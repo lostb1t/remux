@@ -2350,6 +2350,44 @@ mod tests {
         );
     }
 
+    // A local "episode" source is a Series library, so catalogs_for_kinds must
+    // admit its catalog when Series is requested (as RefreshLibraryTask does), but
+    // not for an unrelated kind.
+    #[tokio::test]
+    async fn episode_catalog_admitted_when_series_requested() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let (_, db_addon) = make_local_addon(ctx, dir.path(), "episode").await;
+        ctx.addons
+            .reload(&ctx.db, &ctx.config)
+            .await
+            .unwrap();
+
+        for (requested, should_admit) in
+            [(db::MediaKind::Series, true), (db::MediaKind::Movie, false)]
+        {
+            let admitted = ctx
+                .addons
+                .catalogs_for_kinds(ctx, &[requested.clone()])
+                .await
+                .into_iter()
+                .find(|(rt, _)| {
+                    rt.row
+                        .id
+                        == db_addon.id
+                })
+                .is_some_and(|(_, cats)| !cats.is_empty());
+            assert_eq!(
+                admitted, should_admit,
+                "episode catalog admission for {requested:?} should be {should_admit}"
+            );
+        }
+    }
+
     // ---------------------------------------------------------------------------
     // Files inside special-feature subdirs (trailers/, extras/, etc.) must be
     // skipped — they are not episodes or movies.
