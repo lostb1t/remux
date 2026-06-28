@@ -2868,47 +2868,48 @@ impl Media {
                         api::ItemSortBy::PopularityAllTime => {
                             // all-time → most recent yearly → most recent monthly → 0
                             "COALESCE(\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.source = 'tmdb' AND pa.period = 'all' AND pa.period_key = 'all'),\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.source = 'tmdb' AND pa.period = 'yearly' ORDER BY pa.period_key DESC LIMIT 1),\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.source = 'tmdb' AND pa.period = 'monthly' ORDER BY pa.period_key DESC LIMIT 1),\
+                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'all' AND pa.period_key = 'all'),\
+                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'yearly' ORDER BY pa.period_key DESC LIMIT 1),\
+                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'monthly' ORDER BY pa.period_key DESC LIMIT 1),\
                                0) DESC"
                                 .to_string()
                         }
                         api::ItemSortBy::PopularityDay => {
                             // today → most recent daily → 0
                             "COALESCE(\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.source = 'tmdb' AND pa.period = 'daily' AND pa.period_key = date('now')),\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.source = 'tmdb' AND pa.period = 'daily' ORDER BY pa.period_key DESC LIMIT 1),\
+                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'daily' AND pa.period_key = date('now')),\
+                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'daily' ORDER BY pa.period_key DESC LIMIT 1),\
                                0) DESC"
                                 .to_string()
                         }
                         api::ItemSortBy::PopularityWeek => {
                             // this week → most recent weekly → 0
+                            // period_key is the Monday of the week as 'YYYY-MM-DD'
                             "COALESCE(\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.source = 'tmdb' AND pa.period = 'weekly' AND pa.period_key = strftime('%Y-W%W', 'now')),\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.source = 'tmdb' AND pa.period = 'weekly' ORDER BY pa.period_key DESC LIMIT 1),\
+                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'weekly' AND pa.period_key = date('now', 'weekday 0', '-6 days')),\
+                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'weekly' ORDER BY pa.period_key DESC LIMIT 1),\
                                0) DESC"
                                 .to_string()
                         }
                         api::ItemSortBy::PopularityMonth => {
                             // this month → most recent monthly → 0
                             "COALESCE(\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.source = 'tmdb' AND pa.period = 'monthly' AND pa.period_key = strftime('%Y-%m', 'now')),\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.source = 'tmdb' AND pa.period = 'monthly' ORDER BY pa.period_key DESC LIMIT 1),\
+                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'monthly' AND pa.period_key = strftime('%Y-%m', 'now')),\
+                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'monthly' ORDER BY pa.period_key DESC LIMIT 1),\
                                0) DESC"
                                 .to_string()
                         }
                         api::ItemSortBy::TrendingWeek => {
                             "COALESCE(\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.source = 'tmdb' AND pa.period = 'trend_week' AND pa.period_key = date('now')),\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.source = 'tmdb' AND pa.period = 'trend_week' ORDER BY pa.period_key DESC LIMIT 1),\
+                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'trend_week' AND pa.period_key = date('now')),\
+                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'trend_week' ORDER BY pa.period_key DESC LIMIT 1),\
                                0) DESC"
                                 .to_string()
                         }
                         api::ItemSortBy::TrendingMonth => {
                             "COALESCE(\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.source = 'tmdb' AND pa.period = 'trend_month' AND pa.period_key = date('now')),\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.source = 'tmdb' AND pa.period = 'trend_month' ORDER BY pa.period_key DESC LIMIT 1),\
+                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'trend_month' AND pa.period_key = date('now')),\
+                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'trend_month' ORDER BY pa.period_key DESC LIMIT 1),\
                                0) DESC"
                                 .to_string()
                         }

@@ -5,6 +5,7 @@ pub mod introdb;
 pub mod remux;
 pub mod stremio;
 pub mod tmdb;
+pub mod trakt;
 
 use http::{HeaderMap, HeaderValue, Method, header};
 use itertools::Itertools;
@@ -79,6 +80,8 @@ impl Auth for JellyfinApiKeyAuth {
 pub enum ClientError {
     #[error("unauthorized")]
     Unauthorized,
+    #[error("rate limited, retry after {retry_after_secs}s")]
+    RateLimited { retry_after_secs: u64 },
     #[error("http error (status={status}) endpoint={endpoint:?}: {message}")]
     Http {
         status: u16,
@@ -298,6 +301,21 @@ impl<A: Auth + Clone> RestClient<A> {
         let status = resp
             .status()
             .as_u16();
+        if status == 429 {
+            let retry_after_secs = resp
+                .headers()
+                .get("Retry-After")
+                .and_then(|v| {
+                    v.to_str()
+                        .ok()
+                })
+                .and_then(|s| {
+                    s.parse::<u64>()
+                        .ok()
+                })
+                .unwrap_or(60);
+            return Err(ClientError::RateLimited { retry_after_secs });
+        }
         let text = resp
             .text()
             .await

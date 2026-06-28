@@ -13,6 +13,7 @@ pub mod squid;
 pub mod stremio;
 pub mod tmdb;
 pub mod torznab;
+pub mod trakt;
 pub mod ytdlp;
 
 use anyhow::{Result, anyhow};
@@ -1098,6 +1099,9 @@ impl AddonService {
             .filter(|r| {
                 r.metrics
                     .is_some()
+                    && r.row
+                        .resources
+                        .contains(&ResourceType::Metrics)
             })
             .cloned()
             .collect()

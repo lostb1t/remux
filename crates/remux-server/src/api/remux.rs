@@ -561,7 +561,7 @@ pub async fn remux_metrics_status(
     let row = sqlx::query_as::<_, (i64, Option<i64>, i64)>(
         "SELECT COUNT(DISTINCT period_key), \
                 CAST(julianday('now') - julianday(MAX(period_key)) AS INTEGER), \
-                COUNT(DISTINCT external_id) \
+                COUNT(DISTINCT media_id) \
          FROM popularity_agg \
          WHERE period = 'daily' AND period_key >= date('now', '-14 days')",
     )
