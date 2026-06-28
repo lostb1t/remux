@@ -430,6 +430,39 @@ async fn items_playbackinfo_inner(
                 });
         }
 
+        // Pre-extract all embedded text subtitle streams in the background, in one
+        // FFmpeg pass. By the time the client requests a subtitle URL, the cache file
+        // is already written (same approach Jellyfin uses).
+        if let Some(ref input_url) = url_opt {
+            let text_sub_indices: Vec<i64> = source
+                .media_streams
+                .iter()
+                .filter(|s| {
+                    matches!(s.type_, Some(api::MediaStreamType::Subtitle))
+                        && !s.is_external
+                        && s.is_text_subtitle_stream
+                })
+                .map(|s| s.index)
+                .collect();
+            if !text_sub_indices.is_empty() {
+                let data_dir = state
+                    .ctx
+                    .config
+                    .data_dir
+                    .clone();
+                let url = input_url.clone();
+                let msid = sm.id;
+                tokio::spawn(
+                    crate::api::subtitles::pre_extract_all_subtitles_to_cache(
+                        data_dir,
+                        url,
+                        msid,
+                        text_sub_indices,
+                    ),
+                );
+            }
+        }
+
         // Detect embedded subtitle codecs unsupported by the client device profile.
         // In Burn mode this triggers transcoding so the subtitle can be burned in.
         // In Extract/Strip modes, no transcode reason is added for subtitles.
@@ -446,6 +479,7 @@ async fn items_playbackinfo_inner(
                         s.index == idx
                             && matches!(s.type_, Some(api::MediaStreamType::Subtitle))
                             && !s.is_external
+                            && !s.is_text_subtitle_stream
                             && !device_profile
                                 .as_ref()
                                 .map(|dp| {
@@ -632,6 +666,7 @@ async fn items_playbackinfo_inner(
                     })
                     .and_then(|stream| {
                         if stream.is_external
+                            || stream.is_text_subtitle_stream
                             || subtitle_mode
                                 != remux_sdks::remux::EmbeddedSubtitleHandling::Burn
                         {
@@ -802,10 +837,12 @@ async fn items_playbackinfo_inner(
             if !stream.is_external && profile_embeds(format) {
                 stream.delivery_method = Some(api::SubtitleDeliveryMethod::Embed);
             } else if !stream.is_external
+                && !stream.is_text_subtitle_stream
+                && !profile_supports(format)
                 && subtitle_mode == remux_sdks::remux::EmbeddedSubtitleHandling::Burn
             {
-                // Burn mode: embedded sub not natively embedded → will be burned into video.
-                // Tell the client not to request it separately.
+                // Burn mode: embedded image sub (PGS/VOBSUB) the client can't handle at
+                // all (not via embed, not via external) → force transcode with burn-in.
                 stream.delivery_method = Some(api::SubtitleDeliveryMethod::Encode);
             } else {
                 stream.delivery_url = Some(format!(
@@ -1408,55 +1445,9 @@ async fn videos_stream_inner(
         .subtitle_method
         .as_deref()
         == Some("Encode");
-    let text_subtitle_si_prog = if burn_subtitle_prog {
-        q.subtitle_stream_index
-            .and_then(|sub_idx| {
-                media
-                    .probe_data
-                    .as_ref()
-                    .and_then(|probe| {
-                        let stream = probe
-                            .media_streams
-                            .iter()
-                            .find(|s| s.index == sub_idx as i64)?;
-                        let is_text = stream.is_text_subtitle_stream
-                            || matches!(
-                                stream
-                                    .codec
-                                    .as_deref()
-                                    .unwrap_or(""),
-                                "subrip"
-                                    | "srt"
-                                    | "ass"
-                                    | "ssa"
-                                    | "webvtt"
-                                    | "mov_text"
-                                    | "text"
-                            );
-                        if !is_text {
-                            return None;
-                        }
-                        let mut sub_indexes: Vec<i64> = probe
-                            .media_streams
-                            .iter()
-                            .filter(|s| {
-                                matches!(
-                                    s.type_,
-                                    Some(crate::api::MediaStreamType::Subtitle)
-                                )
-                            })
-                            .map(|s| s.index)
-                            .collect();
-                        sub_indexes.sort_unstable();
-                        let ordinal = sub_indexes
-                            .iter()
-                            .position(|&i| i == sub_idx as i64)?;
-                        Some(ordinal as i64)
-                    })
-            })
-    } else {
-        None
-    };
+    // Image subs use the filter_complex overlay path (subtitle_stream_index);
+    // subtitle_path is not needed.
+    let subtitle_path_prog: Option<std::path::PathBuf> = None;
 
     let params = crate::transcode::engine::ProgressiveTranscodeParams {
         input_url: url,
@@ -1490,7 +1481,7 @@ async fn videos_stream_inner(
             .subtitle_stream_index
             .map(|v| v as i32),
         burn_subtitle: burn_subtitle_prog,
-        text_subtitle_si: text_subtitle_si_prog,
+        subtitle_path: subtitle_path_prog,
         subtitle_width: None,
         subtitle_height: None,
         encoding_preset: encoding_opts.encoding_preset,

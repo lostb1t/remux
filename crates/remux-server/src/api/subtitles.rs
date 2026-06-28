@@ -101,6 +101,63 @@ pub(crate) async fn extract_subtitle_to_cache(
     Ok(cache_path)
 }
 
+/// Pre-extract all embedded text subtitle streams for a media source in one FFmpeg pass.
+/// Mirrors Jellyfin's approach: one command, multiple outputs, fire-and-forget at PlaybackInfo time.
+/// The `subtitles_stream` endpoint falls back to on-demand extraction for any cache misses.
+pub(crate) async fn pre_extract_all_subtitles_to_cache(
+    data_dir: std::path::PathBuf,
+    input_url: String,
+    media_source_id: uuid::Uuid,
+    stream_indices: Vec<i64>,
+) {
+    let cache_dir = data_dir.join("subtitle-cache");
+    let _ = tokio::fs::create_dir_all(&cache_dir).await;
+
+    let mut to_extract: Vec<(i64, std::path::PathBuf)> = Vec::new();
+    for idx in stream_indices {
+        let path = cache_dir.join(format!("{media_source_id}_{idx}.srt"));
+        if path.exists() {
+            if let Ok(b) = tokio::fs::read(&path).await {
+                if !String::from_utf8_lossy(&b)
+                    .trim()
+                    .is_empty()
+                {
+                    continue;
+                }
+            }
+        }
+        to_extract.push((idx, path));
+    }
+
+    if to_extract.is_empty() {
+        return;
+    }
+
+    let mut cmd = tokio::process::Command::new(ffmpeg_bin());
+    cmd.kill_on_drop(true);
+    cmd.args(["-i", &input_url]);
+    for (idx, path) in &to_extract {
+        if let Some(p) = path.to_str() {
+            cmd.args([
+                "-map",
+                &format!("0:{idx}"),
+                "-an",
+                "-vn",
+                "-c:s",
+                "srt",
+                "-flush_packets",
+                "1",
+                p,
+            ]);
+        }
+    }
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+
+    let _ =
+        tokio::time::timeout(std::time::Duration::from_secs(120), cmd.output()).await;
+}
+
 /// Subtitle extraction endpoint - extracts a subtitle stream from a media source
 /// and optionally converts it to the requested format (vtt, srt, ass).
 // Jellyfin clients include a start-position-ticks segment in the path.

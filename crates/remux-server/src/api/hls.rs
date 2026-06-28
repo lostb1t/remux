@@ -299,55 +299,9 @@ pub async fn master_hls_video(
         });
         let burn_subtitle =
             q.subtitle_method == Some(api::SubtitleDeliveryMethod::Encode);
-        let text_subtitle_si = if burn_subtitle {
-            q.subtitle_stream_index
-                .and_then(|sub_idx| {
-                    resolved_media
-                        .probe_data
-                        .as_ref()
-                        .and_then(|probe| {
-                            let stream = probe
-                                .media_streams
-                                .iter()
-                                .find(|s| s.index == sub_idx as i64)?;
-                            let is_text = stream.is_text_subtitle_stream
-                                || matches!(
-                                    stream
-                                        .codec
-                                        .as_deref()
-                                        .unwrap_or(""),
-                                    "subrip"
-                                        | "srt"
-                                        | "ass"
-                                        | "ssa"
-                                        | "webvtt"
-                                        | "mov_text"
-                                        | "text"
-                                );
-                            if !is_text {
-                                return None;
-                            }
-                            let mut sub_indexes: Vec<i64> = probe
-                                .media_streams
-                                .iter()
-                                .filter(|s| {
-                                    matches!(
-                                        s.type_,
-                                        Some(crate::api::MediaStreamType::Subtitle)
-                                    )
-                                })
-                                .map(|s| s.index)
-                                .collect();
-                            sub_indexes.sort_unstable();
-                            let ordinal = sub_indexes
-                                .iter()
-                                .position(|&i| i == sub_idx as i64)?;
-                            Some(ordinal as i64)
-                        })
-                })
-        } else {
-            None
-        };
+        // Image subs use the filter_complex overlay path (subtitle_stream_index);
+        // subtitle_path is not needed.
+        let subtitle_path: Option<std::path::PathBuf> = None;
         let session = TranscodeSession::new(
             play_session_id.clone(),
             id,
@@ -361,7 +315,7 @@ pub async fn master_hls_video(
             q.subtitle_stream_index
                 .map(|v| v as i32),
             burn_subtitle,
-            text_subtitle_si,
+            subtitle_path.clone(),
             segment_length,
             // Parse reasons from query param (set by playbackinfo on the transcoding URL)
             q.transcode_reasons
@@ -429,7 +383,7 @@ pub async fn master_hls_video(
                 .subtitle_stream_index
                 .map(|v| v as i32),
             burn_subtitle,
-            text_subtitle_si,
+            subtitle_path: subtitle_path.clone(),
             subtitle_width: None,
             subtitle_height: None,
             encoding_preset: encoding_opts.encoding_preset,
@@ -943,7 +897,9 @@ async fn hls_segment_inner(
                     let audio_stream_index = s.audio_stream_index;
                     let subtitle_stream_index = s.subtitle_stream_index;
                     let burn_subtitle = s.burn_subtitle;
-                    let text_subtitle_si = s.text_subtitle_si;
+                    let subtitle_path = s
+                        .subtitle_path
+                        .clone();
                     drop(s);
 
                     // Kill running FFmpeg and clean up stale segments (params
@@ -1014,7 +970,7 @@ async fn hls_segment_inner(
                         audio_stream_index,
                         subtitle_stream_index,
                         burn_subtitle,
-                        text_subtitle_si,
+                        subtitle_path: subtitle_path.clone(),
                         subtitle_width: None,
                         subtitle_height: None,
                         encoding_preset: encoding_opts.encoding_preset,
