@@ -128,9 +128,8 @@ pub async fn insert_test_source(ctx: &AppContext) -> db::Media {
         title: "Test Source".to_string(),
         kind: db::MediaKind::Stream,
         stream_info: Some(crate::stream::StreamInfo {
-            descriptor: crate::stream::StreamDescriptor::http(
-                "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_5MB.mp4"
-                    .to_string(),
+            descriptor: crate::stream::StreamDescriptor::Local(
+                "test-fixture.mp4".into(),
             ),
             ..Default::default()
         }),
