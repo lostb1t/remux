@@ -1,6 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use super::{
@@ -52,7 +53,10 @@ impl AddonPreset for TraktPreset {
             .filter(|s| !s.is_empty())
             .map(str::to_string);
         Ok(AddonCapabilities {
-            metrics: Some(Arc::new(TraktAddon { client_id })),
+            metrics: Some(Arc::new(TraktAddon {
+                client_id,
+                cache: Mutex::new(None),
+            })),
             ..Default::default()
         })
     }
@@ -64,9 +68,86 @@ inventory::submit! {
 
 pub struct TraktAddon {
     client_id: Option<String>,
+    // (date, movie_ceiling, show_ceiling) — refreshed daily from #1 popular item stats
+    cache: Mutex<Option<(chrono::NaiveDate, f64, f64)>>,
 }
 
-const TRAKT_WATCHERS_MAX: f64 = 700_000.0;
+impl TraktAddon {
+    async fn ceilings(&self, ctx: &AppContext) -> Option<(f64, f64)> {
+        let client_id = self
+            .client_id
+            .as_deref()?;
+        let today = chrono::Utc::now().date_naive();
+
+        let mut cache = self
+            .cache
+            .lock()
+            .await;
+        if cache
+            .as_ref()
+            .map_or(true, |(d, _, _)| *d != today)
+        {
+            let client = sdks::trakt::trakt_client(
+                client_id,
+                &ctx.config
+                    .trakt_base_url,
+            )
+            .ok()?;
+
+            let movie_ceiling = async {
+                let top = client
+                    .execute(sdks::trakt::MoviePopularEndpoint { limit: 1 })
+                    .await
+                    .ok()?
+                    .into_iter()
+                    .next()?;
+                let imdb_id = top
+                    .ids
+                    .imdb?;
+                let stats = client
+                    .execute(sdks::trakt::MovieStatsEndpoint { imdb_id })
+                    .await
+                    .ok()?;
+                Some(
+                    stats
+                        .raw_score()
+                        .max(1.0),
+                )
+            }
+            .await
+            .unwrap_or(500_000.0);
+
+            let show_ceiling = async {
+                let top = client
+                    .execute(sdks::trakt::ShowPopularEndpoint { limit: 1 })
+                    .await
+                    .ok()?
+                    .into_iter()
+                    .next()?;
+                let imdb_id = top
+                    .ids
+                    .imdb?;
+                let stats = client
+                    .execute(sdks::trakt::ShowStatsEndpoint { imdb_id })
+                    .await
+                    .ok()?;
+                Some(
+                    stats
+                        .raw_score()
+                        .max(1.0),
+                )
+            }
+            .await
+            .unwrap_or(500_000.0);
+
+            *cache = Some((today, movie_ceiling, show_ceiling));
+        }
+
+        cache
+            .as_ref()
+            .map(|(_, m, s)| (*m, *s))
+    }
+}
 
 #[async_trait]
 impl MetricsAddon for TraktAddon {
@@ -85,7 +166,17 @@ impl MetricsAddon for TraktAddon {
         else {
             return Ok(None);
         };
-        let Some(ref client_id) = self.client_id else {
+        let Some(client_id) = self
+            .client_id
+            .as_deref()
+        else {
+            return Ok(None);
+        };
+
+        let Some((movie_ceiling, show_ceiling)) = self
+            .ceilings(ctx)
+            .await
+        else {
             return Ok(None);
         };
 
@@ -93,35 +184,62 @@ impl MetricsAddon for TraktAddon {
             client_id,
             &ctx.config
                 .trakt_base_url,
-        )
-        .map_err(anyhow::Error::from)?;
+        )?;
         let today = chrono::Utc::now().date_naive();
 
-        let watchers: Option<u64> = match media.kind {
-            db::MediaKind::Movie => client
-                .execute(sdks::trakt::MovieStatsEndpoint {
-                    imdb_id: imdb_id.to_string(),
-                })
-                .await
-                .ok()
-                .map(|r| r.watchers),
-            db::MediaKind::Series => client
-                .execute(sdks::trakt::ShowStatsEndpoint {
-                    imdb_id: imdb_id.to_string(),
-                })
-                .await
-                .ok()
-                .map(|r| r.watchers),
-            _ => return Ok(None),
+        let stats = loop {
+            let result = match media.kind {
+                db::MediaKind::Movie => {
+                    client
+                        .execute(sdks::trakt::MovieStatsEndpoint {
+                            imdb_id: imdb_id.to_string(),
+                        })
+                        .await
+                }
+                db::MediaKind::Series => {
+                    client
+                        .execute(sdks::trakt::ShowStatsEndpoint {
+                            imdb_id: imdb_id.to_string(),
+                        })
+                        .await
+                }
+                _ => return Ok(None),
+            };
+            match result {
+                Ok(s) => break s,
+                Err(sdks::ClientError::RateLimited { retry_after_secs }) => {
+                    tokio::time::sleep(Duration::from_secs(retry_after_secs)).await;
+                }
+                Err(_) => return Ok(None),
+            }
         };
 
+        let ceiling = match media.kind {
+            db::MediaKind::Movie => movie_ceiling,
+            _ => show_ceiling,
+        };
+
+        let age_years = media
+            .released_at
+            .map(|d| {
+                let days = (chrono::Utc::now().naive_utc() - d).num_days();
+                days as f64 / 365.25
+            })
+            .unwrap_or(5.0)
+            .max(0.0);
+
+        let raw = stats.raw_score();
+        let base = (raw / ceiling * 100.0).clamp(0.0, 100.0);
+        let decay = 1.0 / (1.0 + age_years * 0.1);
+        let score = base * decay;
+
         let external_id = format!("trakt:{}", imdb_id);
-        Ok(watchers.map(|w| MetricSnapshot {
+        Ok(Some(MetricSnapshot {
             source: "trakt".to_string(),
             media_id: Some(media.id),
             media_raw: Some(external_id.clone()),
             external_id,
-            value: MetricValue::from_raw(w as f64, TRAKT_WATCHERS_MAX),
+            value: MetricValue::from_normalized(score),
             date: today,
         }))
     }

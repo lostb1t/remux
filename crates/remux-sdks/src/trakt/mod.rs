@@ -17,8 +17,67 @@ impl Auth for TraktAuth {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct TraktStatsResponse {
+pub struct TraktItemIds {
+    pub imdb: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TraktPopularItem {
+    pub ids: TraktItemIds,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PopularParams {
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct MoviePopularEndpoint {
+    pub limit: u32,
+}
+
+impl Endpoint for MoviePopularEndpoint {
+    type Output = Vec<TraktPopularItem>;
+
+    fn path(&self) -> String {
+        "movies/popular".to_string()
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        PopularParams { limit: self.limit }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ShowPopularEndpoint {
+    pub limit: u32,
+}
+
+impl Endpoint for ShowPopularEndpoint {
+    type Output = Vec<TraktPopularItem>;
+
+    fn path(&self) -> String {
+        "shows/popular".to_string()
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        PopularParams { limit: self.limit }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TraktStats {
     pub watchers: u64,
+    pub recommended: u64,
+    pub favorited: u64,
+}
+
+impl TraktStats {
+    pub fn raw_score(&self) -> f64 {
+        self.watchers as f64
+            + self.recommended as f64 * 20.0
+            + self.favorited as f64 * 10.0
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -27,10 +86,14 @@ pub struct MovieStatsEndpoint {
 }
 
 impl Endpoint for MovieStatsEndpoint {
-    type Output = TraktStatsResponse;
+    type Output = TraktStats;
 
     fn path(&self) -> String {
         format!("movies/{}/stats", self.imdb_id)
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        ()
     }
 }
 
@@ -40,10 +103,14 @@ pub struct ShowStatsEndpoint {
 }
 
 impl Endpoint for ShowStatsEndpoint {
-    type Output = TraktStatsResponse;
+    type Output = TraktStats;
 
     fn path(&self) -> String {
         format!("shows/{}/stats", self.imdb_id)
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        ()
     }
 }
 
