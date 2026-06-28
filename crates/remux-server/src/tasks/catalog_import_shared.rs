@@ -124,7 +124,7 @@ where
 
         if let Err(e) = ctx
             .addons
-            .process_meta_batch(new_items.clone(), ctx, false)
+            .process_meta_batch(new_items.clone(), ctx, true)
             .await
         {
             error!(catalog = media_id, error = %e, "failed to process new items chunk");

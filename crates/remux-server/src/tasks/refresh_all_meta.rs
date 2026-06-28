@@ -61,7 +61,7 @@ impl Task for RefreshAllMetaTask {
             }
             let fetched = batch.len();
             ctx.addons
-                .process_meta_batch(batch, &ctx, false)
+                .process_meta_batch(batch, &ctx, true)
                 .await?;
             processed += fetched;
             progress.report(processed, total.max(1));
