@@ -1445,9 +1445,6 @@ async fn videos_stream_inner(
         .subtitle_method
         .as_deref()
         == Some("Encode");
-    // Image subs use the filter_complex overlay path (subtitle_stream_index);
-    // subtitle_path is not needed.
-    let subtitle_path_prog: Option<std::path::PathBuf> = None;
 
     let params = crate::transcode::engine::ProgressiveTranscodeParams {
         input_url: url,
@@ -1481,7 +1478,6 @@ async fn videos_stream_inner(
             .subtitle_stream_index
             .map(|v| v as i32),
         burn_subtitle: burn_subtitle_prog,
-        subtitle_path: subtitle_path_prog,
         subtitle_width: None,
         subtitle_height: None,
         encoding_preset: encoding_opts.encoding_preset,

@@ -148,7 +148,7 @@ pub(crate) async fn pre_extract_all_subtitles_to_cache(
     }
 
     if to_extract.is_empty() {
-        info!(%media_source_id, "all {} subtitle track(s) already cached", stream_indices.len());
+        debug!(%media_source_id, "all {} subtitle track(s) already cached", stream_indices.len());
         return;
     }
 
@@ -246,13 +246,6 @@ pub async fn subtitles_stream(
         String,
     )>,
 ) -> Result<impl IntoResponse> {
-    info!(
-        %item_id,
-        %media_source_id,
-        stream_index,
-        %format,
-        "subtitle stream requested"
-    );
     // Try to resolve as an external subtitle injected during PlaybackInfo.
     // fetch_subtitles is cached (24h Stremio / SQLite Opendal) so this is cheap.
     if let Some(item_media) = db::Media::get_by_id(

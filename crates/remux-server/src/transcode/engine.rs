@@ -266,11 +266,6 @@ pub struct TranscodeParams {
     pub audio_stream_index: Option<i32>,
     pub subtitle_stream_index: Option<i32>,
     pub burn_subtitle: bool,
-    /// Pre-extracted local path for text subtitle burn-in (SRT/ASS).
-    /// FFmpeg's `subtitles=` filter requires a local file — it cannot open
-    /// network URLs reliably. Set this for text subs; leave None for image subs
-    /// (PGS/DVD), which use `subtitle_stream_index` + filter_complex overlay.
-    pub subtitle_path: Option<std::path::PathBuf>,
     /// Native dimensions of the subtitle bitmap (PGS canvas size), used to
     /// scale the subtitle to match the output video resolution.
     pub subtitle_width: Option<u32>,
@@ -329,7 +324,6 @@ impl Default for TranscodeParams {
             audio_stream_index: None,
             subtitle_stream_index: None,
             burn_subtitle: false,
-            subtitle_path: None,
             subtitle_width: None,
             subtitle_height: None,
             encoding_preset: None,
@@ -567,12 +561,9 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         };
         // Subtitle burn-in requires re-encoding; can't copy video.
         let base = if params.burn_subtitle
-            && (params
+            && params
                 .subtitle_stream_index
                 .is_some()
-                || params
-                    .subtitle_path
-                    .is_some())
             && base == "copy"
         {
             "libx264"
@@ -679,34 +670,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
 
     // Stream mapping
     if params.burn_subtitle {
-        if let Some(ref sub_path) = params.subtitle_path {
-            // Text subtitle (SRT/ASS): pre-extracted to a local file.
-            // FFmpeg's subtitles= filter requires a local path — network URLs
-            // are not reliably supported (Jellyfin uses the same approach).
-            let path_str = sub_path
-                .to_string_lossy()
-                .replace('\\', "/");
-            let escaped = path_str
-                .replace(':', "\\:")
-                .replace('\'', "'\\''");
-            let scale_part = build_scale_filter(params)
-                .map(|s| format!("{s},"))
-                .unwrap_or_default();
-            let hw_part = hw_suffix
-                .as_deref()
-                .map(|s| format!(",{s}"))
-                .unwrap_or_default();
-            args.extend([
-                "-vf".into(),
-                format!("{scale_part}subtitles=f='{escaped}'{hw_part}"),
-            ]);
-            args.extend(["-map".into(), "0:v:0".into()]);
-            if let Some(audio_idx) = params.audio_stream_index {
-                args.extend(["-map".into(), format!("0:{audio_idx}")]);
-            } else {
-                args.extend(["-map".into(), "0:a?".into()]);
-            }
-        } else if let Some(sub_idx) = params.subtitle_stream_index {
+        if let Some(sub_idx) = params.subtitle_stream_index {
             // Image subtitle (PGS/DVD): bitmap overlay via filter_complex.
             // Scale subtitle bitmap to output dimensions (matching Jellyfin's approach).
             // When output size is known, scale to that; otherwise pass through as-is.
@@ -1314,8 +1278,6 @@ pub struct ProgressiveTranscodeParams {
     pub audio_stream_index: Option<i32>,
     pub subtitle_stream_index: Option<i32>,
     pub burn_subtitle: bool,
-    /// See `TranscodeParams::subtitle_path`.
-    pub subtitle_path: Option<std::path::PathBuf>,
     pub subtitle_width: Option<u32>,
     pub subtitle_height: Option<u32>,
     pub encoding_preset: Option<EncodingPreset>,
@@ -1366,12 +1328,9 @@ pub(crate) fn build_progressive_args(
             _ => "libx264",
         };
         let base = if params.burn_subtitle
-            && (params
+            && params
                 .subtitle_stream_index
                 .is_some()
-                || params
-                    .subtitle_path
-                    .is_some())
             && base == "copy"
         {
             "libx264"
@@ -1485,33 +1444,7 @@ pub(crate) fn build_progressive_args(
     };
 
     if params.burn_subtitle {
-        if let Some(ref sub_path) = params.subtitle_path {
-            // Text subtitle (SRT/ASS): pre-extracted local file, same as Jellyfin.
-            let path_str = sub_path
-                .to_string_lossy()
-                .replace('\\', "/");
-            let escaped = path_str
-                .replace(':', "\\:")
-                .replace('\'', "'\\''");
-            let scale_part = scale_filter
-                .as_deref()
-                .map(|s| format!("{s},"))
-                .unwrap_or_default();
-            let hw_part = hw_suffix
-                .as_deref()
-                .map(|s| format!(",{s}"))
-                .unwrap_or_default();
-            args.extend([
-                "-vf".into(),
-                format!("{scale_part}subtitles=f='{escaped}'{hw_part}"),
-            ]);
-            args.extend(["-map".into(), "0:v:0".into()]);
-            if let Some(audio_idx) = params.audio_stream_index {
-                args.extend(["-map".into(), format!("0:{audio_idx}")]);
-            } else {
-                args.extend(["-map".into(), "0:a?".into()]);
-            }
-        } else if let Some(sub_idx) = params.subtitle_stream_index {
+        if let Some(sub_idx) = params.subtitle_stream_index {
             // Image subtitle (PGS/DVD): bitmap overlay via filter_complex.
             let (out_w, out_h) = (params.max_width, params.max_height);
             let sub_scale = match (out_w, out_h) {
@@ -2205,7 +2138,6 @@ mod tests {
             audio_stream_index: None,
             subtitle_stream_index: None,
             burn_subtitle: false,
-            subtitle_path: None,
             subtitle_width: None,
             subtitle_height: None,
             encoding_preset: None,
@@ -2436,7 +2368,6 @@ mod tests {
             audio_stream_index: None,
             subtitle_stream_index: None,
             burn_subtitle: false,
-            subtitle_path: None,
             segment_length: 6,
             transcode_reasons: TranscodeReasons::default(),
             kill_tx: None,
@@ -2810,121 +2741,6 @@ mod tests {
         assert_eq!(arg_after(&args, "-c:v"), Some("libx264"));
         let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
         assert!(fc.contains("overlay"), "fc: {fc}");
-    }
-
-    // ── Text subtitle burn-in (subtitle_path) ────────────────────────────────
-
-    #[test]
-    fn hls_text_subtitle_burn_uses_vf_subtitles_filter() {
-        let dir = PathBuf::from("/tmp/test_text_sub");
-        let args = build_hls_args(&TranscodeParams {
-            video_codec: "libx264".into(),
-            burn_subtitle: true,
-            subtitle_path: Some(std::path::PathBuf::from("/cache/sub.srt")),
-            ..default_hls(dir)
-        });
-
-        let vf = arg_after(&args, "-vf").expect("-vf missing");
-        assert!(
-            vf.contains("subtitles=f="),
-            "-vf should contain subtitles=f= filter: {vf}"
-        );
-        assert!(
-            vf.contains("sub.srt"),
-            "-vf should reference the srt file: {vf}"
-        );
-        assert!(
-            !args_contains(&args, "-filter_complex"),
-            "text subtitle burn must not use -filter_complex"
-        );
-    }
-
-    #[test]
-    fn hls_text_subtitle_burn_forces_reencode_from_copy() {
-        let dir = PathBuf::from("/tmp/test_text_sub_copy");
-        let args = build_hls_args(&TranscodeParams {
-            video_codec: "copy".into(),
-            burn_subtitle: true,
-            subtitle_path: Some(std::path::PathBuf::from("/cache/sub.srt")),
-            ..default_hls(dir)
-        });
-
-        assert_eq!(arg_after(&args, "-c:v"), Some("libx264"));
-    }
-
-    #[test]
-    fn hls_text_subtitle_burn_with_scale_prefix() {
-        let dir = PathBuf::from("/tmp/test_text_sub_scale");
-        let args = build_hls_args(&TranscodeParams {
-            video_codec: "libx264".into(),
-            burn_subtitle: true,
-            subtitle_path: Some(std::path::PathBuf::from("/cache/sub.srt")),
-            max_width: Some(1280),
-            max_height: Some(720),
-            ..default_hls(dir)
-        });
-
-        let vf = arg_after(&args, "-vf").expect("-vf missing");
-        let scale_pos = vf
-            .find("scale=")
-            .expect("scale= missing in -vf");
-        let sub_pos = vf
-            .find("subtitles=")
-            .expect("subtitles= missing in -vf");
-        assert!(
-            scale_pos < sub_pos,
-            "scale must precede subtitles= in -vf: {vf}"
-        );
-    }
-
-    #[test]
-    fn hls_text_subtitle_path_colon_escaped_for_lavfi() {
-        // Colons in the path must be escaped as \: for FFmpeg lavfi (Jellyfin approach).
-        let dir = PathBuf::from("/tmp/test_text_sub_escape");
-        let args = build_hls_args(&TranscodeParams {
-            video_codec: "libx264".into(),
-            burn_subtitle: true,
-            subtitle_path: Some(std::path::PathBuf::from("/cache/C:/sub.srt")),
-            ..default_hls(dir)
-        });
-
-        let vf = arg_after(&args, "-vf").expect("-vf missing");
-        assert!(
-            vf.contains("\\:"),
-            "colon in path must be escaped as \\: for lavfi: {vf}"
-        );
-    }
-
-    #[test]
-    fn progressive_text_subtitle_burn_uses_vf_subtitles_filter() {
-        let args = build_progressive_args(&ProgressiveTranscodeParams {
-            video_codec: "libx264".into(),
-            burn_subtitle: true,
-            subtitle_path: Some(std::path::PathBuf::from("/cache/sub.srt")),
-            ..default_progressive()
-        });
-
-        let vf = arg_after(&args, "-vf").expect("-vf missing");
-        assert!(
-            vf.contains("subtitles=f="),
-            "-vf should contain subtitles=f= filter: {vf}"
-        );
-        assert!(
-            !args_contains(&args, "-filter_complex"),
-            "text subtitle burn must not use -filter_complex"
-        );
-    }
-
-    #[test]
-    fn progressive_text_subtitle_burn_forces_reencode_from_copy() {
-        let args = build_progressive_args(&ProgressiveTranscodeParams {
-            video_codec: "copy".into(),
-            burn_subtitle: true,
-            subtitle_path: Some(std::path::PathBuf::from("/cache/sub.srt")),
-            ..default_progressive()
-        });
-
-        assert_eq!(arg_after(&args, "-c:v"), Some("libx264"));
     }
 
     #[test]

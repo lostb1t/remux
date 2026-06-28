@@ -299,9 +299,6 @@ pub async fn master_hls_video(
         });
         let burn_subtitle =
             q.subtitle_method == Some(api::SubtitleDeliveryMethod::Encode);
-        // Image subs use the filter_complex overlay path (subtitle_stream_index);
-        // subtitle_path is not needed.
-        let subtitle_path: Option<std::path::PathBuf> = None;
         let session = TranscodeSession::new(
             play_session_id.clone(),
             id,
@@ -315,7 +312,6 @@ pub async fn master_hls_video(
             q.subtitle_stream_index
                 .map(|v| v as i32),
             burn_subtitle,
-            subtitle_path.clone(),
             segment_length,
             // Parse reasons from query param (set by playbackinfo on the transcoding URL)
             q.transcode_reasons
@@ -383,7 +379,6 @@ pub async fn master_hls_video(
                 .subtitle_stream_index
                 .map(|v| v as i32),
             burn_subtitle,
-            subtitle_path: subtitle_path.clone(),
             subtitle_width: None,
             subtitle_height: None,
             encoding_preset: encoding_opts.encoding_preset,
@@ -897,9 +892,6 @@ async fn hls_segment_inner(
                     let audio_stream_index = s.audio_stream_index;
                     let subtitle_stream_index = s.subtitle_stream_index;
                     let burn_subtitle = s.burn_subtitle;
-                    let subtitle_path = s
-                        .subtitle_path
-                        .clone();
                     drop(s);
 
                     // Kill running FFmpeg and clean up stale segments (params
@@ -970,7 +962,6 @@ async fn hls_segment_inner(
                         audio_stream_index,
                         subtitle_stream_index,
                         burn_subtitle,
-                        subtitle_path: subtitle_path.clone(),
                         subtitle_width: None,
                         subtitle_height: None,
                         encoding_preset: encoding_opts.encoding_preset,
