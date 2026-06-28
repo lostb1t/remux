@@ -2009,7 +2009,7 @@ pub async fn create_virtual_folder(
         collection_kind: Some(collection_kind.clone()),
         collection_media_kind,
         promoted,
-        idx: payload.sort_order,
+        sort_order: payload.sort_order,
         ..Default::default()
     };
 
@@ -2072,7 +2072,7 @@ pub async fn update_virtual_folder(
     let updated_at = Utc::now().naive_utc();
 
     sqlx::query(
-        "UPDATE media SET title = $1, promoted = $2, collection_media_kind = $3, collection_kind = $4, collection_max_items = $5, updated_at = $6, idx = $8 WHERE id = $7",
+        "UPDATE media SET title = $1, promoted = $2, collection_media_kind = $3, collection_kind = $4, collection_max_items = $5, updated_at = $6, sort_order = $8 WHERE id = $7",
     )
     .bind(&payload.name)
     .bind(promoted)
