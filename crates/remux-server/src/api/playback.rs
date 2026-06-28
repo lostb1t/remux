@@ -303,6 +303,13 @@ async fn items_playbackinfo_inner(
         } else {
             (source_medias.clone(), true)
         };
+    let first_grouped_uuid = source_medias
+        .first()
+        .filter(|s| {
+            s.group_id
+                .is_some()
+        })
+        .map(|s| s.id);
     let mut media_sources = Vec::with_capacity(source_medias.len());
     for (idx, sm) in source_medias
         .into_iter()
@@ -903,6 +910,25 @@ async fn items_playbackinfo_inner(
     )
     .await;
 
+    // Cache the group-resolved stream UUID so the stream endpoint can find it
+    // without re-running filter_sources (which could pick a different candidate).
+    if let Some(uuid) = first_grouped_uuid {
+        state
+            .ctx
+            .store
+            .save(
+                format!(
+                    "psource:{}:{}",
+                    id,
+                    session
+                        .device
+                        .id
+                ),
+                uuid,
+                std::time::Duration::from_secs(24 * 3600),
+            );
+    }
+
     // When no specific source was requested (initial load, or media_source_id == item_id),
     // override source[0].Id to equal the item ID — clients expect this for auto-play.
     // When a real specific source was requested, keep its UUID so the client
@@ -1309,20 +1335,42 @@ async fn videos_stream_inner(
                     .db,
             )
             .await?;
-        media = if let Some(wanted) = q.media_source_id {
+        let found = if let Some(wanted) = q.media_source_id {
             sources
                 .iter()
                 .find(|s| s.id == wanted)
                 .cloned()
         } else {
             None
-        }
-        .or_else(|| {
-            sources
-                .into_iter()
-                .next()
-        })
-        .context_not_found("no playable source found")?;
+        };
+        media = if let Some(m) = found {
+            m
+        } else {
+            let device_key = q
+                .device_id
+                .as_deref()
+                .unwrap_or("");
+            let store_key = format!("psource:{}:{}", id, device_key);
+            if let Some(resolved) = state
+                .ctx
+                .store
+                .get::<uuid::Uuid>(&store_key)
+            {
+                db::Media::get_by_id(
+                    &state
+                        .ctx
+                        .db,
+                    &resolved,
+                )
+                .await?
+                .context_not_found("resolved source not found")?
+            } else {
+                sources
+                    .into_iter()
+                    .next()
+                    .context_not_found("no playable source found")?
+            }
+        };
     }
 
     let si = media
