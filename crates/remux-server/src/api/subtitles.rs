@@ -7,13 +7,27 @@ use axum::{
 use axum_anyhow::ApiResult as Result;
 use http::{Response, StatusCode};
 use remux_macros::get;
-use tracing::error;
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+};
+use tokio::sync::watch;
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::{AppState, IntoApiError, OptionExt, ResultExt, api, db, db::auth};
 
 fn ffmpeg_bin() -> String {
     std::env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".into())
+}
+
+/// Tracks in-progress batch subtitle extractions. Subtitle endpoint waits on these
+/// instead of launching a competing on-demand FFmpeg process.
+static BATCH_EXTRACTING: OnceLock<Mutex<HashMap<Uuid, watch::Receiver<bool>>>> =
+    OnceLock::new();
+
+fn batch_extraction_map() -> &'static Mutex<HashMap<Uuid, watch::Receiver<bool>>> {
+    BATCH_EXTRACTING.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Extract an embedded subtitle stream to the SRT cache and return the cache path.
@@ -49,6 +63,8 @@ pub(crate) async fn extract_subtitle_to_cache(
     let mut cmd = tokio::process::Command::new(ffmpeg_bin());
     cmd.kill_on_drop(true);
     cmd.args([
+        "-y",
+        "-nostdin",
         "-copyts",
         "-i",
         input_url,
@@ -64,6 +80,7 @@ pub(crate) async fn extract_subtitle_to_cache(
             .to_str()
             .ok_or_else(|| anyhow!("invalid cache path"))?,
     ]);
+    cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::piped());
 
@@ -114,7 +131,7 @@ pub(crate) async fn pre_extract_all_subtitles_to_cache(
     let _ = tokio::fs::create_dir_all(&cache_dir).await;
 
     let mut to_extract: Vec<(i64, std::path::PathBuf)> = Vec::new();
-    for idx in stream_indices {
+    for idx in &stream_indices {
         let path = cache_dir.join(format!("{media_source_id}_{idx}.srt"));
         if path.exists() {
             if let Ok(b) = tokio::fs::read(&path).await {
@@ -122,20 +139,44 @@ pub(crate) async fn pre_extract_all_subtitles_to_cache(
                     .trim()
                     .is_empty()
                 {
+                    debug!(%media_source_id, stream_index = idx, "subtitle cache hit, skipping");
                     continue;
                 }
             }
         }
-        to_extract.push((idx, path));
+        to_extract.push((*idx, path));
     }
 
     if to_extract.is_empty() {
+        info!(%media_source_id, "all {} subtitle track(s) already cached", stream_indices.len());
         return;
     }
 
+    let indices: Vec<i64> = to_extract
+        .iter()
+        .map(|(i, _)| *i)
+        .collect();
+    info!(
+        %media_source_id,
+        ?indices,
+        "pre-extracting {} subtitle track(s) in background",
+        to_extract.len()
+    );
+
+    // Register in-progress signal so the subtitle endpoint can wait on us
+    // instead of launching a competing FFmpeg process.
+    let (done_tx, done_rx) = watch::channel(false);
+    batch_extraction_map()
+        .lock()
+        .unwrap()
+        .insert(media_source_id, done_rx);
+
     let mut cmd = tokio::process::Command::new(ffmpeg_bin());
     cmd.kill_on_drop(true);
-    cmd.args(["-i", &input_url]);
+    // -y: overwrite without prompting (hangs forever waiting for stdin otherwise)
+    // -nostdin: don't read from stdin at all
+    // -c:s copy: copy subtitle packets as-is (same as Jellyfin, much faster than re-encoding)
+    cmd.args(["-y", "-nostdin", "-i", &input_url]);
     for (idx, path) in &to_extract {
         if let Some(p) = path.to_str() {
             cmd.args([
@@ -144,18 +185,48 @@ pub(crate) async fn pre_extract_all_subtitles_to_cache(
                 "-an",
                 "-vn",
                 "-c:s",
-                "srt",
+                "copy",
                 "-flush_packets",
                 "1",
                 p,
             ]);
         }
     }
+    cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::null());
-    cmd.stderr(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::piped());
 
-    let _ =
-        tokio::time::timeout(std::time::Duration::from_secs(120), cmd.output()).await;
+    let start = std::time::Instant::now();
+    match tokio::time::timeout(std::time::Duration::from_secs(120), cmd.output()).await
+    {
+        Ok(Ok(output)) => {
+            let elapsed = start
+                .elapsed()
+                .as_secs_f32();
+            if output
+                .status
+                .success()
+            {
+                info!(%media_source_id, ?indices, elapsed_secs = elapsed, "batch subtitle extraction completed");
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                warn!(%media_source_id, ?indices, elapsed_secs = elapsed, %stderr, "batch subtitle extraction non-zero exit");
+            }
+        }
+        Ok(Err(e)) => {
+            warn!(%media_source_id, ?indices, "failed to spawn ffmpeg for batch subtitle extraction: {e}");
+        }
+        Err(_) => {
+            warn!(%media_source_id, ?indices, "batch subtitle extraction timed out after 120s");
+        }
+    }
+
+    // Signal done and clean up (drop tx signals all receivers).
+    let _ = done_tx.send(true);
+    batch_extraction_map()
+        .lock()
+        .unwrap()
+        .remove(&media_source_id);
 }
 
 /// Subtitle extraction endpoint - extracts a subtitle stream from a media source
@@ -175,6 +246,13 @@ pub async fn subtitles_stream(
         String,
     )>,
 ) -> Result<impl IntoResponse> {
+    info!(
+        %item_id,
+        %media_source_id,
+        stream_index,
+        %format,
+        "subtitle stream requested"
+    );
     // Try to resolve as an external subtitle injected during PlaybackInfo.
     // fetch_subtitles is cached (24h Stremio / SQLite Opendal) so this is cheap.
     if let Some(item_media) = db::Media::get_by_id(
@@ -444,9 +522,53 @@ pub async fn subtitles_stream(
             .unwrap());
     }
 
-    // Text formats: cache SRT, convert on-the-fly.
-    // For passthrough (ASS) we still extract via the shared helper (which produces SRT)
-    // and then re-extract as ASS separately if needed.  For now collapse to SRT path.
+    // Text formats: serve from SRT cache (populated by pre_extract_all_subtitles_to_cache
+    // at PlaybackInfo time). Falls back to on-demand extraction on cache miss.
+    let cache_file = state
+        .ctx
+        .config
+        .data_dir
+        .join("subtitle-cache")
+        .join(format!("{media_source_id}_{stream_index}.srt"));
+    let is_cached = |path: &std::path::Path| -> bool {
+        path.exists()
+            && std::fs::read(path)
+                .ok()
+                .map(|b| {
+                    !String::from_utf8_lossy(&b)
+                        .trim()
+                        .is_empty()
+                })
+                .unwrap_or(false)
+    };
+
+    if is_cached(&cache_file) {
+        debug!(%media_source_id, stream_index, "subtitle cache hit");
+    } else {
+        // Check if a batch extraction is in progress for this source.
+        // If so, wait for it to finish rather than launching a competing FFmpeg process.
+        let in_progress_rx = batch_extraction_map()
+            .lock()
+            .unwrap()
+            .get(&media_source_id)
+            .cloned();
+        if let Some(mut rx) = in_progress_rx {
+            if !*rx.borrow() {
+                info!(%media_source_id, stream_index, "batch extraction in progress — waiting for it to finish");
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(120),
+                    rx.changed(),
+                )
+                .await;
+            }
+        }
+
+        if is_cached(&cache_file) {
+            info!(%media_source_id, stream_index, "subtitle ready after waiting for batch extraction");
+        } else {
+            info!(%media_source_id, stream_index, %map_spec, "subtitle cache miss — extracting on-demand");
+        }
+    }
     let cache_path = match extract_subtitle_to_cache(
         &state
             .ctx
