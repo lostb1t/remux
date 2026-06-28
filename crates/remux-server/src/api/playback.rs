@@ -985,8 +985,8 @@ async fn probe_with_fallback(
         let url = match url_opt {
             Some(u) => u,
             None => {
-                return Err(anyhow!("stream has no URL"))
-                    .context_internal("stream has no URL");
+                warn!(id = %sm.id, "skipping stream with no URL");
+                continue;
             }
         };
         if is_retry {
