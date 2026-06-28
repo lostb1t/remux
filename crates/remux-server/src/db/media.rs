@@ -2212,6 +2212,24 @@ impl Media {
             })
             .flatten();
 
+        // When sorting by a single-period popularity metric, pre-compute scores via a
+        // LEFT JOIN on a derived table so SQLite materialises popularity_agg once and
+        // joins with a hash-join rather than executing 2 correlated subqueries per
+        // qualifying row in ORDER BY. PopularityAllTime spans 3 periods and stays with
+        // the correlated-subquery path.
+        let pop_period: Option<&'static str> = filter
+            .sort_by
+            .iter()
+            .find_map(|s| match s {
+                api::ItemSortBy::TrendingWeek => Some("trend_week"),
+                api::ItemSortBy::TrendingMonth => Some("trend_month"),
+                api::ItemSortBy::PopularityDay => Some("daily"),
+                api::ItemSortBy::PopularityWeek => Some("weekly"),
+                api::ItemSortBy::PopularityMonth => Some("monthly"),
+                _ => None,
+            });
+        let mut pop_joined = false;
+
         let mut count_qb;
         let mut records_qb;
 
@@ -2333,6 +2351,26 @@ impl Media {
                 );
                 records_qb.push_bind(uid);
                 records_qb.push(" AND media.id = dp.media_id AND 1=1");
+            } else if let Some(period) = pop_period {
+                // Materialise the latest per-media popularity score once and JOIN it in
+                // so ORDER BY uses a plain column reference instead of N correlated
+                // subqueries — one per qualifying row before LIMIT is applied.
+                pop_joined = true;
+                records_qb = sqlx::QueryBuilder::new(format!(
+                    "SELECT media.* FROM media \
+                     LEFT JOIN (\
+                       SELECT pa.media_id, pa.avg \
+                       FROM popularity_agg pa \
+                       WHERE pa.period = '{period}' \
+                         AND pa.period_key = (\
+                           SELECT MAX(pa2.period_key) FROM popularity_agg pa2 \
+                           WHERE pa2.media_id = pa.media_id \
+                             AND pa2.period = '{period}' \
+                             AND pa2.period_key <= date('now')\
+                         )\
+                     ) pop ON pop.media_id = media.id \
+                     WHERE 1=1"
+                ));
             } else {
                 records_qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
             }
@@ -2877,43 +2915,59 @@ impl Media {
                                 .to_string()
                         }
                         api::ItemSortBy::PopularityDay => {
-                            // today → most recent daily → 0
-                            "COALESCE(\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'daily' AND pa.period_key = date('now')),\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'daily' ORDER BY pa.period_key DESC LIMIT 1),\
-                               0) DESC"
-                                .to_string()
+                            if pop_joined {
+                                "COALESCE(pop.avg, 0) DESC".to_string()
+                            } else {
+                                "COALESCE(\
+                                   (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'daily' AND pa.period_key = date('now')),\
+                                   (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'daily' ORDER BY pa.period_key DESC LIMIT 1),\
+                                   0) DESC"
+                                    .to_string()
+                            }
                         }
                         api::ItemSortBy::PopularityWeek => {
-                            // this week → most recent weekly → 0
-                            // period_key is the Monday of the week as 'YYYY-MM-DD'
-                            "COALESCE(\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'weekly' AND pa.period_key = date('now', 'weekday 0', '-6 days')),\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'weekly' ORDER BY pa.period_key DESC LIMIT 1),\
-                               0) DESC"
-                                .to_string()
+                            if pop_joined {
+                                "COALESCE(pop.avg, 0) DESC".to_string()
+                            } else {
+                                "COALESCE(\
+                                   (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'weekly' AND pa.period_key = date('now', 'weekday 0', '-6 days')),\
+                                   (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'weekly' ORDER BY pa.period_key DESC LIMIT 1),\
+                                   0) DESC"
+                                    .to_string()
+                            }
                         }
                         api::ItemSortBy::PopularityMonth => {
-                            // this month → most recent monthly → 0
-                            "COALESCE(\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'monthly' AND pa.period_key = strftime('%Y-%m', 'now')),\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'monthly' ORDER BY pa.period_key DESC LIMIT 1),\
-                               0) DESC"
-                                .to_string()
+                            if pop_joined {
+                                "COALESCE(pop.avg, 0) DESC".to_string()
+                            } else {
+                                "COALESCE(\
+                                   (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'monthly' AND pa.period_key = strftime('%Y-%m', 'now')),\
+                                   (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'monthly' ORDER BY pa.period_key DESC LIMIT 1),\
+                                   0) DESC"
+                                    .to_string()
+                            }
                         }
                         api::ItemSortBy::TrendingWeek => {
-                            "COALESCE(\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'trend_week' AND pa.period_key = date('now')),\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'trend_week' ORDER BY pa.period_key DESC LIMIT 1),\
-                               0) DESC"
-                                .to_string()
+                            if pop_joined {
+                                "COALESCE(pop.avg, 0) DESC".to_string()
+                            } else {
+                                "COALESCE(\
+                                   (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'trend_week' AND pa.period_key = date('now')),\
+                                   (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'trend_week' ORDER BY pa.period_key DESC LIMIT 1),\
+                                   0) DESC"
+                                    .to_string()
+                            }
                         }
                         api::ItemSortBy::TrendingMonth => {
-                            "COALESCE(\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'trend_month' AND pa.period_key = date('now')),\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'trend_month' ORDER BY pa.period_key DESC LIMIT 1),\
-                               0) DESC"
-                                .to_string()
+                            if pop_joined {
+                                "COALESCE(pop.avg, 0) DESC".to_string()
+                            } else {
+                                "COALESCE(\
+                                   (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'trend_month' AND pa.period_key = date('now')),\
+                                   (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'trend_month' ORDER BY pa.period_key DESC LIMIT 1),\
+                                   0) DESC"
+                                    .to_string()
+                            }
                         }
                         // Default fallback
                         _ => format!("title COLLATE NOCASE {}", dir),
@@ -2953,6 +3007,9 @@ impl Media {
 
         let (count, records_result) = tokio::join!(
             async {
+                if !filter.total_count {
+                    return Ok(0_usize);
+                }
                 let query = count_qb.build();
                 let row = query
                     .fetch_one(db)

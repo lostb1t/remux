@@ -170,9 +170,12 @@ pub async fn get_items(
     state: AppState,
     session: auth::AuthSession,
     mut q: api::GetItemsQuery,
-    _count: bool,
+    want_count: bool,
 ) -> Result<ItemsQueryResultBuilder> {
     //trace!(?q, "get_items");
+    if !want_count {
+        q.enable_total_record_count = Some(false);
+    }
     // Used only by pre-converting paths (search, playlist) that use with_dtos().
     // Raw-media paths delegate hide_sources to with_client_patches() on the builder.
     let hide_sources = session
@@ -640,7 +643,8 @@ pub async fn get_items(
                     .ctx
                     .db,
                 &q,
-                true,
+                q.enable_total_record_count
+                    .unwrap_or(true),
                 Some(&session.user),
                 Some(&server_config),
                 smart_filter,
