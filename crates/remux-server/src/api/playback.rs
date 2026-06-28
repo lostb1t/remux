@@ -35,7 +35,7 @@ use crate::{
 
 use crate::{
     IntoApiError, OptionExt, ResultExt,
-    device_profile::DeviceProfileExt,
+    device_profile::{DeviceProfileExt, subtitle_codec_matches_profile},
     sdks,
     services::MediaResolveService,
     torrent,
@@ -426,7 +426,7 @@ async fn items_playbackinfo_inner(
                                         s.codec
                                             .as_deref()
                                             .map_or(false, |c| {
-                                                f.eq_ignore_ascii_case(c)
+                                                subtitle_codec_matches_profile(c, f)
                                             })
                                     })
                             })
@@ -720,7 +720,7 @@ async fn items_playbackinfo_inner(
                                 p.format
                                     .as_deref()
                             })
-                            .any(|f| f.eq_ignore_ascii_case(fmt))
+                            .any(|f| subtitle_codec_matches_profile(fmt, f))
                     })
                     .unwrap_or(false)
             };
@@ -2161,6 +2161,108 @@ mod tests {
         }));
     }
 
+    #[tokio::test]
+    async fn test_playbackinfo_accepts_pgs_aliases_for_selected_subtitle() {
+        use crate::api::{MediaSourceInfo, MediaStream, MediaStreamType};
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let now = chrono::Utc::now().naive_utc();
+
+        let mut media = crate::db::Media {
+            title: "PGS Alias Test".to_string(),
+            kind: crate::db::MediaKind::Stream,
+            stream_info: Some(crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::Local(
+                    "test-fixture.mkv".into(),
+                ),
+                ..Default::default()
+            }),
+            probe_data: Some(MediaSourceInfo {
+                container: Some("mkv".to_string()),
+                default_subtitle_stream_index: Some(2),
+                media_streams: vec![
+                    MediaStream {
+                        codec: Some("h264".to_string()),
+                        type_: Some(MediaStreamType::Video),
+                        index: 0,
+                        width: Some(1920),
+                        height: Some(1080),
+                        ..Default::default()
+                    },
+                    MediaStream {
+                        codec: Some("aac".to_string()),
+                        type_: Some(MediaStreamType::Audio),
+                        index: 1,
+                        ..Default::default()
+                    },
+                    MediaStream {
+                        codec: Some("hdmv_pgs_subtitle".to_string()),
+                        type_: Some(MediaStreamType::Subtitle),
+                        index: 2,
+                        is_text_subtitle_stream: false,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        media
+            .save(
+                &guard
+                    .0
+                    .db,
+            )
+            .await
+            .expect("save media");
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "SubtitleStreamIndex": 2,
+                "DeviceProfile": {
+                    "DirectPlayProfiles": [
+                        { "Type": "Video", "Container": "*", "VideoCodec": "*", "AudioCodec": "*" }
+                    ],
+                    "SubtitleProfiles": [
+                        { "Format": "pgs", "Method": "External" }
+                    ],
+                    "TranscodingProfiles": [],
+                    "CodecProfiles": []
+                }
+            }))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let source = &body["MediaSources"][0];
+        let delivery_url = source["MediaStreams"][2]["DeliveryUrl"]
+            .as_str()
+            .expect("subtitle delivery url");
+        let reasons = source["TranscodingReasons"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+
+        assert!(
+            delivery_url.contains("/Stream.sup?"),
+            "expected PGS alias to map to SUP delivery, got {delivery_url}"
+        );
+        assert!(
+            !reasons
+                .iter()
+                .any(|r| r.as_str() == Some("SubtitleCodecNotSupported")),
+            "PGS alias should not force subtitle transcode: {reasons:?}"
+        );
+    }
+
     /// Response always contains a `PlaySessionId`.
     #[tokio::test]
     async fn test_playbackinfo_has_play_session_id() {
@@ -2342,9 +2444,8 @@ mod tests {
             kind: db::MediaKind::Stream,
             parent_id: Some(movie.id),
             stream_info: Some(crate::stream::StreamInfo {
-                descriptor: crate::stream::StreamDescriptor::http(
-                    "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_5MB.mp4"
-                        .to_string(),
+                descriptor: crate::stream::StreamDescriptor::Local(
+                    "test-fixture-1080p.mp4".into(),
                 ),
                 ..Default::default()
             }),
@@ -2363,9 +2464,8 @@ mod tests {
             kind: db::MediaKind::Stream,
             parent_id: Some(movie.id),
             stream_info: Some(crate::stream::StreamInfo {
-                descriptor: crate::stream::StreamDescriptor::http(
-                    "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_5MB.mp4"
-                        .to_string(),
+                descriptor: crate::stream::StreamDescriptor::Local(
+                    "test-fixture-720p.mp4".into(),
                 ),
                 ..Default::default()
             }),
@@ -2569,9 +2669,8 @@ mod tests {
             title: "Multilang Test".to_string(),
             kind: db::MediaKind::Stream,
             stream_info: Some(crate::stream::StreamInfo {
-                descriptor: crate::stream::StreamDescriptor::http(
-                    "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_5MB.mp4"
-                        .to_string(),
+                descriptor: crate::stream::StreamDescriptor::Local(
+                    "test-fixture-multilang.mp4".into(),
                 ),
                 ..Default::default()
             }),
