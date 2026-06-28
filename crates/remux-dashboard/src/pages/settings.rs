@@ -4,10 +4,11 @@ use crate::{
 };
 use dioxus::prelude::*;
 use remux_sdks::remux::{
-    CountryInfo, EncodingOptions, GetCountries, GetEncodingConfiguration,
-    GetIntroConfiguration, GetSystemConfiguration, HardwareAccelerationType,
-    IntroOptions, IntroOrder, IntroTriggers, ServerConfiguration, StartTask,
-    UpdateEncodingConfiguration, UpdateIntroConfiguration, UpdateSystemConfiguration,
+    CountryInfo, EmbeddedSubtitleHandling, EncodingOptions, GetCountries,
+    GetEncodingConfiguration, GetIntroConfiguration, GetSystemConfiguration,
+    HardwareAccelerationType, IntroOptions, IntroOrder, IntroTriggers,
+    ServerConfiguration, StartTask, UpdateEncodingConfiguration,
+    UpdateIntroConfiguration, UpdateSystemConfiguration,
 };
 
 #[component]
@@ -315,6 +316,7 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
     let mut h264_crf = use_signal(|| 23_u32);
     let mut h265_crf = use_signal(|| 28_u32);
     let mut enable_video_transcoding = use_signal(|| true);
+    let mut subtitle_mode = use_signal(|| "Burn".to_string());
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(|| Option::<String>::None);
@@ -394,6 +396,11 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                         opts.enable_video_transcoding
                             .unwrap_or(true),
                     );
+                    subtitle_mode.set(
+                        opts.subtitle_mode
+                            .unwrap_or(EmbeddedSubtitleHandling::Burn)
+                            .to_string(),
+                    );
                 }
                 Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
             }
@@ -442,6 +449,10 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
             h264_crf: Some(*h264_crf.peek()),
             h265_crf: Some(*h265_crf.peek()),
             enable_video_transcoding: Some(*enable_video_transcoding.peek()),
+            subtitle_mode: subtitle_mode
+                .peek()
+                .parse::<EmbeddedSubtitleHandling>()
+                .ok(),
         };
         saving.set(true);
         error.set(None);
@@ -476,6 +487,21 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                                     onchange: move |e| enable_video_transcoding.set(e.checked()),
                                 }
                                 "Enable video transcoding"
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", "Unsupported Subtitle Handling" }
+                            div { class: "field-hint",
+                                "What to do with embedded subtitle streams the client device doesn't support. Burn encodes them into the video. Extract delivers them separately via the subtitle stream endpoint (may be slow for remote sources). Strip removes them from the media source so the client never sees them — no subtitle-triggered transcoding."
+                            }
+                            select {
+                                class: "select-input",
+                                value: subtitle_mode.read().clone(),
+                                onchange: move |e| subtitle_mode.set(e.value()),
+                                option { value: "Burn", "Burn into video (default)" }
+                                option { value: "Extract", "Extract and deliver separately" }
+                                option { value: "Strip", "Strip (remove, no transcoding)" }
                             }
                         }
 

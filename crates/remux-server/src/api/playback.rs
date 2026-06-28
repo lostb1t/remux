@@ -397,23 +397,19 @@ async fn items_playbackinfo_inner(
             reasons
         };
 
-        // Image-based subtitles (PGS/DVD) can't be rendered by web clients — detect
-        // from the explicitly-selected or default subtitle stream and add a transcode reason.
-        let effective_sub_idx = q
-            .subtitle_stream_index
-            .or(source.default_subtitle_stream_index);
-        // Signal burn-in for image-based subtitle codecs the client does not
-        // declare support for in its device profile. Text codecs are handled via
-        // VTT conversion in the DeliveryUrl loop below.
-        if let Some(idx) = effective_sub_idx {
-            let needs_burn = source
+        let subtitle_mode = encoding_cfg
+            .subtitle_mode
+            .unwrap_or_default();
+
+        // Strip mode: remove embedded subtitle streams not supported by the client so
+        // they don't trigger a transcode. External/addon subs are never touched.
+        if subtitle_mode == remux_sdks::remux::EmbeddedSubtitleHandling::Strip {
+            source
                 .media_streams
-                .iter()
-                .any(|s| {
-                    s.index == idx
-                        && matches!(s.type_, Some(api::MediaStreamType::Subtitle))
-                        && !s.is_text_subtitle_stream
-                        && !device_profile
+                .retain(|s| {
+                    !matches!(s.type_, Some(api::MediaStreamType::Subtitle))
+                        || s.is_external
+                        || device_profile
                             .as_ref()
                             .map(|dp| {
                                 dp.subtitle_profiles
@@ -430,8 +426,45 @@ async fn items_playbackinfo_inner(
                                             })
                                     })
                             })
-                            .unwrap_or(false)
+                            .unwrap_or(true)
                 });
+        }
+
+        // Detect embedded subtitle codecs unsupported by the client device profile.
+        // In Burn mode this triggers transcoding so the subtitle can be burned in.
+        // In Extract/Strip modes, no transcode reason is added for subtitles.
+        let effective_sub_idx = q
+            .subtitle_stream_index
+            .or(source.default_subtitle_stream_index);
+        if let Some(idx) = effective_sub_idx {
+            let needs_burn = subtitle_mode
+                == remux_sdks::remux::EmbeddedSubtitleHandling::Burn
+                && source
+                    .media_streams
+                    .iter()
+                    .any(|s| {
+                        s.index == idx
+                            && matches!(s.type_, Some(api::MediaStreamType::Subtitle))
+                            && !s.is_external
+                            && !device_profile
+                                .as_ref()
+                                .map(|dp| {
+                                    dp.subtitle_profiles
+                                        .iter()
+                                        .filter_map(|p| {
+                                            p.format
+                                                .as_deref()
+                                        })
+                                        .any(|f| {
+                                            s.codec
+                                                .as_deref()
+                                                .map_or(false, |c| {
+                                                    f.eq_ignore_ascii_case(c)
+                                                })
+                                        })
+                                })
+                                .unwrap_or(false)
+                    });
             if needs_burn {
                 let codec = source
                     .media_streams
@@ -578,8 +611,11 @@ async fn items_playbackinfo_inner(
                 let audio_codec =
                     if needs_audio_transcode { "aac" } else { "copy" }.to_string();
 
-                // Detect image-based subtitle streams (PGS, DVD) that cannot be
-                // embedded in HLS — burn them into the video via FFmpeg overlay.
+                // Determine subtitle delivery method for the selected stream.
+                // In Burn mode, any embedded codec not in the device profile gets
+                // SubtitleDeliveryMethod::Encode so FFmpeg burns it into the video.
+                // In Extract/Strip modes we defer to the client (no burn).
+                // External subtitles are never burned — they have their own URL.
                 let selected_sub_idx = effective_sub_idx;
                 let subtitle_method = selected_sub_idx
                     .and_then(|idx| {
@@ -595,23 +631,33 @@ async fn items_playbackinfo_inner(
                             })
                     })
                     .and_then(|stream| {
+                        if stream.is_external
+                            || subtitle_mode
+                                != remux_sdks::remux::EmbeddedSubtitleHandling::Burn
+                        {
+                            return None;
+                        }
                         let codec = stream
                             .codec
                             .as_deref()
                             .unwrap_or("");
-                        let is_image_sub = matches!(
-                            codec,
-                            "pgssub" | "hdmv_pgs_subtitle" | "dvd_subtitle"
-                        );
-                        if !is_image_sub {
-                            return None;
+                        let not_in_profile = !device_profile
+                            .as_ref()
+                            .map(|dp| {
+                                dp.subtitle_profiles
+                                    .iter()
+                                    .filter_map(|p| {
+                                        p.format
+                                            .as_deref()
+                                    })
+                                    .any(|f| f.eq_ignore_ascii_case(codec))
+                            })
+                            .unwrap_or(false);
+                        if not_in_profile {
+                            Some(api::SubtitleDeliveryMethod::Encode)
+                        } else {
+                            None
                         }
-                        Some(
-                            device_profile
-                                .as_ref()
-                                .and_then(|p| p.subtitle_delivery_method(codec))
-                                .unwrap_or(api::SubtitleDeliveryMethod::Encode),
-                        )
                     });
 
                 if subtitle_method == Some(api::SubtitleDeliveryMethod::Encode) {
@@ -755,6 +801,12 @@ async fn items_playbackinfo_inner(
             };
             if !stream.is_external && profile_embeds(format) {
                 stream.delivery_method = Some(api::SubtitleDeliveryMethod::Embed);
+            } else if !stream.is_external
+                && subtitle_mode == remux_sdks::remux::EmbeddedSubtitleHandling::Burn
+            {
+                // Burn mode: embedded sub not natively embedded → will be burned into video.
+                // Tell the client not to request it separately.
+                stream.delivery_method = Some(api::SubtitleDeliveryMethod::Encode);
             } else {
                 stream.delivery_url = Some(format!(
                     "/Videos/{id}/{source_id}/Subtitles/{idx}/0/Stream.{format}?ApiKey={api_key}",
@@ -1352,6 +1404,81 @@ async fn videos_stream_inner(
             s.codec
                 .clone()
         });
+    let burn_subtitle_prog = q
+        .subtitle_method
+        .as_deref()
+        == Some("Encode");
+    let subtitle_path_prog = if burn_subtitle_prog {
+        if let Some(sub_idx) = q.subtitle_stream_index {
+            if let Some(probe) = media
+                .probe_data
+                .as_ref()
+            {
+                let stream = probe
+                    .media_streams
+                    .iter()
+                    .find(|s| s.index == sub_idx as i64);
+                let is_text = stream.map_or(false, |s| {
+                    s.is_text_subtitle_stream
+                        || matches!(
+                            s.codec
+                                .as_deref()
+                                .unwrap_or(""),
+                            "subrip"
+                                | "srt"
+                                | "ass"
+                                | "ssa"
+                                | "webvtt"
+                                | "mov_text"
+                                | "text"
+                        )
+                });
+                if is_text {
+                    let mut sub_indexes: Vec<i64> = probe
+                        .media_streams
+                        .iter()
+                        .filter(|s| {
+                            matches!(
+                                s.type_,
+                                Some(crate::api::MediaStreamType::Subtitle)
+                            )
+                        })
+                        .map(|s| s.index)
+                        .collect();
+                    sub_indexes.sort_unstable();
+                    if let Some(ordinal) = sub_indexes
+                        .iter()
+                        .position(|&i| i == sub_idx as i64)
+                    {
+                        let map_spec = format!("0:s:{ordinal}");
+                        crate::api::subtitles::extract_subtitle_to_cache(
+                            &state
+                                .ctx
+                                .config
+                                .data_dir,
+                            &url,
+                            &map_spec,
+                            media.id,
+                            sub_idx as i64,
+                        )
+                        .await
+                        .ok()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let params = crate::transcode::engine::ProgressiveTranscodeParams {
         input_url: url,
         container: container.clone(),
@@ -1383,10 +1510,8 @@ async fn videos_stream_inner(
         subtitle_stream_index: q
             .subtitle_stream_index
             .map(|v| v as i32),
-        burn_subtitle: q
-            .subtitle_method
-            .as_deref()
-            == Some("Encode"),
+        burn_subtitle: burn_subtitle_prog,
+        subtitle_path: subtitle_path_prog,
         subtitle_width: None,
         subtitle_height: None,
         encoding_preset: encoding_opts.encoding_preset,

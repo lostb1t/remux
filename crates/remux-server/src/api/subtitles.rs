@@ -16,6 +16,91 @@ fn ffmpeg_bin() -> String {
     std::env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".into())
 }
 
+/// Extract an embedded subtitle stream to the SRT cache and return the cache path.
+/// The cache key is `{data_dir}/subtitle-cache/{media_source_id}_{stream_index}.srt`.
+/// Returns immediately if the cache already exists and is non-empty.
+pub(crate) async fn extract_subtitle_to_cache(
+    data_dir: &std::path::Path,
+    input_url: &str,
+    map_spec: &str,
+    media_source_id: uuid::Uuid,
+    stream_index: i64,
+) -> anyhow::Result<std::path::PathBuf> {
+    let cache_dir = data_dir.join("subtitle-cache");
+    tokio::fs::create_dir_all(&cache_dir)
+        .await
+        .map_err(|e| anyhow!("failed to create subtitle cache dir: {e}"))?;
+    let cache_path = cache_dir.join(format!("{media_source_id}_{stream_index}.srt"));
+
+    // Return cached copy if it exists and is non-empty.
+    if cache_path.exists() {
+        let bytes = tokio::fs::read(&cache_path)
+            .await
+            .unwrap_or_default();
+        let content = String::from_utf8_lossy(&bytes);
+        if !content
+            .trim()
+            .is_empty()
+        {
+            return Ok(cache_path);
+        }
+    }
+
+    let mut cmd = tokio::process::Command::new(ffmpeg_bin());
+    cmd.kill_on_drop(true);
+    cmd.args([
+        "-copyts",
+        "-i",
+        input_url,
+        "-map",
+        map_spec,
+        "-an",
+        "-vn",
+        "-c:s",
+        "srt",
+        "-f",
+        "srt",
+        cache_path
+            .to_str()
+            .ok_or_else(|| anyhow!("invalid cache path"))?,
+    ]);
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let output =
+        tokio::time::timeout(std::time::Duration::from_secs(120), cmd.output())
+            .await
+            .map_err(|_| {
+                let p = cache_path.clone();
+                tokio::spawn(async move {
+                    let _ = tokio::fs::remove_file(p).await;
+                });
+                anyhow!("subtitle extraction timed out")
+            })?
+            .map_err(|e| anyhow!("failed to run ffmpeg: {e}"))?;
+
+    if !output
+        .status
+        .success()
+    {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("ffmpeg subtitle extraction failed: {stderr}");
+    }
+
+    let bytes = tokio::fs::read(&cache_path)
+        .await
+        .map_err(|e| anyhow!("failed to read cached subtitle: {e}"))?;
+    if bytes
+        .iter()
+        .all(|b| b.is_ascii_whitespace())
+    {
+        let _ = tokio::fs::remove_file(&cache_path).await;
+        anyhow::bail!("subtitle extraction produced empty output");
+    }
+
+    Ok(cache_path)
+}
+
 /// Subtitle extraction endpoint - extracts a subtitle stream from a media source
 /// and optionally converts it to the requested format (vtt, srt, ass).
 // Jellyfin clients include a start-position-ticks segment in the path.
@@ -264,6 +349,7 @@ pub async fn subtitles_stream(
     // Binary formats (PGS/SUP): extract on-the-fly as raw bytes.
     if is_binary {
         let mut cmd = tokio::process::Command::new(ffmpeg_bin());
+        cmd.kill_on_drop(true);
         cmd.args([
             "-copyts",
             "-i",
@@ -280,10 +366,11 @@ pub async fn subtitles_stream(
         ]);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
-        let output = cmd
-            .output()
-            .await
-            .map_err(|e| anyhow!("failed to run ffmpeg: {e}"))?;
+        let output =
+            tokio::time::timeout(std::time::Duration::from_secs(120), cmd.output())
+                .await
+                .map_err(|_| anyhow!("subtitle extraction timed out"))?
+                .map_err(|e| anyhow!("failed to run ffmpeg: {e}"))?;
         if !output
             .status
             .success()
@@ -301,88 +388,36 @@ pub async fn subtitles_stream(
     }
 
     // Text formats: cache SRT, convert on-the-fly.
-    let (ext_codec, ext_fmt, ext) = if is_passthrough {
-        ("copy", "ass", "ass")
-    } else {
-        ("srt", "srt", "srt")
-    };
-
-    let cache_dir = state
-        .ctx
-        .config
-        .data_dir
-        .join("subtitle-cache");
-    tokio::fs::create_dir_all(&cache_dir)
-        .await
-        .map_err(|e| anyhow!("failed to create subtitle cache dir: {e}"))?;
-    let cache_path = cache_dir.join(format!("{media_source_id}_{stream_index}.{ext}"));
-
-    let mut cached = if cache_path.exists() {
-        tokio::fs::read(&cache_path)
-            .await
-            .ok()
-            .map(|b| String::from_utf8_lossy(&b).into_owned())
-            .filter(|s| {
-                !s.trim()
-                    .is_empty()
-            })
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
-
-    if cached.is_empty() {
-        let mut cmd = tokio::process::Command::new(ffmpeg_bin());
-        cmd.args([
-            "-copyts",
-            "-i",
-            &url,
-            "-map",
-            &map_spec,
-            "-an",
-            "-vn",
-            "-c:s",
-            ext_codec,
-            "-f",
-            ext_fmt,
-            cache_path
-                .to_str()
-                .ok_or_else(|| anyhow!("invalid cache path"))?,
-        ]);
-        cmd.stdout(std::process::Stdio::null());
-        cmd.stderr(std::process::Stdio::piped());
-        let output = cmd
-            .output()
-            .await
-            .map_err(|e| anyhow!("failed to run ffmpeg: {e}"))?;
-        if !output
-            .status
-            .success()
-        {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            error!(%media_source_id, stream_index, %map_spec, "ffmpeg subtitle extraction failed: {stderr}");
+    // For passthrough (ASS) we still extract via the shared helper (which produces SRT)
+    // and then re-extract as ASS separately if needed.  For now collapse to SRT path.
+    let cache_path = match extract_subtitle_to_cache(
+        &state
+            .ctx
+            .config
+            .data_dir,
+        &url,
+        &map_spec,
+        media_source_id,
+        stream_index,
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            error!(%media_source_id, stream_index, %map_spec, "subtitle extraction failed: {e}");
             return Ok(Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(Body::from("subtitle extraction failed"))
                 .unwrap());
         }
-        cached = String::from_utf8_lossy(
-            &tokio::fs::read(&cache_path)
-                .await
-                .map_err(|e| anyhow!("failed to read cached subtitle: {e}"))?,
-        )
-        .into_owned();
-        if cached
-            .trim()
-            .is_empty()
-        {
-            let _ = tokio::fs::remove_file(&cache_path).await;
-            return Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::from("subtitle extraction failed"))
-                .unwrap());
-        }
-    }
+    };
+
+    let cached = String::from_utf8_lossy(
+        &tokio::fs::read(&cache_path)
+            .await
+            .map_err(|e| anyhow!("failed to read cached subtitle: {e}"))?,
+    )
+    .into_owned();
 
     let body = if is_passthrough {
         cached
