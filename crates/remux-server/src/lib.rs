@@ -250,7 +250,7 @@ pub async fn init_app(
     let ctx = AppContext {
         config,
         db: conn.clone(),
-        store: Store::new_weighted(32 * 1024 * 1024),
+        store: Store::new(10000),
         sessions: playback_session::PlaybackSessionManager::new("transcode_sessions"),
         torrent: Arc::new(torrent_mgr),
         ws_tx: tokio::sync::broadcast::channel(128).0,
