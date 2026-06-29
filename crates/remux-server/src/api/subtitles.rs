@@ -258,55 +258,20 @@ pub async fn subtitles_stream(
     .ok()
     .flatten()
     {
-        let source_media = {
-            let sm = db::Media::get_by_id(
-                &state
-                    .ctx
-                    .db,
-                &media_source_id,
-            )
-            .await
-            .ok()
-            .flatten();
-            if let Some(mut m) = sm {
-                if m.kind == db::MediaKind::StreamGroup {
-                    db::StreamGroup::streams_for(
-                        &state
-                            .ctx
-                            .db,
-                        &m.id,
-                        &item_id,
-                    )
-                    .await
-                    .ok()
-                    .and_then(|v| {
-                        v.into_iter()
-                            .next()
-                    })
-                } else if matches!(
-                    m.kind,
-                    db::MediaKind::Movie
-                        | db::MediaKind::Episode
-                        | db::MediaKind::Track
-                ) {
-                    m.streams(
-                        &state
-                            .ctx
-                            .db,
-                    )
-                    .await
-                    .ok()
-                    .and_then(|v| {
-                        v.into_iter()
-                            .next()
-                    })
-                } else {
-                    Some(m)
-                }
-            } else {
-                None
-            }
-        };
+        let source_media = crate::services::StreamResolver::resolve(
+            &state
+                .ctx
+                .db,
+            &state
+                .ctx
+                .store,
+            item_id,
+            Some(media_source_id),
+            None,
+        )
+        .await
+        .ok()
+        .map(|r| r.stream);
         if let Some(ref source) = source_media {
             let embedded_indices: std::collections::HashSet<i64> = source
                 .probe_data
@@ -415,43 +380,19 @@ pub async fn subtitles_stream(
         }
     }
 
-    let mut media = db::Media::get_by_id(
+    let media = crate::services::StreamResolver::resolve(
         &state
             .ctx
             .db,
-        &media_source_id,
+        &state
+            .ctx
+            .store,
+        item_id,
+        Some(media_source_id),
+        None,
     )
     .await?
-    .context_not_found("media source not found")?;
-
-    if media.kind == db::MediaKind::StreamGroup {
-        let group_id = media.id;
-        media = db::StreamGroup::streams_for(
-            &state
-                .ctx
-                .db,
-            &group_id,
-            &item_id,
-        )
-        .await?
-        .into_iter()
-        .next()
-        .context_not_found("no streams available for this group")?;
-    } else if matches!(
-        media.kind,
-        db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track
-    ) {
-        media = media
-            .streams(
-                &state
-                    .ctx
-                    .db,
-            )
-            .await?
-            .get(0)
-            .context_not_found("no sources found")?
-            .clone();
-    }
+    .stream;
 
     let url = media
         .stream_info

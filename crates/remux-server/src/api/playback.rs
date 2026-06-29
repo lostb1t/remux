@@ -38,7 +38,7 @@ use crate::{
     IntoApiError, OptionExt, ResultExt,
     device_profile::{DeviceProfileExt, SubtitleCodec, subtitle_codec_matches_profile},
     sdks,
-    services::MediaResolveService,
+    services::{MediaResolveService, StreamResolver},
     torrent,
     transcode::session::{TranscodeSession, TranscodeState},
 };
@@ -93,47 +93,26 @@ async fn items_playbackinfo_inner(
     .await
     .unwrap_or_default();
 
-    let mut media =
+    let initial =
         MediaResolveService::resolve_item(media_source_id.unwrap_or(id), &state.ctx)
             .await?
             .context_not_found("not found")?;
 
-    // When a StreamGroup UUID is requested, resolve it to the group's best candidate
-    // and keep all candidates (including subsequent groups) for probe fallback scope.
-    let group_source_override: Option<(Uuid, String, Vec<db::Media>)> = if media.kind
-        == db::MediaKind::StreamGroup
-    {
-        let gid = media.id;
-        let gtitle = media
-            .title
-            .clone();
-        let mut candidates = db::StreamGroup::streams_for(
-            &state
-                .ctx
-                .db,
-            &gid,
-            &id,
-        )
-        .await?;
-        if candidates.is_empty() {
-            return Err(anyhow::anyhow!("no streams available for this group").into());
-        }
-        // Append streams from lower-priority groups so probe can cascade across groups.
-        let cascade = db::StreamGroup::streams_for_groups_after(
-            &state
-                .ctx
-                .db,
-            &gid,
-            &id,
-        )
-        .await
-        .unwrap_or_default();
-        candidates.extend(cascade);
-        media = candidates[0].clone();
-        Some((gid, gtitle, candidates))
-    } else {
-        None
-    };
+    let resolver = StreamResolver::resolve_group(
+        &state
+            .ctx
+            .db,
+        &state
+            .ctx
+            .store,
+        id,
+        media_source_id,
+        initial,
+    )
+    .await?;
+    let mut media = resolver
+        .stream
+        .clone();
 
     // Load the top-level Movie/Episode for subtitle lookup.
     // `id` is always the movie/episode UUID; `media_source_id` may point to a
@@ -234,16 +213,35 @@ async fn items_playbackinfo_inner(
     //
     // Android TV always sends media_source_id = item_id (not None) for auto-play.
     // Treat that the same as "return first source only" — no need to send all versions.
-    let specific_source_requested = media_source_id
-        .map(|sid| {
-            sid != id
-                && all_source_medias
-                    .iter()
-                    .any(|s| s.id == sid)
-        })
-        .unwrap_or(false);
-    let (source_medias, probe_only_first) = if specific_source_requested {
-        // Specific stream requested: return only that stream.
+    // A group request counts as a specific source request: the client sent a stable group UUID
+    // and must receive that same UUID back. Non-group requests check if the UUID maps to an
+    // actual child stream in all_source_medias.
+    let specific_source_requested = resolver
+        .group
+        .is_some()
+        || media_source_id
+            .map(|sid| {
+                sid != id
+                    && all_source_medias
+                        .iter()
+                        .any(|s| s.id == sid)
+            })
+            .unwrap_or(false);
+    let (source_medias, probe_only_first) = if resolver
+        .group
+        .is_some()
+    {
+        // Group request: the resolver already picked the best candidate stream.
+        (
+            vec![
+                resolver
+                    .stream
+                    .clone(),
+            ],
+            false,
+        )
+    } else if specific_source_requested {
+        // Specific non-group stream: return only that stream.
         let sid = media_source_id.unwrap();
         let filtered: Vec<db::Media> = all_source_medias
             .into_iter()
@@ -298,19 +296,19 @@ async fn items_playbackinfo_inner(
     // For group selections, use all group candidates (including cascade) as the probe fallback pool.
     // Resolution filtering is disabled for group requests: the group priority order already
     // encodes the user's quality preference, so cross-resolution fallback is intentional.
-    let (all_sources, restrict_resolution) =
-        if let Some((_, _, ref candidates)) = group_source_override {
-            (candidates.clone(), false)
-        } else {
-            (source_medias.clone(), true)
-        };
-    let first_grouped_uuid = source_medias
-        .first()
-        .filter(|s| {
-            s.group_id
-                .is_some()
-        })
-        .map(|s| s.id);
+    let (all_sources, restrict_resolution) = if resolver
+        .group
+        .is_some()
+    {
+        (
+            resolver
+                .candidates()
+                .to_vec(),
+            false,
+        )
+    } else {
+        (source_medias.clone(), true)
+    };
     let mut media_sources = Vec::with_capacity(source_medias.len());
     for (idx, sm) in source_medias
         .into_iter()
@@ -348,11 +346,24 @@ async fn items_playbackinfo_inner(
                 .db,
         )
         .await?;
-        source.id = sm.id;
-        source.e_tag = sm.id;
+        // Use the client-facing ID from the resolver: group UUID for group requests,
+        // stream UUID otherwise. Set once here — no later overrides.
+        let cid = resolver
+            .group
+            .as_ref()
+            .map(|(gid, _, _)| *gid)
+            .unwrap_or(sm.id);
+        source.id = cid;
+        source.e_tag = cid;
         source.name = Some(
-            sm.title
-                .clone(),
+            resolver
+                .group
+                .as_ref()
+                .map(|(_, t, _)| t.clone())
+                .unwrap_or_else(|| {
+                    sm.title
+                        .clone()
+                }),
         );
         source.has_segments = true;
         source.path = Some(format!("/remux/{}", sm.id));
@@ -889,17 +900,6 @@ async fn items_playbackinfo_inner(
 
         source.transcoding_reasons = transcode_reasons;
 
-        // For group selections, expose the stable group UUID to the client.
-        // Subtitle delivery URLs above use the real source_id (captured before
-        // this point) so the extraction endpoint finds the media by its actual
-        // database UUID, not the group alias.
-        // TranscodingUrl already embeds the real source UUID (set before this point).
-        if let Some((gid, ref gtitle, _)) = group_source_override {
-            source.id = gid;
-            source.e_tag = gid;
-            source.name = Some(gtitle.clone());
-        }
-
         media_sources.push(source);
     }
 
@@ -937,23 +937,23 @@ async fn items_playbackinfo_inner(
 
     // Cache the group-resolved stream UUID so the stream endpoint can find it
     // without re-running filter_sources (which could pick a different candidate).
-    if let Some(uuid) = first_grouped_uuid {
-        save_selected_stream(
+    if resolver
+        .group
+        .is_some()
+    {
+        resolver.save_preference(
             &state
                 .ctx
                 .store,
-            id,
             &session
                 .device
                 .id,
-            uuid,
         );
     }
 
     // When no specific source was requested (initial load, or media_source_id == item_id),
     // override source[0].Id to equal the item ID — clients expect this for auto-play.
-    // When a real specific source was requested, keep its UUID so the client
-    // sends it back and we resolve the right stream.
+    // Group and specific-stream requests keep their own UUIDs (specific_source_requested = true).
     if !specific_source_requested && !media_sources.is_empty() {
         media_sources[0].id = id;
         media_sources[0].e_tag = id;
@@ -1315,89 +1315,13 @@ fn ext_from_descriptor(descriptor: &crate::stream::StreamDescriptor) -> String {
     }
 }
 
-fn save_selected_stream(
-    store: &Store,
-    item_id: Uuid,
-    device_key: &str,
-    stream_id: Uuid,
-) {
-    store.save(
-        format!("pstream:{}:{}", item_id, device_key),
-        stream_id,
-        std::time::Duration::from_secs(24 * 3600),
-    );
-}
-
-fn get_selected_stream(store: &Store, item_id: Uuid, device_key: &str) -> Option<Uuid> {
-    store.get::<Uuid>(&format!("pstream:{}:{}", item_id, device_key))
-}
-
-async fn resolve_stream(
-    db: &sqlx::SqlitePool,
-    store: &Store,
-    id: Uuid,
-    q: &api::VideoStreamQuery,
-) -> Result<db::Media> {
-    let mut media = db::Media::get_by_id(
-        db,
-        &q.media_source_id
-            .unwrap_or(id),
-    )
-    .await?
-    .context_not_found("not found")?;
-
-    if media.kind == db::MediaKind::StreamGroup {
-        let group_id = media.id;
-        let candidates = db::StreamGroup::streams_for(db, &group_id, &id).await?;
-        media = candidates
-            .into_iter()
-            .next()
-            .context_not_found("no streams available for this group")?;
-    } else if media.kind == db::MediaKind::Movie
-        || media.kind == db::MediaKind::Episode
-        || media.kind == db::MediaKind::Track
-    {
-        let sources = media
-            .streams(db)
-            .await?;
-        let found = if let Some(wanted) = q.media_source_id {
-            sources
-                .iter()
-                .find(|s| s.id == wanted)
-                .cloned()
-        } else {
-            None
-        };
-        media = if let Some(m) = found {
-            m
-        } else {
-            let device_key = q
-                .device_id
-                .as_deref()
-                .unwrap_or("");
-            if let Some(stream_id) = get_selected_stream(store, id, device_key) {
-                db::Media::get_by_id(db, &stream_id)
-                    .await?
-                    .context_not_found("resolved stream not found")?
-            } else {
-                sources
-                    .into_iter()
-                    .next()
-                    .context_not_found("no playable stream found")?
-            }
-        };
-    }
-
-    Ok(media)
-}
-
 async fn videos_stream_inner(
     headers: headers::HeaderMap,
     state: AppState,
     id: Uuid,
     q: api::VideoStreamQuery,
 ) -> Result<impl IntoResponse> {
-    let media = resolve_stream(
+    let media = StreamResolver::resolve(
         &state
             .ctx
             .db,
@@ -1405,9 +1329,12 @@ async fn videos_stream_inner(
             .ctx
             .store,
         id,
-        &q,
+        q.media_source_id,
+        q.device_id
+            .as_deref(),
     )
-    .await?;
+    .await?
+    .stream;
 
     let si = media
         .stream_info
