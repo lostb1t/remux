@@ -313,20 +313,22 @@ pub async fn init_app(
         .layer(on_error(log_api_error))
         .layer(
             tower_http::trace::TraceLayer::new_for_http()
-                .make_span_with(|_request: &axum::http::Request<axum::body::Body>| {
-                    tracing::info_span!("request", user = tracing::field::Empty)
-                })
-                .on_request(|request: &axum::http::Request<axum::body::Body>, _span: &tracing::Span| {
+                .make_span_with(|request: &axum::http::Request<axum::body::Body>| {
                     let uri = request.uri();
                     let path = uri.path();
-                    match uri.query() {
-                        Some(q) => debug!(target: "remux_server::request", method = %request.method(), uri = %format!("{path}?{q}"), "→"),
-                        None => debug!(target: "remux_server::request", method = %request.method(), uri = %path, "→"),
+                    let uri_str = match uri.query() {
+                        Some(q) => format!("{path}?{q}"),
+                        None => path.to_string(),
                     };
+                    tracing::info_span!("request", user = tracing::field::Empty, uri = %uri_str)
+                })
+                .on_request(|request: &axum::http::Request<axum::body::Body>, _span: &tracing::Span| {
+                    debug!(target: "remux_server::request", method = %request.method(), "→");
                 })
                 .on_response(|response: &axum::http::Response<axum::body::Body>, latency: std::time::Duration, _span: &tracing::Span| {
                     debug!(target: "remux_server::request", status = %response.status().as_u16(), latency_ms = %latency.as_millis(), "←");
-                }),
+                })
+                .on_failure(()),
         )
         .layer(cors);
 
