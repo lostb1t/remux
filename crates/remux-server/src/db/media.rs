@@ -5773,6 +5773,83 @@ mod tests {
     use crate::db::MediaIdRaw;
 
     #[test]
+    fn stale_episode_id_recomputes_to_canonical_and_validates() {
+        let series_imdb = NonEmptyString::try_new("tt1844624".to_string()).unwrap();
+        let mut ep = Media {
+            kind: MediaKind::Episode,
+            title: "S0E1 - Behind the Fright".to_string(),
+            idx: Some(1),
+            parent_idx: Some(0),
+            external_ids: ExternalIds {
+                series_imdb: Some(series_imdb.clone()),
+                ..Default::default()
+            },
+            id: crate::common::stable_media_uuid(&MediaKind::Episode, "tt1844624:1:1"),
+            ..Default::default()
+        };
+
+        assert!(
+            ep.validate()
+                .is_err()
+        );
+
+        let raw = ep.media_id_raw();
+        assert!(
+            raw.canonical()
+                .is_some()
+        );
+        ep.id = Uuid::from(&raw);
+
+        assert_eq!(
+            ep.id,
+            crate::common::stable_media_uuid(&MediaKind::Episode, "tt1844624:0:1")
+        );
+        assert!(
+            ep.validate()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn stale_season_id_recomputes_to_canonical_and_validates() {
+        let series_imdb = NonEmptyString::try_new("tt1844624".to_string()).unwrap();
+        let mut season = Media {
+            kind: MediaKind::Season,
+            title: "Specials".to_string(),
+            idx: Some(0),
+            external_ids: ExternalIds {
+                series_imdb: Some(series_imdb.clone()),
+                ..Default::default()
+            },
+            id: crate::common::stable_media_uuid(&MediaKind::Season, "tt1844624:1"),
+            ..Default::default()
+        };
+
+        assert!(
+            season
+                .validate()
+                .is_err()
+        );
+
+        let raw = season.media_id_raw();
+        assert!(
+            raw.canonical()
+                .is_some()
+        );
+        season.id = Uuid::from(&raw);
+
+        assert_eq!(
+            season.id,
+            crate::common::stable_media_uuid(&MediaKind::Season, "tt1844624:0")
+        );
+        assert!(
+            season
+                .validate()
+                .is_ok()
+        );
+    }
+
+    #[test]
     fn from_path_tmdb_in_directory() {
         let ids = ExternalIds::from_path(
             "Movies/The Matrix (1999) [tmdbid-603]/The Matrix.mkv",
