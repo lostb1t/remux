@@ -706,7 +706,7 @@ pub struct MetricsCtx {
 }
 
 #[async_trait]
-pub trait MetricsAddon: Send + Sync {
+pub trait MetricsAddon: AddonKind + Send + Sync {
     /// Fetch a popularity metric for a single media item.
     /// Returns `None` if this addon has no data for the item.
     /// Values in `MetricSnapshot.value` must be in \[0.0, 100.0\].
@@ -1154,30 +1154,58 @@ impl AddonService {
                         .clone();
                     let metrics_ctx = metrics_ctx.clone();
                     async move {
+                        let done: std::collections::HashSet<uuid::Uuid> =
+                            sqlx::query_scalar::<_, Option<uuid::Uuid>>(
+                                "SELECT media_id FROM popularity_raw \
+                                 WHERE source = ? AND date = date('now') AND media_id IS NOT NULL",
+                            )
+                            .bind(addon.id())
+                            .fetch_all(&ctx.db)
+                            .await
+                            .unwrap_or_default()
+                            .into_iter()
+                            .flatten()
+                            .collect();
+
+                        let total: i64 = sqlx::query_scalar(
+                            "SELECT COUNT(*) FROM media WHERE kind IN ('movie', 'series')",
+                        )
+                        .fetch_one(&ctx.db)
+                        .await
+                        .unwrap_or(0);
+
+                        tracing::info!(
+                            source = addon.id(),
+                            already_fetched = done.len(),
+                            remaining = (total as usize).saturating_sub(done.len()),
+                            "starting metrics fetch"
+                        );
+
                         let mut offset = 0u32;
                         loop {
-                            let result = db::Media::get_by_filter(
+                            let page = db::Media::get_by_filter(
                                 &ctx.db,
                                 &db::MediaFilter {
-                                    kind: Some(vec![
-                                        db::MediaKind::Movie,
-                                        db::MediaKind::Series,
-                                    ]),
+                                    kind: Some(vec![db::MediaKind::Movie, db::MediaKind::Series]),
                                     limit: Some(PAGE),
                                     offset: Some(offset),
                                     total_count: false,
                                     ..Default::default()
                                 },
                             )
-                            .await?;
+                            .await?
+                            .records;
 
-                            let batch = result.records;
-                            if batch.is_empty() {
+                            if page.is_empty() {
                                 break;
                             }
-                            let batch_len = batch.len();
-                            let t = std::time::Instant::now();
 
+                            let batch: Vec<_> =
+                                page.into_iter().filter(|m| !done.contains(&m.id)).collect();
+                            offset += PAGE;
+                            if batch.is_empty() {
+                                continue;
+                            }
                             let snapshots: Vec<MetricSnapshot> = stream::iter(batch)
                                 .map(|item| {
                                     let addon = addon.clone();
@@ -1195,21 +1223,9 @@ impl AddonService {
                                 .collect()
                                 .await;
 
-                            tracing::info!(
-                                batch_size = batch_len,
-                                snapshots = snapshots.len(),
-                                elapsed_ms = t
-                                    .elapsed()
-                                    .as_millis(),
-                                offset,
-                                "metrics batch"
-                            );
-
                             if !snapshots.is_empty() {
                                 bulk_insert_snapshots(ctx, &snapshots).await?;
                             }
-
-                            offset += PAGE;
                         }
                         Ok::<(), anyhow::Error>(())
                     }

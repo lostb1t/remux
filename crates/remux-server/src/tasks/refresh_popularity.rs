@@ -15,7 +15,7 @@ impl Task for RefreshPopularityTask {
     }
 
     fn name(&self) -> &str {
-        "Refresh Popularity Data"
+        "Fetch Daily Metrics"
     }
 
     fn description(&self) -> &str {

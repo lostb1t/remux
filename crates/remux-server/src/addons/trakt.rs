@@ -5,9 +5,9 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use super::{
-    AddonCapabilities, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
-    AddonPresetRegistration, MediaKind, MetricSnapshot, MetricValue, MetricsAddon,
-    MetricsCtx, ResourceType,
+    AddonCapabilities, AddonKind, AddonMetadata, AddonOption, AddonOptionType,
+    AddonPreset, AddonPresetRegistration, MediaKind, MetricSnapshot, MetricValue,
+    MetricsAddon, MetricsCtx, ResourceType,
 };
 use crate::{db, sdks};
 
@@ -146,6 +146,13 @@ impl TraktAddon {
         cache
             .as_ref()
             .map(|(_, m, s)| (*m, *s))
+    }
+}
+
+#[async_trait]
+impl AddonKind for TraktAddon {
+    fn id(&self) -> &'static str {
+        "trakt"
     }
 }
 
