@@ -7,9 +7,9 @@ use uuid::Uuid;
 use super::{
     AddonCapabilities, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
     AddonPresetRegistration, MediaKind, MetricSnapshot, MetricValue, MetricsAddon,
-    ResourceType,
+    MetricsCtx, ResourceType,
 };
-use crate::{AppContext, db, sdks};
+use crate::{db, sdks};
 
 pub struct TraktPreset;
 
@@ -73,7 +73,7 @@ pub struct TraktAddon {
 }
 
 impl TraktAddon {
-    async fn ceilings(&self, ctx: &AppContext) -> Option<(f64, f64)> {
+    async fn ceilings(&self, ctx: &MetricsCtx) -> Option<(f64, f64)> {
         let client_id = self
             .client_id
             .as_deref()?;
@@ -154,7 +154,7 @@ impl MetricsAddon for TraktAddon {
     async fn metric(
         &self,
         media: &db::Media,
-        ctx: &AppContext,
+        ctx: &MetricsCtx,
     ) -> Result<Option<MetricSnapshot>> {
         if !matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
             return Ok(None);

@@ -697,6 +697,14 @@ pub struct MetricSnapshot {
     pub media_raw: Option<String>,
 }
 
+/// Per-run context passed to `MetricsAddon::metric`. Carries only what addons
+/// need (static config + pre-fetched settings) — addons must not touch the DB.
+#[derive(Clone)]
+pub struct MetricsCtx {
+    pub config: Arc<crate::Config>,
+    pub settings: api::ServerConfiguration,
+}
+
 #[async_trait]
 pub trait MetricsAddon: Send + Sync {
     /// Fetch a popularity metric for a single media item.
@@ -705,7 +713,7 @@ pub trait MetricsAddon: Send + Sync {
     async fn metric(
         &self,
         media: &db::Media,
-        ctx: &AppContext,
+        ctx: &MetricsCtx,
     ) -> Result<Option<MetricSnapshot>>;
 }
 
@@ -1120,73 +1128,96 @@ impl AddonService {
             return Ok(());
         }
 
-        let config = db::Settings::get_config_or_default(&ctx.db).await;
-        let concurrency = (config.meta_concurrency as usize).max(1);
+        let settings = db::Settings::get_config_or_default(&ctx.db).await;
+        let metrics_ctx = MetricsCtx {
+            config: Arc::new(
+                ctx.config
+                    .clone(),
+            ),
+            settings,
+        };
+
         const PAGE: u32 = 250;
+        const CONCURRENCY: usize = 25;
 
-        let mut offset = 0u32;
-        let mut processed = 0usize;
-        let mut total = 0usize;
-
-        loop {
-            let result = db::Media::get_by_filter(
-                &ctx.db,
-                &db::MediaFilter {
-                    kind: Some(vec![db::MediaKind::Movie, db::MediaKind::Series]),
-                    limit: Some(PAGE),
-                    offset: Some(offset),
-                    total_count: offset == 0,
-                    ..Default::default()
-                },
-            )
-            .await?;
-
-            if offset == 0 {
-                total = result.total_count;
-            }
-
-            let batch = result.records;
-            if batch.is_empty() {
-                break;
-            }
-            let batch_len = batch.len();
-
-            let snapshots: Vec<MetricSnapshot> = stream::iter(batch)
-                .flat_map(|item| {
-                    let addons = addons.clone();
-                    stream::iter(
-                        addons
-                            .into_iter()
-                            .map(move |r| (item.clone(), r)),
-                    )
-                })
-                .map(|(item, runtime)| {
+        // Each addon runs its own independent paging loop concurrently.
+        // This way a rate-limited addon (e.g. Trakt sleeping 5 min) doesn't
+        // stall the others.
+        futures::future::join_all(
+            addons
+                .iter()
+                .map(|runtime| {
                     let addon = runtime
                         .metrics
                         .as_ref()
                         .unwrap()
                         .clone();
+                    let metrics_ctx = metrics_ctx.clone();
                     async move {
-                        addon
-                            .metric(&item, ctx)
-                            .await
-                            .ok()
-                            .flatten()
+                        let mut offset = 0u32;
+                        loop {
+                            let result = db::Media::get_by_filter(
+                                &ctx.db,
+                                &db::MediaFilter {
+                                    kind: Some(vec![
+                                        db::MediaKind::Movie,
+                                        db::MediaKind::Series,
+                                    ]),
+                                    limit: Some(PAGE),
+                                    offset: Some(offset),
+                                    total_count: false,
+                                    ..Default::default()
+                                },
+                            )
+                            .await?;
+
+                            let batch = result.records;
+                            if batch.is_empty() {
+                                break;
+                            }
+                            let batch_len = batch.len();
+                            let t = std::time::Instant::now();
+
+                            let snapshots: Vec<MetricSnapshot> = stream::iter(batch)
+                                .map(|item| {
+                                    let addon = addon.clone();
+                                    let ctx = metrics_ctx.clone();
+                                    async move {
+                                        addon
+                                            .metric(&item, &ctx)
+                                            .await
+                                            .ok()
+                                            .flatten()
+                                    }
+                                })
+                                .buffer_unordered(CONCURRENCY)
+                                .filter_map(|s| async move { s })
+                                .collect()
+                                .await;
+
+                            tracing::info!(
+                                batch_size = batch_len,
+                                snapshots = snapshots.len(),
+                                elapsed_ms = t
+                                    .elapsed()
+                                    .as_millis(),
+                                offset,
+                                "metrics batch"
+                            );
+
+                            if !snapshots.is_empty() {
+                                bulk_insert_snapshots(ctx, &snapshots).await?;
+                            }
+
+                            offset += PAGE;
+                        }
+                        Ok::<(), anyhow::Error>(())
                     }
-                })
-                .buffer_unordered(concurrency)
-                .filter_map(|s| async move { s })
-                .collect()
-                .await;
-
-            if !snapshots.is_empty() {
-                bulk_insert_snapshots(ctx, &snapshots).await?;
-            }
-
-            processed += batch_len;
-            progress.report(processed, total.max(1));
-            offset += PAGE;
-        }
+                }),
+        )
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
 
         progress.set(100.0);
         Ok(())

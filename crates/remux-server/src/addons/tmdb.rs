@@ -9,7 +9,7 @@ use uuid::Uuid;
 use super::{
     AddonCapabilities, AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration,
     CatalogAddon, CatalogInfo, MediaKind, MetaAddon, MetricSnapshot, MetricValue,
-    MetricsAddon, ResourceType, SearchAddon, TreeAddon,
+    MetricsAddon, MetricsCtx, ResourceType, SearchAddon, TreeAddon,
 };
 use crate::{
     AppContext, api, common, db, sdks,
@@ -79,7 +79,7 @@ pub struct TmdbAddon {
 }
 
 impl TmdbAddon {
-    async fn popularity_max(&self, ctx: &AppContext) -> (f64, f64) {
+    async fn popularity_max(&self, api_key: &str, base_url: &str) -> (f64, f64) {
         let now = chrono::Utc::now();
         let mut cache = self
             .popularity_max
@@ -89,14 +89,7 @@ impl TmdbAddon {
             .as_ref()
             .map_or(true, |(t, _, _)| (now - *t).num_minutes() >= 60)
         {
-            let Ok(config) = crate::db::Settings::get_config(&ctx.db).await else {
-                return (1_000.0, 1_000.0);
-            };
-            let Ok(client) = tmdb_client(
-                config.get_tmdb_key(),
-                &ctx.config
-                    .tmdb_base_url,
-            ) else {
+            let Ok(client) = tmdb_client(api_key, base_url) else {
                 return (1_000.0, 1_000.0);
             };
             let q = sdks::tmdb::DiscoverQuery {
@@ -371,7 +364,7 @@ impl MetricsAddon for TmdbAddon {
     async fn metric(
         &self,
         media: &db::Media,
-        ctx: &AppContext,
+        ctx: &MetricsCtx,
     ) -> Result<Option<MetricSnapshot>> {
         let Some(tmdb_id) = media
             .external_ids
@@ -379,16 +372,22 @@ impl MetricsAddon for TmdbAddon {
         else {
             return Ok(None);
         };
-        let config = crate::db::Settings::get_config(&ctx.db).await?;
+        let api_key = ctx
+            .settings
+            .get_tmdb_key();
+        let (movie_max, tv_max) = self
+            .popularity_max(
+                api_key,
+                &ctx.config
+                    .tmdb_base_url,
+            )
+            .await;
         let client = tmdb_client(
-            config.get_tmdb_key(),
+            api_key,
             &ctx.config
                 .tmdb_base_url,
         )?;
         let today = chrono::Utc::now().date_naive();
-        let (movie_max, tv_max) = self
-            .popularity_max(ctx)
-            .await;
 
         let popularity: Option<(f64, f64)> = match media.kind {
             db::MediaKind::Movie => client
