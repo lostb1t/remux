@@ -1121,6 +1121,7 @@ impl AddonService {
         progress: ProgressReporter,
     ) -> Result<()> {
         use futures::stream::{self, StreamExt as _};
+        use std::sync::atomic::{AtomicU64, Ordering};
 
         let addons = self.metrics_addons();
         if addons.is_empty() {
@@ -1137,6 +1138,18 @@ impl AddonService {
             settings,
         };
 
+        let total: u64 = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM media WHERE kind IN ('movie', 'series')",
+        )
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap_or(0) as u64;
+
+        let num_addons = addons.len() as u64;
+        let grand_total = total * num_addons;
+        // Shared counter: done items + newly fetched items across all addon loops.
+        let processed = Arc::new(AtomicU64::new(0));
+
         const PAGE: u32 = 250;
         const CONCURRENCY: usize = 25;
 
@@ -1147,12 +1160,10 @@ impl AddonService {
             addons
                 .iter()
                 .map(|runtime| {
-                    let addon = runtime
-                        .metrics
-                        .as_ref()
-                        .unwrap()
-                        .clone();
+                    let addon = runtime.metrics.as_ref().unwrap().clone();
                     let metrics_ctx = metrics_ctx.clone();
+                    let progress = progress.clone();
+                    let processed = Arc::clone(&processed);
                     async move {
                         let done: std::collections::HashSet<uuid::Uuid> =
                             sqlx::query_scalar::<_, Option<uuid::Uuid>>(
@@ -1167,19 +1178,20 @@ impl AddonService {
                             .flatten()
                             .collect();
 
-                        let total: i64 = sqlx::query_scalar(
-                            "SELECT COUNT(*) FROM media WHERE kind IN ('movie', 'series')",
-                        )
-                        .fetch_one(&ctx.db)
-                        .await
-                        .unwrap_or(0);
-
                         tracing::info!(
                             source = addon.id(),
                             already_fetched = done.len(),
                             remaining = (total as usize).saturating_sub(done.len()),
                             "starting metrics fetch"
                         );
+
+                        // Credit already-fetched items immediately so progress
+                        // reflects a resumed or partial run from the start.
+                        if grand_total > 0 && !done.is_empty() {
+                            let n = processed.fetch_add(done.len() as u64, Ordering::Relaxed)
+                                + done.len() as u64;
+                            progress.set((n as f64 / grand_total as f64 * 100.0).min(99.0));
+                        }
 
                         let mut offset = 0u32;
                         loop {
@@ -1206,17 +1218,13 @@ impl AddonService {
                             if batch.is_empty() {
                                 continue;
                             }
+
+                            let batch_len = batch.len() as u64;
                             let snapshots: Vec<MetricSnapshot> = stream::iter(batch)
                                 .map(|item| {
                                     let addon = addon.clone();
                                     let ctx = metrics_ctx.clone();
-                                    async move {
-                                        addon
-                                            .metric(&item, &ctx)
-                                            .await
-                                            .ok()
-                                            .flatten()
-                                    }
+                                    async move { addon.metric(&item, &ctx).await.ok().flatten() }
                                 })
                                 .buffer_unordered(CONCURRENCY)
                                 .filter_map(|s| async move { s })
@@ -1225,6 +1233,12 @@ impl AddonService {
 
                             if !snapshots.is_empty() {
                                 bulk_insert_snapshots(ctx, &snapshots).await?;
+                            }
+
+                            if grand_total > 0 {
+                                let n = processed.fetch_add(batch_len, Ordering::Relaxed)
+                                    + batch_len;
+                                progress.set((n as f64 / grand_total as f64 * 100.0).min(99.0));
                             }
                         }
                         Ok::<(), anyhow::Error>(())
