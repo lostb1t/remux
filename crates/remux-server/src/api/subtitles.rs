@@ -175,7 +175,7 @@ pub(crate) async fn pre_extract_all_subtitles_to_cache(
     cmd.kill_on_drop(true);
     // -y: overwrite without prompting (hangs forever waiting for stdin otherwise)
     // -nostdin: don't read from stdin at all
-    // -c:s copy: copy subtitle packets as-is (same as Jellyfin, much faster than re-encoding)
+    // -c:s srt: convert to SRT so the cache is always valid SRT (not raw ASS/VTT bytes)
     cmd.args(["-y", "-nostdin", "-i", &input_url]);
     for (idx, path) in &to_extract {
         if let Some(p) = path.to_str() {
@@ -185,7 +185,7 @@ pub(crate) async fn pre_extract_all_subtitles_to_cache(
                 "-an",
                 "-vn",
                 "-c:s",
-                "copy",
+                "srt",
                 "-flush_packets",
                 "1",
                 p,

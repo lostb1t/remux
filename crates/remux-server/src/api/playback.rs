@@ -470,7 +470,7 @@ async fn items_playbackinfo_inner(
                     .data_dir
                     .clone();
                 let url = input_url.clone();
-                let msid = sm.id;
+                let msid = source.id;
                 tokio::spawn(
                     crate::api::subtitles::pre_extract_all_subtitles_to_cache(
                         data_dir,
@@ -704,7 +704,7 @@ async fn items_playbackinfo_inner(
                                         p.format
                                             .as_deref()
                                     })
-                                    .any(|f| f.eq_ignore_ascii_case(codec))
+                                    .any(|f| subtitle_codec_matches_profile(codec, f))
                             })
                             .unwrap_or(false);
                         if not_in_profile {
@@ -870,8 +870,10 @@ async fn items_playbackinfo_inner(
                 "vtt"
             };
             let client_can_handle_image = is_image_sub
-                && (profile_supports(SubtitleCodec::Pgs)
-                    || profile_embeds(SubtitleCodec::Pgs));
+                && parsed_codec
+                    .as_ref()
+                    .map(|c| profile_supports(c.clone()) || profile_embeds(c.clone()))
+                    .unwrap_or(false);
             if !stream.is_external
                 && parsed_codec
                     .as_ref()
