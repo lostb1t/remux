@@ -799,7 +799,7 @@ async fn items_playbackinfo_inner(
                 .codec
                 .as_deref()
                 .unwrap_or_default();
-            let profile_supports = |fmt: &str| -> bool {
+            let profile_supports = |codec: SubtitleCodec| -> bool {
                 device_profile
                     .as_ref()
                     .map(|dp| {
@@ -809,11 +809,16 @@ async fn items_playbackinfo_inner(
                                 p.format
                                     .as_deref()
                             })
-                            .any(|f| subtitle_codec_matches_profile(fmt, f))
+                            .any(|f| {
+                                f.parse::<SubtitleCodec>()
+                                    .ok()
+                                    .as_ref()
+                                    == Some(&codec)
+                            })
                     })
                     .unwrap_or(false)
             };
-            let profile_embeds = |fmt: &str| -> bool {
+            let profile_embeds = |codec: SubtitleCodec| -> bool {
                 device_profile
                     .as_ref()
                     .map(|dp| {
@@ -823,9 +828,12 @@ async fn items_playbackinfo_inner(
                                 p.method == Some(api::SubtitleDeliveryMethod::Embed)
                                     && p.format
                                         .as_deref()
-                                        .map_or(false, |f| {
-                                            subtitle_codec_matches_profile(fmt, f)
+                                        .and_then(|f| {
+                                            f.parse::<SubtitleCodec>()
+                                                .ok()
                                         })
+                                        .as_ref()
+                                        == Some(&codec)
                             })
                     })
                     .unwrap_or(false)
@@ -838,19 +846,27 @@ async fn items_playbackinfo_inner(
                 .map(SubtitleCodec::is_image)
                 .unwrap_or(false);
             let format = if stream.is_text_subtitle_stream {
-                if parsed_codec == Some(SubtitleCodec::Ass) && profile_supports("ass") {
+                if parsed_codec == Some(SubtitleCodec::Ass)
+                    && profile_supports(SubtitleCodec::Ass)
+                {
                     "ass"
                 } else {
                     "vtt"
                 }
-            } else if profile_supports("pgssub") {
+            } else if profile_supports(SubtitleCodec::Pgs) {
                 "sup"
             } else {
                 "vtt"
             };
             let client_can_handle_image = is_image_sub
-                && (profile_supports("pgssub") || profile_embeds("pgssub"));
-            if !stream.is_external && profile_embeds(format) {
+                && (profile_supports(SubtitleCodec::Pgs)
+                    || profile_embeds(SubtitleCodec::Pgs));
+            if !stream.is_external
+                && parsed_codec
+                    .as_ref()
+                    .map(|c| profile_embeds(c.clone()))
+                    .unwrap_or(false)
+            {
                 stream.delivery_method = Some(api::SubtitleDeliveryMethod::Embed);
             } else if !stream.is_external
                 && is_image_sub
