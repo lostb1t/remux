@@ -1918,12 +1918,23 @@ pub fn generate_master_playlist(session: &TranscodeSession) -> String {
         ),
         _ => "avc1.640028".to_string(),
     };
-    let audio_codec_str = match session
-        .audio_codec
-        .as_str()
-    {
-        "copy" | "aac" => "mp4a.40.2",
-        _ => "mp4a.40.2",
+    let audio_codec_str = if session.audio_codec == "copy" {
+        // Use the actual source codec when copying so the CODECS attribute
+        // matches the bitstream. Browsers that see "mp4a.40.2" but receive
+        // eac3 will fail to initialize the audio decoder.
+        match session
+            .source_audio_codec
+            .as_deref()
+            .and_then(|s| {
+                s.parse::<AudioCodec>()
+                    .ok()
+            }) {
+            Some(AudioCodec::Eac3) => "ec-3",
+            Some(AudioCodec::Ac3) => "ac-3",
+            _ => "mp4a.40.2",
+        }
+    } else {
+        "mp4a.40.2"
     };
     let codecs = format!("{},{}", video_codec_str, audio_codec_str);
 
