@@ -269,7 +269,21 @@ pub async fn subtitles_stream(
             .ok()
             .flatten();
             if let Some(mut m) = sm {
-                if matches!(
+                if m.kind == db::MediaKind::StreamGroup {
+                    db::StreamGroup::streams_for(
+                        &state
+                            .ctx
+                            .db,
+                        &m.id,
+                        &item_id,
+                    )
+                    .await
+                    .ok()
+                    .and_then(|v| {
+                        v.into_iter()
+                            .next()
+                    })
+                } else if matches!(
                     m.kind,
                     db::MediaKind::Movie
                         | db::MediaKind::Episode
@@ -410,7 +424,20 @@ pub async fn subtitles_stream(
     .await?
     .context_not_found("media source not found")?;
 
-    if matches!(
+    if media.kind == db::MediaKind::StreamGroup {
+        let group_id = media.id;
+        media = db::StreamGroup::streams_for(
+            &state
+                .ctx
+                .db,
+            &group_id,
+            &item_id,
+        )
+        .await?
+        .into_iter()
+        .next()
+        .context_not_found("no streams available for this group")?;
+    } else if matches!(
         media.kind,
         db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track
     ) {
