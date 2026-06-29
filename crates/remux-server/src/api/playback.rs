@@ -15,6 +15,7 @@ use futures_util::{StreamExt, TryStreamExt};
 use headers;
 use http::{Response, StatusCode};
 use remux_macros::{delete, get, post, query};
+use remux_utils::Store;
 use serde::Deserialize;
 use serde_json::json;
 use serde_with::{DurationSeconds, serde_as};
@@ -35,9 +36,9 @@ use crate::{
 
 use crate::{
     IntoApiError, OptionExt, ResultExt,
-    device_profile::{DeviceProfileExt, subtitle_codec_matches_profile},
+    device_profile::{DeviceProfileExt, SubtitleCodec, subtitle_codec_matches_profile},
     sdks,
-    services::MediaResolveService,
+    services::{MediaResolveService, StreamResolver},
     torrent,
     transcode::session::{TranscodeSession, TranscodeState},
 };
@@ -92,47 +93,26 @@ async fn items_playbackinfo_inner(
     .await
     .unwrap_or_default();
 
-    let mut media =
+    let initial =
         MediaResolveService::resolve_item(media_source_id.unwrap_or(id), &state.ctx)
             .await?
             .context_not_found("not found")?;
 
-    // When a StreamGroup UUID is requested, resolve it to the group's best candidate
-    // and keep all candidates (including subsequent groups) for probe fallback scope.
-    let group_source_override: Option<(Uuid, String, Vec<db::Media>)> = if media.kind
-        == db::MediaKind::StreamGroup
-    {
-        let gid = media.id;
-        let gtitle = media
-            .title
-            .clone();
-        let mut candidates = db::StreamGroup::streams_for(
-            &state
-                .ctx
-                .db,
-            &gid,
-            &id,
-        )
-        .await?;
-        if candidates.is_empty() {
-            return Err(anyhow::anyhow!("no streams available for this group").into());
-        }
-        // Append streams from lower-priority groups so probe can cascade across groups.
-        let cascade = db::StreamGroup::streams_for_groups_after(
-            &state
-                .ctx
-                .db,
-            &gid,
-            &id,
-        )
-        .await
-        .unwrap_or_default();
-        candidates.extend(cascade);
-        media = candidates[0].clone();
-        Some((gid, gtitle, candidates))
-    } else {
-        None
-    };
+    let resolver = StreamResolver::resolve_group(
+        &state
+            .ctx
+            .db,
+        &state
+            .ctx
+            .store,
+        id,
+        media_source_id,
+        initial,
+    )
+    .await?;
+    let mut media = resolver
+        .stream
+        .clone();
 
     // Load the top-level Movie/Episode for subtitle lookup.
     // `id` is always the movie/episode UUID; `media_source_id` may point to a
@@ -233,16 +213,35 @@ async fn items_playbackinfo_inner(
     //
     // Android TV always sends media_source_id = item_id (not None) for auto-play.
     // Treat that the same as "return first source only" — no need to send all versions.
-    let specific_source_requested = media_source_id
-        .map(|sid| {
-            sid != id
-                && all_source_medias
-                    .iter()
-                    .any(|s| s.id == sid)
-        })
-        .unwrap_or(false);
-    let (source_medias, probe_only_first) = if specific_source_requested {
-        // Specific stream requested: return only that stream.
+    // A group request counts as a specific source request: the client sent a stable group UUID
+    // and must receive that same UUID back. Non-group requests check if the UUID maps to an
+    // actual child stream in all_source_medias.
+    let specific_source_requested = resolver
+        .group
+        .is_some()
+        || media_source_id
+            .map(|sid| {
+                sid != id
+                    && all_source_medias
+                        .iter()
+                        .any(|s| s.id == sid)
+            })
+            .unwrap_or(false);
+    let (source_medias, probe_only_first) = if resolver
+        .group
+        .is_some()
+    {
+        // Group request: the resolver already picked the best candidate stream.
+        (
+            vec![
+                resolver
+                    .stream
+                    .clone(),
+            ],
+            false,
+        )
+    } else if specific_source_requested {
+        // Specific non-group stream: return only that stream.
         let sid = media_source_id.unwrap();
         let filtered: Vec<db::Media> = all_source_medias
             .into_iter()
@@ -297,12 +296,19 @@ async fn items_playbackinfo_inner(
     // For group selections, use all group candidates (including cascade) as the probe fallback pool.
     // Resolution filtering is disabled for group requests: the group priority order already
     // encodes the user's quality preference, so cross-resolution fallback is intentional.
-    let (all_sources, restrict_resolution) =
-        if let Some((_, _, ref candidates)) = group_source_override {
-            (candidates.clone(), false)
-        } else {
-            (source_medias.clone(), true)
-        };
+    let (all_sources, restrict_resolution) = if resolver
+        .group
+        .is_some()
+    {
+        (
+            resolver
+                .candidates()
+                .to_vec(),
+            false,
+        )
+    } else {
+        (source_medias.clone(), true)
+    };
     let mut media_sources = Vec::with_capacity(source_medias.len());
     for (idx, sm) in source_medias
         .into_iter()
@@ -340,11 +346,24 @@ async fn items_playbackinfo_inner(
                 .db,
         )
         .await?;
-        source.id = sm.id;
-        source.e_tag = sm.id;
+        // Use the client-facing ID from the resolver: group UUID for group requests,
+        // stream UUID otherwise. Set once here — no later overrides.
+        let cid = resolver
+            .group
+            .as_ref()
+            .map(|(gid, _, _)| *gid)
+            .unwrap_or(sm.id);
+        source.id = cid;
+        source.e_tag = cid;
         source.name = Some(
-            sm.title
-                .clone(),
+            resolver
+                .group
+                .as_ref()
+                .map(|(_, t, _)| t.clone())
+                .unwrap_or_else(|| {
+                    sm.title
+                        .clone()
+                }),
         );
         source.has_segments = true;
         source.path = Some(format!("/remux/{}", sm.id));
@@ -397,23 +416,19 @@ async fn items_playbackinfo_inner(
             reasons
         };
 
-        // Image-based subtitles (PGS/DVD) can't be rendered by web clients — detect
-        // from the explicitly-selected or default subtitle stream and add a transcode reason.
-        let effective_sub_idx = q
-            .subtitle_stream_index
-            .or(source.default_subtitle_stream_index);
-        // Signal burn-in for image-based subtitle codecs the client does not
-        // declare support for in its device profile. Text codecs are handled via
-        // VTT conversion in the DeliveryUrl loop below.
-        if let Some(idx) = effective_sub_idx {
-            let needs_burn = source
+        let subtitle_mode = encoding_cfg
+            .subtitle_mode
+            .unwrap_or_default();
+
+        // Strip mode: remove embedded subtitle streams not supported by the client so
+        // they don't trigger a transcode. External/addon subs are never touched.
+        if subtitle_mode == remux_sdks::remux::EmbeddedSubtitleHandling::Strip {
+            source
                 .media_streams
-                .iter()
-                .any(|s| {
-                    s.index == idx
-                        && matches!(s.type_, Some(api::MediaStreamType::Subtitle))
-                        && !s.is_text_subtitle_stream
-                        && !device_profile
+                .retain(|s| {
+                    !matches!(s.type_, Some(api::MediaStreamType::Subtitle))
+                        || s.is_external
+                        || device_profile
                             .as_ref()
                             .map(|dp| {
                                 dp.subtitle_profiles
@@ -430,8 +445,78 @@ async fn items_playbackinfo_inner(
                                             })
                                     })
                             })
-                            .unwrap_or(false)
+                            .unwrap_or(true)
                 });
+        }
+
+        // Pre-extract all embedded text subtitle streams in the background, in one
+        // FFmpeg pass. By the time the client requests a subtitle URL, the cache file
+        // is already written (same approach Jellyfin uses).
+        if let Some(ref input_url) = url_opt {
+            let text_sub_indices: Vec<i64> = source
+                .media_streams
+                .iter()
+                .filter(|s| {
+                    matches!(s.type_, Some(api::MediaStreamType::Subtitle))
+                        && !s.is_external
+                        && s.is_text_subtitle_stream
+                })
+                .map(|s| s.index)
+                .collect();
+            if !text_sub_indices.is_empty() {
+                let data_dir = state
+                    .ctx
+                    .config
+                    .data_dir
+                    .clone();
+                let url = input_url.clone();
+                tokio::spawn(
+                    crate::api::subtitles::pre_extract_all_subtitles_to_cache(
+                        data_dir,
+                        url,
+                        id,
+                        text_sub_indices,
+                    ),
+                );
+            }
+        }
+
+        // Detect embedded subtitle codecs unsupported by the client device profile.
+        // In Burn mode this triggers transcoding so the subtitle can be burned in.
+        // In Extract/Strip modes, no transcode reason is added for subtitles.
+        let effective_sub_idx = q
+            .subtitle_stream_index
+            .or(source.default_subtitle_stream_index);
+        if let Some(idx) = effective_sub_idx {
+            let needs_burn = subtitle_mode
+                == remux_sdks::remux::EmbeddedSubtitleHandling::Burn
+                && source
+                    .media_streams
+                    .iter()
+                    .any(|s| {
+                        s.index == idx
+                            && matches!(s.type_, Some(api::MediaStreamType::Subtitle))
+                            && !s.is_external
+                            && !s.is_text_subtitle_stream
+                            && !device_profile
+                                .as_ref()
+                                .map(|dp| {
+                                    dp.subtitle_profiles
+                                        .iter()
+                                        .filter_map(|p| {
+                                            p.format
+                                                .as_deref()
+                                        })
+                                        .any(|f| {
+                                            s.codec
+                                                .as_deref()
+                                                .map_or(false, |c| {
+                                                    subtitle_codec_matches_profile(c, f)
+                                                })
+                                        })
+                                })
+                                .unwrap_or(false)
+                    });
             if needs_burn {
                 let codec = source
                     .media_streams
@@ -578,8 +663,11 @@ async fn items_playbackinfo_inner(
                 let audio_codec =
                     if needs_audio_transcode { "aac" } else { "copy" }.to_string();
 
-                // Detect image-based subtitle streams (PGS, DVD) that cannot be
-                // embedded in HLS — burn them into the video via FFmpeg overlay.
+                // Determine subtitle delivery method for the selected stream.
+                // In Burn mode, any embedded codec not in the device profile gets
+                // SubtitleDeliveryMethod::Encode so FFmpeg burns it into the video.
+                // In Extract/Strip modes we defer to the client (no burn).
+                // External subtitles are never burned — they have their own URL.
                 let selected_sub_idx = effective_sub_idx;
                 let subtitle_method = selected_sub_idx
                     .and_then(|idx| {
@@ -595,23 +683,34 @@ async fn items_playbackinfo_inner(
                             })
                     })
                     .and_then(|stream| {
+                        if stream.is_external
+                            || stream.is_text_subtitle_stream
+                            || subtitle_mode
+                                != remux_sdks::remux::EmbeddedSubtitleHandling::Burn
+                        {
+                            return None;
+                        }
                         let codec = stream
                             .codec
                             .as_deref()
                             .unwrap_or("");
-                        let is_image_sub = matches!(
-                            codec,
-                            "pgssub" | "hdmv_pgs_subtitle" | "dvd_subtitle"
-                        );
-                        if !is_image_sub {
-                            return None;
+                        let not_in_profile = !device_profile
+                            .as_ref()
+                            .map(|dp| {
+                                dp.subtitle_profiles
+                                    .iter()
+                                    .filter_map(|p| {
+                                        p.format
+                                            .as_deref()
+                                    })
+                                    .any(|f| subtitle_codec_matches_profile(codec, f))
+                            })
+                            .unwrap_or(false);
+                        if not_in_profile {
+                            Some(api::SubtitleDeliveryMethod::Encode)
+                        } else {
+                            None
                         }
-                        Some(
-                            device_profile
-                                .as_ref()
-                                .and_then(|p| p.subtitle_delivery_method(codec))
-                                .unwrap_or(api::SubtitleDeliveryMethod::Encode),
-                        )
                     });
 
                 if subtitle_method == Some(api::SubtitleDeliveryMethod::Encode) {
@@ -710,7 +809,7 @@ async fn items_playbackinfo_inner(
                 .codec
                 .as_deref()
                 .unwrap_or_default();
-            let profile_supports = |fmt: &str| -> bool {
+            let profile_supports = |codec: SubtitleCodec| -> bool {
                 device_profile
                     .as_ref()
                     .map(|dp| {
@@ -720,11 +819,16 @@ async fn items_playbackinfo_inner(
                                 p.format
                                     .as_deref()
                             })
-                            .any(|f| subtitle_codec_matches_profile(fmt, f))
+                            .any(|f| {
+                                f.parse::<SubtitleCodec>()
+                                    .ok()
+                                    .as_ref()
+                                    == Some(&codec)
+                            })
                     })
                     .unwrap_or(false)
             };
-            let profile_embeds = |fmt: &str| -> bool {
+            let profile_embeds = |codec: SubtitleCodec| -> bool {
                 device_profile
                     .as_ref()
                     .map(|dp| {
@@ -734,27 +838,56 @@ async fn items_playbackinfo_inner(
                                 p.method == Some(api::SubtitleDeliveryMethod::Embed)
                                     && p.format
                                         .as_deref()
-                                        .map_or(false, |f| f.eq_ignore_ascii_case(fmt))
+                                        .and_then(|f| {
+                                            f.parse::<SubtitleCodec>()
+                                                .ok()
+                                        })
+                                        .as_ref()
+                                        == Some(&codec)
                             })
                     })
                     .unwrap_or(false)
             };
+            let parsed_codec = codec
+                .parse::<SubtitleCodec>()
+                .ok();
+            let is_image_sub = parsed_codec
+                .as_ref()
+                .map(SubtitleCodec::is_image)
+                .unwrap_or(false);
             let format = if stream.is_text_subtitle_stream {
-                if (codec.eq_ignore_ascii_case("ass")
-                    || codec.eq_ignore_ascii_case("ssa"))
-                    && profile_supports("ass")
+                if parsed_codec == Some(SubtitleCodec::Ass)
+                    && profile_supports(SubtitleCodec::Ass)
                 {
                     "ass"
                 } else {
                     "vtt"
                 }
-            } else if profile_supports("sup") || profile_supports("pgssub") {
+            } else if profile_supports(SubtitleCodec::Pgs) {
                 "sup"
             } else {
                 "vtt"
             };
-            if !stream.is_external && profile_embeds(format) {
+            let client_can_handle_image = is_image_sub
+                && parsed_codec
+                    .as_ref()
+                    .map(|c| profile_supports(c.clone()) || profile_embeds(c.clone()))
+                    .unwrap_or(false);
+            if !stream.is_external
+                && parsed_codec
+                    .as_ref()
+                    .map(|c| profile_embeds(c.clone()))
+                    .unwrap_or(false)
+            {
                 stream.delivery_method = Some(api::SubtitleDeliveryMethod::Embed);
+            } else if !stream.is_external
+                && is_image_sub
+                && !client_can_handle_image
+                && subtitle_mode == remux_sdks::remux::EmbeddedSubtitleHandling::Burn
+            {
+                // Burn mode: embedded image sub (PGS/VOBSUB) the client can't render
+                // externally → force transcode with burn-in.
+                stream.delivery_method = Some(api::SubtitleDeliveryMethod::Encode);
             } else {
                 stream.delivery_url = Some(format!(
                     "/Videos/{id}/{source_id}/Subtitles/{idx}/0/Stream.{format}?ApiKey={api_key}",
@@ -767,17 +900,6 @@ async fn items_playbackinfo_inner(
         }
 
         source.transcoding_reasons = transcode_reasons;
-
-        // For group selections, expose the stable group UUID to the client.
-        // Subtitle delivery URLs above use the real source_id (captured before
-        // this point) so the extraction endpoint finds the media by its actual
-        // database UUID, not the group alias.
-        // TranscodingUrl already embeds the real source UUID (set before this point).
-        if let Some((gid, ref gtitle, _)) = group_source_override {
-            source.id = gid;
-            source.e_tag = gid;
-            source.name = Some(gtitle.clone());
-        }
 
         media_sources.push(source);
     }
@@ -814,10 +936,25 @@ async fn items_playbackinfo_inner(
     )
     .await;
 
+    // Cache the group-resolved stream UUID so the stream endpoint can find it
+    // without re-running filter_sources (which could pick a different candidate).
+    if resolver
+        .group
+        .is_some()
+    {
+        resolver.save_preference(
+            &state
+                .ctx
+                .store,
+            &session
+                .device
+                .id,
+        );
+    }
+
     // When no specific source was requested (initial load, or media_source_id == item_id),
     // override source[0].Id to equal the item ID — clients expect this for auto-play.
-    // When a real specific source was requested, keep its UUID so the client
-    // sends it back and we resolve the right stream.
+    // Group and specific-stream requests keep their own UUIDs (specific_source_requested = true).
     if !specific_source_requested && !media_sources.is_empty() {
         media_sources[0].id = id;
         media_sources[0].e_tag = id;
@@ -1185,56 +1322,20 @@ async fn videos_stream_inner(
     id: Uuid,
     q: api::VideoStreamQuery,
 ) -> Result<impl IntoResponse> {
-    let mut media = db::Media::get_by_id(
+    let media = StreamResolver::resolve(
         &state
             .ctx
             .db,
-        &q.media_source_id
-            .unwrap_or(id),
+        &state
+            .ctx
+            .store,
+        id,
+        q.media_source_id,
+        q.device_id
+            .as_deref(),
     )
     .await?
-    .context_not_found("not found")?;
-
-    if media.kind == db::MediaKind::StreamGroup {
-        let group_id = media.id;
-        let candidates = db::StreamGroup::streams_for(
-            &state
-                .ctx
-                .db,
-            &group_id,
-            &id,
-        )
-        .await?;
-        media = candidates
-            .into_iter()
-            .next()
-            .context_not_found("no streams available for this group")?;
-    } else if media.kind == db::MediaKind::Movie
-        || media.kind == db::MediaKind::Episode
-        || media.kind == db::MediaKind::Track
-    {
-        let sources = media
-            .streams(
-                &state
-                    .ctx
-                    .db,
-            )
-            .await?;
-        media = if let Some(wanted) = q.media_source_id {
-            sources
-                .iter()
-                .find(|s| s.id == wanted)
-                .cloned()
-        } else {
-            None
-        }
-        .or_else(|| {
-            sources
-                .into_iter()
-                .next()
-        })
-        .context_not_found("no playable source found")?;
-    }
+    .stream;
 
     let si = media
         .stream_info
@@ -1352,6 +1453,11 @@ async fn videos_stream_inner(
             s.codec
                 .clone()
         });
+    let burn_subtitle_prog = q
+        .subtitle_method
+        .as_deref()
+        == Some("Encode");
+
     let params = crate::transcode::engine::ProgressiveTranscodeParams {
         input_url: url,
         container: container.clone(),
@@ -1383,10 +1489,7 @@ async fn videos_stream_inner(
         subtitle_stream_index: q
             .subtitle_stream_index
             .map(|v| v as i32),
-        burn_subtitle: q
-            .subtitle_method
-            .as_deref()
-            == Some("Encode"),
+        burn_subtitle: burn_subtitle_prog,
         subtitle_width: None,
         subtitle_height: None,
         encoding_preset: encoding_opts.encoding_preset,
@@ -3102,6 +3205,36 @@ async fn apply_user_playback_prefs(
         .unwrap_or(false);
 
     for source in media_sources.iter_mut() {
+        // --- client explicit selection wins ---
+        if client_wants_audio {
+            if let Some(idx) = client_audio_idx {
+                let exists = source
+                    .media_streams
+                    .iter()
+                    .any(|s| {
+                        s.index == idx
+                            && matches!(s.type_, Some(api::MediaStreamType::Audio))
+                    });
+                if exists {
+                    source.default_audio_stream_index = Some(idx);
+                }
+            }
+        }
+        if client_wants_subtitle {
+            if let Some(idx) = client_subtitle_idx {
+                let exists = source
+                    .media_streams
+                    .iter()
+                    .any(|s| {
+                        s.index == idx
+                            && matches!(s.type_, Some(api::MediaStreamType::Subtitle))
+                    });
+                if exists {
+                    source.default_subtitle_stream_index = Some(idx);
+                }
+            }
+        }
+
         // --- remember_audio_selections ---
         if !client_wants_audio && cfg.remember_audio_selections {
             if let Some(idx) = saved_audio {

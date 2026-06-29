@@ -561,6 +561,39 @@ pub struct EncodingOptions {
     /// unaffected by this setting.
     #[default(Some(true))]
     pub enable_video_transcoding: Option<bool>,
+    /// Controls how embedded subtitle streams unsupported by the client are handled.
+    /// Burn: encode into video (default). Extract: serve via Stream.js/VTT endpoint.
+    /// Strip: remove from media source so the client never sees them.
+    #[default(Some(EmbeddedSubtitleHandling::Burn))]
+    pub subtitle_mode: Option<EmbeddedSubtitleHandling>,
+}
+
+// --- Embedded subtitle handling ---
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    strum_macros::Display,
+    strum_macros::EnumString,
+)]
+#[serde(rename_all = "PascalCase")]
+#[strum(serialize_all = "PascalCase")]
+pub enum EmbeddedSubtitleHandling {
+    /// Burn unsupported embedded subtitles into the video during transcoding.
+    #[default]
+    Burn,
+    /// Extract and deliver unsupported embedded subtitles via the subtitle stream
+    /// endpoint (Stream.js / Stream.vtt). May be slow for remote sources.
+    Extract,
+    /// Remove unsupported embedded subtitle streams from the media source entirely.
+    /// No transcoding is triggered for subtitles; they simply won't be available.
+    Strip,
 }
 
 // --- Preroll configuration ---
@@ -1455,6 +1488,52 @@ mod tests {
         assert_eq!(
             normalize_next_up_date_cutoff("not-a-date").unwrap_err(),
             "nextUpDateCutoff must be RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS"
+        );
+    }
+
+    #[test]
+    fn embedded_subtitle_handling_default_is_burn() {
+        assert_eq!(
+            EmbeddedSubtitleHandling::default(),
+            EmbeddedSubtitleHandling::Burn
+        );
+    }
+
+    #[test]
+    fn embedded_subtitle_handling_display_round_trips() {
+        for (variant, expected) in [
+            (EmbeddedSubtitleHandling::Burn, "Burn"),
+            (EmbeddedSubtitleHandling::Extract, "Extract"),
+            (EmbeddedSubtitleHandling::Strip, "Strip"),
+        ] {
+            assert_eq!(variant.to_string(), expected);
+            let parsed: EmbeddedSubtitleHandling = expected
+                .parse()
+                .unwrap();
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[test]
+    fn embedded_subtitle_handling_serde_round_trips() {
+        for variant in [
+            EmbeddedSubtitleHandling::Burn,
+            EmbeddedSubtitleHandling::Extract,
+            EmbeddedSubtitleHandling::Strip,
+        ] {
+            let json = serde_json::to_string(&variant).unwrap();
+            let back: EmbeddedSubtitleHandling = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, variant);
+        }
+    }
+
+    #[test]
+    fn encoding_options_subtitle_mode_defaults_to_burn() {
+        let opts = EncodingOptions::default();
+        assert_eq!(
+            opts.subtitle_mode
+                .unwrap_or_default(),
+            EmbeddedSubtitleHandling::Burn
         );
     }
 }

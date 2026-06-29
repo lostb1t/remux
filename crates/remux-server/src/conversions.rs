@@ -187,6 +187,17 @@ impl From<db::Media> for api::MediaSourceInfo {
             .runtime
             .and_then(|r| r.to_ticks(common::TickUnit::Seconds));
         let run_time_ticks = probe_ticks.or(meta_ticks);
+        let (media_streams, default_audio_stream_index, default_subtitle_stream_index) =
+            source
+                .probe_data
+                .map(|p| {
+                    (
+                        p.media_streams,
+                        p.default_audio_stream_index,
+                        p.default_subtitle_stream_index,
+                    )
+                })
+                .unwrap_or_default();
         api::MediaSourceInfo {
             id: client_id,
             e_tag: client_id,
@@ -204,10 +215,9 @@ impl From<db::Media> for api::MediaSourceInfo {
             formats: Some(vec![]),
             required_http_headers: Some(HashMap::new()),
             run_time_ticks,
-            media_streams: source
-                .probe_data
-                .map(|p| p.media_streams)
-                .unwrap_or_default(),
+            media_streams,
+            default_audio_stream_index,
+            default_subtitle_stream_index,
             ..Default::default()
         }
     }

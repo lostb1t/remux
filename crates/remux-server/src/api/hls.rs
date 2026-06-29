@@ -297,6 +297,8 @@ pub async fn master_hls_video(
             s.codec
                 .clone()
         });
+        let burn_subtitle =
+            q.subtitle_method == Some(api::SubtitleDeliveryMethod::Encode);
         let session = TranscodeSession::new(
             play_session_id.clone(),
             id,
@@ -309,7 +311,7 @@ pub async fn master_hls_video(
                 .map(|v| v as i32),
             q.subtitle_stream_index
                 .map(|v| v as i32),
-            q.subtitle_method == Some(api::SubtitleDeliveryMethod::Encode),
+            burn_subtitle,
             segment_length,
             // Parse reasons from query param (set by playbackinfo on the transcoding URL)
             q.transcode_reasons
@@ -376,8 +378,7 @@ pub async fn master_hls_video(
             subtitle_stream_index: q
                 .subtitle_stream_index
                 .map(|v| v as i32),
-            burn_subtitle: q.subtitle_method
-                == Some(api::SubtitleDeliveryMethod::Encode),
+            burn_subtitle,
             subtitle_width: None,
             subtitle_height: None,
             encoding_preset: encoding_opts.encoding_preset,
