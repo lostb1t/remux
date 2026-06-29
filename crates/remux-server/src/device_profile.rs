@@ -17,25 +17,43 @@ pub trait DeviceProfileExt {
 )]
 #[strum(ascii_case_insensitive)]
 pub(crate) enum SubtitleCodec {
+    // Canonical: "pgssub". Aliases: pgs, hdmv_pgs_subtitle, sup.
     #[strum(
-        serialize = "pgs",
+        to_string = "pgssub",
         serialize = "pgssub",
+        serialize = "pgs",
         serialize = "hdmv_pgs_subtitle",
         serialize = "sup"
     )]
     Pgs,
-    #[strum(serialize = "subrip", serialize = "srt")]
+    // Canonical: "srt". Aliases: subrip.
+    #[strum(to_string = "srt", serialize = "srt", serialize = "subrip")]
     Srt,
-    #[strum(serialize = "dvd_subtitle", serialize = "dvdsub")]
+    // Canonical: "dvdsub". Aliases: dvd_subtitle.
+    #[strum(to_string = "dvdsub", serialize = "dvdsub", serialize = "dvd_subtitle")]
     DvdSub,
-    #[strum(serialize = "dvb_subtitle", serialize = "dvbsub")]
+    // Canonical: "dvbsub". Aliases: dvb_subtitle.
+    #[strum(to_string = "dvbsub", serialize = "dvbsub", serialize = "dvb_subtitle")]
     DvbSub,
-    #[strum(serialize = "ass", serialize = "ssa")]
+    // Canonical: "ass". Aliases: ssa.
+    #[strum(to_string = "ass", serialize = "ass", serialize = "ssa")]
     Ass,
-    #[strum(serialize = "webvtt", serialize = "vtt")]
+    // Canonical: "vtt". Aliases: webvtt.
+    #[strum(to_string = "vtt", serialize = "vtt", serialize = "webvtt")]
     WebVtt,
-    #[strum(serialize = "mov_text", serialize = "tx3g")]
+    // Canonical: "tx3g". Aliases: mov_text.
+    #[strum(to_string = "tx3g", serialize = "tx3g", serialize = "mov_text")]
     MovText,
+}
+
+impl SubtitleCodec {
+    pub(crate) fn is_image(&self) -> bool {
+        matches!(self, Self::Pgs | Self::DvdSub | Self::DvbSub)
+    }
+
+    pub(crate) fn is_text(&self) -> bool {
+        !self.is_image()
+    }
 }
 
 pub(crate) fn subtitle_codec_matches_profile(

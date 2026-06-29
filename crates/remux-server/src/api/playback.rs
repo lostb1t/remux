@@ -36,7 +36,7 @@ use crate::{
 
 use crate::{
     IntoApiError, OptionExt, ResultExt,
-    device_profile::{DeviceProfileExt, subtitle_codec_matches_profile},
+    device_profile::{DeviceProfileExt, SubtitleCodec, subtitle_codec_matches_profile},
     sdks,
     services::MediaResolveService,
     torrent,
@@ -501,7 +501,7 @@ async fn items_playbackinfo_inner(
                                             s.codec
                                                 .as_deref()
                                                 .map_or(false, |c| {
-                                                    f.eq_ignore_ascii_case(c)
+                                                    subtitle_codec_matches_profile(c, f)
                                                 })
                                         })
                                 })
@@ -823,34 +823,42 @@ async fn items_playbackinfo_inner(
                                 p.method == Some(api::SubtitleDeliveryMethod::Embed)
                                     && p.format
                                         .as_deref()
-                                        .map_or(false, |f| f.eq_ignore_ascii_case(fmt))
+                                        .map_or(false, |f| {
+                                            subtitle_codec_matches_profile(fmt, f)
+                                        })
                             })
                     })
                     .unwrap_or(false)
             };
+            let parsed_codec = codec
+                .parse::<SubtitleCodec>()
+                .ok();
+            let is_image_sub = parsed_codec
+                .as_ref()
+                .map(SubtitleCodec::is_image)
+                .unwrap_or(false);
             let format = if stream.is_text_subtitle_stream {
-                if (codec.eq_ignore_ascii_case("ass")
-                    || codec.eq_ignore_ascii_case("ssa"))
-                    && profile_supports("ass")
-                {
+                if parsed_codec == Some(SubtitleCodec::Ass) && profile_supports("ass") {
                     "ass"
                 } else {
                     "vtt"
                 }
-            } else if profile_supports("sup") || profile_supports("pgssub") {
+            } else if profile_supports("pgssub") {
                 "sup"
             } else {
                 "vtt"
             };
+            let client_can_handle_image = is_image_sub
+                && (profile_supports("pgssub") || profile_embeds("pgssub"));
             if !stream.is_external && profile_embeds(format) {
                 stream.delivery_method = Some(api::SubtitleDeliveryMethod::Embed);
             } else if !stream.is_external
-                && !stream.is_text_subtitle_stream
-                && !profile_supports(format)
+                && is_image_sub
+                && !client_can_handle_image
                 && subtitle_mode == remux_sdks::remux::EmbeddedSubtitleHandling::Burn
             {
-                // Burn mode: embedded image sub (PGS/VOBSUB) the client can't handle at
-                // all (not via embed, not via external) → force transcode with burn-in.
+                // Burn mode: embedded image sub (PGS/VOBSUB) the client can't render
+                // externally → force transcode with burn-in.
                 stream.delivery_method = Some(api::SubtitleDeliveryMethod::Encode);
             } else {
                 stream.delivery_url = Some(format!(

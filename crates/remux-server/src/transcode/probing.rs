@@ -1,6 +1,7 @@
 use crate::{
     api,
     common::{TickUnit, ToRunTimeTicks},
+    device_profile::SubtitleCodec,
 };
 use anyhow::{Result, anyhow};
 use isolang::Language;
@@ -52,14 +53,6 @@ fn first_to_upper(s: &str) -> String {
                 .collect::<String>()
                 + c.as_str()
         }
-    }
-}
-
-fn subtitle_codec_display(codec: &str) -> &str {
-    match codec {
-        "hdmv_pgs_subtitle" => "pgssub",
-        "dvd_subtitle" => "dvdsub",
-        other => other,
     }
 }
 
@@ -232,7 +225,11 @@ fn display_title_subtitle(m: &StreamMeta) -> Option<String> {
         attrs.push("Forced".into());
     }
     if let Some(codec) = m.codec {
-        attrs.push(subtitle_codec_display(codec).to_ascii_uppercase());
+        let display = codec
+            .parse::<SubtitleCodec>()
+            .map(|c| c.to_string())
+            .unwrap_or_else(|_| codec.to_string());
+        attrs.push(display.to_ascii_uppercase());
     }
     if m.is_external {
         attrs.push("External".into());
@@ -671,18 +668,25 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                 audio_idx += 1;
             }
             "subtitle" => {
-                let codec = s
+                let raw_codec = s
                     .codec_name
                     .clone()
                     .unwrap_or_default();
-                let is_text = matches!(
-                    codec.as_str(),
-                    "ass" | "ssa" | "subrip" | "webvtt" | "mov_text" | "text"
-                );
-                let is_image = matches!(
-                    codec.as_str(),
-                    "pgssub" | "hdmv_pgs_subtitle" | "dvd_subtitle" | "dvdsub"
-                );
+                let parsed_codec = raw_codec
+                    .parse::<SubtitleCodec>()
+                    .ok();
+                let codec = parsed_codec
+                    .as_ref()
+                    .map(|c| c.to_string())
+                    .unwrap_or(raw_codec);
+                let is_text = parsed_codec
+                    .as_ref()
+                    .map(SubtitleCodec::is_text)
+                    .unwrap_or(false);
+                let is_image = parsed_codec
+                    .as_ref()
+                    .map(SubtitleCodec::is_image)
+                    .unwrap_or(false);
                 let delivery_method = if is_image {
                     Some(api::SubtitleDeliveryMethod::Embed)
                 } else {
