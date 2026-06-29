@@ -15,6 +15,7 @@ use futures_util::{StreamExt, TryStreamExt};
 use headers;
 use http::{Response, StatusCode};
 use remux_macros::{delete, get, post, query};
+use remux_utils::Store;
 use serde::Deserialize;
 use serde_json::json;
 use serde_with::{DurationSeconds, serde_as};
@@ -913,20 +914,16 @@ async fn items_playbackinfo_inner(
     // Cache the group-resolved stream UUID so the stream endpoint can find it
     // without re-running filter_sources (which could pick a different candidate).
     if let Some(uuid) = first_grouped_uuid {
-        state
-            .ctx
-            .store
-            .save(
-                format!(
-                    "psource:{}:{}",
-                    id,
-                    session
-                        .device
-                        .id
-                ),
-                uuid,
-                std::time::Duration::from_secs(24 * 3600),
-            );
+        save_selected_stream(
+            &state
+                .ctx
+                .store,
+            id,
+            &session
+                .device
+                .id,
+            uuid,
+        );
     }
 
     // When no specific source was requested (initial load, or media_source_id == item_id),
@@ -1294,16 +1291,31 @@ fn ext_from_descriptor(descriptor: &crate::stream::StreamDescriptor) -> String {
     }
 }
 
-async fn videos_stream_inner(
-    headers: headers::HeaderMap,
-    state: AppState,
+fn save_selected_stream(
+    store: &Store,
+    item_id: Uuid,
+    device_key: &str,
+    stream_id: Uuid,
+) {
+    store.save(
+        format!("pstream:{}:{}", item_id, device_key),
+        stream_id,
+        std::time::Duration::from_secs(24 * 3600),
+    );
+}
+
+fn get_selected_stream(store: &Store, item_id: Uuid, device_key: &str) -> Option<Uuid> {
+    store.get::<Uuid>(&format!("pstream:{}:{}", item_id, device_key))
+}
+
+async fn resolve_stream(
+    db: &sqlx::SqlitePool,
+    store: &Store,
     id: Uuid,
-    q: api::VideoStreamQuery,
-) -> Result<impl IntoResponse> {
+    q: &api::VideoStreamQuery,
+) -> Result<db::Media> {
     let mut media = db::Media::get_by_id(
-        &state
-            .ctx
-            .db,
+        db,
         &q.media_source_id
             .unwrap_or(id),
     )
@@ -1312,14 +1324,7 @@ async fn videos_stream_inner(
 
     if media.kind == db::MediaKind::StreamGroup {
         let group_id = media.id;
-        let candidates = db::StreamGroup::streams_for(
-            &state
-                .ctx
-                .db,
-            &group_id,
-            &id,
-        )
-        .await?;
+        let candidates = db::StreamGroup::streams_for(db, &group_id, &id).await?;
         media = candidates
             .into_iter()
             .next()
@@ -1329,11 +1334,7 @@ async fn videos_stream_inner(
         || media.kind == db::MediaKind::Track
     {
         let sources = media
-            .streams(
-                &state
-                    .ctx
-                    .db,
-            )
+            .streams(db)
             .await?;
         let found = if let Some(wanted) = q.media_source_id {
             sources
@@ -1350,28 +1351,39 @@ async fn videos_stream_inner(
                 .device_id
                 .as_deref()
                 .unwrap_or("");
-            let store_key = format!("psource:{}:{}", id, device_key);
-            if let Some(resolved) = state
-                .ctx
-                .store
-                .get::<uuid::Uuid>(&store_key)
-            {
-                db::Media::get_by_id(
-                    &state
-                        .ctx
-                        .db,
-                    &resolved,
-                )
-                .await?
-                .context_not_found("resolved source not found")?
+            if let Some(stream_id) = get_selected_stream(store, id, device_key) {
+                db::Media::get_by_id(db, &stream_id)
+                    .await?
+                    .context_not_found("resolved stream not found")?
             } else {
                 sources
                     .into_iter()
                     .next()
-                    .context_not_found("no playable source found")?
+                    .context_not_found("no playable stream found")?
             }
         };
     }
+
+    Ok(media)
+}
+
+async fn videos_stream_inner(
+    headers: headers::HeaderMap,
+    state: AppState,
+    id: Uuid,
+    q: api::VideoStreamQuery,
+) -> Result<impl IntoResponse> {
+    let media = resolve_stream(
+        &state
+            .ctx
+            .db,
+        &state
+            .ctx
+            .store,
+        id,
+        &q,
+    )
+    .await?;
 
     let si = media
         .stream_info
@@ -3241,6 +3253,36 @@ async fn apply_user_playback_prefs(
         .unwrap_or(false);
 
     for source in media_sources.iter_mut() {
+        // --- client explicit selection wins ---
+        if client_wants_audio {
+            if let Some(idx) = client_audio_idx {
+                let exists = source
+                    .media_streams
+                    .iter()
+                    .any(|s| {
+                        s.index == idx
+                            && matches!(s.type_, Some(api::MediaStreamType::Audio))
+                    });
+                if exists {
+                    source.default_audio_stream_index = Some(idx);
+                }
+            }
+        }
+        if client_wants_subtitle {
+            if let Some(idx) = client_subtitle_idx {
+                let exists = source
+                    .media_streams
+                    .iter()
+                    .any(|s| {
+                        s.index == idx
+                            && matches!(s.type_, Some(api::MediaStreamType::Subtitle))
+                    });
+                if exists {
+                    source.default_subtitle_stream_index = Some(idx);
+                }
+            }
+        }
+
         // --- remember_audio_selections ---
         if !client_wants_audio && cfg.remember_audio_selections {
             if let Some(idx) = saved_audio {
