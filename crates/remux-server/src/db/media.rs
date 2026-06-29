@@ -962,6 +962,7 @@ pub struct MediaFilter {
     pub total_count: bool,
     pub include_user_state: bool,
     pub include_child_count: bool,
+    pub include_relations: bool,
     /// User ID to use when loading user state (separate from user_state filter)
     pub user_id: Option<Uuid>,
     pub user_state: Option<super::UserMediaStateFilter>,
@@ -2445,6 +2446,24 @@ impl Media {
                 None
             };
 
+        // series_excluded: no series possible → use NOT IN bloom filter for unplayed
+        // series_only:     only series → emit episode EXISTS directly (no CASE wrapper)
+        // else (mixed):    OR-split so non-series still get the bloom filter
+        let series_excluded = filter
+            .kind
+            .as_ref()
+            .map(|k| !k.is_empty() && !k.contains(&MediaKind::Series))
+            .unwrap_or(false);
+        let series_only = filter
+            .kind
+            .as_ref()
+            .map(|k| {
+                !k.is_empty()
+                    && k.iter()
+                        .all(|k| matches!(k, MediaKind::Series))
+            })
+            .unwrap_or(false);
+
         for qb in [&mut count_qb, &mut records_qb] {
             if is_genre_scope_query {
                 // Filter genres by their media_relations to items within the parent scope.
@@ -3023,9 +3042,7 @@ impl Media {
                     .await
             }
         );
-
         let mut records = records_result?;
-
         if !records.is_empty() {
             let ids: Vec<Uuid> = records
                 .iter()
@@ -3068,19 +3085,23 @@ impl Media {
             }
         }
 
-        let rel_ids: Vec<Uuid> = records
-            .iter()
-            .filter(|m| {
-                matches!(
-                    m.kind,
-                    MediaKind::Movie
-                        | MediaKind::Episode
-                        | MediaKind::Series
-                        | MediaKind::Season
-                )
-            })
-            .map(|m| m.id)
-            .collect();
+        let rel_ids: Vec<Uuid> = if filter.include_relations {
+            records
+                .iter()
+                .filter(|m| {
+                    matches!(
+                        m.kind,
+                        MediaKind::Movie
+                            | MediaKind::Episode
+                            | MediaKind::Series
+                            | MediaKind::Season
+                    )
+                })
+                .map(|m| m.id)
+                .collect()
+        } else {
+            vec![]
+        };
         if !rel_ids.is_empty() {
             let mut g_qb = sqlx::QueryBuilder::new(
                 // Drive from media_relations using the left_media_id index.
@@ -3906,6 +3927,16 @@ impl Media {
                         .as_deref()
                         .map(|f| f.contains(&api::ItemFields::ChildCount))
                         .unwrap_or(false),
+                include_relations: filter
+                    .fields
+                    .as_deref()
+                    .map(|f| {
+                        f.contains(&api::ItemFields::People)
+                            || f.contains(&api::ItemFields::Genres)
+                            || f.contains(&api::ItemFields::Studios)
+                            || f.contains(&api::ItemFields::ProductionLocations)
+                    })
+                    .unwrap_or(false),
                 total_count,
                 user_state,
                 genre_ids,
