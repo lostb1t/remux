@@ -1,7 +1,7 @@
 use crate::{
     api,
     common::{TickUnit, ToRunTimeTicks},
-    device_profile::SubtitleCodec,
+    device_profile::{AudioCodec, SubtitleCodec, VideoCodec},
 };
 use anyhow::{Result, anyhow};
 use isolang::Language;
@@ -53,23 +53,6 @@ fn first_to_upper(s: &str) -> String {
                 .collect::<String>()
                 + c.as_str()
         }
-    }
-}
-
-fn audio_codec_friendly(codec: &str) -> &str {
-    match codec {
-        "aac" => "AAC",
-        "ac3" | "a52" => "Dolby Digital",
-        "eac3" => "Dolby Digital Plus",
-        "truehd" => "TrueHD",
-        "dca" | "dts" => "DTS",
-        "flac" => "FLAC",
-        "mp3" => "MP3",
-        "opus" => "Opus",
-        "vorbis" => "Vorbis",
-        "pcm_s16le" | "pcm_s24le" | "pcm_s32le" | "pcm_f32le" => "PCM",
-        "alac" => "ALAC",
-        other => other,
     }
 }
 
@@ -151,7 +134,13 @@ fn display_title_audio(m: &StreamMeta) -> Option<String> {
             );
         }
     } else if let Some(codec) = m.codec {
-        attrs.push(audio_codec_friendly(codec).to_string());
+        attrs.push(
+            codec
+                .parse::<AudioCodec>()
+                .unwrap()
+                .friendly_name()
+                .to_string(),
+        );
     }
 
     if let Some(layout) = m.channel_layout {
@@ -512,10 +501,14 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                             .as_deref()
                             .and_then(parse_frame_rate)
                     });
-                let codec = s
+                let raw_codec = s
                     .codec_name
                     .clone()
                     .unwrap_or_default();
+                let codec = raw_codec
+                    .parse::<VideoCodec>()
+                    .unwrap()
+                    .to_string();
                 let is_default = video_idx == 0;
                 let is_forced = s
                     .disposition
@@ -612,10 +605,14 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                             .ok()
                     })
                     .and_then(nonzero);
-                let codec = s
+                let raw_codec = s
                     .codec_name
                     .clone()
                     .unwrap_or_default();
+                let codec = raw_codec
+                    .parse::<AudioCodec>()
+                    .unwrap()
+                    .to_string();
                 let is_default = audio_idx == 0;
                 let is_forced = s
                     .disposition

@@ -12,7 +12,10 @@ use std::{
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-use crate::common::{TickUnit, ToRunTimeTicks};
+use crate::{
+    common::{TickUnit, ToRunTimeTicks},
+    device_profile::{AudioCodec, VideoCodec},
+};
 use remux_sdks::remux::{EncodingPreset, HardwareAccelerationType, VideoRangeType};
 
 use super::session::{TranscodeSession, TranscodeState};
@@ -587,12 +590,16 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     // fMP4 (fragmented MP4) is required for HEVC on iOS Safari per Apple's HLS
     // authoring specification.  MPEG-TS cannot carry HEVC correctly in HLS.
     let is_hevc_copy = ffmpeg_video_codec == "copy"
-        && matches!(
-            params
-                .source_video_codec
-                .as_deref(),
-            Some("hevc") | Some("h265") | Some("hvc1") | Some("hev1")
-        );
+        && params
+            .source_video_codec
+            .as_deref()
+            .and_then(|s| {
+                s.parse::<VideoCodec>()
+                    .ok()
+            })
+            .as_ref()
+            .map(VideoCodec::is_hevc)
+            .unwrap_or(false);
 
     let mut args: Vec<String> = vec![
         "-v".into(),
@@ -889,12 +896,17 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     if ffmpeg_audio_codec == "copy" {
         // AAC streams from IPTV sources often use ADTS framing, which is not
         // valid inside MP4/fMP4 containers. Apply the reframing filter when copying.
-        if matches!(
-            params
-                .source_audio_codec
-                .as_deref(),
-            Some("aac") | Some("aac_fixed") | Some("aac_latm")
-        ) {
+        if params
+            .source_audio_codec
+            .as_deref()
+            .and_then(|s| {
+                s.parse::<AudioCodec>()
+                    .ok()
+            })
+            .as_ref()
+            .map(AudioCodec::needs_adts_reframe)
+            .unwrap_or(false)
+        {
             args.extend(["-bsf:a".into(), "aac_adtstoasc".into()]);
         }
     } else {
@@ -1561,12 +1573,17 @@ pub(crate) fn build_progressive_args(
     args.extend(["-c:v".into(), ffmpeg_video_codec.clone()]);
     if ffmpeg_video_codec == "copy" {
         // Apply hvc1 codec tag for HEVC Apple compatibility
-        if matches!(
-            params
-                .source_video_codec
-                .as_deref(),
-            Some("hevc") | Some("h265") | Some("hvc1") | Some("hev1")
-        ) {
+        if params
+            .source_video_codec
+            .as_deref()
+            .and_then(|s| {
+                s.parse::<VideoCodec>()
+                    .ok()
+            })
+            .as_ref()
+            .map(VideoCodec::is_hevc)
+            .unwrap_or(false)
+        {
             args.extend(["-tag:v".into(), "hvc1".into()]);
         }
     } else if is_hw {
@@ -1628,12 +1645,17 @@ pub(crate) fn build_progressive_args(
     // Audio
     args.extend(["-c:a".into(), ffmpeg_audio_codec.into()]);
     if ffmpeg_audio_codec == "copy" {
-        if matches!(
-            params
-                .source_audio_codec
-                .as_deref(),
-            Some("aac") | Some("aac_fixed") | Some("aac_latm")
-        ) {
+        if params
+            .source_audio_codec
+            .as_deref()
+            .and_then(|s| {
+                s.parse::<AudioCodec>()
+                    .ok()
+            })
+            .as_ref()
+            .map(AudioCodec::needs_adts_reframe)
+            .unwrap_or(false)
+        {
             args.extend(["-bsf:a".into(), "aac_adtstoasc".into()]);
         }
     } else {
@@ -1865,20 +1887,28 @@ pub fn generate_master_playlist(session: &TranscodeSession) -> String {
         .video_codec
         .as_str()
     {
-        "copy" => match session
-            .source_video_codec
-            .as_deref()
-        {
-            Some("hevc") | Some("h265") | Some("hvc1") | Some("hev1") => {
+        "copy" => {
+            if session
+                .source_video_codec
+                .as_deref()
+                .and_then(|s| {
+                    s.parse::<VideoCodec>()
+                        .ok()
+                })
+                .as_ref()
+                .map(VideoCodec::is_hevc)
+                .unwrap_or(false)
+            {
                 hevc_hls_codec_string(
                     session
                         .source_video_profile
                         .as_deref(),
                     session.source_video_level,
                 )
+            } else {
+                "avc1.640028".to_string()
             }
-            _ => "avc1.640028".to_string(),
-        },
+        }
         "h264" | "libx264" => "avc1.640028".to_string(),
         "hevc" | "libx265" => hevc_hls_codec_string(
             session

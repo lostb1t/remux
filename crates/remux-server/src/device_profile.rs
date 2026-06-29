@@ -56,6 +56,123 @@ impl SubtitleCodec {
     }
 }
 
+#[derive(
+    Debug, Clone, PartialEq, Eq, strum_macros::EnumString, strum_macros::Display,
+)]
+#[strum(ascii_case_insensitive)]
+pub(crate) enum VideoCodec {
+    #[strum(
+        to_string = "h264",
+        serialize = "h264",
+        serialize = "avc",
+        serialize = "avc1"
+    )]
+    H264,
+    #[strum(
+        to_string = "hevc",
+        serialize = "hevc",
+        serialize = "h265",
+        serialize = "hvc1",
+        serialize = "hev1"
+    )]
+    Hevc,
+    #[strum(
+        to_string = "av1",
+        serialize = "av1",
+        serialize = "libaom-av1",
+        serialize = "libsvtav1"
+    )]
+    Av1,
+    #[strum(to_string = "vp9", serialize = "vp9", serialize = "libvpx-vp9")]
+    Vp9,
+    #[strum(to_string = "vp8", serialize = "vp8", serialize = "libvpx")]
+    Vp8,
+    #[strum(to_string = "mpeg4", serialize = "mpeg4")]
+    Mpeg4,
+    #[strum(
+        to_string = "mpeg2video",
+        serialize = "mpeg2video",
+        serialize = "mpeg2"
+    )]
+    Mpeg2,
+    #[strum(default)]
+    Unknown(String),
+}
+
+impl VideoCodec {
+    pub(crate) fn is_hevc(&self) -> bool {
+        matches!(self, Self::Hevc)
+    }
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, strum_macros::EnumString, strum_macros::Display,
+)]
+#[strum(ascii_case_insensitive)]
+pub(crate) enum AudioCodec {
+    #[strum(
+        to_string = "aac",
+        serialize = "aac",
+        serialize = "aac_fixed",
+        serialize = "aac_latm"
+    )]
+    Aac,
+    #[strum(to_string = "ac3", serialize = "ac3", serialize = "a52")]
+    Ac3,
+    #[strum(to_string = "eac3", serialize = "eac3", serialize = "ec3")]
+    Eac3,
+    #[strum(to_string = "truehd", serialize = "truehd")]
+    TrueHd,
+    #[strum(to_string = "dts", serialize = "dts", serialize = "dca")]
+    Dts,
+    #[strum(to_string = "flac", serialize = "flac")]
+    Flac,
+    #[strum(to_string = "mp3", serialize = "mp3", serialize = "mp3float")]
+    Mp3,
+    #[strum(to_string = "opus", serialize = "opus", serialize = "libopus")]
+    Opus,
+    #[strum(to_string = "vorbis", serialize = "vorbis")]
+    Vorbis,
+    #[strum(to_string = "alac", serialize = "alac")]
+    Alac,
+    #[strum(
+        to_string = "pcm",
+        serialize = "pcm",
+        serialize = "pcm_s16le",
+        serialize = "pcm_s24le",
+        serialize = "pcm_s32le",
+        serialize = "pcm_f32le",
+        serialize = "pcm_s16be",
+        serialize = "pcm_u8"
+    )]
+    Pcm,
+    #[strum(default)]
+    Unknown(String),
+}
+
+impl AudioCodec {
+    pub(crate) fn friendly_name(&self) -> &str {
+        match self {
+            Self::Aac => "AAC",
+            Self::Ac3 => "Dolby Digital",
+            Self::Eac3 => "Dolby Digital Plus",
+            Self::TrueHd => "TrueHD",
+            Self::Dts => "DTS",
+            Self::Flac => "FLAC",
+            Self::Mp3 => "MP3",
+            Self::Opus => "Opus",
+            Self::Vorbis => "Vorbis",
+            Self::Alac => "ALAC",
+            Self::Pcm => "PCM",
+            Self::Unknown(s) => s.as_str(),
+        }
+    }
+
+    pub(crate) fn needs_adts_reframe(&self) -> bool {
+        matches!(self, Self::Aac)
+    }
+}
+
 pub(crate) fn subtitle_codec_matches_profile(
     codec: &str,
     profile_format: &str,
