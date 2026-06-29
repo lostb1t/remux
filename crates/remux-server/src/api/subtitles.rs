@@ -31,20 +31,20 @@ fn batch_extraction_map() -> &'static Mutex<HashMap<Uuid, watch::Receiver<bool>>
 }
 
 /// Extract an embedded subtitle stream to the SRT cache and return the cache path.
-/// The cache key is `{data_dir}/subtitle-cache/{media_source_id}_{stream_index}.srt`.
+/// The cache key is `{data_dir}/subtitle-cache/{item_id}_{stream_index}.srt`.
 /// Returns immediately if the cache already exists and is non-empty.
 pub(crate) async fn extract_subtitle_to_cache(
     data_dir: &std::path::Path,
     input_url: &str,
     map_spec: &str,
-    media_source_id: uuid::Uuid,
+    item_id: uuid::Uuid,
     stream_index: i64,
 ) -> anyhow::Result<std::path::PathBuf> {
     let cache_dir = data_dir.join("subtitle-cache");
     tokio::fs::create_dir_all(&cache_dir)
         .await
         .map_err(|e| anyhow!("failed to create subtitle cache dir: {e}"))?;
-    let cache_path = cache_dir.join(format!("{media_source_id}_{stream_index}.srt"));
+    let cache_path = cache_dir.join(format!("{item_id}_{stream_index}.srt"));
 
     // Return cached copy if it exists and is non-empty.
     if cache_path.exists() {
@@ -124,7 +124,7 @@ pub(crate) async fn extract_subtitle_to_cache(
 pub(crate) async fn pre_extract_all_subtitles_to_cache(
     data_dir: std::path::PathBuf,
     input_url: String,
-    media_source_id: uuid::Uuid,
+    item_id: uuid::Uuid,
     stream_indices: Vec<i64>,
 ) {
     let cache_dir = data_dir.join("subtitle-cache");
@@ -132,14 +132,14 @@ pub(crate) async fn pre_extract_all_subtitles_to_cache(
 
     let mut to_extract: Vec<(i64, std::path::PathBuf)> = Vec::new();
     for idx in &stream_indices {
-        let path = cache_dir.join(format!("{media_source_id}_{idx}.srt"));
+        let path = cache_dir.join(format!("{item_id}_{idx}.srt"));
         if path.exists() {
             if let Ok(b) = tokio::fs::read(&path).await {
                 if !String::from_utf8_lossy(&b)
                     .trim()
                     .is_empty()
                 {
-                    debug!(%media_source_id, stream_index = idx, "subtitle cache hit, skipping");
+                    debug!(%item_id, stream_index = idx, "subtitle cache hit, skipping");
                     continue;
                 }
             }
@@ -148,7 +148,7 @@ pub(crate) async fn pre_extract_all_subtitles_to_cache(
     }
 
     if to_extract.is_empty() {
-        debug!(%media_source_id, "all {} subtitle track(s) already cached", stream_indices.len());
+        debug!(%item_id, "all {} subtitle track(s) already cached", stream_indices.len());
         return;
     }
 
@@ -157,7 +157,7 @@ pub(crate) async fn pre_extract_all_subtitles_to_cache(
         .map(|(i, _)| *i)
         .collect();
     info!(
-        %media_source_id,
+        %item_id,
         ?indices,
         "pre-extracting {} subtitle track(s) in background",
         to_extract.len()
@@ -169,7 +169,7 @@ pub(crate) async fn pre_extract_all_subtitles_to_cache(
     batch_extraction_map()
         .lock()
         .unwrap()
-        .insert(media_source_id, done_rx);
+        .insert(item_id, done_rx);
 
     let mut cmd = tokio::process::Command::new(ffmpeg_bin());
     cmd.kill_on_drop(true);
@@ -207,17 +207,17 @@ pub(crate) async fn pre_extract_all_subtitles_to_cache(
                 .status
                 .success()
             {
-                info!(%media_source_id, ?indices, elapsed_secs = elapsed, "batch subtitle extraction completed");
+                info!(%item_id, ?indices, elapsed_secs = elapsed, "batch subtitle extraction completed");
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                warn!(%media_source_id, ?indices, elapsed_secs = elapsed, %stderr, "batch subtitle extraction non-zero exit");
+                warn!(%item_id, ?indices, elapsed_secs = elapsed, %stderr, "batch subtitle extraction non-zero exit");
             }
         }
         Ok(Err(e)) => {
-            warn!(%media_source_id, ?indices, "failed to spawn ffmpeg for batch subtitle extraction: {e}");
+            warn!(%item_id, ?indices, "failed to spawn ffmpeg for batch subtitle extraction: {e}");
         }
         Err(_) => {
-            warn!(%media_source_id, ?indices, "batch subtitle extraction timed out after 120s");
+            warn!(%item_id, ?indices, "batch subtitle extraction timed out after 120s");
         }
     }
 
@@ -226,7 +226,7 @@ pub(crate) async fn pre_extract_all_subtitles_to_cache(
     batch_extraction_map()
         .lock()
         .unwrap()
-        .remove(&media_source_id);
+        .remove(&item_id);
 }
 
 /// Subtitle extraction endpoint - extracts a subtitle stream from a media source
@@ -490,7 +490,7 @@ pub async fn subtitles_stream(
         .config
         .data_dir
         .join("subtitle-cache")
-        .join(format!("{media_source_id}_{stream_index}.srt"));
+        .join(format!("{item_id}_{stream_index}.srt"));
     let is_cached = |path: &std::path::Path| -> bool {
         path.exists()
             && std::fs::read(path)
@@ -504,18 +504,18 @@ pub async fn subtitles_stream(
     };
 
     if is_cached(&cache_file) {
-        debug!(%media_source_id, stream_index, "subtitle cache hit");
+        debug!(%item_id, stream_index, "subtitle cache hit");
     } else {
-        // Check if a batch extraction is in progress for this source.
+        // Check if a batch extraction is in progress for this item.
         // If so, wait for it to finish rather than launching a competing FFmpeg process.
         let in_progress_rx = batch_extraction_map()
             .lock()
             .unwrap()
-            .get(&media_source_id)
+            .get(&item_id)
             .cloned();
         if let Some(mut rx) = in_progress_rx {
             if !*rx.borrow() {
-                info!(%media_source_id, stream_index, "batch extraction in progress — waiting for it to finish");
+                info!(%item_id, stream_index, "batch extraction in progress — waiting for it to finish");
                 let _ = tokio::time::timeout(
                     std::time::Duration::from_secs(120),
                     rx.changed(),
@@ -525,9 +525,9 @@ pub async fn subtitles_stream(
         }
 
         if is_cached(&cache_file) {
-            info!(%media_source_id, stream_index, "subtitle ready after waiting for batch extraction");
+            info!(%item_id, stream_index, "subtitle ready after waiting for batch extraction");
         } else {
-            info!(%media_source_id, stream_index, %map_spec, "subtitle cache miss — extracting on-demand");
+            info!(%item_id, stream_index, %map_spec, "subtitle cache miss — extracting on-demand");
         }
     }
     let cache_path = match extract_subtitle_to_cache(
@@ -537,14 +537,14 @@ pub async fn subtitles_stream(
             .data_dir,
         &url,
         &map_spec,
-        media_source_id,
+        item_id,
         stream_index,
     )
     .await
     {
         Ok(p) => p,
         Err(e) => {
-            error!(%media_source_id, stream_index, %map_spec, "subtitle extraction failed: {e}");
+            error!(%item_id, stream_index, %map_spec, "subtitle extraction failed: {e}");
             return Ok(Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(Body::from("subtitle extraction failed"))

@@ -255,6 +255,8 @@ struct FfprobeDisposition {
     forced: i64,
     #[serde(default)]
     hearing_impaired: i64,
+    #[serde(default)]
+    attached_pic: i64,
 }
 
 #[derive(Deserialize)]
@@ -483,6 +485,15 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
 
         match codec_type {
             "video" => {
+                // Skip attached pictures (embedded cover art). They are not playable
+                // video streams, and having two Type:Video entries confuses clients
+                // that look for the primary video stream.
+                if s.disposition
+                    .attached_pic
+                    != 0
+                {
+                    continue;
+                }
                 let bitrate = s
                     .bit_rate
                     .as_deref()

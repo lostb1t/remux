@@ -470,12 +470,11 @@ async fn items_playbackinfo_inner(
                     .data_dir
                     .clone();
                 let url = input_url.clone();
-                let msid = source.id;
                 tokio::spawn(
                     crate::api::subtitles::pre_extract_all_subtitles_to_cache(
                         data_dir,
                         url,
-                        msid,
+                        id,
                         text_sub_indices,
                     ),
                 );
