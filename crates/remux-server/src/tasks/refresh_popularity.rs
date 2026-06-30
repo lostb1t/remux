@@ -183,6 +183,29 @@ impl Task for RefreshPopularityTask {
         .execute(db)
         .await?;
 
+        // Refresh the latest flag: clear and re-mark the most recent period_key
+        // per (media_id, period).  This lets the sort query use a simple
+        // `AND pop.latest = 1` instead of a GROUP BY + MAX subquery.
+        for period in &["daily", "weekly", "monthly", "trend_week", "trend_month"] {
+            sqlx::query("UPDATE popularity_agg SET latest = 0 WHERE period = ?1")
+                .bind(period)
+                .execute(db)
+                .await?;
+            sqlx::query(
+                "UPDATE popularity_agg SET latest = 1 \
+                 WHERE period = ?1 \
+                   AND (media_id, period_key) IN (\
+                     SELECT media_id, MAX(period_key) \
+                     FROM popularity_agg \
+                     WHERE period = ?1 \
+                     GROUP BY media_id\
+                   )",
+            )
+            .bind(period)
+            .execute(db)
+            .await?;
+        }
+
         info!("popularity data refresh complete");
         progress.set(100.0);
         Ok(())

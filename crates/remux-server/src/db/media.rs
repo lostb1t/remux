@@ -2359,17 +2359,10 @@ impl Media {
                 pop_joined = true;
                 records_qb = sqlx::QueryBuilder::new(format!(
                     "SELECT media.* FROM media \
-                     LEFT JOIN (\
-                       SELECT pa.media_id, pa.avg \
-                       FROM popularity_agg pa \
-                       WHERE pa.period = '{period}' \
-                         AND pa.period_key = (\
-                           SELECT MAX(pa2.period_key) FROM popularity_agg pa2 \
-                           WHERE pa2.media_id = pa.media_id \
-                             AND pa2.period = '{period}' \
-                             AND pa2.period_key <= date('now')\
-                         )\
-                     ) pop ON pop.media_id = media.id \
+                     LEFT JOIN popularity_agg pop \
+                       ON pop.media_id = media.id \
+                      AND pop.period = '{period}' \
+                      AND pop.latest = 1 \
                      WHERE 1=1"
                 ));
             } else {
