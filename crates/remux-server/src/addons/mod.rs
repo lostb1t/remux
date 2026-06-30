@@ -1477,22 +1477,22 @@ impl AddonService {
             }
         }
 
-        // Recompute stable UUID for Movie/Series/Season/Episode once the canonical external ID
+        // Recompute stable UUID for Movie/Series once the canonical external ID
         // (IMDB or custom stremio) is resolved by meta enrichment. Catalog stubs
         // arrive with a TMDB-keyed UUID; validate() expects the canonical one.
-        if matches!(
-            media.kind,
-            db::MediaKind::Movie
-                | db::MediaKind::Series
-                | db::MediaKind::Season
-                | db::MediaKind::Episode
-        ) {
-            let raw = media.media_id_raw();
-            if raw
-                .canonical()
-                .is_some()
-            {
-                media.id = uuid::Uuid::from(&raw);
+        if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
+            let raw = db::MediaIdRaw {
+                kind: media
+                    .kind
+                    .clone(),
+                external_ids: media
+                    .external_ids
+                    .clone(),
+                season: None,
+                episode: None,
+            };
+            if let Some(canonical) = raw.canonical() {
+                media.id = crate::common::stable_media_uuid(&media.kind, &canonical);
             }
         }
 
