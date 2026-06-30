@@ -51,7 +51,9 @@ jobs:
         id: version
         run: |
           SHORT_SHA=$(git rev-parse --short HEAD)
-          VERSION="0.0.1-nightly.$(date -u '+%Y%m%d').${SHORT_SHA}"
+          # Prefix with g to avoid semver rejecting purely-numeric shas
+          # that have leading zeros (e.g. 0403527).
+          VERSION="0.0.1-nightly.$(date -u '+%Y%m%d').g${SHORT_SHA}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
   test:
