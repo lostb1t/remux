@@ -716,9 +716,14 @@ async fn stremio_meta_fetch(
         }
         db::MediaKind::Episode => {
             let idx = media.idx;
+            let parent_idx = media.parent_idx;
             medias
                 .into_iter()
-                .find(|x| x.kind == db::MediaKind::Episode && x.idx == idx)
+                .find(|x| {
+                    x.kind == db::MediaKind::Episode
+                        && x.idx == idx
+                        && x.parent_idx == parent_idx
+                })
         }
         _ => None,
     };
@@ -821,12 +826,11 @@ async fn stremio_sync_children(
                 // and TMDB can provide the season poster.
                 Some(x)
             } else if x.kind == db::MediaKind::Episode {
-                if let Some(season_idx) = x.parent_idx {
-                    x.parent_id = Some(crate::common::get_stable_uuid(format!(
-                        "season:{}:{}",
-                        meta_id, season_idx
-                    )));
-                }
+                // parent_id is already set correctly by stremio_meta_to_medias
+                // using the proper UUID scheme (stable_media_uuid with capital
+                // prefix). Do NOT override it with a lowercase "season:" prefix
+                // — that produces a completely different UUID that doesn't match
+                // the actual season row.
                 x.grandparent_id = Some(root.id);
                 if let Some(episode_num) = x.idx {
                     if let Some(season_num) = x.parent_idx {

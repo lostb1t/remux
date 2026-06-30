@@ -1593,6 +1593,15 @@ impl AddonService {
             })
             .buffer_unordered(concurrency);
 
+        // Cross-tree batching: accumulate items from multiple series' trees into a
+        // single batch and flush at CHUNK_SIZE.  This keeps peak memory bounded
+        // (at most CHUNK_SIZE × ~43 bind-parameter columns per flush) rather than
+        // holding one complete tree's items — a concern for very large series with
+        // thousands of episodes.  The FK on parent_id is satisfied within each
+        // chunk because series + seasons always sort before their child episodes
+        // in the accumulated batch (the series' own tree is yielded as a contiguous
+        // block; items from the next tree only arrive after the previous tree has
+        // been yielded).
         let mut batch = vec![];
 
         while let Some(items) = stream

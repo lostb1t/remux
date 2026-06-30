@@ -5267,6 +5267,9 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                     grandparent_id: Some(media.id),
                     external_ids: ExternalIds {
                         series_imdb: Some(imdb_id.clone()),
+                        series_tmdb: media
+                            .external_ids
+                            .tmdb,
                         ..Default::default()
                     },
                     parent_id: Some(media.id),
