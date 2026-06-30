@@ -1787,6 +1787,7 @@ mod tests {
             types: vec![],
             enabled: true,
             priority: 0,
+            system: false,
             created_at: now,
             updated_at: now,
         };
