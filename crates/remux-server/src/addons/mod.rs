@@ -1688,6 +1688,42 @@ impl AddonService {
             return vec![media];
         }
 
+        // Populate a minimal grandparent stub on tree children so their
+        // refresh_meta calls (Season → tmdb_id, Episode → tmdb_id + genres)
+        // find the resolved parent info in-memory instead of falling back
+        // to DB queries.
+        let has_series_ids = media
+            .external_ids
+            .tmdb
+            .is_some()
+            || media
+                .external_ids
+                .imdb
+                .is_some();
+        if has_series_ids {
+            let mut gp = db::Media::default();
+            gp.id = media.id;
+            gp.external_ids = media
+                .external_ids
+                .clone();
+            if let Some(rels) = media
+                .relations
+                .as_ref()
+            {
+                let genre_rels: Vec<(db::MediaRelation, db::Media)> = rels
+                    .iter()
+                    .filter(|(_, m)| m.kind == db::MediaKind::Genre)
+                    .cloned()
+                    .collect();
+                if !genre_rels.is_empty() {
+                    gp.relations = Some(genre_rels);
+                }
+            }
+            for child in &mut tree {
+                child.grandparent = Some(Box::new(gp.clone()));
+            }
+        }
+
         for item in &mut tree {
             if force_refresh
                 || item

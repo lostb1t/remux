@@ -738,12 +738,22 @@ fn tmdb_client(
 async fn tmdb_client_from_ctx(
     ctx: &AppContext,
 ) -> Result<sdks::RestClient<sdks::BearerAuth>> {
+    // Cache the client after first build to avoid querying the DB for the
+    // API key on every call — critical when many concurrent refresh_meta
+    // or get_tree calls all need a TMDB client.
+    use std::sync::OnceLock;
+    static CLIENT: OnceLock<sdks::RestClient<sdks::BearerAuth>> = OnceLock::new();
+    if let Some(client) = CLIENT.get() {
+        return Ok(client.clone());
+    }
     let config = crate::db::Settings::get_config(&ctx.db).await?;
-    tmdb_client(
+    let client = tmdb_client(
         config.get_tmdb_key(),
         &ctx.config
             .tmdb_base_url,
-    )
+    )?;
+    let _ = CLIENT.set(client.clone());
+    Ok(client)
 }
 
 async fn tmdb_series_seasons(
