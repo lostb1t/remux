@@ -2935,7 +2935,7 @@ impl Media {
                         }
                         api::ItemSortBy::PopularityDay => {
                             if pop_joined {
-                                "COALESCE(pop.avg, 0) DESC".to_string()
+                                "pop.avg DESC NULLS LAST".to_string()
                             } else {
                                 "COALESCE(\
                                    (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'daily' AND pa.period_key = date('now')),\
@@ -2946,7 +2946,7 @@ impl Media {
                         }
                         api::ItemSortBy::PopularityWeek => {
                             if pop_joined {
-                                "COALESCE(pop.avg, 0) DESC".to_string()
+                                "pop.avg DESC NULLS LAST".to_string()
                             } else {
                                 "COALESCE(\
                                    (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'weekly' AND pa.period_key = date('now', 'weekday 0', '-6 days')),\
@@ -2957,7 +2957,7 @@ impl Media {
                         }
                         api::ItemSortBy::PopularityMonth => {
                             if pop_joined {
-                                "COALESCE(pop.avg, 0) DESC".to_string()
+                                "pop.avg DESC NULLS LAST".to_string()
                             } else {
                                 "COALESCE(\
                                    (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'monthly' AND pa.period_key = strftime('%Y-%m', 'now')),\
@@ -2968,7 +2968,7 @@ impl Media {
                         }
                         api::ItemSortBy::TrendingWeek => {
                             if pop_joined {
-                                "COALESCE(pop.avg, 0) DESC".to_string()
+                                "pop.avg DESC NULLS LAST".to_string()
                             } else {
                                 "COALESCE(\
                                    (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'trend_week' AND pa.period_key = date('now')),\
@@ -2979,7 +2979,7 @@ impl Media {
                         }
                         api::ItemSortBy::TrendingMonth => {
                             if pop_joined {
-                                "COALESCE(pop.avg, 0) DESC".to_string()
+                                "pop.avg DESC NULLS LAST".to_string()
                             } else {
                                 "COALESCE(\
                                    (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'trend_month' AND pa.period_key = date('now')),\
