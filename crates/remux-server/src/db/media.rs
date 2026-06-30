@@ -2580,33 +2580,21 @@ impl Media {
                     qb.push(" AND ums.play_count > 0)");
                 }
 
-                // played=false (unplayed)
-                // Series: show if at least one episode has not been played.
-                //   Series rows only get play_count > 0 via explicit mark-played,
-                //   not from normal episode playback, so we must check episodes.
-                // Other kinds: standard NOT EXISTS on the item's own play_count.
+                // played=false (unplayed).
+                // reconcile_series_played_state keeps the series' own play_count
+                // in sync with its episodes, so a simple NOT EXISTS on the row
+                // itself works for both movies and series — no need to traverse
+                // the episode tree.
                 if user_state_filter.played == Some(false) {
                     qb.push(
-                        " AND CASE WHEN media.kind = 'series' THEN \
-                         EXISTS (SELECT 1 FROM media e \
-                                 WHERE e.grandparent_id = media.id AND e.kind = 'episode' \
-                                 AND NOT EXISTS (SELECT 1 FROM user_media_state ums \
-                                                WHERE ums.media_id = e.id",
-                    );
-                    if let Some(user_id) = &user_state_filter.user_id {
-                        qb.push(" AND ums.user_id = ")
-                            .push_bind(user_id.clone());
-                    }
-                    qb.push(
-                        " AND ums.play_count > 0)) \
-                         ELSE NOT EXISTS (SELECT 1 FROM user_media_state ums \
+                        " AND NOT EXISTS (SELECT 1 FROM user_media_state ums \
                                           WHERE ums.media_id = media.id",
                     );
                     if let Some(user_id) = &user_state_filter.user_id {
                         qb.push(" AND ums.user_id = ")
                             .push_bind(user_id.clone());
                     }
-                    qb.push(" AND ums.play_count > 0) END");
+                    qb.push(" AND ums.play_count > 0)");
                 }
 
                 // resumable — IDs pre-fetched above; bind directly so SQLite uses PK
