@@ -462,11 +462,13 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                     let res_str = format!("{res}");
                                                     let res_str_check = res_str.clone();
                                                     let checked = edit_resources.read().contains(&res_str);
+                                                    let is_system = addons.read().iter().find(|a| a.id == edit_id).map(|a| a.system).unwrap_or(false);
                                                     rsx! {
                                                         label { class: "check-row",
                                                             input {
                                                                 r#type: "checkbox",
                                                                 checked,
+                                                                disabled: is_system,
                                                                 onchange: move |e| {
                                                                     let mut set = edit_resources.write();
                                                                     if e.checked() {
@@ -502,11 +504,13 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                             let t_str = format!("{t}");
                                                             let t_str_check = t_str.clone();
                                                             let checked = edit_types.read().contains(&t_str);
+                                                            let is_system = addons.read().iter().find(|a| a.id == edit_id).map(|a| a.system).unwrap_or(false);
                                                             rsx! {
                                                                 label { class: "check-row",
                                                                     input {
                                                                         r#type: "checkbox",
                                                                         checked,
+                                                                        disabled: is_system,
                                                                         onchange: move |e| {
                                                                             let mut set = edit_types.write();
                                                                             if e.checked() {

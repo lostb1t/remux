@@ -110,6 +110,7 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
         supported_resources,
         supported_types,
         priority: addon.priority,
+        system: addon.system,
         created_at: addon.created_at,
         updated_at: addon.updated_at,
     }
@@ -307,6 +308,7 @@ pub async fn create_addon(
         priority: payload.priority,
         created_at: now,
         updated_at: now,
+        system: false,
     };
 
     addon
@@ -359,17 +361,35 @@ pub async fn update_addon(
     .await?
     .context_not_found("Addon not found")?;
 
-    if let Some(name) = payload.name {
-        addon.name = name;
-    }
+    // System addons cannot have their resources or content types modified.
+    // Silently skip these fields so the rest of the update still saves.
     if let Some(resources) = payload.resources {
-        addon.resources = resources;
+        if addon.system {
+            if resources != addon.resources {
+                warn!("ignoring resources change on system addon {}", addon.id);
+            }
+        } else {
+            addon.resources = resources;
+        }
     }
     if let Some(types) = payload.types {
-        addon.types = types
-            .into_iter()
-            .map(DbMediaKind::from)
-            .collect();
+        if addon.system {
+            let new_types: Vec<_> = types
+                .into_iter()
+                .map(DbMediaKind::from)
+                .collect();
+            if new_types != addon.types {
+                warn!("ignoring types change on system addon {}", addon.id);
+            }
+        } else {
+            addon.types = types
+                .into_iter()
+                .map(DbMediaKind::from)
+                .collect();
+        }
+    }
+    if let Some(name) = payload.name {
+        addon.name = name;
     }
     if let Some(enabled) = payload.enabled {
         addon.enabled = enabled;
@@ -466,6 +486,11 @@ pub async fn delete_addon(
     )
     .await?
     .context_not_found("Addon not found")?;
+
+    if addon_row.system {
+        return Err(anyhow::anyhow!("Cannot delete a system addon")
+            .context_forbidden("Forbidden"));
+    }
 
     // Purge the addon's index (removes e.g. IPTV channels) before deleting.
     if let Some(runtime) = state

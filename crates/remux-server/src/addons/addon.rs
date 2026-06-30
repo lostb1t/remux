@@ -32,10 +32,11 @@ pub struct Addon {
     pub priority: i64,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
+    /// System addons cannot be deleted or have their resources/content types modified.
+    pub system: bool,
 }
 
-const ADDON_COLS: &str =
-    "id, name, preset, resources, types, enabled, priority, created_at, updated_at";
+const ADDON_COLS: &str = "id, name, preset, resources, types, enabled, priority, created_at, updated_at, system";
 
 impl Addon {
     pub async fn list(db: &SqlitePool) -> Result<Vec<Self>> {
@@ -58,8 +59,8 @@ impl Addon {
     pub async fn insert(&self, db: &SqlitePool) -> Result<()> {
         sqlx::query(
             "INSERT INTO addons \
-             (id, name, preset, resources, types, enabled, priority, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             (id, name, preset, resources, types, enabled, priority, created_at, updated_at, system) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         )
         .bind(self.id)
         .bind(&self.name)
@@ -70,6 +71,7 @@ impl Addon {
         .bind(self.priority)
         .bind(self.created_at)
         .bind(self.updated_at)
+        .bind(self.system)
         .execute(db)
         .await?;
         Ok(())

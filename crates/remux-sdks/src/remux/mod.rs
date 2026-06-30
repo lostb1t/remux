@@ -200,6 +200,8 @@ pub struct AddonDto {
     #[serde(default)]
     pub supported_types: Vec<MediaKind>,
     pub priority: i64,
+    #[serde(default)]
+    pub system: bool,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
