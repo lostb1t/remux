@@ -1097,6 +1097,9 @@ pub struct Media {
     pub certification: Option<String>,
     #[sqlx(default)]
     pub certification_age: Option<i32>,
+    pub custom_rating: Option<String>,
+    #[sqlx(default)]
+    pub custom_rating_age: Option<i32>,
     /// ISO 3166-1 alpha-2 country code (e.g. "US", "GB").
     pub country: Option<String>,
     /// BCP 47 language tag of the original language (e.g. "en", "fr").
@@ -1575,13 +1578,13 @@ impl Media {
         INSERT INTO media (
             id, title, kind, parent_id, idx, released_at, runtime,
             rating_critic, rating_audience, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind, collection_max_items,
-            external_ids, external_ratings, created_at, updated_at, certification, certification_age, parent_idx,
+            external_ids, external_ratings, created_at, updated_at, certification, certification_age, custom_rating, custom_rating_age, parent_idx,
             live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id,
             collection_smart_filter, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital,
             collection_source, collection_default_sort, collection_default_sort_order,
             original_language
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
@@ -1612,6 +1615,8 @@ impl Media {
             updated_at = excluded.updated_at,
             certification = excluded.certification,
             certification_age = excluded.certification_age,
+            custom_rating = excluded.custom_rating,
+            custom_rating_age = excluded.custom_rating_age,
             parent_idx = COALESCE(excluded.parent_idx, media.parent_idx),
             live_start = excluded.live_start,
             live_end = excluded.live_end,
@@ -1649,6 +1654,8 @@ impl Media {
         .bind(updated_at)
         .bind(&self.certification)
         .bind(self.certification_age)
+        .bind(&self.custom_rating)
+        .bind(self.custom_rating_age)
         .bind(self.parent_idx)
         .bind(self.live_start)
         .bind(self.live_end)
@@ -1719,7 +1726,7 @@ impl Media {
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind,
-                external_ids, external_ratings, created_at, updated_at, certification, certification_age, parent_idx,
+                external_ids, external_ratings, created_at, updated_at, certification, certification_age, custom_rating, custom_rating_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, grandparent_id, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital,
                 collection_source, collection_default_sort, collection_default_sort_order,
                 original_language
@@ -1755,6 +1762,8 @@ impl Media {
                     .push_bind(Utc::now())
                     .push_bind(&item.certification)
                     .push_bind(&item.certification_age)
+                    .push_bind(&item.custom_rating)
+                    .push_bind(&item.custom_rating_age)
                     .push_bind(&item.parent_idx)
                     .push_bind(&item.live_start)
                     .push_bind(&item.live_end)
@@ -1829,7 +1838,7 @@ impl Media {
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind,
-                external_ids, external_ratings, created_at, updated_at, certification, certification_age, parent_idx,
+                external_ids, external_ratings, created_at, updated_at, certification, certification_age, custom_rating, custom_rating_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital,
                 collection_source, collection_default_sort, collection_default_sort_order,
                 original_language
@@ -1863,6 +1872,8 @@ impl Media {
                     .push_bind(Utc::now())
                     .push_bind(&item.certification)
                     .push_bind(&item.certification_age)
+                    .push_bind(&item.custom_rating)
+                    .push_bind(&item.custom_rating_age)
                     .push_bind(&item.parent_idx)
                     .push_bind(&item.live_start)
                     .push_bind(&item.live_end)
@@ -1909,6 +1920,8 @@ impl Media {
                 promoted = excluded.promoted,
                 certification = excluded.certification,
                 certification_age = excluded.certification_age,
+                custom_rating = media.custom_rating,
+                custom_rating_age = media.custom_rating_age,
                 parent_id = excluded.parent_id,
                 parent_idx = COALESCE(excluded.parent_idx, media.parent_idx),
                 live_start = excluded.live_start,
@@ -2647,7 +2660,7 @@ impl Media {
 
             if let Some(ratings) = &filter.official_ratings {
                 if !ratings.is_empty() {
-                    qb.push(" AND certification IN (");
+                    qb.push(" AND COALESCE(custom_rating, certification) IN (");
                     let mut sep = qb.separated(", ");
                     for r in ratings {
                         sep.push_bind(r);
@@ -2657,7 +2670,7 @@ impl Media {
             }
 
             if let Some(max_rating) = filter.max_parental_rating {
-                qb.push(" AND (certification_age IS NULL OR certification_age <= ")
+                qb.push(" AND (COALESCE(custom_rating_age, certification_age) IS NULL OR COALESCE(custom_rating_age, certification_age) <= ")
                     .push_bind(max_rating)
                     .push(")");
             }
@@ -5521,10 +5534,10 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
             let negated = *op == NumericOp::NotEq;
             let sql = match op {
                 NumericOp::Eq | NumericOp::NotEq => {
-                    format!("certification_age = {value}")
+                    format!("COALESCE(custom_rating_age, certification_age) = {value}")
                 }
-                NumericOp::Gt => format!("certification_age > {value}"),
-                NumericOp::Lt => format!("certification_age <= {value}"),
+                NumericOp::Gt => format!("COALESCE(custom_rating_age, certification_age) > {value}"),
+                NumericOp::Lt => format!("COALESCE(custom_rating_age, certification_age) <= {value}"),
             };
             Some((sql, negated))
         }
@@ -5536,11 +5549,11 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
                         .first()
                         .map(|s| s.as_str())
                         .unwrap_or(""));
-                    format!("lower(certification) = lower('{v}')")
+                    format!("lower(COALESCE(custom_rating, certification)) = lower('{v}')")
                 }
                 SetOp::In | SetOp::NotIn => {
                     let list = in_list(values)?;
-                    format!("lower(certification) IN ({list})")
+                    format!("lower(COALESCE(custom_rating, certification)) IN ({list})")
                 }
             };
             Some((sql, negated))

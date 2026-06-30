@@ -394,6 +394,9 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
         official_rating: media
             .certification
             .clone(),
+        custom_rating: media
+            .custom_rating
+            .clone(),
         parent_index_number: media.parent_idx,
         image_tags: Some(ImageTags {
             primary: media_image_tag(&media, db::ImageKind::Primary).or_else(|| {

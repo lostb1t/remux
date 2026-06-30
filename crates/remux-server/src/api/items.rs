@@ -2483,6 +2483,7 @@ struct PatchItemRequest {
     latest_sort_digital: Option<bool>,
     collection_default_sort: Option<Vec<api::ItemSortBy>>,
     collection_default_sort_order: Option<Vec<api::SortOrder>>,
+    custom_rating: Option<String>,
 }
 
 #[patch("/items/{id}")]
@@ -2544,6 +2545,23 @@ pub async fn patch_item(
     if let Some(ref v) = payload.collection_default_sort_order {
         qb.push(", collection_default_sort_order = ")
             .push_bind(sqlx::types::Json(v));
+    }
+    if let Some(custom_rating) = &payload.custom_rating {
+        let trimmed = custom_rating.trim();
+        let (rating, rating_age) = if trimmed.is_empty() {
+            (None::<String>, None::<i32>)
+        } else {
+            let config = db::Settings::get_config_or_default(&state.ctx.db).await;
+            let age = crate::localization::ratings::resolve_rating_age(
+                Some(trimmed),
+                config.metadata_country_code.as_deref(),
+            );
+            (Some(trimmed.to_string()), age)
+        };
+        qb.push(", custom_rating = ")
+            .push_bind(rating);
+        qb.push(", custom_rating_age = ")
+            .push_bind(rating_age);
     }
 
     qb.push(" WHERE id = ")

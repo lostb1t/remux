@@ -1004,6 +1004,7 @@ pub struct PatchItemPayload {
     pub latest_sort_digital: Option<bool>,
     pub collection_default_sort: Option<Vec<ItemSortBy>>,
     pub collection_default_sort_order: Option<Vec<SortOrder>>,
+    pub custom_rating: Option<String>,
 }
 
 #[dto]
