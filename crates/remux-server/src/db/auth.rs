@@ -308,6 +308,7 @@ impl FromRequestParts<AppState> for AuthSession {
             .token
             .as_deref()
             .context_unauthorized("forbidden")?;
+
         // device_id is optional — query-param-only auth (e.g. ?token=...)
         // doesn't carry a DeviceId. The device is looked up by token alone.
         let _device_id = jfauth
@@ -528,27 +529,32 @@ impl FromRequestParts<AppState> for JellyfinAuthHeader {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        if let Some(raw) = parts
+        // Try Authorization / X-Emby-Authorization
+        let mut auth = parts
             .headers
             .get(http::header::AUTHORIZATION)
-            .and_then(|v| {
-                v.to_str()
-                    .ok()
-            })
             .or_else(|| {
                 parts
                     .headers
                     .get("X-Emby-Authorization")
-                    .and_then(|v| {
-                        v.to_str()
-                            .ok()
-                    })
             })
-        {
-            return Ok(JellyfinAuthHeader::from_str(raw)?);
+            .and_then(|v| {
+                v.to_str()
+                    .ok()
+            })
+            .and_then(|raw| JellyfinAuthHeader::from_str(raw).ok());
+
+        // If we got a valid token inside, use it
+        if let Some(ref a) = auth {
+            if a.token
+                .is_some()
+            {
+                return Ok(a.clone());
+            }
         }
 
-        if let Some(token) = parts
+        // Try X-Emby / MediaBrowser token headers
+        let token = parts
             .headers
             .get("X-Emby-Token")
             .or_else(|| {
@@ -560,13 +566,16 @@ impl FromRequestParts<AppState> for JellyfinAuthHeader {
                 v.to_str()
                     .ok()
             })
-        {
+            .map(|s| s.to_string());
+
+        if let Some(token) = token {
             return Ok(JellyfinAuthHeader {
-                token: Some(token.to_string()),
+                token: Some(token),
                 ..Default::default()
             });
         }
 
+        // Query params fallback
         if let Some(query) = parts
             .uri
             .query()
