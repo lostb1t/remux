@@ -529,8 +529,7 @@ impl FromRequestParts<AppState> for JellyfinAuthHeader {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        // Try Authorization / X-Emby-Authorization
-        let mut auth = parts
+        if let Some(auth) = parts
             .headers
             .get(http::header::AUTHORIZATION)
             .or_else(|| {
@@ -542,15 +541,9 @@ impl FromRequestParts<AppState> for JellyfinAuthHeader {
                 v.to_str()
                     .ok()
             })
-            .and_then(|raw| JellyfinAuthHeader::from_str(raw).ok());
-
-        // If we got a valid token inside, use it
-        if let Some(ref a) = auth {
-            if a.token
-                .is_some()
-            {
-                return Ok(a.clone());
-            }
+            .and_then(|raw| JellyfinAuthHeader::from_str(raw).ok())
+        {
+            return Ok(auth);
         }
 
         // Try X-Emby / MediaBrowser token headers
