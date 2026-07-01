@@ -1,3 +1,38 @@
+# [0.11.0](https://github.com/lostb1t/remux/compare/v0.10.2...v0.11.0) (2026-07-01)
+
+
+### Bug Fixes
+
+* force meta refresh on catalog import so configured meta providers are always applied ([deb167e](https://github.com/lostb1t/remux/commit/deb167e24bf55a7af2df00b078394da98270062b))
+* import local TV when source advertises an Episode catalog ([#64](https://github.com/lostb1t/remux/issues/64)) ([bce45dd](https://github.com/lostb1t/remux/commit/bce45ddcd481d55ee6f20c217a47049e1324264e))
+* **opendal:** derive episode series title from directory when filename starts with episode code ([5af1f62](https://github.com/lostb1t/remux/commit/5af1f6206cf652735a162c06d42a1a2050420d24))
+* refactor playback  ([#69](https://github.com/lostb1t/remux/issues/69)) ([5d96e80](https://github.com/lostb1t/remux/commit/5d96e8016f0b920e2aa82837225809e81285cdb9))
+* **sessions:** populate SeriesName and SeasonName in NowPlayingItem ([#62](https://github.com/lostb1t/remux/issues/62)) ([d526ebd](https://github.com/lostb1t/remux/commit/d526ebd0c31fcc02df07a54dc8fdaab3870e7738))
+* skip unreleased episodes when marking season/series played with release filter enabled ([#41](https://github.com/lostb1t/remux/issues/41)) ([#42](https://github.com/lostb1t/remux/issues/42)) ([e0ecd2d](https://github.com/lostb1t/remux/commit/e0ecd2d1363b6d8589a585d412137f010b0e49d2))
+* **subtitles:** honor codec aliases in playback decisions ([#44](https://github.com/lostb1t/remux/issues/44)) ([5c72159](https://github.com/lostb1t/remux/commit/5c721595991341196da7443a310753ed523de7f1))
+* **transcode:** only apply dovi_rpu bsf for confirmed Dolby Vision streams ([#50](https://github.com/lostb1t/remux/issues/50)) ([20a3071](https://github.com/lostb1t/remux/commit/20a30712500efc196e6d36a8896ecd1fdcef0542))
+* **web:** strip Recently Added inu prefix from homescreen row titles ([4413464](https://github.com/lostb1t/remux/commit/4413464a9cb5239ac19c299ff3db3652ded21537))
+
+
+### Features
+
+* add destructive flag to Task trait with confirmation modal for purge tasks ([3541250](https://github.com/lostb1t/remux/commit/3541250efd451f6cef8633b2bd90a6d3e1d4fb59))
+* add filter rule groups with AND/OR nesting ([#55](https://github.com/lostb1t/remux/issues/55)) ([3bbadb9](https://github.com/lostb1t/remux/commit/3bbadb9ec15086dfef3ce80b8949337d61da711f))
+* add support for mixed (movie and shows) collections ([#54](https://github.com/lostb1t/remux/issues/54)) ([620c6c3](https://github.com/lostb1t/remux/commit/620c6c32c2750c28ccb1cbdcd7750b5106689ee6))
+* add TMDB popular, top rated and trending catalogs ([f5c5820](https://github.com/lostb1t/remux/commit/f5c5820e05c1eb7bb7a8f5b6a1df8b96d85f909b))
+* add TMDB watch provider tags to movie and series metadata ([737fb03](https://github.com/lostb1t/remux/commit/737fb0329b175b0b61c6d142f8847d86458908a9))
+* **deezer:** surface playlists as real Jellyfin playlists ([#60](https://github.com/lostb1t/remux/issues/60)) ([906cc36](https://github.com/lostb1t/remux/commit/906cc367712ccd76e814a0763a207bf1e84825de))
+* extend TMDB search addon to support Movie and Series kinds ([fc6e62e](https://github.com/lostb1t/remux/commit/fc6e62ef20ad2410dde6b70798acfeddd7fe0215))
+* make tmdb addon an system addon ([13e4b24](https://github.com/lostb1t/remux/commit/13e4b24710d2fe07c450f627a4cd97a9c18a1613))
+* **meta:** Added language, studios and production locations including filters ([#52](https://github.com/lostb1t/remux/issues/52)) ([9b779d4](https://github.com/lostb1t/remux/commit/9b779d4f7b08762052a53ce40e8aae8aeecb0e10))
+* popularity metrics ([#57](https://github.com/lostb1t/remux/issues/57)) ([2b8df7b](https://github.com/lostb1t/remux/commit/2b8df7b1b9633b07ce8da472aacb09aeaa709c9b))
+* trakt addon with metrics ([#65](https://github.com/lostb1t/remux/issues/65)) ([ed6ee58](https://github.com/lostb1t/remux/commit/ed6ee5834e0e347d6f046c99ed14c87bb5e49e85))
+
+
+### Performance Improvements
+
+* skip relations batch-load when Fields doesn't include People/Genres/Studios ([b5d6775](https://github.com/lostb1t/remux/commit/b5d6775ca46b804abd3f69baf0a981a03c74add6))
+
 ## [0.10.2](https://github.com/lostb1t/remux/compare/v0.10.1...v0.10.2) (2026-06-24)
 
 
