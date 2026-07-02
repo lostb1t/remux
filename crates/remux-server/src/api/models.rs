@@ -583,7 +583,14 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                             .role
                             .as_ref()
                             .and_then(|r| match r {
-                                db::RelationRole::Actor => Some("Actor".to_string()),
+                                db::RelationRole::Actor => Some(
+                                    if media.kind == db::MediaKind::Episode {
+                                        "GuestStar"
+                                    } else {
+                                        "Actor"
+                                    }
+                                    .to_string(),
+                                ),
                                 db::RelationRole::Director => {
                                     Some("Director".to_string())
                                 }
