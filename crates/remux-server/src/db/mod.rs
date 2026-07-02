@@ -119,7 +119,7 @@ async fn vacuum_if_needed(pool: &SqlitePool) -> Result<()> {
         .fetch_one(pool)
         .await
         .unwrap_or(0);
-    if freelist > 500 {
+    if freelist > 50_000 {
         info!(
             freelist_pages = freelist,
             "vacuuming database to reclaim freed pages"
