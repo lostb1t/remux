@@ -4,7 +4,7 @@ use chrono::NaiveDate;
 use std::{collections::HashMap, sync::Arc};
 use tracing::{debug, info, warn};
 
-use super::{ProgressReporter, Task, TaskService};
+use super::{ProgressReporter, Task, TaskCategory, TaskService};
 use crate::{AppContext, db};
 use remux_sdks::{
     JellyfinApiKeyAuth, RestClient,
@@ -32,8 +32,8 @@ impl Task for JellyfinImportTask {
     fn short_description(&self) -> &str {
         "Imports users and watch history from Jellyfin"
     }
-    fn category(&self) -> &str {
-        "Users"
+    fn category(&self) -> TaskCategory {
+        TaskCategory::Users
     }
 
     async fn run(

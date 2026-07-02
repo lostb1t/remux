@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tracing::{debug, info};
 
-use super::{ProgressReporter, Task, TaskService};
+use super::{ProgressReporter, Task, TaskCategory, TaskService};
 use crate::AppContext;
 
 pub struct RefreshPopularityTask;
@@ -26,8 +26,8 @@ impl Task for RefreshPopularityTask {
         "Updates popularity scores and trend history"
     }
 
-    fn category(&self) -> &str {
-        "Metrics"
+    fn category(&self) -> TaskCategory {
+        TaskCategory::Library
     }
 
     async fn run(

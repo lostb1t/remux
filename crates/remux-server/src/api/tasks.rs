@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::{
     AppState, api,
     db::auth,
-    tasks::{TaskStatus, TaskView},
+    tasks::{TaskCategory, TaskStatus, TaskView},
 };
 use axum_anyhow::ApiResult as Result;
 use remux_sdks::remux::TaskTriggerInfoType;
@@ -269,6 +269,29 @@ pub async fn scheduled_tasks(
             .unwrap_or_default();
         task_infos.push(task_info(handler, triggers, last_result));
     }
+
+    task_infos.sort_by(|a, b| {
+        let rank = |cat: Option<&String>| {
+            cat.and_then(|s| {
+                s.parse::<TaskCategory>()
+                    .ok()
+            })
+            .map(TaskCategory::rank)
+            .unwrap_or(usize::MAX)
+        };
+        rank(
+            a.category
+                .as_ref(),
+        )
+        .cmp(&rank(
+            b.category
+                .as_ref(),
+        ))
+        .then_with(|| {
+            a.name
+                .cmp(&b.name)
+        })
+    });
 
     Ok(Json(task_infos))
 }

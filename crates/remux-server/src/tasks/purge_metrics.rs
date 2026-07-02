@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tracing::info;
 
-use super::{ProgressReporter, Task, TaskService};
+use super::{ProgressReporter, Task, TaskCategory, TaskService};
 use crate::AppContext;
 
 pub struct PurgeMetricsTask;
@@ -26,8 +26,8 @@ impl Task for PurgeMetricsTask {
         "Clears all popularity snapshots and trend aggregates"
     }
 
-    fn category(&self) -> &str {
-        "Metrics"
+    fn category(&self) -> TaskCategory {
+        TaskCategory::Maintenance
     }
     fn destructive(&self) -> bool {
         true

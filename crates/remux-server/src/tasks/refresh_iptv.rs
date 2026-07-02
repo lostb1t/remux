@@ -6,7 +6,7 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use super::{
-    ProgressReporter, Task, TaskService,
+    ProgressReporter, Task, TaskCategory, TaskService,
     catalog_import_shared::{
         import_catalog_items, prune_stale_iptv_channels,
         remove_stale_catalog_memberships,
@@ -30,8 +30,8 @@ impl Task for RefreshIptvTask {
     fn short_description(&self) -> &str {
         "Syncs channels and EPG data from all IPTV sources"
     }
-    fn category(&self) -> &str {
-        "Live TV"
+    fn category(&self) -> TaskCategory {
+        TaskCategory::LiveTv
     }
 
     async fn run(

@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
 
-use super::{ProgressReporter, Task, TaskService};
+use super::{ProgressReporter, Task, TaskCategory, TaskService};
 use crate::AppContext;
 
 pub struct PurgeIptvTask;
@@ -21,8 +21,8 @@ impl Task for PurgeIptvTask {
     fn short_description(&self) -> &str {
         "Removes all TV channels and programs (no physical files are deleted)."
     }
-    fn category(&self) -> &str {
-        "Live TV"
+    fn category(&self) -> TaskCategory {
+        TaskCategory::Maintenance
     }
     fn destructive(&self) -> bool {
         true

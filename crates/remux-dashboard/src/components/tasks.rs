@@ -368,19 +368,15 @@ pub fn TasksCard(
                                 }
                             }
                         } else {
-                            let mut groups: std::collections::BTreeMap<String, Vec<TaskInfo>> =
-                                std::collections::BTreeMap::new();
+                            let mut groups: Vec<(String, Vec<TaskInfo>)> = Vec::new();
                             for task in visible {
                                 let cat = task.category.clone().unwrap_or_else(|| "Other".to_string());
-                                groups.entry(cat).or_default().push(task);
+                                if let Some((_, tasks)) = groups.iter_mut().find(|(c, _)| c == &cat) {
+                                    tasks.push(task);
+                                } else {
+                                    groups.push((cat, vec![task]));
+                                }
                             }
-                            let groups: Vec<(String, Vec<TaskInfo>)> = groups
-                                .into_iter()
-                                .map(|(cat, mut tasks)| {
-                                    tasks.sort_by(|a, b| a.name.cmp(&b.name));
-                                    (cat, tasks)
-                                })
-                                .collect();
                             rsx! {
                                 for (cat, group_tasks) in groups {
                                     div { key: "{cat}", class: "task-group",

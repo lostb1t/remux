@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
 
-use super::{ProgressReporter, Task, TaskService};
+use super::{ProgressReporter, Task, TaskCategory, TaskService};
 use crate::AppContext;
 
 pub struct PurgeMediaTask;
@@ -23,8 +23,8 @@ impl Task for PurgeMediaTask {
     fn short_description(&self) -> &str {
         "Wipes all imported media from the database (no physical files are deleted)."
     }
-    fn category(&self) -> &str {
-        "Maintenance"
+    fn category(&self) -> TaskCategory {
+        TaskCategory::Maintenance
     }
     fn destructive(&self) -> bool {
         true

@@ -5,7 +5,7 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use super::{
-    ProgressReporter, Task, TaskService,
+    ProgressReporter, Task, TaskCategory, TaskService,
     catalog_import_shared::{
         import_catalog_items, prune_orphaned_playlists,
         remove_stale_catalog_memberships,
@@ -29,8 +29,8 @@ impl Task for RefreshLibraryTask {
     fn short_description(&self) -> &str {
         "Syncs all addon catalogs into your library"
     }
-    fn category(&self) -> &str {
-        "Library"
+    fn category(&self) -> TaskCategory {
+        TaskCategory::Library
     }
 
     async fn run(

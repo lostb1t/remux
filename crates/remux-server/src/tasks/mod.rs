@@ -15,6 +15,7 @@ use tracing::{error, info};
 
 use crate::{AppContext, db, ws};
 use remux_sdks::remux::TaskTriggerInfoType;
+use strum_macros::{Display, EnumString};
 
 mod catalog_import_shared;
 mod clean_transcode_folder;
@@ -44,6 +45,28 @@ use refresh_library::RefreshLibraryTask;
 use refresh_popularity::RefreshPopularityTask;
 use series_sync::SeriesSyncTask;
 
+// --- Task category ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString)]
+pub enum TaskCategory {
+    Library,
+    #[strum(to_string = "Live TV")]
+    LiveTv,
+    Users,
+    Maintenance,
+}
+
+impl TaskCategory {
+    pub fn rank(self) -> usize {
+        match self {
+            Self::Library => 0,
+            Self::LiveTv => 1,
+            Self::Users => 2,
+            Self::Maintenance => 3,
+        }
+    }
+}
+
 // --- Task status ---
 
 #[derive(Debug, Clone, PartialEq)]
@@ -66,8 +89,8 @@ pub trait Task: Send + Sync + 'static {
     fn short_description(&self) -> &str {
         ""
     }
-    fn category(&self) -> &str {
-        "System"
+    fn category(&self) -> TaskCategory {
+        TaskCategory::Maintenance
     }
     fn destructive(&self) -> bool {
         false

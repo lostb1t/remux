@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
 
-use super::{ProgressReporter, Task, TaskService};
+use super::{ProgressReporter, Task, TaskCategory, TaskService};
 use crate::{AppContext, db};
 
 pub struct SeriesSyncTask;
@@ -21,8 +21,8 @@ impl Task for SeriesSyncTask {
     fn short_description(&self) -> &str {
         "Updates episode lists for all series"
     }
-    fn category(&self) -> &str {
-        "Library"
+    fn category(&self) -> TaskCategory {
+        TaskCategory::Library
     }
 
     async fn run(

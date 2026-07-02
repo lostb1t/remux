@@ -5,7 +5,7 @@ use libc;
 use std::{collections::HashSet, sync::Arc};
 use tracing::{info, warn};
 
-use super::{ProgressReporter, Task, TaskService};
+use super::{ProgressReporter, Task, TaskCategory, TaskService};
 use crate::AppContext;
 
 pub struct CleanTranscodeFolderTask;
@@ -24,8 +24,8 @@ impl Task for CleanTranscodeFolderTask {
     fn short_description(&self) -> &str {
         "Deletes leftover temp transcode files"
     }
-    fn category(&self) -> &str {
-        "Maintenance"
+    fn category(&self) -> TaskCategory {
+        TaskCategory::Maintenance
     }
 
     async fn run(

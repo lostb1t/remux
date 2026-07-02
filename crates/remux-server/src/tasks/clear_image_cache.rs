@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tracing::{info, warn};
 
-use super::{ProgressReporter, Task, TaskService};
+use super::{ProgressReporter, Task, TaskCategory, TaskService};
 use crate::AppContext;
 
 pub struct ClearImageCacheTask;
@@ -22,8 +22,8 @@ impl Task for ClearImageCacheTask {
     fn short_description(&self) -> &str {
         "Deletes all cached images"
     }
-    fn category(&self) -> &str {
-        "Maintenance"
+    fn category(&self) -> TaskCategory {
+        TaskCategory::Maintenance
     }
 
     async fn run(
