@@ -62,53 +62,42 @@ impl Task for RefreshPopularityTask {
             .await?;
         progress.set(68.0);
 
-        // trend_week: today / 7 days ago ratio.
+        // trend_week: weighted trend = recent_avg * MIN(ratio, 5.0).
+        // Splits available daily rows into two halves: last 3 days vs prior 3 days.
+        // Multiplying ratio by the absolute score prevents low-popularity noise items
+        // from dominating on a large ratio alone. Ratio is capped at 5× so that
+        // near-zero → small jumps don't explode. Falls back to recent_avg when no
+        // earlier window exists yet.
         sqlx::query(
             "INSERT OR REPLACE INTO popularity_agg \
              (media_id, period, period_key, avg, min, max, sample_count) \
-             SELECT n.media_id, 'trend_week', date('now'), \
-                    CASE WHEN o.avg > 0 THEN n.avg / o.avg ELSE n.avg END, \
-                    CASE WHEN o.avg > 0 THEN n.avg / o.avg ELSE n.avg END, \
-                    CASE WHEN o.avg > 0 THEN n.avg / o.avg ELSE n.avg END, \
+             SELECT new.media_id, 'trend_week', date('now'), \
+                    CASE WHEN old.avg > 0 THEN new.avg * MIN(new.avg / old.avg, 5.0) ELSE new.avg END, \
+                    CASE WHEN old.avg > 0 THEN new.avg * MIN(new.avg / old.avg, 5.0) ELSE new.avg END, \
+                    CASE WHEN old.avg > 0 THEN new.avg * MIN(new.avg / old.avg, 5.0) ELSE new.avg END, \
                     1 \
-             FROM popularity_agg n \
-             LEFT JOIN popularity_agg o \
-                 ON o.media_id = n.media_id \
-                 AND o.period = 'daily' AND o.period_key = date('now', '-7 days') \
-             WHERE n.period = 'daily' AND n.period_key = date('now')",
+             FROM ( \
+               SELECT media_id, AVG(avg) AS avg \
+               FROM popularity_agg \
+               WHERE period = 'daily' \
+                 AND period_key BETWEEN date('now', '-2 days') AND date('now') \
+               GROUP BY media_id \
+             ) new \
+             LEFT JOIN ( \
+               SELECT media_id, AVG(avg) AS avg \
+               FROM popularity_agg \
+               WHERE period = 'daily' \
+                 AND period_key BETWEEN date('now', '-5 days') AND date('now', '-3 days') \
+               GROUP BY media_id \
+             ) old ON old.media_id = new.media_id",
         )
         .execute(db)
         .await?;
+        progress.set(70.0);
 
-        // trend_month: today / 30 days ago ratio.
-        sqlx::query(
-            "INSERT OR REPLACE INTO popularity_agg \
-             (media_id, period, period_key, avg, min, max, sample_count) \
-             SELECT n.media_id, 'trend_month', date('now'), \
-                    CASE WHEN o.avg > 0 THEN n.avg / o.avg ELSE n.avg END, \
-                    CASE WHEN o.avg > 0 THEN n.avg / o.avg ELSE n.avg END, \
-                    CASE WHEN o.avg > 0 THEN n.avg / o.avg ELSE n.avg END, \
-                    1 \
-             FROM popularity_agg n \
-             LEFT JOIN popularity_agg o \
-                 ON o.media_id = n.media_id \
-                 AND o.period = 'daily' AND o.period_key = date('now', '-30 days') \
-             WHERE n.period = 'daily' AND n.period_key = date('now')",
-        )
-        .execute(db)
-        .await?;
-
-        sqlx::query(
-            "DELETE FROM popularity_agg \
-             WHERE period IN ('trend_week', 'trend_month') \
-             AND period_key < date('now', '-2 days')",
-        )
-        .execute(db)
-        .await?;
-        progress.set(72.0);
-
-        // Weekly period_key is the Monday of the week as a real date so that
-        // subsequent strftime calls on it (for monthly) can parse it correctly.
+        // Weekly rollup runs before trend_month so that today's daily data is included
+        // in the weekly aggregates that trend_month uses.
+        // period_key is the Monday of the week so that strftime calls on it work correctly.
         // 'weekday 0' advances to the next Sunday; '-6 days' steps back to Monday.
         sqlx::query(
             "INSERT OR REPLACE INTO popularity_agg \
@@ -119,6 +108,44 @@ impl Task for RefreshPopularityTask {
                     AVG(avg), MIN(min), MAX(max), SUM(sample_count) \
              FROM popularity_agg WHERE period = 'daily' \
              GROUP BY media_id, date(period_key, 'weekday 0', '-6 days')",
+        )
+        .execute(db)
+        .await?;
+        progress.set(72.0);
+
+        // trend_month: weighted trend = recent_avg * MIN(ratio, 5.0).
+        // Splits available weekly rows into two halves: last 2 weeks vs prior 2 weeks.
+        // Same weighted formula with 5× ratio cap as trend_week.
+        sqlx::query(
+            "INSERT OR REPLACE INTO popularity_agg \
+             (media_id, period, period_key, avg, min, max, sample_count) \
+             SELECT new.media_id, 'trend_month', date('now'), \
+                    CASE WHEN old.avg > 0 THEN new.avg * MIN(new.avg / old.avg, 5.0) ELSE new.avg END, \
+                    CASE WHEN old.avg > 0 THEN new.avg * MIN(new.avg / old.avg, 5.0) ELSE new.avg END, \
+                    CASE WHEN old.avg > 0 THEN new.avg * MIN(new.avg / old.avg, 5.0) ELSE new.avg END, \
+                    1 \
+             FROM ( \
+               SELECT media_id, AVG(avg) AS avg \
+               FROM popularity_agg \
+               WHERE period = 'weekly' \
+                 AND period_key >= date('now', '-13 days') \
+               GROUP BY media_id \
+             ) new \
+             LEFT JOIN ( \
+               SELECT media_id, AVG(avg) AS avg \
+               FROM popularity_agg \
+               WHERE period = 'weekly' \
+                 AND period_key BETWEEN date('now', '-27 days') AND date('now', '-14 days') \
+               GROUP BY media_id \
+             ) old ON old.media_id = new.media_id",
+        )
+        .execute(db)
+        .await?;
+
+        sqlx::query(
+            "DELETE FROM popularity_agg \
+             WHERE period IN ('trend_week', 'trend_month') \
+             AND period_key < date('now', '-2 days')",
         )
         .execute(db)
         .await?;
