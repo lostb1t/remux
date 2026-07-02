@@ -558,6 +558,31 @@ where
     }
 }
 
+pub fn deserialize_option_i64_from_string<'de, D>(
+    deserializer: D,
+) -> Result<Option<i64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrNumber {
+        String(String),
+        Number(i64),
+    }
+
+    let value = Option::<StringOrNumber>::deserialize(deserializer)?;
+    match value {
+        Some(StringOrNumber::String(s)) => s
+            .trim()
+            .parse::<i64>()
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+        Some(StringOrNumber::Number(n)) => Ok(Some(n)),
+        None => Ok(None),
+    }
+}
+
 /// Deserializes an optional `NaiveDate` from a string, treating empty strings as `None`.
 /// TMDB returns `""` instead of `null` for missing dates, which chrono refuses to parse.
 pub fn deserialize_option_naive_date<'de, D>(

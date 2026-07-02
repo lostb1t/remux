@@ -557,6 +557,30 @@ impl MediaRelation {
         Ok(())
     }
 
+    pub async fn delete_by_right_kinds(
+        db: &SqlitePool,
+        left_id: Uuid,
+        right_kinds: &[MediaKind],
+    ) -> Result<()> {
+        if right_kinds.is_empty() {
+            return Ok(());
+        }
+        let mut qb = sqlx::QueryBuilder::new(
+            "DELETE FROM media_relations WHERE left_media_id = ",
+        );
+        qb.push_bind(left_id);
+        qb.push(" AND right_media_id IN (SELECT id FROM media WHERE kind IN (");
+        let mut sep = qb.separated(", ");
+        for k in right_kinds {
+            sep.push_bind(k.to_string());
+        }
+        qb.push("))");
+        qb.build()
+            .execute(db)
+            .await?;
+        Ok(())
+    }
+
     pub async fn move_playlist_item(
         db: &SqlitePool,
         playlist_id: &Uuid,
@@ -5749,6 +5773,32 @@ fn build_episode_relations_from_ep(
         RelationRole::Writer,
     );
     relations
+}
+
+pub(crate) fn build_genre_relations_from_names(
+    left_id: uuid::Uuid,
+    names: &[String],
+    kind: MediaKind,
+) -> Vec<(MediaRelation, Media)> {
+    names
+        .iter()
+        .map(|name| {
+            let gid = crate::common::stable_media_uuid(&kind, &name.to_lowercase());
+            (
+                MediaRelation {
+                    left_media_id: left_id,
+                    right_media_id: gid,
+                    ..Default::default()
+                },
+                Media {
+                    id: gid,
+                    title: name.clone(),
+                    kind: kind.clone(),
+                    ..Default::default()
+                },
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]

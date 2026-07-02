@@ -9,6 +9,7 @@ use axum_extra::extract::Query;
 use http::StatusCode;
 use itertools::Itertools;
 use remux_macros::{delete, get, patch, post, query};
+use remux_utils::merge_option;
 use serde::Deserialize;
 use tracing::{debug, error, info, trace, warn};
 use uuid::{Uuid, uuid};
@@ -2311,11 +2312,118 @@ pub async fn music_genres(
 
 #[get("/items/{id}/metadataeditor")]
 pub async fn items_metadata_editor(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     _session: auth::AdminSession,
-    Path(_id): Path<Uuid>,
+    Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    Ok(Json(api::MetadataEditorInfo::default()))
+    let item = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &id,
+    )
+    .await?
+    .context_not_found("Item not found")?;
+
+    let config = crate::db::Settings::get_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await?;
+    let parental_rating_options =
+        crate::localization::ratings::parental_ratings_for_country(
+            config
+                .metadata_country_code
+                .as_deref(),
+        );
+
+    let countries: Vec<api::CountryInfo> = rust_iso3166::ALL
+        .iter()
+        .map(|c| api::CountryInfo {
+            name: c
+                .name
+                .to_string(),
+            display_name: c
+                .name
+                .to_string(),
+            two_letter_iso_region_name: c
+                .alpha2
+                .to_string(),
+            three_letter_iso_region_name: c
+                .alpha3
+                .to_string(),
+        })
+        .collect();
+
+    let mut cultures: Vec<api::CultureDto> = isolang::languages()
+        .filter_map(|lang| {
+            let two = lang.to_639_1()?;
+            Some(api::CultureDto {
+                name: lang
+                    .to_name()
+                    .to_string(),
+                display_name: lang
+                    .to_name()
+                    .to_string(),
+                two_letter_iso_language_name: two.to_string(),
+                three_letter_iso_language_name: lang
+                    .to_639_3()
+                    .to_string(),
+                three_letter_iso_language_names: vec![
+                    lang.to_639_3()
+                        .to_string(),
+                ],
+            })
+        })
+        .collect();
+    cultures.sort_by(|a, b| {
+        a.display_name
+            .cmp(&b.display_name)
+    });
+
+    let external_id_infos: Vec<api::ExternalIdInfo> = vec![
+        ("IMDb", "Imdb", None),
+        ("TheMovieDb", "Tmdb", Some("Movie")),
+        ("TheMovieDb", "TmdbCollection", Some("BoxSet")),
+        ("TheTVDB", "TvdbCollection", Some("BoxSet")),
+        ("TheTVDB Numerical", "Tvdb", Some("Movie")),
+        ("TheTVDB Slug", "TvdbSlug", Some("Movie")),
+    ]
+    .into_iter()
+    .map(|(name, key, type_)| api::ExternalIdInfo {
+        name: name.to_string(),
+        key: key.to_string(),
+        type_: type_.map(str::to_string),
+        url_format_string: None,
+    })
+    .collect();
+
+    let content_type_options: Vec<String> = vec![
+        db::MediaKind::Movie,
+        db::MediaKind::Series,
+        db::MediaKind::Season,
+        db::MediaKind::Episode,
+        db::MediaKind::Artist,
+        db::MediaKind::Album,
+        db::MediaKind::Track,
+        db::MediaKind::Playlist,
+    ]
+    .into_iter()
+    .map(|k| k.to_string())
+    .collect();
+
+    Ok(Json(api::MetadataEditorInfo {
+        parental_rating_options,
+        countries,
+        cultures,
+        external_id_infos,
+        content_type: Some(
+            item.kind
+                .to_string(),
+        ),
+        content_type_options,
+    }))
 }
 
 #[query]
@@ -2441,10 +2549,41 @@ async fn set_tags(db: &SqlitePool, id: Uuid, tags: &[String]) -> anyhow::Result<
     Ok(())
 }
 
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+struct UpdateItemPerson {
+    id: Option<Uuid>,
+    name: String,
+    #[serde(rename = "Type")]
+    type_: Option<String>,
+    role: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct UpdateItemRequest {
+    name: Option<String>,
+    overview: Option<String>,
+    premiere_date: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(
+        default,
+        deserialize_with = "remux_sdks::deserialize_option_i64_from_string"
+    )]
+    production_year: Option<i64>,
+    official_rating: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "remux_sdks::deserialize_option_number_from_string"
+    )]
+    community_rating: Option<f64>,
+    #[serde(
+        default,
+        deserialize_with = "remux_sdks::deserialize_option_number_from_string"
+    )]
+    critic_rating: Option<f64>,
     tags: Option<Vec<String>>,
+    genres: Option<Vec<String>>,
+    people: Option<Vec<UpdateItemPerson>>,
 }
 
 #[post("/items/{id}")]
@@ -2454,6 +2593,40 @@ pub async fn update_item(
     Path(id): Path<Uuid>,
     Json(payload): Json<UpdateItemRequest>,
 ) -> Result<StatusCode> {
+    let mut media = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &id,
+    )
+    .await?
+    .context_not_found("Item not found")?;
+
+    if let Some(name) = payload.name {
+        media.title = name;
+    }
+    merge_option(&mut media.description, &payload.overview, true);
+    if let Some(premiere_date) = payload.premiere_date {
+        media.released_at = Some(premiere_date.naive_utc());
+    } else if let Some(year) = payload.production_year {
+        if let Some(dt) = chrono::NaiveDate::from_ymd_opt(year as i32, 1, 1)
+            .and_then(|d| d.and_hms_opt(0, 0, 0))
+        {
+            media.released_at = Some(dt);
+        }
+    }
+    merge_option(&mut media.certification, &payload.official_rating, true);
+    merge_option(&mut media.rating_audience, &payload.community_rating, true);
+    merge_option(&mut media.rating_critic, &payload.critic_rating, true);
+    media
+        .save(
+            &state
+                .ctx
+                .db,
+        )
+        .await
+        .context_bad_request("Failed to save item")?;
+
     if let Some(tags) = &payload.tags {
         set_tags(
             &state
@@ -2465,6 +2638,221 @@ pub async fn update_item(
         .await
         .context_bad_request("Failed to update tags")?;
     }
+
+    if let Some(genres) = &payload.genres {
+        db::MediaRelation::delete_by_right_kinds(
+            &state
+                .ctx
+                .db,
+            id,
+            &[db::MediaKind::Genre, db::MediaKind::MusicGenre],
+        )
+        .await?;
+        if !genres.is_empty() {
+            let pairs =
+                db::build_genre_relations_from_names(id, genres, db::MediaKind::Genre);
+            let medias: Vec<_> = pairs
+                .iter()
+                .map(|(_, m)| m.clone())
+                .collect();
+            let rels: Vec<_> = pairs
+                .into_iter()
+                .map(|(r, _)| r)
+                .collect();
+            db::Media::upsert(
+                &state
+                    .ctx
+                    .db,
+                &medias,
+            )
+            .await
+            .inspect_err(|e| warn!(error = %e, "failed to upsert genre media"))
+            .ok();
+            db::MediaRelation::upsert(
+                &state
+                    .ctx
+                    .db,
+                &rels,
+            )
+            .await
+            .inspect_err(|e| warn!(error = %e, "failed to upsert genre relations"))
+            .ok();
+        }
+    }
+
+    if let Some(people) = &payload.people {
+        db::MediaRelation::delete_by_right_kinds(
+            &state
+                .ctx
+                .db,
+            id,
+            &[db::MediaKind::Person],
+        )
+        .await?;
+        if !people.is_empty() {
+            // Resolve person IDs: prefer the Id supplied by the client (which the
+            // client echoes back from our own response), then fall back to a name
+            // lookup so we don't create a duplicate record and lose images.
+            let names_needing_lookup: Vec<&str> = people
+                .iter()
+                .filter(|p| {
+                    p.id.is_none()
+                })
+                .map(|p| {
+                    p.name
+                        .as_str()
+                })
+                .collect();
+
+            let name_to_id: std::collections::HashMap<String, Uuid> =
+                if names_needing_lookup.is_empty() {
+                    Default::default()
+                } else {
+                    let mut map = std::collections::HashMap::new();
+                    for chunk in names_needing_lookup.chunks(50) {
+                        let mut qb = sqlx::QueryBuilder::new(
+                            "SELECT id, title FROM media WHERE kind = 'person' AND lower(title) IN (",
+                        );
+                        let mut sep = qb.separated(", ");
+                        for name in chunk {
+                            sep.push_bind(name.to_lowercase());
+                        }
+                        qb.push(")");
+                        let rows: Vec<(Uuid, String)> = qb
+                            .build_query_as()
+                            .fetch_all(
+                                &state
+                                    .ctx
+                                    .db,
+                            )
+                            .await
+                            .unwrap_or_default();
+                        for (pid, title) in rows {
+                            map.insert(title.to_lowercase(), pid);
+                        }
+                    }
+                    map
+                };
+
+            let mut person_medias: Vec<db::Media> = Vec::new();
+            let mut person_rels: Vec<db::MediaRelation> = Vec::new();
+            for (i, p) in people
+                .iter()
+                .enumerate()
+            {
+                let pid =
+                    p.id.or_else(|| {
+                        name_to_id
+                            .get(
+                                &p.name
+                                    .to_lowercase(),
+                            )
+                            .copied()
+                    })
+                    .unwrap_or_else(|| {
+                        crate::common::stable_media_uuid(
+                            &db::MediaKind::Person,
+                            &p.name
+                                .to_lowercase(),
+                        )
+                    });
+                let role = p
+                    .type_
+                    .as_deref()
+                    .map(|t| match t {
+                        "Director" => db::RelationRole::Director,
+                        "Writer" => db::RelationRole::Writer,
+                        "Producer" => db::RelationRole::Producer,
+                        "Creator" => db::RelationRole::Creator,
+                        _ => db::RelationRole::Actor,
+                    });
+                // Only push a media stub for truly new persons (no existing record).
+                if p.id
+                    .is_none()
+                    && !name_to_id.contains_key(
+                        &p.name
+                            .to_lowercase(),
+                    )
+                {
+                    person_medias.push(db::Media {
+                        id: pid,
+                        title: p
+                            .name
+                            .clone(),
+                        kind: db::MediaKind::Person,
+                        ..Default::default()
+                    });
+                }
+                person_rels.push(db::MediaRelation {
+                    left_media_id: id,
+                    right_media_id: pid,
+                    weight: Some(i as i64),
+                    role,
+                    character: p
+                        .role
+                        .clone(),
+                    ..Default::default()
+                });
+            }
+            if !person_medias.is_empty() {
+                db::Media::upsert(
+                    &state
+                        .ctx
+                        .db,
+                    &person_medias,
+                )
+                .await
+                .inspect_err(|e| warn!(error = %e, "failed to upsert person media"))
+                .ok();
+            }
+            db::MediaRelation::upsert(
+                &state
+                    .ctx
+                    .db,
+                &person_rels,
+            )
+            .await
+            .inspect_err(|e| warn!(error = %e, "failed to upsert person relations"))
+            .ok();
+        }
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[query]
+#[derive(Debug, Default)]
+struct ContentTypeQuery {
+    content_type: Option<String>,
+}
+
+#[post("/items/{id}/contenttype")]
+pub async fn update_item_content_type(
+    State(state): State<AppState>,
+    _session: auth::AdminSession,
+    Path(id): Path<Uuid>,
+    Query(q): Query<ContentTypeQuery>,
+) -> Result<StatusCode> {
+    let raw = q
+        .content_type
+        .unwrap_or_default();
+    info!(id = %id, content_type = %raw, "update_item_content_type");
+    if raw.is_empty() {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    let kind = db::MediaKind::try_from(raw.as_str())
+        .or_else(|_| db::MediaKind::try_from(raw.to_lowercase()))
+        .map_err(|_| anyhow::anyhow!("invalid content type: {raw}"))
+        .context_bad_request("Invalid content type")?;
+    sqlx::query("UPDATE media SET kind = ? WHERE id = ?")
+        .bind(kind.to_string())
+        .bind(id)
+        .execute(
+            &state
+                .ctx
+                .db,
+        )
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -2076,12 +2076,12 @@ pub struct QueryFiltersLegacy {
 #[derive(Default, Deserialize, Serialize, Clone, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct MetadataEditorInfo {
-    pub parental_rating_options: Vec<serde_json::Value>,
-    pub countries: Vec<serde_json::Value>,
-    pub cultures: Vec<serde_json::Value>,
-    pub external_id_infos: Vec<serde_json::Value>,
+    pub parental_rating_options: Vec<ParentalRating>,
+    pub countries: Vec<CountryInfo>,
+    pub cultures: Vec<CultureDto>,
+    pub external_id_infos: Vec<ExternalIdInfo>,
     pub content_type: Option<String>,
-    pub content_type_options: Vec<serde_json::Value>,
+    pub content_type_options: Vec<String>,
 }
 
 #[dto]
