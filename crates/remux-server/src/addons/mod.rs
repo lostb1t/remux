@@ -2022,6 +2022,14 @@ impl AddonService {
         }
 
         let now = chrono::Utc::now().naive_utc();
+        sqlx::query(
+            "UPDATE media SET streams_refreshed_at = ? WHERE id = ?",
+        )
+        .bind(now)
+        .bind(media.id)
+        .execute(&ctx.db)
+        .await?;
+        media.streams_refreshed_at = Some(now);
         let sources: Vec<db::Media> = deduped
             .into_iter()
             .enumerate()
@@ -2040,13 +2048,6 @@ impl AddonService {
             })
             .collect();
         db::Media::upsert(&ctx.db, &sources).await?;
-        sqlx::query(
-            "UPDATE media SET streams_refreshed_at = CURRENT_TIMESTAMP WHERE id = ?",
-        )
-        .bind(media.id)
-        .execute(&ctx.db)
-        .await?;
-        media.streams_refreshed_at = Some(now);
 
         // delete stale items
         sqlx::query(
