@@ -46,7 +46,7 @@ impl Task for RefreshAllMetaTask {
         let mut offset = 0u32;
         loop {
             let batch = sqlx::query_as::<_, db::Media>(
-                "SELECT * FROM media WHERE kind IN (?, ?, ?) ORDER BY id LIMIT ? OFFSET ?",
+                "SELECT * FROM media WHERE kind IN (?, ?, ?) ORDER BY refreshed_at ASC NULLS FIRST, id LIMIT ? OFFSET ?",
             )
             .bind(db::MediaKind::Movie)
             .bind(db::MediaKind::Series)

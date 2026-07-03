@@ -1837,7 +1837,7 @@ impl Media {
         if items.is_empty() {
             return Ok(());
         }
-        
+
         let now = chrono::Utc::now().naive_utc();
 
         for chunk in items.chunks(CHUNK_SIZE) {

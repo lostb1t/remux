@@ -2022,13 +2022,11 @@ impl AddonService {
         }
 
         let now = chrono::Utc::now().naive_utc();
-        sqlx::query(
-            "UPDATE media SET streams_refreshed_at = ? WHERE id = ?",
-        )
-        .bind(now)
-        .bind(media.id)
-        .execute(&ctx.db)
-        .await?;
+        sqlx::query("UPDATE media SET streams_refreshed_at = ? WHERE id = ?")
+            .bind(now)
+            .bind(media.id)
+            .execute(&ctx.db)
+            .await?;
         media.streams_refreshed_at = Some(now);
         let sources: Vec<db::Media> = deduped
             .into_iter()
