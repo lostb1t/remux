@@ -446,6 +446,11 @@ impl PlaybackSessionManager {
 
         if let Some(item_id) = item_id {
             if let Ok(Some(media)) = db::Media::get_by_id(db, &item_id).await {
+                let runtime_seconds = media.runtime;
+                let play_method = data
+                    .play_method
+                    .as_ref()
+                    .map(|m| m.to_string());
                 db::UserMediaState::update_playback(
                     db,
                     user,
@@ -453,7 +458,18 @@ impl PlaybackSessionManager {
                     final_ticks.unwrap_or(0),
                     None, // don't overwrite stream selections on stop
                     None,
-                    media.runtime, // Some(runtime) triggers watched-threshold check
+                    runtime_seconds, // Some(runtime) triggers watched-threshold check
+                )
+                .await?;
+
+                db::WatchHistory::record_playback_stop(
+                    db,
+                    user,
+                    &media,
+                    Some(psid),
+                    final_ticks.unwrap_or(0),
+                    runtime_seconds,
+                    play_method.as_deref(),
                 )
                 .await?;
             }

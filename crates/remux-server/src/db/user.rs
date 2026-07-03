@@ -417,6 +417,150 @@ pub struct UserMediaStateFilter {
     pub offset: Option<u32>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, sqlx::FromRow)]
+pub struct WatchHistory {
+    pub id: i64,
+    pub user_id: Uuid,
+    pub media_id: Uuid,
+    pub media_raw: Option<String>,
+    pub event_type: String,
+    pub session_id: Option<String>,
+    pub play_method: Option<String>,
+    pub position_ticks: i64,
+    pub runtime_seconds: Option<i64>,
+    pub completed: bool,
+    pub created_at: Option<chrono::NaiveDateTime>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WatchHistoryFilter {
+    pub user_id: Option<Uuid>,
+    pub media_id: Option<Uuid>,
+    pub event_type: Option<String>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+    pub total_count: bool,
+}
+
+impl WatchHistory {
+    pub async fn record_playback_stop(
+        db: &SqlitePool,
+        user: &User,
+        media: &super::Media,
+        session_id: Option<&str>,
+        position_ticks: i64,
+        runtime_seconds: Option<i64>,
+        play_method: Option<&str>,
+    ) -> Result<()> {
+        let media_raw = serde_json::to_string(&media.media_id_raw()).ok();
+        let completed = runtime_seconds
+            .and_then(|runtime| {
+                (runtime > 0)
+                    .then_some(position_ticks >= (runtime * 90 / 100) * 10_000_000)
+            })
+            .unwrap_or(false);
+        Self::record_event(
+            db,
+            &user.id,
+            &media.id,
+            media_raw.as_deref(),
+            "playback_stop",
+            session_id,
+            play_method,
+            position_ticks,
+            runtime_seconds,
+            completed,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_event(
+        db: &SqlitePool,
+        user_id: &Uuid,
+        media_id: &Uuid,
+        media_raw: Option<&str>,
+        event_type: &str,
+        session_id: Option<&str>,
+        play_method: Option<&str>,
+        position_ticks: i64,
+        runtime_seconds: Option<i64>,
+        completed: bool,
+    ) -> Result<()> {
+        let raw = media_raw.map(|raw| raw.to_string());
+        sqlx::query(
+            "INSERT INTO watch_history (user_id, media_id, media_raw, event_type, session_id, play_method, position_ticks, runtime_seconds, completed) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        )
+        .bind(user_id)
+        .bind(media_id)
+        .bind(raw.as_deref())
+        .bind(event_type)
+        .bind(session_id)
+        .bind(play_method)
+        .bind(position_ticks)
+        .bind(runtime_seconds)
+        .bind(completed)
+        .execute(db)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_by_filter(
+        db: &SqlitePool,
+        filter: &WatchHistoryFilter,
+    ) -> Result<FilterResult<Self>> {
+        let mut count_qb =
+            sqlx::QueryBuilder::new("SELECT COUNT(*) as count FROM watch_history WHERE 1=1");
+        let mut records_qb = sqlx::QueryBuilder::new(
+            "SELECT * FROM watch_history WHERE 1=1 ORDER BY created_at DESC",
+        );
+
+        for qb in [&mut count_qb, &mut records_qb] {
+            if let Some(user_id) = &filter.user_id {
+                qb.push(" AND user_id = ")
+                    .push_bind(user_id);
+            }
+            if let Some(media_id) = &filter.media_id {
+                qb.push(" AND media_id = ")
+                    .push_bind(media_id);
+            }
+            if let Some(event_type) = &filter.event_type {
+                qb.push(" AND event_type = ")
+                    .push_bind(event_type);
+            }
+        }
+
+        if let Some(limit) = filter.limit {
+            records_qb.push(" LIMIT ").push_bind(limit);
+        }
+        if let Some(offset) = filter.offset {
+            records_qb.push(" OFFSET ").push_bind(offset);
+        }
+
+        let (count, records) = tokio::join!(
+            async {
+                let query = count_qb.build();
+                let row = query
+                    .fetch_one(db)
+                    .await;
+                row.map(|r| r.get::<i64, _>(0) as usize)
+            },
+            async {
+                let query = records_qb.build_query_as::<Self>();
+                query
+                    .fetch_all(db)
+                    .await
+            }
+        );
+
+        Ok(FilterResult {
+            records: records?,
+            total_count: if filter.total_count { count? } else { 0 },
+        })
+    }
+}
+
 impl UserMediaState {
     pub async fn get_by_user_and_media(
         db: &SqlitePool,
