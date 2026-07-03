@@ -1,3 +1,20 @@
+# [0.12.0](https://github.com/lostb1t/remux/compare/v0.11.0...v0.12.0) (2026-07-03)
+
+
+### Bug Fixes
+
+* **auth:** improve legacy Jellyfin header fallback handling ([#77](https://github.com/lostb1t/remux/issues/77)) ([ec8226e](https://github.com/lostb1t/remux/commit/ec8226e07c5f83fa969c24bd2bc8a344ae64f5b1))
+* **items:** implement metadata editor, item update, and content type endpoints ([284a0bf](https://github.com/lostb1t/remux/commit/284a0bf1f63631880c2839b38685085f3ee74288))
+* **people:** skip episode credits.cast, add GuestStar API type, use TMDB order for cast weight ([94feffc](https://github.com/lostb1t/remux/commit/94feffc078ade0edd3885d3c81e918d2d67c9071))
+* **popularity:** improve trending algorithm with weighted split-window scoring ([7ca73eb](https://github.com/lostb1t/remux/commit/7ca73ebd2ebe7abb247491f3c4f5922202b862cf))
+* set streams_refreshed_at early in refresh to prevent date shifting when inserts are slow ([b7006f2](https://github.com/lostb1t/remux/commit/b7006f2038f50e19bd12164673d1828697211d0e))
+
+
+### Features
+
+* **migrations:** remove duplicate episode cast already present on series ([e0b21b1](https://github.com/lostb1t/remux/commit/e0b21b11bcbbb17e8c3eaf0d58ded412b44feadf))
+* **tasks:** enum-driven task categories with consistent sort order ([f0a7e97](https://github.com/lostb1t/remux/commit/f0a7e978bd13e093c60656b19fc9b54b7104f62e))
+
 # [0.11.0](https://github.com/lostb1t/remux/compare/v0.10.2...v0.11.0) (2026-07-01)
 
 
