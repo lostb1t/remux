@@ -192,9 +192,7 @@ impl StreamInfo {
             .or(self
                 .name
                 .as_deref())?;
-        hunch::hunch(src)
-            .screen_size()
-            .map(|s| s.to_owned())
+        crate::db::min_screen_size(&hunch::hunch(src)).map(|s| s.to_owned())
     }
 }
 

@@ -365,8 +365,7 @@ impl StreamGroup {
             None => return false,
         };
 
-        let resolution = parsed
-            .screen_size()
+        let resolution = min_screen_size(&parsed)
             .and_then(StreamResolution::from_hunch)
             .unwrap_or(StreamResolution::Unknown);
         let source = {
@@ -488,6 +487,25 @@ impl StreamGroup {
     }
 }
 
+/// Picks the lowest of hunch's screen-size candidates.
+///
+/// Filenames like "UHD BluRay 1080p ... x265" parse to multiple screen_size
+/// hits (hunch maps the bare word "UHD" to 2160p in addition to the literal
+/// 1080p token) because "UHD BluRay" credits the source disc, not the encode
+/// resolution. Encoders only ever downscale from source, never label a
+/// downscaled encode with a higher resolution, so the smaller candidate is
+/// always the real encode resolution when they disagree.
+pub(crate) fn min_screen_size<'a>(parsed: &'a hunch::HunchResult) -> Option<&'a str> {
+    parsed
+        .all(hunch::Property::ScreenSize)
+        .into_iter()
+        .min_by_key(|s| {
+            s.trim_end_matches(['p', 'i'])
+                .parse::<u32>()
+                .unwrap_or(u32::MAX)
+        })
+}
+
 fn auto_name(filter: &StreamFilter) -> String {
     let parts: Vec<String> = filter
         .rules
@@ -564,5 +582,68 @@ fn fallback_source(raw: &str) -> StreamQuality {
         StreamQuality::Dvd
     } else {
         StreamQuality::Unknown
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stream::StreamDescriptor;
+
+    fn group_1080p_bluray() -> StreamGroup {
+        StreamGroup {
+            id: Uuid::nil(),
+            name: "1080p · Blu-ray".to_string(),
+            filter: StreamFilter {
+                match_mode: FilterMatchMode::All,
+                rules: vec![
+                    StreamRule::Resolution {
+                        op: SetOp::In,
+                        values: vec![StreamResolution::R1080p],
+                    },
+                    StreamRule::Quality {
+                        op: SetOp::In,
+                        values: vec![StreamQuality::BluRay, StreamQuality::BluRayRemux],
+                    },
+                ],
+            },
+            priority: 0,
+            enabled: true,
+            hidden: false,
+            created_at: String::new(),
+        }
+    }
+
+    fn info(filename: &str) -> StreamInfo {
+        StreamInfo {
+            descriptor: StreamDescriptor::default(),
+            filename: Some(filename.to_string()),
+            ..Default::default()
+        }
+    }
+
+    // "UHD BluRay" credits the source disc; the explicit "1080p" token is the
+    // real encode resolution. These are real filenames that were falling
+    // through to Ungrouped before min_screen_size() was introduced.
+    #[test]
+    fn uhd_bluray_source_with_explicit_1080p_matches_1080p_group() {
+        let group = group_1080p_bluray();
+        assert!(group.matches(&info(
+            "The Martian 2015 Extended Cut UHD BluRay 1080p DD Atmos 5 1 DoVi HDR10 x265-SM737.mkv"
+        )));
+        assert!(group.matches(&info(
+            "The.Housemaid.2025.UHD.BluRay.1080p.DD+Atmos.5.1.DoVi.HDR10+.x265-SM737.mkv"
+        )));
+        assert!(group.matches(&info(
+            "The Housemaid 2025 REPACK UHD BluRay 1080p DD Atmos 5 1 DoVi HDR10 x265-SM737.mkv"
+        )));
+    }
+
+    #[test]
+    fn genuine_2160p_release_does_not_match_1080p_group() {
+        let group = group_1080p_bluray();
+        assert!(!group.matches(&info(
+            "The Martian 2015 UHD BluRay 2160p HDR10 DoVi Atmos x265-GROUP.mkv"
+        )));
     }
 }
