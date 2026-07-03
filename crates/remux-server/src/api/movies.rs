@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use axum::{Json, extract::State, response::IntoResponse};
 use axum_anyhow::ApiResult as Result;
@@ -55,27 +55,14 @@ pub(super) async fn build_recommendations(
     item_limit: u32,
 ) -> Result<Vec<api::RecommendationDto>> {
     // Recently played (up to 7), ordered by last played date.
-    let recently_played = db::Media::get_by_filter(
+    let recently_played = gather_recently_consumed(
         db,
-        &db::MediaFilter {
-            kind: Some(vec![kind.clone()]),
-            parent_id,
-            recursive: parent_id.is_some(),
-            user_id: Some(user_id),
-            user_state: Some(db::UserMediaStateFilter {
-                user_id: Some(user_id),
-                played: Some(true),
-                ..Default::default()
-            }),
-            sort_by: vec![api::ItemSortBy::DatePlayed],
-            sort_order: vec![api::SortOrder::Descending],
-            limit: Some(7),
-            total_count: false,
-            ..Default::default()
-        },
+        user_id,
+        kind.clone(),
+        parent_id,
+        7,
     )
-    .await?
-    .records;
+    .await?;
 
     let recently_played_ids: HashSet<Uuid> = recently_played
         .iter()
@@ -173,6 +160,134 @@ pub(super) async fn build_recommendations(
     }
 
     Ok(result)
+}
+
+async fn gather_recently_consumed(
+    db: &sqlx::SqlitePool,
+    user_id: Uuid,
+    kind: db::MediaKind,
+    parent_id: Option<Uuid>,
+    limit: usize,
+) -> Result<Vec<db::Media>> {
+    let mut baselines: Vec<db::Media> = Vec::new();
+    let mut consumed_ids: HashSet<Uuid> = HashSet::new();
+
+    let mut collect_from = |baselines: &mut Vec<db::Media>,
+                            consumed_ids: &mut HashSet<Uuid>,
+                            list: Vec<db::Media>| {
+        for item in list {
+            if consumed_ids.insert(item.id) {
+                baselines.push(item);
+            }
+        }
+    };
+
+    let played = db::Media::get_by_filter(
+        db,
+        &db::MediaFilter {
+            kind: Some(vec![kind.clone()]),
+            parent_id,
+            recursive: parent_id.is_some(),
+            user_state: Some(db::UserMediaStateFilter {
+                user_id: Some(user_id),
+                played: Some(true),
+                ..Default::default()
+            }),
+            sort_by: vec![api::ItemSortBy::DatePlayed],
+            sort_order: vec![api::SortOrder::Descending],
+            limit: Some(limit as u32),
+            total_count: false,
+            ..Default::default()
+        },
+    )
+    .await?
+    .records;
+    collect_from(&mut baselines, &mut consumed_ids, played);
+
+    if baselines.len() < limit {
+        let resumable = db::Media::get_by_filter(
+            db,
+            &db::MediaFilter {
+                kind: Some(vec![kind.clone()]),
+                parent_id,
+                recursive: parent_id.is_some(),
+                user_state: Some(db::UserMediaStateFilter {
+                    user_id: Some(user_id),
+                    resumable: Some(true),
+                    ..Default::default()
+                }),
+                sort_by: vec![api::ItemSortBy::DatePlayed],
+                sort_order: vec![api::SortOrder::Descending],
+                limit: Some(limit as u32),
+                total_count: false,
+                ..Default::default()
+            },
+        )
+        .await?
+        .records;
+        collect_from(&mut baselines, &mut consumed_ids, resumable);
+    }
+
+    if baselines.len() < limit {
+        let wanted = limit
+            .saturating_sub(baselines.len());
+        let events = db::WatchHistory::get_by_filter(
+            db,
+            &db::WatchHistoryFilter {
+                user_id: Some(user_id),
+                event_type: Some("playback_stop".to_string()),
+                limit: Some((wanted * 3) as u32),
+                total_count: false,
+                ..Default::default()
+            },
+        )
+        .await?
+        .records;
+
+        let mut media_ids = Vec::new();
+        for event in events {
+            if consumed_ids.insert(event.media_id) {
+                media_ids.push(event.media_id);
+            }
+            if media_ids.len() >= wanted * 3 {
+                break;
+            }
+        }
+
+        if !media_ids.is_empty() {
+            let mut media_by_id: HashMap<Uuid, db::Media> = HashMap::new();
+            for media in db::Media::get_by_filter(
+                db,
+                &db::MediaFilter {
+                    kind: Some(vec![kind.clone()]),
+                    parent_id,
+                    recursive: parent_id.is_some(),
+                    id: Some(media_ids.clone()),
+                    total_count: false,
+                    ..Default::default()
+                },
+            )
+            .await?
+            .records
+            {
+                media_by_id.insert(media.id, media);
+            }
+
+            let mut ordered = Vec::new();
+            for media_id in media_ids {
+                if let Some(media) = media_by_id.remove(&media_id) {
+                    ordered.push(media);
+                    if ordered.len() >= wanted {
+                        break;
+                    }
+                }
+            }
+            collect_from(&mut baselines, &mut consumed_ids, ordered);
+        }
+    }
+
+    baselines.truncate(limit);
+    Ok(baselines)
 }
 
 async fn build_similar_categories(
