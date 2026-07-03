@@ -2,35 +2,50 @@
 
 /* ── Design tokens ────────────────────────────────────────────────── */
 :root {
-  --bg:             #f2f2f2;
-  --bg-elevated:    #ffffff;
-  --panel:          #ffffff;
-  --panel-hover:    #f7f7f7;
-  --border:         #dddddd;
-  --border-hover:   #bbbbbb;
-  --primary:        #009245;
-  --primary-hover:  #007a38;
-  --primary-glow:   rgba(0, 146, 69, .15);
-  --primary-dim:    rgba(0, 146, 69, .08);
-  --text:           #111111;
-  --text-secondary: #555555;
-  --text-muted:     #777777;
-  --text-dim:       #aaaaaa;
-  --error:          #c0392b;
-  --error-glow:     rgba(192, 57, 43, .1);
-  --success:        #009245;
-  --info:           #2980b9;
-  --warning:        #e67e22;
+  color-scheme: dark;
+
+  --bg:             #070b10;
+  --bg-base:        #070b10;
+  --bg-primary:     #101820;
+  --bg-elevated:    #101820;
+  --bg-secondary:   #111b24;
+  --bg-tertiary:    #16222d;
+
+  --panel:          #101820;
+  --panel-hover:    #16222d;
+
+  --border:         #263442;
+  --border-hover:   #3a4f63;
+
+  --primary:        #00b85a;
+  --primary-hover:  #00d46a;
+  --primary-glow:   rgba(0, 184, 90, .20);
+  --primary-dim:    rgba(0, 184, 90, .10);
+
+  --text:           #eef5f1;
+  --text-primary:   #eef5f1;
+  --text-secondary: #b7c4bd;
+  --text-muted:     #8f9d96;
+  --text-dim:       #6f7f78;
+
+  --error:          #ff6b5f;
+  --error-glow:     rgba(255, 107, 95, .12);
+  --success:        #00b85a;
+  --info:           #4aa3ff;
+  --warning:        #ffb347;
+
   --font-head: "Inter", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", monospace;
+
   --radius-sm: 2px;
   --radius-md: 3px;
   --radius-lg: 4px;
-  --shadow-sm: 0 1px 3px rgba(0,0,0,.06);
-  --shadow-md: 0 2px 8px rgba(0,0,0,.10);
+
+  --shadow-sm: 0 1px 3px rgba(0,0,0,.40);
+  --shadow-md: 0 8px 24px rgba(0,0,0,.50);
+
   --transition: .1s ease;
 }
-
 /* ── Base ────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; }
 
@@ -303,8 +318,8 @@ html, body {
 }
 
 .btn-danger:hover {
-  background: #a93226;
-  border-color: #a93226;
+  background: #e85a50;
+  border-color: #e85a50;
 }
 
 /* ── Form ──────────────────────────────────────────────────────────── */
@@ -346,7 +361,7 @@ html, body {
 /* ── Alert ───────────────────────────────────────────────────────── */
 .alert-error {
   padding: 10px 13px;
-  border: 1px solid rgba(192, 57, 43, .4);
+  border: 1px solid rgba(255, 107, 95, .40);
   border-radius: var(--radius-sm);
   background: var(--error-glow);
   font-family: var(--font-mono);
@@ -357,7 +372,7 @@ html, body {
 
 .alert-success {
   padding: 10px 13px;
-  border: 1px solid rgba(0, 146, 69, .35);
+  border: 1px solid rgba(0, 184, 90, .35);
   border-radius: var(--radius-sm);
   background: var(--primary-dim);
   font-family: var(--font-mono);
@@ -523,13 +538,13 @@ html, body {
 
 .task-badge-completed {
   color: var(--success);
-  border-color: rgba(0, 146, 69, .35);
-  background: rgba(0, 146, 69, .06);
+  border-color: rgba(0, 184, 90, .35);
+  background: rgba(0, 184, 90, .06);
 }
 
 .task-badge-failed {
   color: var(--error);
-  border-color: rgba(192, 57, 43, .35);
+  border-color: rgba(255, 107, 95, .35);
   background: var(--error-glow);
 }
 
@@ -778,9 +793,9 @@ html, body {
 .update-banner {
   margin: 14px 28px 0;
   padding: 12px 14px;
-  border: 1px solid rgba(230, 126, 34, .55);
+  border: 1px solid rgba(255, 179, 71, .45);
   border-radius: var(--radius-sm);
-  background: rgba(230, 126, 34, .1);
+  background: rgba(255, 179, 71, .12);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1103,7 +1118,7 @@ html, body {
 
 .wizard-step-done {
   border-color: var(--success);
-  background: rgba(0, 146, 69, .1);
+  background: rgba(0, 184, 90, .10);
   color: var(--success);
 }
 
@@ -1605,7 +1620,7 @@ html, body {
   gap: 4px;
   padding: 2px 6px 2px 8px;
   background: var(--primary-dim);
-  border: 1px solid rgba(0, 146, 69, .3);
+  border: 1px solid rgba(0, 184, 90, .30);
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: .72rem;
@@ -1689,47 +1704,7 @@ html, body {
   border-top: 1px solid var(--border);
 }
 
-/* Dark dashboard theme
-   This overrides the existing light theme variables.
-   No Rust/UI code changes required.
-*/
 
-:root,
-:host {
-  color-scheme: dark;
-
-  --bg: #070b10;
-  --bg-base: #070b10;
-  --bg-elevated: #101820;
-  --bg-secondary: #111b24;
-  --bg-tertiary: #16222d;
-
-  --panel: #101820;
-  --panel-hover: #16222d;
-
-  --border: #263442;
-  --border-hover: #3a4f63;
-
-  --primary: #00b85a;
-  --primary-hover: #00d46a;
-  --primary-glow: #00b85a33;
-  --primary-dim: #00b85a18;
-
-  --text: #eef5f1;
-  --text-primary: #eef5f1;
-  --text-secondary: #b7c4bd;
-  --text-muted: #8f9d96;
-  --text-dim: #6f7f78;
-
-  --error: #ff6b5f;
-  --error-glow: #ff6b5f1f;
-  --success: #00b85a;
-  --info: #4aa3ff;
-  --warning: #ffb347;
-
-  --shadow-sm: 0 1px 3px #00000066;
-  --shadow-md: 0 8px 24px #00000080;
-}
 
 /* Tailwind utility row colors were hardcoded for light mode */
 .even\:bg-\[rgba\(0\,0\,0\,0\.02\)\]:nth-child(2n) {
