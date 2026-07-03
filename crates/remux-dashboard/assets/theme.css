@@ -1688,15 +1688,14 @@ html, body {
   padding: 10px 16px;
   border-top: 1px solid var(--border);
 }
-/* Dashboard theme switcher
-   Default: dark
-   Optional light mode: html[data-theme="light"]
+
+/* Dark dashboard theme
+   This overrides the existing light theme variables.
+   No Rust/UI code changes required.
 */
 
 :root,
-:root[data-theme="dark"],
-:host,
-:host[data-theme="dark"] {
+:host {
   color-scheme: dark;
 
   --bg: #070b10;
@@ -1732,55 +1731,14 @@ html, body {
   --shadow-md: 0 8px 24px #00000080;
 }
 
-/* Light mode values from the original dashboard theme */
-:root[data-theme="light"],
-:host[data-theme="light"] {
-  color-scheme: light;
-
-  --bg: #f2f2f2;
-  --bg-base: #f2f2f2;
-  --bg-elevated: #fff;
-  --bg-secondary: #f7f7f7;
-  --bg-tertiary: #eee;
-
-  --panel: #fff;
-  --panel-hover: #f7f7f7;
-
-  --border: #ddd;
-  --border-hover: #bbb;
-
-  --primary: #009245;
-  --primary-hover: #007a38;
-  --primary-glow: #00924526;
-  --primary-dim: #00924514;
-
-  --text: #111;
-  --text-primary: #111;
-  --text-secondary: #555;
-  --text-muted: #777;
-  --text-dim: #aaa;
-
-  --error: #c0392b;
-  --error-glow: #c0392b1a;
-  --success: #009245;
-  --info: #2980b9;
-  --warning: #e67e22;
-
-  --shadow-sm: 0 1px 3px #0000000f;
-  --shadow-md: 0 2px 8px #0000001a;
-}
-
-/* Hardcoded Tailwind row colors need theme-aware overrides */
-:root[data-theme="dark"] .even\:bg-\[rgba\(0\,0\,0\,0\.02\)\]:nth-child(2n),
-:root:not([data-theme="light"]) .even\:bg-\[rgba\(0\,0\,0\,0\.02\)\]:nth-child(2n) {
+/* Tailwind utility row colors were hardcoded for light mode */
+.even\:bg-\[rgba\(0\,0\,0\,0\.02\)\]:nth-child(2n) {
   background-color: rgba(255, 255, 255, 0.035);
 }
 
 @media (hover: hover) {
-  :root[data-theme="dark"] .hover\:bg-\[rgba\(0\,0\,0\,0\.03\)\]:hover,
-  :root[data-theme="dark"] .even\:hover\:bg-\[rgba\(0\,0\,0\,0\.03\)\]:nth-child(2n):hover,
-  :root:not([data-theme="light"]) .hover\:bg-\[rgba\(0\,0\,0\,0\.03\)\]:hover,
-  :root:not([data-theme="light"]) .even\:hover\:bg-\[rgba\(0\,0\,0\,0\.03\)\]:nth-child(2n):hover {
+  .hover\:bg-\[rgba\(0\,0\,0\,0\.03\)\]:hover,
+  .even\:hover\:bg-\[rgba\(0\,0\,0\,0\.03\)\]:nth-child(2n):hover {
     background-color: rgba(255, 255, 255, 0.06);
   }
 }
