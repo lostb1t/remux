@@ -1837,6 +1837,8 @@ impl Media {
         if items.is_empty() {
             return Ok(());
         }
+        
+        let now = chrono::Utc::now().naive_utc();
 
         for chunk in items.chunks(CHUNK_SIZE) {
             let _permit = DB_WRITE_SEMAPHORE
@@ -1884,7 +1886,7 @@ impl Media {
                     .push_bind(sqlx::types::Json(&item.external_ids))
                     .push_bind(sqlx::types::Json(&item.external_ratings))
                     .push_bind(&item.created_at)
-                    .push_bind(Utc::now())
+                    .push_bind(&now)
                     .push_bind(&item.certification)
                     .push_bind(&item.certification_age)
                     .push_bind(&item.parent_idx)
