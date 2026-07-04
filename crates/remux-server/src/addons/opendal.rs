@@ -1278,9 +1278,12 @@ async fn scan_addon(
                 .iter()
                 .any(|c| {
                     let lower = c.to_lowercase();
+                    let normalized = lower.trim_matches(|ch: char| {
+                        ch == '.' || ch == '[' || ch == ']' || ch.is_whitespace()
+                    });
                     SKIP_DIRS
                         .iter()
-                        .any(|s| lower == *s)
+                        .any(|s| normalized == *s)
                 })
             {
                 debug!(path, "opendal: skipping file in special-feature subdir");
