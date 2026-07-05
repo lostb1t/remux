@@ -1,3 +1,13 @@
+## [0.12.1](https://github.com/lostb1t/remux/compare/v0.12.0...v0.12.1) (2026-07-05)
+
+
+### Bug Fixes
+
+* **opendal:** normalize dotted/bracketed dir names before SKIP_DIRS check, fixes [#83](https://github.com/lostb1t/remux/issues/83) ([2fb114d](https://github.com/lostb1t/remux/commit/2fb114d6c63300cc8488d71af275da6a4ebcc909))
+* **streams:** resolve encode resolution instead of source-disc label for UHD BluRay filenames ([24d43b6](https://github.com/lostb1t/remux/commit/24d43b687346263eecfab16e6cdd894c55ecd6a8))
+* **transcode:** normalize AudioStreamIndex < 0 to None at transcode boundary ([fcf623a](https://github.com/lostb1t/remux/commit/fcf623aa3eb6a3cfce17fda69f73d89b7715571f))
+* **web_patches:** guard against non-string itemId in patched getItem ([ffd36c5](https://github.com/lostb1t/remux/commit/ffd36c58a3fcc92e08bc1e89225eeeeeaee45851))
+
 # [0.12.0](https://github.com/lostb1t/remux/compare/v0.11.0...v0.12.0) (2026-07-03)
 
 
