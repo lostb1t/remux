@@ -1485,7 +1485,8 @@ async fn videos_stream_inner(
             .map(|v| v as u32),
         audio_stream_index: q
             .audio_stream_index
-            .map(|v| v as i32),
+            .map(|v| v as i32)
+            .filter(|&v| v >= 0),
         subtitle_stream_index: q
             .subtitle_stream_index
             .map(|v| v as i32),

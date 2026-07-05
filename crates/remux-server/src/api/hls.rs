@@ -308,7 +308,8 @@ pub async fn master_hls_video(
             video_codec.clone(),
             audio_codec.clone(),
             q.audio_stream_index
-                .map(|v| v as i32),
+                .map(|v| v as i32)
+                .filter(|&v| v >= 0),
             q.subtitle_stream_index
                 .map(|v| v as i32),
             burn_subtitle,
@@ -374,7 +375,8 @@ pub async fn master_hls_video(
             audio_channels: if audio_codec == "copy" { None } else { Some(2) },
             audio_stream_index: q
                 .audio_stream_index
-                .map(|v| v as i32),
+                .map(|v| v as i32)
+                .filter(|&v| v >= 0),
             subtitle_stream_index: q
                 .subtitle_stream_index
                 .map(|v| v as i32),
