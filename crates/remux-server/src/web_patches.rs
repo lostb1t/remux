@@ -280,6 +280,10 @@ pub static JS: &str = r#"
 
     proto.getItem = function (userId, itemId) {
       var self = this;
+      // Guard: itemId may be non-string (e.g. undefined) when called from list-view play buttons.
+      if (typeof itemId !== 'string') {
+        return self.getJSON(self.getUrl('Users/' + userId + '/Items/' + itemId));
+      }
       var capturedId = itemId;
       // Strip dashes so we can match against both UUID formats in the URL.
       var capturedIdNoDash = itemId.replace(/-/g, '');
