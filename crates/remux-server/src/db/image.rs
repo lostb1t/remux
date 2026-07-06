@@ -86,8 +86,12 @@ impl MediaImage {
             .collect())
     }
 
-    /// Persist images using INSERT OR IGNORE
-    /// (preserves existing UUID — addon re-imports don't bust the cache).
+    /// Persist images from an addon meta refresh. Replaces an existing row only
+    /// when it currently holds a provider URL (path starts with "http") and the
+    /// new path differs — this lets a higher-priority addon's artwork win on
+    /// every refresh while never touching a user upload or generated
+    /// placeholder (local file paths). The `id` is regenerated on replace so
+    /// clients, which cache images by that id, pick up the new artwork.
     pub async fn sync_from_media(
         db: &SqlitePool,
         media_id: Uuid,
@@ -95,9 +99,16 @@ impl MediaImage {
     ) -> Result<(), sqlx::Error> {
         for image in images.iter() {
             sqlx::query(
-                "INSERT OR IGNORE INTO media_images \
+                "INSERT INTO media_images \
                  (id, media_id, image_type, image_index, path, width, height) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                 VALUES (?, ?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT (media_id, image_type, image_index) DO UPDATE SET \
+                   id = excluded.id, \
+                   path = excluded.path, \
+                   width = excluded.width, \
+                   height = excluded.height \
+                 WHERE media_images.path LIKE 'http%' \
+                   AND media_images.path <> excluded.path",
             )
             .bind(Uuid::new_v4())
             .bind(media_id)
@@ -253,5 +264,117 @@ impl From<Vec<MediaImage>> for MediaImages {
             }
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn test_db() -> SqlitePool {
+        let db = crate::db::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        crate::db::migrate(&db)
+            .await
+            .unwrap();
+        db
+    }
+
+    async fn insert_stub_media(db: &SqlitePool) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO media (id, title, kind, created_at, updated_at) \
+             VALUES (?, 'x', 'movie', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .bind(id)
+        .execute(db)
+        .await
+        .unwrap();
+        id
+    }
+
+    fn primary_image(path: &str) -> MediaImages {
+        MediaImages {
+            primary: vec![MediaImage {
+                id: Uuid::new_v4(),
+                media_id: Uuid::nil(),
+                image_type: "primary".into(),
+                image_index: 0,
+                path: path.into(),
+                width: None,
+                height: None,
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_image_replaced_but_local_upload_preserved() {
+        let db = test_db().await;
+        let media_id = insert_stub_media(&db).await;
+
+        // 1) Provider image (tmdb).
+        MediaImage::sync_from_media(&db, media_id, &primary_image("https://image.tmdb.org/a.jpg"))
+            .await
+            .unwrap();
+        let before = MediaImage::get_for_media(&db, &media_id)
+            .await
+            .unwrap();
+        let id_before = before
+            .get(ImageKind::Primary)
+            .unwrap()
+            .id;
+
+        // 2) Refresh with a higher-priority provider (another http URL) -> must
+        // replace the path AND change the id, so clients (which cache by id) see
+        // the new artwork.
+        MediaImage::sync_from_media(
+            &db,
+            media_id,
+            &primary_image("https://aio.example/a.jpg"),
+        )
+        .await
+        .unwrap();
+        let after = MediaImage::get_for_media(&db, &media_id)
+            .await
+            .unwrap();
+        let p = after
+            .get(ImageKind::Primary)
+            .unwrap();
+        assert_eq!(p.path, "https://aio.example/a.jpg");
+        assert_ne!(
+            p.id, id_before,
+            "id must change to bust the client-side image cache"
+        );
+
+        // 3) A user upload (local path) must win over any subsequent provider sync.
+        MediaImage::save(
+            &db,
+            media_id,
+            ImageKind::Primary,
+            "/data/img/user.jpg",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        MediaImage::sync_from_media(
+            &db,
+            media_id,
+            &primary_image("https://aio.example/b.jpg"),
+        )
+        .await
+        .unwrap();
+        let final_state = MediaImage::get_for_media(&db, &media_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            final_state
+                .get(ImageKind::Primary)
+                .unwrap()
+                .path,
+            "/data/img/user.jpg"
+        );
     }
 }
