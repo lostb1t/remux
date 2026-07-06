@@ -1967,8 +1967,12 @@ impl Media {
                 })
                 .collect();
             for img_chunk in chunk_images.chunks(500) {
+                // Provider rows (remote URL) are replaced so a higher-priority addon's
+                // artwork wins on refresh; user uploads / generated placeholders (local
+                // paths) are left untouched. See `MediaImage::sync_from_media` for the
+                // single-item equivalent of this guard.
                 let mut qb = sqlx::QueryBuilder::new(
-                    "INSERT OR IGNORE INTO media_images \
+                    "INSERT INTO media_images \
                      (id, media_id, image_type, image_index, path, width, height) ",
                 );
                 qb.push_values(img_chunk.iter(), |mut b, (media_id, img)| {
@@ -1980,6 +1984,13 @@ impl Media {
                         .push_bind(img.width)
                         .push_bind(img.height);
                 });
+                qb.push(
+                    " ON CONFLICT (media_id, image_type, image_index) DO UPDATE SET \
+                       id = excluded.id, path = excluded.path, \
+                       width = excluded.width, height = excluded.height \
+                     WHERE media_images.path LIKE 'http%' \
+                       AND media_images.path <> excluded.path",
+                );
                 qb.build()
                     .execute(&mut *tx)
                     .await?;
