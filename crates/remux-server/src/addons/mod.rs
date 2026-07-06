@@ -432,6 +432,21 @@ fn apply_meta(media: &mut db::Media, mut patch: db::Media, replace: bool) {
     }
 }
 
+/// Fuses meta patches from multiple addons into a single patch, where the
+/// highest-priority addon (earliest in `patches`) wins each field and later
+/// addons only fill in gaps it left empty. `patches` must be supplied in
+/// `priority ASC` order (highest priority first), matching `addons_for`.
+fn combine_meta_patches(patches: Vec<db::Media>) -> Option<db::Media> {
+    let mut it = patches.into_iter();
+    let mut acc = it.next()?;
+    for patch in it {
+        // replace=false: only fills fields still empty in `acc`, so the
+        // highest-priority addon (already in `acc`) keeps its values.
+        apply_meta(&mut acc, patch, false);
+    }
+    Some(acc)
+}
+
 // ---------------------------------------------------------------------------
 impl From<crate::stream::StreamInfo> for db::Media {
     fn from(si: crate::stream::StreamInfo) -> Self {
@@ -1432,8 +1447,14 @@ impl AddonService {
             .await;
 
         if applicable.is_empty() {
+            debug!("no meta addons applicable for this item");
             return Ok(());
         }
+
+        debug!(
+            addons = ?applicable.iter().map(|r| (r.row.name.clone(), r.row.priority)).collect::<Vec<_>>(),
+            "meta addons applicable, in apply order"
+        );
 
         let results = futures::future::join_all(
             applicable
@@ -1447,18 +1468,50 @@ impl AddonService {
         )
         .await;
 
+        // Collect patches in priority order (highest priority first); precedence
+        // between addons is resolved by `combine_meta_patches`, not by application
+        // order here.
+        let mut patches: Vec<db::Media> = Vec::new();
         for (r, result) in applicable
             .iter()
             .zip(results)
         {
             match result {
-                Ok(Some(patch)) => apply_meta(media, patch, force_refresh),
-                Ok(None) => {}
+                Ok(Some(patch)) => {
+                    debug!(
+                        addon = %r.row.name,
+                        primary = ?patch.images.primary.first().map(|i| &i.path),
+                        backdrop = ?patch.images.backdrop.first().map(|i| &i.path),
+                        logo = ?patch.images.logo.first().map(|i| &i.path),
+                        thumb = ?patch.images.thumb.first().map(|i| &i.path),
+                        "meta addon patch received"
+                    );
+                    patches.push(patch);
+                }
+                Ok(None) => debug!(addon = %r.row.name, "meta addon returned no patch"),
                 Err(e) => {
                     error!(addon = %r.row.name, error = %e, "meta addon error")
                 }
             }
         }
+
+        if let Some(mut combined) = combine_meta_patches(patches) {
+            // Images always follow addon priority, regardless of `force_refresh`:
+            // the highest-priority addon's artwork replaces whatever is already on
+            // `media`. User uploads/placeholders are protected at the persistence
+            // layer (local paths vs. provider URLs), not here.
+            let combined_images = std::mem::take(&mut combined.images);
+            if !combined_images.is_empty() {
+                media.images = combined_images;
+            }
+            apply_meta(media, combined, force_refresh);
+        }
+
+        debug!(
+            primary = ?media.images.get(db::ImageKind::Primary).map(|i| &i.path),
+            backdrop = ?media.images.get(db::ImageKind::Backdrop).map(|i| &i.path),
+            "images after merge"
+        );
 
         // Apply SxxExx / "Season N" title formatting once, after all patches are merged.
         // Calling it inside apply_meta would re-apply the prefix on every patch.
@@ -2266,4 +2319,68 @@ impl RemoteMediaStream for AddonCatalogStream {
 
 pub fn make_media_id(addon_id: Uuid, local_id: &str) -> String {
     format!("addon:{addon_id}:{local_id}")
+}
+
+#[cfg(test)]
+mod combine_meta_patches_tests {
+    use super::*;
+
+    fn img(path: &str) -> db::MediaImage {
+        db::MediaImage {
+            id: Uuid::new_v4(),
+            media_id: Uuid::nil(),
+            image_type: "primary".into(),
+            image_index: 0,
+            path: path.into(),
+            width: None,
+            height: None,
+        }
+    }
+
+    #[test]
+    fn highest_priority_provider_wins_per_field() {
+        // Order = priority ASC: aiometadata (highest priority) comes first.
+        let mut aiometa = db::Media {
+            title: "AIO".into(),
+            ..Default::default()
+        };
+        aiometa
+            .images
+            .primary = vec![img("https://aio.example/poster.jpg")];
+
+        let mut tmdb = db::Media {
+            title: "TMDB".into(),
+            description: Some("desc tmdb".into()),
+            ..Default::default()
+        };
+        tmdb.images
+            .primary = vec![img("https://image.tmdb.org/x.jpg")];
+
+        let combined = combine_meta_patches(vec![aiometa, tmdb]).unwrap();
+
+        // aiometadata wins the poster and the title; tmdb fills the description
+        // (a field aiometadata left empty).
+        assert_eq!(
+            combined
+                .images
+                .primary[0]
+                .path,
+            "https://aio.example/poster.jpg"
+        );
+        assert_eq!(combined.title, "AIO");
+        assert_eq!(
+            combined
+                .description
+                .as_deref(),
+            Some("desc tmdb")
+        );
+    }
+
+    #[test]
+    fn empty_patch_list_returns_none() {
+        assert!(
+            combine_meta_patches(vec![])
+                .is_none()
+        );
+    }
 }
