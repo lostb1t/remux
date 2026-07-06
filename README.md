@@ -90,12 +90,6 @@ Build jellyfin web
 cargo make jellyfin-web
 ```
 
-Fetch/build all supported web clients (Jellyfin)
-
-```
-cargo make web-clients
-```
-
 run
 
 ```
