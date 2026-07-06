@@ -78,6 +78,12 @@ Install cargo make
 cargo install --force cargo-make
 ```
 
+Install the dioxus cli
+
+```
+cargo install dioxus-cli
+```
+
 Build jellyfin web
 
 ```
