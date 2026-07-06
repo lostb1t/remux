@@ -1582,17 +1582,30 @@ impl AddonService {
     ) -> Result<()> {
         use futures::stream::{self, StreamExt};
         fn rss_mb() -> u64 {
+            #[cfg(target_os = "linux")]
+            {
+                std::fs::read_to_string("/proc/self/status")
+                    .ok()
+                    .and_then(|s| {
+                        s.lines()
+                            .find(|l| l.starts_with("VmRSS:"))
+                            .and_then(|l| {
+                                l.split_whitespace()
+                                    .nth(1)
+                            })
+                            .and_then(|v| {
+                                v.parse::<u64>()
+                                    .ok()
+                            })
+                    })
+                    .unwrap_or(0)
+                    / 1024
+            }
+            #[cfg(not(target_os = "linux"))]
             unsafe {
                 let mut info = std::mem::zeroed::<libc::rusage>();
                 libc::getrusage(libc::RUSAGE_SELF, &mut info);
-                #[cfg(target_os = "macos")]
-                {
-                    (info.ru_maxrss as u64) / (1024 * 1024)
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    (info.ru_maxrss as u64) / 1024
-                }
+                (info.ru_maxrss as u64) / (1024 * 1024)
             }
         }
 

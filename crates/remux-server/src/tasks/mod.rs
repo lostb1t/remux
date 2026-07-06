@@ -538,18 +538,35 @@ pub(super) fn iter_dir(
         .flatten()
 }
 
-/// Returns the process peak RSS in MiB (macOS: bytes; Linux: KiB).
+/// Returns the current RSS in MiB.
+/// Linux: reads VmRSS from /proc/self/status (current, can decrease).
+/// macOS: reads ru_maxrss from getrusage (peak, monotonically increasing).
 pub(super) fn rss_mb() -> u64 {
-    unsafe {
-        let mut info = std::mem::zeroed::<libc::rusage>();
-        libc::getrusage(libc::RUSAGE_SELF, &mut info);
-        #[cfg(target_os = "macos")]
-        {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("VmRSS:"))
+                    .and_then(|l| {
+                        l.split_whitespace()
+                            .nth(1)
+                    })
+                    .and_then(|v| {
+                        v.parse::<u64>()
+                            .ok()
+                    })
+            })
+            .unwrap_or(0)
+            / 1024
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        unsafe {
+            let mut info = std::mem::zeroed::<libc::rusage>();
+            libc::getrusage(libc::RUSAGE_SELF, &mut info);
             (info.ru_maxrss as u64) / (1024 * 1024)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            (info.ru_maxrss as u64) / 1024
         }
     }
 }
