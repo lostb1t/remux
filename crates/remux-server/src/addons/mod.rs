@@ -1448,17 +1448,29 @@ impl AddonService {
         )
         .await;
 
+        // Accumulate all addon patches into a fresh empty object so the
+        // highest-priority addon (first in list, lowest priority number) wins
+        // each field — later addons only fill gaps. The real `media` stays
+        // untouched until the combined result is applied once at the end,
+        // where `force_refresh` controls whether existing values are replaced.
+        let mut combined: Option<db::Media> = None;
         for (r, result) in applicable
             .iter()
             .zip(results)
         {
             match result {
-                Ok(Some(patch)) => apply_meta(media, patch, force_refresh),
+                Ok(Some(patch)) => {
+                    let acc = combined.get_or_insert_with(db::Media::default);
+                    apply_meta(acc, patch, false);
+                }
                 Ok(None) => {}
                 Err(e) => {
                     error!(addon = %r.row.name, error = %e, "meta addon error")
                 }
             }
+        }
+        if let Some(combined) = combined {
+            apply_meta(media, combined, force_refresh);
         }
 
         // Apply SxxExx / "Season N" title formatting once, after all patches are merged.
@@ -2316,4 +2328,161 @@ impl RemoteMediaStream for AddonCatalogStream {
 
 pub fn make_media_id(addon_id: Uuid, local_id: &str) -> String {
     format!("addon:{addon_id}:{local_id}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_image(path: &str) -> db::MediaImage {
+        db::MediaImage {
+            id: uuid::Uuid::new_v4(),
+            media_id: uuid::Uuid::nil(),
+            image_type: db::ImageKind::Primary.to_string(),
+            image_index: 0,
+            path: path.into(),
+            width: None,
+            height: None,
+        }
+    }
+
+    // Simulates the refresh_meta accumulation: patch multiple addon results
+    // into a fresh db::Media with replace=false, then apply once to `media`.
+    fn accumulate(patches: Vec<db::Media>, force_refresh: bool) -> db::Media {
+        let mut combined: Option<db::Media> = None;
+        for patch in patches {
+            let acc = combined.get_or_insert_with(db::Media::default);
+            apply_meta(acc, patch, false);
+        }
+        let mut media = db::Media::default();
+        if let Some(c) = combined {
+            apply_meta(&mut media, c, force_refresh);
+        }
+        media
+    }
+
+    #[test]
+    fn highest_priority_addon_wins_description() {
+        let high = db::Media {
+            description: Some("from high priority".into()),
+            ..Default::default()
+        };
+        let low = db::Media {
+            description: Some("from low priority".into()),
+            ..Default::default()
+        };
+        // high priority addon is first (lower priority number, ORDER BY priority ASC)
+        let result = accumulate(vec![high, low], true);
+        assert_eq!(
+            result
+                .description
+                .as_deref(),
+            Some("from high priority")
+        );
+    }
+
+    #[test]
+    fn lower_priority_addon_fills_gaps_left_by_higher() {
+        let high = db::Media {
+            description: None, // high priority addon has no description
+            ..Default::default()
+        };
+        let low = db::Media {
+            description: Some("fallback".into()),
+            ..Default::default()
+        };
+        let result = accumulate(vec![high, low], true);
+        assert_eq!(
+            result
+                .description
+                .as_deref(),
+            Some("fallback")
+        );
+    }
+
+    #[test]
+    fn highest_priority_addon_wins_primary_image() {
+        let mut high = db::Media::default();
+        high.images
+            .primary = vec![make_image("https://high.example/poster.jpg")];
+
+        let mut low = db::Media::default();
+        low.images
+            .primary = vec![make_image("https://low.example/poster.jpg")];
+
+        let result = accumulate(vec![high, low], true);
+        assert_eq!(
+            result
+                .images
+                .primary[0]
+                .path,
+            "https://high.example/poster.jpg"
+        );
+    }
+
+    #[test]
+    fn lower_priority_fills_missing_image_type() {
+        let mut high = db::Media::default();
+        high.images
+            .primary = vec![make_image("https://high.example/poster.jpg")];
+        // high priority has no backdrop
+
+        let mut low = db::Media::default();
+        low.images
+            .backdrop = vec![make_image("https://low.example/backdrop.jpg")];
+
+        let result = accumulate(vec![high, low], true);
+        assert_eq!(
+            result
+                .images
+                .primary[0]
+                .path,
+            "https://high.example/poster.jpg"
+        );
+        assert_eq!(
+            result
+                .images
+                .backdrop[0]
+                .path,
+            "https://low.example/backdrop.jpg"
+        );
+    }
+
+    #[test]
+    fn force_refresh_replaces_existing_media_values() {
+        let patch = db::Media {
+            description: Some("new description".into()),
+            ..Default::default()
+        };
+        let mut media = db::Media {
+            description: Some("old description".into()),
+            ..Default::default()
+        };
+        apply_meta(&mut media, patch, true);
+        assert_eq!(
+            media
+                .description
+                .as_deref(),
+            Some("new description")
+        );
+    }
+
+    #[test]
+    fn no_force_refresh_preserves_existing_media_values() {
+        let patch = db::Media {
+            description: Some("new description".into()),
+            ..Default::default()
+        };
+        let mut media = db::Media {
+            description: Some("old description".into()),
+            ..Default::default()
+        };
+        apply_meta(&mut media, patch, false);
+        assert_eq!(
+            media
+                .description
+                .as_deref(),
+            Some("old description")
+        );
+    }
 }
