@@ -1,8 +1,9 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
+use tracing::debug;
 
-use super::{ProgressReporter, Task, TaskCategory, TaskService};
+use super::{ProgressReporter, Task, TaskCategory, TaskService, rss_mb};
 use crate::{AppContext, db};
 
 pub struct RefreshAllMetaTask;
@@ -42,6 +43,12 @@ impl Task for RefreshAllMetaTask {
                 .await?;
         let total = total as usize;
 
+        debug!(
+            "[mem] RefreshAllMeta start: {}MB RSS, total={}",
+            rss_mb(),
+            total
+        );
+
         let mut processed = 0usize;
         let mut offset = 0u32;
         loop {
@@ -60,9 +67,19 @@ impl Task for RefreshAllMetaTask {
                 break;
             }
             let fetched = batch.len();
+            debug!(
+                "[mem] before process_meta_batch offset={}: {}MB RSS",
+                offset,
+                rss_mb()
+            );
             ctx.addons
                 .process_meta_batch(batch, &ctx, true)
                 .await?;
+            debug!(
+                "[mem] after process_meta_batch offset={}: {}MB RSS",
+                offset,
+                rss_mb()
+            );
             processed += fetched;
             progress.report(processed, total.max(1));
             if fetched < CHUNK_SIZE as usize {
@@ -70,6 +87,11 @@ impl Task for RefreshAllMetaTask {
             }
             offset += CHUNK_SIZE;
         }
+        debug!(
+            "[mem] RefreshAllMeta done: {}MB RSS, processed={}",
+            rss_mb(),
+            processed
+        );
         Ok(())
     }
 }

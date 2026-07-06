@@ -28,6 +28,7 @@ use std::{
 };
 
 use crate::keyed_lock::KeyedLock;
+use libc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -1580,6 +1581,20 @@ impl AddonService {
         force_refresh: bool,
     ) -> Result<()> {
         use futures::stream::{self, StreamExt};
+        fn rss_mb() -> u64 {
+            unsafe {
+                let mut info = std::mem::zeroed::<libc::rusage>();
+                libc::getrusage(libc::RUSAGE_SELF, &mut info);
+                #[cfg(target_os = "macos")]
+                {
+                    (info.ru_maxrss as u64) / (1024 * 1024)
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    (info.ru_maxrss as u64) / 1024
+                }
+            }
+        }
 
         let config = db::Settings::get_config_or_default(&ctx.db).await;
 
@@ -1603,6 +1618,13 @@ impl AddonService {
         // block; items from the next tree only arrive after the previous tree has
         // been yielded).
         let mut batch = vec![];
+        let mut total_flushed = 0usize;
+
+        debug!(
+            "[mem] process_meta_batch start concurrency={}: {}MB RSS",
+            concurrency,
+            rss_mb()
+        );
 
         while let Some(items) = stream
             .next()
@@ -1629,10 +1651,18 @@ impl AddonService {
                         error!(error = %e, "failed to upsert media batch");
                     }
                 }
+                total_flushed += db::CHUNK_SIZE;
+                debug!(
+                    "[mem] process_meta_batch flush flushed={} pending={}: {}MB RSS",
+                    total_flushed,
+                    batch.len(),
+                    rss_mb()
+                );
             }
         }
 
         if !batch.is_empty() {
+            let remaining = batch.len();
             match db::Media::upsert(&ctx.db, &batch).await {
                 Ok(_) => {
                     save_pending_relations(ctx, &batch).await;
@@ -1643,7 +1673,14 @@ impl AddonService {
                     error!(error = %e, "failed to upsert final media batch");
                 }
             }
+            total_flushed += remaining;
         }
+
+        debug!(
+            "[mem] process_meta_batch done total_flushed={}: {}MB RSS",
+            total_flushed,
+            rss_mb()
+        );
 
         Ok(())
     }

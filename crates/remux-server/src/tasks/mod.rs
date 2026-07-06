@@ -537,3 +537,19 @@ pub(super) fn iter_dir(
         .flatten()
         .flatten()
 }
+
+/// Returns the process peak RSS in MiB (macOS: bytes; Linux: KiB).
+pub(super) fn rss_mb() -> u64 {
+    unsafe {
+        let mut info = std::mem::zeroed::<libc::rusage>();
+        libc::getrusage(libc::RUSAGE_SELF, &mut info);
+        #[cfg(target_os = "macos")]
+        {
+            (info.ru_maxrss as u64) / (1024 * 1024)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            (info.ru_maxrss as u64) / 1024
+        }
+    }
+}
