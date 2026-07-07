@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use super::{ProgressReporter, rss_mb};
+use super::ProgressReporter;
 use crate::{AppContext, addons::ResolvedCatalog, db};
 
 /// Consume `stream`, fetching metadata + full tree for new items and upserting everything.
@@ -122,14 +122,6 @@ where
             .map(|m| m.id)
             .collect();
 
-        debug!(
-            "[mem] catalog {} chunk total={} new={} existing={}: {}MB RSS",
-            media_id,
-            total + new_items.len() + existing_items.len(),
-            new_items.len(),
-            existing_items.len(),
-            rss_mb()
-        );
         if let Err(e) = ctx
             .addons
             .process_meta_batch(new_items.clone(), ctx, true)
@@ -138,11 +130,6 @@ where
             error!(catalog = media_id, error = %e, "failed to process new items chunk");
             continue;
         }
-        debug!(
-            "[mem] catalog {} after process_meta_batch: {}MB RSS",
-            media_id,
-            rss_mb()
-        );
 
         for id in new_series_ids {
             db::reconcile_series_played_state(&ctx.db, id).await;

@@ -1636,12 +1636,6 @@ impl AddonService {
         let mut total_flushed = 0usize;
         let mut last_flush = std::time::Instant::now();
 
-        debug!(
-            "[mem] process_meta_batch start concurrency={}: {}MB RSS",
-            concurrency,
-            crate::tasks::rss_mb()
-        );
-
         while let Some(item) = merged
             .next()
             .await
@@ -1660,19 +1654,6 @@ impl AddonService {
                     Err(e) => error!(error = %e, "failed to upsert media batch"),
                 }
                 total_flushed += batch.len();
-                let (http_entries, http_weight) = sdks::http_cache_stats();
-                debug!(
-                    "[mem] process_meta_batch flush flushed={} flush_ms={} http_cache_entries={} http_cache_mb={} store_entries={} store_weight={}: {}MB RSS",
-                    total_flushed,
-                    flush_ms,
-                    http_entries,
-                    http_weight / 1024 / 1024,
-                    ctx.store
-                        .entry_count(),
-                    ctx.store
-                        .weighted_size(),
-                    crate::tasks::rss_mb()
-                );
                 batch.clear();
                 last_flush = std::time::Instant::now();
             }
@@ -1689,19 +1670,6 @@ impl AddonService {
                 Err(e) => error!(error = %e, "failed to upsert final media batch"),
             }
         }
-
-        let (http_entries, http_weight) = sdks::http_cache_stats();
-        debug!(
-            "[mem] process_meta_batch done total_flushed={} http_cache_entries={} http_cache_mb={} store_entries={} store_weight={}: {}MB RSS",
-            total_flushed,
-            http_entries,
-            http_weight / 1024 / 1024,
-            ctx.store
-                .entry_count(),
-            ctx.store
-                .weighted_size(),
-            crate::tasks::rss_mb()
-        );
 
         Ok(())
     }
