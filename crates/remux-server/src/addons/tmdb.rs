@@ -1756,7 +1756,6 @@ async fn fetch_tmdb_meta(
             {
                 // Use the SeasonEndpoint (already cached from get_tree) instead of
                 // a separate per-episode EpisodeEndpoint call.
-                let t_ep = std::time::Instant::now();
                 let season = client
                     .execute(
                         sdks::tmdb::SeasonEndpoint {
@@ -1768,7 +1767,6 @@ async fn fetch_tmdb_meta(
                         .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
-                let t_season_execute = t_ep.elapsed();
                 let Some(ep) = season
                     .episodes
                     .unwrap_or_default()
@@ -1777,15 +1775,6 @@ async fn fetch_tmdb_meta(
                 else {
                     return Ok(None);
                 };
-                let t_find = t_ep.elapsed();
-                tracing::debug!(
-                    series_id = tmdb_id,
-                    season = s_n,
-                    episode = e_n,
-                    season_execute_ms = t_season_execute.as_millis(),
-                    find_ms = (t_find - t_season_execute).as_millis(),
-                    "tmdb episode fetch timing"
-                );
                 return Ok(Some(db::Media::from(&ep)));
             }
         }

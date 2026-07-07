@@ -1435,27 +1435,13 @@ impl AddonService {
         force_refresh: bool,
         config: &api::ServerConfiguration,
     ) -> Result<()> {
-        let is_episode = media.kind == db::MediaKind::Episode;
-        let t0 = std::time::Instant::now();
-
         let applicable = self
             .addons_for::<dyn MetaAddon>(media)
             .await;
 
-        let t_addons_for = t0.elapsed();
-
         if applicable.is_empty() {
             return Ok(());
         }
-
-        let addon_names: Vec<&str> = applicable
-            .iter()
-            .map(|r| {
-                r.row
-                    .name
-                    .as_str()
-            })
-            .collect();
 
         let results = futures::future::join_all(
             applicable
@@ -1468,8 +1454,6 @@ impl AddonService {
                 }),
         )
         .await;
-
-        let t_join_all = t0.elapsed();
 
         // Accumulate all addon patches into a fresh empty object so the
         // highest-priority addon (first in list, lowest priority number) wins
@@ -1534,21 +1518,6 @@ impl AddonService {
 
         media.refreshed_at = Some(chrono::Utc::now().naive_utc());
 
-        if is_episode
-            && t0
-                .elapsed()
-                .as_millis()
-                > 50
-        {
-            tracing::debug!(
-                addons = ?addon_names,
-                addons_for_ms = t_addons_for.as_millis(),
-                join_all_ms = t_join_all.as_millis(),
-                total_ms = t0.elapsed().as_millis(),
-                "refresh_meta episode timing"
-            );
-        }
-
         Ok(())
     }
 
@@ -1568,15 +1537,6 @@ impl AddonService {
             let mut total_yielded = 0usize;
 
             while let Some(node) = queue.pop() {
-                debug!(
-                    root = %root_title,
-                    node_kind = %node.kind,
-                    node_title = %node.title,
-                    queue_len = queue.len(),
-                    seen_len = seen.len(),
-                    total_yielded,
-                    "get_tree: processing node"
-                );
                 let applicable: Vec<Arc<dyn TreeAddon>> = svc
                     .inner
                     .load()
@@ -1617,13 +1577,6 @@ impl AddonService {
                         .await
                     {
                         Ok(Some(children)) if !children.is_empty() => {
-                            debug!(
-                                root = %root_title,
-                                node_kind = %node.kind,
-                                node_title = %node.title,
-                                children_count = children.len(),
-                                "get_tree: get_children returned"
-                            );
                             for child in children {
                                 if seen.insert(child.id) {
                                     let is_leaf = matches!(
@@ -1742,23 +1695,13 @@ impl AddonService {
             let mut media = media;
             let original_id = media.id;
 
+            if let Err(e) = svc
+                .refresh_meta(&mut media, &ctx, force_refresh, &config)
+                .await
             {
-                let t = std::time::Instant::now();
-                if let Err(e) = svc
-                    .refresh_meta(&mut media, &ctx, force_refresh, &config)
-                    .await
-                {
-                    warn!(id = %media.id, error = %e, "failed to refresh metadata, keeping as-is");
-                    yield media;
-                    return;
-                }
-                debug!(
-                    id = %media.id,
-                    title = %media.title,
-                    kind = %media.kind,
-                    elapsed_ms = t.elapsed().as_millis(),
-                    "process_meta_item: refresh_meta root"
-                );
+                warn!(id = %media.id, error = %e, "failed to refresh metadata, keeping as-is");
+                yield media;
+                return;
             }
 
             // If this Person's ID was rewritten (name-keyed → tmdb-keyed) by refresh_meta,
@@ -1807,41 +1750,25 @@ impl AddonService {
 
             let mut had_children = false;
             {
-                debug!(id = %media.id, title = %media.title, kind = %media.kind, "process_meta_item: starting tree");
                 // Pass a clone of the root to get_tree — the stream owns it, so
                 // `media` is free to be yielded afterwards without borrow conflicts.
                 let root_clone = media.clone();
                 let mut tree = std::pin::pin!(svc.get_tree(root_clone, &ctx));
-                let mut child_count = 0usize;
                 while let Some(mut child) = futures::StreamExt::next(&mut tree).await {
                     had_children = true;
-                    child_count += 1;
                     if let Some(gp) = &gp_stub {
                         child.grandparent = Some(Box::new(gp.clone()));
                     }
                     if force_refresh || child.refreshed_at.is_none() {
-                        let t = std::time::Instant::now();
                         if let Err(e) = svc
                             .refresh_meta(&mut child, &ctx, force_refresh, &config)
                             .await
                         {
                             warn!(id = %child.id, error = %e, "failed to refresh child meta");
                         }
-                        let elapsed = t.elapsed();
-                        if elapsed.as_millis() > 100 || child_count <= 3 {
-                            debug!(
-                                title = %media.title,
-                                child_count,
-                                child_kind = %child.kind,
-                                child_title = %child.title,
-                                elapsed_ms = elapsed.as_millis(),
-                                "process_meta_item: refresh_meta child"
-                            );
-                        }
                     }
                     yield child;
                 }
-                debug!(id = %media.id, title = %media.title, child_count, "process_meta_item: tree done");
             }
 
             if !had_children && media.kind == db::MediaKind::Series {
