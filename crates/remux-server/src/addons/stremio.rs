@@ -728,7 +728,23 @@ async fn stremio_meta_fetch(
     }
 
     let meta_raw = meta.clone();
-    let medias: Vec<db::Media> = db::stremio_meta_to_medias(meta)?;
+    let medias_cache_key = format!("stremio_medias:{}", meta_id);
+    let medias: Vec<db::Media> = if let Some(cached) = ctx
+        .store
+        .get::<Vec<db::Media>>(&medias_cache_key)
+    {
+        cached
+    } else {
+        let m = db::stremio_meta_to_medias(meta)?;
+        ctx.store
+            .save_with_weight(
+                medias_cache_key,
+                m.clone(),
+                m.len() as u32,
+                Duration::from_secs(3600),
+            );
+        m
+    };
     let found = match media.kind {
         db::MediaKind::Movie => medias
             .into_iter()
