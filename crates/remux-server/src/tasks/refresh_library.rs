@@ -13,6 +13,7 @@ use super::{
     rss_mb,
 };
 use crate::{AppContext, db};
+use remux_sdks::stremio::ResourceType;
 
 pub struct RefreshLibraryTask;
 
@@ -85,6 +86,14 @@ impl Task for RefreshLibraryTask {
 
             for cat_info in available {
                 domain_collection_ids.insert(cat_info.collection_id);
+            }
+
+            if !runtime
+                .row
+                .resources
+                .contains(&ResourceType::Catalog)
+            {
+                continue;
             }
 
             let enabled: Vec<_> = available
