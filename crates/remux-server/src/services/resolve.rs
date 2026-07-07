@@ -256,6 +256,11 @@ impl MediaResolveService {
                 );
         }
 
+        // Already in DB — alias is saved above, skip the full tree sync.
+        if let Some(existing) = db::Media::get_by_id(&ctx.db, &resolved_id).await? {
+            return Ok(Some(existing));
+        }
+
         let config = std::sync::Arc::new(
             crate::db::Settings::get_config_or_default(&ctx.db).await,
         );
