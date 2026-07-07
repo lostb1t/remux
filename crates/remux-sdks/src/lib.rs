@@ -24,6 +24,11 @@ pub fn clear_http_cache() {
     HTTP_CACHE.clear();
 }
 
+/// Returns `(entry_count, weighted_size)` for the HTTP response cache.
+pub fn http_cache_stats() -> (u64, u64) {
+    (HTTP_CACHE.entry_count(), HTTP_CACHE.weighted_size())
+}
+
 fn hash_key(key: &str) -> String {
     let result = md5::compute(key.as_bytes());
     format!("{:x}", result)

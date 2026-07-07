@@ -127,6 +127,16 @@ impl Store {
             .invalidate(&key.into());
     }
 
+    pub fn entry_count(&self) -> u64 {
+        self.inner
+            .entry_count()
+    }
+
+    pub fn weighted_size(&self) -> u64 {
+        self.inner
+            .weighted_size()
+    }
+
     /// Scan all keys with a given prefix.
     pub fn scan_keys(&self, prefix: &str) -> Vec<String> {
         self.inner

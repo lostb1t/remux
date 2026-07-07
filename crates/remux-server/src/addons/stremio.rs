@@ -77,6 +77,9 @@ impl AddonPreset for StremioPreset {
         let addon = Arc::new(StremioAddon {
             manifest_url,
             client,
+            medias_cache: Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
         });
         Ok(AddonCapabilities {
             kind: Some(addon.clone()),
@@ -170,6 +173,8 @@ where
 pub struct StremioAddon {
     manifest_url: StremioManifestUrl,
     client: reqwest::Client,
+    medias_cache:
+        Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<Vec<db::Media>>>>>,
 }
 
 impl StremioAddon {
@@ -358,7 +363,14 @@ impl MetaAddon for StremioAddon {
         _config: &crate::api::ServerConfiguration,
     ) -> Result<Option<db::Media>> {
         let svc = self.service()?;
-        stremio_meta_fetch(&svc, media, ctx).await
+        stremio_meta_fetch(&svc, media, ctx, &self.medias_cache).await
+    }
+
+    fn on_series_done(&self, meta_id: &str) {
+        self.medias_cache
+            .lock()
+            .unwrap()
+            .remove(meta_id);
     }
 }
 
@@ -638,6 +650,9 @@ async fn stremio_meta_fetch(
     svc: &stremio_service::StremioService,
     media: &db::Media,
     ctx: &AppContext,
+    medias_cache: &std::sync::Mutex<
+        std::collections::HashMap<String, Arc<Vec<db::Media>>>,
+    >,
 ) -> Result<Option<db::Media>> {
     // Episodes with a TMDB ID already have full metadata from the season endpoint.
     // Fetching via Stremio would make one full series-meta API call per episode
@@ -712,46 +727,45 @@ async fn stremio_meta_fetch(
     }
 
     let meta_raw = meta.clone();
-    let medias_cache_key = format!("stremio_medias:{}", meta_id);
-    let medias: Vec<db::Media> = if let Some(cached) = ctx
-        .store
-        .get::<Vec<db::Media>>(&medias_cache_key)
-    {
-        cached
-    } else {
-        let m = db::stremio_meta_to_medias(meta)?;
-        ctx.store
-            .save_with_weight(
-                medias_cache_key,
-                m.clone(),
-                m.len() as u32,
-                Duration::from_secs(3600),
-            );
-        m
+    let medias: Arc<Vec<db::Media>> = {
+        let mut guard = medias_cache
+            .lock()
+            .unwrap();
+        if let Some(cached) = guard.get(&meta_id) {
+            Arc::clone(cached)
+        } else {
+            let m = Arc::new(db::stremio_meta_to_medias(meta)?);
+            guard.insert(meta_id.clone(), Arc::clone(&m));
+            m
+        }
     };
     let found = match media.kind {
         db::MediaKind::Movie => medias
-            .into_iter()
-            .find(|x| x.kind == db::MediaKind::Movie),
+            .iter()
+            .find(|x| x.kind == db::MediaKind::Movie)
+            .cloned(),
         db::MediaKind::Series => medias
-            .into_iter()
-            .find(|x| x.kind == db::MediaKind::Series),
+            .iter()
+            .find(|x| x.kind == db::MediaKind::Series)
+            .cloned(),
         db::MediaKind::Season => {
             let idx = media.idx;
             medias
-                .into_iter()
+                .iter()
                 .find(|x| x.kind == db::MediaKind::Season && x.idx == idx)
+                .cloned()
         }
         db::MediaKind::Episode => {
             let idx = media.idx;
             let parent_idx = media.parent_idx;
             medias
-                .into_iter()
+                .iter()
                 .find(|x| {
                     x.kind == db::MediaKind::Episode
                         && x.idx == idx
                         && x.parent_idx == parent_idx
                 })
+                .cloned()
         }
         _ => None,
     };

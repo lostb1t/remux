@@ -567,6 +567,9 @@ pub trait MetaAddon: Send + Sync {
         ctx: &AppContext,
         config: &api::ServerConfiguration,
     ) -> Result<Option<db::Media>>;
+    /// Called after all items for a given meta_id have been processed.
+    /// Addons can use this to evict per-series caches they built during the run.
+    fn on_series_done(&self, _meta_id: &str) {}
     /// Fetch remote image candidates for manual image selection in the UI.
     async fn images_fetch(
         &self,
@@ -1631,6 +1634,7 @@ impl AddonService {
 
         let mut batch: Vec<db::Media> = Vec::with_capacity(db::CHUNK_SIZE);
         let mut total_flushed = 0usize;
+        let mut last_flush = std::time::Instant::now();
 
         debug!(
             "[mem] process_meta_batch start concurrency={}: {}MB RSS",
@@ -1644,6 +1648,9 @@ impl AddonService {
         {
             batch.push(item);
             if batch.len() >= db::CHUNK_SIZE {
+                let flush_ms = last_flush
+                    .elapsed()
+                    .as_millis();
                 match db::Media::upsert(&ctx.db, &batch).await {
                     Ok(_) => {
                         save_pending_relations(ctx, &batch).await;
@@ -1653,12 +1660,21 @@ impl AddonService {
                     Err(e) => error!(error = %e, "failed to upsert media batch"),
                 }
                 total_flushed += batch.len();
+                let (http_entries, http_weight) = sdks::http_cache_stats();
                 debug!(
-                    "[mem] process_meta_batch flush flushed={} pending=0: {}MB RSS",
+                    "[mem] process_meta_batch flush flushed={} flush_ms={} http_cache_entries={} http_cache_mb={} store_entries={} store_weight={}: {}MB RSS",
                     total_flushed,
+                    flush_ms,
+                    http_entries,
+                    http_weight / 1024 / 1024,
+                    ctx.store
+                        .entry_count(),
+                    ctx.store
+                        .weighted_size(),
                     crate::tasks::rss_mb()
                 );
                 batch.clear();
+                last_flush = std::time::Instant::now();
             }
         }
 
@@ -1674,9 +1690,16 @@ impl AddonService {
             }
         }
 
+        let (http_entries, http_weight) = sdks::http_cache_stats();
         debug!(
-            "[mem] process_meta_batch done total_flushed={}: {}MB RSS",
+            "[mem] process_meta_batch done total_flushed={} http_cache_entries={} http_cache_mb={} store_entries={} store_weight={}: {}MB RSS",
             total_flushed,
+            http_entries,
+            http_weight / 1024 / 1024,
+            ctx.store
+                .entry_count(),
+            ctx.store
+                .weighted_size(),
             crate::tasks::rss_mb()
         );
 
@@ -1768,6 +1791,16 @@ impl AddonService {
                         }
                     }
                     yield child;
+                }
+
+                // Notify addons that all items for this series have been processed
+                // so they can evict per-series caches.
+                if let Some(meta_id) = media.external_ids.stremio_lookup_id() {
+                    for r in svc.inner.load().iter() {
+                        if let Some(ref meta_addon) = r.meta {
+                            meta_addon.on_series_done(&meta_id);
+                        }
+                    }
                 }
             }
 
