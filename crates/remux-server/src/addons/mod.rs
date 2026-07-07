@@ -1771,14 +1771,14 @@ impl AddonService {
                 None
             };
 
-            let mut had_children = false;
+            // Root always goes first — parent row must exist before children land in a
+            // later upsert chunk (PRAGMA defer_foreign_keys is per-transaction only).
+            yield media.clone();
+
             {
-                // Pass a clone of the root to get_tree — the stream owns it, so
-                // `media` is free to be yielded afterwards without borrow conflicts.
                 let root_clone = media.clone();
                 let mut tree = std::pin::pin!(svc.get_tree(root_clone, &ctx));
                 while let Some(mut child) = futures::StreamExt::next(&mut tree).await {
-                    had_children = true;
                     if let Some(gp) = &gp_stub {
                         child.grandparent = Some(Box::new(gp.clone()));
                     }
@@ -1803,13 +1803,6 @@ impl AddonService {
                     }
                 }
             }
-
-            if !had_children && media.kind == db::MediaKind::Series {
-                info!(id = %media.id, title = %media.title, "series has no seasons yet, skipping import");
-                return;
-            }
-
-            yield media;
         }
     }
 
