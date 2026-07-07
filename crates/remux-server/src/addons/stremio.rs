@@ -654,18 +654,6 @@ async fn stremio_meta_fetch(
         std::collections::HashMap<String, Arc<Vec<db::Media>>>,
     >,
 ) -> Result<Option<db::Media>> {
-    // Episodes with a TMDB ID already have full metadata from the season endpoint.
-    // Fetching via Stremio would make one full series-meta API call per episode
-    // (since stremio_lookup_id returns the series IMDB ID), which is very slow
-    // for large series.
-    if media.kind == db::MediaKind::Episode
-        && media
-            .external_ids
-            .tmdb
-            .is_some()
-    {
-        return Ok(None);
-    }
     // Prefer a real IMDB ID; fall back to custom_stremio_id for addon-owned content.
     let imdb_id = media
         .external_ids
