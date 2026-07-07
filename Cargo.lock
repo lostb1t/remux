@@ -6382,6 +6382,7 @@ dependencies = [
  "arc-swap",
  "argon2",
  "async-compression",
+ "async-stream",
  "async-trait",
  "axum",
  "axum-anyhow",

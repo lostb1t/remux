@@ -671,6 +671,16 @@ impl From<&sdks::tmdb::Season> for db::Media {
 
 impl From<&sdks::tmdb::Episode> for db::Media {
     fn from(ep: &sdks::tmdb::Episode) -> Self {
+        let external_ratings = db::ExternalRatings {
+            tmdb: ep
+                .vote_average
+                .map(|score| db::Rating {
+                    score,
+                    vote_count: ep
+                        .vote_count
+                        .map(|v| v as u32),
+                }),
+        };
         let mut media = db::Media {
             kind: db::MediaKind::Episode,
             title: format!("S{}E{} - {}", ep.season_number, ep.episode_number, ep.name),
@@ -687,6 +697,11 @@ impl From<&sdks::tmdb::Episode> for db::Media {
             released_at: ep
                 .air_date
                 .and_then(|d| d.and_hms_opt(0, 0, 0)),
+            runtime: ep
+                .runtime
+                .map(|r| r * 60),
+            rating_audience: external_ratings.audience_rating(),
+            external_ratings: Some(external_ratings),
             refreshed_at: Some(chrono::Utc::now().naive_utc()),
             ..Default::default()
         };
@@ -1739,178 +1754,28 @@ async fn fetch_tmdb_meta(
             if let (Some(tmdb_id), Some(s_n), Some(e_n)) =
                 (series_tmdb_id, season_number, episode_number)
             {
-                let ep_details = client
+                // Use the SeasonEndpoint (already cached from get_tree) instead of
+                // a separate per-episode EpisodeEndpoint call.
+                let season = client
                     .execute(
-                        sdks::tmdb::EpisodeEndpoint::new(tmdb_id, s_n, e_n)
-                            .with_cache(Duration::from_secs(360)),
+                        sdks::tmdb::SeasonEndpoint {
+                            series_id: tmdb_id,
+                            season_number: s_n,
+                            language: None,
+                            append_to_response: None,
+                        }
+                        .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
-                let tmdb_ext = ep_details
-                    .external_ids
-                    .as_ref();
-                let external_ids = db::ExternalIds {
-                    tmdb: Some(ep_details.id),
-                    imdb: tmdb_ext
-                        .and_then(|e| {
-                            e.imdb_id
-                                .as_deref()
-                        })
-                        .and_then(|s| db::NonEmptyString::try_new(s.to_string()).ok()),
-                    tvdb: tmdb_ext.and_then(|e| e.tvdb_id),
-                    ..Default::default()
-                };
-                let best_still = ep_details
-                    .images
-                    .as_ref()
-                    .and_then(|imgs| {
-                        imgs.stills
-                            .iter()
-                            .max_by(|a, b| {
-                                a.vote_average
-                                    .partial_cmp(&b.vote_average)
-                                    .unwrap_or(std::cmp::Ordering::Equal)
-                            })
-                            .map(|e| {
-                                e.file_path
-                                    .clone()
-                            })
-                    })
-                    .or_else(|| {
-                        ep_details
-                            .still_path
-                            .clone()
-                    });
-                let still_url =
-                    tmdb_image(best_still.as_deref(), db::ImageKind::Primary);
-                let external_ratings = db::ExternalRatings {
-                    tmdb: ep_details
-                        .vote_average
-                        .map(|score| db::Rating {
-                            score,
-                            vote_count: ep_details
-                                .vote_count
-                                .map(|v| v as u32),
-                        }),
-                };
-                let mut patch = db::Media {
-                    title: ep_details.name,
-                    description: ep_details.overview,
-                    released_at: ep_details
-                        .air_date
-                        .and_then(|d| d.and_hms_opt(0, 0, 0)),
-                    runtime: ep_details
-                        .runtime
-                        .map(|r| r * 60),
-                    rating_audience: external_ratings.audience_rating(),
-                    external_ratings: Some(external_ratings),
-                    external_ids: external_ids,
-                    ..Default::default()
-                };
-                if let Some(url) = still_url {
-                    patch.set_image(db::ImageKind::Primary, url.clone());
-                    patch.set_image(db::ImageKind::Backdrop, url);
-                }
-                let mut relations = vec![];
-                if let Some(guest_stars) = &ep_details.guest_stars {
-                    for (i, member) in guest_stars
-                        .iter()
-                        .enumerate()
-                    {
-                        let name = &member.name;
-                        let person_id = common::stable_media_uuid(
-                            &db::MediaKind::Person,
-                            &member
-                                .id
-                                .to_string(),
-                        );
-                        let mut person = db::Media {
-                            id: person_id,
-                            title: name.clone(),
-                            kind: db::MediaKind::Person,
-                            external_ids: db::ExternalIds {
-                                tmdb: Some(member.id),
-                                ..Default::default()
-                            },
-                            ..Default::default()
-                        };
-                        if let Some(url) = tmdb_image(
-                            member
-                                .profile_path
-                                .as_deref(),
-                            db::ImageKind::Primary,
-                        ) {
-                            person.set_image(db::ImageKind::Primary, url);
-                        }
-                        relations.push((
-                            db::MediaRelation {
-                                left_media_id: media.id,
-                                right_media_id: person_id,
-                                weight: Some(member.order as i64),
-                                role: Some(db::RelationRole::Actor),
-                                character: member
-                                    .character
-                                    .clone(),
-                                ..Default::default()
-                            },
-                            person,
-                        ));
-                    }
-                }
-                if let Some(credits) = &ep_details.credits {
-                    let base_weight = relations.len() as i64;
-                    let mut ep_relations = build_crew_relations(media.id, credits);
-                    for (rel, _) in &mut ep_relations {
-                        if let Some(w) = rel.weight {
-                            rel.weight = Some(base_weight + w);
-                        } else {
-                            rel.weight = Some(base_weight);
-                        }
-                    }
-                    relations.extend(ep_relations);
-                }
-                let series_genres: Vec<db::Media> = if let Some(genres) = media
-                    .grandparent
-                    .as_ref()
-                    .and_then(|g| {
-                        g.relations
-                            .as_ref()
-                    })
-                    .map(|rels| {
-                        rels.iter()
-                            .filter(|(_, m)| m.kind == db::MediaKind::Genre)
-                            .map(|(_, m)| m.clone())
-                            .collect::<Vec<_>>()
-                    })
-                    .filter(|v: &Vec<_>| !v.is_empty())
-                {
-                    genres
-                } else if let Some(grandparent_id) = media.grandparent_id {
-                    sqlx::query_as::<_, db::Media>(
-                        "SELECT m.* FROM media m
-                         JOIN media_relations r ON m.id = r.right_media_id
-                         WHERE r.left_media_id = ? AND m.kind = 'genre'",
-                    )
-                    .bind(grandparent_id)
-                    .fetch_all(&ctx.db)
-                    .await
+                let Some(ep) = season
+                    .episodes
                     .unwrap_or_default()
-                } else {
-                    vec![]
+                    .into_iter()
+                    .find(|e| e.episode_number == e_n)
+                else {
+                    return Ok(None);
                 };
-                for genre in series_genres {
-                    relations.push((
-                        db::MediaRelation {
-                            left_media_id: media.id,
-                            right_media_id: genre.id,
-                            ..Default::default()
-                        },
-                        genre,
-                    ));
-                }
-                if !relations.is_empty() {
-                    patch.relations = Some(relations);
-                }
-                return Ok(Some(patch));
+                return Ok(Some(db::Media::from(&ep)));
             }
         }
         db::MediaKind::Season => {

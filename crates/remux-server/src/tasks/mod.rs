@@ -30,7 +30,6 @@ mod refresh_iptv;
 mod refresh_library;
 mod refresh_popularity;
 mod series_sync;
-
 pub use crate::common::ProgressReporter;
 use clean_transcode_folder::CleanTranscodeFolderTask;
 use clear_cache::ClearCacheTask;
@@ -318,7 +317,6 @@ impl TaskService {
         service
             .register_task(Arc::new(PurgeMetricsTask))
             .await?;
-
         let triggers = db::TaskTrigger::get_all(
             &service
                 .ctx
@@ -536,37 +534,4 @@ pub(super) fn iter_dir(
         .into_iter()
         .flatten()
         .flatten()
-}
-
-/// Returns the current RSS in MiB.
-/// Linux: reads VmRSS from /proc/self/status (current, can decrease).
-/// macOS: reads ru_maxrss from getrusage (peak, monotonically increasing).
-pub(super) fn rss_mb() -> u64 {
-    #[cfg(target_os = "linux")]
-    {
-        std::fs::read_to_string("/proc/self/status")
-            .ok()
-            .and_then(|s| {
-                s.lines()
-                    .find(|l| l.starts_with("VmRSS:"))
-                    .and_then(|l| {
-                        l.split_whitespace()
-                            .nth(1)
-                    })
-                    .and_then(|v| {
-                        v.parse::<u64>()
-                            .ok()
-                    })
-            })
-            .unwrap_or(0)
-            / 1024
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        unsafe {
-            let mut info = std::mem::zeroed::<libc::rusage>();
-            libc::getrusage(libc::RUSAGE_SELF, &mut info);
-            (info.ru_maxrss as u64) / (1024 * 1024)
-        }
-    }
 }

@@ -10,9 +10,9 @@ use super::{
         import_catalog_items, prune_orphaned_playlists,
         remove_stale_catalog_memberships,
     },
-    rss_mb,
 };
 use crate::{AppContext, db};
+use remux_sdks::stremio::ResourceType;
 
 pub struct RefreshLibraryTask;
 
@@ -45,12 +45,9 @@ impl Task for RefreshLibraryTask {
             .catalog_max_items
             .unwrap_or(250) as usize;
 
-        debug!("[mem] RefreshLibrary start: {}MB RSS", rss_mb());
-
         ctx.addons
             .refresh_indexes(&ctx, progress.scaled(0.0, 20.0))
             .await?;
-        debug!("[mem] after refresh_indexes: {}MB RSS", rss_mb());
 
         // Keep in sync with the top-level kinds import_catalog_items() actually
         // persists (catalog_import_shared.rs's retain filter), minus TvChannel
@@ -85,6 +82,14 @@ impl Task for RefreshLibraryTask {
 
             for cat_info in available {
                 domain_collection_ids.insert(cat_info.collection_id);
+            }
+
+            if !runtime
+                .row
+                .resources
+                .contains(&ResourceType::Catalog)
+            {
+                continue;
             }
 
             let enabled: Vec<_> = available
@@ -153,7 +158,6 @@ impl Task for RefreshLibraryTask {
                 .await?;
 
                 info!(catalog = %full_id, total = ?counts, new = ?new_counts, "catalog import complete");
-                debug!("[mem] after catalog {}: {}MB RSS", full_id, rss_mb());
             }
         }
 
@@ -170,7 +174,6 @@ impl Task for RefreshLibraryTask {
             &domain_collection_ids,
         )
         .await;
-        debug!("[mem] after catalog prune/cleanup: {}MB RSS", rss_mb());
 
         const CHUNK_SIZE: u32 = 100;
         let mut total: Option<u32> = None;
@@ -193,19 +196,9 @@ impl Task for RefreshLibraryTask {
                 break;
             }
             let fetched = batch.len() as u32;
-            debug!(
-                "[mem] before meta_refresh offset={}: {}MB RSS",
-                offset,
-                rss_mb()
-            );
             ctx.addons
                 .process_meta_batch(batch, &ctx, false)
                 .await?;
-            debug!(
-                "[mem] after meta_refresh offset={}: {}MB RSS",
-                offset,
-                rss_mb()
-            );
             processed += fetched;
             if let Some(t) = total {
                 meta_progress.report(processed as usize, t as usize);
@@ -216,7 +209,6 @@ impl Task for RefreshLibraryTask {
             offset += CHUNK_SIZE;
         }
 
-        debug!("[mem] RefreshLibrary done: {}MB RSS", rss_mb());
         Ok(())
     }
 }
