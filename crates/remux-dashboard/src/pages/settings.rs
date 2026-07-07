@@ -18,7 +18,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut metadata_country = use_signal(|| "US".to_string());
     let mut countries: Signal<Vec<CountryInfo>> = use_signal(Vec::new);
     let mut catalog_max_items = use_signal(|| 100_i64);
-    let mut meta_concurrency = use_signal(|| 8_i64);
+    let mut meta_concurrency = use_signal(|| 12_i64);
     let mut filter_digital_release = use_signal(|| true);
     let mut digital_release_buffer = use_signal(|| 0_i64);
     let mut subtitle_languages = use_signal(String::new);
@@ -209,7 +209,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                                 },
                             }
                             p { class: "field-hint",
-                                "Number of items to enrich with metadata concurrently during library import. Higher values are faster but increase memory usage and may trigger rate limits on metadata sources. Default: 4."
+                                "Number of items to enrich with metadata concurrently during library import. Higher values are faster but increase memory usage and may trigger rate limits on metadata sources. Default: 12."
                             }
                         }
 
