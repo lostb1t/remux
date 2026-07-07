@@ -873,6 +873,13 @@ trait PickCap<T: ?Sized + Send + Sync> {
 #[async_trait]
 impl PickCap<dyn MetaAddon> for AddonRuntime {
     async fn pick(&self, media: &db::Media) -> bool {
+        if !self
+            .row
+            .resources
+            .contains(&ResourceType::Meta)
+        {
+            return false;
+        }
         let Some(cap) = self
             .caps
             .meta
@@ -1428,13 +1435,27 @@ impl AddonService {
         force_refresh: bool,
         config: &api::ServerConfiguration,
     ) -> Result<()> {
+        let is_episode = media.kind == db::MediaKind::Episode;
+        let t0 = std::time::Instant::now();
+
         let applicable = self
             .addons_for::<dyn MetaAddon>(media)
             .await;
 
+        let t_addons_for = t0.elapsed();
+
         if applicable.is_empty() {
             return Ok(());
         }
+
+        let addon_names: Vec<&str> = applicable
+            .iter()
+            .map(|r| {
+                r.row
+                    .name
+                    .as_str()
+            })
+            .collect();
 
         let results = futures::future::join_all(
             applicable
@@ -1447,6 +1468,8 @@ impl AddonService {
                 }),
         )
         .await;
+
+        let t_join_all = t0.elapsed();
 
         // Accumulate all addon patches into a fresh empty object so the
         // highest-priority addon (first in list, lowest priority number) wins
@@ -1510,80 +1533,121 @@ impl AddonService {
         }
 
         media.refreshed_at = Some(chrono::Utc::now().naive_utc());
+
+        if is_episode
+            && t0
+                .elapsed()
+                .as_millis()
+                > 50
+        {
+            tracing::debug!(
+                addons = ?addon_names,
+                addons_for_ms = t_addons_for.as_millis(),
+                join_all_ms = t_join_all.as_millis(),
+                total_ms = t0.elapsed().as_millis(),
+                "refresh_meta episode timing"
+            );
+        }
+
         Ok(())
     }
 
-    pub async fn get_tree(&self, root: &db::Media, ctx: &AppContext) -> Vec<db::Media> {
-        let mut seen: std::collections::HashSet<uuid::Uuid> =
-            std::collections::HashSet::new();
-        seen.insert(root.id);
-        let mut all = Vec::new();
-        let mut queue = vec![root.clone()];
+    pub fn get_tree(
+        &self,
+        root: db::Media,
+        ctx: &AppContext,
+    ) -> impl futures::Stream<Item = db::Media> + 'static {
+        let svc = self.clone();
+        let ctx = ctx.clone();
+        async_stream::stream! {
+            let mut seen = std::collections::HashSet::new();
+            seen.insert(root.id);
+            let root_title = root.title.clone();
+            let root_id = root.id;
+            let mut queue = vec![root];
+            let mut total_yielded = 0usize;
 
-        while let Some(node) = queue.pop() {
-            let applicable: Vec<Arc<dyn TreeAddon>> = self
-                .inner
-                .load()
-                .iter()
-                .filter_map(|r| {
-                    if !r
-                        .tree
-                        .as_ref()
-                        .map(|t| t.supports(&node))
-                        .unwrap_or(false)
-                    {
-                        return None;
-                    }
-                    // Apply the same meta idPrefixes guard used for MetaAddon.
-                    if let Some(prefixes) = r.resource_id_prefixes(&ResourceType::Meta)
-                    {
-                        let Some(id) = node
-                            .external_ids
-                            .stremio_lookup_id()
-                        else {
-                            return None;
-                        };
-                        if !prefixes
-                            .iter()
-                            .any(|p| id.starts_with(p.as_str()))
+            while let Some(node) = queue.pop() {
+                debug!(
+                    root = %root_title,
+                    node_kind = %node.kind,
+                    node_title = %node.title,
+                    queue_len = queue.len(),
+                    seen_len = seen.len(),
+                    total_yielded,
+                    "get_tree: processing node"
+                );
+                let applicable: Vec<Arc<dyn TreeAddon>> = svc
+                    .inner
+                    .load()
+                    .iter()
+                    .filter_map(|r| {
+                        if !r
+                            .tree
+                            .as_ref()
+                            .map(|t| t.supports(&node))
+                            .unwrap_or(false)
                         {
                             return None;
                         }
-                    }
-                    r.tree
-                        .as_ref()
-                        .cloned()
-                })
-                .collect();
-
-            for addon in &applicable {
-                match addon
-                    .get_children(&node, ctx)
-                    .await
-                {
-                    Ok(Some(children)) if !children.is_empty() => {
-                        for mut child in children {
-                            // dbg!(&child.title);
-                            //child.parent_id = Some(node.id);
-                            //if node.parent_id.is_some() {
-                            //  child.grandparent_id = node.parent_id;
-                            //}
-                            if seen.insert(child.id) {
-                                queue.push(child.clone());
-                                all.push(child);
+                        if let Some(prefixes) = r.resource_id_prefixes(&ResourceType::Meta)
+                        {
+                            let Some(id) = node
+                                .external_ids
+                                .stremio_lookup_id()
+                            else {
+                                return None;
+                            };
+                            if !prefixes
+                                .iter()
+                                .any(|p| id.starts_with(p.as_str()))
+                            {
+                                return None;
                             }
                         }
-                        break;
-                    }
-                    Ok(_) => continue,
-                    Err(e) => {
-                        warn!(id = %node.id, error = %e, "get_children failed");
-                        continue;
+                        r.tree
+                            .as_ref()
+                            .cloned()
+                    })
+                    .collect();
+
+                for addon in &applicable {
+                    match addon
+                        .get_children(&node, &ctx)
+                        .await
+                    {
+                        Ok(Some(children)) if !children.is_empty() => {
+                            debug!(
+                                root = %root_title,
+                                node_kind = %node.kind,
+                                node_title = %node.title,
+                                children_count = children.len(),
+                                "get_tree: get_children returned"
+                            );
+                            for child in children {
+                                if seen.insert(child.id) {
+                                    let is_leaf = matches!(
+                                        child.kind,
+                                        db::MediaKind::Episode | db::MediaKind::Track
+                                    );
+                                    if !is_leaf {
+                                        queue.push(child.clone());
+                                    }
+                                    total_yielded += 1;
+                                    yield child;
+                                }
+                            }
+                            break;
+                        }
+                        Ok(_) => continue,
+                        Err(e) => {
+                            warn!(id = %node.id, error = %e, "get_children failed");
+                            continue;
+                        }
                     }
                 }
             }
         }
-        all
     }
 
     pub async fn process_meta_batch(
@@ -1593,217 +1657,200 @@ impl AddonService {
         force_refresh: bool,
     ) -> Result<()> {
         use futures::stream::{self, StreamExt};
-        fn rss_mb() -> u64 {
-            #[cfg(target_os = "linux")]
-            {
-                std::fs::read_to_string("/proc/self/status")
-                    .ok()
-                    .and_then(|s| {
-                        s.lines()
-                            .find(|l| l.starts_with("VmRSS:"))
-                            .and_then(|l| {
-                                l.split_whitespace()
-                                    .nth(1)
-                            })
-                            .and_then(|v| {
-                                v.parse::<u64>()
-                                    .ok()
-                            })
-                    })
-                    .unwrap_or(0)
-                    / 1024
-            }
-            #[cfg(not(target_os = "linux"))]
-            unsafe {
-                let mut info = std::mem::zeroed::<libc::rusage>();
-                libc::getrusage(libc::RUSAGE_SELF, &mut info);
-                (info.ru_maxrss as u64) / (1024 * 1024)
-            }
-        }
 
         let config = db::Settings::get_config_or_default(&ctx.db).await;
-
         let concurrency = config.meta_concurrency as usize;
         let config = Arc::new(config);
 
-        let mut stream = stream::iter(media)
-            .map(|m| {
-                let cfg = Arc::clone(&config);
-                self.process_meta_item(m, ctx, force_refresh, cfg)
-            })
-            .buffer_unordered(concurrency);
+        let svc = self.clone();
+        let ctx_owned = ctx.clone();
 
-        // Cross-tree batching: accumulate items from multiple series' trees into a
-        // single batch and flush at CHUNK_SIZE.  This keeps peak memory bounded
-        // (at most CHUNK_SIZE × ~43 bind-parameter columns per flush) rather than
-        // holding one complete tree's items — a concern for very large series with
-        // thousands of episodes.  The FK on parent_id is satisfied within each
-        // chunk because series + seasons always sort before their child episodes
-        // in the accumulated batch (the series' own tree is yielded as a contiguous
-        // block; items from the next tree only arrive after the previous tree has
-        // been yielded).
-        let mut batch = vec![];
+        // flat_map_unordered drives up to `concurrency` process_meta_item streams
+        // simultaneously and yields individual db::Media items as they arrive — no
+        // tree is ever fully buffered in memory.
+        let mut merged =
+            stream::iter(media).flat_map_unordered(concurrency, move |m| {
+                let cfg = Arc::clone(&config);
+                let svc2 = svc.clone();
+                let ctx2 = ctx_owned.clone();
+                Box::pin(svc2.process_meta_item(m, ctx2, force_refresh, cfg))
+            });
+
+        let mut batch: Vec<db::Media> = Vec::with_capacity(db::CHUNK_SIZE);
         let mut total_flushed = 0usize;
 
         debug!(
             "[mem] process_meta_batch start concurrency={}: {}MB RSS",
             concurrency,
-            rss_mb()
+            crate::tasks::rss_mb()
         );
 
-        while let Some(items) = stream
+        while let Some(item) = merged
             .next()
             .await
         {
-            if items.is_empty() {
-                continue;
-            }
-
-            batch.extend(items);
-
-            while batch.len() >= db::CHUNK_SIZE {
-                let items: Vec<_> = batch
-                    .drain(..db::CHUNK_SIZE)
-                    .collect();
-
-                match db::Media::upsert(&ctx.db, &items).await {
+            batch.push(item);
+            if batch.len() >= db::CHUNK_SIZE {
+                match db::Media::upsert(&ctx.db, &batch).await {
                     Ok(_) => {
-                        save_pending_relations(ctx, &items).await;
-                        save_pending_tags(ctx, &items).await;
-                        save_pending_popularity(ctx, &items).await;
+                        save_pending_relations(ctx, &batch).await;
+                        save_pending_tags(ctx, &batch).await;
+                        save_pending_popularity(ctx, &batch).await;
                     }
-                    Err(e) => {
-                        error!(error = %e, "failed to upsert media batch");
-                    }
+                    Err(e) => error!(error = %e, "failed to upsert media batch"),
                 }
-                total_flushed += db::CHUNK_SIZE;
+                total_flushed += batch.len();
                 debug!(
-                    "[mem] process_meta_batch flush flushed={} pending={}: {}MB RSS",
+                    "[mem] process_meta_batch flush flushed={} pending=0: {}MB RSS",
                     total_flushed,
-                    batch.len(),
-                    rss_mb()
+                    crate::tasks::rss_mb()
                 );
+                batch.clear();
             }
         }
 
         if !batch.is_empty() {
-            let remaining = batch.len();
+            total_flushed += batch.len();
             match db::Media::upsert(&ctx.db, &batch).await {
                 Ok(_) => {
                     save_pending_relations(ctx, &batch).await;
                     save_pending_tags(ctx, &batch).await;
                     save_pending_popularity(ctx, &batch).await;
                 }
-                Err(e) => {
-                    error!(error = %e, "failed to upsert final media batch");
-                }
+                Err(e) => error!(error = %e, "failed to upsert final media batch"),
             }
-            total_flushed += remaining;
         }
 
         debug!(
             "[mem] process_meta_batch done total_flushed={}: {}MB RSS",
             total_flushed,
-            rss_mb()
+            crate::tasks::rss_mb()
         );
 
         Ok(())
     }
-    pub(crate) async fn process_meta_item(
+
+    pub(crate) fn process_meta_item(
         &self,
-        mut media: db::Media,
-        ctx: &AppContext,
+        media: db::Media,
+        ctx: AppContext,
         force_refresh: bool,
         config: Arc<api::ServerConfiguration>,
-    ) -> Vec<db::Media> {
-        let original_id = media.id;
+    ) -> impl futures::Stream<Item = db::Media> + 'static + use<> {
+        let svc = self.clone();
+        async_stream::stream! {
+            let mut media = media;
+            let original_id = media.id;
 
-        if let Err(e) = self
-            .refresh_meta(&mut media, ctx, force_refresh, &config)
-            .await
-        {
-            warn!(id = %media.id, error = %e, "failed to refresh metadata, keeping as-is");
-            return vec![media];
-        }
-
-        // If this Person's ID was rewritten (name-keyed → tmdb-keyed) by refresh_meta,
-        // delete the stale name-keyed row so it doesn't linger as a duplicate.
-        if media.kind == db::MediaKind::Person && media.id != original_id {
-            if let Err(e) = db::Media::delete(&ctx.db, &original_id).await {
-                warn!(
-                    old_id = %original_id,
-                    new_id = %media.id,
-                    error = %e,
-                    "failed to delete stale name-keyed person row"
-                );
-            }
-        }
-
-        let mut tree = self
-            .get_tree(&media, ctx)
-            .await;
-        if tree.is_empty() {
-            if media.kind == db::MediaKind::Series {
-                info!(id = %media.id, title = %media.title, "series has no seasons yet, skipping import");
-                return vec![];
-            }
-            return vec![media];
-        }
-
-        // Populate a minimal grandparent stub on tree children so their
-        // refresh_meta calls (Season → tmdb_id, Episode → tmdb_id + genres)
-        // find the resolved parent info in-memory instead of falling back
-        // to DB queries.
-        let has_series_ids = media
-            .external_ids
-            .tmdb
-            .is_some()
-            || media
-                .external_ids
-                .imdb
-                .is_some();
-        if has_series_ids {
-            let mut gp = db::Media::default();
-            gp.id = media.id;
-            gp.external_ids = media
-                .external_ids
-                .clone();
-            if let Some(rels) = media
-                .relations
-                .as_ref()
             {
-                let genre_rels: Vec<(db::MediaRelation, db::Media)> = rels
-                    .iter()
-                    .filter(|(_, m)| m.kind == db::MediaKind::Genre)
-                    .cloned()
-                    .collect();
-                if !genre_rels.is_empty() {
-                    gp.relations = Some(genre_rels);
-                }
-            }
-            for child in &mut tree {
-                child.grandparent = Some(Box::new(gp.clone()));
-            }
-        }
-
-        for item in &mut tree {
-            if force_refresh
-                || item
-                    .refreshed_at
-                    .is_none()
-            {
-                if let Err(e) = self
-                    .refresh_meta(item, ctx, force_refresh, &config)
+                let t = std::time::Instant::now();
+                if let Err(e) = svc
+                    .refresh_meta(&mut media, &ctx, force_refresh, &config)
                     .await
                 {
-                    warn!(id = %item.id, error = %e, "failed to refresh child meta");
+                    warn!(id = %media.id, error = %e, "failed to refresh metadata, keeping as-is");
+                    yield media;
+                    return;
+                }
+                debug!(
+                    id = %media.id,
+                    title = %media.title,
+                    kind = %media.kind,
+                    elapsed_ms = t.elapsed().as_millis(),
+                    "process_meta_item: refresh_meta root"
+                );
+            }
+
+            // If this Person's ID was rewritten (name-keyed → tmdb-keyed) by refresh_meta,
+            // delete the stale name-keyed row so it doesn't linger as a duplicate.
+            if media.kind == db::MediaKind::Person && media.id != original_id {
+                if let Err(e) = db::Media::delete(&ctx.db, &original_id).await {
+                    warn!(
+                        old_id = %original_id,
+                        new_id = %media.id,
+                        error = %e,
+                        "failed to delete stale name-keyed person row"
+                    );
                 }
             }
+
+            // Populate a minimal grandparent stub on tree children so their
+            // refresh_meta calls (Season → tmdb_id, Episode → tmdb_id + genres)
+            // find the resolved parent info in-memory instead of falling back
+            // to DB queries.
+            let has_series_ids = media
+                .external_ids
+                .tmdb
+                .is_some()
+                || media
+                    .external_ids
+                    .imdb
+                    .is_some();
+            let gp_stub: Option<db::Media> = if has_series_ids {
+                let mut gp = db::Media::default();
+                gp.id = media.id;
+                gp.external_ids = media.external_ids.clone();
+                if let Some(rels) = media.relations.as_ref() {
+                    let genre_rels: Vec<(db::MediaRelation, db::Media)> = rels
+                        .iter()
+                        .filter(|(_, m)| m.kind == db::MediaKind::Genre)
+                        .cloned()
+                        .collect();
+                    if !genre_rels.is_empty() {
+                        gp.relations = Some(genre_rels);
+                    }
+                }
+                Some(gp)
+            } else {
+                None
+            };
+
+            let mut had_children = false;
+            {
+                debug!(id = %media.id, title = %media.title, kind = %media.kind, "process_meta_item: starting tree");
+                // Pass a clone of the root to get_tree — the stream owns it, so
+                // `media` is free to be yielded afterwards without borrow conflicts.
+                let root_clone = media.clone();
+                let mut tree = std::pin::pin!(svc.get_tree(root_clone, &ctx));
+                let mut child_count = 0usize;
+                while let Some(mut child) = futures::StreamExt::next(&mut tree).await {
+                    had_children = true;
+                    child_count += 1;
+                    if let Some(gp) = &gp_stub {
+                        child.grandparent = Some(Box::new(gp.clone()));
+                    }
+                    if force_refresh || child.refreshed_at.is_none() {
+                        let t = std::time::Instant::now();
+                        if let Err(e) = svc
+                            .refresh_meta(&mut child, &ctx, force_refresh, &config)
+                            .await
+                        {
+                            warn!(id = %child.id, error = %e, "failed to refresh child meta");
+                        }
+                        let elapsed = t.elapsed();
+                        if elapsed.as_millis() > 100 || child_count <= 3 {
+                            debug!(
+                                title = %media.title,
+                                child_count,
+                                child_kind = %child.kind,
+                                child_title = %child.title,
+                                elapsed_ms = elapsed.as_millis(),
+                                "process_meta_item: refresh_meta child"
+                            );
+                        }
+                    }
+                    yield child;
+                }
+                debug!(id = %media.id, title = %media.title, child_count, "process_meta_item: tree done");
+            }
+
+            if !had_children && media.kind == db::MediaKind::Series {
+                info!(id = %media.id, title = %media.title, "series has no seasons yet, skipping import");
+                return;
+            }
+
+            yield media;
         }
-
-        tree.insert(0, media);
-
-        tree
     }
 
     pub async fn search(

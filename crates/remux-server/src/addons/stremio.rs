@@ -639,6 +639,18 @@ async fn stremio_meta_fetch(
     media: &db::Media,
     ctx: &AppContext,
 ) -> Result<Option<db::Media>> {
+    // Episodes with a TMDB ID already have full metadata from the season endpoint.
+    // Fetching via Stremio would make one full series-meta API call per episode
+    // (since stremio_lookup_id returns the series IMDB ID), which is very slow
+    // for large series.
+    if media.kind == db::MediaKind::Episode
+        && media
+            .external_ids
+            .tmdb
+            .is_some()
+    {
+        return Ok(None);
+    }
     // Prefer a real IMDB ID; fall back to custom_stremio_id for addon-owned content.
     let imdb_id = media
         .external_ids
@@ -654,6 +666,7 @@ async fn stremio_meta_fetch(
         .ok_or_else(|| anyhow!("no resolvable meta id for {}", media.id))?;
     let is_custom = imdb_id.is_none();
 
+    let t0 = std::time::Instant::now();
     let mut meta = if let Some(cached_meta) = ctx
         .store
         .get::<sdks::stremio::Meta>(
@@ -661,10 +674,17 @@ async fn stremio_meta_fetch(
                 .id
                 .to_string(),
         ) {
+        tracing::debug!(
+            kind = ?media.kind,
+            meta_id = %meta_id,
+            store_cache_hit = true,
+            elapsed_ms = t0.elapsed().as_millis(),
+            "stremio_meta_fetch timing"
+        );
         cached_meta
     } else {
         let media_type = sdks::stremio::MediaType::from(&media.kind);
-        match svc
+        let result = match svc
             .get_meta(media_type.clone(), meta_id.clone())
             .await
         {
@@ -681,7 +701,15 @@ async fn stremio_meta_fetch(
                 }
             }
             Err(e) => return Err(e),
-        }
+        };
+        tracing::debug!(
+            kind = ?media.kind,
+            meta_id = %meta_id,
+            store_cache_hit = false,
+            get_meta_ms = t0.elapsed().as_millis(),
+            "stremio_meta_fetch timing"
+        );
+        result
     };
 
     if meta

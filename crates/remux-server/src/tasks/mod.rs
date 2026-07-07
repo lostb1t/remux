@@ -30,6 +30,7 @@ mod refresh_iptv;
 mod refresh_library;
 mod refresh_popularity;
 mod series_sync;
+mod stress_meta;
 
 pub use crate::common::ProgressReporter;
 use clean_transcode_folder::CleanTranscodeFolderTask;
@@ -44,6 +45,7 @@ use refresh_iptv::RefreshIptvTask;
 use refresh_library::RefreshLibraryTask;
 use refresh_popularity::RefreshPopularityTask;
 use series_sync::SeriesSyncTask;
+use stress_meta::StressMetaTask;
 
 // --- Task category ---
 
@@ -318,6 +320,9 @@ impl TaskService {
         service
             .register_task(Arc::new(PurgeMetricsTask))
             .await?;
+        service
+            .register_task(Arc::new(StressMetaTask))
+            .await?;
 
         let triggers = db::TaskTrigger::get_all(
             &service
@@ -541,7 +546,7 @@ pub(super) fn iter_dir(
 /// Returns the current RSS in MiB.
 /// Linux: reads VmRSS from /proc/self/status (current, can decrease).
 /// macOS: reads ru_maxrss from getrusage (peak, monotonically increasing).
-pub(super) fn rss_mb() -> u64 {
+pub(crate) fn rss_mb() -> u64 {
     #[cfg(target_os = "linux")]
     {
         std::fs::read_to_string("/proc/self/status")

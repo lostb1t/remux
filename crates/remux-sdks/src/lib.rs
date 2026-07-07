@@ -257,13 +257,8 @@ impl<A: Auth + Clone> RestClient<A> {
             .cache_ttl()
             .is_some()
         {
-            if let Some(json) = HTTP_CACHE.get::<String>(&cache_key) {
-                let parse_body = if json.is_empty() { "null" } else { &json };
-                if let Ok(value) = serde_json::from_str::<EP::Output>(parse_body) {
-                    return Ok(value);
-                }
-                // Deserialization failed (e.g. schema changed) — fall through to re-fetch.
-                HTTP_CACHE.delete(&cache_key);
+            if let Some(value) = HTTP_CACHE.get::<EP::Output>(&cache_key) {
+                return Ok(value);
             }
         }
 
@@ -340,16 +335,15 @@ impl<A: Auth + Clone> RestClient<A> {
                             body: Some(text.clone()),
                         }
                     });
-                if result.is_ok() {
+                if let Ok(ref val) = result {
                     if let Some(ttl) = endpoint.cache_ttl() {
-                        // Store raw JSON — weight accurately reflects actual RAM used.
                         let weight = text
                             .len()
                             .min(u32::MAX as usize)
                             as u32;
                         HTTP_CACHE.save_with_weight(
                             cache_key,
-                            text.clone(),
+                            val.clone(),
                             weight,
                             ttl,
                         );

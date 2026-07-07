@@ -259,10 +259,13 @@ impl MediaResolveService {
         let config = std::sync::Arc::new(
             crate::db::Settings::get_config_or_default(&ctx.db).await,
         );
-        let processed = ctx
-            .addons
-            .process_meta_item(root, ctx, false, config)
-            .await;
+        let processed: Vec<db::Media> = {
+            use futures::StreamExt;
+            ctx.addons
+                .process_meta_item(root, ctx.clone(), false, config)
+                .collect()
+                .await
+        };
         if !processed.is_empty() {
             db::Media::upsert(&ctx.db, &processed)
                 .await

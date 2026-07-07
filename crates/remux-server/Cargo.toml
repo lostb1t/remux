@@ -81,6 +81,7 @@ remux-utils = { path = "../remux-utils" }
 isolang = { version = "2.4.0", features = ["list_languages"] }
 timed = "0.2.1"
 async-trait = "0.1.88"
+async-stream = "0.3"
 headers = "0.4.0"
 urlencoding = "2.1.3"
 url = "2.5.4"
