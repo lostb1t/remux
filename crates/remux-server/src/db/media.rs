@@ -1,6 +1,6 @@
 use super::{FilterResult, ImageKind, MediaImage, MediaImages, QueryBuilderExt};
 
-pub const CHUNK_SIZE: usize = 500;
+pub const CHUNK_SIZE: usize = 250;
 const SQLITE_VAR_LIMIT: usize = 999;
 
 static DB_WRITE_SEMAPHORE: std::sync::LazyLock<tokio::sync::Semaphore> =
@@ -5348,6 +5348,189 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
     }
 
     Ok(media_instances)
+}
+
+/// Extracts season-level `Media` items from a cached Stremio `Meta` without cloning
+/// the full response. Used by the streaming tree path where episodes are fetched
+/// per-season rather than all-at-once.
+pub fn stremio_meta_seasons(
+    meta: &crate::sdks::stremio::Meta,
+    series_id: Uuid,
+    series_external_ids: &ExternalIds,
+) -> Vec<Media> {
+    let imdb_id = series_external_ids
+        .imdb
+        .clone();
+    let custom_id = series_external_ids
+        .custom_stremio_id
+        .clone();
+
+    let Some(videos) = meta
+        .videos
+        .as_ref()
+    else {
+        return vec![];
+    };
+
+    // Collect unique season numbers with their first episode's release date.
+    let mut seasons_map: std::collections::BTreeMap<
+        i64,
+        &crate::sdks::stremio::Episode,
+    > = std::collections::BTreeMap::new();
+    for ep in videos {
+        if let Some(s) = ep.season {
+            seasons_map
+                .entry(s)
+                .or_insert(ep);
+        }
+    }
+
+    let mut out = Vec::with_capacity(seasons_map.len());
+    for (season_idx, first_ep) in seasons_map {
+        let (season_id, external_ids) = if let Some(ref iid) = imdb_id {
+            let id = Uuid::from(&super::MediaIdRaw {
+                kind: MediaKind::Season,
+                external_ids: ExternalIds {
+                    series_imdb: Some(iid.clone()),
+                    ..Default::default()
+                },
+                season: Some(season_idx),
+                episode: None,
+            });
+            let ext = ExternalIds {
+                series_imdb: Some(iid.clone()),
+                series_tmdb: series_external_ids.tmdb,
+                ..Default::default()
+            };
+            (id, ext)
+        } else if let Some(ref cid) = custom_id {
+            let id = Uuid::from(&super::MediaIdRaw {
+                kind: MediaKind::Season,
+                external_ids: ExternalIds {
+                    series_custom_stremio_id: Some(cid.clone()),
+                    ..Default::default()
+                },
+                season: Some(season_idx),
+                episode: None,
+            });
+            let ext = ExternalIds {
+                series_custom_stremio_id: Some(cid.clone()),
+                ..Default::default()
+            };
+            (id, ext)
+        } else {
+            continue;
+        };
+
+        let mut season = Media {
+            id: season_id,
+            title: format!("Season {}", season_idx),
+            kind: MediaKind::Season,
+            idx: Some(season_idx),
+            parent_id: Some(series_id),
+            grandparent_id: Some(series_id),
+            external_ids,
+            released_at: first_ep
+                .released
+                .map(|x| x.naive_utc()),
+            digital_released_at: first_ep
+                .released
+                .map(|x| x.naive_utc()),
+            ..Default::default()
+        };
+        if let Some(url) = meta.get_season_poster(season_idx) {
+            season.set_image(ImageKind::Primary, url);
+        }
+        out.push(season);
+    }
+    out
+}
+
+/// Extracts episode-level `Media` items for a single season from a cached Stremio `Meta`.
+/// Only the target season's videos are converted, keeping per-iteration allocations small.
+pub fn stremio_meta_season_episodes(
+    meta: &crate::sdks::stremio::Meta,
+    series_id: Uuid,
+    season_id: Uuid,
+    season_idx: i64,
+    series_external_ids: &ExternalIds,
+) -> Result<Vec<Media>> {
+    let imdb_id = series_external_ids
+        .imdb
+        .clone();
+    let custom_id = series_external_ids
+        .custom_stremio_id
+        .clone();
+
+    let Some(videos) = meta
+        .videos
+        .as_ref()
+    else {
+        return Ok(vec![]);
+    };
+
+    let mut out = Vec::new();
+    for ep in videos
+        .iter()
+        .filter(|e| e.season == Some(season_idx))
+    {
+        let ep_idx = ep
+            .episode
+            .unwrap_or(0);
+        let mut episode: Media = ep
+            .clone()
+            .try_into()?;
+
+        if let Some(ref iid) = imdb_id {
+            episode.id = Uuid::from(&super::MediaIdRaw {
+                kind: MediaKind::Episode,
+                external_ids: ExternalIds {
+                    series_imdb: Some(iid.clone()),
+                    ..Default::default()
+                },
+                season: Some(season_idx),
+                episode: Some(ep_idx),
+            });
+            episode.external_ids = ExternalIds {
+                series_imdb: Some(iid.clone()),
+                series_tmdb: series_external_ids.tmdb,
+                ..Default::default()
+            };
+        } else if let Some(ref cid) = custom_id {
+            episode.id = Uuid::from(&super::MediaIdRaw {
+                kind: MediaKind::Episode,
+                external_ids: ExternalIds {
+                    series_custom_stremio_id: Some(cid.clone()),
+                    ..Default::default()
+                },
+                season: Some(season_idx),
+                episode: Some(ep_idx),
+            });
+            episode.external_ids = ExternalIds {
+                series_custom_stremio_id: Some(cid.clone()),
+                ..Default::default()
+            };
+        }
+
+        episode.idx = ep.episode;
+        episode.parent_idx = Some(season_idx);
+        episode.parent_id = Some(season_id);
+        episode.grandparent_id = Some(series_id);
+        episode.released_at = ep
+            .released
+            .map(|x| x.naive_utc());
+        episode.digital_released_at = ep
+            .released
+            .map(|x| x.naive_utc());
+
+        let rels = build_episode_relations_from_ep(&episode, ep);
+        if !rels.is_empty() {
+            episode.relations = Some(rels);
+        }
+
+        out.push(episode);
+    }
+    Ok(out)
 }
 
 /// Return the release-date WHERE fragment for use in raw `format!` SQL strings.

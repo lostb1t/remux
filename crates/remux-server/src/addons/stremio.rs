@@ -173,8 +173,12 @@ where
 pub struct StremioAddon {
     manifest_url: StremioManifestUrl,
     client: reqwest::Client,
-    medias_cache:
-        Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<Vec<db::Media>>>>>,
+    /// Raw Stremio `Meta` cached per series lookup-id for the duration of one tree sync.
+    /// Shared between the tree-children path and `stremio_meta_fetch` so the API is
+    /// called exactly once per series. Evicted by `on_series_done`.
+    medias_cache: Arc<
+        std::sync::Mutex<std::collections::HashMap<String, Arc<sdks::stremio::Meta>>>,
+    >,
 }
 
 impl StremioAddon {
@@ -377,7 +381,7 @@ impl MetaAddon for StremioAddon {
 #[async_trait]
 impl TreeAddon for StremioAddon {
     fn supports(&self, root: &db::Media) -> bool {
-        root.kind == db::MediaKind::Series
+        matches!(root.kind, db::MediaKind::Series | db::MediaKind::Season)
     }
 
     async fn get_children(
@@ -385,15 +389,85 @@ impl TreeAddon for StremioAddon {
         root: &db::Media,
         ctx: &AppContext,
     ) -> Result<Option<Vec<db::Media>>> {
-        if root.kind != db::MediaKind::Series {
-            return Ok(None);
-        }
-        let svc = self.service()?;
-        let children = stremio_sync_children(&svc, root, ctx).await?;
-        if children.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(children))
+        match root.kind {
+            db::MediaKind::Series => {
+                let svc = self.service()?;
+                let meta_arc =
+                    fetch_and_cache_meta(&svc, root, &self.medias_cache, ctx).await?;
+                let seasons =
+                    db::stremio_meta_seasons(&meta_arc, root.id, &root.external_ids);
+                if seasons.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(seasons))
+                }
+            }
+            db::MediaKind::Season => {
+                let meta_id = root
+                    .external_ids
+                    .stremio_lookup_id()
+                    .ok_or_else(|| {
+                        anyhow!("season {} has no resolvable meta id", root.id)
+                    })?;
+                let meta_arc = self
+                    .medias_cache
+                    .lock()
+                    .unwrap()
+                    .get(&meta_id)
+                    .cloned();
+                let Some(meta_arc) = meta_arc else {
+                    return Ok(None);
+                };
+                let season_idx = match root.idx {
+                    Some(i) => i,
+                    None => return Ok(None),
+                };
+                // Rebuild series external_ids from what the season carries.
+                let series_external_ids = db::ExternalIds {
+                    imdb: root
+                        .external_ids
+                        .series_imdb
+                        .clone(),
+                    tmdb: root
+                        .external_ids
+                        .series_tmdb,
+                    custom_stremio_id: root
+                        .external_ids
+                        .series_custom_stremio_id
+                        .clone(),
+                    ..Default::default()
+                };
+                let series_id = root
+                    .grandparent_id
+                    .ok_or_else(|| {
+                        anyhow!("season {} missing grandparent_id", root.id)
+                    })?;
+                let mut episodes = db::stremio_meta_season_episodes(
+                    &meta_arc,
+                    series_id,
+                    root.id,
+                    season_idx,
+                    &series_external_ids,
+                )?;
+                let now = chrono::Utc::now().naive_utc();
+                for ep in &mut episodes {
+                    if let Some(ep_num) = ep.idx {
+                        if let Some(s_num) = ep.parent_idx {
+                            ep.title = format!("S{}E{} - {}", s_num, ep_num, ep.title);
+                        } else {
+                            ep.title = format!("E{} - {}", ep_num, ep.title);
+                        }
+                    }
+                    // Mark refreshed so TMDB isn't called per-episode during tree sync.
+                    ep.refreshed_at = Some(now);
+                }
+                if episodes.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(episodes))
+                }
+            }
+            _ => Ok(None),
         }
     }
 }
@@ -646,50 +720,62 @@ fn is_404(e: &anyhow::Error) -> bool {
 // Meta helpers
 // ---------------------------------------------------------------------------
 
-async fn stremio_meta_fetch(
+/// Fetch the raw Stremio `Meta` for `media`, storing it in `cache` keyed by
+/// the series-level lookup id. Returns the cached `Arc` immediately if present.
+async fn fetch_and_cache_meta(
     svc: &stremio_service::StremioService,
     media: &db::Media,
-    ctx: &AppContext,
-    medias_cache: &std::sync::Mutex<
-        std::collections::HashMap<String, Arc<Vec<db::Media>>>,
+    cache: &std::sync::Mutex<
+        std::collections::HashMap<String, Arc<sdks::stremio::Meta>>,
     >,
-) -> Result<Option<db::Media>> {
-    // Prefer a real IMDB ID; fall back to custom_stremio_id for addon-owned content.
-    let imdb_id = media
-        .external_ids
-        .series_imdb
-        .clone()
-        .or(media
-            .external_ids
-            .imdb
-            .clone());
+    ctx: &AppContext,
+) -> Result<Arc<sdks::stremio::Meta>> {
     let meta_id: String = media
         .external_ids
         .stremio_lookup_id()
         .ok_or_else(|| anyhow!("no resolvable meta id for {}", media.id))?;
-    let is_custom = imdb_id.is_none();
 
-    let mut meta = if let Some(cached_meta) = ctx
+    if let Some(cached) = cache
+        .lock()
+        .unwrap()
+        .get(&meta_id)
+        .cloned()
+    {
+        return Ok(cached);
+    }
+
+    let is_custom = media
+        .external_ids
+        .imdb
+        .is_none()
+        && media
+            .external_ids
+            .series_imdb
+            .is_none();
+    let media_type = sdks::stremio::MediaType::from(&media.kind);
+    let meta = if let Some(stored) = ctx
         .store
         .get::<sdks::stremio::Meta>(
             media
                 .id
                 .to_string(),
         ) {
-        cached_meta
+        stored
     } else {
-        let media_type = sdks::stremio::MediaType::from(&media.kind);
         match svc
             .get_meta(media_type.clone(), meta_id.clone())
             .await
         {
             Ok(m) => m,
             Err(e) if is_404(&e) && !is_custom => {
-                if let Some(tmdb_id) = media
+                let tmdb_id = media
                     .external_ids
                     .tmdb
-                {
-                    svc.get_meta(media_type, format!("tmdb:{}", tmdb_id))
+                    .or(media
+                        .external_ids
+                        .series_tmdb);
+                if let Some(tid) = tmdb_id {
+                    svc.get_meta(media_type, format!("tmdb:{}", tid))
                         .await?
                 } else {
                     return Err(e);
@@ -699,71 +785,122 @@ async fn stremio_meta_fetch(
         }
     };
 
-    if meta
+    let arc = Arc::new(meta);
+    cache
+        .lock()
+        .unwrap()
+        .insert(meta_id, Arc::clone(&arc));
+    Ok(arc)
+}
+
+async fn stremio_meta_fetch(
+    svc: &stremio_service::StremioService,
+    media: &db::Media,
+    ctx: &AppContext,
+    medias_cache: &std::sync::Mutex<
+        std::collections::HashMap<String, Arc<sdks::stremio::Meta>>,
+    >,
+) -> Result<Option<db::Media>> {
+    let imdb_id = media
+        .external_ids
+        .series_imdb
+        .clone()
+        .or(media
+            .external_ids
+            .imdb
+            .clone());
+    let is_custom = imdb_id.is_none();
+
+    let meta_arc = fetch_and_cache_meta(svc, media, medias_cache, ctx).await?;
+
+    // Patch imdb_id into a mutable clone for root-level conversion and relations.
+    let mut meta_patched = (*meta_arc).clone();
+    if meta_patched
         .imdb_id
         .is_none()
         && !is_custom
     {
-        meta.imdb_id = db::ExternalIds::from_stremio_id(&meta.id)
+        meta_patched.imdb_id = db::ExternalIds::from_stremio_id(&meta_patched.id)
             .imdb
             .map(Into::into)
-            .or_else(|| {
-                imdb_id
-                    .clone()
-                    .map(Into::into)
-            });
+            .or_else(|| imdb_id.map(Into::into));
     }
 
-    let meta_raw = meta.clone();
-    let medias: Arc<Vec<db::Media>> = {
-        let mut guard = medias_cache
-            .lock()
-            .unwrap();
-        if let Some(cached) = guard.get(&meta_id) {
-            Arc::clone(cached)
-        } else {
-            let m = Arc::new(db::stremio_meta_to_medias(meta)?);
-            guard.insert(meta_id.clone(), Arc::clone(&m));
-            m
+    match media.kind {
+        db::MediaKind::Movie | db::MediaKind::Series => {
+            let mut found =
+                db::Media::try_from(meta_patched.clone()).map_err(|e| anyhow!(e))?;
+            // Preserve the persisted ID — try_from recomputes it from external_ids.
+            found.id = media.id;
+            let relations = build_relations(media, &meta_patched);
+            if !relations.is_empty() {
+                found.relations = Some(relations);
+            }
+            Ok(Some(found))
         }
-    };
-    let found = match media.kind {
-        db::MediaKind::Movie => medias
-            .iter()
-            .find(|x| x.kind == db::MediaKind::Movie)
-            .cloned(),
-        db::MediaKind::Series => medias
-            .iter()
-            .find(|x| x.kind == db::MediaKind::Series)
-            .cloned(),
         db::MediaKind::Season => {
-            let idx = media.idx;
-            medias
-                .iter()
-                .find(|x| x.kind == db::MediaKind::Season && x.idx == idx)
-                .cloned()
+            let series_id = media
+                .grandparent_id
+                .or(media.parent_id)
+                .ok_or_else(|| anyhow!("season {} missing grandparent_id", media.id))?;
+            let series_external_ids = db::ExternalIds {
+                imdb: media
+                    .external_ids
+                    .series_imdb
+                    .clone(),
+                tmdb: media
+                    .external_ids
+                    .series_tmdb,
+                custom_stremio_id: media
+                    .external_ids
+                    .series_custom_stremio_id
+                    .clone(),
+                ..Default::default()
+            };
+            let seasons =
+                db::stremio_meta_seasons(&meta_arc, series_id, &series_external_ids);
+            Ok(seasons
+                .into_iter()
+                .find(|s| s.idx == media.idx))
         }
         db::MediaKind::Episode => {
-            let idx = media.idx;
-            let parent_idx = media.parent_idx;
-            medias
-                .iter()
-                .find(|x| {
-                    x.kind == db::MediaKind::Episode
-                        && x.idx == idx
-                        && x.parent_idx == parent_idx
-                })
-                .cloned()
-        }
-        _ => None,
-    };
-
-    if let Some(mut found_media) = found {
-        let relations =
-            if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
-                build_relations(media, &meta_raw)
-            } else if media.kind == db::MediaKind::Episode {
-                if let Some(meta_ep) = meta_raw
+            let series_id = media
+                .grandparent_id
+                .ok_or_else(|| {
+                    anyhow!("episode {} missing grandparent_id", media.id)
+                })?;
+            let season_id = media
+                .parent_id
+                .ok_or_else(|| anyhow!("episode {} missing parent_id", media.id))?;
+            let season_idx = media
+                .parent_idx
+                .ok_or_else(|| anyhow!("episode {} missing parent_idx", media.id))?;
+            let series_external_ids = db::ExternalIds {
+                imdb: media
+                    .external_ids
+                    .series_imdb
+                    .clone(),
+                tmdb: media
+                    .external_ids
+                    .series_tmdb,
+                custom_stremio_id: media
+                    .external_ids
+                    .series_custom_stremio_id
+                    .clone(),
+                ..Default::default()
+            };
+            let episodes = db::stremio_meta_season_episodes(
+                &meta_arc,
+                series_id,
+                season_id,
+                season_idx,
+                &series_external_ids,
+            )?;
+            let mut found = episodes
+                .into_iter()
+                .find(|e| e.idx == media.idx);
+            if let Some(ref mut ep) = found {
+                if let Some(meta_ep) = meta_patched
                     .videos
                     .as_ref()
                     .and_then(|v| {
@@ -773,126 +910,16 @@ async fn stremio_meta_fetch(
                             })
                     })
                 {
-                    build_episode_relations(media, meta_ep)
-                } else {
-                    vec![]
-                }
-            } else {
-                vec![]
-            };
-
-        if !relations.is_empty() {
-            found_media.relations = Some(relations);
-        }
-        Ok(Some(found_media))
-    } else {
-        Ok(None)
-    }
-}
-
-async fn stremio_sync_children(
-    svc: &stremio_service::StremioService,
-    root: &db::Media,
-    ctx: &AppContext,
-) -> Result<Vec<db::Media>> {
-    if root.kind != db::MediaKind::Series {
-        return Ok(vec![]);
-    }
-
-    let imdb_id = root
-        .external_ids
-        .imdb
-        .clone();
-    let meta_id: String = imdb_id
-        .as_deref()
-        .map(|s| s.to_string())
-        .or_else(|| {
-            root.external_ids
-                .custom_stremio_id
-                .clone()
-        })
-        .ok_or_else(|| anyhow!("series has no resolvable meta id: {}", root.id))?;
-    let is_custom = imdb_id.is_none();
-
-    let mut meta = svc
-        .get_meta(sdks::stremio::MediaType::from(&root.kind), meta_id.clone())
-        .await?;
-
-    if meta
-        .imdb_id
-        .is_none()
-        && !is_custom
-    {
-        meta.imdb_id = db::ExternalIds::from_stremio_id(&meta.id)
-            .imdb
-            .map(Into::into)
-            .or_else(|| {
-                imdb_id
-                    .clone()
-                    .map(Into::into)
-            });
-    }
-
-    let meta_clone = meta.clone();
-    let medias: Vec<db::Media> = db::stremio_meta_to_medias(meta)?;
-    let mut children = medias
-        .into_iter()
-        .filter_map(|mut x| {
-            if x.kind == db::MediaKind::Season {
-                x.parent_id = Some(root.id);
-                x.grandparent_id = Some(root.id);
-                if let Some(url) = x
-                    .idx
-                    .and_then(|idx| meta_clone.get_season_poster(idx))
-                {
-                    x.set_image(db::ImageKind::Primary, url);
-                }
-                x.title = format!(
-                    "Season {}",
-                    x.idx
-                        .unwrap_or(1)
-                );
-                // Leave refreshed_at as None so sync_tree will call refresh_meta
-                // and TMDB can provide the season poster.
-                Some(x)
-            } else if x.kind == db::MediaKind::Episode {
-                // parent_id is already set correctly by stremio_meta_to_medias
-                // using the proper UUID scheme (stable_media_uuid with capital
-                // prefix). Do NOT override it with a lowercase "season:" prefix
-                // — that produces a completely different UUID that doesn't match
-                // the actual season row.
-                x.grandparent_id = Some(root.id);
-                if let Some(episode_num) = x.idx {
-                    if let Some(season_num) = x.parent_idx {
-                        x.title =
-                            format!("S{}E{} - {}", season_num, episode_num, x.title);
-                    } else {
-                        x.title = format!("E{} - {}", episode_num, x.title);
+                    let relations = build_episode_relations(media, meta_ep);
+                    if !relations.is_empty() {
+                        ep.relations = Some(relations);
                     }
                 }
-                x.refreshed_at = Some(Utc::now().naive_utc());
-                Some(x)
-            } else {
-                None
             }
-        })
-        .collect::<Vec<db::Media>>();
-
-    for child in &mut children {
-        if child
-            .grandparent
-            .is_none()
-        {
-            let mut gp = db::Media::default();
-            gp.id = root.id;
-            gp.title = root
-                .title
-                .clone();
-            //child.grandparent = Some(Box::new(gp));
+            Ok(found)
         }
+        _ => Ok(None),
     }
-
-    Ok(children)
 }
 
 // ---------------------------------------------------------------------------
