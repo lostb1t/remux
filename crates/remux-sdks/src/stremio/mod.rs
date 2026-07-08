@@ -491,6 +491,13 @@ impl Meta {
                     .clone()
             })
     }
+
+    pub fn is_error(&self) -> bool {
+        let name = self
+            .get_name()
+            .unwrap_or_default();
+        name.starts_with("[✗]") || name.starts_with("[❌]") || name.starts_with("[X]")
+    }
 }
 
 #[skip_serializing_none]

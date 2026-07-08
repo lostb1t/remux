@@ -828,6 +828,15 @@ async fn stremio_meta_fetch(
 
     match media.kind {
         db::MediaKind::Movie | db::MediaKind::Series => {
+            if meta_patched.is_error() {
+                warn!(
+                    id = %media.id,
+                    error_title = %meta_patched.get_name().unwrap_or_default(),
+                    error_description = %meta_patched.description.as_deref().unwrap_or(""),
+                    "meta addon returned an error, skipping"
+                );
+                return Ok(None);
+            }
             let mut found =
                 db::Media::try_from(meta_patched.clone()).map_err(|e| anyhow!(e))?;
             // Preserve the persisted ID — try_from recomputes it from external_ids.
