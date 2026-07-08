@@ -858,6 +858,8 @@ pub async fn userviews(
         kind: Some(vec![db::MediaKind::Collection, db::MediaKind::Folder]),
         promoted: Some(true),
         include_child_count: true,
+        sort_by: vec![api::ItemSortBy::DisplayOrder],
+        sort_order: vec![api::SortOrder::Ascending],
         ..Default::default()
     };
     let channel_filter = db::MediaFilter {
@@ -881,18 +883,6 @@ pub async fn userviews(
     );
 
     let mut libraries = library_result?.records;
-    libraries.sort_by(|a, b| {
-        a.sort_order
-            .unwrap_or(i64::MAX)
-            .cmp(
-                &b.sort_order
-                    .unwrap_or(i64::MAX),
-            )
-            .then_with(|| {
-                a.title
-                    .cmp(&b.title)
-            })
-    });
 
     // Hide libraries/collections that contain zero items visible to this user.
     // Hide libraries/collections that contain zero items visible to this user.

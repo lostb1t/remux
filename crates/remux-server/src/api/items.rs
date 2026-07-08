@@ -2914,7 +2914,7 @@ pub async fn patch_item(
             .push_bind(dra.naive_utc());
     }
     if let Some(so) = payload.sort_order {
-        qb.push(", idx = ")
+        qb.push(", sort_order = ")
             .push_bind(so);
     }
     if let Some(v) = payload.latest_auto_unplayed {

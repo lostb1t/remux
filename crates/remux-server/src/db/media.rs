@@ -2924,6 +2924,9 @@ impl Media {
                         api::ItemSortBy::ChannelOrder => {
                             format!("(sort_order IS NULL), COALESCE(sort_order, channel_number, 999999) {dir}, title COLLATE NOCASE")
                         }
+                        api::ItemSortBy::DisplayOrder => {
+                            format!("(sort_order IS NULL), COALESCE(sort_order, 999999) {dir}, title COLLATE NOCASE")
+                        }
                         api::ItemSortBy::CatalogOrder => {
                             let catalog_ids: Vec<String> = filter
                                 .filter_rules
