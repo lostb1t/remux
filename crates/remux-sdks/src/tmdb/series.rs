@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize, Serializer};
-use serde_with::skip_serializing_none;
+use serde_with::{VecSkipError, serde_as, skip_serializing_none};
 
 use super::{Status, default_append_to_response};
 use crate::Endpoint;
@@ -148,6 +148,7 @@ impl Endpoint for SeasonEndpoint {
     }
 }
 
+#[serde_as]
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Episode {
     pub id: i64,
@@ -166,6 +167,7 @@ pub struct Episode {
     pub still_path: Option<String>,
     pub credits: Option<super::Credits>,
     pub external_ids: Option<super::ExternalIds>,
+    #[serde_as(as = "Option<VecSkipError<_>>")]
     pub guest_stars: Option<Vec<super::CastMember>>,
     /// Populated when `append_to_response=images` is requested.
     /// Episodes return `stills` (high-res frames).
