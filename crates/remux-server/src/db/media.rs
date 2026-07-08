@@ -815,6 +815,10 @@ impl ExternalIds {
             if let Ok(n) = rest.parse::<i64>() {
                 return Self {
                     kitsu: Some(n),
+                    // custom_stremio_id drives UUID derivation and the custom-ID
+                    // pipeline in stremio_meta_to_medias; keep it set so kitsu items
+                    // without an IMDB ID get a stable, deduplicated UUID.
+                    custom_stremio_id: Some(id.to_string()),
                     ..Default::default()
                 };
             }

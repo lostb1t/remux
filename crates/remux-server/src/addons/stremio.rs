@@ -623,10 +623,14 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
         .imdb_id
         .is_none()
     {
-        // Allow items whose ID is a custom addon-owned prefix (not IMDB/TMDB/TVDB).
+        // Allow items that have a recognised non-IMDB identity (custom addon prefix or
+        // kitsu ID that couldn't be resolved to IMDB — anime often isn't on IMDB).
         return ids
             .custom_stremio_id
-            .is_some();
+            .is_some()
+            || ids
+                .kitsu
+                .is_some();
     }
 
     true
