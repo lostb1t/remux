@@ -550,47 +550,6 @@ fn stremio_type_for_kind(kind: &db::MediaKind) -> Option<&'static str> {
 // Catalog helpers
 // ---------------------------------------------------------------------------
 
-fn needs_release_dates(meta: &sdks::stremio::Meta) -> bool {
-    matches!(meta.media_type, sdks::stremio::MediaType::Movie)
-        && meta
-            .app_extras
-            .as_ref()
-            .and_then(|e| {
-                e.release_dates
-                    .as_ref()
-            })
-            .is_none()
-}
-
-fn inject_tmdb_release_dates(
-    meta: &mut sdks::stremio::Meta,
-    tmdb_rd: sdks::tmdb::MovieReleaseDates,
-) {
-    let aio_rd = sdks::stremio::ReleaseDates {
-        results: tmdb_rd
-            .results
-            .into_iter()
-            .map(|c| sdks::stremio::ReleaseDateCountry {
-                iso_3166_1: c.iso_3166_1,
-                release_dates: c
-                    .release_dates
-                    .into_iter()
-                    .filter_map(|rd| {
-                        rd.release_date
-                            .map(|date| sdks::stremio::ReleaseDateEntry {
-                                release_date: date,
-                                release_type: rd.release_type,
-                            })
-                    })
-                    .collect(),
-            })
-            .collect(),
-    };
-    meta.app_extras
-        .get_or_insert_with(Default::default)
-        .release_dates = Some(aio_rd);
-}
-
 pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
     meta: &mut sdks::stremio::Meta,
     svc: Option<&stremio_service::StremioService>,
@@ -598,17 +557,29 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
 ) -> bool {
     let t = Instant::now();
 
-    if meta
-        .imdb_id
+    // Phase 1: build the richest possible ExternalIds before any TMDB calls.
+    let mut ids = db::ExternalIds::from_stremio_id(&meta.id);
+    if ids
+        .imdb
         .is_none()
     {
-        if let Some(imdb) = db::ExternalIds::from_stremio_id(&meta.id).imdb {
-            meta.imdb_id = Some(imdb.into());
-        }
+        ids.imdb = meta
+            .imdb_id
+            .as_deref()
+            .and_then(|s| db::NonEmptyString::try_new(s.to_string()).ok());
+    }
+    if ids
+        .tmdb
+        .is_none()
+    {
+        ids.tmdb = meta
+            .moviedb_id
+            .map(|n| n as i64);
     }
 
-    if meta
-        .imdb_id
+    // AIO resolve: the addon may map its own ID to an IMDB ID.
+    if ids
+        .imdb
         .is_none()
     {
         if let Some(svc) = svc {
@@ -620,90 +591,42 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
                 Err(e) => warn!(id = %meta.id, error = %e, "AIO resolve failed"),
             }
             debug!(id = %meta.id, elapsed = ?t.elapsed(), resolved = meta.imdb_id.is_some(), "after AIO resolve");
+            ids.imdb = meta
+                .imdb_id
+                .as_deref()
+                .and_then(|s| db::NonEmptyString::try_new(s.to_string()).ok());
         }
     }
 
-    if meta
-        .imdb_id
+    // Phase 2: single TMDB resolution pass (TMDB/TVDB/Kitsu chains handled inside).
+    if ids
+        .imdb
         .is_none()
     {
-        let mut ids = db::ExternalIds::from_stremio_id(&meta.id);
-        if ids
-            .tmdb
-            .is_none()
-        {
-            ids.tmdb = meta
-                .moviedb_id
-                .map(|n| n as i64);
-        }
         if let Some(client) = tmdb_client {
             if !ids.is_empty() {
                 let is_tv = meta.media_type == sdks::stremio::MediaType::Series;
-                meta.imdb_id =
+                ids.imdb =
                     crate::addons::tmdb::resolve_imdb_from_ids(&ids, is_tv, client)
-                        .await
-                        .map(Into::into);
-                debug!(id = %meta.id, elapsed = ?t.elapsed(), resolved = meta.imdb_id.is_some(), "after TMDB id resolve");
+                        .await;
+                debug!(id = %meta.id, elapsed = ?t.elapsed(), resolved = ids.imdb.is_some(), "after TMDB resolve");
             }
         }
     }
+
+    meta.imdb_id = ids
+        .imdb
+        .clone()
+        .map(Into::into);
 
     if meta
         .imdb_id
         .is_none()
     {
         // Allow items whose ID is a custom addon-owned prefix (not IMDB/TMDB/TVDB).
-        return db::ExternalIds::from_stremio_id(&meta.id)
+        return ids
             .custom_stremio_id
             .is_some();
-    }
-
-    if needs_release_dates(meta) {
-        if let Some(client) = tmdb_client {
-            let tmdb_id = db::ExternalIds::from_stremio_id(&meta.id)
-                .tmdb
-                .or_else(|| {
-                    meta.moviedb_id
-                        .map(|n| n as i64)
-                });
-
-            let tmdb_id = if tmdb_id.is_some() {
-                tmdb_id
-            } else if let Some(ref imdb_id) = meta.imdb_id {
-                client
-                    .execute(
-                        sdks::tmdb::FindByIdEndpoint {
-                            external_id: imdb_id.clone(),
-                            external_source: "imdb_id".to_string(),
-                        }
-                        .with_cache(Duration::from_secs(3600)),
-                    )
-                    .await
-                    .ok()
-                    .and_then(|r| {
-                        r.movie_results
-                            .into_iter()
-                            .next()
-                    })
-                    .map(|m| m.id)
-            } else {
-                None
-            };
-
-            if let Some(tid) = tmdb_id {
-                if let Ok(movie) = client
-                    .execute(
-                        sdks::tmdb::MovieEndpoint::new(tid)
-                            .with_cache(Duration::from_secs(3600)),
-                    )
-                    .await
-                {
-                    if let Some(rd) = movie.release_dates {
-                        inject_tmdb_release_dates(meta, rd);
-                    }
-                }
-            }
-        }
     }
 
     true

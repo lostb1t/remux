@@ -2425,7 +2425,31 @@ pub(crate) async fn resolve_imdb_from_ids<A: sdks::Auth + Clone>(
         }
     }
 
-    if let Some(tvdb_id) = ids.tvdb {
+    let effective_tvdb = if ids
+        .tvdb
+        .is_some()
+    {
+        ids.tvdb
+    } else if let Some(kitsu_id) = ids.kitsu {
+        match sdks::kitsu::client()
+            .execute(sdks::kitsu::MappingsEndpoint { kitsu_id })
+            .await
+        {
+            Ok(m) => {
+                let tvdb_id = m.tvdb_id();
+                debug!(kitsu_id, tvdb_id, "kitsu → tvdb");
+                tvdb_id
+            }
+            Err(e) => {
+                warn!(kitsu_id, error = %e, "kitsu mappings lookup failed");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    if let Some(tvdb_id) = effective_tvdb {
         let find_resp = client
             .execute(
                 sdks::tmdb::FindByIdEndpoint {
