@@ -1597,7 +1597,7 @@ impl AddonService {
                         }
                         Ok(_) => continue,
                         Err(e) => {
-                            warn!(id = %node.id, error = %e, "get_children failed");
+                            debug!(id = %node.id, error = %e, "get_children failed");
                             continue;
                         }
                     }
