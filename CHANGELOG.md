@@ -1,3 +1,23 @@
+# [0.13.0](https://github.com/lostb1t/remux/compare/v0.12.1...v0.13.0) (2026-07-08)
+
+
+### Bug Fixes
+
+* **addons:** accumulate meta patches into clean object so highest-priority addon wins ([#87](https://github.com/lostb1t/remux/issues/87)) ([f5ecc5d](https://github.com/lostb1t/remux/commit/f5ecc5d7a30c01e46f5e84fac29d52d86a7b5c6f))
+* admit kitsu-only anime and ensure stable UUID for kitsu items with no IMDB ID ([48a3019](https://github.com/lostb1t/remux/commit/48a30196320b08966489e5a21bfc3ab7b1e514df))
+* skip malformed TMDB guest star entries missing id/name ([8f09e89](https://github.com/lostb1t/remux/commit/8f09e89919008b400754e2af47c6cd12094d11ba))
+* userviews now reflects user-defined collection order ([478fc48](https://github.com/lostb1t/remux/commit/478fc48fe3a5c6e977bcf9a95ab7c5df9f521bc2))
+
+
+### Features
+
+* add Kitsu ID resolution and guard against error meta leaking into DB ([772e488](https://github.com/lostb1t/remux/commit/772e488828b5f92eacc5ecefdbf371c328166fc9))
+
+
+### Performance Improvements
+
+* optimize meta refresh ([#89](https://github.com/lostb1t/remux/issues/89)) ([ec4ffc8](https://github.com/lostb1t/remux/commit/ec4ffc83d588913f11a3e34561b0d1e0660b04f4))
+
 ## [0.12.1](https://github.com/lostb1t/remux/compare/v0.12.0...v0.12.1) (2026-07-05)
 
 
