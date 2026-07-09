@@ -1152,13 +1152,17 @@ async fn probe_with_fallback(
                 // when unknown) — these are typically error/copyright-strike
                 // placeholder videos, not real content.
                 if let Some(probed_ticks) = probed.run_time_ticks {
-                    const TICKS_PER_SEC: i64 = 10_000_000;
-                    const MAX_THRESHOLD_TICKS: i64 = 5 * 60 * TICKS_PER_SEC;
+                    let max_threshold = 5_i64
+                        .to_ticks(TickUnit::Minutes)
+                        .unwrap_or(0);
                     let threshold_ticks = match sm.runtime {
-                        Some(known_secs) => {
-                            (known_secs * TICKS_PER_SEC / 2).min(MAX_THRESHOLD_TICKS)
-                        }
-                        None => 3 * 60 * TICKS_PER_SEC,
+                        Some(known_secs) => known_secs
+                            .to_ticks(TickUnit::Seconds)
+                            .map(|t| (t / 2).min(max_threshold))
+                            .unwrap_or(max_threshold),
+                        None => 3_i64
+                            .to_ticks(TickUnit::Minutes)
+                            .unwrap_or(0),
                     };
                     if probed_ticks < threshold_ticks {
                         warn!(
