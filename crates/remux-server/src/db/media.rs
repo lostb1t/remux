@@ -367,7 +367,10 @@ impl From<String> for CollectionMediaKind {
     strum_macros::Display,
     Debug,
     Clone,
+    Copy,
     PartialEq,
+    Eq,
+    Hash,
     Serialize,
     Deserialize,
     sqlx::Type,
@@ -474,6 +477,53 @@ impl MediaRelation {
         for chunk in ids.chunks(SQLITE_VAR_LIMIT) {
             let mut qb = sqlx::QueryBuilder::new(
                 "DELETE FROM media_relations WHERE left_media_id IN (",
+            );
+            let mut sep = qb.separated(", ");
+            for id in chunk {
+                sep.push_bind(id);
+            }
+            qb.push(")");
+            qb.build()
+                .execute(db)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn get_by_left_ids(db: &SqlitePool, ids: &[Uuid]) -> Result<Vec<Self>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut out = Vec::new();
+        for chunk in ids.chunks(SQLITE_VAR_LIMIT) {
+            let mut qb = sqlx::QueryBuilder::new(
+                "SELECT * FROM media_relations WHERE left_media_id IN (",
+            );
+            let mut sep = qb.separated(", ");
+            for id in chunk {
+                sep.push_bind(id);
+            }
+            qb.push(")");
+            let rows = qb
+                .build_query_as::<Self>()
+                .fetch_all(db)
+                .await?;
+            out.extend(rows);
+        }
+        Ok(out)
+    }
+
+    pub async fn delete_by_ids(db: &SqlitePool, ids: &[Uuid]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let _permit = DB_WRITE_SEMAPHORE
+            .acquire()
+            .await
+            .unwrap();
+        for chunk in ids.chunks(SQLITE_VAR_LIMIT) {
+            let mut qb = sqlx::QueryBuilder::new(
+                "DELETE FROM media_relations WHERE relation_id IN (",
             );
             let mut sep = qb.separated(", ");
             for id in chunk {

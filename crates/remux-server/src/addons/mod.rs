@@ -191,11 +191,51 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
         // Don't link relations that point to name-keyed person stubs.
         .filter(|r| !name_keyed_person_ids.contains(&r.right_media_id))
         .collect();
-    db::MediaRelation::delete_by_left_ids(&ctx.db, &all_ids)
+
+    // Fetch existing relations and only write the delta — avoids the WAL pressure
+    // of a full delete+reinsert on steady-state runs where nothing changed.
+    let existing = db::MediaRelation::get_by_left_ids(&ctx.db, &all_ids)
         .await
-        .ok();
-    if !all_rels.is_empty() {
-        if let Err(e) = db::MediaRelation::upsert(&ctx.db, &all_rels).await {
+        .unwrap_or_default();
+
+    type RelKey = (Uuid, Uuid, Option<db::RelationRole>);
+
+    let existing_map: std::collections::HashMap<RelKey, &db::MediaRelation> = existing
+        .iter()
+        .map(|r| ((r.left_media_id, r.right_media_id, r.role), r))
+        .collect();
+
+    let desired_keys: std::collections::HashSet<RelKey> = all_rels
+        .iter()
+        .map(|r| (r.left_media_id, r.right_media_id, r.role))
+        .collect();
+
+    let to_delete: Vec<Uuid> = existing
+        .iter()
+        .filter(|r| {
+            !desired_keys.contains(&(r.left_media_id, r.right_media_id, r.role))
+        })
+        .map(|r| r.relation_id)
+        .collect();
+
+    let to_upsert: Vec<db::MediaRelation> = all_rels
+        .into_iter()
+        .filter(|r| {
+            let key = (r.left_media_id, r.right_media_id, r.role);
+            match existing_map.get(&key) {
+                None => true,
+                Some(ex) => ex.weight != r.weight || ex.character != r.character,
+            }
+        })
+        .collect();
+
+    if !to_delete.is_empty() {
+        db::MediaRelation::delete_by_ids(&ctx.db, &to_delete)
+            .await
+            .ok();
+    }
+    if !to_upsert.is_empty() {
+        if let Err(e) = db::MediaRelation::upsert(&ctx.db, &to_upsert).await {
             warn!(error = %e, "failed to upsert relations batch");
         }
     }
