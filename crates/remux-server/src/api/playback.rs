@@ -1147,6 +1147,36 @@ async fn probe_with_fallback(
 
         match probe_result {
             Ok(Ok(Ok((mut probed, segments)))) => {
+                // Reject streams whose probed duration is suspiciously short
+                // relative to the known metadata runtime (or absolutely < 3 min
+                // when unknown) — these are typically error/copyright-strike
+                // placeholder videos, not real content.
+                if let Some(probed_ticks) = probed.run_time_ticks {
+                    let max_threshold = 5_i64
+                        .to_ticks(TickUnit::Minutes)
+                        .unwrap_or(0);
+                    let threshold_ticks = match sm.runtime {
+                        Some(known_secs) => known_secs
+                            .to_ticks(TickUnit::Seconds)
+                            .map(|t| (t / 2).min(max_threshold))
+                            .unwrap_or(max_threshold),
+                        None => 3_i64
+                            .to_ticks(TickUnit::Minutes)
+                            .unwrap_or(0),
+                    };
+                    if probed_ticks < threshold_ticks {
+                        warn!(
+                            id = %sm.id,
+                            url = %url,
+                            probed_ticks,
+                            threshold_ticks,
+                            known_runtime_secs = ?sm.runtime,
+                            "stream is suspiciously short, treating as probe failure"
+                        );
+                        continue;
+                    }
+                }
+
                 if probed
                     .video_stream()
                     .is_some()
