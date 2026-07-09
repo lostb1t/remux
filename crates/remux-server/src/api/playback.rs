@@ -1147,39 +1147,29 @@ async fn probe_with_fallback(
 
         match probe_result {
             Ok(Ok(Ok((mut probed, segments)))) => {
-                // Reject non-local streams whose probed duration is suspiciously
-                // short relative to the known metadata runtime (or absolutely
-                // < 3 min when unknown) — these are typically error/copyright-strike
+                // Reject streams whose probed duration is suspiciously short
+                // relative to the known metadata runtime (or absolutely < 3 min
+                // when unknown) — these are typically error/copyright-strike
                 // placeholder videos, not real content.
-                let is_local = sm
-                    .stream_info
-                    .as_ref()
-                    .map_or(false, |si| {
-                        matches!(
-                            si.descriptor,
-                            crate::stream::StreamDescriptor::Local(_)
-                        )
-                    });
-                if !is_local {
-                    if let Some(probed_ticks) = probed.run_time_ticks {
-                        const TICKS_PER_SEC: i64 = 10_000_000;
-                        const MAX_THRESHOLD_TICKS: i64 = 5 * 60 * TICKS_PER_SEC;
-                        let threshold_ticks = match sm.runtime {
-                            Some(known_secs) => (known_secs * TICKS_PER_SEC / 2)
-                                .min(MAX_THRESHOLD_TICKS),
-                            None => 3 * 60 * TICKS_PER_SEC,
-                        };
-                        if probed_ticks < threshold_ticks {
-                            warn!(
-                                id = %sm.id,
-                                url = %url,
-                                probed_ticks,
-                                threshold_ticks,
-                                known_runtime_secs = ?sm.runtime,
-                                "remote stream is suspiciously short, treating as probe failure"
-                            );
-                            continue;
+                if let Some(probed_ticks) = probed.run_time_ticks {
+                    const TICKS_PER_SEC: i64 = 10_000_000;
+                    const MAX_THRESHOLD_TICKS: i64 = 5 * 60 * TICKS_PER_SEC;
+                    let threshold_ticks = match sm.runtime {
+                        Some(known_secs) => {
+                            (known_secs * TICKS_PER_SEC / 2).min(MAX_THRESHOLD_TICKS)
                         }
+                        None => 3 * 60 * TICKS_PER_SEC,
+                    };
+                    if probed_ticks < threshold_ticks {
+                        warn!(
+                            id = %sm.id,
+                            url = %url,
+                            probed_ticks,
+                            threshold_ticks,
+                            known_runtime_secs = ?sm.runtime,
+                            "stream is suspiciously short, treating as probe failure"
+                        );
+                        continue;
                     }
                 }
 
