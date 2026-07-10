@@ -45,7 +45,7 @@ impl MediaSourceInfoExt for db::Media {
     }
 
     fn probe_with_url(&self, url: &str) -> Result<MediaSourceInfo> {
-        let (mut probed, _) = crate::transcode::probing::probe_media(url)?;
+        let (mut probed, _) = crate::playback::probe::probe_media(url)?;
 
         probed.id = self
             .id

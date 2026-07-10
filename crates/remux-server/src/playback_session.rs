@@ -5,7 +5,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::{common, db, db::auth, transcode::session::TranscodeSession};
+use crate::{common, db, db::auth, playback::session::TranscodeSession};
 use remux_sdks::remux::{PlayMethod, PlaybackInfo, QueueItem};
 
 #[derive(Clone)]

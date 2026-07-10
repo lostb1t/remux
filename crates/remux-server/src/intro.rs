@@ -87,7 +87,7 @@ pub async fn sync_intros(ctx: &AppContext) -> Result<()> {
 
         let url = path_str.clone();
         let probe_result = tokio::task::spawn_blocking(move || {
-            crate::transcode::probing::probe_media(&url)
+            crate::playback::probe::probe_media(&url)
         })
         .await
         .ok()

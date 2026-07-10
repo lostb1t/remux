@@ -37,10 +37,16 @@ use crate::{
 use crate::{
     IntoApiError, OptionExt, ResultExt,
     device_profile::{DeviceProfileExt, SubtitleCodec, subtitle_codec_matches_profile},
+    playback::{
+        decision::{
+            PlaybackConfig, TranscodeDecision, apply_subtitle_delivery,
+            build_transcode_decision,
+        },
+        session::{TranscodeSession, TranscodeState},
+    },
     sdks,
-    services::{MediaResolveService, StreamResolver},
+    services::{MediaResolveService, ProbeResult, StreamService, StreamServiceConfig},
     torrent,
-    transcode::session::{TranscodeSession, TranscodeState},
 };
 use axum_anyhow::ApiResult as Result;
 
@@ -74,7 +80,9 @@ async fn items_playbackinfo_inner(
 
     trace!(?id, ?q, "items_playbackinfo");
 
-    let device_profile = q.device_profile;
+    let device_profile = q
+        .device_profile
+        .clone();
 
     let probe_cfg = db::Settings::get_config_or_default(
         &state
@@ -93,27 +101,32 @@ async fn items_playbackinfo_inner(
     .await
     .unwrap_or_default();
 
-    let initial =
+    let media =
         MediaResolveService::resolve_item(media_source_id.unwrap_or(id), &state.ctx)
             .await?
             .context_not_found("not found")?;
 
-    let resolver = StreamResolver::resolve_group(
-        &state
+    let mut service = StreamService::new(StreamServiceConfig {
+        ctx: state
             .ctx
-            .db,
-        &state
-            .ctx
-            .store,
-        id,
-        media_source_id,
-        initial,
-    )
-    .await?;
-    let mut media = resolver
-        .stream
-        .clone();
-
+            .clone(),
+        item_id: id,
+        requested_id: media_source_id,
+        show_ungrouped,
+        stream_filter: session
+            .user
+            .policy
+            .as_ref()
+            .and_then(|p| {
+                p.stream_filter
+                    .clone()
+            }),
+    });
+    let is_live = media.is_live();
+    let is_track_item = media.is_track();
+    service
+        .load(media)
+        .await?;
     // Load the top-level Movie/Episode for subtitle lookup.
     // `id` is always the movie/episode UUID; `media_source_id` may point to a
     // child Source, so we always resolve via `id` to get the IMDB fields.
@@ -127,143 +140,11 @@ async fn items_playbackinfo_inner(
     .ok()
     .flatten();
 
-    let is_live = media.kind == db::MediaKind::TvChannel;
-
-    let is_track = media.kind == db::MediaKind::Track
+    let is_track = is_track_item
         || subtitle_media
             .as_ref()
-            .map_or(false, |m| m.kind == db::MediaKind::Track);
+            .map_or(false, |m| m.is_track());
     let has_lyrics = is_track;
-
-    // Collect all playable sources. A Movie/Episode may have multiple
-    // Source children (versions); return every one so the client can
-    // show version selection and per-source stream lists.
-    let all_source_medias: Vec<db::Media> = if matches!(
-        media.kind,
-        db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track
-    ) {
-        state
-            .ctx
-            .addons
-            .refresh_streams(&mut media, &state.ctx)
-            .await
-            .inspect_err(|e| error!("refresh_streams failed: {e:#}"));
-        let sources = media
-            .streams(
-                &state
-                    .ctx
-                    .db,
-            )
-            .await?;
-        let raw = if sources.is_empty() {
-            vec![media]
-        } else {
-            sources
-        };
-        {
-            let sources = db::StreamGroup::filter_sources(
-                &state
-                    .ctx
-                    .db,
-                raw,
-                show_ungrouped,
-            )
-            .await;
-            if let Some(sf) = session
-                .user
-                .policy
-                .as_ref()
-                .and_then(|p| {
-                    p.stream_filter
-                        .as_ref()
-                })
-                .filter(|sf| {
-                    !sf.rules
-                        .is_empty()
-                })
-            {
-                let before = sources.len();
-                let filtered = db::apply_stream_filter(sf, sources);
-                debug!(
-                    user = %session.user.username,
-                    sources_before = before,
-                    sources_after = filtered.len(),
-                    rules = sf.rules.len(),
-                    "stream filter applied"
-                );
-                filtered
-            } else {
-                debug!(
-                    user = %session.user.username,
-                    has_policy = session.user.policy.is_some(),
-                    has_stream_filter = session.user.policy.as_ref().and_then(|p| p.stream_filter.as_ref()).is_some(),
-                    "stream filter skipped"
-                );
-                sources
-            }
-        }
-    } else {
-        vec![media]
-    };
-
-    // Keep the full filtered pool for probe fallback before source_medias narrows it.
-    let fallback_pool = all_source_medias.clone();
-
-    // When the client requests a specific source, only process that one.
-    // When no source is specified (e.g. details page open), return all versions
-    // for version selection but only probe the first one — probing every source
-    // causes a storm of parallel FFmpeg processes (one per version of the movie).
-    //
-    // Android TV always sends media_source_id = item_id (not None) for auto-play.
-    // Treat that the same as "return first source only" — no need to send all versions.
-    // A group request counts as a specific source request: the client sent a stable group UUID
-    // and must receive that same UUID back. Non-group requests check if the UUID maps to an
-    // actual child stream in all_source_medias.
-    let specific_source_requested = resolver
-        .group
-        .is_some()
-        || media_source_id
-            .map(|sid| {
-                sid != id
-                    && all_source_medias
-                        .iter()
-                        .any(|s| s.id == sid)
-            })
-            .unwrap_or(false);
-    let (source_medias, probe_only_first) = if resolver
-        .group
-        .is_some()
-    {
-        // Group request: the resolver already picked the best candidate stream.
-        (
-            vec![
-                resolver
-                    .stream
-                    .clone(),
-            ],
-            false,
-        )
-    } else if specific_source_requested {
-        // Specific non-group stream: return only that stream.
-        let sid = media_source_id.unwrap();
-        let filtered: Vec<db::Media> = all_source_medias
-            .into_iter()
-            .filter(|s| s.id == sid)
-            .collect();
-        (filtered, false)
-    } else if media_source_id.is_some() {
-        // media_source_id provided but equals item_id (Android TV auto-play) or
-        // stream not found: return only the first (best) source.
-        // specific_source_requested stays false so source[0].id is overridden to
-        // item_id below — required for Android TV routing.
-        let mut v = all_source_medias;
-        v.truncate(1);
-        (v, false)
-    } else {
-        // No source ID: return all versions for the selection UI,
-        // probe only the first to avoid spawning N FFmpeg processes.
-        (all_source_medias, true)
-    };
 
     let max_bitrate: Option<i64> = match (
         q.max_streaming_bitrate,
@@ -279,113 +160,37 @@ async fn items_playbackinfo_inner(
         .as_simple()
         .to_string();
 
-    let probe_timeout_secs = probe_cfg
-        .probe_timeout_secs
-        .unwrap_or(20) as u64;
-    let probe_timeout_p2p_secs = probe_cfg
-        .probe_timeout_p2p_secs
-        .unwrap_or(60) as u64;
-    let auto_next_stream = probe_cfg
-        .auto_next_stream_on_probe_fail
-        .unwrap_or(true);
-    let max_stream_retries = probe_cfg
-        .max_probe_fallback_streams
-        .unwrap_or(3) as usize;
+    let subtitle_mode = encoding_cfg
+        .subtitle_mode
+        .unwrap_or_default();
+    let cfg = PlaybackConfig {
+        encoding_cfg,
+        device_profile: device_profile.clone(),
+        max_bitrate,
+        play_session_id: play_session_id.clone(),
+        item_id: id,
+        subtitle_mode,
+    };
 
     let port = state
         .ctx
         .config
         .port;
-    // For group selections, use all group candidates (including cascade) as the probe fallback pool.
-    // Resolution filtering is disabled for group requests: the group priority order already
-    // encodes the user's quality preference, so cross-resolution fallback is intentional.
-    let (all_sources, restrict_resolution) = if resolver
-        .group
-        .is_some()
-    {
-        (
-            resolver
-                .candidates()
-                .to_vec(),
-            false,
-        )
-    } else {
-        (fallback_pool, true)
-    };
-    let mut media_sources = Vec::with_capacity(source_medias.len());
-    for (idx, sm) in source_medias
-        .into_iter()
-        .enumerate()
-    {
-        let url_opt = sm
-            .stream_info
-            .as_ref()
-            .map(|si| {
-                si.descriptor
-                    .server_input(sm.id, port)
-            });
-        let skip_probe = probe_only_first && idx > 0;
-        let timeout_secs = if sm
-            .stream_info
-            .as_ref()
-            .map_or(false, |si| si.is_p2p())
-        {
-            probe_timeout_p2p_secs
-        } else {
-            probe_timeout_secs
-        };
-        let (mut source, effective_sm) = probe_source(
-            &sm,
-            url_opt.clone(),
-            skip_probe,
-            timeout_secs,
-            auto_next_stream,
-            max_stream_retries,
-            &all_sources,
-            restrict_resolution,
-            port,
-            &state
-                .ctx
-                .db,
-        )
+    let probed = service
+        .probe_candidates()
         .await?;
-        // Use the client-facing ID from the resolver: group UUID for group requests,
-        // stream UUID otherwise. Set once here — no later overrides.
-        // Use effective_sm (which may be a fallback stream) so ID/path/name match
-        // the stream whose codec layout was actually probed.
-        let cid = resolver
-            .group
-            .as_ref()
-            .map(|(gid, _, _)| *gid)
-            .unwrap_or(effective_sm.id);
-        source.id = cid;
-        source.e_tag = cid;
-        source.name = Some(
-            resolver
-                .group
-                .as_ref()
-                .map(|(_, t, _)| t.clone())
-                .unwrap_or_else(|| {
-                    effective_sm
-                        .title
-                        .clone()
-                }),
-        );
-        source.has_segments = true;
-        source.path = Some(format!("/remux/{}", effective_sm.id));
-        source.is_remote = false;
-
-        // Re-apply binge-group headers on top of the probed result —
-        // ffmpeg probing produces a fresh `MediaSourceInfo` and would
-        // otherwise drop the `X-Remux-BingeGroup` / `X-Gelato-BingeGroup`
-        // hints we stashed alongside the source.
-        source.remux = Some(api::MediaSourceRemuxInfo {
-            provider_info: sm
-                .stream_info
-                .as_ref()
-                .and_then(|si| serde_json::to_value(si).ok()),
-        });
-
+    let specific_stream_requested = probed.specific_requested;
+    let mut media_sources = Vec::with_capacity(
+        probed
+            .results
+            .len(),
+    );
+    for ProbeResult {
+        mut source,
+        stream,
+        effective_stream,
+    } in probed.results
+    {
         if has_lyrics {
             api::inject_lyric_stream(&mut source);
         }
@@ -410,7 +215,8 @@ async fn items_playbackinfo_inner(
             }
             // RTSP streams can only be served via ffmpeg — never direct-playable.
             if matches!(
-                sm.stream_info
+                stream
+                    .stream_info
                     .as_ref()
                     .map(|si| &si.descriptor),
                 Some(crate::stream::StreamDescriptor::Rtsp { .. })
@@ -421,10 +227,6 @@ async fn items_playbackinfo_inner(
             }
             reasons
         };
-
-        let subtitle_mode = encoding_cfg
-            .subtitle_mode
-            .unwrap_or_default();
 
         // Strip mode: remove embedded subtitle streams not supported by the client so
         // they don't trigger a transcode. External/addon subs are never touched.
@@ -458,13 +260,13 @@ async fn items_playbackinfo_inner(
         // Pre-extract all embedded text subtitle streams in the background, in one
         // FFmpeg pass. By the time the client requests a subtitle URL, the cache file
         // is already written (same approach Jellyfin uses).
-        // Use effective_sm so the URL matches the stream whose track layout was probed.
-        let effective_url = effective_sm
+        // Use effective_stream so the URL matches the stream whose track layout was probed.
+        let effective_url = effective_stream
             .stream_info
             .as_ref()
             .map(|si| {
                 si.descriptor
-                    .server_input(effective_sm.id, port)
+                    .server_input(effective_stream.id, port)
             });
         if let Some(ref input_url) = effective_url {
             let text_sub_indices: Vec<i64> = source
@@ -546,372 +348,46 @@ async fn items_playbackinfo_inner(
             }
         }
 
-        // `EnableTranscoding=true` means "allowed", not "forced".
-        let transcode_required = !transcode_reasons.is_empty()
-            || !q
-                .enable_direct_play
-                .unwrap_or(true)
-            || !q
-                .enable_direct_stream
-                .unwrap_or(true);
-        let needs_transcoding = transcode_required
-            && q.enable_transcoding
-                .unwrap_or(true);
-
         debug!(
-            source_id = %sm.id,
+            stream_id = %stream.id,
             transcode_reasons = ?transcode_reasons,
             "playback decision"
         );
 
-        if needs_transcoding {
-            let is_audio_only = source
-                .video_stream()
-                .is_none();
-
-            if is_audio_only {
-                let trans_profile = device_profile
-                    .as_ref()
-                    .and_then(|p| p.audio_transcoding_profile());
-                let trans_container = trans_profile
-                    .and_then(|p| {
-                        p.container
-                            .clone()
-                    })
-                    .unwrap_or_else(|| "mp3".to_string());
-                let audio_codec = trans_profile
-                    .and_then(|p| {
-                        p.audio_codec
-                            .as_deref()
-                    })
-                    .and_then(|c| {
-                        c.split(',')
-                            .next()
-                    })
-                    .map(|c| {
-                        c.trim()
-                            .to_string()
-                    })
-                    .unwrap_or_else(|| "aac".to_string());
-
-                let start_time_param = q
-                    .start_time_ticks
-                    .map(|t| format!("&StartTimeTicks={}", t))
-                    .unwrap_or_default();
-
+        match build_transcode_decision(
+            &source,
+            &transcode_reasons,
+            effective_sub_idx,
+            &q,
+            &session,
+            &cfg,
+        ) {
+            TranscodeDecision::DirectPlay => {
+                // Keep transcoding available so clients can re-request with a subtitle
+                // index (e.g. PGS burn-in) even when direct-play is otherwise fine.
                 source.supports_transcoding = true;
-                source.transcoding_url = Some(format!(
-                    "/videos/{}/stream.{}?MediaSourceId={}&AudioCodec={}{}&ApiKey={}",
-                    id,
-                    trans_container,
-                    source.id,
-                    audio_codec,
-                    start_time_param,
-                    session
-                        .device
-                        .access_token,
-                ));
-                source.transcoding_container = Some(trans_container);
-                source.transcoding_sub_protocol = "http".to_string();
-                source.supports_direct_play = false;
-                source.supports_direct_stream = false;
-            } else {
-                let trans_profile = device_profile
-                    .as_ref()
-                    .and_then(|p| p.video_transcoding_profile());
-                let (trans_container, trans_protocol) = trans_profile
-                    .map(|p| {
-                        (
-                            p.container
-                                .clone()
-                                .unwrap_or_else(|| "ts".to_string()),
-                            p.protocol
-                                .clone()
-                                .unwrap_or_else(|| "hls".to_string()),
-                        )
-                    })
-                    .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
-
-                let needs_video_transcode =
-                    transcode_reasons.contains(
-                        &api::TranscodeReason::VideoCodecNotSupported(String::new()),
-                    ) || transcode_reasons
-                        .contains(&api::TranscodeReason::ContainerBitrateExceedsLimit)
-                        || transcode_reasons.contains(
-                            &api::TranscodeReason::VideoRangeTypeNotSupported(
-                                String::new(),
-                            ),
-                        );
-
-                let video_transcode_allowed = encoding_cfg
-                    .enable_video_transcoding
-                    .unwrap_or(true)
-                    && session
-                        .user
-                        .policy
-                        .as_ref()
-                        .map(|p| p.enable_video_playback_transcoding)
-                        .unwrap_or(true);
-
-                if needs_video_transcode && !video_transcode_allowed {
-                    info!(
-                        user = %session.user.username,
-                        source_id = %sm.id,
-                        "video transcoding required but not allowed — marking source as not transcodable"
-                    );
-                    source.supports_transcoding = false;
-                    source.supports_direct_play = false;
-                    source.supports_direct_stream = false;
-                    continue;
-                }
-
-                let mut video_codec = if needs_video_transcode {
-                    "h264"
-                } else {
-                    "copy"
-                }
-                .to_string();
-                let needs_audio_transcode = transcode_reasons.contains(
-                    &api::TranscodeReason::AudioCodecNotSupported(String::new()),
-                );
-                let audio_codec =
-                    if needs_audio_transcode { "aac" } else { "copy" }.to_string();
-
-                // Determine subtitle delivery method for the selected stream.
-                // In Burn mode, any embedded codec not in the device profile gets
-                // SubtitleDeliveryMethod::Encode so FFmpeg burns it into the video.
-                // In Extract/Strip modes we defer to the client (no burn).
-                // External subtitles are never burned — they have their own URL.
-                let selected_sub_idx = effective_sub_idx;
-                let subtitle_method = selected_sub_idx
-                    .and_then(|idx| {
-                        source
-                            .media_streams
-                            .iter()
-                            .find(|s| {
-                                s.index == idx
-                                    && matches!(
-                                        s.type_,
-                                        Some(api::MediaStreamType::Subtitle)
-                                    )
-                            })
-                    })
-                    .and_then(|stream| {
-                        if stream.is_external
-                            || stream.is_text_subtitle_stream
-                            || subtitle_mode
-                                != remux_sdks::remux::EmbeddedSubtitleHandling::Burn
-                        {
-                            return None;
-                        }
-                        let codec = stream
-                            .codec
-                            .as_deref()
-                            .unwrap_or("");
-                        let not_in_profile = !device_profile
-                            .as_ref()
-                            .map(|dp| {
-                                dp.subtitle_profiles
-                                    .iter()
-                                    .filter_map(|p| {
-                                        p.format
-                                            .as_deref()
-                                    })
-                                    .any(|f| subtitle_codec_matches_profile(codec, f))
-                            })
-                            .unwrap_or(false);
-                        if not_in_profile {
-                            Some(api::SubtitleDeliveryMethod::Encode)
-                        } else {
-                            None
-                        }
-                    });
-
-                if subtitle_method == Some(api::SubtitleDeliveryMethod::Encode) {
-                    video_codec = "h264".to_string();
-                }
-
-                let bitrate_param = max_bitrate
-                    .map(|b| format!("&MaxStreamingBitrate={}", b))
-                    .unwrap_or_default();
-                let reasons_param = transcode_reasons
-                    .to_query_value()
-                    .map(|v| format!("&TranscodeReasons={}", v))
-                    .unwrap_or_default();
-                let audio_stream_param = q
-                    .audio_stream_index
-                    .or(source.default_audio_stream_index)
-                    .map(|idx| format!("&AudioStreamIndex={}", idx))
-                    .unwrap_or_default();
-                let subtitle_stream_param = selected_sub_idx
-                    .map(|idx| format!("&SubtitleStreamIndex={}", idx))
-                    .unwrap_or_default();
-                let subtitle_method_param = subtitle_method
-                    .map(|m| format!("&SubtitleMethod={}", m))
-                    .unwrap_or_default();
-                let start_time_param = q
-                    .start_time_ticks
-                    .map(|t| format!("&StartTimeTicks={}", t))
-                    .unwrap_or_default();
-
-                source.supports_transcoding = true;
-                source.transcoding_url = Some(
-                    if trans_protocol.eq_ignore_ascii_case("hls") {
-                        format!(
-                            "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}{}{}{}&ApiKey={}",
-                            id,
-                            play_session_id,
-                            source.id,
-                            video_codec,
-                            audio_codec,
-                            bitrate_param,
-                            reasons_param,
-                            audio_stream_param,
-                            subtitle_stream_param,
-                            subtitle_method_param,
-                            start_time_param,
-                            session
-                                .device
-                                .access_token,
-                        )
-                    } else {
-                        format!(
-                            "/videos/{}/stream.{}?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}{}{}{}&ApiKey={}",
-                            id,
-                            trans_container,
-                            play_session_id,
-                            source.id,
-                            video_codec,
-                            audio_codec,
-                            bitrate_param,
-                            reasons_param,
-                            audio_stream_param,
-                            subtitle_stream_param,
-                            subtitle_method_param,
-                            start_time_param,
-                            session
-                                .device
-                                .access_token,
-                        )
-                    },
-                );
-                source.transcoding_container = Some(trans_container);
-                source.transcoding_sub_protocol = trans_protocol;
-                source.supports_direct_play = false;
-                source.supports_direct_stream = false;
+                source.supports_direct_play = true;
             }
-        } else {
-            // Keep transcoding available so clients can re-request with a subtitle
-            // index (e.g. PGS burn-in) even when direct-play is otherwise fine.
-            source.supports_transcoding = true;
-            source.supports_direct_play = true;
-        }
-
-        // Set delivery URL on text subtitle streams so clients can download them.
-        let source_id = source.id;
-        let api_key = &session
-            .device
-            .access_token;
-        for stream in source
-            .media_streams
-            .iter_mut()
-        {
-            if stream.type_ != Some(api::MediaStreamType::Subtitle) {
+            TranscodeDecision::Skip => {
+                info!(
+                    user = %session.user.username,
+                    stream_id = %stream.id,
+                    "video transcoding required but not allowed — marking source as not transcodable"
+                );
                 continue;
             }
-            let codec = stream
-                .codec
-                .as_deref()
-                .unwrap_or_default();
-            let profile_supports = |codec: SubtitleCodec| -> bool {
-                device_profile
-                    .as_ref()
-                    .map(|dp| {
-                        dp.subtitle_profiles
-                            .iter()
-                            .filter_map(|p| {
-                                p.format
-                                    .as_deref()
-                            })
-                            .any(|f| {
-                                f.parse::<SubtitleCodec>()
-                                    .ok()
-                                    .as_ref()
-                                    == Some(&codec)
-                            })
-                    })
-                    .unwrap_or(false)
-            };
-            let profile_embeds = |codec: SubtitleCodec| -> bool {
-                device_profile
-                    .as_ref()
-                    .map(|dp| {
-                        dp.subtitle_profiles
-                            .iter()
-                            .any(|p| {
-                                p.method == Some(api::SubtitleDeliveryMethod::Embed)
-                                    && p.format
-                                        .as_deref()
-                                        .and_then(|f| {
-                                            f.parse::<SubtitleCodec>()
-                                                .ok()
-                                        })
-                                        .as_ref()
-                                        == Some(&codec)
-                            })
-                    })
-                    .unwrap_or(false)
-            };
-            let parsed_codec = codec
-                .parse::<SubtitleCodec>()
-                .ok();
-            let is_image_sub = parsed_codec
-                .as_ref()
-                .map(SubtitleCodec::is_image)
-                .unwrap_or(false);
-            let format = if stream.is_text_subtitle_stream {
-                if parsed_codec == Some(SubtitleCodec::Ass)
-                    && profile_supports(SubtitleCodec::Ass)
-                {
-                    "ass"
-                } else {
-                    "vtt"
-                }
-            } else if profile_supports(SubtitleCodec::Pgs) {
-                "sup"
-            } else {
-                "vtt"
-            };
-            let client_can_handle_image = is_image_sub
-                && parsed_codec
-                    .as_ref()
-                    .map(|c| profile_supports(c.clone()) || profile_embeds(c.clone()))
-                    .unwrap_or(false);
-            if !stream.is_external
-                && parsed_codec
-                    .as_ref()
-                    .map(|c| profile_embeds(c.clone()))
-                    .unwrap_or(false)
-            {
-                stream.delivery_method = Some(api::SubtitleDeliveryMethod::Embed);
-            } else if !stream.is_external
-                && is_image_sub
-                && !client_can_handle_image
-                && subtitle_mode == remux_sdks::remux::EmbeddedSubtitleHandling::Burn
-            {
-                // Burn mode: embedded image sub (PGS/VOBSUB) the client can't render
-                // externally → force transcode with burn-in.
-                stream.delivery_method = Some(api::SubtitleDeliveryMethod::Encode);
-            } else {
-                stream.delivery_url = Some(format!(
-                    "/Videos/{id}/{source_id}/Subtitles/{idx}/0/Stream.{format}?ApiKey={api_key}",
-                    idx = stream.index,
-                ));
-                stream.delivery_method = Some(api::SubtitleDeliveryMethod::External);
-                stream.is_external_url = Some(false);
-                stream.is_external = false;
-            }
+            TranscodeDecision::Transcode(outcome) => outcome.apply_to(&mut source),
         }
+
+        apply_subtitle_delivery(
+            &mut source,
+            id,
+            &session
+                .device
+                .access_token,
+            &cfg.device_profile,
+            cfg.subtitle_mode,
+        );
 
         source.transcoding_reasons = transcode_reasons;
 
@@ -919,14 +395,14 @@ async fn items_playbackinfo_inner(
     }
 
     // Inject external subtitles from AIO (cache-backed)
-    if let Some(ref sm) = subtitle_media {
+    if let Some(ref sub_media) = subtitle_media {
         let sub_langs = probe_cfg
             .subtitle_languages
             .clone()
             .unwrap_or_default();
         inject_external_subtitles(
             &state.ctx,
-            sm,
+            sub_media,
             &mut media_sources,
             id,
             &session
@@ -952,24 +428,16 @@ async fn items_playbackinfo_inner(
 
     // Cache the group-resolved stream UUID so the stream endpoint can find it
     // without re-running filter_sources (which could pick a different candidate).
-    if resolver
-        .group
-        .is_some()
-    {
-        resolver.save_preference(
-            &state
-                .ctx
-                .store,
-            &session
-                .device
-                .id,
-        );
-    }
+    service.save_preference(
+        &session
+            .device
+            .id,
+    );
 
-    // When no specific source was requested (initial load, or media_source_id == item_id),
+    // When no specific stream was requested (initial load, or media_source_id == item_id),
     // override source[0].Id to equal the item ID — clients expect this for auto-play.
-    // Group and specific-stream requests keep their own UUIDs (specific_source_requested = true).
-    if !specific_source_requested && !media_sources.is_empty() {
+    // Group and specific-stream requests keep their own UUIDs (specific_stream_requested = true).
+    if !specific_stream_requested && !media_sources.is_empty() {
         media_sources[0].id = id;
         media_sources[0].e_tag = id;
     }
@@ -1014,259 +482,6 @@ async fn items_playbackinfo_inner(
 
     trace!(?info, "items_playbackinfo_result");
     Ok(Json(info))
-}
-
-/// Resolve probe data for a single source: cache hit → skip → live probe with fallback.
-async fn probe_source(
-    sm: &db::Media,
-    url_opt: Option<String>,
-    skip_probe: bool,
-    timeout_secs: u64,
-    auto_next_stream: bool,
-    max_retries: usize,
-    all_sources: &[db::Media],
-    restrict_resolution: bool,
-    port: u16,
-    db: &sqlx::SqlitePool,
-) -> axum_anyhow::ApiResult<(api::MediaSourceInfo, db::Media)> {
-    if skip_probe {
-        return Ok((api::MediaSourceInfo::from(sm.clone()), sm.clone()));
-    }
-    if let Some(cached) = &sm.probe_data {
-        if cached
-            .video_stream()
-            .is_some()
-        {
-            debug!(id = %sm.id, "probe cache hit");
-            return Ok((cached.clone(), sm.clone()));
-        }
-        debug!(id = %sm.id, "probe cache stale (no video stream), re-probing");
-    }
-    probe_with_fallback(
-        sm.clone(),
-        url_opt,
-        timeout_secs,
-        auto_next_stream,
-        max_retries,
-        all_sources,
-        restrict_resolution,
-        port,
-        db,
-        |url| crate::transcode::probing::probe_media(&url),
-    )
-    .await
-}
-
-fn select_candidates(
-    primary: &db::Media,
-    all_sources: &[db::Media],
-    auto_next_stream: bool,
-    max_retries: usize,
-    restrict_resolution: bool,
-    port: u16,
-) -> Vec<(db::Media, String)> {
-    if !auto_next_stream {
-        return vec![];
-    }
-    let pri_p2p = primary
-        .stream_info
-        .as_ref()
-        .map_or(false, |si| si.is_p2p());
-    let pri_res = primary
-        .stream_info
-        .as_ref()
-        .and_then(|si| si.resolution_tag());
-    all_sources
-        .iter()
-        .filter(|c| {
-            if c.id == primary.id {
-                return false;
-            }
-            let c_p2p = c
-                .stream_info
-                .as_ref()
-                .map_or(false, |si| si.is_p2p());
-            if c_p2p != pri_p2p {
-                return false;
-            }
-            if restrict_resolution {
-                let c_res = c
-                    .stream_info
-                    .as_ref()
-                    .and_then(|si| si.resolution_tag());
-                if c_res != pri_res {
-                    return false;
-                }
-            }
-            true
-        })
-        // In group-cascade mode (restrict_resolution=false) try all candidates;
-        // otherwise honour the configured retry cap.
-        .take(if restrict_resolution {
-            max_retries
-        } else {
-            usize::MAX
-        })
-        .filter_map(|c| {
-            let url = c
-                .stream_info
-                .as_ref()?
-                .descriptor
-                .server_input(c.id, port);
-            Some((c.clone(), url))
-        })
-        .collect()
-}
-
-/// Probe a stream URL, retrying with the next matching candidate on failure.
-///
-/// Returns a 500 error if all candidates fail to probe.
-async fn probe_with_fallback<F>(
-    primary: db::Media,
-    primary_url: Option<String>,
-    timeout_secs: u64,
-    auto_next_stream: bool,
-    max_retries: usize,
-    all_sources: &[db::Media],
-    restrict_resolution: bool,
-    port: u16,
-    db: &sqlx::SqlitePool,
-    probe_fn: F,
-) -> axum_anyhow::ApiResult<(api::MediaSourceInfo, db::Media)>
-where
-    F: Fn(
-            String,
-        )
-            -> anyhow::Result<(api::MediaSourceInfo, remux_sdks::remux::MediaSegments)>
-        + Clone
-        + Send
-        + 'static,
-{
-    use crate::{IntoApiError, ResultExt};
-
-    let candidates = select_candidates(
-        &primary,
-        all_sources,
-        auto_next_stream,
-        max_retries,
-        restrict_resolution,
-        port,
-    );
-
-    let all_to_try: Vec<_> = std::iter::once((primary.clone(), primary_url))
-        .chain(
-            candidates
-                .into_iter()
-                .map(|(m, u)| (m, Some(u))),
-        )
-        .collect();
-    let total_available = all_sources.len();
-    let mut attempts = 0usize;
-
-    for (sm, url_opt) in all_to_try {
-        let is_retry = sm.id != primary.id;
-        let url = match url_opt {
-            Some(u) => u,
-            None => {
-                warn!(id = %sm.id, "skipping stream with no URL");
-                continue;
-            }
-        };
-        attempts += 1;
-        if is_retry {
-            info!(
-                failed_id = %primary.id,
-                next_id = %sm.id,
-                next_url = %url,
-                "probe failed, trying next matching stream"
-            );
-        }
-        let url2 = url.clone();
-        let sm2 = sm.clone();
-        let db2 = db.clone();
-        let f = probe_fn.clone();
-        let probe_result = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            tokio::task::spawn_blocking(move || f(url2)),
-        )
-        .await;
-
-        match probe_result {
-            Ok(Ok(Ok((mut probed, segments)))) => {
-                // Reject streams whose probed duration is suspiciously short
-                // relative to the known metadata runtime (or absolutely < 3 min
-                // when unknown) — these are typically error/copyright-strike
-                // placeholder videos, not real content.
-                if let Some(probed_ticks) = probed.run_time_ticks {
-                    let max_threshold = 5_i64
-                        .to_ticks(TickUnit::Minutes)
-                        .unwrap_or(0);
-                    let threshold_ticks = match sm.runtime {
-                        Some(known_secs) => known_secs
-                            .to_ticks(TickUnit::Seconds)
-                            .map(|t| (t / 2).min(max_threshold))
-                            .unwrap_or(max_threshold),
-                        None => 3_i64
-                            .to_ticks(TickUnit::Minutes)
-                            .unwrap_or(0),
-                    };
-                    if probed_ticks < threshold_ticks {
-                        warn!(
-                            id = %sm.id,
-                            url = %url,
-                            probed_ticks,
-                            threshold_ticks,
-                            known_runtime_secs = ?sm.runtime,
-                            "stream is suspiciously short, treating as probe failure"
-                        );
-                        continue;
-                    }
-                }
-
-                if probed
-                    .video_stream()
-                    .is_some()
-                    || probed
-                        .audio_stream()
-                        .is_some()
-                {
-                    if !segments.is_empty() {
-                        probed.segments = Some(segments);
-                    }
-                    if let Err(e) =
-                        db::Media::save_probe_data(&db2, &sm2.id, &probed).await
-                    {
-                        warn!(id = %sm2.id, error = %e, "failed to save probe data");
-                    }
-                } else {
-                    warn!(id = %sm2.id, "probe returned no audio or video stream, not caching");
-                }
-                if is_retry {
-                    info!(
-                        fallback_url = %url,
-                        attempt = attempts,
-                        "probe succeeded on fallback stream"
-                    );
-                }
-                return Ok((probed, sm));
-            }
-            Ok(Ok(Err(e))) => {
-                warn!(url = %url, error = %e, "probe failed");
-            }
-            Ok(Err(e)) => {
-                warn!(url = %url, error = %e, "probe task panicked");
-            }
-            Err(_) => {
-                warn!(url = %url, timeout = timeout_secs, "probe timed out");
-            }
-        }
-    }
-
-    Err(anyhow!(
-        "all probe attempts failed for '{}' (tried {attempts} of {total_available} streams)",
-        primary.full_title()
-    ))
-    .context_internal("stream probe failed — no usable streams found")
 }
 
 /// Starts a direct playback for the given media UUID.
@@ -1405,20 +620,14 @@ async fn videos_stream_inner(
     id: Uuid,
     q: api::VideoStreamQuery,
 ) -> Result<impl IntoResponse> {
-    let media = StreamResolver::resolve(
-        &state
-            .ctx
-            .db,
-        &state
-            .ctx
-            .store,
+    let media = StreamService::lookup(
+        &state.ctx,
         id,
         q.media_source_id,
         q.device_id
             .as_deref(),
     )
-    .await?
-    .stream;
+    .await?;
 
     let si = media
         .stream_info
@@ -1541,7 +750,7 @@ async fn videos_stream_inner(
         .as_deref()
         == Some("Encode");
 
-    let params = crate::transcode::engine::ProgressiveTranscodeParams {
+    let params = crate::playback::engine::ProgressiveTranscodeParams {
         input_url: url,
         container: container.clone(),
         video_codec,
@@ -1618,7 +827,7 @@ async fn videos_stream_inner(
             .unwrap_or(28),
     };
 
-    let stream = crate::transcode::engine::start_progressive_transcode(params)?;
+    let stream = crate::playback::engine::start_progressive_transcode(params)?;
     let body = Body::from_stream(stream);
 
     // The engine transparently promotes copy+mp4 → matroska (no BSF needed for Matroska).
@@ -3147,396 +2356,6 @@ mod tests {
             body["MediaSources"][0]["DefaultAudioStreamIndex"].as_i64(),
             Some(1),
             "Client's explicit AudioStreamIndex must prevent language preference from selecting Dutch (index 1)"
-        );
-    }
-}
-
-#[cfg(test)]
-mod probe_tests {
-    use super::*;
-    use crate::stream::{StreamDescriptor, StreamInfo};
-    use remux_sdks::remux::{MediaSegments, MediaStream, MediaStreamType};
-    use std::{
-        collections::VecDeque,
-        sync::{Arc, Mutex},
-    };
-
-    fn http_media(url: &str) -> db::Media {
-        db::Media {
-            stream_info: Some(StreamInfo {
-                descriptor: StreamDescriptor::http(url),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }
-    }
-
-    fn http_media_with_filename(url: &str, filename: &str) -> db::Media {
-        db::Media {
-            stream_info: Some(StreamInfo {
-                descriptor: StreamDescriptor::http(url),
-                filename: Some(filename.to_string()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }
-    }
-
-    fn p2p_media() -> db::Media {
-        db::Media {
-            stream_info: Some(StreamInfo {
-                descriptor: StreamDescriptor::Torrent {
-                    info_hash: "abc123".to_string(),
-                    file_hint: None,
-                    file_idx: None,
-                    trackers: vec![],
-                },
-                ..Default::default()
-            }),
-            ..Default::default()
-        }
-    }
-
-    fn video_probe() -> anyhow::Result<(api::MediaSourceInfo, MediaSegments)> {
-        Ok((
-            api::MediaSourceInfo {
-                media_streams: vec![MediaStream {
-                    type_: Some(MediaStreamType::Video),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            },
-            Default::default(),
-        ))
-    }
-
-    fn queued_probe(
-        results: Vec<anyhow::Result<(api::MediaSourceInfo, MediaSegments)>>,
-    ) -> impl Fn(String) -> anyhow::Result<(api::MediaSourceInfo, MediaSegments)>
-    + Clone
-    + Send
-    + 'static {
-        let q = Arc::new(Mutex::new(VecDeque::from(results)));
-        move |_url: String| {
-            q.lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or_else(|| Err(anyhow!("no more probe results")))
-        }
-    }
-
-    async fn test_db() -> sqlx::SqlitePool {
-        let db = crate::db::connect("sqlite::memory:", 5_000)
-            .await
-            .unwrap();
-        crate::db::migrate(&db)
-            .await
-            .unwrap();
-        db
-    }
-
-    // ── select_candidates ─────────────────────────────────────────────────────
-
-    #[test]
-    fn no_fallback_when_auto_next_stream_false() {
-        let primary = http_media("http://a.example.com");
-        let other = http_media("http://b.example.com");
-        let result = select_candidates(
-            &primary,
-            &[primary.clone(), other],
-            false,
-            3,
-            false,
-            3000,
-        );
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn excludes_primary_from_candidates() {
-        let primary = http_media("http://a.example.com");
-        let other = http_media("http://b.example.com");
-        let all = vec![primary.clone(), other];
-        let result = select_candidates(&primary, &all, true, 10, false, 3000);
-        assert!(
-            result
-                .iter()
-                .all(|(m, _)| m.id != primary.id)
-        );
-    }
-
-    #[test]
-    fn p2p_mismatch_excluded() {
-        let primary = http_media("http://a.example.com");
-        let p2p = p2p_media();
-        let all = vec![primary.clone(), p2p];
-        let result = select_candidates(&primary, &all, true, 10, false, 3000);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn resolution_mismatch_excluded_when_restricted() {
-        let primary =
-            http_media_with_filename("http://a.example.com", "Movie.1080p.BluRay.mkv");
-        let other =
-            http_media_with_filename("http://b.example.com", "Movie.720p.BluRay.mkv");
-        let all = vec![primary.clone(), other];
-        let result = select_candidates(&primary, &all, true, 10, true, 3000);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn resolution_mismatch_allowed_in_cascade() {
-        let primary =
-            http_media_with_filename("http://a.example.com", "Movie.1080p.BluRay.mkv");
-        let other =
-            http_media_with_filename("http://b.example.com", "Movie.720p.BluRay.mkv");
-        let all = vec![primary.clone(), other];
-        let result = select_candidates(&primary, &all, true, 10, false, 3000);
-        assert_eq!(result.len(), 1);
-    }
-
-    #[test]
-    fn max_retries_caps_result() {
-        let primary = http_media("http://a.example.com");
-        let others: Vec<_> = (0..5)
-            .map(|i| http_media(&format!("http://s{i}.example.com")))
-            .collect();
-        let all: Vec<_> = std::iter::once(primary.clone())
-            .chain(others)
-            .collect();
-        let result = select_candidates(&primary, &all, true, 2, true, 3000);
-        assert!(result.len() <= 2);
-    }
-
-    #[test]
-    fn cascade_mode_ignores_retry_cap() {
-        let primary = http_media("http://a.example.com");
-        let others: Vec<_> = (0..5)
-            .map(|i| http_media(&format!("http://s{i}.example.com")))
-            .collect();
-        let all: Vec<_> = std::iter::once(primary.clone())
-            .chain(others)
-            .collect();
-        let result = select_candidates(&primary, &all, true, 1, false, 3000);
-        assert_eq!(result.len(), 5);
-    }
-
-    // ── probe_with_fallback ───────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn primary_success() {
-        let db = test_db().await;
-        let primary = http_media("http://a.example.com");
-        let primary_id = primary.id;
-        let all = vec![primary.clone()];
-        let result = probe_with_fallback(
-            primary,
-            Some("http://a.example.com".to_string()),
-            10,
-            false,
-            0,
-            &all,
-            false,
-            3000,
-            &db,
-            queued_probe(vec![video_probe()]),
-        )
-        .await;
-        let (_, effective) = result.unwrap();
-        assert_eq!(
-            effective.id, primary_id,
-            "primary succeeded — effective stream must be the primary"
-        );
-    }
-
-    #[tokio::test]
-    async fn primary_fails_fallback_succeeds() {
-        let db = test_db().await;
-        let primary = http_media("http://a.example.com");
-        let fallback = http_media("http://b.example.com");
-        let fallback_id = fallback.id;
-        let all = vec![primary.clone(), fallback];
-        let result = probe_with_fallback(
-            primary,
-            Some("http://a.example.com".to_string()),
-            10,
-            true,
-            5,
-            &all,
-            false,
-            3000,
-            &db,
-            queued_probe(vec![Err(anyhow!("primary failed")), video_probe()]),
-        )
-        .await;
-        // The returned effective stream must be the fallback, not the primary.
-        // Before the fix: probe_with_fallback returns only MediaSourceInfo (no db::Media)
-        // — this won't compile, which is the red state.
-        let (_, effective) = result.unwrap();
-        assert_eq!(
-            effective.id, fallback_id,
-            "fallback succeeded — effective stream must be the fallback, not the primary"
-        );
-    }
-
-    #[tokio::test]
-    async fn all_fail_returns_error_with_counts() {
-        let db = test_db().await;
-        let primary = http_media("http://a.example.com");
-        let fallback = http_media("http://b.example.com");
-        let all = vec![primary.clone(), fallback];
-        let result = probe_with_fallback(
-            primary,
-            Some("http://a.example.com".to_string()),
-            10,
-            true,
-            5,
-            &all,
-            false,
-            3000,
-            &db,
-            queued_probe(vec![Err(anyhow!("fail")), Err(anyhow!("fail"))]),
-        )
-        .await;
-        let err = format!("{:?}", result.unwrap_err());
-        assert!(
-            err.contains("tried 2 of 2 streams"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn short_duration_skips_to_next() {
-        let db = test_db().await;
-        // 1 minute — well below the 3-minute threshold when runtime is unknown
-        let short_ticks = 60_i64 * 10_000_000;
-        let short_probe = Ok((
-            api::MediaSourceInfo {
-                run_time_ticks: Some(short_ticks),
-                media_streams: vec![MediaStream {
-                    type_: Some(MediaStreamType::Video),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            },
-            MediaSegments::default(),
-        ));
-        let primary = http_media("http://a.example.com");
-        let fallback = http_media("http://b.example.com");
-        let fallback_id = fallback.id;
-        let all = vec![primary.clone(), fallback];
-        let result = probe_with_fallback(
-            primary,
-            Some("http://a.example.com".to_string()),
-            10,
-            true,
-            5,
-            &all,
-            false,
-            3000,
-            &db,
-            queued_probe(vec![short_probe, video_probe()]),
-        )
-        .await;
-        let (_, effective) = result.unwrap();
-        assert_eq!(
-            effective.id, fallback_id,
-            "short primary skipped — effective stream must be the fallback"
-        );
-    }
-
-    #[tokio::test]
-    async fn no_url_stream_not_counted_as_attempt() {
-        let db = test_db().await;
-        let primary = http_media("http://a.example.com");
-        let all = vec![primary.clone()];
-        let result = probe_with_fallback(
-            primary,
-            None, // no URL — will be skipped without incrementing attempts
-            10,
-            false,
-            0,
-            &all,
-            false,
-            3000,
-            &db,
-            queued_probe(vec![]),
-        )
-        .await;
-        let err = format!("{:?}", result.unwrap_err());
-        assert!(
-            err.contains("tried 0 of 1 streams"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn cascade_mode_tries_all_sources() {
-        let db = test_db().await;
-        let sources: Vec<_> = (0..4)
-            .map(|i| http_media(&format!("http://s{i}.example.com")))
-            .collect();
-        let primary = sources[0].clone();
-        let result = probe_with_fallback(
-            primary,
-            Some("http://s0.example.com".to_string()),
-            10,
-            true,
-            1, // max_retries=1, but restrict_resolution=false → cascade
-            &sources,
-            false,
-            3000,
-            &db,
-            queued_probe(vec![
-                Err(anyhow!("fail")),
-                Err(anyhow!("fail")),
-                Err(anyhow!("fail")),
-                Err(anyhow!("fail")),
-            ]),
-        )
-        .await;
-        let err = format!("{:?}", result.unwrap_err());
-        assert!(
-            err.contains("tried 4 of 4 streams"),
-            "unexpected error: {err}"
-        );
-    }
-
-    // Regression: items_playbackinfo was building all_sources = source_medias,
-    // which is narrowed to 1 item when a specific media_source_id is requested.
-    // The fallback pool must be the full filtered list, not the selection.
-    #[tokio::test]
-    async fn specific_source_request_falls_back_through_all_streams() {
-        let db = test_db().await;
-        let primary = http_media("http://a.example.com");
-        let other_a = http_media("http://b.example.com");
-        let other_b = http_media("http://c.example.com");
-
-        // all_sources is the full pool (as items_playbackinfo now provides via fallback_pool).
-        let all_sources = vec![primary.clone(), other_a, other_b];
-
-        let result = probe_with_fallback(
-            primary,
-            Some("http://a.example.com".into()),
-            10,
-            true,
-            5,
-            &all_sources,
-            false,
-            3000,
-            &db,
-            queued_probe(vec![
-                Err(anyhow!("fail")),
-                Err(anyhow!("fail")),
-                Err(anyhow!("fail")),
-            ]),
-        )
-        .await;
-        let err = format!("{:?}", result.unwrap_err());
-        assert!(
-            err.contains("tried 3 of 3 streams"),
-            "expected all 3 streams tried, got: {err}"
         );
     }
 }

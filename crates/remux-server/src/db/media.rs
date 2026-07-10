@@ -1474,6 +1474,14 @@ pub enum MediaError {
 }
 
 impl Media {
+    pub fn is_live(&self) -> bool {
+        self.kind == MediaKind::TvChannel
+    }
+
+    pub fn is_track(&self) -> bool {
+        self.kind == MediaKind::Track
+    }
+
     pub fn full_title(&self) -> String {
         match self.kind {
             MediaKind::Episode | MediaKind::TvProgram => {

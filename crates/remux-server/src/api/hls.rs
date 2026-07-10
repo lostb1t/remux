@@ -16,7 +16,7 @@ use crate::{
     common::{TickUnit, ToRunTimeTicks},
     db,
     db::auth,
-    transcode::session::{TranscodeSession, TranscodeState},
+    playback::session::{TranscodeSession, TranscodeState},
 };
 
 /// Serializes the lookup-or-create-transcode sequence per play_session_id so
@@ -339,7 +339,7 @@ pub async fn master_hls_video(
         // Start transcoding in background
         let session_clone = session.clone();
         let encoding_opts = encoding_opts_hls.clone();
-        let params = crate::transcode::engine::TranscodeParams {
+        let params = crate::playback::engine::TranscodeParams {
             input_url,
             output_dir: session
                 .read()
@@ -476,7 +476,7 @@ pub async fn master_hls_video(
                 "▶ Playback started (transcode)"
             );
             if let Err(e) =
-                crate::transcode::engine::start_transcode(session_clone, params).await
+                crate::playback::engine::start_transcode(session_clone, params).await
             {
                 error!("Transcode failed: {:#}", e);
             }
@@ -490,7 +490,7 @@ pub async fn master_hls_video(
         .read()
         .await;
     let master_playlist =
-        crate::transcode::engine::generate_master_playlist(&session_read);
+        crate::playback::engine::generate_master_playlist(&session_read);
 
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -637,7 +637,7 @@ async fn variant_hls_video_inner(
         play_session_id = %play_session_id,
         "Generating VOD variant playlist"
     );
-    let content = crate::transcode::engine::generate_variant_playlist(
+    let content = crate::playback::engine::generate_variant_playlist(
         &session_read,
         "", // no extra query string needed
     );
@@ -937,7 +937,7 @@ async fn hls_segment_inner(
                     )
                     .await
                     .unwrap_or_default();
-                    let params = crate::transcode::engine::TranscodeParams {
+                    let params = crate::playback::engine::TranscodeParams {
                         input_url,
                         output_dir: output_dir.clone(),
                         video_codec,
@@ -1039,7 +1039,7 @@ async fn hls_segment_inner(
 
                     let session_clone = session.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = crate::transcode::engine::start_transcode(
+                        if let Err(e) = crate::playback::engine::start_transcode(
                             session_clone,
                             params,
                         )
