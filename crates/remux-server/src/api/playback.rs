@@ -101,7 +101,7 @@ async fn items_playbackinfo_inner(
     .await
     .unwrap_or_default();
 
-    let item =
+    let media =
         MediaResolveService::resolve_item(media_source_id.unwrap_or(id), &state.ctx)
             .await?
             .context_not_found("not found")?;
@@ -122,10 +122,12 @@ async fn items_playbackinfo_inner(
                     .clone()
             }),
     });
+    let is_live = media.is_live();
+    let is_track_item = media.is_track();
     service
-        .load(item)
+        .load(media)
         .await?;
-    let mut media = service
+    let mut stream = service
         .candidate()
         .clone();
 
@@ -142,12 +144,10 @@ async fn items_playbackinfo_inner(
     .ok()
     .flatten();
 
-    let is_live = media.kind == db::MediaKind::TvChannel;
-
-    let is_track = media.kind == db::MediaKind::Track
+    let is_track = is_track_item
         || subtitle_media
             .as_ref()
-            .map_or(false, |m| m.kind == db::MediaKind::Track);
+            .map_or(false, |m| m.is_track());
     let has_lyrics = is_track;
 
     let max_bitrate: Option<i64> = match (
