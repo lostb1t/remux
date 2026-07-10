@@ -1,7 +1,27 @@
-use crate::{AppContext, db, playback::probe::resolve_stream_root};
+use crate::{
+    AppContext, api, db,
+    playback::probe::{probe_stream, resolve_stream_root},
+};
 use remux_sdks::remux::StreamFilter;
 use tracing::debug;
 use uuid::Uuid;
+
+/// Result of probing a single stream candidate.
+pub(crate) struct ProbeResult {
+    /// Probed source info with id/name/path/remux already stamped.
+    pub source: api::MediaSourceInfo,
+    /// Original candidate stream (needed for RTSP check, subtitle extraction).
+    pub stream: db::Media,
+    /// Effective stream post-fallback (may differ from `stream` if probe failed over).
+    pub effective_stream: db::Media,
+}
+
+/// Result of `StreamService::probe_candidates`.
+pub(crate) struct ProbedStreams {
+    pub results: Vec<ProbeResult>,
+    /// True when the client named a specific stream — keep its UUID, don't override to item_id.
+    pub specific_requested: bool,
+}
 
 pub(crate) struct StreamServiceConfig {
     pub ctx: AppContext,
@@ -359,6 +379,108 @@ impl StreamService {
             probe_only_first,
             specific_requested,
         }
+    }
+
+    /// Probe all stream candidates and return stamped results.
+    ///
+    /// Internally calls `select_streams()`, loads probe config, then invokes `probe_stream`
+    /// for each candidate. Source ID/name/path/remux are stamped before returning so the
+    /// handler only deals with playback-decision work.
+    pub async fn probe_candidates(&self) -> anyhow::Result<ProbedStreams> {
+        let sel = self.select_streams();
+        let probe_cfg = db::Settings::get_config_or_default(
+            &self
+                .ctx
+                .db,
+        )
+        .await;
+        let timeout = probe_cfg
+            .probe_timeout_secs
+            .unwrap_or(20) as u64;
+        let timeout_p2p = probe_cfg
+            .probe_timeout_p2p_secs
+            .unwrap_or(60) as u64;
+        let auto_next = probe_cfg
+            .auto_next_stream_on_probe_fail
+            .unwrap_or(true);
+        let max_retries = probe_cfg
+            .max_probe_fallback_streams
+            .unwrap_or(3) as usize;
+        let port = self
+            .ctx
+            .config
+            .port;
+
+        let mut results = Vec::with_capacity(
+            sel.candidates
+                .len(),
+        );
+        for (idx, stream) in sel
+            .candidates
+            .into_iter()
+            .enumerate()
+        {
+            let url_opt = stream
+                .stream_info
+                .as_ref()
+                .map(|si| {
+                    si.descriptor
+                        .server_input(stream.id, port)
+                });
+            let skip_probe = sel.probe_only_first && idx > 0;
+            let timeout_secs = if stream
+                .stream_info
+                .as_ref()
+                .map_or(false, |si| si.is_p2p())
+            {
+                timeout_p2p
+            } else {
+                timeout
+            };
+            let (mut source, effective_stream) = probe_stream(
+                &stream,
+                url_opt,
+                skip_probe,
+                timeout_secs,
+                auto_next,
+                max_retries,
+                &sel.probe_pool,
+                sel.restrict_resolution,
+                port,
+                &self
+                    .ctx
+                    .db,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+
+            let cid = self.source_id_for(&effective_stream);
+            source.id = cid;
+            source.e_tag = cid;
+            source.name = Some(self.source_name_for(&effective_stream));
+            source.has_segments = true;
+            source.path = Some(format!("/remux/{}", effective_stream.id));
+            source.is_remote = false;
+            // Re-apply binge-group headers — ffmpeg probing produces a fresh
+            // MediaSourceInfo and would otherwise drop provider hints.
+            source.remux = Some(api::MediaSourceRemuxInfo {
+                provider_info: stream
+                    .stream_info
+                    .as_ref()
+                    .and_then(|si| serde_json::to_value(si).ok()),
+            });
+
+            results.push(ProbeResult {
+                source,
+                stream,
+                effective_stream,
+            });
+        }
+
+        Ok(ProbedStreams {
+            results,
+            specific_requested: sel.specific_requested,
+        })
     }
 
     /// Persist the resolved stream UUID in the device-preference store (24 h TTL).

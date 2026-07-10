@@ -42,14 +42,10 @@ use crate::{
             PlaybackConfig, TranscodeDecision, apply_subtitle_delivery,
             build_transcode_decision,
         },
-        probe::probe_stream,
         session::{TranscodeSession, TranscodeState},
     },
     sdks,
-    services::{
-        MediaResolveService, StreamService, StreamServiceConfig,
-        stream_service::StreamSelection,
-    },
+    services::{MediaResolveService, ProbeResult, StreamService, StreamServiceConfig},
     torrent,
 };
 use axum_anyhow::ApiResult as Result;
@@ -154,14 +150,6 @@ async fn items_playbackinfo_inner(
             .map_or(false, |m| m.kind == db::MediaKind::Track);
     let has_lyrics = is_track;
 
-    let StreamSelection {
-        candidates: candidate_streams,
-        probe_pool: fallback_streams,
-        restrict_resolution: sel_restrict_resolution,
-        probe_only_first,
-        specific_requested: specific_stream_requested,
-    } = service.select_streams();
-
     let max_bitrate: Option<i64> = match (
         q.max_streaming_bitrate,
         device_profile
@@ -176,25 +164,6 @@ async fn items_playbackinfo_inner(
         .as_simple()
         .to_string();
 
-    let probe_timeout_secs = probe_cfg
-        .probe_timeout_secs
-        .unwrap_or(20) as u64;
-    let probe_timeout_p2p_secs = probe_cfg
-        .probe_timeout_p2p_secs
-        .unwrap_or(60) as u64;
-    let auto_next_stream = probe_cfg
-        .auto_next_stream_on_probe_fail
-        .unwrap_or(true);
-    let max_stream_retries = probe_cfg
-        .max_probe_fallback_streams
-        .unwrap_or(3) as usize;
-
-    let port = state
-        .ctx
-        .config
-        .port;
-    let probe_pool = fallback_streams;
-    let restrict_resolution = sel_restrict_resolution;
     let subtitle_mode = encoding_cfg
         .subtitle_mode
         .unwrap_or_default();
@@ -206,62 +175,26 @@ async fn items_playbackinfo_inner(
         item_id: id,
         subtitle_mode,
     };
-    let mut media_sources = Vec::with_capacity(candidate_streams.len());
-    for (idx, stream) in candidate_streams
-        .into_iter()
-        .enumerate()
-    {
-        let url_opt = stream
-            .stream_info
-            .as_ref()
-            .map(|si| {
-                si.descriptor
-                    .server_input(stream.id, port)
-            });
-        let skip_probe = probe_only_first && idx > 0;
-        let timeout_secs = if stream
-            .stream_info
-            .as_ref()
-            .map_or(false, |si| si.is_p2p())
-        {
-            probe_timeout_p2p_secs
-        } else {
-            probe_timeout_secs
-        };
-        let (mut source, effective_stream) = probe_stream(
-            &stream,
-            url_opt.clone(),
-            skip_probe,
-            timeout_secs,
-            auto_next_stream,
-            max_stream_retries,
-            &probe_pool,
-            restrict_resolution,
-            port,
-            &state
-                .ctx
-                .db,
-        )
+
+    let port = state
+        .ctx
+        .config
+        .port;
+    let probed = service
+        .probe_candidates()
         .await?;
-        let cid = service.source_id_for(&effective_stream);
-        source.id = cid;
-        source.e_tag = cid;
-        source.name = Some(service.source_name_for(&effective_stream));
-        source.has_segments = true;
-        source.path = Some(format!("/remux/{}", effective_stream.id));
-        source.is_remote = false;
-
-        // Re-apply binge-group headers on top of the probed result —
-        // ffmpeg probing produces a fresh `MediaSourceInfo` and would
-        // otherwise drop the `X-Remux-BingeGroup` / `X-Gelato-BingeGroup`
-        // hints we stashed alongside the stream.
-        source.remux = Some(api::MediaSourceRemuxInfo {
-            provider_info: stream
-                .stream_info
-                .as_ref()
-                .and_then(|si| serde_json::to_value(si).ok()),
-        });
-
+    let specific_stream_requested = probed.specific_requested;
+    let mut media_sources = Vec::with_capacity(
+        probed
+            .results
+            .len(),
+    );
+    for ProbeResult {
+        mut source,
+        stream,
+        effective_stream,
+    } in probed.results
+    {
         if has_lyrics {
             api::inject_lyric_stream(&mut source);
         }

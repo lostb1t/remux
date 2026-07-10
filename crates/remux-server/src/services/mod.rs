@@ -5,4 +5,6 @@ pub mod stremio;
 
 pub use resolve::MediaResolveService;
 pub(crate) use resolve::ResolvedItem;
-pub(crate) use stream_service::{StreamService, StreamServiceConfig};
+pub(crate) use stream_service::{
+    ProbeResult, ProbedStreams, StreamService, StreamServiceConfig,
+};
