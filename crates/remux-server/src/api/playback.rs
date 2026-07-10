@@ -138,17 +138,38 @@ async fn items_playbackinfo_inner(
     // Collect all playable sources. A Movie/Episode may have multiple
     // Source children (versions); return every one so the client can
     // show version selection and per-source stream lists.
-    let all_source_medias: Vec<db::Media> = if matches!(
+    //
+    // When a specific stream UUID is sent as media_source_id, resolver.stream
+    // resolves to a Stream child record (kind=Stream), not the Episode. Always
+    // enumerate from the top-level item (id) so the fallback pool is complete.
+    let mut source_root = if matches!(
         media.kind,
+        db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track
+    ) {
+        media.clone()
+    } else {
+        db::Media::get_by_id(
+            &state
+                .ctx
+                .db,
+            &id,
+        )
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| media.clone())
+    };
+    let all_source_medias: Vec<db::Media> = if matches!(
+        source_root.kind,
         db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track
     ) {
         state
             .ctx
             .addons
-            .refresh_streams(&mut media, &state.ctx)
+            .refresh_streams(&mut source_root, &state.ctx)
             .await
             .inspect_err(|e| error!("refresh_streams failed: {e:#}"));
-        let sources = media
+        let sources = source_root
             .streams(
                 &state
                     .ctx
@@ -156,7 +177,7 @@ async fn items_playbackinfo_inner(
             )
             .await?;
         let raw = if sources.is_empty() {
-            vec![media]
+            vec![source_root]
         } else {
             sources
         };
