@@ -1241,6 +1241,13 @@ where
                 } else {
                     warn!(id = %sm2.id, "probe returned no audio or video stream, not caching");
                 }
+                if is_retry {
+                    info!(
+                        fallback_url = %url,
+                        attempt = attempts,
+                        "probe succeeded on fallback stream"
+                    );
+                }
                 return Ok((probed, sm));
             }
             Ok(Ok(Err(e))) => {
