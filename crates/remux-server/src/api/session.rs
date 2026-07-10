@@ -20,8 +20,8 @@ use crate::{
     common::{TickUnit, ToRunTimeTicks},
     db,
     db::auth,
+    playback::session::TranscodeSession,
     services::MediaResolveService,
-    transcode::session::TranscodeSession,
 };
 
 #[post("/sessions/logout")]
