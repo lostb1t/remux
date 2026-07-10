@@ -40,6 +40,8 @@ impl Task for RefreshLibraryTask {
         _tasks: Arc<TaskService>,
         progress: ProgressReporter,
     ) -> Result<()> {
+        super::log_process_memory("refresh_library:start");
+
         let global_max = db::Settings::get_config_or_default(&ctx.db)
             .await
             .catalog_max_items
@@ -48,6 +50,7 @@ impl Task for RefreshLibraryTask {
         ctx.addons
             .refresh_indexes(&ctx, progress.scaled(0.0, 20.0))
             .await?;
+        super::log_process_memory("refresh_library:index_refresh:complete");
 
         // Keep in sync with the top-level kinds import_catalog_items() actually
         // persists (catalog_import_shared.rs's retain filter), minus TvChannel
@@ -174,12 +177,14 @@ impl Task for RefreshLibraryTask {
             &domain_collection_ids,
         )
         .await;
+        super::log_process_memory("refresh_library:catalog_import:complete");
 
         const CHUNK_SIZE: u32 = 100;
         let mut total: Option<u32> = None;
         let mut processed = 0u32;
         let mut offset = 0u32;
         let meta_progress = progress.scaled(70.0, 100.0);
+        super::log_process_memory("refresh_library:metadata_refresh:start");
         loop {
             let (batch, count) = db::Media::get_refreshable(
                 &ctx.db,
@@ -200,6 +205,11 @@ impl Task for RefreshLibraryTask {
                 .process_meta_batch(batch, &ctx, false)
                 .await?;
             processed += fetched;
+            if processed % 1000 < fetched || fetched < CHUNK_SIZE {
+                super::log_process_memory(&format!(
+                    "refresh_library:metadata_refresh:processed:{processed}"
+                ));
+            }
             if let Some(t) = total {
                 meta_progress.report(processed as usize, t as usize);
             }
@@ -209,6 +219,7 @@ impl Task for RefreshLibraryTask {
             offset += CHUNK_SIZE;
         }
 
+        super::log_process_memory("refresh_library:complete");
         Ok(())
     }
 }

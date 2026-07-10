@@ -127,7 +127,7 @@ pub(crate) fn select_hw_accel(
 }
 
 /// Max seconds to buffer ahead of the current playback position.
-const MAX_BUFFER_SECS: u32 = 300;
+const MAX_BUFFER_SECS: u32 = 86_400; // was 300
 /// Seconds behind the playback position before a segment is eligible for deletion.
 const SEGMENT_KEEP_SECS: u32 = 30;
 
@@ -1399,6 +1399,10 @@ pub(crate) fn build_progressive_args(
         "1".into(),
         "-reconnect_delay_max".into(),
         "5".into(),
+        "-timeout".into(),
+        "30000000".into(),
+        "-rw_timeout".into(),
+        "30000000".into(),
     ];
 
     // Hardware acceleration input flags (before -ss and -i).

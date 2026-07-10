@@ -1,5 +1,5 @@
 use crate::{
-    components::{EmptyState, FormGroup, LoadingText},
+    components::{EmptyState, FormGroup, LoadingText, Modal},
     state::AppState,
 };
 use dioxus::prelude::*;
@@ -380,7 +380,7 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                                 let gid_del = group.id;
                                 rsx! {
                                     div {
-                                        class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)]",
+                                        class: "flex items-center border-b border-[var(--border)] hover:bg-[var(--row-hover)]",
                                         key: "{group.id}",
                                         div { class: "flex-1 min-w-0 px-3 py-[10px]",
                                             div { style: "font-weight:500;font-size:.85rem", "{group.name}" }
@@ -390,15 +390,15 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                                                         let (label, is_excl, color_style) = match rule {
                                                             StreamRule::Resolution { op, values } => {
                                                                 let lbl = values.iter().map(|v| v.label()).collect::<Vec<_>>().join("/");
-                                                                (lbl, matches!(op, SetOp::NotIn), "background:var(--accent-subtle,rgba(99,102,241,.12));color:var(--accent,#6366f1);padding:1px 6px;border-radius:4px")
+                                                                (lbl, matches!(op, SetOp::NotIn), "background:color-mix(in srgb, var(--info) 15%, transparent);color:var(--info);padding:1px 6px;border-radius:4px")
                                                             }
                                                             StreamRule::Quality { op, values } => {
                                                                 let lbl = values.iter().map(|v| v.label()).collect::<Vec<_>>().join("/");
-                                                                (lbl, matches!(op, SetOp::NotIn), "background:rgba(0,0,0,0.06);padding:1px 6px;border-radius:4px")
+                                                                (lbl, matches!(op, SetOp::NotIn), "background:var(--row-hover);color:var(--text-secondary);padding:1px 6px;border-radius:4px")
                                                             }
                                                             StreamRule::Codec { op, values } => {
                                                                 let lbl = values.iter().map(|v| v.label()).collect::<Vec<_>>().join("/");
-                                                                (lbl, matches!(op, SetOp::NotIn), "background:rgba(16,185,129,.12);color:rgb(5,150,105);padding:1px 6px;border-radius:4px")
+                                                                (lbl, matches!(op, SetOp::NotIn), "background:color-mix(in srgb, var(--success) 15%, transparent);color:var(--success);padding:1px 6px;border-radius:4px")
                                                             }
                                                         };
                                                         let prefix = if is_excl { "NOT " } else { "" };
@@ -481,7 +481,7 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                                         "▼ {group.name}"
                                         if group.hidden {
                                             span {
-                                                style: "font-size:.68rem;padding:1px 5px;border-radius:3px;background:var(--bg-subtle,#333);color:var(--text-muted);font-family:sans-serif",
+                                                style: "font-size:.68rem;padding:1px 5px;border-radius:3px;background:var(--bg-subtle);color:var(--text-muted);font-family:sans-serif",
                                                 "hidden"
                                             }
                                         }
@@ -511,81 +511,79 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
 
         // Create modal
         if *show_create.read() {
-            div { class: "modal-backdrop",
-                div { class: "modal",
-                    div { class: "modal-header",
-                        span { class: "modal-title", "New Stream Group" }
-                    }
-                    div { class: "modal-body",
-                        FormGroup { label: "Name",
-                            input {
-                                class: "form-input",
-                                r#type: "text",
-                                placeholder: "Auto-generated from filter",
-                                value: "{create_name}",
-                                oninput: move |e| create_name.set(e.value()),
-                            }
-                        }
-                        FormGroup { label: "Filter rules",
-                            StreamFilterEditor { match_mode: create_match, rules: create_rules }
-                        }
-                        FormGroup { label: "Priority (lower = shown first)",
-                            input {
-                                class: "form-input",
-                                r#type: "number",
-                                value: "{create_priority}",
-                                oninput: move |e| {
-                                    if let Ok(n) = e.value().parse::<i64>() {
-                                        create_priority.set(n);
-                                    }
-                                },
-                            }
+            Modal { on_close: move |_| show_create.set(false),
+                div { class: "modal-header",
+                    span { class: "modal-title", "New Stream Group" }
+                }
+                div { class: "modal-body",
+                    FormGroup { label: "Name",
+                        input {
+                            class: "form-input",
+                            r#type: "text",
+                            placeholder: "Auto-generated from filter",
+                            value: "{create_name}",
+                            oninput: move |e| create_name.set(e.value()),
                         }
                     }
-                    div { class: "modal-footer",
-                        button {
-                            class: "btn btn-ghost",
-                            onclick: move |_| show_create.set(false),
-                            "Cancel"
-                        }
-                        button {
-                            class: "btn btn-primary",
-                            disabled: *creating.read(),
-                            onclick: {
-                                let client = app_state.client.clone();
-                                move |_| {
-                                    let name = create_name.read().trim().to_string();
-                                    creating.set(true);
-                                    let c = client.clone();
-                                    let filter = StreamFilter {
-                                        match_mode: create_match.peek().clone(),
-                                        rules: create_rules.peek().clone(),
-                                    };
-                                    let prio = *create_priority.peek();
-                                    spawn(async move {
-                                        match c.execute(CreateStreamGroup {
-                                            payload: CreateStreamGroupRequest {
-                                                name,
-                                                filter,
-                                                priority: prio,
-                                            },
-                                        }).await {
-                                            Ok(_) => {
-                                                show_create.set(false);
-                                                let v = *refresh.peek() + 1;
-                                                refresh.set(v);
-                                            }
-                                            Err(e) => {
-                                                error.set(Some(format!("Failed to create: {e}")));
-                                                show_create.set(false);
-                                            }
-                                        }
-                                        creating.set(false);
-                                    });
+                    FormGroup { label: "Filter rules",
+                        StreamFilterEditor { match_mode: create_match, rules: create_rules }
+                    }
+                    FormGroup { label: "Priority (lower = shown first)",
+                        input {
+                            class: "form-input",
+                            r#type: "number",
+                            value: "{create_priority}",
+                            oninput: move |e| {
+                                if let Ok(n) = e.value().parse::<i64>() {
+                                    create_priority.set(n);
                                 }
                             },
-                            if *creating.read() { "Creating…" } else { "Create" }
                         }
+                    }
+                }
+                div { class: "modal-footer",
+                    button {
+                        class: "btn btn-ghost",
+                        onclick: move |_| show_create.set(false),
+                        "Cancel"
+                    }
+                    button {
+                        class: "btn btn-primary",
+                        disabled: *creating.read(),
+                        onclick: {
+                            let client = app_state.client.clone();
+                            move |_| {
+                                let name = create_name.read().trim().to_string();
+                                creating.set(true);
+                                let c = client.clone();
+                                let filter = StreamFilter {
+                                    match_mode: create_match.peek().clone(),
+                                    rules: create_rules.peek().clone(),
+                                };
+                                let prio = *create_priority.peek();
+                                spawn(async move {
+                                    match c.execute(CreateStreamGroup {
+                                        payload: CreateStreamGroupRequest {
+                                            name,
+                                            filter,
+                                            priority: prio,
+                                        },
+                                    }).await {
+                                        Ok(_) => {
+                                            show_create.set(false);
+                                            let v = *refresh.peek() + 1;
+                                            refresh.set(v);
+                                        }
+                                        Err(e) => {
+                                            error.set(Some(format!("Failed to create: {e}")));
+                                            show_create.set(false);
+                                        }
+                                    }
+                                    creating.set(false);
+                                });
+                            }
+                        },
+                        if *creating.read() { "Creating…" } else { "Create" }
                     }
                 }
             }
@@ -593,106 +591,104 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
 
         // Edit modal
         if id_to_edit.read().is_some() {
-            div { class: "modal-backdrop",
-                div { class: "modal",
-                    div { class: "modal-header",
-                        span { class: "modal-title", "Edit Stream Group" }
-                    }
-                    div { class: "modal-body",
-                        FormGroup { label: "Name",
-                            input {
-                                class: "form-input",
-                                r#type: "text",
-                                value: "{edit_name}",
-                                oninput: move |e| edit_name.set(e.value()),
-                            }
-                        }
-                        FormGroup { label: "Filter rules",
-                            StreamFilterEditor { match_mode: edit_match, rules: edit_rules }
-                        }
-                        FormGroup { label: "Priority (lower = shown first)",
-                            input {
-                                class: "form-input",
-                                r#type: "number",
-                                value: "{edit_priority}",
-                                oninput: move |e| {
-                                    if let Ok(n) = e.value().parse::<i64>() {
-                                        edit_priority.set(n);
-                                    }
-                                },
-                            }
-                        }
-                        div { class: "form-group",
-                            label { class: "form-label", style: "display:flex;align-items:center;gap:8px",
-                                input {
-                                    r#type: "checkbox",
-                                    checked: *edit_enabled.read(),
-                                    onchange: move |e| edit_enabled.set(e.checked()),
-                                }
-                                "Enabled"
-                            }
-                        }
-                        div { class: "form-group",
-                            label { class: "form-label", style: "display:flex;align-items:center;gap:8px",
-                                input {
-                                    r#type: "checkbox",
-                                    checked: *edit_hidden.read(),
-                                    onchange: move |e| edit_hidden.set(e.checked()),
-                                }
-                                "Hide group"
-                            }
+            Modal { on_close: move |_| id_to_edit.set(None),
+                div { class: "modal-header",
+                    span { class: "modal-title", "Edit Stream Group" }
+                }
+                div { class: "modal-body",
+                    FormGroup { label: "Name",
+                        input {
+                            class: "form-input",
+                            r#type: "text",
+                            value: "{edit_name}",
+                            oninput: move |e| edit_name.set(e.value()),
                         }
                     }
-                    div { class: "modal-footer",
-                        button {
-                            class: "btn btn-ghost",
-                            onclick: move |_| id_to_edit.set(None),
-                            "Cancel"
-                        }
-                        button {
-                            class: "btn btn-primary",
-                            disabled: *editing.read(),
-                            onclick: {
-                                let client = app_state.client.clone();
-                                move |_| {
-                                    let Some(id) = *id_to_edit.peek() else { return };
-                                    let name = edit_name.read().trim().to_string();
-                                    editing.set(true);
-                                    let c = client.clone();
-                                    let filter = StreamFilter {
-                                        match_mode: edit_match.peek().clone(),
-                                        rules: edit_rules.peek().clone(),
-                                    };
-                                    let prio = *edit_priority.peek();
-                                    let enabled = *edit_enabled.peek();
-                                    let hidden = *edit_hidden.peek();
-                                    spawn(async move {
-                                        match c.execute(UpdateStreamGroup {
-                                            id,
-                                            payload: UpdateStreamGroupRequest {
-                                                name,
-                                                filter,
-                                                priority: prio,
-                                                enabled,
-                                                hidden,
-                                            },
-                                        }).await {
-                                            Ok(_) => {
-                                                id_to_edit.set(None);
-                                                let v = *refresh.peek() + 1;
-                                                refresh.set(v);
-                                            }
-                                            Err(e) => {
-                                                error.set(Some(format!("Failed to update: {e}")));
-                                                id_to_edit.set(None);
-                                            }
-                                        }
-                                        editing.set(false);
-                                    });
+                    FormGroup { label: "Filter rules",
+                        StreamFilterEditor { match_mode: edit_match, rules: edit_rules }
+                    }
+                    FormGroup { label: "Priority (lower = shown first)",
+                        input {
+                            class: "form-input",
+                            r#type: "number",
+                            value: "{edit_priority}",
+                            oninput: move |e| {
+                                if let Ok(n) = e.value().parse::<i64>() {
+                                    edit_priority.set(n);
                                 }
                             },
-                            if *editing.read() { "Saving…" } else { "Save" }
                         }
+                    }
+                    div { class: "form-group",
+                        label { class: "form-label", style: "display:flex;align-items:center;gap:8px",
+                            input {
+                                r#type: "checkbox",
+                                checked: *edit_enabled.read(),
+                                onchange: move |e| edit_enabled.set(e.checked()),
+                            }
+                            "Enabled"
+                        }
+                    }
+                    div { class: "form-group",
+                        label { class: "form-label", style: "display:flex;align-items:center;gap:8px",
+                            input {
+                                r#type: "checkbox",
+                                checked: *edit_hidden.read(),
+                                onchange: move |e| edit_hidden.set(e.checked()),
+                            }
+                            "Hide group"
+                        }
+                    }
+                }
+                div { class: "modal-footer",
+                    button {
+                        class: "btn btn-ghost",
+                        onclick: move |_| id_to_edit.set(None),
+                        "Cancel"
+                    }
+                    button {
+                        class: "btn btn-primary",
+                        disabled: *editing.read(),
+                        onclick: {
+                            let client = app_state.client.clone();
+                            move |_| {
+                                let Some(id) = *id_to_edit.peek() else { return };
+                                let name = edit_name.read().trim().to_string();
+                                editing.set(true);
+                                let c = client.clone();
+                                let filter = StreamFilter {
+                                    match_mode: edit_match.peek().clone(),
+                                    rules: edit_rules.peek().clone(),
+                                };
+                                let prio = *edit_priority.peek();
+                                let enabled = *edit_enabled.peek();
+                                let hidden = *edit_hidden.peek();
+                                spawn(async move {
+                                    match c.execute(UpdateStreamGroup {
+                                        id,
+                                        payload: UpdateStreamGroupRequest {
+                                            name,
+                                            filter,
+                                            priority: prio,
+                                            enabled,
+                                            hidden,
+                                        },
+                                    }).await {
+                                        Ok(_) => {
+                                            id_to_edit.set(None);
+                                            let v = *refresh.peek() + 1;
+                                            refresh.set(v);
+                                        }
+                                        Err(e) => {
+                                            error.set(Some(format!("Failed to update: {e}")));
+                                            id_to_edit.set(None);
+                                        }
+                                    }
+                                    editing.set(false);
+                                });
+                            }
+                        },
+                        if *editing.read() { "Saving…" } else { "Save" }
                     }
                 }
             }
@@ -700,51 +696,49 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
 
         // Delete confirm modal
         if id_to_delete.read().is_some() {
-            div { class: "modal-backdrop",
-                div { class: "modal",
-                    div { class: "modal-header",
-                        span { class: "modal-title", "Delete Stream Group" }
+            Modal { on_close: move |_| id_to_delete.set(None),
+                div { class: "modal-header",
+                    span { class: "modal-title", "Delete Stream Group" }
+                }
+                div { class: "modal-body",
+                    p { style: "font-size:.85rem",
+                        "Are you sure you want to delete this stream group? This cannot be undone."
                     }
-                    div { class: "modal-body",
-                        p { style: "font-size:.85rem",
-                            "Are you sure you want to delete this stream group? This cannot be undone."
-                        }
+                }
+                div { class: "modal-footer",
+                    button {
+                        class: "btn btn-ghost",
+                        disabled: *deleting.read(),
+                        onclick: move |_| id_to_delete.set(None),
+                        "Cancel"
                     }
-                    div { class: "modal-footer",
-                        button {
-                            class: "btn btn-ghost",
-                            disabled: *deleting.read(),
-                            onclick: move |_| id_to_delete.set(None),
-                            "Cancel"
-                        }
-                        button {
-                            class: "btn btn-primary",
-                            style: "background:var(--error);border-color:var(--error)",
-                            disabled: *deleting.read(),
-                            onclick: {
-                                let client = app_state.client.clone();
-                                move |_| {
-                                    let Some(id) = *id_to_delete.peek() else { return };
-                                    deleting.set(true);
-                                    let c = client.clone();
-                                    spawn(async move {
-                                        match c.execute(DeleteStreamGroup { id }).await {
-                                            Ok(_) => {
-                                                id_to_delete.set(None);
-                                                let v = *refresh.peek() + 1;
-                                                refresh.set(v);
-                                            }
-                                            Err(e) => {
-                                                error.set(Some(format!("Failed to delete: {e}")));
-                                                id_to_delete.set(None);
-                                            }
+                    button {
+                        class: "btn btn-primary",
+                        style: "background:var(--error);border-color:var(--error)",
+                        disabled: *deleting.read(),
+                        onclick: {
+                            let client = app_state.client.clone();
+                            move |_| {
+                                let Some(id) = *id_to_delete.peek() else { return };
+                                deleting.set(true);
+                                let c = client.clone();
+                                spawn(async move {
+                                    match c.execute(DeleteStreamGroup { id }).await {
+                                        Ok(_) => {
+                                            id_to_delete.set(None);
+                                            let v = *refresh.peek() + 1;
+                                            refresh.set(v);
                                         }
-                                        deleting.set(false);
-                                    });
-                                }
-                            },
-                            if *deleting.read() { "Deleting…" } else { "Delete" }
-                        }
+                                        Err(e) => {
+                                            error.set(Some(format!("Failed to delete: {e}")));
+                                            id_to_delete.set(None);
+                                        }
+                                    }
+                                    deleting.set(false);
+                                });
+                            }
+                        },
+                        if *deleting.read() { "Deleting…" } else { "Delete" }
                     }
                 }
             }

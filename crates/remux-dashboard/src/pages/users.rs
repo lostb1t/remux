@@ -87,7 +87,7 @@ pub fn UsersPage(app_state: AppState) -> Element {
                                     let user_id   = user.id;
                                     let client_del = app_state.client.clone();
                                     rsx! {
-                                        div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]", key: "{user.id}",
+                                        div { class: "flex items-center border-b border-[var(--border)] hover:bg-[var(--row-hover)] even:bg-[var(--row-stripe)] even:hover:bg-[var(--row-hover)]", key: "{user.id}",
                                             div { class: "flex-1 min-w-0 px-3 py-[10px]",
                                                 div { class: "user-info",
                                                     span { class: "user-name", "{user.name}" }
@@ -132,18 +132,16 @@ pub fn UsersPage(app_state: AppState) -> Element {
         }
 
         if let Some(mode) = form_mode.read().clone() {
-            div { class: "modal-backdrop",
-                div { class: "modal",
-                    UserForm {
-                        mode,
-                        app_state: app_state.clone(),
-                        on_done: move |_| {
-                            form_mode.set(None);
-                            let v = *refresh.peek() + 1;
-                            refresh.set(v);
-                        },
-                        on_cancel: move |_| form_mode.set(None),
-                    }
+            Modal { on_close: move |_| form_mode.set(None),
+                UserForm {
+                    mode,
+                    app_state: app_state.clone(),
+                    on_done: move |_| {
+                        form_mode.set(None);
+                        let v = *refresh.peek() + 1;
+                        refresh.set(v);
+                    },
+                    on_cancel: move |_| form_mode.set(None),
                 }
             }
         }

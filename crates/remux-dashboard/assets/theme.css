@@ -1,35 +1,99 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
-/* ── Design tokens ────────────────────────────────────────────────── */
+/* ── Design tokens ────────────────────────────────────────────────────
+ * Theming model
+ * -------------
+ * Every palette token is defined ONCE using CSS `light-dark(light, dark)`.
+ * Which side is used is decided by the element's used `color-scheme`:
+ *   • System (default)  → `:root { color-scheme: light dark }` follows the OS
+ *                          (`prefers-color-scheme`) automatically, no JS needed.
+ *   • Explicit Light    → `:root[data-theme="light"] { color-scheme: light }`
+ *   • Explicit Dark     → `:root[data-theme="dark"]  { color-scheme: dark }`
+ * `data-theme` is set/removed on <html> by the Rust theme runtime (see theme.rs).
+ *
+ * Accent
+ * ------
+ * A single `--accent` (user-customisable, default brand green) drives the whole
+ * primary family via `color-mix()`. Status colors (success/error/info/warning)
+ * are intentionally INDEPENDENT of the accent so they never shift with it.
+ *
+ * Scale
+ * -----
+ * `--ui-scale` (default 1) feeds `zoom` on the top-level containers so the whole
+ * UI can be scaled uniformly (px + rem) from the Appearance settings.
+ * ──────────────────────────────────────────────────────────────────── */
 :root {
-  --bg:             #f2f2f2;
-  --bg-elevated:    #ffffff;
-  --panel:          #ffffff;
-  --panel-hover:    #f7f7f7;
-  --border:         #dddddd;
-  --border-hover:   #bbbbbb;
-  --primary:        #009245;
-  --primary-hover:  #007a38;
-  --primary-glow:   rgba(0, 146, 69, .15);
-  --primary-dim:    rgba(0, 146, 69, .08);
-  --text:           #111111;
-  --text-secondary: #555555;
-  --text-muted:     #777777;
-  --text-dim:       #aaaaaa;
-  --error:          #c0392b;
-  --error-glow:     rgba(192, 57, 43, .1);
-  --success:        #009245;
-  --info:           #2980b9;
-  --warning:        #e67e22;
+  /* Enable light-dark() and make System mode follow the OS scheme. */
+  color-scheme: light dark;
+
+  /* User-tunable knobs (overridden at runtime via an injected <style>). */
+  --accent:   #009245;   /* brand green; drives the primary family below   */
+  --ui-scale: 1;         /* global zoom factor (0.85–1.25), 1 = 100%        */
+
+  /* Surfaces (light, dark) */
+  --bg:             light-dark(#f2f2f2, #0f1114);
+  --bg-elevated:    light-dark(#ffffff, #171a1f);
+  --panel:          light-dark(#ffffff, #14171b);
+  --panel-hover:    light-dark(#f7f7f7, #1c212a);
+  --border:         light-dark(#dddddd, #2a2f37);
+  --border-hover:   light-dark(#bbbbbb, #3a414d);
+
+  /* Accent-derived primary family (single source: --accent). The hover mix
+     targets black in light mode and white in dark mode so it stays visible. */
+  --primary:        var(--accent);
+  --primary-hover:  color-mix(in srgb, var(--accent) 82%, light-dark(#000, #fff));
+  --primary-glow:   color-mix(in srgb, var(--accent) 15%, transparent);
+  --primary-dim:    color-mix(in srgb, var(--accent) 8%, transparent);
+
+  /* Text */
+  --text:           light-dark(#111111, #e8eaed);
+  --text-secondary: light-dark(#555555, #b4b8bf);
+  --text-muted:     light-dark(#777777, #8b9099);
+  --text-dim:       light-dark(#aaaaaa, #626873);
+
+  /* Status (independent of accent) */
+  --error:          light-dark(#c0392b, #e5534b);
+  --error-glow:     light-dark(rgba(192, 57, 43, .1), rgba(229, 83, 75, .16));
+  --success:        light-dark(#009245, #2ea043);
+  --info:           light-dark(#2980b9, #4aa3df);
+  --warning:        light-dark(#e67e22, #e8913c);
+
+  /* Semantic surface helpers (also back-fill vars referenced elsewhere so the
+     tab group + addon-kind card render correctly in both themes). */
+  --overlay:        light-dark(rgba(0, 0, 0, .35), rgba(0, 0, 0, .6));
+  --row-hover:      light-dark(rgba(0, 0, 0, .03), rgba(255, 255, 255, .045));
+  --row-stripe:     light-dark(rgba(0, 0, 0, .02), rgba(255, 255, 255, .022));
+  --on-primary:     #ffffff;   /* text/icon color on primary-filled surfaces  */
+  --accent-subtle:  color-mix(in srgb, var(--accent) 12%, transparent);
+  --bg-base:        var(--bg);
+  --bg-secondary:   var(--panel-hover);
+  --bg-tertiary:    var(--bg);
+  --bg-primary:     var(--bg-elevated);
+  --bg-subtle:      var(--panel-hover);
+  --text-primary:   var(--text);
+
+  /* Typography / shape / motion */
   --font-head: "Inter", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", monospace;
   --radius-sm: 2px;
   --radius-md: 3px;
   --radius-lg: 4px;
-  --shadow-sm: 0 1px 3px rgba(0,0,0,.06);
-  --shadow-md: 0 2px 8px rgba(0,0,0,.10);
+  --shadow-sm: light-dark(0 1px 3px rgba(0,0,0,.06), 0 1px 3px rgba(0,0,0,.45));
+  --shadow-md: light-dark(0 2px 8px rgba(0,0,0,.10), 0 4px 14px rgba(0,0,0,.55));
   --transition: .1s ease;
 }
+
+/* Explicit theme overrides: pin `color-scheme` so light-dark() picks a side
+   regardless of the OS setting. System mode simply omits `data-theme`. */
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"]  { color-scheme: dark; }
+
+/* Global UI scale. `zoom` scales px + rem uniformly and keeps fixed-position
+   modals (rendered inside these containers) in proportion. */
+.layout,
+.login-page,
+.wizard-page,
+.page { zoom: var(--ui-scale); }
 
 /* ── Base ────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; }
@@ -255,7 +319,7 @@ html, body {
 
 .btn-primary {
   background: var(--primary);
-  color: #ffffff;
+  color: var(--on-primary);
   border-color: var(--primary);
 }
 
@@ -298,13 +362,13 @@ html, body {
 
 .btn-danger {
   background: var(--error);
-  color: white;
+  color: var(--on-primary);
   border-color: var(--error);
 }
 
 .btn-danger:hover {
-  background: #a93226;
-  border-color: #a93226;
+  background: color-mix(in srgb, var(--error) 82%, light-dark(#000, #fff));
+  border-color: color-mix(in srgb, var(--error) 82%, light-dark(#000, #fff));
 }
 
 /* ── Form ──────────────────────────────────────────────────────────── */
@@ -346,7 +410,7 @@ html, body {
 /* ── Alert ───────────────────────────────────────────────────────── */
 .alert-error {
   padding: 10px 13px;
-  border: 1px solid rgba(192, 57, 43, .4);
+  border: 1px solid color-mix(in srgb, var(--error) 40%, transparent);
   border-radius: var(--radius-sm);
   background: var(--error-glow);
   font-family: var(--font-mono);
@@ -357,7 +421,7 @@ html, body {
 
 .alert-success {
   padding: 10px 13px;
-  border: 1px solid rgba(0, 146, 69, .35);
+  border: 1px solid color-mix(in srgb, var(--success) 35%, transparent);
   border-radius: var(--radius-sm);
   background: var(--primary-dim);
   font-family: var(--font-mono);
@@ -523,13 +587,13 @@ html, body {
 
 .task-badge-completed {
   color: var(--success);
-  border-color: rgba(0, 146, 69, .35);
-  background: rgba(0, 146, 69, .06);
+  border-color: color-mix(in srgb, var(--success) 35%, transparent);
+  background: color-mix(in srgb, var(--success) 8%, transparent);
 }
 
 .task-badge-failed {
   color: var(--error);
-  border-color: rgba(192, 57, 43, .35);
+  border-color: color-mix(in srgb, var(--error) 35%, transparent);
   background: var(--error-glow);
 }
 
@@ -778,9 +842,9 @@ html, body {
 .update-banner {
   margin: 14px 28px 0;
   padding: 12px 14px;
-  border: 1px solid rgba(230, 126, 34, .55);
+  border: 1px solid color-mix(in srgb, var(--warning) 55%, transparent);
   border-radius: var(--radius-sm);
-  background: rgba(230, 126, 34, .1);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -835,7 +899,7 @@ html, body {
 .sidebar-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, .35);
+  background: var(--overlay);
   z-index: 199;
 }
 
@@ -1103,7 +1167,7 @@ html, body {
 
 .wizard-step-done {
   border-color: var(--success);
-  background: rgba(0, 146, 69, .1);
+  background: color-mix(in srgb, var(--success) 10%, transparent);
   color: var(--success);
 }
 
@@ -1158,13 +1222,13 @@ html, body {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,.35);
+  background: var(--overlay);
   display: flex;
   align-items: flex-start;
   justify-content: center;
   z-index: 100;
   overflow-y: auto;
-  padding: 16px 0;
+  padding: 16px;
 }
 
 .modal {
@@ -1172,14 +1236,20 @@ html, body {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 24px;
-  width: 440px;
-  max-width: calc(100vw - 32px);
+  /* Fluid width: never wider than the token, never wider than the backdrop. */
+  width: min(var(--modal-w, 440px), 100%);
+  /* Never taller than the viewport; inner regions scroll instead. */
+  max-height: calc(100vh - 32px);
   display: flex;
   flex-direction: column;
   gap: 16px;
   box-shadow: var(--shadow-md);
   margin: auto;
 }
+
+/* Safety net: a modal whose content is not wrapped in `.modal-body` scrolls
+   as a whole so it can never overflow the viewport. */
+.modal:not(:has(.modal-body)) { overflow-y: auto; }
 
 .modal-title {
   font-size: .78rem;
@@ -1191,19 +1261,23 @@ html, body {
 }
 
 .modal-header {
+  flex-shrink: 0;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border);
 }
 
 .modal-body {
+  /* Grows to fill the modal and scrolls internally; the header/footer stay put. */
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 14px;
   overflow-y: auto;
-  max-height: 60vh;
 }
 
 .modal-footer {
+  flex-shrink: 0;
   display: flex;
   justify-content: flex-end;
   gap: 8px;
@@ -1268,7 +1342,7 @@ html, body {
 }
 
 .modal--wide {
-  width: 600px;
+  --modal-w: 600px;
 }
 
 /* ── Addon list cards ───────────────────────────────────────────── */
@@ -1605,7 +1679,7 @@ html, body {
   gap: 4px;
   padding: 2px 6px 2px 8px;
   background: var(--primary-dim);
-  border: 1px solid rgba(0, 146, 69, .3);
+  border: 1px solid color-mix(in srgb, var(--primary) 30%, transparent);
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: .72rem;
@@ -1687,4 +1761,73 @@ html, body {
   gap: 12px;
   padding: 10px 16px;
   border-top: 1px solid var(--border);
+}
+
+/* ── Theme switcher (Auto / Light / Dark segmented control) ───────── */
+.theme-seg {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.theme-seg-btn {
+  flex: 1;
+  height: 26px;
+  padding: 0 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: .66rem;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.theme-seg-btn:hover { color: var(--text); }
+
+.theme-seg-btn--active {
+  background: var(--primary-dim);
+  color: var(--primary);
+}
+
+/* ── Accent color picker (Appearance page) ───────────────────────── */
+.accent-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.accent-swatch {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 2px solid var(--border);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: transform var(--transition), border-color var(--transition);
+}
+
+.accent-swatch:hover { transform: scale(1.1); }
+
+/* Selected swatch: a ring in the current text color + accent halo. */
+.accent-swatch--selected {
+  border-color: var(--text);
+  box-shadow: 0 0 0 2px var(--bg-elevated), 0 0 0 4px var(--primary);
+}
+
+.accent-color-input {
+  width: 48px;
+  height: 32px;
+  padding: 2px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
 }

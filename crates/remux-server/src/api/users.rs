@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Context;
 use axum::{
@@ -87,6 +88,438 @@ pub async fn user_configuration_legacy(
 struct DisplayPrefQuery {
     user_id: Option<Uuid>,
     client: String,
+}
+
+const DEFAULT_INTEREST_LIMIT: usize = 12;
+const DEFAULT_INTEREST_SOURCE_LIMIT: usize = 500;
+const DEFAULT_INTEREST_MAX_TAGS_PER_MEDIA: usize = 24;
+
+const BLOCKED_INTEREST_TAGS: [&str; 10] = [
+    "tmdb",
+    "imdb",
+    "tvdb",
+    "language",
+    "format",
+    "subtitle",
+    "audio",
+    "country",
+    "collection",
+    "tag:",
+];
+
+#[derive(Deserialize)]
+struct UserInterestsQuery {
+    #[serde(rename = "limit")]
+    limit: Option<usize>,
+    #[serde(rename = "sourceLimit")]
+    source_limit: Option<usize>,
+}
+
+#[derive(serde::Serialize)]
+struct UserInterestSignal {
+    id: Option<Uuid>,
+    name: String,
+    score: f32,
+    sample_media_ids: Vec<Uuid>,
+}
+
+#[derive(serde::Serialize)]
+struct UserInterestsResponse {
+    user_id: Uuid,
+    tags: Vec<UserInterestSignal>,
+    genres: Vec<UserInterestSignal>,
+    actors: Vec<UserInterestSignal>,
+    directors: Vec<UserInterestSignal>,
+}
+
+fn is_blocked_interest_tag(tag: &str) -> bool {
+    let normalized = tag
+        .trim()
+        .to_lowercase();
+    if normalized.is_empty() {
+        return true;
+    }
+    BLOCKED_INTEREST_TAGS
+        .iter()
+        .any(|prefix| normalized.starts_with(prefix))
+}
+
+fn clean_interest_tag(tag: &str) -> Option<String> {
+    let cleaned = tag
+        .trim()
+        .replace('_', " ")
+        .trim()
+        .to_lowercase();
+    if is_blocked_interest_tag(&cleaned) {
+        return None;
+    }
+    Some(cleaned)
+}
+
+#[derive(Default)]
+struct InterestAccumulator {
+    score: f32,
+    sample_media_ids: Vec<Uuid>,
+}
+
+impl InterestAccumulator {
+    fn add(&mut self, media_id: Uuid, score: f32) {
+        self.score += score;
+        if !self
+            .sample_media_ids
+            .contains(&media_id)
+        {
+            self.sample_media_ids
+                .push(media_id);
+        }
+    }
+}
+
+fn add_interest_signal(
+    map: &mut HashMap<String, InterestAccumulator>,
+    key: String,
+    media_id: Uuid,
+    score: f32,
+) {
+    map.entry(key)
+        .or_default()
+        .add(media_id, score);
+}
+
+fn add_interest_signal_with_id(
+    map: &mut HashMap<(Uuid, String), InterestAccumulator>,
+    id: Uuid,
+    name: String,
+    media_id: Uuid,
+    score: f32,
+) {
+    map.entry((id, name))
+        .or_default()
+        .add(media_id, score);
+}
+
+fn top_signals_from_map(
+    map: HashMap<String, InterestAccumulator>,
+    limit: usize,
+) -> Vec<UserInterestSignal> {
+    let mut entries: Vec<UserInterestSignal> = map
+        .into_iter()
+        .map(|(name, bucket)| UserInterestSignal {
+            id: None,
+            name,
+            score: bucket.score,
+            sample_media_ids: bucket
+                .sample_media_ids
+                .into_iter()
+                .take(3)
+                .collect(),
+        })
+        .collect();
+
+    entries.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| {
+                a.name
+                    .cmp(&b.name)
+            })
+    });
+
+    entries.truncate(limit);
+    entries
+}
+
+fn top_signals_with_id_from_map(
+    map: HashMap<(Uuid, String), InterestAccumulator>,
+    limit: usize,
+) -> Vec<UserInterestSignal> {
+    let mut entries: Vec<UserInterestSignal> = map
+        .into_iter()
+        .map(|((id, name), bucket)| UserInterestSignal {
+            id: Some(id),
+            name,
+            score: bucket.score,
+            sample_media_ids: bucket
+                .sample_media_ids
+                .into_iter()
+                .take(3)
+                .collect(),
+        })
+        .collect();
+
+    entries.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| {
+                a.name
+                    .cmp(&b.name)
+            })
+    });
+
+    entries.truncate(limit);
+    entries
+}
+
+#[get("/users/{user_id}/interests")]
+pub async fn users_interests(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path(user_id): Path<Uuid>,
+    Query(q): Query<UserInterestsQuery>,
+) -> Result<impl IntoResponse> {
+    require_self_or_admin(user_id, &session)?;
+    users_interests_for(state, user_id, q).await
+}
+
+#[get("/users/me/interests")]
+pub async fn users_interests_me(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Query(q): Query<UserInterestsQuery>,
+) -> Result<impl IntoResponse> {
+    users_interests_for(
+        state,
+        session
+            .user
+            .id,
+        q,
+    )
+    .await
+}
+
+async fn users_interests_for(
+    state: AppState,
+    user_id: Uuid,
+    q: UserInterestsQuery,
+) -> Result<impl IntoResponse> {
+    let per_bucket_limit = q
+        .limit
+        .unwrap_or(DEFAULT_INTEREST_LIMIT)
+        .max(1)
+        .min(40);
+    let source_limit = q
+        .source_limit
+        .unwrap_or(DEFAULT_INTEREST_SOURCE_LIMIT)
+        .max(1);
+
+    let tags_per_media_limit = DEFAULT_INTEREST_MAX_TAGS_PER_MEDIA;
+
+    let mut media_scores: HashMap<Uuid, f32> = HashMap::new();
+    let events = db::WatchHistory::get_by_filter(
+        &state
+            .ctx
+            .db,
+        &db::WatchHistoryFilter {
+            user_id: Some(user_id),
+            event_type: Some("playback_stop".to_string()),
+            limit: Some(source_limit as u32),
+            total_count: false,
+            ..Default::default()
+        },
+    )
+    .await?
+    .records;
+
+    for (idx, event) in events
+        .iter()
+        .enumerate()
+    {
+        let recency = 1.0 / (1.0 + (idx as f32 / 60.0));
+        let mut weight = recency * if event.completed { 1.8 } else { 1.0 };
+        if let Some(runtime_seconds) = event.runtime_seconds {
+            if runtime_seconds > 0 {
+                let progress = event.position_ticks as f32
+                    / (runtime_seconds as f32 * 10_000_000.0);
+                if progress >= 0.9 {
+                    weight += 0.6;
+                } else if progress >= 0.5 {
+                    weight += 0.2;
+                }
+            }
+        }
+        media_scores
+            .entry(event.media_id)
+            .and_modify(|s| *s += weight)
+            .or_insert(weight);
+    }
+
+    let fallback_states = db::UserMediaState::get_by_filter(
+        &state
+            .ctx
+            .db,
+        &db::UserMediaStateFilter {
+            user_id: Some(user_id),
+            played: Some(true),
+            resumable: Some(true),
+            limit: Some((source_limit / 2) as u32),
+            ..Default::default()
+        },
+    )
+    .await?
+    .records;
+    for state in fallback_states {
+        let state_weight = 0.3
+            + (state
+                .play_count
+                .min(12) as f32)
+                * 0.1;
+        media_scores
+            .entry(state.media_id)
+            .and_modify(|s| *s += state_weight)
+            .or_insert(state_weight);
+    }
+
+    // Keep only the most recent media candidates for response sizing.
+    let mut top_media_ids: Vec<(Uuid, f32)> = media_scores
+        .into_iter()
+        .collect();
+    top_media_ids.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(Ordering::Equal)
+    });
+    top_media_ids.truncate(source_limit);
+
+    if top_media_ids.is_empty() {
+        return Ok(Json(UserInterestsResponse {
+            user_id,
+            tags: vec![],
+            genres: vec![],
+            actors: vec![],
+            directors: vec![],
+        }));
+    }
+
+    let candidate_ids: Vec<Uuid> = top_media_ids
+        .iter()
+        .map(|(id, _)| *id)
+        .collect();
+    let candidate_scores: HashMap<Uuid, f32> = top_media_ids
+        .into_iter()
+        .collect();
+
+    let media = db::Media::get_by_filter(
+        &state
+            .ctx
+            .db,
+        &db::MediaFilter {
+            id: Some(candidate_ids),
+            kind: Some(vec![
+                db::MediaKind::Movie,
+                db::MediaKind::Series,
+                db::MediaKind::Season,
+                db::MediaKind::Episode,
+            ]),
+            total_count: false,
+            ..Default::default()
+        },
+    )
+    .await?
+    .records;
+
+    let mut tags: HashMap<String, InterestAccumulator> = HashMap::new();
+    let mut genres: HashMap<(Uuid, String), InterestAccumulator> = HashMap::new();
+    let mut actors: HashMap<(Uuid, String), InterestAccumulator> = HashMap::new();
+    let mut directors: HashMap<(Uuid, String), InterestAccumulator> = HashMap::new();
+
+    for item in media {
+        let weight = candidate_scores
+            .get(&item.id)
+            .copied()
+            .unwrap_or(0.0);
+        if weight == 0.0 {
+            continue;
+        }
+        let mut normalized_tag_count = HashSet::new();
+        for tag in item.tags {
+            let key = match clean_interest_tag(&tag) {
+                Some(tag) => tag,
+                None => continue,
+            };
+            if key.is_empty() || normalized_tag_count.contains(&key) {
+                continue;
+            }
+            normalized_tag_count.insert(key.clone());
+            add_interest_signal(&mut tags, key, item.id, weight);
+            if normalized_tag_count.len() >= tags_per_media_limit {
+                // Keep only the strongest tags from each media item.
+                // This avoids overfitting low-signal entries from huge tag lists.
+                break;
+            }
+        }
+
+        if let Some(relations) = item.relations {
+            for (rel, related) in relations {
+                let related_name = related
+                    .title
+                    .clone();
+                if let Some(role) = &rel.role {
+                    match role {
+                        db::RelationRole::Actor => add_interest_signal_with_id(
+                            &mut actors,
+                            related.id,
+                            related_name.clone(),
+                            item.id,
+                            weight,
+                        ),
+                        db::RelationRole::Director => add_interest_signal_with_id(
+                            &mut directors,
+                            related.id,
+                            related_name.clone(),
+                            item.id,
+                            weight,
+                        ),
+                        _ => {}
+                    }
+                }
+
+                if matches!(
+                    related.kind,
+                    db::MediaKind::Genre | db::MediaKind::MusicGenre
+                ) {
+                    add_interest_signal_with_id(
+                        &mut genres,
+                        related.id,
+                        related_name,
+                        item.id,
+                        weight,
+                    );
+                }
+            }
+        }
+    }
+
+    let response = UserInterestsResponse {
+        user_id,
+        tags: top_signals_from_map(tags, per_bucket_limit),
+        genres: top_signals_with_id_from_map(genres, per_bucket_limit),
+        actors: top_signals_with_id_from_map(actors, per_bucket_limit),
+        directors: top_signals_with_id_from_map(directors, per_bucket_limit),
+    };
+    Ok(Json(response))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_interest_tags_strip_noise() {
+        assert!(clean_interest_tag("tmdb_keyword:Horror").is_none());
+        assert!(clean_interest_tag(" tmdb ").is_none());
+        assert_eq!(clean_interest_tag("Sci_fi"), Some("sci fi".to_string()));
+        assert_eq!(
+            clean_interest_tag("  Adventure "),
+            Some("adventure".to_string())
+        );
+    }
+
+    #[test]
+    fn blocked_tag_filter_is_prefix_aware() {
+        assert!(is_blocked_interest_tag("language:en"));
+        assert!(!is_blocked_interest_tag("adventure"));
+    }
 }
 
 #[get("/displaypreferences/{id}")]

@@ -1,5 +1,5 @@
 use crate::{
-    components::{Card, EmptyState, FormGroup, LoadingText},
+    components::{Card, EmptyState, FormGroup, LoadingText, Modal},
     state::{fmt_time, AppState},
 };
 use dioxus::prelude::*;
@@ -83,7 +83,7 @@ pub fn ApiKeysPage(app_state: AppState) -> Element {
                                      let token_del = token.clone();
                                     rsx! {
                                         div {
-                                            class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]",
+                                            class: "flex items-center border-b border-[var(--border)] hover:bg-[var(--row-hover)] even:bg-[var(--row-stripe)] even:hover:bg-[var(--row-hover)]",
                                             key: "{token}",
                                             div { class: "flex-1 min-w-0 px-3 py-[10px]",
                                                 div { style: "font-weight:500;font-size:.85rem", "{app}" }
@@ -108,60 +108,58 @@ pub fn ApiKeysPage(app_state: AppState) -> Element {
             }
 
         if *show_create.read() {
-            div { class: "modal-backdrop",
-                div { class: "modal",
-                    div { class: "modal-header",
-                        span { class: "modal-title", "New API Key" }
+            Modal { on_close: move |_| show_create.set(false),
+                div { class: "modal-header",
+                    span { class: "modal-title", "New API Key" }
+                }
+                div { class: "modal-body",
+                    p { style: "font-size:.8rem;color:var(--text-muted);margin-bottom:12px",
+                        "Enter a name to identify the application using this key."
                     }
-                    div { class: "modal-body",
-                        p { style: "font-size:.8rem;color:var(--text-muted);margin-bottom:12px",
-                            "Enter a name to identify the application using this key."
-                        }
-                        FormGroup { label: "App name",
-                            input {
-                                class: "form-input",
-                                r#type: "text",
-                                placeholder: "e.g. My Media App",
-                                value: "{app_name_input}",
-                                oninput: move |e| app_name_input.set(e.value()),
-                            }
+                    FormGroup { label: "App name",
+                        input {
+                            class: "form-input",
+                            r#type: "text",
+                            placeholder: "e.g. My Media App",
+                            value: "{app_name_input}",
+                            oninput: move |e| app_name_input.set(e.value()),
                         }
                     }
-                    div { class: "modal-footer",
-                        button {
-                            class: "btn btn-ghost",
-                            onclick: move |_| show_create.set(false),
-                            "Cancel"
-                        }
-                        button {
-                            class: "btn btn-primary",
-                            disabled: *creating.read() || app_name_input.read().trim().is_empty(),
-                            onclick: {
-                                let client = app_state.client.clone();
-                                move |_| {
-                                    let name = app_name_input.read().trim().to_string();
-                                    if name.is_empty() { return; }
-                                    creating.set(true);
-                                    let c = client.clone();
-                                    spawn(async move {
-                                        match c.execute(CreateApiKey { app: name }).await {
-                                            Ok(new_key) => {
-                                                show_create.set(false);
-                                                revealed_key.set(Some(new_key));
-                                                let v = *refresh.peek() + 1;
-                                                refresh.set(v);
-                                            }
-                                            Err(e) => {
-                                                error.set(Some(format!("Failed to create key: {e}")));
-                                                show_create.set(false);
-                                            }
+                }
+                div { class: "modal-footer",
+                    button {
+                        class: "btn btn-ghost",
+                        onclick: move |_| show_create.set(false),
+                        "Cancel"
+                    }
+                    button {
+                        class: "btn btn-primary",
+                        disabled: *creating.read() || app_name_input.read().trim().is_empty(),
+                        onclick: {
+                            let client = app_state.client.clone();
+                            move |_| {
+                                let name = app_name_input.read().trim().to_string();
+                                if name.is_empty() { return; }
+                                creating.set(true);
+                                let c = client.clone();
+                                spawn(async move {
+                                    match c.execute(CreateApiKey { app: name }).await {
+                                        Ok(new_key) => {
+                                            show_create.set(false);
+                                            revealed_key.set(Some(new_key));
+                                            let v = *refresh.peek() + 1;
+                                            refresh.set(v);
                                         }
-                                        creating.set(false);
-                                    });
-                                }
-                            },
-                            if *creating.read() { "Creating…" } else { "Create" }
-                        }
+                                        Err(e) => {
+                                            error.set(Some(format!("Failed to create key: {e}")));
+                                            show_create.set(false);
+                                        }
+                                    }
+                                    creating.set(false);
+                                });
+                            }
+                        },
+                        if *creating.read() { "Creating…" } else { "Create" }
                     }
                 }
             }
@@ -172,46 +170,44 @@ pub fn ApiKeysPage(app_state: AppState) -> Element {
                 let token = new_key.access_token.clone().unwrap_or_default();
                 let app = new_key.app_name.clone().unwrap_or_default();
                 rsx! {
-                    div { class: "modal-backdrop",
-                        div { class: "modal",
-                            div { class: "modal-header",
-                                span { class: "modal-title", "API Key Created" }
+                    Modal { on_close: move |_| revealed_key.set(None),
+                        div { class: "modal-header",
+                            span { class: "modal-title", "API Key Created" }
+                        }
+                        div { class: "modal-body",
+                            p { style: "font-size:.8rem;color:var(--text-muted);margin-bottom:12px",
+                                "Your new API key for "{app}" has been created. Copy it now — it will not be shown again."
                             }
-                            div { class: "modal-body",
-                                p { style: "font-size:.8rem;color:var(--text-muted);margin-bottom:12px",
-                                    "Your new API key for "{app}" has been created. Copy it now — it will not be shown again."
-                                }
-                                FormGroup { label: "API Key",
-                                    div { style: "display:flex;gap:6px;align-items:center",
-                                        input {
-                                            class: "form-input",
-                                            r#type: "text",
-                                            readonly: true,
-                                            value: "{token}",
-                                            style: "font-family:monospace;font-size:.8rem",
-                                        }
-                                        button {
-                                            class: "btn btn-ghost",
-                                            style: "height:36px;white-space:nowrap;flex-shrink:0",
-                                            onclick: {
-                                                let t = token.clone();
-                                                move |_| {
-                                                    if let Some(win) = web_sys::window() {
-                                                        let _ = win.navigator().clipboard().write_text(&t);
-                                                    }
+                            FormGroup { label: "API Key",
+                                div { style: "display:flex;gap:6px;align-items:center",
+                                    input {
+                                        class: "form-input",
+                                        r#type: "text",
+                                        readonly: true,
+                                        value: "{token}",
+                                        style: "font-family:monospace;font-size:.8rem",
+                                    }
+                                    button {
+                                        class: "btn btn-ghost",
+                                        style: "height:36px;white-space:nowrap;flex-shrink:0",
+                                        onclick: {
+                                            let t = token.clone();
+                                            move |_| {
+                                                if let Some(win) = web_sys::window() {
+                                                    let _ = win.navigator().clipboard().write_text(&t);
                                                 }
-                                            },
-                                            "Copy"
-                                        }
+                                            }
+                                        },
+                                        "Copy"
                                     }
                                 }
                             }
-                            div { class: "modal-footer",
-                                button {
-                                    class: "btn btn-primary",
-                                    onclick: move |_| revealed_key.set(None),
-                                    "Done"
-                                }
+                        }
+                        div { class: "modal-footer",
+                            button {
+                                class: "btn btn-primary",
+                                onclick: move |_| revealed_key.set(None),
+                                "Done"
                             }
                         }
                     }
@@ -223,44 +219,42 @@ pub fn ApiKeysPage(app_state: AppState) -> Element {
             {
                 let client = app_state.client.clone();
                 rsx! {
-                    div { class: "modal-backdrop",
-                        div { class: "modal",
-                            div { class: "modal-header",
-                                span { class: "modal-title", "Revoke API Key" }
+                    Modal { on_close: move |_| key_to_delete.set(None),
+                        div { class: "modal-header",
+                            span { class: "modal-title", "Revoke API Key" }
+                        }
+                        div { class: "modal-body",
+                            p { style: "font-size:.85rem",
+                                "Are you sure you want to revoke this key? Any application using it will lose access immediately."
                             }
-                            div { class: "modal-body",
-                                p { style: "font-size:.85rem",
-                                    "Are you sure you want to revoke this key? Any application using it will lose access immediately."
-                                }
+                        }
+                        div { class: "modal-footer",
+                            button {
+                                class: "btn btn-ghost",
+                                onclick: move |_| key_to_delete.set(None),
+                                "Cancel"
                             }
-                            div { class: "modal-footer",
-                                button {
-                                    class: "btn btn-ghost",
-                                    onclick: move |_| key_to_delete.set(None),
-                                    "Cancel"
-                                }
-                                button {
-                                    class: "btn btn-ghost",
-                                    style: "color:var(--error);border-color:var(--error)",
-                                    disabled: *deleting.read(),
-                                    onclick: {
-                                        let t = token.clone();
-                                        let c = client.clone();
-                                        move |_| {
-                                            deleting.set(true);
-                                            let tok = t.clone();
-                                            let cc = c.clone();
-                                            spawn(async move {
-                                                let _ = cc.execute(DeleteApiKey { key: tok }).await;
-                                                key_to_delete.set(None);
-                                                deleting.set(false);
-                                                let v = *refresh.peek() + 1;
-                                                refresh.set(v);
-                                            });
-                                        }
-                                    },
-                                    if *deleting.read() { "Revoking…" } else { "Revoke" }
-                                }
+                            button {
+                                class: "btn btn-ghost",
+                                style: "color:var(--error);border-color:var(--error)",
+                                disabled: *deleting.read(),
+                                onclick: {
+                                    let t = token.clone();
+                                    let c = client.clone();
+                                    move |_| {
+                                        deleting.set(true);
+                                        let tok = t.clone();
+                                        let cc = c.clone();
+                                        spawn(async move {
+                                            let _ = cc.execute(DeleteApiKey { key: tok }).await;
+                                            key_to_delete.set(None);
+                                            deleting.set(false);
+                                            let v = *refresh.peek() + 1;
+                                            refresh.set(v);
+                                        });
+                                    }
+                                },
+                                if *deleting.read() { "Revoking…" } else { "Revoke" }
                             }
                         }
                     }

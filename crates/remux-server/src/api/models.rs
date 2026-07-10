@@ -242,6 +242,32 @@ fn parent_image_tag(parent: Option<&db::Media>, kind: db::ImageKind) -> Option<S
         })
 }
 
+fn jellyfin_datetime(date: chrono::NaiveDateTime) -> String {
+    let utc = date.and_utc();
+    let fractional_ticks = utc.timestamp_subsec_nanos() / 100;
+    format!(
+        "{}.{:07}Z",
+        utc.format("%Y-%m-%dT%H:%M:%S"),
+        fractional_ticks
+    )
+}
+
+fn valid_release_date(date: Option<chrono::NaiveDateTime>) -> Option<String> {
+    date.filter(|d| d.year() > 1)
+        .map(jellyfin_datetime)
+}
+
+fn is_music_metadata_item(kind: &db::MediaKind) -> bool {
+    matches!(
+        kind,
+        db::MediaKind::Track
+            | db::MediaKind::Album
+            | db::MediaKind::Artist
+            | db::MediaKind::MusicGenre
+            | db::MediaKind::Playlist
+    )
+}
+
 pub fn db_state_to_dto(
     state: db::UserMediaState,
     media: &db::Media,
@@ -378,12 +404,10 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             .sources
             .as_ref()
             .map(|sources| sources.is_empty()),
-        premiere_date: media
-            .released_at
-            .clone()
-            .map(|d| d.and_utc()),
+        premiere_date: valid_release_date(media.released_at),
         production_year: media
             .released_at
+            .filter(|d| d.year() > 1)
             .map(|d| d.year() as i64),
         community_rating: media
             .rating_audience
@@ -664,11 +688,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                     })
             })
             .flatten(),
-        album_artists: matches!(
-            media.kind,
-            db::MediaKind::Track | db::MediaKind::Album
-        )
-        .then(|| {
+        album_artists: is_music_metadata_item(&media.kind).then(|| {
             media
                 .grandparent_id
                 .zip(
@@ -681,37 +701,34 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                         }),
                 )
                 .map(|(id, name)| vec![NameIdPair { id, name }])
-        })
-        .flatten(),
-        artists: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
-            .then(|| {
-                media
-                    .grandparent
-                    .as_ref()
-                    .map(|gp| {
-                        vec![
+                .unwrap_or_default()
+        }),
+        artists: is_music_metadata_item(&media.kind).then(|| {
+            media
+                .grandparent
+                .as_ref()
+                .map(|gp| {
+                    vec![gp
+                        .title
+                        .clone()]
+                })
+                .unwrap_or_default()
+        }),
+        artist_items: is_music_metadata_item(&media.kind).then(|| {
+            media
+                .grandparent_id
+                .zip(
+                    media
+                        .grandparent
+                        .as_ref()
+                        .map(|gp| {
                             gp.title
-                                .clone(),
-                        ]
-                    })
-            })
-            .flatten(),
-        artist_items: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
-            .then(|| {
-                media
-                    .grandparent_id
-                    .zip(
-                        media
-                            .grandparent
-                            .as_ref()
-                            .map(|gp| {
-                                gp.title
-                                    .clone()
-                            }),
-                    )
-                    .map(|(id, name)| vec![NameIdPair { id, name }])
-            })
-            .flatten(),
+                                .clone()
+                        }),
+                )
+                .map(|(id, name)| vec![NameIdPair { id, name }])
+                .unwrap_or_default()
+        }),
         tags: media
             .tags
             .clone(),
@@ -750,6 +767,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                 }),
         ),
         remux: Some(RemuxInfo {
+            recommendation_explanation: None,
             collection_kind: media
                 .collection_kind
                 .as_ref()
@@ -771,9 +789,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                 .parse_smart_filter()
                 .cloned(),
             promoted: Some(media.promoted),
-            digital_release_date: media
-                .digital_released_at
-                .map(|d| d.and_utc()),
+            digital_release_date: valid_release_date(media.digital_released_at),
             latest_auto_unplayed: media.collection_latest_auto_unplayed,
             latest_sort_digital: media.collection_latest_sort_digital,
             collection_source: media
@@ -787,12 +803,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                 .clone(),
         }),
         enable_media_source_display: Some(true),
-        date_created: Some(
-            media
-                .created_at
-                .and_utc()
-                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-        ),
+        date_created: Some(jellyfin_datetime(media.created_at)),
         original_language: media
             .original_language
             .clone(),
@@ -930,11 +941,9 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             .sources
             .clone()
         {
-            Some(sources) if sources.is_empty() => Some(vec![
-                media
-                    .clone()
-                    .into(),
-            ]),
+            Some(sources) if sources.is_empty() => Some(vec![media
+                .clone()
+                .into()]),
             Some(sources) => {
                 let mut infos: Vec<MediaSourceInfo> = sources
                     .into_iter()
@@ -947,11 +956,9 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                 }
                 Some(infos)
             }
-            None => Some(vec![
-                media
-                    .clone()
-                    .into(),
-            ]),
+            None => Some(vec![media
+                .clone()
+                .into()]),
         };
         item.path = item
             .media_sources

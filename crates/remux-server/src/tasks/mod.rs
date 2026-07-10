@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use std::{
     collections::HashMap,
+    fs,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -30,6 +31,8 @@ mod refresh_iptv;
 mod refresh_library;
 mod refresh_popularity;
 mod series_sync;
+mod watch_history_backfill;
+
 pub use crate::common::ProgressReporter;
 use clean_transcode_folder::CleanTranscodeFolderTask;
 use clear_cache::ClearCacheTask;
@@ -43,6 +46,64 @@ use refresh_iptv::RefreshIptvTask;
 use refresh_library::RefreshLibraryTask;
 use refresh_popularity::RefreshPopularityTask;
 use series_sync::SeriesSyncTask;
+use watch_history_backfill::BackfillWatchHistoryTask;
+
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ProcessMemorySnapshot {
+    vm_peak_kb: Option<u64>,
+    vm_rss_kb: Option<u64>,
+    rss_anon_kb: Option<u64>,
+    vm_data_kb: Option<u64>,
+    threads: Option<u64>,
+}
+
+fn parse_status_kb(value: &str) -> Option<u64> {
+    value
+        .split_whitespace()
+        .next()
+        .and_then(|v| v.parse().ok())
+}
+
+fn read_process_memory_snapshot() -> Option<ProcessMemorySnapshot> {
+    let status = fs::read_to_string("/proc/self/status").ok()?;
+    let mut snapshot = ProcessMemorySnapshot::default();
+
+    for line in status.lines() {
+        if let Some(value) = line.strip_prefix("VmPeak:") {
+            snapshot.vm_peak_kb = parse_status_kb(value);
+        } else if let Some(value) = line.strip_prefix("VmRSS:") {
+            snapshot.vm_rss_kb = parse_status_kb(value);
+        } else if let Some(value) = line.strip_prefix("RssAnon:") {
+            snapshot.rss_anon_kb = parse_status_kb(value);
+        } else if let Some(value) = line.strip_prefix("VmData:") {
+            snapshot.vm_data_kb = parse_status_kb(value);
+        } else if let Some(value) = line.strip_prefix("Threads:") {
+            snapshot.threads = value
+                .split_whitespace()
+                .next()
+                .and_then(|v| v.parse().ok());
+        }
+    }
+
+    Some(snapshot)
+}
+
+pub(crate) fn log_process_memory(label: &str) {
+    let Some(snapshot) = read_process_memory_snapshot() else {
+        return;
+    };
+
+    info!(
+        label,
+        vm_peak_mb = snapshot.vm_peak_kb.map(|v| v / 1024),
+        vm_rss_mb = snapshot.vm_rss_kb.map(|v| v / 1024),
+        rss_anon_mb = snapshot.rss_anon_kb.map(|v| v / 1024),
+        vm_data_mb = snapshot.vm_data_kb.map(|v| v / 1024),
+        threads = snapshot.threads,
+        "process memory snapshot"
+    );
+}
 
 // --- Task category ---
 
@@ -192,11 +253,13 @@ impl TaskHandler {
             let start_at = Utc::now().naive_utc();
             let instant = Instant::now();
             info!(task = %task.name(), "starting");
+            log_process_memory(&format!("task:{task_key}:start"));
 
             let result = task
                 .run(ctx.clone(), task_service, progress)
                 .await;
             let elapsed = instant.elapsed();
+            log_process_memory(&format!("task:{task_key}:after_run"));
 
             // Flush WAL after every task so write bursts don't accumulate into
             // a large WAL that degrades subsequent read performance.
@@ -211,6 +274,7 @@ impl TaskHandler {
                 .execute(&ctx.db)
                 .await
                 .ok();
+            log_process_memory(&format!("task:{task_key}:after_maintenance"));
 
             let (new_status, db_status) = match &result {
                 Ok(_) => {
@@ -317,6 +381,10 @@ impl TaskService {
         service
             .register_task(Arc::new(PurgeMetricsTask))
             .await?;
+        service
+            .register_task(Arc::new(BackfillWatchHistoryTask))
+            .await?;
+
         let triggers = db::TaskTrigger::get_all(
             &service
                 .ctx

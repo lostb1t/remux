@@ -3,13 +3,10 @@ use super::{
     SQLITE_BIND_LIMIT,
 };
 
-<<<<<<< HEAD
 pub const CHUNK_SIZE: usize = 250;
-const SQLITE_VAR_LIMIT: usize = 999;
-=======
-pub const CHUNK_SIZE: usize = 500;
 const SQLITE_VAR_LIMIT: usize = SQLITE_BIND_LIMIT;
->>>>>>> 89b1595 (wip: preserve local main state)
+const SIMILARITY_SORT_PROFILE_SOURCE_LIMIT: u32 = 300;
+const SIMILARITY_SORT_PROFILE_TAG_LIMIT: usize = 64;
 
 static DB_WRITE_SEMAPHORE: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(1));
@@ -1665,8 +1662,12 @@ impl Media {
                 && self
                     .external_ids
                     .youtube_id
+                    .is_none()
+                && self
+                    .external_ids
+                    .custom_stremio_id
                     .is_none())
-            .then_some("deezer_track or youtube_id"),
+            .then_some("deezer_track, youtube_id, or custom_stremio_id"),
             _ => None,
         };
 
@@ -2214,6 +2215,42 @@ impl Media {
         Ok((scored, total))
     }
 
+
+    pub async fn get_similar_by_genres_for_recommendations(
+        db: &SqlitePool,
+        source_id: &Uuid,
+        kind: &MediaKind,
+        genre_ids: &[Uuid],
+        limit: u32,
+    ) -> Result<Vec<(Uuid, i64)>> {
+        if matches!(kind, MediaKind::Episode) || genre_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let kind_str = kind.to_string();
+        let mut qb = sqlx::QueryBuilder::new(
+            "SELECT m.id, COUNT(DISTINCT mr.right_media_id) as score \
+             FROM media_relations mr \
+             JOIN media m ON m.id = mr.left_media_id \
+             WHERE mr.right_media_id IN (",
+        );
+        let mut sep = qb.separated(", ");
+        for genre_id in genre_ids {
+            sep.push_bind(*genre_id);
+        }
+        qb.push(") AND m.kind = ");
+        qb.push_bind(kind_str);
+        qb.push(" AND m.id != ");
+        qb.push_bind(source_id);
+        qb.push(" GROUP BY m.id ORDER BY score DESC LIMIT ");
+        qb.push_bind(limit as i64);
+
+        Ok(qb
+            .build_query_as()
+            .fetch_all(db)
+            .await?)
+    }
+
     /// Return distinct Genre records linked (via media_relations) to media of the given kinds.
     /// If `related_kinds` is empty, all genres are returned.
     pub async fn get_genres(
@@ -2390,6 +2427,24 @@ impl Media {
             });
         let mut pop_joined = false;
 
+        let similarity_profile = if filter
+            .sort_by
+            .iter()
+            .any(|s| matches!(s, api::ItemSortBy::SimilarityScore))
+        {
+            filter
+                .user_id
+                .as_ref()
+                .map(|user_id| Self::build_similarity_profile_tags(db, user_id, filter))
+        } else {
+            None
+        };
+        let similarity_profile = if let Some(f) = similarity_profile {
+            Some(f.await?)
+        } else {
+            None
+        };
+
         let mut count_qb;
         let mut records_qb;
 
@@ -2474,7 +2529,7 @@ impl Media {
                 .unwrap();
 
             count_qb = sqlx::QueryBuilder::new(
-                "SELECT COUNT(*) as count FROM media \
+                "SELECT COUNT(DISTINCT media.id) as count FROM media \
                  JOIN media_relations mr ON mr.right_media_id = media.id \
                  AND mr.role = 'collection' AND mr.left_media_id = ",
             );
@@ -2483,7 +2538,7 @@ impl Media {
 
             if let Some(uid) = date_played_uid {
                 records_qb = sqlx::QueryBuilder::new(
-                    "SELECT media.* FROM user_media_state dp CROSS JOIN media \
+                    "SELECT DISTINCT media.* FROM user_media_state dp CROSS JOIN media \
                      JOIN media_relations mr ON mr.right_media_id = media.id \
                      AND mr.role = 'collection' AND mr.left_media_id = ",
                 );
@@ -2493,7 +2548,7 @@ impl Media {
                 records_qb.push(" AND dp.media_id = media.id AND 1=1");
             } else {
                 records_qb = sqlx::QueryBuilder::new(
-                    "SELECT media.* FROM media \
+                    "SELECT DISTINCT media.* FROM media \
                      JOIN media_relations mr ON mr.right_media_id = media.id \
                      AND mr.role = 'collection' AND mr.left_media_id = ",
                 );
@@ -3033,6 +3088,14 @@ impl Media {
                         }
                         api::ItemSortBy::DisplayOrder => {
                             format!("(sort_order IS NULL), COALESCE(sort_order, 999999) {dir}, title COLLATE NOCASE")
+                        }
+                        api::ItemSortBy::SimilarityScore => {
+                            Self::build_similarity_sort_clause(
+                                similarity_profile
+                                    .as_deref()
+                                    .unwrap_or_default(),
+                                dir,
+                            )
                         }
                         api::ItemSortBy::CatalogOrder => {
                             let catalog_ids: Vec<String> = filter
@@ -3709,6 +3772,205 @@ impl Media {
             records,
             total_count: count?,
         })
+    }
+
+    fn is_blocked_similarity_tag(tag: &str) -> bool {
+        const BLOCKED_INTEREST_TAGS: [&str; 11] = [
+            "tmdb",
+            "imdb",
+            "tvdb",
+            "language",
+            "format",
+            "subtitle",
+            "audio",
+            "country",
+            "collection",
+            "tag:",
+            "studio:",
+        ];
+
+        let normalized = tag
+            .trim()
+            .to_lowercase();
+        if normalized.is_empty() {
+            return true;
+        }
+
+        BLOCKED_INTEREST_TAGS
+            .iter()
+            .any(|prefix| normalized.starts_with(prefix))
+    }
+
+    fn normalize_similarity_tag(tag: &str) -> Option<String> {
+        let normalized = tag
+            .trim()
+            .replace('_', " ")
+            .trim()
+            .to_lowercase();
+        if Self::is_blocked_similarity_tag(&normalized) {
+            return None;
+        }
+
+        Some(normalized)
+    }
+
+    fn escape_sql_like_literal(value: &str) -> String {
+        value.replace('\'', "''")
+    }
+
+    async fn build_similarity_profile_tags(
+        db: &SqlitePool,
+        user_id: &Uuid,
+        filter: &MediaFilter,
+    ) -> Result<Vec<(String, f32)>> {
+        let events = super::WatchHistory::get_by_filter(
+            db,
+            &super::WatchHistoryFilter {
+                user_id: Some(*user_id),
+                event_type: Some("playback_stop".to_string()),
+                limit: Some(SIMILARITY_SORT_PROFILE_SOURCE_LIMIT),
+                total_count: false,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        let mut media_scores: HashMap<Uuid, f32> = HashMap::new();
+
+        for (idx, event) in events
+            .records
+            .iter()
+            .enumerate()
+        {
+            let recency = 1.0_f32 / (1.0_f32 + (idx as f32 / 60.0));
+            let mut weight = recency * if event.completed { 1.8 } else { 1.0 };
+
+            if let Some(runtime_seconds) = event.runtime_seconds {
+                if runtime_seconds > 0 {
+                    let progress = event.position_ticks as f32
+                        / (runtime_seconds as f32 * 10_000_000.0);
+                    if progress >= 0.9 {
+                        weight += 0.6;
+                    } else if progress >= 0.5 {
+                        weight += 0.2;
+                    }
+                }
+            }
+
+            media_scores
+                .entry(event.media_id)
+                .and_modify(|score| *score += weight)
+                .or_insert(weight);
+        }
+
+        if media_scores.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut media_ranking: Vec<(Uuid, f32)> = media_scores
+            .iter()
+            .map(|(media_id, score)| (*media_id, *score))
+            .collect();
+        media_ranking.sort_by(|a, b| {
+            b.1
+                .partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let media_ids: Vec<Uuid> = media_ranking
+            .iter()
+            .take(200)
+            .map(|(media_id, _)| *media_id)
+            .collect();
+
+        let mut tags_qb = sqlx::QueryBuilder::new(
+            "SELECT mt.media_id, mt.tag FROM media_tags mt JOIN media m ON m.id = mt.media_id WHERE mt.media_id IN (",
+        );
+        let mut sep = tags_qb.separated(", ");
+        for id in &media_ids {
+            sep.push_bind(id);
+        }
+        tags_qb.push(")");
+
+        if let Some(kinds) = &filter.kind {
+            if !kinds.is_empty() {
+                tags_qb.push(" AND m.kind IN (");
+                let mut sep = tags_qb.separated(", ");
+                for kind in kinds {
+                    sep.push_bind(kind);
+                }
+                tags_qb.push(")");
+            }
+        }
+        if filter.parent_id.is_some() && !filter.recursive {
+            tags_qb.push(" AND m.parent_id = ");
+            tags_qb.push_bind(
+                filter
+                    .parent_id
+                    .as_ref()
+                    .unwrap(),
+            );
+        }
+
+        let mut tag_rows = tags_qb
+            .build()
+            .fetch_all(db)
+            .await?;
+
+        let mut profile_scores: HashMap<String, f32> = HashMap::new();
+        for row in tag_rows.drain(..) {
+            let media_id: Uuid = row.get(0);
+            let tag: String = row.get(1);
+
+            let Some(weight) = media_scores
+                .get(&media_id)
+                .copied()
+            else {
+                continue;
+            };
+
+            if let Some(normalized) = Self::normalize_similarity_tag(&tag) {
+                profile_scores
+                    .entry(normalized)
+                    .and_modify(|s| *s += weight)
+                    .or_insert(weight);
+            }
+        }
+
+        let mut sorted = profile_scores
+            .into_iter()
+            .collect::<Vec<(String, f32)>>();
+        sorted.sort_by(|a, b| {
+            b.1
+                .partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        sorted.truncate(SIMILARITY_SORT_PROFILE_TAG_LIMIT);
+
+        let mut deduped = HashSet::new();
+        sorted.retain(|(tag, _)| deduped.insert(tag.to_string()));
+
+        Ok(sorted)
+    }
+
+    fn build_similarity_sort_clause(profile_tags: &[(String, f32)], dir: &str) -> String {
+        if profile_tags.is_empty() {
+            return format!("0.0 {dir}");
+        }
+
+        let terms = profile_tags
+            .iter()
+            .map(|(tag, weight)| {
+                format!(
+                    "CASE WHEN EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND mt.tag = '{}') THEN {:.8} ELSE 0.0 END",
+                    Self::escape_sql_like_literal(tag),
+                    weight,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" + ");
+
+        format!("({terms}) {dir}, title COLLATE NOCASE {dir}")
     }
 
     pub async fn get_refreshable(

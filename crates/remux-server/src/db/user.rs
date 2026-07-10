@@ -510,10 +510,11 @@ impl WatchHistory {
         db: &SqlitePool,
         filter: &WatchHistoryFilter,
     ) -> Result<FilterResult<Self>> {
-        let mut count_qb =
-            sqlx::QueryBuilder::new("SELECT COUNT(*) as count FROM watch_history WHERE 1=1");
+        let mut count_qb = sqlx::QueryBuilder::new(
+            "SELECT COUNT(*) as count FROM watch_history WHERE 1=1",
+        );
         let mut records_qb = sqlx::QueryBuilder::new(
-            "SELECT * FROM watch_history WHERE 1=1 ORDER BY created_at DESC",
+            "SELECT * FROM watch_history WHERE 1=1",
         );
 
         for qb in [&mut count_qb, &mut records_qb] {
@@ -530,12 +531,16 @@ impl WatchHistory {
                     .push_bind(event_type);
             }
         }
-
+        records_qb.push(" ORDER BY created_at DESC");
         if let Some(limit) = filter.limit {
-            records_qb.push(" LIMIT ").push_bind(limit);
+            records_qb
+                .push(" LIMIT ")
+                .push_bind(limit);
         }
         if let Some(offset) = filter.offset {
-            records_qb.push(" OFFSET ").push_bind(offset);
+            records_qb
+                .push(" OFFSET ")
+                .push_bind(offset);
         }
 
         let (count, records) = tokio::join!(
@@ -815,7 +820,16 @@ impl UserMediaState {
                 qb.push_in("media_id", &media_ids);
             }
             if let Some(played) = &filter.played {
-                qb.push(" AND play_count > 0");
+                if filter
+                    .resumable
+                    .unwrap_or(false)
+                {
+                    qb.push(
+                        " AND (play_count > 0 OR (play_count = 0 AND playback_position > 0))",
+                    );
+                } else {
+                    qb.push(" AND play_count > 0");
+                }
             }
             if let Some(favorite) = &filter.favorite {
                 qb.push(" AND favorite = ")

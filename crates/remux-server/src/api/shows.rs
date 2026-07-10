@@ -540,6 +540,8 @@ pub struct GetShowRecommendationsQuery {
     pub parent_id: Option<Uuid>,
     pub category_limit: Option<u32>,
     pub item_limit: Option<u32>,
+    pub shuffle: Option<bool>,
+    pub shuffle_seed: Option<u64>,
 }
 
 #[get("/shows/recommendations")]
@@ -555,6 +557,13 @@ pub async fn shows_recommendations(
                 .user
                 .id,
         );
+    let category_limit = q
+        .category_limit
+        .unwrap_or(5) as usize;
+    let item_limit = q
+        .item_limit
+        .unwrap_or(8);
+    let started = std::time::Instant::now();
     let categories = super::movies::build_recommendations(
         &state
             .ctx
@@ -562,12 +571,25 @@ pub async fn shows_recommendations(
         user_id,
         q.parent_id,
         db::MediaKind::Series,
-        q.category_limit
-            .unwrap_or(5) as usize,
-        q.item_limit
-            .unwrap_or(8),
+        category_limit,
+        item_limit,
+        q.shuffle
+            .unwrap_or(false),
+        q.shuffle_seed
+            .unwrap_or(0),
     )
     .await?;
+    tracing::debug!(
+        target: "remux_server::recommendations",
+        kind = "Series",
+        user_id = %user_id,
+        category_limit = category_limit,
+        item_limit = item_limit,
+        category_count = categories.len(),
+        item_count = categories.iter().map(|category| category.items.len()).sum::<usize>(),
+        elapsed_ms = started.elapsed().as_millis(),
+        "built recommendations",
+    );
     Ok(Json(categories))
 }
 

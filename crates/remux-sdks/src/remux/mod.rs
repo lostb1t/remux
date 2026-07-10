@@ -10,7 +10,7 @@ use std::{collections::HashMap, str::FromStr};
 use uuid::Uuid;
 
 pub use crate::stremio::ResourceType;
-use crate::{Auth, Body, Endpoint, RestClient, stremio};
+use crate::{stremio, Auth, Body, Endpoint, RestClient};
 
 fn serialize_comma<S>(v: &[String], s: S) -> Result<S::Ok, S::Error>
 where
@@ -1538,6 +1538,17 @@ mod tests {
             EmbeddedSubtitleHandling::Burn
         );
     }
+
+    #[test]
+    fn base_item_serializes_empty_client_compat_arrays() {
+        let json = serde_json::to_value(BaseItemDto::default()).unwrap();
+
+        assert_eq!(json.get("Genres"), Some(&serde_json::json!([])));
+        assert_eq!(json.get("GenreItems"), Some(&serde_json::json!([])));
+        assert_eq!(json.get("People"), Some(&serde_json::json!([])));
+        assert_eq!(json.get("Studios"), Some(&serde_json::json!([])));
+        assert_eq!(json.get("Tags"), Some(&serde_json::json!([])));
+    }
 }
 
 #[derive(Default, Debug, Deserialize)]
@@ -2829,17 +2840,42 @@ where
 
 #[dto]
 pub struct RemuxInfo {
+    pub recommendation_explanation: Option<RecommendationExplanation>,
     pub collection_kind: Option<RemuxCollectionKind>,
     pub collection_media_kind: Option<MediaKind>,
     pub collection_max_items: Option<i64>,
     pub smart_filter: Option<CollectionFilter>,
     pub promoted: Option<bool>,
-    pub digital_release_date: Option<DateTime<Utc>>,
+    pub digital_release_date: Option<String>,
     pub latest_auto_unplayed: Option<bool>,
     pub latest_sort_digital: Option<bool>,
     pub collection_source: Option<String>,
     pub collection_default_sort: Option<Vec<ItemSortBy>>,
     pub collection_default_sort_order: Option<Vec<SortOrder>>,
+}
+
+#[dto]
+pub struct RecommendationSignal {
+    #[serde(rename = "Type")]
+    pub type_field: Option<String>,
+    #[serde(rename = "Value")]
+    pub value: Option<String>,
+    #[serde(rename = "Label")]
+    pub label: Option<String>,
+    #[serde(rename = "Score")]
+    pub score: Option<f64>,
+    #[serde(rename = "Role")]
+    pub role: Option<String>,
+    #[serde(rename = "Displayable")]
+    pub displayable: Option<bool>,
+}
+
+#[dto]
+pub struct RecommendationExplanation {
+    #[serde(rename = "Reason")]
+    pub reason: Option<String>,
+    #[serde(rename = "Signals")]
+    pub signals: Option<Vec<RecommendationSignal>>,
 }
 
 #[dto]
@@ -2872,7 +2908,7 @@ pub struct BaseItemDto {
     pub forced_sort_name: Option<String>,
     pub video_3d_format: Option<String>,
     //#[serde_as(as = "Option<DisplayFromStr>")]
-    pub premiere_date: Option<DateTime<Utc>>,
+    pub premiere_date: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub external_urls: Vec<ExternalUrl>,
     pub media_sources: Option<Vec<MediaSourceInfo>>,
@@ -2886,7 +2922,7 @@ pub struct BaseItemDto {
     pub overview: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub taglines: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub genres: Vec<String>,
     pub community_rating: Option<f64>,
     pub cumulative_run_time_ticks: Option<i64>,
@@ -2906,11 +2942,11 @@ pub struct BaseItemDto {
     pub parent_id: Option<Uuid>,
     #[default(MediaType::Movie)]
     pub type_: MediaType,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub people: Vec<BaseItemPerson>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub studios: Vec<NameIdPair>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub genre_items: Vec<NameIdPair>,
     pub parent_logo_item_id: Option<String>,
     pub parent_backdrop_item_id: Option<String>,
@@ -2929,7 +2965,7 @@ pub struct BaseItemDto {
     pub status: Option<Status>,
     pub air_time: Option<String>,
     pub air_days: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub tags: Vec<String>,
 
     // TODO: compute from actual image dimensions rather than a hardcoded default

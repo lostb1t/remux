@@ -1,5 +1,5 @@
 use crate::{
-    components::{Button, ButtonVariant, ErrorAlert, FormActions, LoadingText},
+    components::{Button, ButtonVariant, ErrorAlert, FormActions, LoadingText, Modal},
     state::AppState,
 };
 use dioxus::prelude::*;
@@ -405,18 +405,16 @@ pub fn TasksCard(
             }
         }
         if let Some(task) = selected_task.read().clone() {
-            div { class: "modal-backdrop",
-                div { class: "modal",
-                    TaskTriggersModal {
-                        task,
-                        app_state: app_state.clone(),
-                        on_done: move |_| {
-                            selected_task.set(None);
-                            let v = *refresh.peek() + 1;
-                            refresh.set(v);
-                        },
-                        on_cancel: move |_| selected_task.set(None),
-                    }
+            Modal { on_close: move |_| selected_task.set(None),
+                TaskTriggersModal {
+                    task,
+                    app_state: app_state.clone(),
+                    on_done: move |_| {
+                        selected_task.set(None);
+                        let v = *refresh.peek() + 1;
+                        refresh.set(v);
+                    },
+                    on_cancel: move |_| selected_task.set(None),
                 }
             }
         }
@@ -570,7 +568,7 @@ pub fn TaskRow(
 
     rsx! {
         div {
-            class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]",
+            class: "flex items-center border-b border-[var(--border)] hover:bg-[var(--row-hover)] even:bg-[var(--row-stripe)] even:hover:bg-[var(--row-hover)]",
             style: if clickable { "cursor: pointer;" } else { "" },
             onclick: move |_| { if let Some(ref h) = on_click { h.call(()); } },
             div { class: "flex-1 min-w-0 px-3 py-[10px]",

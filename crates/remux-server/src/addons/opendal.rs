@@ -402,23 +402,25 @@ impl CatalogAddon for OpendalAddon {
                 .collect()
             }
             "track" => {
-                sqlx::query_as::<_, (Option<String>,)>(
-                    "SELECT title FROM opendal_files \
+                sqlx::query_as::<_, (Uuid, Option<String>)>(
+                    "SELECT id, title FROM opendal_files \
                      WHERE addon_id = ? AND media_kind = 'track'",
                 )
                 .bind(self.addon_id)
                 .fetch_all(&ctx.db)
                 .await?
                 .into_iter()
-                .filter_map(|(title,)| title)
-                .map(|title| db::Media {
-                    id: common::get_stable_uuid(format!(
-                        "{}:track:{}",
-                        self.addon_id, title
-                    )),
-                    title: title.clone(),
-                    kind: db::MediaKind::Track,
-                    ..Default::default()
+                .filter_map(|(id, title)| {
+                    title.map(|title| db::Media {
+                        id,
+                        title,
+                        kind: db::MediaKind::Track,
+                        external_ids: db::ExternalIds {
+                            custom_stremio_id: Some(format!("opendal:{id}")),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    })
                 })
                 .collect()
             }
@@ -606,15 +608,33 @@ impl StreamAddon for OpendalAddon {
         ctx: &AppContext,
     ) -> Result<Vec<crate::stream::StreamInfo>> {
         let files: Vec<OpendalFile> = if self.media_kind == "track" {
-            sqlx::query_as(
-                "SELECT path, name, title, imdb_id, season, episode, track_number, year, size \
-                 FROM opendal_files \
-                 WHERE addon_id = ? AND media_kind = 'track' AND LOWER(title) = LOWER(?)",
-            )
-            .bind(self.addon_id)
-            .bind(&media.title)
-            .fetch_all(&ctx.db)
-            .await?
+            if let Some(file_id) = media
+                .external_ids
+                .custom_stremio_id
+                .as_deref()
+                .and_then(|id| id.strip_prefix("opendal:"))
+                .and_then(|id| Uuid::parse_str(id).ok())
+            {
+                sqlx::query_as(
+                    "SELECT path, name, title, imdb_id, season, episode, track_number, year, size \
+                     FROM opendal_files \
+                     WHERE id = ? AND addon_id = ? AND media_kind = 'track'",
+                )
+                .bind(file_id)
+                .bind(self.addon_id)
+                .fetch_all(&ctx.db)
+                .await?
+            } else {
+                sqlx::query_as(
+                    "SELECT path, name, title, imdb_id, season, episode, track_number, year, size \
+                     FROM opendal_files \
+                     WHERE addon_id = ? AND media_kind = 'track' AND LOWER(title) = LOWER(?)",
+                )
+                .bind(self.addon_id)
+                .bind(&media.title)
+                .fetch_all(&ctx.db)
+                .await?
+            }
         } else {
             // Episodes are identified by series_imdb (the show's IMDB ID scraped from the
             // filename tag); movies use their own imdb directly.

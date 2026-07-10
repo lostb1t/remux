@@ -44,7 +44,7 @@ pub fn SessionsCard(app_state: AppState) -> Element {
                 div { class: "data-table-container",
                     div { class: "row-list",
                         for session in sessions.read().iter() {
-                            div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]",
+                            div { class: "flex items-center border-b border-[var(--border)] hover:bg-[var(--row-hover)] even:bg-[var(--row-stripe)] even:hover:bg-[var(--row-hover)]",
                                 div { class: "flex-1 min-w-0 px-3 py-[10px]",
                                     div { class: "session-name",
                                         "{session.device_name.as_deref().unwrap_or(\"Unknown device\")}"

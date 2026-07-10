@@ -1,5 +1,6 @@
 pub mod addons;
 pub mod api_keys;
+pub mod appearance;
 pub mod branding;
 pub mod collections;
 pub mod dashboard;
@@ -10,6 +11,7 @@ pub mod users;
 
 pub use addons::AddonsPage;
 pub use api_keys::ApiKeysPage;
+pub use appearance::AppearancePage;
 pub use branding::BrandingPage;
 pub use collections::CollectionsPage;
 pub use dashboard::DashboardPage;

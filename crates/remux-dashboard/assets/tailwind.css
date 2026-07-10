@@ -231,26 +231,29 @@
     --tw-invert: invert(100%);
     filter: var(--tw-blur,) var(--tw-brightness,) var(--tw-contrast,) var(--tw-grayscale,) var(--tw-hue-rotate,) var(--tw-invert,) var(--tw-saturate,) var(--tw-sepia,) var(--tw-drop-shadow,);
   }
+  .lowercase {
+    text-transform: lowercase;
+  }
   .filter {
     filter: var(--tw-blur,) var(--tw-brightness,) var(--tw-contrast,) var(--tw-grayscale,) var(--tw-hue-rotate,) var(--tw-invert,) var(--tw-saturate,) var(--tw-sepia,) var(--tw-drop-shadow,);
   }
-  .even\:bg-\[rgba\(0\,0\,0\,0\.02\)\] {
+  .even\:bg-\[var\(--row-stripe\)\] {
     &:nth-child(even) {
-      background-color: rgba(0,0,0,0.02);
+      background-color: var(--row-stripe);
     }
   }
-  .hover\:bg-\[rgba\(0\,0\,0\,0\.03\)\] {
+  .hover\:bg-\[var\(--row-hover\)\] {
     &:hover {
       @media (hover: hover) {
-        background-color: rgba(0,0,0,0.03);
+        background-color: var(--row-hover);
       }
     }
   }
-  .even\:hover\:bg-\[rgba\(0\,0\,0\,0\.03\)\] {
+  .even\:hover\:bg-\[var\(--row-hover\)\] {
     &:nth-child(even) {
       &:hover {
         @media (hover: hover) {
-          background-color: rgba(0,0,0,0.03);
+          background-color: var(--row-hover);
         }
       }
     }

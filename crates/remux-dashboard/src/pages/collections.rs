@@ -106,7 +106,7 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                         None => "",
                                     };
                                     rsx! {
-                                        div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]", key: "{col_id_str}",
+                                        div { class: "flex items-center border-b border-[var(--border)] hover:bg-[var(--row-hover)] even:bg-[var(--row-stripe)] even:hover:bg-[var(--row-hover)]", key: "{col_id_str}",
                                             div { class: "flex-1 min-w-0 px-3 py-[10px]",
                                                 div { class: "catalog-name", "{name}" }
                                                 div { class: "catalog-meta",
@@ -210,18 +210,16 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
         }
 
         if let Some(mode) = form_mode.read().clone() {
-            div { class: "modal-backdrop",
-                div { class: "modal",
-                    CollectionForm {
-                        mode,
-                        app_state: app_state.clone(),
-                        on_done: move |_| {
-                            form_mode.set(None);
-                            let v = *refresh.peek() + 1;
-                            refresh.set(v);
-                        },
-                        on_cancel: move |_| form_mode.set(None),
-                    }
+            Modal { on_close: move |_| form_mode.set(None),
+                CollectionForm {
+                    mode,
+                    app_state: app_state.clone(),
+                    on_done: move |_| {
+                        form_mode.set(None);
+                        let v = *refresh.peek() + 1;
+                        refresh.set(v);
+                    },
+                    on_cancel: move |_| form_mode.set(None),
                 }
             }
         }

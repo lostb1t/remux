@@ -35,6 +35,8 @@ pub enum Route {
     SettingsIntroRoute,
     #[route("/settings/branding")]
     SettingsBrandingRoute,
+    #[route("/settings/appearance")]
+    SettingsAppearanceRoute,
     #[route("/access/users")]
     AccessUsersRoute,
     #[route("/access/apikeys")]
@@ -124,6 +126,11 @@ pub(crate) fn SettingsIntroRoute() -> Element {
 pub(crate) fn SettingsBrandingRoute() -> Element {
     let app_state = use_context::<AppState>();
     rsx! { BrandingPage { app_state } }
+}
+
+#[component]
+pub(crate) fn SettingsAppearanceRoute() -> Element {
+    rsx! { AppearancePage {} }
 }
 
 #[component]

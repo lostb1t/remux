@@ -268,7 +268,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
                                     rsx! {
                                         div {
                                             key: "{id}",
-                                            class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)]",
+                                            class: "flex items-center border-b border-[var(--border)] hover:bg-[var(--row-hover)]",
                                             style: if !ch.enabled { "gap:8px;padding:6px 12px;opacity:.4" } else { "gap:8px;padding:6px 12px" },
 
                                             input {

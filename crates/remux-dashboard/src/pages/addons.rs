@@ -1,5 +1,5 @@
 use crate::{
-    components::{EmptyState, FormGroup, LoadingText},
+    components::{EmptyState, FormGroup, LoadingText, Modal, ModalSize},
     state::AppState,
 };
 use dioxus::prelude::*;
@@ -286,130 +286,128 @@ pub fn AddonsPage(app_state: AppState) -> Element {
         }
 
         if *show_create.read() {
-            div { class: "modal-backdrop",
-                div { class: "modal modal--wide",
-                    div { class: "modal-header",
-                        span { class: "modal-title",
-                            if *create_step.read() == 0 { "Choose Type" } else { "Configure Addon" }
-                        }
+            Modal { on_close: move |_| show_create.set(false), size: ModalSize::Wide,
+                div { class: "modal-header",
+                    span { class: "modal-title",
+                        if *create_step.read() == 0 { "Choose Type" } else { "Configure Addon" }
                     }
-                    div { class: "modal-body",
-                        if *create_step.read() == 0 {
-                            // ── Step 1: kind picker ──
-                            div { class: "addon-kind-list",
-                                for k in kinds.read().clone() {
-                                    {
-                                        let k_id = k.id.clone();
-                                        let k_name = k.display_name.clone();
-                                        let is_selected = selected_kind.read().as_deref() == Some(&k.id);
-                                        rsx! {
-                                            div {
-                                                class: if is_selected { "addon-kind-card addon-kind-card--selected" } else { "addon-kind-card" },
-                                                onclick: move |_| {
-                                                    selected_kind.set(Some(k_id.clone()));
-                                                    form_values.set(std::collections::HashMap::new());
-                                                },
-                                                div { class: "addon-kind-card-name", "{k.display_name}" }
-                                                div { class: "addon-kind-card-desc", "{k.description}" }
-                                                div { class: "addon-kind-card-badges",
-                                                    for res in k.supported_resources.iter() {
-                                                        span { class: "addon-kind-badge", "{res.name}" }
-                                                    }
-                                                    for t in k.supported_types.iter() {
-                                                        span { class: "addon-kind-type", "{t}" }
-                                                    }
+                }
+                div { class: "modal-body",
+                    if *create_step.read() == 0 {
+                        // ── Step 1: kind picker ──
+                        div { class: "addon-kind-list",
+                            for k in kinds.read().clone() {
+                                {
+                                    let k_id = k.id.clone();
+                                    let k_name = k.display_name.clone();
+                                    let is_selected = selected_kind.read().as_deref() == Some(&k.id);
+                                    rsx! {
+                                        div {
+                                            class: if is_selected { "addon-kind-card addon-kind-card--selected" } else { "addon-kind-card" },
+                                            onclick: move |_| {
+                                                selected_kind.set(Some(k_id.clone()));
+                                                form_values.set(std::collections::HashMap::new());
+                                            },
+                                            div { class: "addon-kind-card-name", "{k.display_name}" }
+                                            div { class: "addon-kind-card-desc", "{k.description}" }
+                                            div { class: "addon-kind-card-badges",
+                                                for res in k.supported_resources.iter() {
+                                                    span { class: "addon-kind-badge", "{res.name}" }
                                                 }
-                                                if is_selected {
-                                                    button {
-                                                        class: "btn btn-primary addon-kind-card-configure",
-                                                        onclick: move |e| {
-                                                            e.stop_propagation();
-                                                            name_input.set(k_name.clone());
-                                                            create_step.set(1);
-                                                        },
-                                                        "Configure →"
-                                                    }
+                                                for t in k.supported_types.iter() {
+                                                    span { class: "addon-kind-type", "{t}" }
+                                                }
+                                            }
+                                            if is_selected {
+                                                button {
+                                                    class: "btn btn-primary addon-kind-card-configure",
+                                                    onclick: move |e| {
+                                                        e.stop_propagation();
+                                                        name_input.set(k_name.clone());
+                                                        create_step.set(1);
+                                                    },
+                                                    "Configure →"
                                                 }
                                             }
                                         }
                                     }
                                 }
                             }
-                        } else {
-                            // ── Step 2: name + options ──
-                            if let Some(meta) = &selected_kind_meta {
-                                div { class: "field-hint", style: "margin-bottom:4px", "{meta.description}" }
+                        }
+                    } else {
+                        // ── Step 2: name + options ──
+                        if let Some(meta) = &selected_kind_meta {
+                            div { class: "field-hint", style: "margin-bottom:4px", "{meta.description}" }
+                        }
+                        FormGroup { label: "Name",
+                            input {
+                                class: "form-input",
+                                r#type: "text",
+                                placeholder: "Display name",
+                                value: "{name_input}",
+                                oninput: move |e| name_input.set(e.value()),
                             }
-                            FormGroup { label: "Name",
-                                input {
-                                    class: "form-input",
-                                    r#type: "text",
-                                    placeholder: "Display name",
-                                    value: "{name_input}",
-                                    oninput: move |e| name_input.set(e.value()),
-                                }
-                            }
-                            if let Some(meta) = &selected_kind_meta {
-                                for opt in meta.options.iter().cloned() {
-                                    AddonOptionField {
-                                        option: opt,
-                                        values: form_values,
-                                    }
+                        }
+                        if let Some(meta) = &selected_kind_meta {
+                            for opt in meta.options.iter().cloned() {
+                                AddonOptionField {
+                                    option: opt,
+                                    values: form_values,
                                 }
                             }
                         }
                     }
-                    div { class: "modal-footer",
+                }
+                div { class: "modal-footer",
+                    button {
+                        class: "btn btn-ghost",
+                        onclick: move |_| {
+                            if *create_step.read() == 1 {
+                                create_step.set(0);
+                            } else {
+                                show_create.set(false);
+                            }
+                        },
+                        if *create_step.read() == 1 { "← Back" } else { "Cancel" }
+                    }
+                    if *create_step.read() == 1 {
                         button {
-                            class: "btn btn-ghost",
-                            onclick: move |_| {
-                                if *create_step.read() == 1 {
-                                    create_step.set(0);
-                                } else {
-                                    show_create.set(false);
+                            class: "btn btn-primary",
+                            disabled: *creating.read() || name_input.read().trim().is_empty() || selected_kind.read().is_none(),
+                            onclick: {
+                                let client = app_state.client.clone();
+                                move |_| {
+                                    let name = name_input.read().trim().to_string();
+                                    let Some(kind) = selected_kind.read().clone() else { return; };
+                                    if name.is_empty() { return; }
+                                    let config: serde_json::Value = serde_json::Value::Object(
+                                        form_values.read().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                                    );
+                                    creating.set(true);
+                                    let c = client.clone();
+                                    spawn(async move {
+                                        let payload = CreateAddonRequest {
+                                            preset: AddonPresetRef { kind, config },
+                                            name,
+                                            resources: Vec::new(),
+                                            types: Vec::new(),
+                                            priority: 0,
+                                        };
+                                        match c.execute(CreateAddon { payload }).await {
+                                            Ok(_) => {
+                                                show_create.set(false);
+                                                let v = *refresh.peek() + 1;
+                                                refresh.set(v);
+                                            }
+                                            Err(e) => {
+                                                error.set(Some(format!("Failed to create addon: {e}")));
+                                            }
+                                        }
+                                        creating.set(false);
+                                    });
                                 }
                             },
-                            if *create_step.read() == 1 { "← Back" } else { "Cancel" }
-                        }
-                        if *create_step.read() == 1 {
-                            button {
-                                class: "btn btn-primary",
-                                disabled: *creating.read() || name_input.read().trim().is_empty() || selected_kind.read().is_none(),
-                                onclick: {
-                                    let client = app_state.client.clone();
-                                    move |_| {
-                                        let name = name_input.read().trim().to_string();
-                                        let Some(kind) = selected_kind.read().clone() else { return; };
-                                        if name.is_empty() { return; }
-                                        let config: serde_json::Value = serde_json::Value::Object(
-                                            form_values.read().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-                                        );
-                                        creating.set(true);
-                                        let c = client.clone();
-                                        spawn(async move {
-                                            let payload = CreateAddonRequest {
-                                                preset: AddonPresetRef { kind, config },
-                                                name,
-                                                resources: Vec::new(),
-                                                types: Vec::new(),
-                                                priority: 0,
-                                            };
-                                            match c.execute(CreateAddon { payload }).await {
-                                                Ok(_) => {
-                                                    show_create.set(false);
-                                                    let v = *refresh.peek() + 1;
-                                                    refresh.set(v);
-                                                }
-                                                Err(e) => {
-                                                    error.set(Some(format!("Failed to create addon: {e}")));
-                                                }
-                                            }
-                                            creating.set(false);
-                                        });
-                                    }
-                                },
-                                if *creating.read() { "Creating…" } else { "Create" }
-                            }
+                            if *creating.read() { "Creating…" } else { "Create" }
                         }
                     }
                 }
@@ -429,19 +427,25 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                     .map(|a| a.supported_resources.clone())
                     .unwrap_or_default();
                 rsx! {
-                    div { class: "modal-backdrop",
-                        div { class: "modal",
-                            div { class: "modal-header",
-                                span { class: "modal-title", "Edit Addon" }
+                    Modal { on_close: move |_| id_to_edit.set(None), size: ModalSize::Wide,
+                        div { class: "modal-header",
+                            span { class: "modal-title", "Edit Addon" }
+                        }
+                        div { class: "modal-body",
+                            FormGroup { label: "Name",
+                                input {
+                                    class: "form-input",
+                                    r#type: "text",
+                                    placeholder: "Display name",
+                                    value: "{edit_name_input}",
+                                    oninput: move |e| edit_name_input.set(e.value()),
+                                }
                             }
-                            div { class: "modal-body",
-                                FormGroup { label: "Name",
-                                    input {
-                                        class: "form-input",
-                                        r#type: "text",
-                                        placeholder: "Display name",
-                                        value: "{edit_name_input}",
-                                        oninput: move |e| edit_name_input.set(e.value()),
+                            if let Some(meta) = &edit_kind_meta {
+                                for opt in meta.options.iter().cloned() {
+                                    AddonOptionField {
+                                        option: opt,
+                                        values: edit_form_values,
                                     }
                                 }
                                 if let Some(meta) = &edit_kind_meta {
@@ -522,84 +526,127 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                                     }
                                                                     "{t_str}"
                                                                 }
+                                                            },
+                                                        }
+                                                        "{res_str}"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // Types section
+                            {
+                                let type_options: Vec<remux_sdks::remux::MediaKind> = addons
+                                    .read()
+                                    .iter()
+                                    .find(|a| a.id == edit_id)
+                                    .map(|a| a.supported_types.clone())
+                                    .unwrap_or_default();
+                                if !type_options.is_empty() {
+                                    rsx! {
+                                        div { class: "form-group",
+                                            label { class: "form-label", "Content Types" }
+                                            div { class: "check-row-group",
+                                                for t in type_options.into_iter() {
+                                                    {
+                                                        let t_str = format!("{t}");
+                                                        let t_str_check = t_str.clone();
+                                                        let checked = edit_types.read().contains(&t_str);
+                                                        rsx! {
+                                                            label { class: "check-row",
+                                                                input {
+                                                                    r#type: "checkbox",
+                                                                    checked,
+                                                                    onchange: move |e| {
+                                                                        let mut set = edit_types.write();
+                                                                        if e.checked() {
+                                                                            set.insert(t_str_check.clone());
+                                                                        } else {
+                                                                            set.remove(&t_str_check);
+                                                                        }
+                                                                    },
+                                                                }
+                                                                "{t_str}"
                                                             }
                                                         }
                                                     }
                                                 }
                                             }
                                         }
-                                    } else {
-                                        rsx! {}
                                     }
+                                } else {
+                                    rsx! {}
                                 }
-                                // Catalogs section (only shown when catalog resource is active)
-                                if edit_resources.read().contains("catalog") {
-                                    div { class: "form-group",
-                                        label { class: "form-label", "Catalogs" }
-                                        if *edit_catalogs_loading.read() {
-                                            span { class: "field-hint", "Loading catalogs…" }
-                                        } else if edit_catalogs.read().is_empty() {
-                                            span { class: "field-hint", "No catalogs found." }
-                                        } else {
-                                            div { class: "catalog-table-wrap",
-                                                table { class: "catalog-table",
-                                                    thead {
-                                                        tr {
-                                                            th { "Catalog" }
-                                                            th { "Enabled" }
-                                                            th { "Max items" }
-                                                            th { "Tags" }
-                                                        }
+                            }
+                            // Catalogs section (only shown when catalog resource is active)
+                            if edit_resources.read().contains("catalog") {
+                                div { class: "form-group",
+                                    label { class: "form-label", "Catalogs" }
+                                    if *edit_catalogs_loading.read() {
+                                        span { class: "field-hint", "Loading catalogs…" }
+                                    } else if edit_catalogs.read().is_empty() {
+                                        span { class: "field-hint", "No catalogs found." }
+                                    } else {
+                                        div { class: "catalog-table-wrap",
+                                            table { class: "catalog-table",
+                                                thead {
+                                                    tr {
+                                                        th { "Catalog" }
+                                                        th { "Enabled" }
+                                                        th { "Max items" }
+                                                        th { "Tags" }
                                                     }
-                                                    tbody {
-                                                        for cat in edit_catalogs.read().clone() {
-                                                            {
-                                                                let cid = cat.catalog_id.clone();
-                                                                let cid_toggle = cid.clone();
-                                                                let cid_max = cid.clone();
-                                                                let cid_tags = cid.clone();
-                                                                let (enabled, max_str, tags_str) = edit_catalog_settings.read()
-                                                                    .get(&cid)
-                                                                    .cloned()
-                                                                    .unwrap_or((false, String::new(), String::new()));
-                                                                rsx! {
-                                                                    tr {
-                                                                        td { class: "catalog-name", "{cat.name}" }
-                                                                        td {
-                                                                            input {
-                                                                                r#type: "checkbox",
-                                                                                checked: enabled,
-                                                                                onchange: move |e| {
-                                                                                    let mut map = edit_catalog_settings.write();
-                                                                                    let entry = map.entry(cid_toggle.clone()).or_default();
-                                                                                    entry.0 = e.checked();
-                                                                                },
-                                                                            }
+                                                }
+                                                tbody {
+                                                    for cat in edit_catalogs.read().clone() {
+                                                        {
+                                                            let cid = cat.catalog_id.clone();
+                                                            let cid_toggle = cid.clone();
+                                                            let cid_max = cid.clone();
+                                                            let cid_tags = cid.clone();
+                                                            let (enabled, max_str, tags_str) = edit_catalog_settings.read()
+                                                                .get(&cid)
+                                                                .cloned()
+                                                                .unwrap_or((false, String::new(), String::new()));
+                                                            rsx! {
+                                                                tr {
+                                                                    td { class: "catalog-name", "{cat.name}" }
+                                                                    td {
+                                                                        input {
+                                                                            r#type: "checkbox",
+                                                                            checked: enabled,
+                                                                            onchange: move |e| {
+                                                                                let mut map = edit_catalog_settings.write();
+                                                                                let entry = map.entry(cid_toggle.clone()).or_default();
+                                                                                entry.0 = e.checked();
+                                                                            },
                                                                         }
-                                                                        td {
-                                                                            input {
-                                                                                r#type: "number",
-                                                                                placeholder: "Max items",
-                                                                                value: "{max_str}",
-                                                                                min: "1",
-                                                                                oninput: move |e| {
-                                                                                    let mut map = edit_catalog_settings.write();
-                                                                                    let entry = map.entry(cid_max.clone()).or_default();
-                                                                                    entry.1 = e.value();
-                                                                                },
-                                                                            }
+                                                                    }
+                                                                    td {
+                                                                        input {
+                                                                            r#type: "number",
+                                                                            placeholder: "Max items",
+                                                                            value: "{max_str}",
+                                                                            min: "1",
+                                                                            oninput: move |e| {
+                                                                                let mut map = edit_catalog_settings.write();
+                                                                                let entry = map.entry(cid_max.clone()).or_default();
+                                                                                entry.1 = e.value();
+                                                                            },
                                                                         }
-                                                                        td {
-                                                                            input {
-                                                                                class: "form-input",
-                                                                                placeholder: "tag1, tag2",
-                                                                                value: "{tags_str}",
-                                                                                oninput: move |e| {
-                                                                                    let mut map = edit_catalog_settings.write();
-                                                                                    let entry = map.entry(cid_tags.clone()).or_default();
-                                                                                    entry.2 = e.value();
-                                                                                },
-                                                                            }
+                                                                    }
+                                                                    td {
+                                                                        input {
+                                                                            class: "form-input",
+                                                                            placeholder: "tag1, tag2",
+                                                                            value: "{tags_str}",
+                                                                            oninput: move |e| {
+                                                                                let mut map = edit_catalog_settings.write();
+                                                                                let entry = map.entry(cid_tags.clone()).or_default();
+                                                                                entry.2 = e.value();
+                                                                            },
                                                                         }
                                                                     }
                                                                 }
@@ -612,91 +659,91 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                     }
                                 }
                             }
-                            div { class: "modal-footer",
-                                button {
-                                    class: "btn btn-ghost",
-                                    onclick: move |_| id_to_edit.set(None),
-                                    "Cancel"
-                                }
-                                button {
-                                    class: "btn btn-primary",
-                                    disabled: *editing.read() || edit_name_input.read().trim().is_empty(),
-                                    onclick: {
-                                        let client = app_state.client.clone();
-                                        move |_| {
-                                            let name = edit_name_input.read().trim().to_string();
-                                            if name.is_empty() { return; }
-                                            let config: serde_json::Value = serde_json::Value::Object(
-                                                edit_form_values.read().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-                                            );
-                                            // Build resources list from checkboxes.
-                                            let resources: Vec<ResourceType> = edit_resources
-                                                .read()
-                                                .iter()
-                                                .filter_map(|s| s.parse::<ResourceType>().ok())
-                                                .collect();
-                                            let types: Vec<remux_sdks::remux::MediaKind> = edit_types
-                                                .read()
-                                                .iter()
-                                                .filter_map(|s| s.parse::<remux_sdks::remux::MediaKind>().ok())
-                                                .collect();
-                                            // Build catalog update payload.
-                                            let catalog_updates: Vec<UpdateAddonCatalogRequest> = edit_catalog_settings
-                                                .read()
-                                                .iter()
-                                                .map(|(catalog_id, (enabled, max_str, tags_str))| {
-                                                    let tags: Vec<String> = tags_str
-                                                        .split(',')
-                                                        .map(|t| t.trim().to_string())
-                                                        .filter(|t| !t.is_empty())
-                                                        .collect();
-                                                    UpdateAddonCatalogRequest {
-                                                        catalog_id: catalog_id.clone(),
-                                                        enabled: *enabled,
-                                                        max_items: max_str.trim().parse::<i64>().ok().filter(|&n| n > 0),
-                                                        tags: Some(tags),
-                                                    }
-                                                })
-                                                .collect();
-                                            editing.set(true);
-                                            let c = client.clone();
-                                            spawn(async move {
-                                                let payload = UpdateAddonRequest {
-                                                    name: Some(name),
-                                                    config: Some(config),
-                                                    resources: Some(resources),
-                                                    types: Some(types),
-                                                    enabled: None,
-                                                    priority: None,
-                                                };
-                                                let addon_res = c.execute(UpdateAddon { id: edit_id, payload }).await;
-                                                let cat_res = if !catalog_updates.is_empty() {
-                                                    c.execute(UpdateAddonCatalogs { id: edit_id, payload: catalog_updates }).await.err()
-                                                } else {
-                                                    None
-                                                };
-                                                match (addon_res, cat_res) {
-                                                    (Ok(_), None) => {
-                                                        id_to_edit.set(None);
-                                                        let v = *refresh.peek() + 1;
-                                                        refresh.set(v);
-                                                    }
-                                                    (Ok(_), Some(e)) => {
-                                                        error.set(Some(format!("Addon saved but catalog update failed: {e}")));
-                                                        id_to_edit.set(None);
-                                                        let v = *refresh.peek() + 1;
-                                                        refresh.set(v);
-                                                    }
-                                                    (Err(e), _) => {
-                                                        error.set(Some(format!("Failed to update addon: {e}")));
-                                                    }
+                        }
+                        div { class: "modal-footer",
+                            button {
+                                class: "btn btn-ghost",
+                                onclick: move |_| id_to_edit.set(None),
+                                "Cancel"
+                            }
+                            button {
+                                class: "btn btn-primary",
+                                disabled: *editing.read() || edit_name_input.read().trim().is_empty(),
+                                onclick: {
+                                    let client = app_state.client.clone();
+                                    move |_| {
+                                        let name = edit_name_input.read().trim().to_string();
+                                        if name.is_empty() { return; }
+                                        let config: serde_json::Value = serde_json::Value::Object(
+                                            edit_form_values.read().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                                        );
+                                        // Build resources list from checkboxes.
+                                        let resources: Vec<ResourceType> = edit_resources
+                                            .read()
+                                            .iter()
+                                            .filter_map(|s| s.parse::<ResourceType>().ok())
+                                            .collect();
+                                        let types: Vec<remux_sdks::remux::MediaKind> = edit_types
+                                            .read()
+                                            .iter()
+                                            .filter_map(|s| s.parse::<remux_sdks::remux::MediaKind>().ok())
+                                            .collect();
+                                        // Build catalog update payload.
+                                        let catalog_updates: Vec<UpdateAddonCatalogRequest> = edit_catalog_settings
+                                            .read()
+                                            .iter()
+                                            .map(|(catalog_id, (enabled, max_str, tags_str))| {
+                                                let tags: Vec<String> = tags_str
+                                                    .split(',')
+                                                    .map(|t| t.trim().to_string())
+                                                    .filter(|t| !t.is_empty())
+                                                    .collect();
+                                                UpdateAddonCatalogRequest {
+                                                    catalog_id: catalog_id.clone(),
+                                                    enabled: *enabled,
+                                                    max_items: max_str.trim().parse::<i64>().ok().filter(|&n| n > 0),
+                                                    tags: Some(tags),
                                                 }
-                                                editing.set(false);
-                                            });
-                                        }
-                                    },
-                                    if *editing.read() { "Saving…" } else { "Save" }
-                                }
+                                            })
+                                            .collect();
+                                        editing.set(true);
+                                        let c = client.clone();
+                                        spawn(async move {
+                                            let payload = UpdateAddonRequest {
+                                                name: Some(name),
+                                                config: Some(config),
+                                                resources: Some(resources),
+                                                types: Some(types),
+                                                enabled: None,
+                                                priority: None,
+                                            };
+                                            let addon_res = c.execute(UpdateAddon { id: edit_id, payload }).await;
+                                            let cat_res = if !catalog_updates.is_empty() {
+                                                c.execute(UpdateAddonCatalogs { id: edit_id, payload: catalog_updates }).await.err()
+                                            } else {
+                                                None
+                                            };
+                                            match (addon_res, cat_res) {
+                                                (Ok(_), None) => {
+                                                    id_to_edit.set(None);
+                                                    let v = *refresh.peek() + 1;
+                                                    refresh.set(v);
+                                                }
+                                                (Ok(_), Some(e)) => {
+                                                    error.set(Some(format!("Addon saved but catalog update failed: {e}")));
+                                                    id_to_edit.set(None);
+                                                    let v = *refresh.peek() + 1;
+                                                    refresh.set(v);
+                                                }
+                                                (Err(e), _) => {
+                                                    error.set(Some(format!("Failed to update addon: {e}")));
+                                                }
+                                            }
+                                            editing.set(false);
+                                        });
+                                    }
+                                },
+                                if *editing.read() { "Saving…" } else { "Save" }
                             }
                         }
                     }
@@ -705,46 +752,44 @@ pub fn AddonsPage(app_state: AppState) -> Element {
         }
 
         if let Some(del_id) = *id_to_delete.read() {
-            div { class: "modal-backdrop",
-                div { class: "modal",
-                    div { class: "modal-header",
-                        span { class: "modal-title", "Delete Addon" }
+            Modal { on_close: move |_| id_to_delete.set(None),
+                div { class: "modal-header",
+                    span { class: "modal-title", "Delete Addon" }
+                }
+                div { class: "modal-body",
+                    p { style: "font-size:.85rem", "Are you sure you want to delete this addon? Catalogs from this addon will be removed on the next import." }
+                }
+                div { class: "modal-footer",
+                    button {
+                        class: "btn btn-ghost",
+                        onclick: move |_| id_to_delete.set(None),
+                        "Cancel"
                     }
-                    div { class: "modal-body",
-                        p { style: "font-size:.85rem", "Are you sure you want to delete this addon? Catalogs from this addon will be removed on the next import." }
-                    }
-                    div { class: "modal-footer",
-                        button {
-                            class: "btn btn-ghost",
-                            onclick: move |_| id_to_delete.set(None),
-                            "Cancel"
-                        }
-                        button {
-                            class: "btn btn-primary",
-                            disabled: *deleting.read(),
-                            style: "background:var(--error);border-color:var(--error)",
-                            onclick: {
-                                let client = app_state.client.clone();
-                                move |_| {
-                                    deleting.set(true);
-                                    let c = client.clone();
-                                    spawn(async move {
-                                        match c.execute(DeleteAddon { id: del_id }).await {
-                                            Ok(_) => {
-                                                id_to_delete.set(None);
-                                                let v = *refresh.peek() + 1;
-                                                refresh.set(v);
-                                            }
-                                            Err(e) => {
-                                                error.set(Some(format!("Failed to delete addon: {e}")));
-                                            }
+                    button {
+                        class: "btn btn-primary",
+                        disabled: *deleting.read(),
+                        style: "background:var(--error);border-color:var(--error)",
+                        onclick: {
+                            let client = app_state.client.clone();
+                            move |_| {
+                                deleting.set(true);
+                                let c = client.clone();
+                                spawn(async move {
+                                    match c.execute(DeleteAddon { id: del_id }).await {
+                                        Ok(_) => {
+                                            id_to_delete.set(None);
+                                            let v = *refresh.peek() + 1;
+                                            refresh.set(v);
                                         }
-                                        deleting.set(false);
-                                    });
-                                }
-                            },
-                            if *deleting.read() { "Deleting…" } else { "Delete" }
-                        }
+                                        Err(e) => {
+                                            error.set(Some(format!("Failed to delete addon: {e}")));
+                                        }
+                                    }
+                                    deleting.set(false);
+                                });
+                            }
+                        },
+                        if *deleting.read() { "Deleting…" } else { "Delete" }
                     }
                 }
             }

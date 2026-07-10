@@ -18,7 +18,9 @@ mod layout;
 mod pages;
 mod router;
 mod state;
+mod theme;
 
+use crate::theme::use_theme;
 use router::Route;
 
 fn main() {
@@ -30,6 +32,10 @@ fn App() -> Element {
     let mut wizard_needed: Signal<Option<bool>> = use_signal(|| None);
     let mut logged_in = use_signal(|| get_stored_server().is_some());
     use_context_provider(|| logged_in);
+
+    // Initialise theming: applies the persisted mode to <html>, provides the
+    // ThemePrefs context, and drives the live accent/scale <style> below.
+    let theme = use_theme();
 
     use_effect(move || {
         spawn(async move {
@@ -50,6 +56,10 @@ fn App() -> Element {
     rsx! {
         document::Link { rel: "stylesheet", href: TAILWIND_CSS }
         document::Link { rel: "stylesheet", href: THEME_CSS }
+        // Live overrides for the user-chosen accent color and UI scale. A
+        // `:root{…}` rule applies globally regardless of the tag's position, and
+        // being parsed after the base stylesheet it wins for --accent/--ui-scale.
+        style { {crate::theme::theme_style_css(&theme.read())} }
         {match *wizard_needed.read() {
             None => rsx! {
                 div { class: "login-page",

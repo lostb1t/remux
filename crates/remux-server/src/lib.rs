@@ -316,19 +316,25 @@ pub async fn init_app(
                 .make_span_with(|request: &axum::http::Request<axum::body::Body>| {
                     let uri = request.uri();
                     let path = uri.path();
-                    let uri_str = match uri.query() {
+                    let uri = match uri.query() {
                         Some(q) => format!("{path}?{q}"),
                         None => path.to_string(),
                     };
-                    tracing::info_span!("request", user = tracing::field::Empty, uri = %uri_str)
+                    tracing::info_span!(
+                        "request",
+                        user = tracing::field::Empty,
+                        method = %request.method(),
+                        uri = %uri,
+                    )
                 })
                 .on_request(|request: &axum::http::Request<axum::body::Body>, _span: &tracing::Span| {
                     debug!(target: "remux_server::request", method = %request.method(), "→");
                 })
-                .on_response(|response: &axum::http::Response<axum::body::Body>, latency: std::time::Duration, _span: &tracing::Span| {
-                    debug!(target: "remux_server::request", status = %response.status().as_u16(), latency_ms = %latency.as_millis(), "←");
-                })
-                .on_failure(()),
+                .on_response(|response: &axum::http::Response<axum::body::Body>, latency: std::time::Duration, span: &tracing::Span| {
+                    span.in_scope(|| {
+                        debug!(target: "remux_server::request", status = %response.status().as_u16(), latency_ms = %latency.as_millis(), "←");
+                    });
+                }),
         )
         .layer(cors);
 

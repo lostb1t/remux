@@ -8,14 +8,16 @@ pub mod server_info;
 pub mod sessions;
 pub mod states;
 pub mod tasks;
+pub mod theme_switch;
 
 pub use button::{Button, ButtonVariant};
 pub use card::Card;
 pub use filters::{FilterRuleEditor, TagChipInput};
 pub use form::{FormActions, FormGroup, ToggleRow};
 pub use metrics::MetricsCard;
-pub use modal::Modal;
+pub use modal::{Modal, ModalSize};
 pub use server_info::{MediaStatsCard, ServerInfoCard};
 pub use sessions::SessionsCard;
 pub use states::{EmptyState, ErrorAlert, LoadingText, SuccessAlert};
 pub use tasks::TasksCard;
+pub use theme_switch::ThemeModeSegment;

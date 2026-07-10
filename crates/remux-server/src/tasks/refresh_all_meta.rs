@@ -31,6 +31,8 @@ impl Task for RefreshAllMetaTask {
         _tasks: Arc<TaskService>,
         progress: ProgressReporter,
     ) -> Result<()> {
+        super::log_process_memory("refresh_all_meta:start");
+
         const CHUNK_SIZE: u32 = 100;
 
         let total: i64 =
@@ -64,12 +66,18 @@ impl Task for RefreshAllMetaTask {
                 .process_meta_batch(batch, &ctx, true)
                 .await?;
             processed += fetched;
+            if processed % 1000 < fetched || fetched < CHUNK_SIZE as usize {
+                super::log_process_memory(&format!(
+                    "refresh_all_meta:processed:{processed}"
+                ));
+            }
             progress.report(processed, total.max(1));
             if fetched < CHUNK_SIZE as usize {
                 break;
             }
             offset += CHUNK_SIZE;
         }
+        super::log_process_memory("refresh_all_meta:complete");
         Ok(())
     }
 }

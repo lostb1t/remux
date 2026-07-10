@@ -1,7 +1,7 @@
 use crate::{
     addons::SubtitleInfo,
     api, common,
-    common::{ToRunTimeTicks, get_uuid},
+    common::{get_uuid, ToRunTimeTicks},
     db,
     sdks::stremio,
     stream::StreamDescriptor,
@@ -38,8 +38,24 @@ fn infer_container_from_url(url: &str) -> Option<String> {
         "avi" => Some("avi".to_string()),
         "m2ts" | "ts" => Some("ts".to_string()),
         "m3u8" => Some("ts".to_string()),
+        "mp3" => Some("mp3".to_string()),
+        "m4a" => Some("m4a".to_string()),
+        "flac" => Some("flac".to_string()),
+        "ogg" | "oga" => Some("ogg".to_string()),
+        "opus" => Some("opus".to_string()),
+        "wav" => Some("wav".to_string()),
+        "aac" => Some("aac".to_string()),
         _ => None,
     }
+}
+
+fn fallback_container_for_media_kind(kind: db::MediaKind) -> String {
+    match kind {
+        db::MediaKind::Track => "mp3",
+        db::MediaKind::TvChannel | db::MediaKind::TvProgram => "ts",
+        _ => "mp4",
+    }
+    .to_string()
 }
 
 fn infer_video_codec(text: &str) -> Option<String> {
@@ -144,9 +160,18 @@ impl From<db::Media> for api::MediaSourceInfo {
         let is_stub = descriptor
             .and_then(|d| d.as_http_url())
             .is_none();
-        let container = descriptor
+        let inferred_container = descriptor
             .and_then(|d| d.as_http_url())
             .and_then(infer_container_from_url);
+        let container = source
+            .probe_data
+            .as_ref()
+            .and_then(|p| {
+                p.container
+                    .clone()
+            })
+            .or(inferred_container)
+            .unwrap_or_else(|| fallback_container_for_media_kind(source.kind));
 
         let remux = Some(api::MediaSourceRemuxInfo {
             provider_info: source
@@ -209,7 +234,7 @@ impl From<db::Media> for api::MediaSourceInfo {
                     .title
                     .clone(),
             ),
-            container,
+            container: Some(container),
             remux,
             has_segments: !is_stub,
             formats: Some(vec![]),
@@ -328,10 +353,16 @@ pub fn stream_into_media_source_info(
     stream: stremio::Stream,
 ) -> api::MediaSourceInfo {
     let id = get_uuid();
+    let container = stream
+        .url
+        .as_deref()
+        .and_then(infer_container_from_url)
+        .unwrap_or_else(|| "mp4".to_string());
     api::MediaSourceInfo {
         id: id.clone(),
         e_tag: id.clone(),
         path: stream.url,
+        container: Some(container),
         protocol: api::MediaProtocol::File,
         supports_transcoding: false,
         supports_direct_stream: true,

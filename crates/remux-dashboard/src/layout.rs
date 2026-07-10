@@ -1,4 +1,5 @@
 use crate::{
+    components::ThemeModeSegment,
     router::Route,
     state::{get_stored_server, AppState, CREDENTIALS_KEY},
 };
@@ -91,6 +92,7 @@ pub fn DashboardLayout() -> Element {
         Route::SettingsSearchRoute => "Search",
         Route::SettingsJellyfinSyncRoute => "Jellyfin Sync",
         Route::SettingsBrandingRoute => "Branding",
+        Route::SettingsAppearanceRoute => "Appearance",
         Route::SettingsIntroRoute => "Intro",
         Route::AccessUsersRoute => "Users",
         Route::AccessApiKeysRoute => "API Keys",
@@ -177,6 +179,7 @@ pub fn DashboardLayout() -> Element {
                             | Route::SettingsSearchRoute
                             | Route::SettingsJellyfinSyncRoute
                             | Route::SettingsBrandingRoute
+                            | Route::SettingsAppearanceRoute
                             | Route::SettingsIntroRoute
                         ),
                         NavSubItem {
@@ -209,6 +212,11 @@ pub fn DashboardLayout() -> Element {
                             active: route == Route::SettingsBrandingRoute,
                             on_click: move |_| { navigator().push(Route::SettingsBrandingRoute); sidebar_open.set(false); },
                         }
+                        NavSubItem {
+                            label: "Appearance",
+                            active: route == Route::SettingsAppearanceRoute,
+                            on_click: move |_| { navigator().push(Route::SettingsAppearanceRoute); sidebar_open.set(false); },
+                        }
                     }
 
                     SidebarGroup {
@@ -236,6 +244,8 @@ pub fn DashboardLayout() -> Element {
                 }
 
                 div { class: "sidebar-footer",
+                    // Quick theme toggle — always visible; mirrors the Appearance page.
+                    ThemeModeSegment {}
                     a {
                         class: "btn btn-ghost",
                         style: "width:100%;margin-bottom:8px",

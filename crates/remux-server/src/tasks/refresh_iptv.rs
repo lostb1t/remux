@@ -40,6 +40,8 @@ impl Task for RefreshIptvTask {
         _tasks: Arc<TaskService>,
         progress: ProgressReporter,
     ) -> Result<()> {
+        super::log_process_memory("refresh_iptv:start");
+
         let iptv_runtimes = ctx
             .addons
             .catalogs_for_kinds(&ctx, &[db::MediaKind::TvChannel])
@@ -147,6 +149,7 @@ impl Task for RefreshIptvTask {
         )
         .await;
         prune_stale_iptv_channels(&ctx.db, import_start).await;
+        super::log_process_memory("refresh_iptv:catalog_import:complete");
 
         let epg_progress = progress.scaled(50.0, 100.0);
         let client = reqwest::Client::new();
@@ -223,6 +226,7 @@ impl Task for RefreshIptvTask {
         }
 
         progress.set(100.0);
+        super::log_process_memory("refresh_iptv:complete");
         Ok(())
     }
 }
