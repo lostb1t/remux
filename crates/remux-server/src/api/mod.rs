@@ -10,6 +10,7 @@ pub mod collections;
 pub mod devices;
 pub mod hls;
 pub mod image;
+pub mod import_features;
 pub mod images;
 pub mod instantmix;
 pub mod intro;

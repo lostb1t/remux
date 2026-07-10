@@ -445,6 +445,7 @@ pub struct ServerConfiguration {
     #[default(0_i64)]
     pub digital_release_buffer_days: i64,
     pub tmdb_api_key: Option<String>,
+    pub feature_dataset_url: Option<String>,
     pub subtitle_languages: Option<Vec<String>>,
     #[default(Some(false))]
     pub enable_subtitles_detail: Option<bool>,
