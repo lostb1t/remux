@@ -265,12 +265,7 @@ impl CatalogAddon for StremioAddon {
                     }),
                     media_kind: db::MediaKind::try_from(stremio_kind).ok(),
                     ..CatalogInfo::new(
-                        format!(
-                            "{}:{}",
-                            c.kind
-                                .to_lowercase(),
-                            c.id
-                        ),
+                        format!("{}:{}", c.kind, c.id),
                         format!(
                             "{} — {} — {}",
                             manifest

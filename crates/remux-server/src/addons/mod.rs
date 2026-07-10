@@ -1331,14 +1331,7 @@ impl AddonService {
                 .resolve_catalogs(ctx)
                 .await
             {
-                Ok(v) => v
-                    .into_iter()
-                    .filter(|c| {
-                        c.media_kind
-                            .as_ref()
-                            .is_some_and(|mk| kind_in_type_list(mk, kinds))
-                    })
-                    .collect(),
+                Ok(v) => v,
                 Err(e) => {
                     warn!(addon = %addon_id, error = %e, "failed to list addon catalogs, skipping");
                     continue;
