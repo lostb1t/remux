@@ -1,0 +1,3 @@
+-- Compatibility placeholder for local databases that applied the original
+-- watch_history_indexes migration at this version before upstream claimed
+-- 202607020001. The indexes now live in 202607020004 for clean installs.
