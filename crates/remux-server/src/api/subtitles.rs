@@ -258,7 +258,7 @@ pub async fn subtitles_stream(
     .ok()
     .flatten()
     {
-        let source_media = crate::services::StreamResolver::resolve(
+        let source_media = crate::services::StreamService::resolve(
             &state
                 .ctx
                 .db,
@@ -380,7 +380,7 @@ pub async fn subtitles_stream(
         }
     }
 
-    let media = crate::services::StreamResolver::resolve(
+    let media = crate::services::StreamService::resolve(
         &state
             .ctx
             .db,

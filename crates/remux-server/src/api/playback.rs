@@ -46,7 +46,7 @@ use crate::{
         session::{TranscodeSession, TranscodeState},
     },
     sdks,
-    services::{MediaResolveService, StreamResolver, stream_resolve::StreamSelection},
+    services::{MediaResolveService, StreamService, stream_service::StreamSelection},
     torrent,
 };
 use axum_anyhow::ApiResult as Result;
@@ -107,7 +107,7 @@ async fn items_playbackinfo_inner(
             .await?
             .context_not_found("not found")?;
 
-    let resolver = StreamResolver::resolve_group(
+    let mut service = StreamService::resolve_group(
         &state
             .ctx
             .db,
@@ -119,7 +119,7 @@ async fn items_playbackinfo_inner(
         initial,
     )
     .await?;
-    let mut media = resolver
+    let mut media = service
         .stream
         .clone();
 
@@ -222,6 +222,7 @@ async fn items_playbackinfo_inner(
     } else {
         vec![media]
     };
+    service.streams = all_streams;
 
     let StreamSelection {
         candidates: candidate_streams,
@@ -229,7 +230,7 @@ async fn items_playbackinfo_inner(
         restrict_resolution: sel_restrict_resolution,
         probe_only_first,
         specific_requested: specific_stream_requested,
-    } = resolver.select_streams(all_streams, media_source_id, id);
+    } = service.select_streams(media_source_id);
 
     let max_bitrate: Option<i64> = match (
         q.max_streaming_bitrate,
@@ -312,10 +313,10 @@ async fn items_playbackinfo_inner(
                 .db,
         )
         .await?;
-        let cid = resolver.source_id_for(&effective_stream);
+        let cid = service.source_id_for(&effective_stream);
         source.id = cid;
         source.e_tag = cid;
-        source.name = Some(resolver.source_name_for(&effective_stream));
+        source.name = Some(service.source_name_for(&effective_stream));
         source.has_segments = true;
         source.path = Some(format!("/remux/{}", effective_stream.id));
         source.is_remote = false;
@@ -568,11 +569,11 @@ async fn items_playbackinfo_inner(
 
     // Cache the group-resolved stream UUID so the stream endpoint can find it
     // without re-running filter_sources (which could pick a different candidate).
-    if resolver
+    if service
         .group
         .is_some()
     {
-        resolver.save_preference(
+        service.save_preference(
             &state
                 .ctx
                 .store,
@@ -768,7 +769,7 @@ async fn videos_stream_inner(
     id: Uuid,
     q: api::VideoStreamQuery,
 ) -> Result<impl IntoResponse> {
-    let media = StreamResolver::resolve(
+    let media = StreamService::resolve(
         &state
             .ctx
             .db,
