@@ -258,20 +258,14 @@ pub async fn subtitles_stream(
     .ok()
     .flatten()
     {
-        let source_media = crate::services::StreamService::resolve(
-            &state
-                .ctx
-                .db,
-            &state
-                .ctx
-                .store,
+        let source_media = crate::services::StreamService::lookup(
+            &state.ctx,
             item_id,
             Some(media_source_id),
             None,
         )
         .await
-        .ok()
-        .map(|r| r.stream);
+        .ok();
         if let Some(ref source) = source_media {
             let embedded_indices: std::collections::HashSet<i64> = source
                 .probe_data
@@ -380,19 +374,13 @@ pub async fn subtitles_stream(
         }
     }
 
-    let media = crate::services::StreamService::resolve(
-        &state
-            .ctx
-            .db,
-        &state
-            .ctx
-            .store,
+    let media = crate::services::StreamService::lookup(
+        &state.ctx,
         item_id,
         Some(media_source_id),
         None,
     )
-    .await?
-    .stream;
+    .await?;
 
     let url = media
         .stream_info

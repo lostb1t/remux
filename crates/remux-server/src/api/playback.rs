@@ -42,7 +42,7 @@ use crate::{
             PlaybackConfig, TranscodeDecision, apply_subtitle_delivery,
             build_transcode_decision,
         },
-        probe::{probe_stream, resolve_stream_root},
+        probe::probe_stream,
         session::{TranscodeSession, TranscodeState},
     },
     sdks,
@@ -107,20 +107,27 @@ async fn items_playbackinfo_inner(
             .await?
             .context_not_found("not found")?;
 
-    let mut service = StreamService::resolve_group(
-        &state
+    let mut service = StreamService::new(
+        state
             .ctx
-            .db,
-        &state
-            .ctx
-            .store,
+            .clone(),
         id,
         media_source_id,
-        initial,
-    )
-    .await?;
+        show_ungrouped,
+        session
+            .user
+            .policy
+            .as_ref()
+            .and_then(|p| {
+                p.stream_filter
+                    .clone()
+            }),
+    );
+    service
+        .resolve(initial)
+        .await?;
     let mut media = service
-        .stream
+        .stream()
         .clone();
 
     // Load the top-level Movie/Episode for subtitle lookup.
@@ -144,93 +151,13 @@ async fn items_playbackinfo_inner(
             .map_or(false, |m| m.kind == db::MediaKind::Track);
     let has_lyrics = is_track;
 
-    // Collect all playable streams. A Movie/Episode may have multiple
-    // Stream children (versions); return every one so the client can
-    // show version selection and per-stream codec lists.
-    let mut stream_root = resolve_stream_root(
-        &media,
-        id,
-        &state
-            .ctx
-            .db,
-    )
-    .await;
-    let all_streams: Vec<db::Media> = if matches!(
-        stream_root.kind,
-        db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track
-    ) {
-        state
-            .ctx
-            .addons
-            .refresh_streams(&mut stream_root, &state.ctx)
-            .await
-            .inspect_err(|e| error!("refresh_streams failed: {e:#}"));
-        let db_streams = stream_root
-            .streams(
-                &state
-                    .ctx
-                    .db,
-            )
-            .await?;
-        let raw = if db_streams.is_empty() {
-            vec![stream_root]
-        } else {
-            db_streams
-        };
-        {
-            let streams = db::StreamGroup::filter_sources(
-                &state
-                    .ctx
-                    .db,
-                raw,
-                show_ungrouped,
-            )
-            .await;
-            if let Some(sf) = session
-                .user
-                .policy
-                .as_ref()
-                .and_then(|p| {
-                    p.stream_filter
-                        .as_ref()
-                })
-                .filter(|sf| {
-                    !sf.rules
-                        .is_empty()
-                })
-            {
-                let before = streams.len();
-                let filtered = db::apply_stream_filter(sf, streams);
-                debug!(
-                    user = %session.user.username,
-                    streams_before = before,
-                    streams_after = filtered.len(),
-                    rules = sf.rules.len(),
-                    "stream filter applied"
-                );
-                filtered
-            } else {
-                debug!(
-                    user = %session.user.username,
-                    has_policy = session.user.policy.is_some(),
-                    has_stream_filter = session.user.policy.as_ref().and_then(|p| p.stream_filter.as_ref()).is_some(),
-                    "stream filter skipped"
-                );
-                streams
-            }
-        }
-    } else {
-        vec![media]
-    };
-    service.streams = all_streams;
-
     let StreamSelection {
         candidates: candidate_streams,
         probe_pool: fallback_streams,
         restrict_resolution: sel_restrict_resolution,
         probe_only_first,
         specific_requested: specific_stream_requested,
-    } = service.select_streams(media_source_id);
+    } = service.select_streams();
 
     let max_bitrate: Option<i64> = match (
         q.max_streaming_bitrate,
@@ -569,19 +496,11 @@ async fn items_playbackinfo_inner(
 
     // Cache the group-resolved stream UUID so the stream endpoint can find it
     // without re-running filter_sources (which could pick a different candidate).
-    if service
-        .group
-        .is_some()
-    {
-        service.save_preference(
-            &state
-                .ctx
-                .store,
-            &session
-                .device
-                .id,
-        );
-    }
+    service.save_preference(
+        &session
+            .device
+            .id,
+    );
 
     // When no specific stream was requested (initial load, or media_source_id == item_id),
     // override source[0].Id to equal the item ID — clients expect this for auto-play.
@@ -769,20 +688,14 @@ async fn videos_stream_inner(
     id: Uuid,
     q: api::VideoStreamQuery,
 ) -> Result<impl IntoResponse> {
-    let media = StreamService::resolve(
-        &state
-            .ctx
-            .db,
-        &state
-            .ctx
-            .store,
+    let media = StreamService::lookup(
+        &state.ctx,
         id,
         q.media_source_id,
         q.device_id
             .as_deref(),
     )
-    .await?
-    .stream;
+    .await?;
 
     let si = media
         .stream_info

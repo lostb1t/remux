@@ -1,92 +1,184 @@
-use crate::db;
+use crate::{AppContext, db, playback::probe::resolve_stream_root};
+use remux_sdks::remux::StreamFilter;
 use remux_utils::Store;
+use tracing::debug;
 use uuid::Uuid;
 
-/// Central service for stream selection policy on a single playback request.
+/// Central service for stream selection on a single playback request.
 ///
-/// Resolves a client-supplied source UUID to a concrete `db::Media`, holds the full
-/// filtered stream list for the item, and encapsulates all candidate/probe-pool
-/// partitioning logic so handlers stay thin.
+/// Construct with `new()`, then call `resolve()` to do all async work (group detection,
+/// stream loading, policy filtering). After that the selection and ID-mapping methods
+/// are available with no further parameters.
 pub(crate) struct StreamService {
-    /// The item UUID from the URL route (Movie/Episode/Track).
+    ctx: AppContext,
     pub item_id: Uuid,
-    /// When the requested source was a StreamGroup: (group_uuid, display_title, all_candidates).
-    pub group: Option<(Uuid, String, Vec<db::Media>)>,
-    /// The concrete playable stream (best candidate).
-    pub stream: db::Media,
-    /// All available, filtered, policy-applied streams for this item.
-    /// Populated by the caller after building the stream list.
+    pub requested_id: Option<Uuid>,
+    show_ungrouped: bool,
+    stream_filter: Option<StreamFilter>,
+    // Populated by resolve()
+    group: Option<(Uuid, String, Vec<db::Media>)>,
+    stream: Option<db::Media>,
     pub streams: Vec<db::Media>,
 }
 
 impl StreamService {
-    /// Full resolution: StreamGroup → best candidate; Movie/Episode/Track → preferred/first source.
-    ///
-    /// Use this in video-stream and subtitle handlers where exactly one concrete stream is needed.
-    pub async fn resolve(
-        db: &sqlx::SqlitePool,
-        store: &Store,
+    pub fn new(
+        ctx: AppContext,
         item_id: Uuid,
         requested_id: Option<Uuid>,
-        device_key: Option<&str>,
-    ) -> anyhow::Result<Self> {
-        let lookup_id = requested_id.unwrap_or(item_id);
-        let media = db::Media::get_by_id(db, &lookup_id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("stream not found: {}", lookup_id))?;
-        Self::dispatch(db, store, item_id, requested_id, device_key, media).await
-    }
-
-    /// Group-only resolution: StreamGroup → best candidate; Movie/Episode/Track → returned as-is.
-    ///
-    /// Use this in the playbackinfo handler where `streams` is built externally and set
-    /// on the returned service before calling `select_streams`.
-    pub async fn resolve_group(
-        db: &sqlx::SqlitePool,
-        store: &Store,
-        item_id: Uuid,
-        requested_id: Option<Uuid>,
-        initial: db::Media,
-    ) -> anyhow::Result<Self> {
-        if initial.kind == db::MediaKind::StreamGroup {
-            Self::resolve_stream_group(db, item_id, initial).await
-        } else {
-            Ok(Self {
-                item_id,
-                group: None,
-                stream: initial,
-                streams: vec![],
-            })
+        show_ungrouped: bool,
+        stream_filter: Option<StreamFilter>,
+    ) -> Self {
+        Self {
+            ctx,
+            item_id,
+            requested_id,
+            show_ungrouped,
+            stream_filter,
+            group: None,
+            stream: None,
+            streams: vec![],
         }
     }
 
-    async fn dispatch(
-        db: &sqlx::SqlitePool,
-        store: &Store,
+    /// Resolve the service from a pre-fetched initial media (playbackinfo path).
+    ///
+    /// Populates `self.group`, `self.stream`, and `self.streams`. Must be called
+    /// before any of the selection or ID-mapping methods.
+    pub async fn resolve(&mut self, initial: db::Media) -> anyhow::Result<()> {
+        if initial.kind == db::MediaKind::StreamGroup {
+            self.resolve_stream_group(initial)
+                .await?;
+            return Ok(());
+        }
+
+        let mut root = resolve_stream_root(
+            &initial,
+            self.item_id,
+            &self
+                .ctx
+                .db,
+        )
+        .await;
+
+        self.ctx
+            .addons
+            .refresh_streams(&mut root, &self.ctx)
+            .await
+            .inspect_err(|e| tracing::error!("refresh_streams failed: {e:#}"));
+
+        let db_streams = root
+            .streams(
+                &self
+                    .ctx
+                    .db,
+            )
+            .await?;
+        let raw = if db_streams.is_empty() {
+            vec![root]
+        } else {
+            db_streams
+        };
+
+        let streams = db::StreamGroup::filter_sources(
+            &self
+                .ctx
+                .db,
+            raw,
+            self.show_ungrouped,
+        )
+        .await;
+        let streams = if let Some(sf) = self
+            .stream_filter
+            .as_ref()
+            .filter(|sf| {
+                !sf.rules
+                    .is_empty()
+            }) {
+            let before = streams.len();
+            let filtered = db::apply_stream_filter(sf, streams);
+            debug!(
+                streams_before = before,
+                streams_after = filtered.len(),
+                rules = sf
+                    .rules
+                    .len(),
+                "stream filter applied"
+            );
+            filtered
+        } else {
+            debug!(
+                has_filter = self
+                    .stream_filter
+                    .is_some(),
+                "stream filter skipped"
+            );
+            streams
+        };
+
+        self.stream = streams
+            .first()
+            .cloned();
+        self.streams = streams;
+        Ok(())
+    }
+
+    /// One-shot lookup for handlers that only need a single resolved stream (subtitles, video).
+    ///
+    /// Handles StreamGroup → best candidate, device preference, and explicit stream UUID.
+    /// Returns the concrete `db::Media` to stream.
+    pub async fn lookup(
+        ctx: &AppContext,
+        item_id: Uuid,
+        requested_id: Option<Uuid>,
+        device_key: Option<&str>,
+    ) -> anyhow::Result<db::Media> {
+        let lookup_id = requested_id.unwrap_or(item_id);
+        let media = db::Media::get_by_id(&ctx.db, &lookup_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("stream not found: {}", lookup_id))?;
+        Self::dispatch_lookup(ctx, item_id, requested_id, device_key, media).await
+    }
+
+    async fn dispatch_lookup(
+        ctx: &AppContext,
         item_id: Uuid,
         requested_id: Option<Uuid>,
         device_key: Option<&str>,
         media: db::Media,
-    ) -> anyhow::Result<Self> {
+    ) -> anyhow::Result<db::Media> {
         match media.kind {
             db::MediaKind::StreamGroup => {
-                Self::resolve_stream_group(db, item_id, media).await
+                let gid = media.id;
+                let mut candidates =
+                    db::StreamGroup::streams_for(&ctx.db, &gid, &item_id).await?;
+                if candidates.is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "no streams available for group {}",
+                        gid
+                    ));
+                }
+                let cascade =
+                    db::StreamGroup::streams_for_groups_after(&ctx.db, &gid, &item_id)
+                        .await
+                        .unwrap_or_default();
+                candidates.extend(cascade);
+                Ok(candidates.remove(0))
             }
             db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track => {
                 let mut media = media;
                 let sources = media
-                    .streams(db)
+                    .streams(&ctx.db)
                     .await?;
-                let stream = if let Some(sid) =
-                    requested_id.filter(|&sid| sid != item_id)
-                {
+                if let Some(sid) = requested_id.filter(|&sid| sid != item_id) {
                     sources
                         .into_iter()
                         .find(|s| s.id == sid)
-                        .ok_or_else(|| anyhow::anyhow!("stream not found: {}", sid))?
+                        .ok_or_else(|| anyhow::anyhow!("stream not found: {}", sid))
                 } else if let Some(key) = device_key {
-                    let saved =
-                        store.get::<Uuid>(&format!("pstream:{}:{}", item_id, key));
+                    let saved = ctx
+                        .store
+                        .get::<Uuid>(&format!("pstream:{}:{}", item_id, key));
                     let by_pref = saved.and_then(|sid| {
                         sources
                             .iter()
@@ -101,74 +193,76 @@ impl StreamService {
                         })
                         .ok_or_else(|| {
                             anyhow::anyhow!("no playable sources for {}", item_id)
-                        })?
+                        })
                 } else {
                     sources
                         .into_iter()
                         .next()
                         .ok_or_else(|| {
                             anyhow::anyhow!("no playable sources for {}", item_id)
-                        })?
-                };
-                Ok(Self {
-                    item_id,
-                    group: None,
-                    stream,
-                    streams: vec![],
-                })
+                        })
+                }
             }
-            _ => Ok(Self {
-                item_id,
-                group: None,
-                stream: media,
-                streams: vec![],
-            }),
+            _ => Ok(media),
         }
     }
 
-    async fn resolve_stream_group(
-        db: &sqlx::SqlitePool,
-        item_id: Uuid,
-        media: db::Media,
-    ) -> anyhow::Result<Self> {
+    async fn resolve_stream_group(&mut self, media: db::Media) -> anyhow::Result<()> {
         let gid = media.id;
         let gtitle = media
             .title
             .clone();
-        let mut candidates = db::StreamGroup::streams_for(db, &gid, &item_id).await?;
+        let mut candidates = db::StreamGroup::streams_for(
+            &self
+                .ctx
+                .db,
+            &gid,
+            &self.item_id,
+        )
+        .await?;
         if candidates.is_empty() {
             return Err(anyhow::anyhow!("no streams available for group {}", gid));
         }
-        let cascade = db::StreamGroup::streams_for_groups_after(db, &gid, &item_id)
-            .await
-            .unwrap_or_default();
+        let cascade = db::StreamGroup::streams_for_groups_after(
+            &self
+                .ctx
+                .db,
+            &gid,
+            &self.item_id,
+        )
+        .await
+        .unwrap_or_default();
         candidates.extend(cascade);
-        let stream = candidates[0].clone();
-        Ok(Self {
-            item_id,
-            group: Some((gid, gtitle, candidates)),
-            stream,
-            streams: vec![],
-        })
+        self.stream = Some(candidates[0].clone());
+        self.group = Some((gid, gtitle, candidates));
+        Ok(())
+    }
+
+    /// The concrete resolved stream. Panics if called before `resolve()`.
+    pub fn stream(&self) -> &db::Media {
+        self.stream
+            .as_ref()
+            .expect("StreamService::resolve() must be called first")
+    }
+
+    /// The StreamGroup context, if the request was for a group.
+    pub fn group(&self) -> Option<&(Uuid, String, Vec<db::Media>)> {
+        self.group
+            .as_ref()
     }
 
     /// UUID the client should see in `MediaSources[0].Id` and `TranscodingUrl MediaSourceId`.
-    ///
-    /// Returns the group UUID when a StreamGroup was requested, otherwise the stream's own UUID.
     pub fn client_facing_id(&self) -> Uuid {
         self.group
             .as_ref()
             .map(|(gid, _, _)| *gid)
-            .unwrap_or(
-                self.stream
-                    .id,
-            )
+            .unwrap_or_else(|| {
+                self.stream()
+                    .id
+            })
     }
 
-    /// UUID to echo in `MediaSources[idx].Id`, using the probe-fallback result as the fallback.
-    ///
-    /// Unlike `client_facing_id()`, this takes the effective stream (which may differ from
-    /// `self.stream` when a probe fallback selected a sibling stream) as the non-group fallback.
+    /// UUID for `MediaSources[idx].Id`, using the probe-fallback effective stream.
     pub fn source_id_for(&self, effective: &db::Media) -> Uuid {
         self.group
             .as_ref()
@@ -176,7 +270,7 @@ impl StreamService {
             .unwrap_or(effective.id)
     }
 
-    /// Display name to echo in `MediaSources[idx].Name` (group title or effective stream title).
+    /// Display name for `MediaSources[idx].Name`.
     pub fn source_name_for(&self, effective: &db::Media) -> String {
         self.group
             .as_ref()
@@ -188,8 +282,7 @@ impl StreamService {
             })
     }
 
-    /// Probe fallback pool — includes cascade candidates for group requests, empty otherwise.
-    pub fn candidates(&self) -> &[db::Media] {
+    fn candidates(&self) -> &[db::Media] {
         self.group
             .as_ref()
             .map(|(_, _, c)| c.as_slice())
@@ -197,19 +290,12 @@ impl StreamService {
     }
 
     /// Partition `self.streams` into candidate/probe lists and compute selection flags.
-    ///
-    /// Encapsulates the 4-way selection policy:
-    /// - group request   → candidates=[self.stream], probe_pool=cascade candidates, restrict=false
-    /// - specific stream → candidates=[that stream], probe_pool=self.streams,       restrict=true
-    /// - android-tv      → candidates=[first],       probe_pool=self.streams,       restrict=true
-    /// - no stream id    → candidates=all,            probe_pool=self.streams,       restrict=true, probe_only_first=true
-    ///
-    /// Caller must set `self.streams` before calling this.
-    pub(crate) fn select_streams(&self, requested_id: Option<Uuid>) -> StreamSelection {
+    pub(crate) fn select_streams(&self) -> StreamSelection {
         let all_streams = self
             .streams
             .clone();
         let item_id = self.item_id;
+        let requested_id = self.requested_id;
 
         let specific_requested = self
             .group
@@ -229,7 +315,7 @@ impl StreamService {
         {
             return StreamSelection {
                 candidates: vec![
-                    self.stream
+                    self.stream()
                         .clone(),
                 ],
                 probe_pool: self
@@ -241,7 +327,6 @@ impl StreamService {
             };
         }
 
-        // Non-group: full filtered list is always the probe fallback pool.
         let probe_pool = all_streams.clone();
 
         let (candidates, probe_only_first) = if specific_requested {
@@ -276,13 +361,22 @@ impl StreamService {
     }
 
     /// Persist the resolved stream UUID in the device-preference store (24 h TTL).
-    pub fn save_preference(&self, store: &Store, device_key: &str) {
-        store.save(
-            format!("pstream:{}:{}", self.item_id, device_key),
-            self.stream
-                .id,
-            std::time::Duration::from_secs(24 * 3600),
-        );
+    /// No-op when this was not a group request.
+    pub fn save_preference(&self, device_key: &str) {
+        if self
+            .group
+            .is_none()
+        {
+            return;
+        }
+        self.ctx
+            .store
+            .save(
+                format!("pstream:{}:{}", self.item_id, device_key),
+                self.stream()
+                    .id,
+                std::time::Duration::from_secs(24 * 3600),
+            );
     }
 }
 
