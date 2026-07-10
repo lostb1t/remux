@@ -64,6 +64,32 @@ pub async fn items_playbackinfo_get(
     items_playbackinfo_inner(state, session, id, q).await
 }
 
+/// Returns the top-level Movie/Episode/Track to use for stream enumeration.
+///
+/// When `media_source_id` points to a Stream child record, `resolver.stream`
+/// resolves to that child (kind=Stream), not the parent episode. Enumerating
+/// streams from a Stream record yields only 1 result — the bug that produced
+/// "tried 1 of 1 streams" even though the episode had many. This function
+/// always returns a top-level item, loading by `id` when `media` is a child.
+async fn resolve_stream_root(
+    media: &db::Media,
+    id: Uuid,
+    db: &sqlx::SqlitePool,
+) -> db::Media {
+    if matches!(
+        media.kind,
+        db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track
+    ) {
+        media.clone()
+    } else {
+        db::Media::get_by_id(db, &id)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| media.clone())
+    }
+}
+
 async fn items_playbackinfo_inner(
     state: AppState,
     session: auth::AuthSession,
@@ -135,54 +161,41 @@ async fn items_playbackinfo_inner(
             .map_or(false, |m| m.kind == db::MediaKind::Track);
     let has_lyrics = is_track;
 
-    // Collect all playable sources. A Movie/Episode may have multiple
-    // Source children (versions); return every one so the client can
-    // show version selection and per-source stream lists.
-    //
-    // When a specific stream UUID is sent as media_source_id, resolver.stream
-    // resolves to a Stream child record (kind=Stream), not the Episode. Always
-    // enumerate from the top-level item (id) so the fallback pool is complete.
-    let mut source_root = if matches!(
-        media.kind,
-        db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track
-    ) {
-        media.clone()
-    } else {
-        db::Media::get_by_id(
-            &state
-                .ctx
-                .db,
-            &id,
-        )
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| media.clone())
-    };
-    let all_source_medias: Vec<db::Media> = if matches!(
-        source_root.kind,
+    // Collect all playable streams. A Movie/Episode may have multiple
+    // Stream children (versions); return every one so the client can
+    // show version selection and per-stream codec lists.
+    let mut stream_root = resolve_stream_root(
+        &media,
+        id,
+        &state
+            .ctx
+            .db,
+    )
+    .await;
+    let all_streams: Vec<db::Media> = if matches!(
+        stream_root.kind,
         db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track
     ) {
         state
             .ctx
             .addons
-            .refresh_streams(&mut source_root, &state.ctx)
+            .refresh_streams(&mut stream_root, &state.ctx)
             .await
             .inspect_err(|e| error!("refresh_streams failed: {e:#}"));
-        let sources = source_root
+        let db_streams = stream_root
             .streams(
                 &state
                     .ctx
                     .db,
             )
             .await?;
-        let raw = if sources.is_empty() {
-            vec![source_root]
+        let raw = if db_streams.is_empty() {
+            vec![stream_root]
         } else {
-            sources
+            db_streams
         };
         {
-            let sources = db::StreamGroup::filter_sources(
+            let streams = db::StreamGroup::filter_sources(
                 &state
                     .ctx
                     .db,
@@ -203,12 +216,12 @@ async fn items_playbackinfo_inner(
                         .is_empty()
                 })
             {
-                let before = sources.len();
-                let filtered = db::apply_stream_filter(sf, sources);
+                let before = streams.len();
+                let filtered = db::apply_stream_filter(sf, streams);
                 debug!(
                     user = %session.user.username,
-                    sources_before = before,
-                    sources_after = filtered.len(),
+                    streams_before = before,
+                    streams_after = filtered.len(),
                     rules = sf.rules.len(),
                     "stream filter applied"
                 );
@@ -220,38 +233,38 @@ async fn items_playbackinfo_inner(
                     has_stream_filter = session.user.policy.as_ref().and_then(|p| p.stream_filter.as_ref()).is_some(),
                     "stream filter skipped"
                 );
-                sources
+                streams
             }
         }
     } else {
         vec![media]
     };
 
-    // Keep the full filtered pool for probe fallback before source_medias narrows it.
-    let fallback_pool = all_source_medias.clone();
+    // Keep the full filtered pool for probe fallback before candidate_streams narrows it.
+    let fallback_streams = all_streams.clone();
 
-    // When the client requests a specific source, only process that one.
-    // When no source is specified (e.g. details page open), return all versions
-    // for version selection but only probe the first one — probing every source
+    // When the client requests a specific stream, only process that one.
+    // When no stream is specified (e.g. details page open), return all versions
+    // for version selection but only probe the first one — probing every stream
     // causes a storm of parallel FFmpeg processes (one per version of the movie).
     //
     // Android TV always sends media_source_id = item_id (not None) for auto-play.
-    // Treat that the same as "return first source only" — no need to send all versions.
-    // A group request counts as a specific source request: the client sent a stable group UUID
+    // Treat that the same as "return first stream only" — no need to send all versions.
+    // A group request counts as a specific stream request: the client sent a stable group UUID
     // and must receive that same UUID back. Non-group requests check if the UUID maps to an
-    // actual child stream in all_source_medias.
-    let specific_source_requested = resolver
+    // actual child stream in all_streams.
+    let specific_stream_requested = resolver
         .group
         .is_some()
         || media_source_id
             .map(|sid| {
                 sid != id
-                    && all_source_medias
+                    && all_streams
                         .iter()
                         .any(|s| s.id == sid)
             })
             .unwrap_or(false);
-    let (source_medias, probe_only_first) = if resolver
+    let (candidate_streams, probe_only_first) = if resolver
         .group
         .is_some()
     {
@@ -264,26 +277,26 @@ async fn items_playbackinfo_inner(
             ],
             false,
         )
-    } else if specific_source_requested {
+    } else if specific_stream_requested {
         // Specific non-group stream: return only that stream.
         let sid = media_source_id.unwrap();
-        let filtered: Vec<db::Media> = all_source_medias
+        let filtered: Vec<db::Media> = all_streams
             .into_iter()
             .filter(|s| s.id == sid)
             .collect();
         (filtered, false)
     } else if media_source_id.is_some() {
         // media_source_id provided but equals item_id (Android TV auto-play) or
-        // stream not found: return only the first (best) source.
-        // specific_source_requested stays false so source[0].id is overridden to
+        // stream not found: return only the first (best) stream.
+        // specific_stream_requested stays false so stream[0].id is overridden to
         // item_id below — required for Android TV routing.
-        let mut v = all_source_medias;
+        let mut v = all_streams;
         v.truncate(1);
         (v, false)
     } else {
-        // No source ID: return all versions for the selection UI,
+        // No stream ID: return all versions for the selection UI,
         // probe only the first to avoid spawning N FFmpeg processes.
-        (all_source_medias, true)
+        (all_streams, true)
     };
 
     let max_bitrate: Option<i64> = match (
@@ -317,10 +330,10 @@ async fn items_playbackinfo_inner(
         .ctx
         .config
         .port;
-    // For group selections, use all group candidates (including cascade) as the probe fallback pool.
+    // For group selections, use all group candidates (including cascade) as the probe pool.
     // Resolution filtering is disabled for group requests: the group priority order already
     // encodes the user's quality preference, so cross-resolution fallback is intentional.
-    let (all_sources, restrict_resolution) = if resolver
+    let (probe_pool, restrict_resolution) = if resolver
         .group
         .is_some()
     {
@@ -331,22 +344,22 @@ async fn items_playbackinfo_inner(
             false,
         )
     } else {
-        (fallback_pool, true)
+        (fallback_streams, true)
     };
-    let mut media_sources = Vec::with_capacity(source_medias.len());
-    for (idx, sm) in source_medias
+    let mut media_sources = Vec::with_capacity(candidate_streams.len());
+    for (idx, stream) in candidate_streams
         .into_iter()
         .enumerate()
     {
-        let url_opt = sm
+        let url_opt = stream
             .stream_info
             .as_ref()
             .map(|si| {
                 si.descriptor
-                    .server_input(sm.id, port)
+                    .server_input(stream.id, port)
             });
         let skip_probe = probe_only_first && idx > 0;
-        let timeout_secs = if sm
+        let timeout_secs = if stream
             .stream_info
             .as_ref()
             .map_or(false, |si| si.is_p2p())
@@ -355,14 +368,14 @@ async fn items_playbackinfo_inner(
         } else {
             probe_timeout_secs
         };
-        let (mut source, effective_sm) = probe_source(
-            &sm,
+        let (mut source, effective_stream) = probe_stream(
+            &stream,
             url_opt.clone(),
             skip_probe,
             timeout_secs,
             auto_next_stream,
             max_stream_retries,
-            &all_sources,
+            &probe_pool,
             restrict_resolution,
             port,
             &state
@@ -372,13 +385,13 @@ async fn items_playbackinfo_inner(
         .await?;
         // Use the client-facing ID from the resolver: group UUID for group requests,
         // stream UUID otherwise. Set once here — no later overrides.
-        // Use effective_sm (which may be a fallback stream) so ID/path/name match
+        // Use effective_stream (which may be a fallback) so ID/path/name match
         // the stream whose codec layout was actually probed.
         let cid = resolver
             .group
             .as_ref()
             .map(|(gid, _, _)| *gid)
-            .unwrap_or(effective_sm.id);
+            .unwrap_or(effective_stream.id);
         source.id = cid;
         source.e_tag = cid;
         source.name = Some(
@@ -387,21 +400,21 @@ async fn items_playbackinfo_inner(
                 .as_ref()
                 .map(|(_, t, _)| t.clone())
                 .unwrap_or_else(|| {
-                    effective_sm
+                    effective_stream
                         .title
                         .clone()
                 }),
         );
         source.has_segments = true;
-        source.path = Some(format!("/remux/{}", effective_sm.id));
+        source.path = Some(format!("/remux/{}", effective_stream.id));
         source.is_remote = false;
 
         // Re-apply binge-group headers on top of the probed result —
         // ffmpeg probing produces a fresh `MediaSourceInfo` and would
         // otherwise drop the `X-Remux-BingeGroup` / `X-Gelato-BingeGroup`
-        // hints we stashed alongside the source.
+        // hints we stashed alongside the stream.
         source.remux = Some(api::MediaSourceRemuxInfo {
-            provider_info: sm
+            provider_info: stream
                 .stream_info
                 .as_ref()
                 .and_then(|si| serde_json::to_value(si).ok()),
@@ -431,7 +444,8 @@ async fn items_playbackinfo_inner(
             }
             // RTSP streams can only be served via ffmpeg — never direct-playable.
             if matches!(
-                sm.stream_info
+                stream
+                    .stream_info
                     .as_ref()
                     .map(|si| &si.descriptor),
                 Some(crate::stream::StreamDescriptor::Rtsp { .. })
@@ -479,13 +493,13 @@ async fn items_playbackinfo_inner(
         // Pre-extract all embedded text subtitle streams in the background, in one
         // FFmpeg pass. By the time the client requests a subtitle URL, the cache file
         // is already written (same approach Jellyfin uses).
-        // Use effective_sm so the URL matches the stream whose track layout was probed.
-        let effective_url = effective_sm
+        // Use effective_stream so the URL matches the stream whose track layout was probed.
+        let effective_url = effective_stream
             .stream_info
             .as_ref()
             .map(|si| {
                 si.descriptor
-                    .server_input(effective_sm.id, port)
+                    .server_input(effective_stream.id, port)
             });
         if let Some(ref input_url) = effective_url {
             let text_sub_indices: Vec<i64> = source
@@ -580,7 +594,7 @@ async fn items_playbackinfo_inner(
                 .unwrap_or(true);
 
         debug!(
-            source_id = %sm.id,
+            stream_id = %stream.id,
             transcode_reasons = ?transcode_reasons,
             "playback decision"
         );
@@ -677,7 +691,7 @@ async fn items_playbackinfo_inner(
                 if needs_video_transcode && !video_transcode_allowed {
                     info!(
                         user = %session.user.username,
-                        source_id = %sm.id,
+                        stream_id = %stream.id,
                         "video transcoding required but not allowed — marking source as not transcodable"
                     );
                     source.supports_transcoding = false;
@@ -940,14 +954,14 @@ async fn items_playbackinfo_inner(
     }
 
     // Inject external subtitles from AIO (cache-backed)
-    if let Some(ref sm) = subtitle_media {
+    if let Some(ref sub_media) = subtitle_media {
         let sub_langs = probe_cfg
             .subtitle_languages
             .clone()
             .unwrap_or_default();
         inject_external_subtitles(
             &state.ctx,
-            sm,
+            sub_media,
             &mut media_sources,
             id,
             &session
@@ -987,10 +1001,10 @@ async fn items_playbackinfo_inner(
         );
     }
 
-    // When no specific source was requested (initial load, or media_source_id == item_id),
+    // When no specific stream was requested (initial load, or media_source_id == item_id),
     // override source[0].Id to equal the item ID — clients expect this for auto-play.
-    // Group and specific-stream requests keep their own UUIDs (specific_source_requested = true).
-    if !specific_source_requested && !media_sources.is_empty() {
+    // Group and specific-stream requests keep their own UUIDs (specific_stream_requested = true).
+    if !specific_stream_requested && !media_sources.is_empty() {
         media_sources[0].id = id;
         media_sources[0].e_tag = id;
     }
@@ -1038,38 +1052,38 @@ async fn items_playbackinfo_inner(
 }
 
 /// Resolve probe data for a single source: cache hit → skip → live probe with fallback.
-async fn probe_source(
-    sm: &db::Media,
+async fn probe_stream(
+    stream: &db::Media,
     url_opt: Option<String>,
     skip_probe: bool,
     timeout_secs: u64,
     auto_next_stream: bool,
     max_retries: usize,
-    all_sources: &[db::Media],
+    probe_pool: &[db::Media],
     restrict_resolution: bool,
     port: u16,
     db: &sqlx::SqlitePool,
 ) -> axum_anyhow::ApiResult<(api::MediaSourceInfo, db::Media)> {
     if skip_probe {
-        return Ok((api::MediaSourceInfo::from(sm.clone()), sm.clone()));
+        return Ok((api::MediaSourceInfo::from(stream.clone()), stream.clone()));
     }
-    if let Some(cached) = &sm.probe_data {
+    if let Some(cached) = &stream.probe_data {
         if cached
             .video_stream()
             .is_some()
         {
-            debug!(id = %sm.id, "probe cache hit");
-            return Ok((cached.clone(), sm.clone()));
+            debug!(id = %stream.id, "probe cache hit");
+            return Ok((cached.clone(), stream.clone()));
         }
-        debug!(id = %sm.id, "probe cache stale (no video stream), re-probing");
+        debug!(id = %stream.id, "probe cache stale (no video stream), re-probing");
     }
     probe_with_fallback(
-        sm.clone(),
+        stream.clone(),
         url_opt,
         timeout_secs,
         auto_next_stream,
         max_retries,
-        all_sources,
+        probe_pool,
         restrict_resolution,
         port,
         db,
@@ -1080,7 +1094,7 @@ async fn probe_source(
 
 fn select_candidates(
     primary: &db::Media,
-    all_sources: &[db::Media],
+    probe_pool: &[db::Media],
     auto_next_stream: bool,
     max_retries: usize,
     restrict_resolution: bool,
@@ -1097,7 +1111,7 @@ fn select_candidates(
         .stream_info
         .as_ref()
         .and_then(|si| si.resolution_tag());
-    all_sources
+    probe_pool
         .iter()
         .filter(|c| {
             if c.id == primary.id {
@@ -1148,7 +1162,7 @@ async fn probe_with_fallback<F>(
     timeout_secs: u64,
     auto_next_stream: bool,
     max_retries: usize,
-    all_sources: &[db::Media],
+    probe_pool: &[db::Media],
     restrict_resolution: bool,
     port: u16,
     db: &sqlx::SqlitePool,
@@ -1167,7 +1181,7 @@ where
 
     let candidates = select_candidates(
         &primary,
-        all_sources,
+        probe_pool,
         auto_next_stream,
         max_retries,
         restrict_resolution,
@@ -1181,15 +1195,15 @@ where
                 .map(|(m, u)| (m, Some(u))),
         )
         .collect();
-    let total_available = all_sources.len();
+    let total_available = probe_pool.len();
     let mut attempts = 0usize;
 
-    for (sm, url_opt) in all_to_try {
-        let is_retry = sm.id != primary.id;
+    for (stream, url_opt) in all_to_try {
+        let is_retry = stream.id != primary.id;
         let url = match url_opt {
             Some(u) => u,
             None => {
-                warn!(id = %sm.id, "skipping stream with no URL");
+                warn!(id = %stream.id, "skipping stream with no URL");
                 continue;
             }
         };
@@ -1197,13 +1211,13 @@ where
         if is_retry {
             info!(
                 failed_id = %primary.id,
-                next_id = %sm.id,
+                next_id = %stream.id,
                 next_url = %url,
                 "probe failed, trying next matching stream"
             );
         }
         let url2 = url.clone();
-        let sm2 = sm.clone();
+        let stream2 = stream.clone();
         let db2 = db.clone();
         let f = probe_fn.clone();
         let probe_result = tokio::time::timeout(
@@ -1222,7 +1236,7 @@ where
                     let max_threshold = 5_i64
                         .to_ticks(TickUnit::Minutes)
                         .unwrap_or(0);
-                    let threshold_ticks = match sm.runtime {
+                    let threshold_ticks = match stream.runtime {
                         Some(known_secs) => known_secs
                             .to_ticks(TickUnit::Seconds)
                             .map(|t| (t / 2).min(max_threshold))
@@ -1233,11 +1247,11 @@ where
                     };
                     if probed_ticks < threshold_ticks {
                         warn!(
-                            id = %sm.id,
+                            id = %stream.id,
                             url = %url,
                             probed_ticks,
                             threshold_ticks,
-                            known_runtime_secs = ?sm.runtime,
+                            known_runtime_secs = ?stream.runtime,
                             "stream is suspiciously short, treating as probe failure"
                         );
                         continue;
@@ -1255,12 +1269,12 @@ where
                         probed.segments = Some(segments);
                     }
                     if let Err(e) =
-                        db::Media::save_probe_data(&db2, &sm2.id, &probed).await
+                        db::Media::save_probe_data(&db2, &stream2.id, &probed).await
                     {
-                        warn!(id = %sm2.id, error = %e, "failed to save probe data");
+                        warn!(id = %stream2.id, error = %e, "failed to save probe data");
                     }
                 } else {
-                    warn!(id = %sm2.id, "probe returned no audio or video stream, not caching");
+                    warn!(id = %stream2.id, "probe returned no audio or video stream, not caching");
                 }
                 if is_retry {
                     info!(
@@ -1269,7 +1283,7 @@ where
                         "probe succeeded on fallback stream"
                     );
                 }
-                return Ok((probed, sm));
+                return Ok((probed, stream));
             }
             Ok(Ok(Err(e))) => {
                 warn!(url = %url, error = %e, "probe failed");
@@ -3493,7 +3507,7 @@ mod probe_tests {
     }
 
     #[tokio::test]
-    async fn cascade_mode_tries_all_sources() {
+    async fn cascade_mode_tries_all_streams() {
         let db = test_db().await;
         let sources: Vec<_> = (0..4)
             .map(|i| http_media(&format!("http://s{i}.example.com")))
@@ -3524,18 +3538,18 @@ mod probe_tests {
         );
     }
 
-    // Regression: items_playbackinfo was building all_sources = source_medias,
+    // Regression: items_playbackinfo was building probe_pool = candidate_streams,
     // which is narrowed to 1 item when a specific media_source_id is requested.
     // The fallback pool must be the full filtered list, not the selection.
     #[tokio::test]
-    async fn specific_source_request_falls_back_through_all_streams() {
+    async fn specific_stream_request_falls_back_through_all_streams() {
         let db = test_db().await;
         let primary = http_media("http://a.example.com");
         let other_a = http_media("http://b.example.com");
         let other_b = http_media("http://c.example.com");
 
-        // all_sources is the full pool (as items_playbackinfo now provides via fallback_pool).
-        let all_sources = vec![primary.clone(), other_a, other_b];
+        // probe_pool is the full pool (as items_playbackinfo now provides via fallback_streams).
+        let probe_pool = vec![primary.clone(), other_a, other_b];
 
         let result = probe_with_fallback(
             primary,
@@ -3543,7 +3557,7 @@ mod probe_tests {
             10,
             true,
             5,
-            &all_sources,
+            &probe_pool,
             false,
             3000,
             &db,
@@ -3559,6 +3573,150 @@ mod probe_tests {
             err.contains("tried 3 of 3 streams"),
             "expected all 3 streams tried, got: {err}"
         );
+    }
+
+    // ── resolve_stream_root ───────────────────────────────────────────────────
+    // Regression coverage for "tried 1 of 1 streams" when media_source_id is
+    // a stream UUID: resolver.stream resolves to a Stream child record, not the
+    // episode, so all_streams was built from the wrong starting point.
+
+    #[tokio::test]
+    async fn stream_root_passes_through_when_media_is_top_level() {
+        let db = test_db().await;
+        let movie = db::Media {
+            kind: db::MediaKind::Movie,
+            ..Default::default()
+        };
+        let id = movie.id;
+        let root = resolve_stream_root(&movie, id, &db).await;
+        assert_eq!(root.id, id, "Movie kind must pass through unchanged");
+    }
+
+    #[tokio::test]
+    async fn stream_root_passes_through_for_episode_and_track() {
+        let db = test_db().await;
+        for kind in [db::MediaKind::Episode, db::MediaKind::Track] {
+            let media = db::Media {
+                kind: kind.clone(),
+                ..Default::default()
+            };
+            let id = media.id;
+            let root = resolve_stream_root(&media, id, &db).await;
+            assert_eq!(
+                root.id, id,
+                "{kind:?} must pass through without a DB lookup"
+            );
+        }
+    }
+
+    /// Build a Movie with the deterministic UUID required by validate().
+    fn test_movie(stremio_id: &str, title: &str) -> db::Media {
+        let external_ids = db::ExternalIds {
+            custom_stremio_id: Some(stremio_id.to_string()),
+            ..Default::default()
+        };
+        let id = crate::common::stable_media_uuid(&db::MediaKind::Movie, stremio_id);
+        db::Media {
+            id,
+            kind: db::MediaKind::Movie,
+            title: title.into(),
+            external_ids,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_root_loads_parent_when_media_is_stream_record() {
+        // Reproduces Bug 3: client sends media_source_id = stream_uuid, so
+        // resolver returns the Stream child as `media` instead of the Movie.
+        let db = test_db().await;
+        let movie = test_movie("test:src_root:1", "Test Movie");
+        let movie_id = movie.id;
+        db::Media::insert(&db, &[movie])
+            .await
+            .unwrap();
+
+        // Simulate what resolver.stream returns when media_source_id = stream_uuid
+        let stream_record = db::Media {
+            kind: db::MediaKind::Stream,
+            parent_id: Some(movie_id),
+            title: "stream child".into(),
+            stream_info: Some(StreamInfo {
+                descriptor: StreamDescriptor::http("http://s1.example.com"),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let stream_id = stream_record.id;
+
+        // `id` in the handler is always the top-level movie UUID from the URL path.
+        let root = resolve_stream_root(&stream_record, movie_id, &db).await;
+        assert_eq!(
+            root.id, movie_id,
+            "stream record must resolve to its parent movie, not itself"
+        );
+        assert!(
+            matches!(root.kind, db::MediaKind::Movie),
+            "stream_root.kind must be Movie, got {:?}",
+            root.kind
+        );
+        assert_ne!(root.id, stream_id);
+    }
+
+    #[tokio::test]
+    async fn stream_kind_yields_full_sibling_pool() {
+        // End-to-end regression: when media_source_id is a stream UUID the
+        // fallback pool must contain ALL sibling streams, not just the one
+        // that was requested. Before the stream_root fix this returned 1 →
+        // "tried 1 of 1 streams" even when the movie had many streams.
+        let db = test_db().await;
+        let movie = test_movie("test:src_root:2", "Test Movie");
+        let movie_id = movie.id;
+        db::Media::insert(&db, &[movie])
+            .await
+            .unwrap();
+
+        let siblings: Vec<db::Media> = (0..3)
+            .map(|i| db::Media {
+                kind: db::MediaKind::Stream,
+                parent_id: Some(movie_id),
+                title: format!("Stream {i}"),
+                stream_info: Some(StreamInfo {
+                    descriptor: StreamDescriptor::http(format!(
+                        "http://s{i}.example.com"
+                    )),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .collect();
+        db::Media::insert(&db, &siblings)
+            .await
+            .unwrap();
+
+        // Simulate the handler receiving media = siblings[0] (resolver returned stream child)
+        let media = siblings[0].clone();
+        let mut root = resolve_stream_root(&media, movie_id, &db).await;
+        let pool = root
+            .streams(&db)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            pool.len(),
+            3,
+            "all 3 sibling streams must be in the fallback pool; \
+             if this is 1 the stream_root fix was reverted and \
+             'tried 1 of 1 streams' returns when media_source_id is a stream UUID"
+        );
+        for sibling in &siblings {
+            assert!(
+                pool.iter()
+                    .any(|s| s.id == sibling.id),
+                "stream {} missing from pool",
+                sibling.id
+            );
+        }
     }
 }
 
