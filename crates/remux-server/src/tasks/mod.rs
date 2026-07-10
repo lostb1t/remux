@@ -325,10 +325,15 @@ impl TaskService {
         .await?;
         for trigger in triggers {
             if let Err(e) = service
-                .add_trigger(trigger)
+                .add_trigger(trigger.clone())
                 .await
             {
-                error!("Failed to add trigger (skipping): {}", e);
+                error!(
+                    task_id = %trigger.task_id,
+                    cron = ?trigger.cron,
+                    "Failed to add trigger (skipping): {}",
+                    e
+                );
             }
         }
 
@@ -349,6 +354,17 @@ impl TaskService {
     pub async fn add_trigger(&self, trigger: db::TaskTrigger) -> Result<()> {
         let Some(cron) = trigger.cron else {
             return Ok(());
+        };
+        // Normalize 5-field standard cron (MIN HOUR DOM MON DOW) to 6-field
+        // (SEC MIN HOUR DOM MON DOW) expected by tokio_cron_scheduler.
+        let cron = if cron
+            .split_whitespace()
+            .count()
+            == 5
+        {
+            format!("0 {cron}")
+        } else {
+            cron
         };
 
         let tasks = self

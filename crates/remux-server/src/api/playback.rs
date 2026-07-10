@@ -1038,14 +1038,76 @@ async fn probe_source(
         restrict_resolution,
         port,
         db,
+        |url| crate::transcode::probing::probe_media(&url),
     )
     .await
+}
+
+fn select_candidates(
+    primary: &db::Media,
+    all_sources: &[db::Media],
+    auto_next_stream: bool,
+    max_retries: usize,
+    restrict_resolution: bool,
+    port: u16,
+) -> Vec<(db::Media, String)> {
+    if !auto_next_stream {
+        return vec![];
+    }
+    let pri_p2p = primary
+        .stream_info
+        .as_ref()
+        .map_or(false, |si| si.is_p2p());
+    let pri_res = primary
+        .stream_info
+        .as_ref()
+        .and_then(|si| si.resolution_tag());
+    all_sources
+        .iter()
+        .filter(|c| {
+            if c.id == primary.id {
+                return false;
+            }
+            let c_p2p = c
+                .stream_info
+                .as_ref()
+                .map_or(false, |si| si.is_p2p());
+            if c_p2p != pri_p2p {
+                return false;
+            }
+            if restrict_resolution {
+                let c_res = c
+                    .stream_info
+                    .as_ref()
+                    .and_then(|si| si.resolution_tag());
+                if c_res != pri_res {
+                    return false;
+                }
+            }
+            true
+        })
+        // In group-cascade mode (restrict_resolution=false) try all candidates;
+        // otherwise honour the configured retry cap.
+        .take(if restrict_resolution {
+            max_retries
+        } else {
+            usize::MAX
+        })
+        .filter_map(|c| {
+            let url = c
+                .stream_info
+                .as_ref()?
+                .descriptor
+                .server_input(c.id, port);
+            Some((c.clone(), url))
+        })
+        .collect()
 }
 
 /// Probe a stream URL, retrying with the next matching candidate on failure.
 ///
 /// Returns a 500 error if all candidates fail to probe.
-async fn probe_with_fallback(
+async fn probe_with_fallback<F>(
     primary: db::Media,
     primary_url: Option<String>,
     timeout_secs: u64,
@@ -1055,67 +1117,37 @@ async fn probe_with_fallback(
     restrict_resolution: bool,
     port: u16,
     db: &sqlx::SqlitePool,
-) -> axum_anyhow::ApiResult<api::MediaSourceInfo> {
+    probe_fn: F,
+) -> axum_anyhow::ApiResult<api::MediaSourceInfo>
+where
+    F: Fn(
+            String,
+        )
+            -> anyhow::Result<(api::MediaSourceInfo, remux_sdks::remux::MediaSegments)>
+        + Clone
+        + Send
+        + 'static,
+{
     use crate::{IntoApiError, ResultExt};
 
-    let candidates: Vec<(db::Media, String)> = if auto_next_stream {
-        let pri_p2p = primary
-            .stream_info
-            .as_ref()
-            .map_or(false, |si| si.is_p2p());
-        let pri_res = primary
-            .stream_info
-            .as_ref()
-            .and_then(|si| si.resolution_tag());
-        all_sources
-            .iter()
-            .filter(|c| {
-                if c.id == primary.id {
-                    return false;
-                }
-                let c_p2p = c
-                    .stream_info
-                    .as_ref()
-                    .map_or(false, |si| si.is_p2p());
-                if c_p2p != pri_p2p {
-                    return false;
-                }
-                if restrict_resolution {
-                    let c_res = c
-                        .stream_info
-                        .as_ref()
-                        .and_then(|si| si.resolution_tag());
-                    if c_res != pri_res {
-                        return false;
-                    }
-                }
-                true
-            })
-            // In group-cascade mode (restrict_resolution=false) try all candidates;
-            // otherwise honour the configured retry cap.
-            .take(if restrict_resolution {
-                max_retries
-            } else {
-                usize::MAX
-            })
-            .filter_map(|c| {
-                let url = c
-                    .stream_info
-                    .as_ref()?
-                    .descriptor
-                    .server_input(c.id, port);
-                Some((c.clone(), url))
-            })
-            .collect()
-    } else {
-        vec![]
-    };
-
-    let all_to_try = std::iter::once((primary.clone(), primary_url)).chain(
-        candidates
-            .into_iter()
-            .map(|(m, u)| (m, Some(u))),
+    let candidates = select_candidates(
+        &primary,
+        all_sources,
+        auto_next_stream,
+        max_retries,
+        restrict_resolution,
+        port,
     );
+
+    let all_to_try: Vec<_> = std::iter::once((primary.clone(), primary_url))
+        .chain(
+            candidates
+                .into_iter()
+                .map(|(m, u)| (m, Some(u))),
+        )
+        .collect();
+    let total_available = all_sources.len();
+    let mut attempts = 0usize;
 
     for (sm, url_opt) in all_to_try {
         let is_retry = sm.id != primary.id;
@@ -1126,6 +1158,7 @@ async fn probe_with_fallback(
                 continue;
             }
         };
+        attempts += 1;
         if is_retry {
             info!(
                 failed_id = %primary.id,
@@ -1137,11 +1170,10 @@ async fn probe_with_fallback(
         let url2 = url.clone();
         let sm2 = sm.clone();
         let db2 = db.clone();
+        let f = probe_fn.clone();
         let probe_result = tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
-            tokio::task::spawn_blocking(move || {
-                crate::transcode::probing::probe_media(&url2)
-            }),
+            tokio::task::spawn_blocking(move || f(url2)),
         )
         .await;
 
@@ -1210,8 +1242,8 @@ async fn probe_with_fallback(
     }
 
     Err(anyhow!(
-        "all probe attempts failed for stream {}",
-        primary.id
+        "all probe attempts failed for '{}' (tried {attempts} of {total_available} streams)",
+        primary.full_title()
     ))
     .context_internal("stream probe failed — no usable streams found")
 }
@@ -3094,6 +3126,341 @@ mod tests {
             body["MediaSources"][0]["DefaultAudioStreamIndex"].as_i64(),
             Some(1),
             "Client's explicit AudioStreamIndex must prevent language preference from selecting Dutch (index 1)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+    use crate::stream::{StreamDescriptor, StreamInfo};
+    use remux_sdks::remux::{MediaSegments, MediaStream, MediaStreamType};
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex},
+    };
+
+    fn http_media(url: &str) -> db::Media {
+        db::Media {
+            stream_info: Some(StreamInfo {
+                descriptor: StreamDescriptor::http(url),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn http_media_with_filename(url: &str, filename: &str) -> db::Media {
+        db::Media {
+            stream_info: Some(StreamInfo {
+                descriptor: StreamDescriptor::http(url),
+                filename: Some(filename.to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn p2p_media() -> db::Media {
+        db::Media {
+            stream_info: Some(StreamInfo {
+                descriptor: StreamDescriptor::Torrent {
+                    info_hash: "abc123".to_string(),
+                    file_hint: None,
+                    file_idx: None,
+                    trackers: vec![],
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn video_probe() -> anyhow::Result<(api::MediaSourceInfo, MediaSegments)> {
+        Ok((
+            api::MediaSourceInfo {
+                media_streams: vec![MediaStream {
+                    type_: Some(MediaStreamType::Video),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            Default::default(),
+        ))
+    }
+
+    fn queued_probe(
+        results: Vec<anyhow::Result<(api::MediaSourceInfo, MediaSegments)>>,
+    ) -> impl Fn(String) -> anyhow::Result<(api::MediaSourceInfo, MediaSegments)>
+    + Clone
+    + Send
+    + 'static {
+        let q = Arc::new(Mutex::new(VecDeque::from(results)));
+        move |_url: String| {
+            q.lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Err(anyhow!("no more probe results")))
+        }
+    }
+
+    async fn test_db() -> sqlx::SqlitePool {
+        let db = crate::db::connect("sqlite::memory:", 5_000)
+            .await
+            .unwrap();
+        crate::db::migrate(&db)
+            .await
+            .unwrap();
+        db
+    }
+
+    // ── select_candidates ─────────────────────────────────────────────────────
+
+    #[test]
+    fn no_fallback_when_auto_next_stream_false() {
+        let primary = http_media("http://a.example.com");
+        let other = http_media("http://b.example.com");
+        let result = select_candidates(
+            &primary,
+            &[primary.clone(), other],
+            false,
+            3,
+            false,
+            3000,
+        );
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn excludes_primary_from_candidates() {
+        let primary = http_media("http://a.example.com");
+        let other = http_media("http://b.example.com");
+        let all = vec![primary.clone(), other];
+        let result = select_candidates(&primary, &all, true, 10, false, 3000);
+        assert!(
+            result
+                .iter()
+                .all(|(m, _)| m.id != primary.id)
+        );
+    }
+
+    #[test]
+    fn p2p_mismatch_excluded() {
+        let primary = http_media("http://a.example.com");
+        let p2p = p2p_media();
+        let all = vec![primary.clone(), p2p];
+        let result = select_candidates(&primary, &all, true, 10, false, 3000);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn resolution_mismatch_excluded_when_restricted() {
+        let primary =
+            http_media_with_filename("http://a.example.com", "Movie.1080p.BluRay.mkv");
+        let other =
+            http_media_with_filename("http://b.example.com", "Movie.720p.BluRay.mkv");
+        let all = vec![primary.clone(), other];
+        let result = select_candidates(&primary, &all, true, 10, true, 3000);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn resolution_mismatch_allowed_in_cascade() {
+        let primary =
+            http_media_with_filename("http://a.example.com", "Movie.1080p.BluRay.mkv");
+        let other =
+            http_media_with_filename("http://b.example.com", "Movie.720p.BluRay.mkv");
+        let all = vec![primary.clone(), other];
+        let result = select_candidates(&primary, &all, true, 10, false, 3000);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn max_retries_caps_result() {
+        let primary = http_media("http://a.example.com");
+        let others: Vec<_> = (0..5)
+            .map(|i| http_media(&format!("http://s{i}.example.com")))
+            .collect();
+        let all: Vec<_> = std::iter::once(primary.clone())
+            .chain(others)
+            .collect();
+        let result = select_candidates(&primary, &all, true, 2, true, 3000);
+        assert!(result.len() <= 2);
+    }
+
+    #[test]
+    fn cascade_mode_ignores_retry_cap() {
+        let primary = http_media("http://a.example.com");
+        let others: Vec<_> = (0..5)
+            .map(|i| http_media(&format!("http://s{i}.example.com")))
+            .collect();
+        let all: Vec<_> = std::iter::once(primary.clone())
+            .chain(others)
+            .collect();
+        let result = select_candidates(&primary, &all, true, 1, false, 3000);
+        assert_eq!(result.len(), 5);
+    }
+
+    // ── probe_with_fallback ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn primary_success() {
+        let db = test_db().await;
+        let primary = http_media("http://a.example.com");
+        let all = vec![primary.clone()];
+        let result = probe_with_fallback(
+            primary,
+            Some("http://a.example.com".to_string()),
+            10,
+            false,
+            0,
+            &all,
+            false,
+            3000,
+            &db,
+            queued_probe(vec![video_probe()]),
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn primary_fails_fallback_succeeds() {
+        let db = test_db().await;
+        let primary = http_media("http://a.example.com");
+        let fallback = http_media("http://b.example.com");
+        let all = vec![primary.clone(), fallback];
+        let result = probe_with_fallback(
+            primary,
+            Some("http://a.example.com".to_string()),
+            10,
+            true,
+            5,
+            &all,
+            false,
+            3000,
+            &db,
+            queued_probe(vec![Err(anyhow!("primary failed")), video_probe()]),
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn all_fail_returns_error_with_counts() {
+        let db = test_db().await;
+        let primary = http_media("http://a.example.com");
+        let fallback = http_media("http://b.example.com");
+        let all = vec![primary.clone(), fallback];
+        let result = probe_with_fallback(
+            primary,
+            Some("http://a.example.com".to_string()),
+            10,
+            true,
+            5,
+            &all,
+            false,
+            3000,
+            &db,
+            queued_probe(vec![Err(anyhow!("fail")), Err(anyhow!("fail"))]),
+        )
+        .await;
+        let err = format!("{:?}", result.unwrap_err());
+        assert!(
+            err.contains("tried 2 of 2 streams"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn short_duration_skips_to_next() {
+        let db = test_db().await;
+        // 1 minute — well below the 3-minute threshold when runtime is unknown
+        let short_ticks = 60_i64 * 10_000_000;
+        let short_probe = Ok((
+            api::MediaSourceInfo {
+                run_time_ticks: Some(short_ticks),
+                media_streams: vec![MediaStream {
+                    type_: Some(MediaStreamType::Video),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            MediaSegments::default(),
+        ));
+        let primary = http_media("http://a.example.com");
+        let fallback = http_media("http://b.example.com");
+        let all = vec![primary.clone(), fallback];
+        let result = probe_with_fallback(
+            primary,
+            Some("http://a.example.com".to_string()),
+            10,
+            true,
+            5,
+            &all,
+            false,
+            3000,
+            &db,
+            queued_probe(vec![short_probe, video_probe()]),
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn no_url_stream_not_counted_as_attempt() {
+        let db = test_db().await;
+        let primary = http_media("http://a.example.com");
+        let all = vec![primary.clone()];
+        let result = probe_with_fallback(
+            primary,
+            None, // no URL — will be skipped without incrementing attempts
+            10,
+            false,
+            0,
+            &all,
+            false,
+            3000,
+            &db,
+            queued_probe(vec![]),
+        )
+        .await;
+        let err = format!("{:?}", result.unwrap_err());
+        assert!(
+            err.contains("tried 0 of 1 streams"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cascade_mode_tries_all_sources() {
+        let db = test_db().await;
+        let sources: Vec<_> = (0..4)
+            .map(|i| http_media(&format!("http://s{i}.example.com")))
+            .collect();
+        let primary = sources[0].clone();
+        let result = probe_with_fallback(
+            primary,
+            Some("http://s0.example.com".to_string()),
+            10,
+            true,
+            1, // max_retries=1, but restrict_resolution=false → cascade
+            &sources,
+            false,
+            3000,
+            &db,
+            queued_probe(vec![
+                Err(anyhow!("fail")),
+                Err(anyhow!("fail")),
+                Err(anyhow!("fail")),
+                Err(anyhow!("fail")),
+            ]),
+        )
+        .await;
+        let err = format!("{:?}", result.unwrap_err());
+        assert!(
+            err.contains("tried 4 of 4 streams"),
+            "unexpected error: {err}"
         );
     }
 }

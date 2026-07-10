@@ -1474,6 +1474,52 @@ pub enum MediaError {
 }
 
 impl Media {
+    pub fn full_title(&self) -> String {
+        match self.kind {
+            MediaKind::Episode | MediaKind::TvProgram => {
+                let show = self
+                    .grandparent
+                    .as_deref()
+                    .map(|g| {
+                        g.title
+                            .as_str()
+                    })
+                    .unwrap_or_default();
+                match (show.is_empty(), self.parent_idx, self.idx) {
+                    (false, Some(s), Some(e)) => {
+                        format!("{} S{:02}E{:02} - {}", show, s, e, self.title)
+                    }
+                    (false, _, _) => format!("{} - {}", show, self.title),
+                    (true, Some(s), Some(e)) => {
+                        format!("S{:02}E{:02} - {}", s, e, self.title)
+                    }
+                    _ => self
+                        .title
+                        .clone(),
+                }
+            }
+            MediaKind::Track => {
+                let artist = self
+                    .grandparent
+                    .as_deref()
+                    .map(|g| {
+                        g.title
+                            .as_str()
+                    })
+                    .unwrap_or_default();
+                if artist.is_empty() {
+                    self.title
+                        .clone()
+                } else {
+                    format!("{} - {}", artist, self.title)
+                }
+            }
+            _ => self
+                .title
+                .clone(),
+        }
+    }
+
     pub fn media_id_raw(&self) -> super::MediaIdRaw {
         super::MediaIdRaw {
             kind: self
