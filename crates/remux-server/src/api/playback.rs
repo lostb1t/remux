@@ -334,7 +334,7 @@ async fn items_playbackinfo_inner(
         } else {
             probe_timeout_secs
         };
-        let mut source = probe_source(
+        let (mut source, effective_sm) = probe_source(
             &sm,
             url_opt.clone(),
             skip_probe,
@@ -351,11 +351,13 @@ async fn items_playbackinfo_inner(
         .await?;
         // Use the client-facing ID from the resolver: group UUID for group requests,
         // stream UUID otherwise. Set once here — no later overrides.
+        // Use effective_sm (which may be a fallback stream) so ID/path/name match
+        // the stream whose codec layout was actually probed.
         let cid = resolver
             .group
             .as_ref()
             .map(|(gid, _, _)| *gid)
-            .unwrap_or(sm.id);
+            .unwrap_or(effective_sm.id);
         source.id = cid;
         source.e_tag = cid;
         source.name = Some(
@@ -364,12 +366,13 @@ async fn items_playbackinfo_inner(
                 .as_ref()
                 .map(|(_, t, _)| t.clone())
                 .unwrap_or_else(|| {
-                    sm.title
+                    effective_sm
+                        .title
                         .clone()
                 }),
         );
         source.has_segments = true;
-        source.path = Some(format!("/remux/{}", sm.id));
+        source.path = Some(format!("/remux/{}", effective_sm.id));
         source.is_remote = false;
 
         // Re-apply binge-group headers on top of the probed result —
@@ -455,7 +458,15 @@ async fn items_playbackinfo_inner(
         // Pre-extract all embedded text subtitle streams in the background, in one
         // FFmpeg pass. By the time the client requests a subtitle URL, the cache file
         // is already written (same approach Jellyfin uses).
-        if let Some(ref input_url) = url_opt {
+        // Use effective_sm so the URL matches the stream whose track layout was probed.
+        let effective_url = effective_sm
+            .stream_info
+            .as_ref()
+            .map(|si| {
+                si.descriptor
+                    .server_input(effective_sm.id, port)
+            });
+        if let Some(ref input_url) = effective_url {
             let text_sub_indices: Vec<i64> = source
                 .media_streams
                 .iter()
@@ -1017,9 +1028,9 @@ async fn probe_source(
     restrict_resolution: bool,
     port: u16,
     db: &sqlx::SqlitePool,
-) -> axum_anyhow::ApiResult<api::MediaSourceInfo> {
+) -> axum_anyhow::ApiResult<(api::MediaSourceInfo, db::Media)> {
     if skip_probe {
-        return Ok(api::MediaSourceInfo::from(sm.clone()));
+        return Ok((api::MediaSourceInfo::from(sm.clone()), sm.clone()));
     }
     if let Some(cached) = &sm.probe_data {
         if cached
@@ -1027,7 +1038,7 @@ async fn probe_source(
             .is_some()
         {
             debug!(id = %sm.id, "probe cache hit");
-            return Ok(cached.clone());
+            return Ok((cached.clone(), sm.clone()));
         }
         debug!(id = %sm.id, "probe cache stale (no video stream), re-probing");
     }
@@ -1121,7 +1132,7 @@ async fn probe_with_fallback<F>(
     port: u16,
     db: &sqlx::SqlitePool,
     probe_fn: F,
-) -> axum_anyhow::ApiResult<api::MediaSourceInfo>
+) -> axum_anyhow::ApiResult<(api::MediaSourceInfo, db::Media)>
 where
     F: Fn(
             String,
@@ -1230,7 +1241,7 @@ where
                 } else {
                     warn!(id = %sm2.id, "probe returned no audio or video stream, not caching");
                 }
-                return Ok(probed);
+                return Ok((probed, sm));
             }
             Ok(Ok(Err(e))) => {
                 warn!(url = %url, error = %e, "probe failed");
@@ -3310,6 +3321,7 @@ mod probe_tests {
     async fn primary_success() {
         let db = test_db().await;
         let primary = http_media("http://a.example.com");
+        let primary_id = primary.id;
         let all = vec![primary.clone()];
         let result = probe_with_fallback(
             primary,
@@ -3324,7 +3336,11 @@ mod probe_tests {
             queued_probe(vec![video_probe()]),
         )
         .await;
-        assert!(result.is_ok());
+        let (_, effective) = result.unwrap();
+        assert_eq!(
+            effective.id, primary_id,
+            "primary succeeded — effective stream must be the primary"
+        );
     }
 
     #[tokio::test]
@@ -3332,6 +3348,7 @@ mod probe_tests {
         let db = test_db().await;
         let primary = http_media("http://a.example.com");
         let fallback = http_media("http://b.example.com");
+        let fallback_id = fallback.id;
         let all = vec![primary.clone(), fallback];
         let result = probe_with_fallback(
             primary,
@@ -3346,7 +3363,14 @@ mod probe_tests {
             queued_probe(vec![Err(anyhow!("primary failed")), video_probe()]),
         )
         .await;
-        assert!(result.is_ok());
+        // The returned effective stream must be the fallback, not the primary.
+        // Before the fix: probe_with_fallback returns only MediaSourceInfo (no db::Media)
+        // — this won't compile, which is the red state.
+        let (_, effective) = result.unwrap();
+        assert_eq!(
+            effective.id, fallback_id,
+            "fallback succeeded — effective stream must be the fallback, not the primary"
+        );
     }
 
     #[tokio::test]
@@ -3393,6 +3417,7 @@ mod probe_tests {
         ));
         let primary = http_media("http://a.example.com");
         let fallback = http_media("http://b.example.com");
+        let fallback_id = fallback.id;
         let all = vec![primary.clone(), fallback];
         let result = probe_with_fallback(
             primary,
@@ -3407,7 +3432,11 @@ mod probe_tests {
             queued_probe(vec![short_probe, video_probe()]),
         )
         .await;
-        assert!(result.is_ok());
+        let (_, effective) = result.unwrap();
+        assert_eq!(
+            effective.id, fallback_id,
+            "short primary skipped — effective stream must be the fallback"
+        );
     }
 
     #[tokio::test]
