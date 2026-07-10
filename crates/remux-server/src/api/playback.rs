@@ -38,6 +38,10 @@ use crate::{
     IntoApiError, OptionExt, ResultExt,
     device_profile::{DeviceProfileExt, SubtitleCodec, subtitle_codec_matches_profile},
     playback::{
+        decision::{
+            PlaybackConfig, TranscodeDecision, apply_subtitle_delivery,
+            build_transcode_decision,
+        },
         probe::{probe_stream, resolve_stream_root},
         session::{TranscodeSession, TranscodeState},
     },
@@ -77,7 +81,9 @@ async fn items_playbackinfo_inner(
 
     trace!(?id, ?q, "items_playbackinfo");
 
-    let device_profile = q.device_profile;
+    let device_profile = q
+        .device_profile
+        .clone();
 
     let probe_cfg = db::Settings::get_config_or_default(
         &state
@@ -323,6 +329,17 @@ async fn items_playbackinfo_inner(
     } else {
         (fallback_streams, true)
     };
+    let subtitle_mode = encoding_cfg
+        .subtitle_mode
+        .unwrap_or_default();
+    let cfg = PlaybackConfig {
+        encoding_cfg,
+        device_profile: device_profile.clone(),
+        max_bitrate,
+        play_session_id: play_session_id.clone(),
+        item_id: id,
+        subtitle_mode,
+    };
     let mut media_sources = Vec::with_capacity(candidate_streams.len());
     for (idx, stream) in candidate_streams
         .into_iter()
@@ -433,10 +450,6 @@ async fn items_playbackinfo_inner(
             }
             reasons
         };
-
-        let subtitle_mode = encoding_cfg
-            .subtitle_mode
-            .unwrap_or_default();
 
         // Strip mode: remove embedded subtitle streams not supported by the client so
         // they don't trigger a transcode. External/addon subs are never touched.
@@ -558,372 +571,46 @@ async fn items_playbackinfo_inner(
             }
         }
 
-        // `EnableTranscoding=true` means "allowed", not "forced".
-        let transcode_required = !transcode_reasons.is_empty()
-            || !q
-                .enable_direct_play
-                .unwrap_or(true)
-            || !q
-                .enable_direct_stream
-                .unwrap_or(true);
-        let needs_transcoding = transcode_required
-            && q.enable_transcoding
-                .unwrap_or(true);
-
         debug!(
             stream_id = %stream.id,
             transcode_reasons = ?transcode_reasons,
             "playback decision"
         );
 
-        if needs_transcoding {
-            let is_audio_only = source
-                .video_stream()
-                .is_none();
-
-            if is_audio_only {
-                let trans_profile = device_profile
-                    .as_ref()
-                    .and_then(|p| p.audio_transcoding_profile());
-                let trans_container = trans_profile
-                    .and_then(|p| {
-                        p.container
-                            .clone()
-                    })
-                    .unwrap_or_else(|| "mp3".to_string());
-                let audio_codec = trans_profile
-                    .and_then(|p| {
-                        p.audio_codec
-                            .as_deref()
-                    })
-                    .and_then(|c| {
-                        c.split(',')
-                            .next()
-                    })
-                    .map(|c| {
-                        c.trim()
-                            .to_string()
-                    })
-                    .unwrap_or_else(|| "aac".to_string());
-
-                let start_time_param = q
-                    .start_time_ticks
-                    .map(|t| format!("&StartTimeTicks={}", t))
-                    .unwrap_or_default();
-
+        match build_transcode_decision(
+            &source,
+            &transcode_reasons,
+            effective_sub_idx,
+            &q,
+            &session,
+            &cfg,
+        ) {
+            TranscodeDecision::DirectPlay => {
+                // Keep transcoding available so clients can re-request with a subtitle
+                // index (e.g. PGS burn-in) even when direct-play is otherwise fine.
                 source.supports_transcoding = true;
-                source.transcoding_url = Some(format!(
-                    "/videos/{}/stream.{}?MediaSourceId={}&AudioCodec={}{}&ApiKey={}",
-                    id,
-                    trans_container,
-                    source.id,
-                    audio_codec,
-                    start_time_param,
-                    session
-                        .device
-                        .access_token,
-                ));
-                source.transcoding_container = Some(trans_container);
-                source.transcoding_sub_protocol = "http".to_string();
-                source.supports_direct_play = false;
-                source.supports_direct_stream = false;
-            } else {
-                let trans_profile = device_profile
-                    .as_ref()
-                    .and_then(|p| p.video_transcoding_profile());
-                let (trans_container, trans_protocol) = trans_profile
-                    .map(|p| {
-                        (
-                            p.container
-                                .clone()
-                                .unwrap_or_else(|| "ts".to_string()),
-                            p.protocol
-                                .clone()
-                                .unwrap_or_else(|| "hls".to_string()),
-                        )
-                    })
-                    .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
-
-                let needs_video_transcode =
-                    transcode_reasons.contains(
-                        &api::TranscodeReason::VideoCodecNotSupported(String::new()),
-                    ) || transcode_reasons
-                        .contains(&api::TranscodeReason::ContainerBitrateExceedsLimit)
-                        || transcode_reasons.contains(
-                            &api::TranscodeReason::VideoRangeTypeNotSupported(
-                                String::new(),
-                            ),
-                        );
-
-                let video_transcode_allowed = encoding_cfg
-                    .enable_video_transcoding
-                    .unwrap_or(true)
-                    && session
-                        .user
-                        .policy
-                        .as_ref()
-                        .map(|p| p.enable_video_playback_transcoding)
-                        .unwrap_or(true);
-
-                if needs_video_transcode && !video_transcode_allowed {
-                    info!(
-                        user = %session.user.username,
-                        stream_id = %stream.id,
-                        "video transcoding required but not allowed — marking source as not transcodable"
-                    );
-                    source.supports_transcoding = false;
-                    source.supports_direct_play = false;
-                    source.supports_direct_stream = false;
-                    continue;
-                }
-
-                let mut video_codec = if needs_video_transcode {
-                    "h264"
-                } else {
-                    "copy"
-                }
-                .to_string();
-                let needs_audio_transcode = transcode_reasons.contains(
-                    &api::TranscodeReason::AudioCodecNotSupported(String::new()),
-                );
-                let audio_codec =
-                    if needs_audio_transcode { "aac" } else { "copy" }.to_string();
-
-                // Determine subtitle delivery method for the selected stream.
-                // In Burn mode, any embedded codec not in the device profile gets
-                // SubtitleDeliveryMethod::Encode so FFmpeg burns it into the video.
-                // In Extract/Strip modes we defer to the client (no burn).
-                // External subtitles are never burned — they have their own URL.
-                let selected_sub_idx = effective_sub_idx;
-                let subtitle_method = selected_sub_idx
-                    .and_then(|idx| {
-                        source
-                            .media_streams
-                            .iter()
-                            .find(|s| {
-                                s.index == idx
-                                    && matches!(
-                                        s.type_,
-                                        Some(api::MediaStreamType::Subtitle)
-                                    )
-                            })
-                    })
-                    .and_then(|stream| {
-                        if stream.is_external
-                            || stream.is_text_subtitle_stream
-                            || subtitle_mode
-                                != remux_sdks::remux::EmbeddedSubtitleHandling::Burn
-                        {
-                            return None;
-                        }
-                        let codec = stream
-                            .codec
-                            .as_deref()
-                            .unwrap_or("");
-                        let not_in_profile = !device_profile
-                            .as_ref()
-                            .map(|dp| {
-                                dp.subtitle_profiles
-                                    .iter()
-                                    .filter_map(|p| {
-                                        p.format
-                                            .as_deref()
-                                    })
-                                    .any(|f| subtitle_codec_matches_profile(codec, f))
-                            })
-                            .unwrap_or(false);
-                        if not_in_profile {
-                            Some(api::SubtitleDeliveryMethod::Encode)
-                        } else {
-                            None
-                        }
-                    });
-
-                if subtitle_method == Some(api::SubtitleDeliveryMethod::Encode) {
-                    video_codec = "h264".to_string();
-                }
-
-                let bitrate_param = max_bitrate
-                    .map(|b| format!("&MaxStreamingBitrate={}", b))
-                    .unwrap_or_default();
-                let reasons_param = transcode_reasons
-                    .to_query_value()
-                    .map(|v| format!("&TranscodeReasons={}", v))
-                    .unwrap_or_default();
-                let audio_stream_param = q
-                    .audio_stream_index
-                    .or(source.default_audio_stream_index)
-                    .map(|idx| format!("&AudioStreamIndex={}", idx))
-                    .unwrap_or_default();
-                let subtitle_stream_param = selected_sub_idx
-                    .map(|idx| format!("&SubtitleStreamIndex={}", idx))
-                    .unwrap_or_default();
-                let subtitle_method_param = subtitle_method
-                    .map(|m| format!("&SubtitleMethod={}", m))
-                    .unwrap_or_default();
-                let start_time_param = q
-                    .start_time_ticks
-                    .map(|t| format!("&StartTimeTicks={}", t))
-                    .unwrap_or_default();
-
-                source.supports_transcoding = true;
-                source.transcoding_url = Some(
-                    if trans_protocol.eq_ignore_ascii_case("hls") {
-                        format!(
-                            "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}{}{}{}&ApiKey={}",
-                            id,
-                            play_session_id,
-                            source.id,
-                            video_codec,
-                            audio_codec,
-                            bitrate_param,
-                            reasons_param,
-                            audio_stream_param,
-                            subtitle_stream_param,
-                            subtitle_method_param,
-                            start_time_param,
-                            session
-                                .device
-                                .access_token,
-                        )
-                    } else {
-                        format!(
-                            "/videos/{}/stream.{}?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}{}{}{}&ApiKey={}",
-                            id,
-                            trans_container,
-                            play_session_id,
-                            source.id,
-                            video_codec,
-                            audio_codec,
-                            bitrate_param,
-                            reasons_param,
-                            audio_stream_param,
-                            subtitle_stream_param,
-                            subtitle_method_param,
-                            start_time_param,
-                            session
-                                .device
-                                .access_token,
-                        )
-                    },
-                );
-                source.transcoding_container = Some(trans_container);
-                source.transcoding_sub_protocol = trans_protocol;
-                source.supports_direct_play = false;
-                source.supports_direct_stream = false;
+                source.supports_direct_play = true;
             }
-        } else {
-            // Keep transcoding available so clients can re-request with a subtitle
-            // index (e.g. PGS burn-in) even when direct-play is otherwise fine.
-            source.supports_transcoding = true;
-            source.supports_direct_play = true;
-        }
-
-        // Set delivery URL on text subtitle streams so clients can download them.
-        let source_id = source.id;
-        let api_key = &session
-            .device
-            .access_token;
-        for stream in source
-            .media_streams
-            .iter_mut()
-        {
-            if stream.type_ != Some(api::MediaStreamType::Subtitle) {
+            TranscodeDecision::Skip => {
+                info!(
+                    user = %session.user.username,
+                    stream_id = %stream.id,
+                    "video transcoding required but not allowed — marking source as not transcodable"
+                );
                 continue;
             }
-            let codec = stream
-                .codec
-                .as_deref()
-                .unwrap_or_default();
-            let profile_supports = |codec: SubtitleCodec| -> bool {
-                device_profile
-                    .as_ref()
-                    .map(|dp| {
-                        dp.subtitle_profiles
-                            .iter()
-                            .filter_map(|p| {
-                                p.format
-                                    .as_deref()
-                            })
-                            .any(|f| {
-                                f.parse::<SubtitleCodec>()
-                                    .ok()
-                                    .as_ref()
-                                    == Some(&codec)
-                            })
-                    })
-                    .unwrap_or(false)
-            };
-            let profile_embeds = |codec: SubtitleCodec| -> bool {
-                device_profile
-                    .as_ref()
-                    .map(|dp| {
-                        dp.subtitle_profiles
-                            .iter()
-                            .any(|p| {
-                                p.method == Some(api::SubtitleDeliveryMethod::Embed)
-                                    && p.format
-                                        .as_deref()
-                                        .and_then(|f| {
-                                            f.parse::<SubtitleCodec>()
-                                                .ok()
-                                        })
-                                        .as_ref()
-                                        == Some(&codec)
-                            })
-                    })
-                    .unwrap_or(false)
-            };
-            let parsed_codec = codec
-                .parse::<SubtitleCodec>()
-                .ok();
-            let is_image_sub = parsed_codec
-                .as_ref()
-                .map(SubtitleCodec::is_image)
-                .unwrap_or(false);
-            let format = if stream.is_text_subtitle_stream {
-                if parsed_codec == Some(SubtitleCodec::Ass)
-                    && profile_supports(SubtitleCodec::Ass)
-                {
-                    "ass"
-                } else {
-                    "vtt"
-                }
-            } else if profile_supports(SubtitleCodec::Pgs) {
-                "sup"
-            } else {
-                "vtt"
-            };
-            let client_can_handle_image = is_image_sub
-                && parsed_codec
-                    .as_ref()
-                    .map(|c| profile_supports(c.clone()) || profile_embeds(c.clone()))
-                    .unwrap_or(false);
-            if !stream.is_external
-                && parsed_codec
-                    .as_ref()
-                    .map(|c| profile_embeds(c.clone()))
-                    .unwrap_or(false)
-            {
-                stream.delivery_method = Some(api::SubtitleDeliveryMethod::Embed);
-            } else if !stream.is_external
-                && is_image_sub
-                && !client_can_handle_image
-                && subtitle_mode == remux_sdks::remux::EmbeddedSubtitleHandling::Burn
-            {
-                // Burn mode: embedded image sub (PGS/VOBSUB) the client can't render
-                // externally → force transcode with burn-in.
-                stream.delivery_method = Some(api::SubtitleDeliveryMethod::Encode);
-            } else {
-                stream.delivery_url = Some(format!(
-                    "/Videos/{id}/{source_id}/Subtitles/{idx}/0/Stream.{format}?ApiKey={api_key}",
-                    idx = stream.index,
-                ));
-                stream.delivery_method = Some(api::SubtitleDeliveryMethod::External);
-                stream.is_external_url = Some(false);
-                stream.is_external = false;
-            }
+            TranscodeDecision::Transcode(outcome) => outcome.apply_to(&mut source),
         }
+
+        apply_subtitle_delivery(
+            &mut source,
+            id,
+            &session
+                .device
+                .access_token,
+            &cfg.device_profile,
+            cfg.subtitle_mode,
+        );
 
         source.transcoding_reasons = transcode_reasons;
 
