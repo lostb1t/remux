@@ -46,7 +46,10 @@ use crate::{
         session::{TranscodeSession, TranscodeState},
     },
     sdks,
-    services::{MediaResolveService, StreamService, stream_service::StreamSelection},
+    services::{
+        MediaResolveService, StreamService, StreamServiceConfig,
+        stream_service::StreamSelection,
+    },
     torrent,
 };
 use axum_anyhow::ApiResult as Result;
@@ -107,14 +110,14 @@ async fn items_playbackinfo_inner(
             .await?
             .context_not_found("not found")?;
 
-    let mut service = StreamService::new(
-        state
+    let mut service = StreamService::new(StreamServiceConfig {
+        ctx: state
             .ctx
             .clone(),
-        id,
-        media_source_id,
+        item_id: id,
+        requested_id: media_source_id,
         show_ungrouped,
-        session
+        stream_filter: session
             .user
             .policy
             .as_ref()
@@ -122,7 +125,7 @@ async fn items_playbackinfo_inner(
                 p.stream_filter
                     .clone()
             }),
-    );
+    });
     service
         .resolve(initial)
         .await?;

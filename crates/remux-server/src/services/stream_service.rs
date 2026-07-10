@@ -1,8 +1,15 @@
 use crate::{AppContext, db, playback::probe::resolve_stream_root};
 use remux_sdks::remux::StreamFilter;
-use remux_utils::Store;
 use tracing::debug;
 use uuid::Uuid;
+
+pub(crate) struct StreamServiceConfig {
+    pub ctx: AppContext,
+    pub item_id: Uuid,
+    pub requested_id: Option<Uuid>,
+    pub show_ungrouped: bool,
+    pub stream_filter: Option<StreamFilter>,
+}
 
 /// Central service for stream selection on a single playback request.
 ///
@@ -22,19 +29,13 @@ pub(crate) struct StreamService {
 }
 
 impl StreamService {
-    pub fn new(
-        ctx: AppContext,
-        item_id: Uuid,
-        requested_id: Option<Uuid>,
-        show_ungrouped: bool,
-        stream_filter: Option<StreamFilter>,
-    ) -> Self {
+    pub fn new(cfg: StreamServiceConfig) -> Self {
         Self {
-            ctx,
-            item_id,
-            requested_id,
-            show_ungrouped,
-            stream_filter,
+            ctx: cfg.ctx,
+            item_id: cfg.item_id,
+            requested_id: cfg.requested_id,
+            show_ungrouped: cfg.show_ungrouped,
+            stream_filter: cfg.stream_filter,
             group: None,
             stream: None,
             streams: vec![],
