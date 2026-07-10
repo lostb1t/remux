@@ -1,4 +1,4 @@
-use super::{ProgressReporter, Task, TaskService};
+use super::{ProgressReporter, Task, TaskCategory, TaskService};
 use crate::AppContext;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -20,8 +20,8 @@ impl Task for ImportAudioFeaturesTask {
     fn short_description(&self) -> &str {
         "Downloads + matches audio features for music mixing"
     }
-    fn category(&self) -> &str {
-        "Library"
+    fn category(&self) -> TaskCategory {
+        TaskCategory::Library
     }
 
     async fn run(

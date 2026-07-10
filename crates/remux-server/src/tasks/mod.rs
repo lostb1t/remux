@@ -23,6 +23,7 @@ mod clean_transcode_folder;
 mod clear_cache;
 mod clear_image_cache;
 mod jellyfin_import;
+mod import_audio_features;
 mod purge_iptv;
 mod purge_media;
 mod purge_metrics;
@@ -38,6 +39,7 @@ use clean_transcode_folder::CleanTranscodeFolderTask;
 use clear_cache::ClearCacheTask;
 use clear_image_cache::ClearImageCacheTask;
 use jellyfin_import::JellyfinImportTask;
+use import_audio_features::ImportAudioFeaturesTask;
 use purge_iptv::PurgeIptvTask;
 use purge_media::PurgeMediaTask;
 use purge_metrics::PurgeMetricsTask;
@@ -371,6 +373,9 @@ impl TaskService {
             .await?;
         service
             .register_task(Arc::new(JellyfinImportTask))
+            .await?;
+        service
+            .register_task(Arc::new(ImportAudioFeaturesTask))
             .await?;
         service
             .register_task(Arc::new(RefreshIptvTask))
