@@ -526,58 +526,15 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                                     }
                                                                     "{t_str}"
                                                                 }
-                                                            },
-                                                        }
-                                                        "{res_str}"
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            // Types section
-                            {
-                                let type_options: Vec<remux_sdks::remux::MediaKind> = addons
-                                    .read()
-                                    .iter()
-                                    .find(|a| a.id == edit_id)
-                                    .map(|a| a.supported_types.clone())
-                                    .unwrap_or_default();
-                                if !type_options.is_empty() {
-                                    rsx! {
-                                        div { class: "form-group",
-                                            label { class: "form-label", "Content Types" }
-                                            div { class: "check-row-group",
-                                                for t in type_options.into_iter() {
-                                                    {
-                                                        let t_str = format!("{t}");
-                                                        let t_str_check = t_str.clone();
-                                                        let checked = edit_types.read().contains(&t_str);
-                                                        rsx! {
-                                                            label { class: "check-row",
-                                                                input {
-                                                                    r#type: "checkbox",
-                                                                    checked,
-                                                                    onchange: move |e| {
-                                                                        let mut set = edit_types.write();
-                                                                        if e.checked() {
-                                                                            set.insert(t_str_check.clone());
-                                                                        } else {
-                                                                            set.remove(&t_str_check);
-                                                                        }
-                                                                    },
-                                                                }
-                                                                "{t_str}"
                                                             }
                                                         }
                                                     }
                                                 }
                                             }
                                         }
+                                    } else {
+                                        rsx! {}
                                     }
-                                } else {
-                                    rsx! {}
                                 }
                             }
                             // Catalogs section (only shown when catalog resource is active)
