@@ -101,7 +101,7 @@ async fn items_playbackinfo_inner(
     .await
     .unwrap_or_default();
 
-    let initial =
+    let item =
         MediaResolveService::resolve_item(media_source_id.unwrap_or(id), &state.ctx)
             .await?
             .context_not_found("not found")?;
@@ -123,10 +123,10 @@ async fn items_playbackinfo_inner(
             }),
     });
     service
-        .resolve(initial)
+        .load(item)
         .await?;
     let mut media = service
-        .stream()
+        .candidate()
         .clone();
 
     // Load the top-level Movie/Episode for subtitle lookup.

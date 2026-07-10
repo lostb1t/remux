@@ -62,19 +62,19 @@ impl StreamService {
         }
     }
 
-    /// Resolve the service from a pre-fetched initial media (playbackinfo path).
+    /// Load the service from a pre-fetched media item (playbackinfo path).
     ///
     /// Populates `self.group`, `self.stream`, and `self.streams`. Must be called
     /// before any of the selection or ID-mapping methods.
-    pub async fn resolve(&mut self, initial: db::Media) -> anyhow::Result<()> {
-        if initial.kind == db::MediaKind::StreamGroup {
-            self.resolve_stream_group(initial)
+    pub async fn load(&mut self, item: db::Media) -> anyhow::Result<()> {
+        if item.kind == db::MediaKind::StreamGroup {
+            self.resolve_stream_group(item)
                 .await?;
             return Ok(());
         }
 
         let mut root = resolve_stream_root(
-            &initial,
+            &item,
             self.item_id,
             &self
                 .ctx
@@ -260,10 +260,10 @@ impl StreamService {
     }
 
     /// The concrete resolved stream. Panics if called before `resolve()`.
-    pub fn stream(&self) -> &db::Media {
+    pub fn candidate(&self) -> &db::Media {
         self.stream
             .as_ref()
-            .expect("StreamService::resolve() must be called first")
+            .expect("StreamService::load() must be called first")
     }
 
     /// The StreamGroup context, if the request was for a group.
@@ -278,7 +278,7 @@ impl StreamService {
             .as_ref()
             .map(|(gid, _, _)| *gid)
             .unwrap_or_else(|| {
-                self.stream()
+                self.candidate()
                     .id
             })
     }
@@ -336,7 +336,7 @@ impl StreamService {
         {
             return StreamSelection {
                 candidates: vec![
-                    self.stream()
+                    self.candidate()
                         .clone(),
                 ],
                 probe_pool: self
@@ -496,7 +496,7 @@ impl StreamService {
             .store
             .save(
                 format!("pstream:{}:{}", self.item_id, device_key),
-                self.stream()
+                self.candidate()
                     .id,
                 std::time::Duration::from_secs(24 * 3600),
             );
