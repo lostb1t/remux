@@ -46,7 +46,7 @@ use crate::{
         session::{TranscodeSession, TranscodeState},
     },
     sdks,
-    services::{MediaResolveService, StreamResolver},
+    services::{MediaResolveService, StreamResolver, stream_resolve::StreamSelection},
     torrent,
 };
 use axum_anyhow::ApiResult as Result;
@@ -223,64 +223,13 @@ async fn items_playbackinfo_inner(
         vec![media]
     };
 
-    // Keep the full filtered pool for probe fallback before candidate_streams narrows it.
-    let fallback_streams = all_streams.clone();
-
-    // When the client requests a specific stream, only process that one.
-    // When no stream is specified (e.g. details page open), return all versions
-    // for version selection but only probe the first one — probing every stream
-    // causes a storm of parallel FFmpeg processes (one per version of the movie).
-    //
-    // Android TV always sends media_source_id = item_id (not None) for auto-play.
-    // Treat that the same as "return first stream only" — no need to send all versions.
-    // A group request counts as a specific stream request: the client sent a stable group UUID
-    // and must receive that same UUID back. Non-group requests check if the UUID maps to an
-    // actual child stream in all_streams.
-    let specific_stream_requested = resolver
-        .group
-        .is_some()
-        || media_source_id
-            .map(|sid| {
-                sid != id
-                    && all_streams
-                        .iter()
-                        .any(|s| s.id == sid)
-            })
-            .unwrap_or(false);
-    let (candidate_streams, probe_only_first) = if resolver
-        .group
-        .is_some()
-    {
-        // Group request: the resolver already picked the best candidate stream.
-        (
-            vec![
-                resolver
-                    .stream
-                    .clone(),
-            ],
-            false,
-        )
-    } else if specific_stream_requested {
-        // Specific non-group stream: return only that stream.
-        let sid = media_source_id.unwrap();
-        let filtered: Vec<db::Media> = all_streams
-            .into_iter()
-            .filter(|s| s.id == sid)
-            .collect();
-        (filtered, false)
-    } else if media_source_id.is_some() {
-        // media_source_id provided but equals item_id (Android TV auto-play) or
-        // stream not found: return only the first (best) stream.
-        // specific_stream_requested stays false so stream[0].id is overridden to
-        // item_id below — required for Android TV routing.
-        let mut v = all_streams;
-        v.truncate(1);
-        (v, false)
-    } else {
-        // No stream ID: return all versions for the selection UI,
-        // probe only the first to avoid spawning N FFmpeg processes.
-        (all_streams, true)
-    };
+    let StreamSelection {
+        candidates: candidate_streams,
+        probe_pool: fallback_streams,
+        restrict_resolution: sel_restrict_resolution,
+        probe_only_first,
+        specific_requested: specific_stream_requested,
+    } = resolver.select_streams(all_streams, media_source_id, id);
 
     let max_bitrate: Option<i64> = match (
         q.max_streaming_bitrate,
@@ -313,22 +262,8 @@ async fn items_playbackinfo_inner(
         .ctx
         .config
         .port;
-    // For group selections, use all group candidates (including cascade) as the probe pool.
-    // Resolution filtering is disabled for group requests: the group priority order already
-    // encodes the user's quality preference, so cross-resolution fallback is intentional.
-    let (probe_pool, restrict_resolution) = if resolver
-        .group
-        .is_some()
-    {
-        (
-            resolver
-                .candidates()
-                .to_vec(),
-            false,
-        )
-    } else {
-        (fallback_streams, true)
-    };
+    let probe_pool = fallback_streams;
+    let restrict_resolution = sel_restrict_resolution;
     let subtitle_mode = encoding_cfg
         .subtitle_mode
         .unwrap_or_default();
@@ -377,28 +312,10 @@ async fn items_playbackinfo_inner(
                 .db,
         )
         .await?;
-        // Use the client-facing ID from the resolver: group UUID for group requests,
-        // stream UUID otherwise. Set once here — no later overrides.
-        // Use effective_stream (which may be a fallback) so ID/path/name match
-        // the stream whose codec layout was actually probed.
-        let cid = resolver
-            .group
-            .as_ref()
-            .map(|(gid, _, _)| *gid)
-            .unwrap_or(effective_stream.id);
+        let cid = resolver.source_id_for(&effective_stream);
         source.id = cid;
         source.e_tag = cid;
-        source.name = Some(
-            resolver
-                .group
-                .as_ref()
-                .map(|(_, t, _)| t.clone())
-                .unwrap_or_else(|| {
-                    effective_stream
-                        .title
-                        .clone()
-                }),
-        );
+        source.name = Some(resolver.source_name_for(&effective_stream));
         source.has_segments = true;
         source.path = Some(format!("/remux/{}", effective_stream.id));
         source.is_remote = false;

@@ -158,12 +158,112 @@ impl StreamResolver {
             )
     }
 
+    /// UUID to echo in `MediaSources[idx].Id`, using the probe-fallback result as the fallback.
+    ///
+    /// Unlike `client_facing_id()`, this takes the effective stream (which may differ from
+    /// `self.stream` when a probe fallback selected a sibling stream) as the non-group fallback.
+    pub fn source_id_for(&self, effective: &db::Media) -> Uuid {
+        self.group
+            .as_ref()
+            .map(|(gid, _, _)| *gid)
+            .unwrap_or(effective.id)
+    }
+
+    /// Display name to echo in `MediaSources[idx].Name` (group title or effective stream title).
+    pub fn source_name_for(&self, effective: &db::Media) -> String {
+        self.group
+            .as_ref()
+            .map(|(_, t, _)| t.clone())
+            .unwrap_or_else(|| {
+                effective
+                    .title
+                    .clone()
+            })
+    }
+
     /// Probe fallback pool — includes cascade candidates for group requests, empty otherwise.
     pub fn candidates(&self) -> &[db::Media] {
         self.group
             .as_ref()
             .map(|(_, _, c)| c.as_slice())
             .unwrap_or(&[])
+    }
+
+    /// Partition `all_streams` into candidate/probe lists and compute selection flags.
+    ///
+    /// Encapsulates the 4-way selection policy:
+    /// - group request   → candidates=[self.stream], probe_pool=cascade candidates, restrict=false
+    /// - specific stream → candidates=[that stream], probe_pool=all_streams,        restrict=true
+    /// - android-tv      → candidates=[first],       probe_pool=all_streams,        restrict=true
+    /// - no stream id    → candidates=all,            probe_pool=all_streams,        restrict=true, probe_only_first=true
+    pub(crate) fn select_streams(
+        &self,
+        all_streams: Vec<db::Media>,
+        requested_id: Option<Uuid>,
+        item_id: Uuid,
+    ) -> StreamSelection {
+        let specific_requested = self
+            .group
+            .is_some()
+            || requested_id
+                .map(|sid| {
+                    sid != item_id
+                        && all_streams
+                            .iter()
+                            .any(|s| s.id == sid)
+                })
+                .unwrap_or(false);
+
+        if self
+            .group
+            .is_some()
+        {
+            return StreamSelection {
+                candidates: vec![
+                    self.stream
+                        .clone(),
+                ],
+                probe_pool: self
+                    .candidates()
+                    .to_vec(),
+                restrict_resolution: false,
+                probe_only_first: false,
+                specific_requested: true,
+            };
+        }
+
+        // Non-group: full filtered list is always the probe fallback pool.
+        let probe_pool = all_streams.clone();
+
+        let (candidates, probe_only_first) = if specific_requested {
+            let sid = requested_id.unwrap();
+            (
+                all_streams
+                    .into_iter()
+                    .filter(|s| s.id == sid)
+                    .collect(),
+                false,
+            )
+        } else if requested_id.is_some() {
+            // media_source_id == item_id (Android TV auto-play) or stream not found:
+            // return only the first stream; specific_requested stays false so
+            // source[0].id is overridden to item_id below (required for Android TV routing).
+            let mut v = all_streams;
+            v.truncate(1);
+            (v, false)
+        } else {
+            // No stream ID: return all versions for the selection UI,
+            // probe only the first to avoid spawning N FFmpeg processes.
+            (all_streams, true)
+        };
+
+        StreamSelection {
+            candidates,
+            probe_pool,
+            restrict_resolution: true,
+            probe_only_first,
+            specific_requested,
+        }
     }
 
     /// Persist the resolved stream UUID in the device-preference store (24 h TTL).
@@ -175,4 +275,18 @@ impl StreamResolver {
             std::time::Duration::from_secs(24 * 3600),
         );
     }
+}
+
+/// Result of `StreamResolver::select_streams` — partitioned candidate/probe lists and flags.
+pub(crate) struct StreamSelection {
+    /// Streams to present to the client and probe.
+    pub candidates: Vec<db::Media>,
+    /// Full pool used for probe-fallback across sibling streams.
+    pub probe_pool: Vec<db::Media>,
+    /// When false (group requests), cross-resolution fallback is intentional.
+    pub restrict_resolution: bool,
+    /// Probe only the first candidate to avoid N parallel FFmpeg processes.
+    pub probe_only_first: bool,
+    /// True when the client named a specific stream — keep its UUID, don't override to item_id.
+    pub specific_requested: bool,
 }
