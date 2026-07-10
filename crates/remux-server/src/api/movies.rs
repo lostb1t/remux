@@ -9,7 +9,7 @@ use axum_extra::extract::Query;
 use moka::sync::Cache;
 use rand::seq::SliceRandom;
 use rand::{SeedableRng, rngs::StdRng};
-use remux_macros::{api_query, get, query};
+use remux_macros::{get, query};
 use sqlx::QueryBuilder;
 use uuid::Uuid;
 

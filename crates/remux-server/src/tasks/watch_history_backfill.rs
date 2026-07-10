@@ -8,7 +8,7 @@ use std::{
 };
 use uuid::Uuid;
 
-use super::{ProgressReporter, Task, TaskService};
+use super::{ProgressReporter, Task, TaskCategory, TaskService};
 use crate::{AppContext, db};
 
 pub struct BackfillWatchHistoryTask;
@@ -31,8 +31,8 @@ impl Task for BackfillWatchHistoryTask {
         "Backfill watch_history from user playback state"
     }
 
-    fn category(&self) -> &str {
-        "Library"
+    fn category(&self) -> TaskCategory {
+        TaskCategory::Library
     }
 
     async fn run(
