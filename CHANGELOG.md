@@ -1,3 +1,20 @@
+# [0.14.0](https://github.com/lostb1t/remux/compare/v0.13.0...v0.14.0) (2026-07-10)
+
+
+### Bug Fixes
+
+* use effective stream for id/path/subtitles when probe falls back to a different stream ([411c173](https://github.com/lostb1t/remux/commit/411c1731f0ab26d60508667515d03f9357b8cd07))
+
+
+### Features
+
+* reject suspiciously short remote streams as probe failures ([#90](https://github.com/lostb1t/remux/issues/90)) ([7e37491](https://github.com/lostb1t/remux/commit/7e3749137a50955818af1b3b68328875e4881f1b))
+
+
+### Performance Improvements
+
+* diff media relations instead of delete+reinsert to reduce WAL pressure ([7078e31](https://github.com/lostb1t/remux/commit/7078e31ec7cabafd71dc084b9a46461bbafd95c2))
+
 # [0.13.0](https://github.com/lostb1t/remux/compare/v0.12.1...v0.13.0) (2026-07-08)
 
 
