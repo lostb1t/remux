@@ -127,10 +127,6 @@ async fn items_playbackinfo_inner(
     service
         .load(media)
         .await?;
-    let mut stream = service
-        .candidate()
-        .clone();
-
     // Load the top-level Movie/Episode for subtitle lookup.
     // `id` is always the movie/episode UUID; `media_source_id` may point to a
     // child Source, so we always resolve via `id` to get the IMDB fields.

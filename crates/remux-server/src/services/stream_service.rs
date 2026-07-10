@@ -137,6 +137,12 @@ impl StreamService {
             streams
         };
 
+        if streams.is_empty() {
+            return Err(anyhow::anyhow!(
+                "no playable sources for {} (filtered out by grouping or stream policy)",
+                self.item_id
+            ));
+        }
         self.stream = streams
             .first()
             .cloned();
