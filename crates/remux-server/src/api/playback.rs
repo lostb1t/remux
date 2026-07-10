@@ -206,6 +206,9 @@ async fn items_playbackinfo_inner(
         vec![media]
     };
 
+    // Keep the full filtered pool for probe fallback before source_medias narrows it.
+    let fallback_pool = all_source_medias.clone();
+
     // When the client requests a specific source, only process that one.
     // When no source is specified (e.g. details page open), return all versions
     // for version selection but only probe the first one — probing every source
@@ -307,7 +310,7 @@ async fn items_playbackinfo_inner(
             false,
         )
     } else {
-        (source_medias.clone(), true)
+        (fallback_pool, true)
     };
     let mut media_sources = Vec::with_capacity(source_medias.len());
     for (idx, sm) in source_medias
@@ -3461,6 +3464,43 @@ mod probe_tests {
         assert!(
             err.contains("tried 4 of 4 streams"),
             "unexpected error: {err}"
+        );
+    }
+
+    // Regression: items_playbackinfo was building all_sources = source_medias,
+    // which is narrowed to 1 item when a specific media_source_id is requested.
+    // The fallback pool must be the full filtered list, not the selection.
+    #[tokio::test]
+    async fn specific_source_request_falls_back_through_all_streams() {
+        let db = test_db().await;
+        let primary = http_media("http://a.example.com");
+        let other_a = http_media("http://b.example.com");
+        let other_b = http_media("http://c.example.com");
+
+        // all_sources is the full pool (as items_playbackinfo now provides via fallback_pool).
+        let all_sources = vec![primary.clone(), other_a, other_b];
+
+        let result = probe_with_fallback(
+            primary,
+            Some("http://a.example.com".into()),
+            10,
+            true,
+            5,
+            &all_sources,
+            false,
+            3000,
+            &db,
+            queued_probe(vec![
+                Err(anyhow!("fail")),
+                Err(anyhow!("fail")),
+                Err(anyhow!("fail")),
+            ]),
+        )
+        .await;
+        let err = format!("{:?}", result.unwrap_err());
+        assert!(
+            err.contains("tried 3 of 3 streams"),
+            "expected all 3 streams tried, got: {err}"
         );
     }
 }
