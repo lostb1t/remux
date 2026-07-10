@@ -22,6 +22,8 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut filter_digital_release = use_signal(|| true);
     let mut digital_release_buffer = use_signal(|| 0_i64);
     let mut subtitle_languages = use_signal(String::new);
+    let mut feature_dataset_url = use_signal(String::new);
+    let mut enable_audio_feature_instant_mix = use_signal(|| true);
     let mut quick_connect_enabled = use_signal(|| true);
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
@@ -62,6 +64,12 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                             .map(|v| v.join(", "))
                             .unwrap_or_default(),
                     );
+                    feature_dataset_url.set(
+                        cfg.feature_dataset_url
+                            .clone()
+                            .unwrap_or_default(),
+                    );
+                    enable_audio_feature_instant_mix.set(cfg.enable_audio_feature_instant_mix);
                     quick_connect_enabled.set(
                         cfg.quick_connect_available
                             .unwrap_or(true),
@@ -98,6 +106,8 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
         let sub_langs_str = subtitle_languages
             .peek()
             .clone();
+        let feature_url = feature_dataset_url.peek().clone();
+        let use_audio_features = *enable_audio_feature_instant_mix.peek();
         let qc_enabled = *quick_connect_enabled.peek();
 
         let mut cfg = base_cfg
@@ -121,6 +131,12 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                 .filter(|s| !s.is_empty())
                 .collect(),
         );
+        cfg.feature_dataset_url = if feature_url.trim().is_empty() {
+            None
+        } else {
+            Some(feature_url.trim().to_string())
+        };
+        cfg.enable_audio_feature_instant_mix = use_audio_features;
 
         saving.set(true);
         error.set(None);
@@ -263,6 +279,35 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                                 "Comma-separated ISO 639-1 codes (e.g. \"en, de\"). "
                                 "Only subtitles in these languages are shown and the first match is selected by default. "
                                 "Leave empty to show all subtitles without a default."
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", r#for: "s-feature-url", "Audio Feature Dataset URL" }
+                            input {
+                                id: "s-feature-url",
+                                r#type: "text",
+                                class: "field-input",
+                                placeholder: "https://.../features.csv",
+                                value: "{feature_dataset_url}",
+                                oninput: move |e| feature_dataset_url.set(e.value()),
+                            }
+                            p { class: "field-hint",
+                                "Direct CSV or Parquet URL used by the Import Audio Features task. Kaggle page URLs are not directly importable."
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *enable_audio_feature_instant_mix.read(),
+                                    oninput: move |e| enable_audio_feature_instant_mix.set(e.checked()),
+                                }
+                                " Use audio features for Instant Mix"
+                            }
+                            p { class: "field-hint",
+                                "When imported feature rows are available, Instant Mix ranks tracks by acoustic similarity before falling back to genre and artist matching."
                             }
                         }
 
