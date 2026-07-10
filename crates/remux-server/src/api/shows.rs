@@ -362,9 +362,12 @@ async fn shows_nextup_all(
                 sep.push_bind(id);
             }
         }
+        ep_qb.push(") AND kind = 'episode'");
+        if let Some(t) = release_threshold {
+            push_release_date_filter(&mut ep_qb, "media", t, true);
+        }
         ep_qb.push(
-            ") AND kind = 'episode' \
-             ORDER BY grandparent_id, COALESCE(parent_idx, 9999) ASC, COALESCE(idx, 9999) ASC",
+            " ORDER BY grandparent_id, COALESCE(parent_idx, 9999) ASC, COALESCE(idx, 9999) ASC",
         );
         let chunk_episodes: Vec<db::Media> = ep_qb
             .build_query_as()
@@ -376,24 +379,6 @@ async fn shows_nextup_all(
             .await?;
         all_episodes.extend(chunk_episodes);
     }
-<<<<<<< HEAD
-    ep_qb.push(") AND kind = 'episode'");
-    if let Some(t) = release_threshold {
-        push_release_date_filter(&mut ep_qb, "media", t, true);
-    }
-    ep_qb.push(
-        " ORDER BY grandparent_id, COALESCE(parent_idx, 9999) ASC, COALESCE(idx, 9999) ASC",
-    );
-    let all_episodes: Vec<db::Media> = ep_qb
-        .build_query_as()
-        .fetch_all(
-            &state
-                .ctx
-                .db,
-        )
-        .await?;
-=======
->>>>>>> 89b1595 (wip: preserve local main state)
 
     let all_ep_ids: Vec<Uuid> = all_episodes
         .iter()
