@@ -136,7 +136,7 @@ impl MediaInfo {
                     .status()
                     .is_success() =>
             {
-                debug!(url, "remuxdb mediainfo submitted");
+                debug!(url, "remuxdb: mediainfo submitted ok");
             }
             Ok(resp) => {
                 let status = resp.status();

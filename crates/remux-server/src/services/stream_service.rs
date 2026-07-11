@@ -509,14 +509,14 @@ impl StreamService {
             {
                 match media_info_from_probe(&source, &effective_stream, item.as_ref()) {
                     Some(mi) => {
-                        debug!(id = %effective_stream.id, "remuxdb: submitting mediainfo");
+                        debug!(id = %effective_stream.id, url, "remuxdb: submitting mediainfo");
                         let token = probe_cfg
                             .remuxdb_token
                             .clone();
                         tokio::spawn(mi.submit(url, token));
                     }
                     None => {
-                        debug!(id = %effective_stream.id, "remuxdb: skipping (no stream_info)");
+                        debug!(id = %effective_stream.id, "remuxdb: skipping (no stream_info or missing required fields)");
                     }
                 }
             }

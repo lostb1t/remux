@@ -431,9 +431,13 @@ pub struct Config {
     /// Base URL for the Trakt API. Overridable for testing.
     #[serde(default = "default_trakt_base_url")]
     pub trakt_base_url: String,
-    /// Base URL for remuxdb (e.g. "http://10.0.10.66:3001"). When set, probe
-    /// results for torrent streams are submitted to remuxdb after each live probe.
+    /// Base URL for remuxdb. When set, probe results are submitted after each live probe.
+    #[serde(default = "default_remuxdb_url")]
     pub remuxdb_url: Option<String>,
+}
+
+fn default_remuxdb_url() -> Option<String> {
+    Some("https://remuxdb.1632022.xyz".to_string())
 }
 
 fn default_tmdb_base_url() -> String {
