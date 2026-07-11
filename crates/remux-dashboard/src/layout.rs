@@ -92,6 +92,7 @@ pub fn DashboardLayout() -> Element {
         Route::SettingsJellyfinSyncRoute => "Jellyfin Sync",
         Route::SettingsBrandingRoute => "Branding",
         Route::SettingsIntroRoute => "Intro",
+        Route::SettingsRemuxdbRoute => "Remuxdb",
         Route::AccessUsersRoute => "Users",
         Route::AccessApiKeysRoute => "API Keys",
         Route::TasksRoute => "Tasks",
@@ -178,6 +179,7 @@ pub fn DashboardLayout() -> Element {
                             | Route::SettingsJellyfinSyncRoute
                             | Route::SettingsBrandingRoute
                             | Route::SettingsIntroRoute
+                            | Route::SettingsRemuxdbRoute
                         ),
                         NavSubItem {
                             label: "General",
@@ -203,6 +205,11 @@ pub fn DashboardLayout() -> Element {
                             label: "Intro",
                             active: route == Route::SettingsIntroRoute,
                             on_click: move |_| { navigator().push(Route::SettingsIntroRoute); sidebar_open.set(false); },
+                        }
+                        NavSubItem {
+                            label: "Remuxdb",
+                            active: route == Route::SettingsRemuxdbRoute,
+                            on_click: move |_| { navigator().push(Route::SettingsRemuxdbRoute); sidebar_open.set(false); },
                         }
                         NavSubItem {
                             label: "Branding",

@@ -289,6 +289,7 @@ struct FfprobeFormat {
     duration: Option<String>,
     format_name: Option<String>,
     bit_rate: Option<String>,
+    size: Option<String>,
 }
 
 fn parse_frame_rate(s: &str) -> Option<f64> {
@@ -457,6 +458,16 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
     let overall_bitrate = probe
         .format
         .bit_rate
+        .as_deref()
+        .and_then(|s| {
+            s.parse::<i64>()
+                .ok()
+        })
+        .and_then(nonzero);
+
+    let file_size = probe
+        .format
+        .size
         .as_deref()
         .and_then(|s| {
             s.parse::<i64>()
@@ -776,6 +787,7 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
             container,
             run_time_ticks,
             bitrate: overall_bitrate,
+            size: file_size,
             default_audio_stream_index,
             default_subtitle_stream_index,
             ..Default::default()

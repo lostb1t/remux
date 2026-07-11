@@ -468,6 +468,11 @@ pub struct ServerConfiguration {
     /// Show streams that don't match any group individually (default true).
     #[default(Some(true))]
     pub stream_groups_show_ungrouped: Option<bool>,
+    /// Enable submitting probe data to remuxdb (default true).
+    #[default(Some(true))]
+    pub remuxdb_enabled: Option<bool>,
+    /// Bearer token for remuxdb submissions.
+    pub remuxdb_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

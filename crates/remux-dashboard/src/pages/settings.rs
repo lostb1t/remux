@@ -1562,3 +1562,132 @@ pub fn IntroSettingsCard(app_state: AppState) -> Element {
         }
     }
 }
+
+#[component]
+pub fn RemuxdbSettingsCard(app_state: AppState) -> Element {
+    let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
+    let mut enabled = use_signal(|| true);
+    let mut token = use_signal(String::new);
+    let mut loading = use_signal(|| true);
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(|| Option::<String>::None);
+    let mut saved = use_signal(|| false);
+
+    let app_state_load = app_state.clone();
+    use_effect(move || {
+        let client = app_state_load
+            .client
+            .clone();
+        spawn(async move {
+            match client
+                .execute(GetSystemConfiguration)
+                .await
+            {
+                Ok(cfg) => {
+                    enabled.set(
+                        cfg.remuxdb_enabled
+                            .unwrap_or(true),
+                    );
+                    token.set(
+                        cfg.remuxdb_token
+                            .clone()
+                            .unwrap_or_default(),
+                    );
+                    base_cfg.set(Some(cfg));
+                }
+                Err(e) => error.set(Some(format!("Failed to load: {e}"))),
+            }
+            loading.set(false);
+        });
+    });
+
+    let on_submit = move |e: Event<FormData>| {
+        e.prevent_default();
+        let client = app_state
+            .client
+            .clone();
+        let Some(cfg) = base_cfg
+            .peek()
+            .clone()
+        else {
+            return;
+        };
+        let token_val = token
+            .peek()
+            .clone();
+        let updated = ServerConfiguration {
+            remuxdb_enabled: Some(*enabled.peek()),
+            remuxdb_token: if token_val.is_empty() {
+                None
+            } else {
+                Some(token_val)
+            },
+            ..cfg
+        };
+        saving.set(true);
+        error.set(None);
+        saved.set(false);
+        spawn(async move {
+            match client
+                .execute(UpdateSystemConfiguration { config: updated })
+                .await
+            {
+                Ok(_) => saved.set(true),
+                Err(e) => error.set(Some(e.user_message())),
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        Card { title: "Remuxdb",
+            if *loading.read() {
+                LoadingText {}
+            } else {
+                form { onsubmit: on_submit, style: "display:flex;flex-direction:column;gap:14px",
+                    div { class: "field",
+                        label { class: "field-label",
+                            input {
+                                r#type: "checkbox",
+                                checked: *enabled.read(),
+                                oninput: move |e| enabled.set(e.checked()),
+                            }
+                            " Enable Remuxdb"
+                        }
+                        p { class: "field-hint", "Submit probe data to remuxdb after each live probe." }
+                    }
+
+                    if *enabled.read() {
+                        div { class: "field",
+                            label { class: "field-label", r#for: "remuxdb-token", "User Token" }
+                            input {
+                                id: "remuxdb-token",
+                                r#type: "password",
+                                class: "field-input",
+                                placeholder: "••••••••••••••••",
+                                value: "{token}",
+                                oninput: move |e| token.set(e.value()),
+                            }
+                            p { class: "field-hint", "Optional bearer token for your remuxdb account." }
+                        }
+                    }
+
+                    if let Some(err) = error.read().as_ref() {
+                        ErrorAlert { message: err.clone() }
+                    }
+                    if *saved.read() {
+                        SuccessAlert { message: "Settings saved.".to_string() }
+                    }
+                    div { class: "form-actions",
+                        button {
+                            r#type: "submit",
+                            class: "btn btn-primary",
+                            disabled: *saving.read(),
+                            if *saving.read() { "Saving…" } else { "Save Settings" }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -209,6 +209,10 @@ impl std::str::FromStr for TickUnit {
     }
 }
 
+pub fn ticks_to_seconds(ticks: i64) -> f64 {
+    ticks as f64 / 10_000_000.0
+}
+
 pub fn duration_to_ticks(value: f64, unit: TickUnit) -> i64 {
     match unit {
         TickUnit::Ticks => value.round() as i64,

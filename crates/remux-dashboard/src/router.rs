@@ -33,6 +33,8 @@ pub enum Route {
     SettingsJellyfinSyncRoute,
     #[route("/settings/intro")]
     SettingsIntroRoute,
+    #[route("/settings/remuxdb")]
+    SettingsRemuxdbRoute,
     #[route("/settings/branding")]
     SettingsBrandingRoute,
     #[route("/access/users")]
@@ -118,6 +120,12 @@ pub(crate) fn SettingsJellyfinSyncRoute() -> Element {
 pub(crate) fn SettingsIntroRoute() -> Element {
     let app_state = use_context::<AppState>();
     rsx! { IntroSettingsCard { app_state } }
+}
+
+#[component]
+pub(crate) fn SettingsRemuxdbRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { RemuxdbSettingsCard { app_state } }
 }
 
 #[component]
