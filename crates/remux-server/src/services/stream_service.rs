@@ -613,10 +613,16 @@ fn media_info_from_probe(
             _ => "movie",
         }
         .to_string();
-        let ids = (item
+        let imdb_id = item
             .external_ids
             .imdb
-            .is_some()
+            .as_ref()
+            .or(item
+                .external_ids
+                .series_imdb
+                .as_ref())
+            .map(|v| v.to_string());
+        let ids = (imdb_id.is_some()
             || item
                 .external_ids
                 .tmdb
@@ -626,11 +632,7 @@ fn media_info_from_probe(
                 .tvdb
                 .is_some())
         .then(|| remuxdb::ExternalIds {
-            imdb_id: item
-                .external_ids
-                .imdb
-                .as_ref()
-                .map(|v| v.to_string()),
+            imdb_id,
             tmdb_id: item
                 .external_ids
                 .tmdb,
