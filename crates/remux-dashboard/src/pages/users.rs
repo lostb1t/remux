@@ -259,6 +259,15 @@ pub fn UserForm(
             })
             .unwrap_or(0)
     });
+    let mut enable_video_transcoding = use_signal(|| {
+        existing
+            .as_ref()
+            .map(|u| {
+                u.policy
+                    .enable_video_playback_transcoding
+            })
+            .unwrap_or(true)
+    });
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
@@ -299,6 +308,7 @@ pub fn UserForm(
             .clone();
         let remote_search_snapshot = *enable_remote_search.peek();
         let max_sessions_snapshot = *max_active_sessions.peek();
+        let video_transcoding_snapshot = *enable_video_transcoding.peek();
 
         saving.set(true);
         err.set(None);
@@ -348,6 +358,8 @@ pub fn UserForm(
                     policy.stream_filter = stream_filter.clone();
                     policy.enable_remote_search = remote_search_snapshot;
                     policy.max_active_sessions = max_sessions_snapshot;
+                    policy.enable_video_playback_transcoding =
+                        video_transcoding_snapshot;
                     client
                         .execute(UpdateUserPolicy {
                             user_id: user.id,
@@ -373,6 +385,7 @@ pub fn UserForm(
                         || stream_filter.is_some()
                         || !remote_search_snapshot
                         || max_sessions_snapshot > 0
+                        || !video_transcoding_snapshot
                     {
                         let mut policy = new_user
                             .policy
@@ -382,6 +395,8 @@ pub fn UserForm(
                         policy.stream_filter = stream_filter.clone();
                         policy.enable_remote_search = remote_search_snapshot;
                         policy.max_active_sessions = max_sessions_snapshot;
+                        policy.enable_video_playback_transcoding =
+                            video_transcoding_snapshot;
                         client
                             .execute(UpdateUserPolicy {
                                 user_id: new_user.id,
@@ -464,6 +479,12 @@ pub fn UserForm(
                 label: "Allow Remote Search",
                 checked: *enable_remote_search.read(),
                 on_change: move |v| enable_remote_search.set(v),
+            }
+
+            ToggleRow {
+                label: "Allow Video Transcoding",
+                checked: *enable_video_transcoding.read(),
+                on_change: move |v| enable_video_transcoding.set(v),
             }
 
             div { class: "field",
