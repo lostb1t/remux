@@ -34,6 +34,7 @@ pub enum MediaType {
     Album,
     Artist,
     Track,
+    #[strum(to_string = "{0}")]
     #[serde(untagged)]
     Unknown(String),
 }
@@ -934,7 +935,7 @@ pub fn client(base: &str) -> Result<RestClient, url::ParseError> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_duration_lossy;
+    use super::{MediaType, parse_duration_lossy};
     use std::time::Duration;
 
     #[test]
@@ -951,5 +952,34 @@ mod tests {
             parse_duration_lossy("31S min").unwrap(),
             Duration::from_secs(31 * 60)
         );
+    }
+
+    #[test]
+    fn media_type_display_known_variants() {
+        assert_eq!(MediaType::Movie.to_string(), "movie");
+        assert_eq!(MediaType::Series.to_string(), "series");
+        assert_eq!(MediaType::Tv.to_string(), "tv");
+        assert_eq!(MediaType::Channel.to_string(), "channel");
+        assert_eq!(MediaType::Events.to_string(), "events");
+        assert_eq!(MediaType::Album.to_string(), "album");
+        assert_eq!(MediaType::Artist.to_string(), "artist");
+        assert_eq!(MediaType::Track.to_string(), "track");
+    }
+
+    #[test]
+    fn media_type_display_unknown_preserves_inner_value() {
+        let kind =
+            MediaType::Unknown("aiostreams::library.torbox.torrent.36825883".into());
+        assert_eq!(
+            kind.to_string(),
+            "aiostreams::library.torbox.torrent.36825883"
+        );
+    }
+
+    #[test]
+    fn media_type_display_unknown_used_in_endpoint_path() {
+        let kind = MediaType::Unknown("my_custom_type".into());
+        let path = format!("/meta/{}/some_id.json", kind);
+        assert_eq!(path, "/meta/my_custom_type/some_id.json");
     }
 }
