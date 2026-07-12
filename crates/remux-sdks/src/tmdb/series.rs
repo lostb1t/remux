@@ -91,10 +91,10 @@ pub struct SeriesEndpoint {
 }
 
 impl SeriesEndpoint {
-    pub fn new(id: i64) -> Self {
+    pub fn new(id: i64, language: Option<String>) -> Self {
         Self {
             id,
-            language: Some("en".to_string()),
+            language,
             append_to_response: default_append_to_response(),
         }
     }
@@ -193,12 +193,17 @@ pub struct EpisodeEndpoint {
 }
 
 impl EpisodeEndpoint {
-    pub fn new(series_id: i64, season_number: i64, episode_number: i64) -> Self {
+    pub fn new(
+        series_id: i64,
+        season_number: i64,
+        episode_number: i64,
+        language: Option<String>,
+    ) -> Self {
         Self {
             series_id,
             season_number,
             episode_number,
-            language: None,
+            language,
             append_to_response: Some(super::default_append_to_response()),
         }
     }

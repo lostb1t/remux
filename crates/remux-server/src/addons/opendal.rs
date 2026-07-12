@@ -1600,7 +1600,7 @@ async fn resolve_imdb(
 
         let series = client
             .execute(
-                sdks::tmdb::SeriesEndpoint::new(tmdb_id)
+                sdks::tmdb::SeriesEndpoint::new(tmdb_id, None)
                     .with_cache(Duration::from_secs(86400)),
             )
             .await
@@ -1632,7 +1632,7 @@ async fn resolve_imdb(
 
         let movie = client
             .execute(
-                sdks::tmdb::MovieEndpoint::new(tmdb_id)
+                sdks::tmdb::MovieEndpoint::new(tmdb_id, None)
                     .with_cache(Duration::from_secs(86400)),
             )
             .await

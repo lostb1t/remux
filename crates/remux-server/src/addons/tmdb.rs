@@ -782,9 +782,13 @@ async fn tmdb_series_seasons(
         return Ok(None);
     };
     let client = tmdb_client_from_ctx(ctx).await?;
+    let preferred_language = crate::db::Settings::get_config(&ctx.db)
+        .await
+        .ok()
+        .and_then(|c| c.preferred_metadata_language);
     let tv = client
         .execute(
-            sdks::tmdb::SeriesEndpoint::new(tmdb_id)
+            sdks::tmdb::SeriesEndpoint::new(tmdb_id, preferred_language)
                 .with_cache(Duration::from_secs(360)),
         )
         .await?;
@@ -850,12 +854,16 @@ async fn tmdb_season_episodes(
         return Ok(None);
     };
     let client = tmdb_client_from_ctx(ctx).await?;
+    let preferred_language = crate::db::Settings::get_config(&ctx.db)
+        .await
+        .ok()
+        .and_then(|c| c.preferred_metadata_language);
     let season_details = client
         .execute(
             sdks::tmdb::SeasonEndpoint {
                 series_id: series_tmdb_id,
                 season_number: season_number as i64,
-                language: None,
+                language: preferred_language,
                 append_to_response: None,
             }
             .with_cache(Duration::from_secs(360)),
@@ -1319,8 +1327,13 @@ async fn fetch_tmdb_meta(
             if let Some(tmdb_id) = tmdb_movie_id {
                 let movie_details = client
                     .execute(
-                        sdks::tmdb::MovieEndpoint::new(tmdb_id)
-                            .with_cache(Duration::from_secs(360)),
+                        sdks::tmdb::MovieEndpoint::new(
+                            tmdb_id,
+                            config
+                                .preferred_metadata_language
+                                .clone(),
+                        )
+                        .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
                 let external_ids = db::ExternalIds {
@@ -1525,8 +1538,13 @@ async fn fetch_tmdb_meta(
             if let Some(tmdb_id) = tmdb_series_id {
                 let tv_details = client
                     .execute(
-                        sdks::tmdb::SeriesEndpoint::new(tmdb_id)
-                            .with_cache(Duration::from_secs(360)),
+                        sdks::tmdb::SeriesEndpoint::new(
+                            tmdb_id,
+                            config
+                                .preferred_metadata_language
+                                .clone(),
+                        )
+                        .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
                 let tmdb_ext = tv_details
@@ -1761,7 +1779,9 @@ async fn fetch_tmdb_meta(
                         sdks::tmdb::SeasonEndpoint {
                             series_id: tmdb_id,
                             season_number: s_n,
-                            language: None,
+                            language: config
+                                .preferred_metadata_language
+                                .clone(),
                             append_to_response: None,
                         }
                         .with_cache(Duration::from_secs(360)),
@@ -1779,7 +1799,7 @@ async fn fetch_tmdb_meta(
             }
         }
         db::MediaKind::Season => {
-            return fetch_tmdb_season_meta(media, ctx, &client).await;
+            return fetch_tmdb_season_meta(media, ctx, &client, config).await;
         }
         db::MediaKind::Person => {
             let tmdb_id = if let Some(id) = media
@@ -1856,6 +1876,7 @@ async fn fetch_tmdb_season_meta(
     media: &db::Media,
     ctx: &AppContext,
     client: &sdks::RestClient<sdks::BearerAuth>,
+    config: &crate::api::ServerConfiguration,
 ) -> Result<Option<db::Media>> {
     // Try to get the series TMDB ID — prefer in-memory grandparent, fall back to DB.
     let series_tmdb_id = if let Some(tmdb) = media
@@ -1917,8 +1938,13 @@ async fn fetch_tmdb_season_meta(
     };
     let tv_details = client
         .execute(
-            sdks::tmdb::SeriesEndpoint::new(tmdb_id)
-                .with_cache(Duration::from_secs(360)),
+            sdks::tmdb::SeriesEndpoint::new(
+                tmdb_id,
+                config
+                    .preferred_metadata_language
+                    .clone(),
+            )
+            .with_cache(Duration::from_secs(360)),
         )
         .await?;
     let season_data = tv_details
@@ -2188,8 +2214,13 @@ async fn tmdb_remote_images(
             if let Some(tmdb_id) = tmdb_id {
                 let movie = client
                     .execute(
-                        sdks::tmdb::MovieEndpoint::new(tmdb_id)
-                            .with_cache(Duration::from_secs(360)),
+                        sdks::tmdb::MovieEndpoint::new(
+                            tmdb_id,
+                            config
+                                .preferred_metadata_language
+                                .clone(),
+                        )
+                        .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
                 if let Some(images) = &movie.images {
@@ -2268,8 +2299,13 @@ async fn tmdb_remote_images(
             if let Some(tmdb_id) = tmdb_id {
                 let tv = client
                     .execute(
-                        sdks::tmdb::SeriesEndpoint::new(tmdb_id)
-                            .with_cache(Duration::from_secs(360)),
+                        sdks::tmdb::SeriesEndpoint::new(
+                            tmdb_id,
+                            config
+                                .preferred_metadata_language
+                                .clone(),
+                        )
+                        .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
                 if let Some(images) = &tv.images {
@@ -2318,8 +2354,15 @@ async fn tmdb_remote_images(
             {
                 let ep = client
                     .execute(
-                        sdks::tmdb::EpisodeEndpoint::new(tmdb_id, s_n, e_n)
-                            .with_cache(Duration::from_secs(360)),
+                        sdks::tmdb::EpisodeEndpoint::new(
+                            tmdb_id,
+                            s_n,
+                            e_n,
+                            config
+                                .preferred_metadata_language
+                                .clone(),
+                        )
+                        .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
                 if let Some(images) = &ep.images {
@@ -2386,7 +2429,7 @@ pub(crate) async fn resolve_imdb_from_ids<A: sdks::Auth + Clone>(
         if is_tv {
             match client
                 .execute(
-                    sdks::tmdb::SeriesEndpoint::new(tmdb_id)
+                    sdks::tmdb::SeriesEndpoint::new(tmdb_id, None)
                         .with_cache(Duration::from_secs(86400)),
                 )
                 .await
@@ -2406,7 +2449,7 @@ pub(crate) async fn resolve_imdb_from_ids<A: sdks::Auth + Clone>(
         } else {
             match client
                 .execute(
-                    sdks::tmdb::MovieEndpoint::new(tmdb_id)
+                    sdks::tmdb::MovieEndpoint::new(tmdb_id, None)
                         .with_cache(Duration::from_secs(86400)),
                 )
                 .await
@@ -2471,7 +2514,7 @@ pub(crate) async fn resolve_imdb_from_ids<A: sdks::Auth + Clone>(
                 .id;
             let series = client
                 .execute(
-                    sdks::tmdb::SeriesEndpoint::new(tmdb_id)
+                    sdks::tmdb::SeriesEndpoint::new(tmdb_id, None)
                         .with_cache(Duration::from_secs(86400)),
                 )
                 .await
@@ -2488,7 +2531,7 @@ pub(crate) async fn resolve_imdb_from_ids<A: sdks::Auth + Clone>(
                 .id;
             let movie = client
                 .execute(
-                    sdks::tmdb::MovieEndpoint::new(tmdb_id)
+                    sdks::tmdb::MovieEndpoint::new(tmdb_id, None)
                         .with_cache(Duration::from_secs(86400)),
                 )
                 .await

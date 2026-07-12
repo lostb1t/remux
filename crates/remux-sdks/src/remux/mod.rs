@@ -4484,6 +4484,17 @@ impl Endpoint for GetCountries {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct GetCultures;
+
+impl Endpoint for GetCultures {
+    type Output = Vec<CultureDto>;
+
+    fn path(&self) -> String {
+        "/localization/cultures".into()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct GetParentalRatings;
 
 impl Endpoint for GetParentalRatings {

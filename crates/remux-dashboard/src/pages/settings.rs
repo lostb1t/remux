@@ -4,10 +4,10 @@ use crate::{
 };
 use dioxus::prelude::*;
 use remux_sdks::remux::{
-    CountryInfo, EmbeddedSubtitleHandling, EncodingOptions, GetCountries,
-    GetEncodingConfiguration, GetIntroConfiguration, GetSystemConfiguration,
-    HardwareAccelerationType, IntroOptions, IntroOrder, IntroTriggers,
-    ServerConfiguration, StartTask, UpdateEncodingConfiguration,
+    CountryInfo, CultureDto, EmbeddedSubtitleHandling, EncodingOptions, GetCountries,
+    GetCultures, GetEncodingConfiguration, GetIntroConfiguration,
+    GetSystemConfiguration, HardwareAccelerationType, IntroOptions, IntroOrder,
+    IntroTriggers, ServerConfiguration, StartTask, UpdateEncodingConfiguration,
     UpdateIntroConfiguration, UpdateSystemConfiguration,
 };
 
@@ -16,7 +16,9 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
     let mut server_name = use_signal(String::new);
     let mut metadata_country = use_signal(|| "US".to_string());
+    let mut metadata_language = use_signal(|| "en".to_string());
     let mut countries: Signal<Vec<CountryInfo>> = use_signal(Vec::new);
+    let mut cultures: Signal<Vec<CultureDto>> = use_signal(Vec::new);
     let mut catalog_max_items = use_signal(|| 100_i64);
     let mut meta_concurrency = use_signal(|| 12_i64);
     let mut filter_digital_release = use_signal(|| true);
@@ -49,6 +51,11 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                             .clone()
                             .unwrap_or_else(|| "US".to_string()),
                     );
+                    metadata_language.set(
+                        cfg.preferred_metadata_language
+                            .clone()
+                            .unwrap_or_else(|| "en".to_string()),
+                    );
                     catalog_max_items.set(
                         cfg.catalog_max_items
                             .unwrap_or(100),
@@ -76,6 +83,12 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
             {
                 countries.set(list);
             }
+            if let Ok(list) = client
+                .execute(GetCultures)
+                .await
+            {
+                cultures.set(list);
+            }
             loading.set(false);
         });
     });
@@ -89,6 +102,9 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
             .peek()
             .clone();
         let country = metadata_country
+            .peek()
+            .clone();
+        let language = metadata_language
             .peek()
             .clone();
         let max = *catalog_max_items.peek();
@@ -106,6 +122,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
             .unwrap_or_default();
         cfg.server_name = Some(name);
         cfg.metadata_country_code = Some(country);
+        cfg.preferred_metadata_language = Some(language);
         cfg.quick_connect_available = Some(qc_enabled);
         cfg.catalog_max_items = Some(max);
         cfg.meta_concurrency = concurrency;
@@ -169,6 +186,23 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                                         value: "{country.two_letter_iso_region_name}",
                                         selected: metadata_country.read().as_str() == country.two_letter_iso_region_name,
                                         "{country.name} ({country.two_letter_iso_region_name})"
+                                    }
+                                }
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", r#for: "s-language", "Metadata Language" }
+                            select {
+                                id: "s-language",
+                                class: "select-input",
+                                value: "{metadata_language}",
+                                onchange: move |e| metadata_language.set(e.value()),
+                                for culture in cultures.read().iter() {
+                                    option {
+                                        value: "{culture.two_letter_iso_language_name}",
+                                        selected: metadata_language.read().as_str() == culture.two_letter_iso_language_name,
+                                        "{culture.display_name} ({culture.two_letter_iso_language_name})"
                                     }
                                 }
                             }

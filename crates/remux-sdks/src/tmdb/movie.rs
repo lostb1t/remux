@@ -74,10 +74,10 @@ pub struct MovieEndpoint {
 }
 
 impl MovieEndpoint {
-    pub fn new(id: i64) -> Self {
+    pub fn new(id: i64, language: Option<String>) -> Self {
         Self {
             id,
-            language: Some("en".to_string()),
+            language,
             append_to_response: default_append_to_response(),
         }
     }
