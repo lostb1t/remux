@@ -9,6 +9,8 @@ pub struct ExternalIds {
     pub tmdb_id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tvdb_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kitsu_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -74,6 +76,9 @@ pub struct VideoTrackPayload {
     pub dv_rpu_present: bool,
     pub dv_bl_present: bool,
     pub dv_el_present: bool,
+    pub is_anamorphic: bool,
+    pub level: Option<i32>,
+    pub ref_frames: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize)]

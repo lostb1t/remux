@@ -630,6 +630,10 @@ fn media_info_from_probe(
             || item
                 .external_ids
                 .tvdb
+                .is_some()
+            || item
+                .external_ids
+                .kitsu
                 .is_some())
         .then(|| remuxdb::ExternalIds {
             imdb_id,
@@ -639,6 +643,9 @@ fn media_info_from_probe(
             tvdb_id: item
                 .external_ids
                 .tvdb,
+            kitsu_id: item
+                .external_ids
+                .kitsu,
         });
         let season = if item.kind == db::MediaKind::Episode {
             item.parent_idx
@@ -752,6 +759,15 @@ fn media_info_from_probe(
                     dv_el_present: ms
                         .el_present_flag
                         .map_or(false, |v| v != 0),
+                    is_anamorphic: ms
+                        .is_anamorphic
+                        .unwrap_or(false),
+                    level: ms
+                        .level
+                        .map(|v| v as i32),
+                    ref_frames: ms
+                        .ref_frames
+                        .map(|v| v as i32),
                 }))
             }
             MediaStreamType::Audio => {
