@@ -283,6 +283,14 @@ impl User {
         Ok(result.rows_affected() > 0)
     }
 
+    pub fn can_remote_control_others(&self) -> bool {
+        self.is_admin
+            || self
+                .policy
+                .as_deref()
+                .map_or(false, |p| p.enable_remote_control_of_other_users)
+    }
+
     pub async fn get_media_state(
         &self,
         db: &SqlitePool,

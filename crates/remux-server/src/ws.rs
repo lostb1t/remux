@@ -240,7 +240,7 @@ fn parse_sessions_data(data: Option<&serde_json::Value>) -> (u64, u64) {
 }
 
 async fn build_sessions(state: &AppState) -> Vec<api::SessionInfoDto> {
-    build_session_list(state, Some(Duration::from_secs(600)), None)
+    build_session_list(state, Some(Duration::from_secs(120)), None)
         .await
         .unwrap_or_default()
 }

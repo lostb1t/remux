@@ -708,9 +708,13 @@ pub async fn get_sessions(
     _session: auth::AuthSession,
     Query(q): Query<SessionsQuery>,
 ) -> Result<impl IntoResponse> {
+    // Unlike Jellyfin (in-memory sessions that vanish on restart), our sessions
+    // accumulate in the DB forever. Without a default window, GET /Sessions
+    // returns every device that ever connected. Clients send KeepAlive every
+    // ~30 s, so 2 min gives comfortable headroom while keeping the list clean.
     let active_within = q
         .active_within
-        .or(Some(Duration::from_secs(600)));
+        .or(Some(Duration::from_secs(120)));
     let mut sessions = build_session_list(
         &state,
         active_within,
@@ -732,12 +736,7 @@ pub async fn get_sessions(
         .await?;
         let can_control_others = ctrl_user
             .as_ref()
-            .map_or(false, |u| {
-                u.is_admin
-                    || u.policy
-                        .as_deref()
-                        .map_or(false, |p| p.enable_remote_control_of_other_users)
-            });
+            .map_or(false, |u| u.can_remote_control_others());
         if !can_control_others {
             sessions.retain(|s| s.user_id == ctrl_uid.to_string());
         }
@@ -858,20 +857,13 @@ pub async fn remote_play(
     )
     .await?
     .context_not_found("session not found")?;
-    let policy = session
-        .user
-        .policy
-        .as_deref()
-        .cloned()
-        .unwrap_or_default();
     if device.user_id
         != session
             .user
             .id
         && !session
             .user
-            .is_admin
-        && !policy.enable_remote_control_of_other_users
+            .can_remote_control_others()
     {
         return Err(anyhow::anyhow!("Forbidden")
             .context_forbidden("cannot control other users' sessions"));
@@ -921,20 +913,13 @@ pub async fn remote_playstate_command(
     )
     .await?
     .context_not_found("session not found")?;
-    let policy = session
-        .user
-        .policy
-        .as_deref()
-        .cloned()
-        .unwrap_or_default();
     if device.user_id
         != session
             .user
             .id
         && !session
             .user
-            .is_admin
-        && !policy.enable_remote_control_of_other_users
+            .can_remote_control_others()
     {
         return Err(anyhow::anyhow!("Forbidden")
             .context_forbidden("cannot control other users' sessions"));
@@ -969,20 +954,13 @@ pub async fn remote_general_command(
     )
     .await?
     .context_not_found("session not found")?;
-    let policy = session
-        .user
-        .policy
-        .as_deref()
-        .cloned()
-        .unwrap_or_default();
     if device.user_id
         != session
             .user
             .id
         && !session
             .user
-            .is_admin
-        && !policy.enable_remote_control_of_other_users
+            .can_remote_control_others()
     {
         return Err(anyhow::anyhow!("Forbidden")
             .context_forbidden("cannot control other users' sessions"));
@@ -1014,20 +992,13 @@ pub async fn remote_full_command(
     )
     .await?
     .context_not_found("session not found")?;
-    let policy = session
-        .user
-        .policy
-        .as_deref()
-        .cloned()
-        .unwrap_or_default();
     if device.user_id
         != session
             .user
             .id
         && !session
             .user
-            .is_admin
-        && !policy.enable_remote_control_of_other_users
+            .can_remote_control_others()
     {
         return Err(anyhow::anyhow!("Forbidden")
             .context_forbidden("cannot control other users' sessions"));
@@ -1062,20 +1033,13 @@ pub async fn remote_system_command(
     )
     .await?
     .context_not_found("session not found")?;
-    let policy = session
-        .user
-        .policy
-        .as_deref()
-        .cloned()
-        .unwrap_or_default();
     if device.user_id
         != session
             .user
             .id
         && !session
             .user
-            .is_admin
-        && !policy.enable_remote_control_of_other_users
+            .can_remote_control_others()
     {
         return Err(anyhow::anyhow!("Forbidden")
             .context_forbidden("cannot control other users' sessions"));
@@ -1107,20 +1071,13 @@ pub async fn remote_message(
     )
     .await?
     .context_not_found("session not found")?;
-    let policy = session
-        .user
-        .policy
-        .as_deref()
-        .cloned()
-        .unwrap_or_default();
     if device.user_id
         != session
             .user
             .id
         && !session
             .user
-            .is_admin
-        && !policy.enable_remote_control_of_other_users
+            .can_remote_control_others()
     {
         return Err(anyhow::anyhow!("Forbidden")
             .context_forbidden("cannot control other users' sessions"));
@@ -1159,20 +1116,13 @@ pub async fn remote_viewing(
     )
     .await?
     .context_not_found("session not found")?;
-    let policy = session
-        .user
-        .policy
-        .as_deref()
-        .cloned()
-        .unwrap_or_default();
     if device.user_id
         != session
             .user
             .id
         && !session
             .user
-            .is_admin
-        && !policy.enable_remote_control_of_other_users
+            .can_remote_control_others()
     {
         return Err(anyhow::anyhow!("Forbidden")
             .context_forbidden("cannot control other users' sessions"));
