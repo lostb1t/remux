@@ -270,16 +270,12 @@ struct SessionsQuery {
     controllable_by_user_id: Option<Uuid>,
 }
 
-/// Get all active sessions
-#[get("/sessions")]
-pub async fn get_sessions(
-    State(state): State<AppState>,
-    _session: auth::AuthSession,
-    Query(q): Query<SessionsQuery>,
-) -> Result<impl IntoResponse> {
-    let active_within = q
-        .active_within
-        .or(Some(Duration::from_secs(600)));
+/// Build the full session list — shared by the HTTP handler and the WS push.
+pub(crate) async fn build_session_list(
+    state: &AppState,
+    active_within: Option<Duration>,
+    device_id: Option<&str>,
+) -> anyhow::Result<Vec<api::SessionInfoDto>> {
     let mut devices = auth::Device::get_all(
         &state
             .ctx
@@ -287,8 +283,8 @@ pub async fn get_sessions(
         active_within,
     )
     .await?;
-    if let Some(ref did) = q.device_id {
-        devices.retain(|d| &d.id == did);
+    if let Some(did) = device_id {
+        devices.retain(|d| d.id == did);
     }
     let playback_sessions = state
         .ctx
@@ -701,6 +697,27 @@ pub async fn get_sessions(
             ..Default::default()
         });
     }
+
+    Ok(sessions)
+}
+
+/// Get all active sessions
+#[get("/sessions")]
+pub async fn get_sessions(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    Query(q): Query<SessionsQuery>,
+) -> Result<impl IntoResponse> {
+    let active_within = q
+        .active_within
+        .or(Some(Duration::from_secs(600)));
+    let mut sessions = build_session_list(
+        &state,
+        active_within,
+        q.device_id
+            .as_deref(),
+    )
+    .await?;
 
     if let Some(ctrl_uid) = q.controllable_by_user_id {
         // Only remotely-controllable sessions (require active WS / media control capability).
