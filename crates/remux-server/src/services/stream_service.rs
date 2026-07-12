@@ -478,10 +478,25 @@ impl StreamService {
             .await
             .map_err(|e| anyhow::anyhow!("{e:?}"))?;
 
-            let cid = self.source_id_for(&effective_stream);
+            // Use the StreamGroup UUID when this candidate is a group representative
+            // (group_id is set by filter_sources). This ensures the client sends back
+            // the stable group UUID, not a stream UUID that can change after a refresh.
+            let (cid, name) = if let Some(gid) = stream.group_id {
+                (
+                    gid,
+                    stream
+                        .title
+                        .clone(),
+                )
+            } else {
+                (
+                    self.source_id_for(&effective_stream),
+                    self.source_name_for(&effective_stream),
+                )
+            };
             source.id = cid;
             source.e_tag = cid;
-            source.name = Some(self.source_name_for(&effective_stream));
+            source.name = Some(name);
             source.has_segments = true;
             source.path = Some(format!("/remux/{}", effective_stream.id));
             source.is_remote = false;

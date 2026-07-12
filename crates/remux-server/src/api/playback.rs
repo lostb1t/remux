@@ -2308,6 +2308,238 @@ mod tests {
         );
     }
 
+    /// When an item has multiple stream groups, each group's source ID in the
+    /// initial PlaybackInfo response must be the StreamGroup UUID (not a stream UUID).
+    /// Selecting a group by its UUID must return only streams from that group,
+    /// not the first stream from the first group.
+    #[tokio::test]
+    async fn test_stream_group_selection_uses_group_uuid_and_plays_correct_stream() {
+        use crate::{api, db};
+        use remux_sdks::remux::{
+            FilterMatchMode, SetOp, StreamFilter, StreamQuality, StreamResolution,
+            StreamRule,
+        };
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let ctx = &guard.0;
+        let now = chrono::Utc::now().naive_utc();
+
+        // Groups: WEB (priority 0) and Blu-ray (priority 1)
+        let web_group = crate::db::StreamGroup::create(
+            &ctx.db,
+            "1080p · WEB",
+            StreamFilter {
+                match_mode: FilterMatchMode::All,
+                rules: vec![
+                    StreamRule::Resolution {
+                        op: SetOp::In,
+                        values: vec![StreamResolution::R1080p],
+                    },
+                    StreamRule::Quality {
+                        op: SetOp::In,
+                        values: vec![StreamQuality::WebDl, StreamQuality::WebRip],
+                    },
+                ],
+            },
+            0,
+        )
+        .await
+        .unwrap();
+
+        let bluray_group = crate::db::StreamGroup::create(
+            &ctx.db,
+            "1080p · Blu-ray",
+            StreamFilter {
+                match_mode: FilterMatchMode::All,
+                rules: vec![
+                    StreamRule::Resolution {
+                        op: SetOp::In,
+                        values: vec![StreamResolution::R1080p],
+                    },
+                    StreamRule::Quality {
+                        op: SetOp::In,
+                        values: vec![StreamQuality::BluRay, StreamQuality::BluRayRemux],
+                    },
+                ],
+            },
+            1,
+        )
+        .await
+        .unwrap();
+
+        let make_probe = || api::MediaSourceInfo {
+            container: Some("mkv".to_string()),
+            bitrate: Some(8_000_000),
+            run_time_ticks: Some(100_000_000),
+            media_streams: vec![
+                api::MediaStream {
+                    codec: Some("h264".to_string()),
+                    type_: Some(api::MediaStreamType::Video),
+                    index: 0,
+                    width: Some(1920),
+                    height: Some(1080),
+                    ..Default::default()
+                },
+                api::MediaStream {
+                    codec: Some("aac".to_string()),
+                    type_: Some(api::MediaStreamType::Audio),
+                    index: 1,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let mut movie = db::Media {
+            title: "Test Movie".to_string(),
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt9999999").ok(),
+                ..Default::default()
+            },
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        movie.id = uuid::Uuid::from(&movie.media_id_raw());
+        movie
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        sqlx::query("UPDATE media SET streams_refreshed_at = ? WHERE id = ?")
+            .bind(now)
+            .bind(movie.id)
+            .execute(&ctx.db)
+            .await
+            .unwrap();
+
+        let mut web_stream = db::Media {
+            title: "TestMovie.2026.1080p.WEB-DL.H264.mkv".to_string(),
+            kind: db::MediaKind::Stream,
+            parent_id: Some(movie.id),
+            idx: Some(0),
+            stream_info: Some(crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::Local(
+                    "TestMovie.2026.1080p.WEB-DL.H264.mkv".into(),
+                ),
+                filename: Some("TestMovie.2026.1080p.WEB-DL.H264.mkv".to_string()),
+                ..Default::default()
+            }),
+            probe_data: Some(make_probe()),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        web_stream
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let mut bluray_stream = db::Media {
+            title: "TestMovie.2026.1080p.BluRay.x264.mkv".to_string(),
+            kind: db::MediaKind::Stream,
+            parent_id: Some(movie.id),
+            idx: Some(1),
+            stream_info: Some(crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::Local(
+                    "TestMovie.2026.1080p.BluRay.x264.mkv".into(),
+                ),
+                filename: Some("TestMovie.2026.1080p.BluRay.x264.mkv".to_string()),
+                ..Default::default()
+            }),
+            probe_data: Some(make_probe()),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        bluray_stream
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        // ── Initial PlaybackInfo: no MediaSourceId ────────────────────────────
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", movie.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({}))
+            .await;
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let sources = body["MediaSources"]
+            .as_array()
+            .unwrap();
+
+        assert_eq!(sources.len(), 2, "expected one source per group");
+        // Source[0] (WEB group) gets its Id overridden to item_id
+        assert_eq!(
+            sources[0]["Id"]
+                .as_str()
+                .unwrap(),
+            movie
+                .id
+                .to_string()
+        );
+        // Source[1] (Blu-ray group) must carry the StreamGroup UUID, not a stream UUID
+        assert_eq!(
+            sources[1]["Id"]
+                .as_str()
+                .unwrap(),
+            bluray_group
+                .id
+                .to_string(),
+            "blu-ray group source Id must be the StreamGroup UUID"
+        );
+
+        // ── Select Blu-ray group by its UUID ─────────────────────────────────
+        let resp2 = server
+            .post(&format!("/items/{}/playbackinfo", movie.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({ "MediaSourceId": bluray_group.id.to_string() }))
+            .await;
+        resp2.assert_status_ok();
+        let body2: serde_json::Value = resp2.json();
+        let sources2 = body2["MediaSources"]
+            .as_array()
+            .unwrap();
+
+        assert_eq!(
+            sources2.len(),
+            1,
+            "specific group request must return one source"
+        );
+        // The source Id must remain the group UUID (not the item Id)
+        assert_eq!(
+            sources2[0]["Id"]
+                .as_str()
+                .unwrap(),
+            bluray_group
+                .id
+                .to_string(),
+            "source Id must be the Blu-ray group UUID"
+        );
+        // Path must reference the blu-ray stream file, not the WEB stream
+        let path = sources2[0]["Path"]
+            .as_str()
+            .unwrap_or("");
+        assert!(
+            path.contains(
+                &bluray_stream
+                    .id
+                    .to_string()
+            ),
+            "source Path must reference the Blu-ray stream ({}), got: {path}",
+            bluray_stream.id
+        );
+    }
+
     /// When the client POSTs an explicit `AudioStreamIndex`, language preference
     /// must not override `DefaultAudioStreamIndex` in the response.
     #[tokio::test]
