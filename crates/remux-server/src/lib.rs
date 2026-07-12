@@ -537,10 +537,37 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
             || lower_path.starts_with("/items/")
             || lower_path.starts_with("/mediasegments/")
             || lower_path.starts_with("/sessions/"));
-    let new_path = if path != "/" && (!is_file_like || api_file_like) {
+
+    // Smart-lowercase: only lowercase purely-alphabetic segments (route
+    // keywords like "Sessions", "Playing"). Path parameter values — UUIDs,
+    // base64 device IDs — contain digits and are preserved unchanged.
+    let smart_lower_path: String = path
+        .split('/')
+        .map(|seg| {
+            if seg
+                .chars()
+                .all(|c| c.is_ascii_alphabetic())
+            {
+                seg.to_ascii_lowercase()
+            } else {
+                seg.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+
+    let new_path = if path == "/" {
+        path
+    } else if is_file_like && !api_file_like {
+        // Static file — preserve original casing.
+        path
+    } else if api_file_like {
+        // Known API file endpoint (HLS, VTT …) — full lowercase so the route
+        // and file-extension both match our lowercase handler definitions.
         lower_path
     } else {
-        path
+        // Regular API route — lowercase route keywords, preserve param values.
+        smart_lower_path
     };
 
     let query = uri
