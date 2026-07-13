@@ -236,7 +236,8 @@ fn Login(on_login: EventHandler) -> Element {
                                             let user_id = user.id;
                                             let url = server_url.read().clone().unwrap_or_default();
                                             rsx! {
-                                                div {
+                                                button {
+                                                    r#type: "button",
                                                     class: "public-user-card",
                                                     key: "{user_id}",
                                                     onclick: move |_| {
