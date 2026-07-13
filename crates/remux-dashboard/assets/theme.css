@@ -31,6 +31,54 @@
   --transition: .1s ease;
 }
 
+/* ── System Dark Mode Preference (Auto) ─────────────────────────── */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:             #121212;
+    --bg-elevated:    #1e1e1e;
+    --panel:          #1e1e1e;
+    --panel-hover:    #262626;
+    --border:         #2d2d2d;
+    --border-hover:   #404040;
+    --text:           #f5f5f7;
+    --text-secondary: #a1a1a6;
+    --text-muted:     #86868b;
+    --text-dim:       #424245;
+    --primary:        #00b354;
+    --primary-hover:  #009245;
+    --primary-glow:   rgba(0, 179, 84, .15);
+    --primary-dim:    rgba(0, 179, 84, .08);
+    --error:          #e74c3c;
+    --error-glow:     rgba(231, 76, 60, .15);
+    --success:        #00b354;
+    --shadow-sm:      0 1px 3px rgba(0,0,0,.3);
+    --shadow-md:      0 2px 8px rgba(0,0,0,.5);
+  }
+}
+
+/* ── Explicit Dark Mode Override ────────────────────────────────── */
+:root[data-theme="dark"] {
+  --bg:             #121212;
+  --bg-elevated:    #1e1e1e;
+  --panel:          #1e1e1e;
+  --panel-hover:    #262626;
+  --border:         #2d2d2d;
+  --border-hover:   #404040;
+  --text:           #f5f5f7;
+  --text-secondary: #a1a1a6;
+  --text-muted:     #86868b;
+  --text-dim:       #424245;
+  --primary:        #00b354;
+  --primary-hover:  #009245;
+  --primary-glow:   rgba(0, 179, 84, .15);
+  --primary-dim:    rgba(0, 179, 84, .08);
+  --error:          #e74c3c;
+  --error-glow:     rgba(231, 76, 60, .15);
+  --success:        #00b354;
+  --shadow-sm:      0 1px 3px rgba(0,0,0,.3);
+  --shadow-md:      0 2px 8px rgba(0,0,0,.5);
+}
+
 /* ── Base ────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; }
 
@@ -1687,4 +1735,40 @@ html, body {
   gap: 12px;
   padding: 10px 16px;
   border-top: 1px solid var(--border);
+}
+
+/* Theme Selector styles */
+.theme-selector-container {
+  display: flex;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 2px;
+  gap: 2px;
+}
+
+.theme-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-family: var(--font-head);
+  font-size: 0.7rem;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: calc(var(--radius-md) - 1px);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.theme-btn:hover {
+  color: var(--text);
+  background: var(--panel-hover);
+}
+
+.theme-btn.active {
+  background: var(--panel);
+  color: var(--primary);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border);
 }

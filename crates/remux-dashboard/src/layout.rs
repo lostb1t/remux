@@ -66,6 +66,22 @@ pub(crate) fn SidebarGroup(
 
 #[component]
 pub fn DashboardLayout() -> Element {
+    let mut theme = use_signal(|| {
+        LocalStorage::get::<String>("theme").unwrap_or_else(|_| "auto".to_string())
+    });
+
+    use_effect(move || {
+        let current_theme = theme.read().clone();
+        let _ = LocalStorage::set("theme", &current_theme);
+        if let Some(window) = web_sys::window() {
+            if let Some(document) = window.document() {
+                if let Some(html) = document.document_element() {
+                    let _ = html.set_attribute("data-theme", &current_theme);
+                }
+            }
+        }
+    });
+
     let server = match get_stored_server() {
         Some(s) => s,
         None => return rsx! { div { "Not logged in" } },
@@ -263,15 +279,40 @@ pub fn DashboardLayout() -> Element {
 
             div { class: "main",
                 div { class: "main-header",
-                    button {
-                        class: "hamburger",
-                        onclick: move |_| {
-                            let open = !*sidebar_open.read();
-                            sidebar_open.set(open);
-                        },
-                        "☰"
+                    style: "display:flex; justify-content:space-between; align-items:center; width:100%",
+                    div {
+                        style: "display:flex; align-items:center; gap:12px",
+                        button {
+                            class: "hamburger",
+                            onclick: move |_| {
+                                let open = !*sidebar_open.read();
+                                sidebar_open.set(open);
+                            },
+                            "☰"
+                        }
+                        h2 { class: "main-title", "{page_title}" }
                     }
-                    h2 { class: "main-title", "{page_title}" }
+
+                    div { class: "theme-selector-container",
+                        button {
+                            class: if *theme.read() == "auto" { "theme-btn active" } else { "theme-btn" },
+                            onclick: move |_| theme.set("auto".to_string()),
+                            title: "Use system theme",
+                            "Auto"
+                        }
+                        button {
+                            class: if *theme.read() == "light" { "theme-btn active" } else { "theme-btn" },
+                            onclick: move |_| theme.set("light".to_string()),
+                            title: "Use light theme",
+                            "Light"
+                        }
+                        button {
+                            class: if *theme.read() == "dark" { "theme-btn active" } else { "theme-btn" },
+                            onclick: move |_| theme.set("dark".to_string()),
+                            title: "Use dark theme",
+                            "Dark"
+                        }
+                    }
                 }
 
                 div { class: "shell",
