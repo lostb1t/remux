@@ -761,8 +761,24 @@ pub async fn update_user(
 // ===== Route aliases (same handler, different path) =====
 
 #[get("/users/public")]
-pub async fn users_public() -> Result<impl IntoResponse> {
-    Ok(Json::<Vec<api::UserDto>>(vec![]).into_response())
+pub async fn users_public(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
+    let all_users = sqlx::query_as::<_, User>("SELECT * FROM users")
+        .fetch_all(&state.ctx.db)
+        .await?;
+
+    let dtos: Vec<api::UserDto> = all_users
+        .into_iter()
+        .filter(|u| {
+            let policy = u.policy.as_ref().map(|p| &p.0);
+            let is_hidden = policy.map(|p| p.is_hidden).unwrap_or(false);
+            !is_hidden
+        })
+        .map(|u| api::db_user_to_dto(&state.ctx.config.data_dir, u))
+        .collect();
+
+    Ok(Json(dtos).into_response())
 }
 
 #[get("/users/{user_id}")]

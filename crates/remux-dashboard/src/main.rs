@@ -1,9 +1,10 @@
 use dioxus::prelude::*;
+use web_sys::wasm_bindgen::JsCast;
 use remux_sdks::{
     remux::{
         AuthenticateUserByName, CountryInfo, GetCountries, GetStartupConfiguration,
         JellyfinAuth, PostStartupComplete, PostStartupConfiguration, PostStartupUser,
-        PublicSystemInfo, StartupConfiguration, StartupUser, Username,
+        PublicSystemInfo, StartupConfiguration, StartupUser, Username, GetPublicUsers, UserDto,
     },
     ClientError,
 };
@@ -87,6 +88,23 @@ fn Login(on_login: EventHandler) -> Element {
     let mut password = use_signal(String::new);
     let mut error = use_signal(|| Option::<String>::None);
     let mut loading = use_signal(|| false);
+    let mut public_users = use_signal(Vec::<UserDto>::new);
+
+    let server_url_effect = server_url.clone();
+    use_effect(move || {
+        let url_opt = server_url_effect.read().clone();
+        if let Some(url) = url_opt {
+            if !url.is_empty() {
+                spawn(async move {
+                    if let Ok(client) = remux_sdks::remux::client(&url) {
+                        if let Ok(users) = client.execute(GetPublicUsers).await {
+                            public_users.set(users);
+                        }
+                    }
+                });
+            }
+        }
+    });
 
     use_effect(move || {
         spawn(async move {
@@ -201,6 +219,58 @@ fn Login(on_login: EventHandler) -> Element {
                         form {
                             onsubmit: on_submit,
                             style: "display:flex;flex-direction:column;gap:14px;",
+
+                            if !public_users.read().is_empty() {
+                                div {
+                                    style: "text-align:center;margin-bottom:6px;",
+                                    span {
+                                        style: "font-size:0.75rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em",
+                                        "Select User"
+                                    }
+                                }
+                                div { class: "public-users-container",
+                                    for user in public_users.read().clone() {
+                                        {
+                                            let username_val = user.name.clone();
+                                            let has_img = user.primary_image_tag.is_some();
+                                            let user_id = user.id;
+                                            let url = server_url.read().clone().unwrap_or_default();
+                                            rsx! {
+                                                div {
+                                                    class: "public-user-card",
+                                                    key: "{user_id}",
+                                                    onclick: move |_| {
+                                                        username.set(username_val.clone());
+                                                        if let Some(window) = web_sys::window() {
+                                                            if let Some(document) = window.document() {
+                                                                if let Some(element) = document.get_element_by_id("password") {
+                                                                    if let Ok(html_element) = element.dyn_into::<web_sys::HtmlElement>() {
+                                                                        let _ = html_element.focus();
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    div { class: "public-user-avatar-wrapper",
+                                                        if has_img {
+                                                            img {
+                                                                class: "public-user-avatar-img",
+                                                                src: "{url}/users/{user_id}/images/primary",
+                                                                alt: "{username_val}",
+                                                            }
+                                                        } else {
+                                                            span { class: "public-user-avatar-placeholder",
+                                                                "{username_val.chars().next().unwrap_or('?')}"
+                                                            }
+                                                        }
+                                                    }
+                                                    span { class: "public-user-name", "{username_val}" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
 
                             if server_url.read().as_deref() == Some("") {
                                 div { class: "field",

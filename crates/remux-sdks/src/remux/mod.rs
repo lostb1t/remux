@@ -4890,6 +4890,16 @@ impl Endpoint for GetUsers {
 }
 
 #[derive(Debug, Clone)]
+pub struct GetPublicUsers;
+
+impl Endpoint for GetPublicUsers {
+    type Output = Vec<UserDto>;
+    fn path(&self) -> String {
+        "/users/public".into()
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct CreateUser {
     pub name: String,
     pub password: String,

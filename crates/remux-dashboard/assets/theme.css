@@ -443,6 +443,78 @@ html, body {
   padding: 20px 0;
 }
 
+/* ── Public User Selection Grid ─────────────────────────────────── */
+.public-users-container {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 16px;
+  margin: 4px 0 16px 0;
+  padding: 8px;
+  background: var(--panel-elevated);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+}
+
+.public-user-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  width: 72px;
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.public-user-card:hover {
+  transform: translateY(-2px);
+}
+
+.public-user-avatar-wrapper {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid transparent;
+  transition: all 0.2s ease;
+  box-shadow: var(--shadow-sm);
+}
+
+.public-user-card:hover .public-user-avatar-wrapper {
+  border-color: var(--primary);
+  box-shadow: 0 0 12px rgba(var(--primary-rgb), 0.3);
+}
+
+.public-user-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.public-user-avatar-placeholder {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.public-user-name {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text);
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
 /* ── Task groups ─────────────────────────────────────────────────── */
 .task-group + .task-group {
   margin-top: 16px;
