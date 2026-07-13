@@ -851,6 +851,7 @@ pub struct PublicSystemInfo {
     pub version: String,
     pub remux_version: String,
     pub operating_system: String,
+    pub remux_started_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -4073,6 +4074,21 @@ impl Endpoint for PublicSystemInfo {
 
     fn path(&self) -> String {
         "/system/info/public".into()
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct RestartServer;
+
+impl Endpoint for RestartServer {
+    type Output = serde_json::Value;
+
+    fn path(&self) -> String {
+        "/system/restart".into()
+    }
+
+    fn method(&self) -> Method {
+        Method::POST
     }
 }
 

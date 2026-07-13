@@ -261,6 +261,7 @@ pub async fn init_app(
         )),
         web_paths,
         addons,
+        started_at: Utc::now(),
     };
 
     // Sync intro items at startup (best-effort; errors are logged not fatal).
@@ -347,6 +348,8 @@ pub struct AppContext {
     /// Present in filesystem builds; `None` in desktop (assets are embedded).
     pub web_paths: Option<FilesystemPaths>,
     pub addons: addons::AddonService,
+    /// When this server process started.
+    pub started_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl AppContext {
