@@ -2836,8 +2836,13 @@ async fn apply_user_playback_prefs(
             }
         }
 
-        // --- play_default_audio_track ---
-        if !cfg.play_default_audio_track {
+        // --- play_default_audio_track regardless of language ---
+        // When enabled, the container's default audio track should play even if the
+        // user has a language preference set. Clear any language-preference selection
+        // so the client falls back to the container's default (track with is_default,
+        // or first audio track).
+        // When disabled, the user's language preference (set above) is respected.
+        if cfg.play_default_audio_track {
             source.default_audio_stream_index = None;
         }
 
