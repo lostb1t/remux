@@ -940,11 +940,13 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                     .into_iter()
                     .map(MediaSourceInfo::from)
                     .collect();
-                // All sources must expose the parent item's ID so clients like
-                // Android TV don't navigate to stream-group UUIDs as standalone items.
-                for info in &mut infos {
-                    info.id = media.id;
-                    info.e_tag = media.id;
+                // Clients expect the first source's ID to equal the parent item's ID
+                // (Jellyfin convention + auto-play). Remaining versions keep their own
+                // distinct IDs (group UUID or stream UUID) so the client can select and
+                // play the version the user picked — matching the PlaybackInfo endpoint.
+                if let Some(first) = infos.first_mut() {
+                    first.id = media.id;
+                    first.e_tag = media.id;
                 }
                 Some(infos)
             }
@@ -1104,4 +1106,50 @@ pub struct RemoteSubtitleInfo {
     pub is_hash_match: Option<bool>,
     pub ai_translated: Option<bool>,
     pub machine_translated: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    #[test]
+    fn media_sources_keep_distinct_ids_only_first_is_item_id() {
+        let item_id = Uuid::new_v4();
+        let s2_id = Uuid::new_v4();
+
+        let media = db::Media {
+            id: item_id,
+            kind: db::MediaKind::Episode,
+            title: "Episode".to_string(),
+            sources: Some(vec![
+                db::Media {
+                    id: Uuid::new_v4(),
+                    kind: db::MediaKind::Stream,
+                    title: "1080p".to_string(),
+                    ..Default::default()
+                },
+                db::Media {
+                    id: s2_id,
+                    kind: db::MediaKind::Stream,
+                    title: "4K".to_string(),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+
+        let item = db_media_to_item(media, false);
+        let sources = item
+            .media_sources
+            .expect("episode with sources must expose media_sources");
+
+        assert_eq!(sources.len(), 2, "both versions must be present");
+        // Jellyfin convention + auto-play: first source id == item id.
+        assert_eq!(sources[0].id, item_id);
+        assert_eq!(sources[0].e_tag, item_id);
+        // Second version must keep its own distinct id so the client can select it.
+        assert_eq!(sources[1].id, s2_id);
+        assert_eq!(sources[1].e_tag, s2_id);
+    }
 }
