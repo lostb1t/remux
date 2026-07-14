@@ -270,22 +270,21 @@ struct SessionsQuery {
     controllable_by_user_id: Option<Uuid>,
 }
 
-/// Get all active sessions
-#[get("/sessions")]
-pub async fn get_sessions(
-    State(state): State<AppState>,
-    _session: auth::AuthSession,
-    Query(q): Query<SessionsQuery>,
-) -> Result<impl IntoResponse> {
+/// Build the full session list — shared by the HTTP handler and the WS push.
+pub(crate) async fn build_session_list(
+    state: &AppState,
+    active_within: Option<Duration>,
+    device_id: Option<&str>,
+) -> anyhow::Result<Vec<api::SessionInfoDto>> {
     let mut devices = auth::Device::get_all(
         &state
             .ctx
             .db,
-        q.active_within,
+        active_within,
     )
     .await?;
-    if let Some(ref did) = q.device_id {
-        devices.retain(|d| &d.id == did);
+    if let Some(did) = device_id {
+        devices.retain(|d| d.id == did);
     }
     let playback_sessions = state
         .ctx
@@ -578,7 +577,11 @@ pub async fn get_sessions(
             .unwrap_or_default(),
         );
 
-        let capabilities = device.parsed_capabilities();
+        let capabilities = Some(
+            device
+                .parsed_capabilities()
+                .unwrap_or_default(),
+        );
 
         let (
             playable_media_types,
@@ -695,6 +698,50 @@ pub async fn get_sessions(
         });
     }
 
+    Ok(sessions)
+}
+
+/// Get all active sessions
+#[get("/sessions")]
+pub async fn get_sessions(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    Query(q): Query<SessionsQuery>,
+) -> Result<impl IntoResponse> {
+    // Unlike Jellyfin (in-memory sessions that vanish on restart), our sessions
+    // accumulate in the DB forever. Without a default window, GET /Sessions
+    // returns every device that ever connected. Clients send KeepAlive every
+    // ~30 s, so 2 min gives comfortable headroom while keeping the list clean.
+    let active_within = q
+        .active_within
+        .or(Some(Duration::from_secs(120)));
+    let mut sessions = build_session_list(
+        &state,
+        active_within,
+        q.device_id
+            .as_deref(),
+    )
+    .await?;
+
+    if let Some(ctrl_uid) = q.controllable_by_user_id {
+        // Only remotely-controllable sessions (require active WS / media control capability).
+        sessions.retain(|s| s.supports_remote_control);
+
+        let ctrl_user = db::User::get_by_id(
+            &state
+                .ctx
+                .db,
+            &ctrl_uid,
+        )
+        .await?;
+        let can_control_others = ctrl_user
+            .as_ref()
+            .map_or(false, |u| u.can_remote_control_others());
+        if !can_control_others {
+            sessions.retain(|s| s.user_id == ctrl_uid.to_string());
+        }
+    }
+
     Ok(Json(sessions))
 }
 
@@ -798,15 +845,29 @@ struct RemoteMessageBody {
 #[post("/sessions/{sessionid}/playing")]
 pub async fn remote_play(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Path(session_id): Path<String>,
     Query(q): Query<RemotePlayQuery>,
 ) -> Result<impl IntoResponse> {
-    let target = state
-        .ctx
-        .sessions
-        .get(&session_id)
-        .context_not_found("session not found")?;
+    let device = auth::Device::get_by_id(
+        &state
+            .ctx
+            .db,
+        &session_id,
+    )
+    .await?
+    .context_not_found("session not found")?;
+    if device.user_id
+        != session
+            .user
+            .id
+        && !session
+            .user
+            .can_remote_control_others()
+    {
+        return Err(anyhow::anyhow!("Forbidden")
+            .context_forbidden("cannot control other users' sessions"));
+    }
     let data = serde_json::json!({
         "ItemIds": *q.item_ids,
         "PlayCommand": q.play_command.unwrap_or_else(|| "PlayNow".to_string()),
@@ -816,13 +877,23 @@ pub async fn remote_play(
         "SubtitleStreamIndex": q.subtitle_stream_index,
         "StartIndex": q.start_index,
     });
-    let _ = state
+    let receivers = state
+        .ctx
+        .ws_tx
+        .receiver_count();
+    info!(device_id = %device.id, ws_receivers = receivers, "sending remote Play command");
+    let result = state
         .ctx
         .ws_tx
         .send(crate::ws::WsEvent::RemotePlay {
-            device_id: target.device_id,
+            device_id: device
+                .id
+                .clone(),
             data,
         });
+    if let Err(_) = result {
+        info!(device_id = %device.id, "no WS receivers for remote Play (target may not be connected)");
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -830,15 +901,29 @@ pub async fn remote_play(
 #[post("/sessions/{sessionid}/playing/{command}")]
 pub async fn remote_playstate_command(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Path((session_id, command)): Path<(String, String)>,
     Query(q): Query<RemotePlaystateQuery>,
 ) -> Result<impl IntoResponse> {
-    let target = state
-        .ctx
-        .sessions
-        .get(&session_id)
-        .context_not_found("session not found")?;
+    let device = auth::Device::get_by_id(
+        &state
+            .ctx
+            .db,
+        &session_id,
+    )
+    .await?
+    .context_not_found("session not found")?;
+    if device.user_id
+        != session
+            .user
+            .id
+        && !session
+            .user
+            .can_remote_control_others()
+    {
+        return Err(anyhow::anyhow!("Forbidden")
+            .context_forbidden("cannot control other users' sessions"));
+    }
     let data = serde_json::json!({
         "Command": command,
         "SeekPositionTicks": q.seek_position_ticks,
@@ -848,7 +933,7 @@ pub async fn remote_playstate_command(
         .ctx
         .ws_tx
         .send(crate::ws::WsEvent::RemotePlaystate {
-            device_id: target.device_id,
+            device_id: device.id,
             data,
         });
     Ok(StatusCode::NO_CONTENT)
@@ -858,20 +943,34 @@ pub async fn remote_playstate_command(
 #[post("/sessions/{sessionid}/command/{command}")]
 pub async fn remote_general_command(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Path((session_id, command)): Path<(String, String)>,
 ) -> Result<impl IntoResponse> {
-    let target = state
-        .ctx
-        .sessions
-        .get(&session_id)
-        .context_not_found("session not found")?;
+    let device = auth::Device::get_by_id(
+        &state
+            .ctx
+            .db,
+        &session_id,
+    )
+    .await?
+    .context_not_found("session not found")?;
+    if device.user_id
+        != session
+            .user
+            .id
+        && !session
+            .user
+            .can_remote_control_others()
+    {
+        return Err(anyhow::anyhow!("Forbidden")
+            .context_forbidden("cannot control other users' sessions"));
+    }
     let data = serde_json::json!({ "Name": command, "Arguments": {} });
     let _ = state
         .ctx
         .ws_tx
         .send(crate::ws::WsEvent::RemoteCommand {
-            device_id: target.device_id,
+            device_id: device.id,
             data,
         });
     Ok(StatusCode::NO_CONTENT)
@@ -881,15 +980,29 @@ pub async fn remote_general_command(
 #[post("/sessions/{sessionid}/command")]
 pub async fn remote_full_command(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Path(session_id): Path<String>,
     Json(body): Json<RemoteFullCommand>,
 ) -> Result<impl IntoResponse> {
-    let target = state
-        .ctx
-        .sessions
-        .get(&session_id)
-        .context_not_found("session not found")?;
+    let device = auth::Device::get_by_id(
+        &state
+            .ctx
+            .db,
+        &session_id,
+    )
+    .await?
+    .context_not_found("session not found")?;
+    if device.user_id
+        != session
+            .user
+            .id
+        && !session
+            .user
+            .can_remote_control_others()
+    {
+        return Err(anyhow::anyhow!("Forbidden")
+            .context_forbidden("cannot control other users' sessions"));
+    }
     let data = serde_json::json!({
         "Name": body.name,
         "ControllingUserId": body.controlling_user_id,
@@ -899,7 +1012,7 @@ pub async fn remote_full_command(
         .ctx
         .ws_tx
         .send(crate::ws::WsEvent::RemoteCommand {
-            device_id: target.device_id,
+            device_id: device.id,
             data,
         });
     Ok(StatusCode::NO_CONTENT)
@@ -909,20 +1022,34 @@ pub async fn remote_full_command(
 #[post("/sessions/{sessionid}/system/{command}")]
 pub async fn remote_system_command(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Path((session_id, command)): Path<(String, String)>,
 ) -> Result<impl IntoResponse> {
-    let target = state
-        .ctx
-        .sessions
-        .get(&session_id)
-        .context_not_found("session not found")?;
+    let device = auth::Device::get_by_id(
+        &state
+            .ctx
+            .db,
+        &session_id,
+    )
+    .await?
+    .context_not_found("session not found")?;
+    if device.user_id
+        != session
+            .user
+            .id
+        && !session
+            .user
+            .can_remote_control_others()
+    {
+        return Err(anyhow::anyhow!("Forbidden")
+            .context_forbidden("cannot control other users' sessions"));
+    }
     let data = serde_json::json!({ "Name": command, "Arguments": {} });
     let _ = state
         .ctx
         .ws_tx
         .send(crate::ws::WsEvent::RemoteCommand {
-            device_id: target.device_id,
+            device_id: device.id,
             data,
         });
     Ok(StatusCode::NO_CONTENT)
@@ -932,15 +1059,29 @@ pub async fn remote_system_command(
 #[post("/sessions/{sessionid}/message")]
 pub async fn remote_message(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Path(session_id): Path<String>,
     Json(body): Json<RemoteMessageBody>,
 ) -> Result<impl IntoResponse> {
-    let target = state
-        .ctx
-        .sessions
-        .get(&session_id)
-        .context_not_found("session not found")?;
+    let device = auth::Device::get_by_id(
+        &state
+            .ctx
+            .db,
+        &session_id,
+    )
+    .await?
+    .context_not_found("session not found")?;
+    if device.user_id
+        != session
+            .user
+            .id
+        && !session
+            .user
+            .can_remote_control_others()
+    {
+        return Err(anyhow::anyhow!("Forbidden")
+            .context_forbidden("cannot control other users' sessions"));
+    }
     let data = serde_json::json!({
         "Name": "DisplayMessage",
         "Arguments": {
@@ -953,7 +1094,7 @@ pub async fn remote_message(
         .ctx
         .ws_tx
         .send(crate::ws::WsEvent::RemoteCommand {
-            device_id: target.device_id,
+            device_id: device.id,
             data,
         });
     Ok(StatusCode::NO_CONTENT)
@@ -963,15 +1104,29 @@ pub async fn remote_message(
 #[post("/sessions/{sessionid}/viewing")]
 pub async fn remote_viewing(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Path(session_id): Path<String>,
     Query(q): Query<RemoteViewingQuery>,
 ) -> Result<impl IntoResponse> {
-    let target = state
-        .ctx
-        .sessions
-        .get(&session_id)
-        .context_not_found("session not found")?;
+    let device = auth::Device::get_by_id(
+        &state
+            .ctx
+            .db,
+        &session_id,
+    )
+    .await?
+    .context_not_found("session not found")?;
+    if device.user_id
+        != session
+            .user
+            .id
+        && !session
+            .user
+            .can_remote_control_others()
+    {
+        return Err(anyhow::anyhow!("Forbidden")
+            .context_forbidden("cannot control other users' sessions"));
+    }
     let data = serde_json::json!({
         "Name": "DisplayContent",
         "Arguments": {
@@ -984,7 +1139,7 @@ pub async fn remote_viewing(
         .ctx
         .ws_tx
         .send(crate::ws::WsEvent::RemoteCommand {
-            device_id: target.device_id,
+            device_id: device.id,
             data,
         });
     Ok(StatusCode::NO_CONTENT)

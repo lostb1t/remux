@@ -8,9 +8,13 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::time::Instant;
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::{AppState, api, common::get_uuid, db, db::auth::AuthSession};
+use crate::{
+    AppState, api, api::session::build_session_list, common::get_uuid, db,
+    db::auth::AuthSession,
+};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum SessionMessageType {
@@ -78,6 +82,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, session: AuthSess
         .device
         .id
         .clone();
+    info!(device_id = %my_device_id, "WS connection opened");
     let mut event_rx = state
         .ctx
         .ws_tx
@@ -96,6 +101,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, session: AuthSess
                         if let Ok(inbound) = serde_json::from_str::<InboundMessage>(&text) {
                             match inbound.message_type {
                                 SessionMessageType::KeepAlive => {
+                                    let _ = session.device.touch(&state.ctx.db, None).await;
                                     if !send_msg::<()>(&mut socket, SessionMessageType::KeepAlive, None).await {
                                         return;
                                     }
@@ -112,7 +118,10 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, session: AuthSess
                             }
                         }
                     }
-                    Some(Ok(Message::Close(_))) | None => return,
+                    Some(Ok(Message::Close(_))) | None => {
+                        info!(device_id = %my_device_id, "WS connection closed");
+                        return;
+                    }
                     _ => {}
                 }
             }
@@ -156,21 +165,27 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, session: AuthSess
                         }
                     }
                     Ok(WsEvent::RemotePlay { device_id, data }) if device_id == my_device_id => {
+                        info!(device_id = %device_id, "delivering Play to WS client");
                         if !send_msg(&mut socket, SessionMessageType::Play, Some(data)).await {
                             return;
                         }
                     }
                     Ok(WsEvent::RemotePlaystate { device_id, data }) if device_id == my_device_id => {
+                        info!(device_id = %device_id, "delivering Playstate to WS client");
                         if !send_msg(&mut socket, SessionMessageType::Playstate, Some(data)).await {
                             return;
                         }
                     }
                     Ok(WsEvent::RemoteCommand { device_id, data }) if device_id == my_device_id => {
+                        info!(device_id = %device_id, "delivering GeneralCommand to WS client");
                         if !send_msg(&mut socket, SessionMessageType::GeneralCommand, Some(data)).await {
                             return;
                         }
                     }
-                    Ok(WsEvent::RemotePlay { .. } | WsEvent::RemotePlaystate { .. } | WsEvent::RemoteCommand { .. }) => {}
+                    Ok(WsEvent::RemotePlay { device_id, .. }) => {
+                        info!(target = %device_id, me = %my_device_id, "RemotePlay not for this connection");
+                    }
+                    Ok(WsEvent::RemotePlaystate { .. } | WsEvent::RemoteCommand { .. }) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 }
@@ -225,183 +240,7 @@ fn parse_sessions_data(data: Option<&serde_json::Value>) -> (u64, u64) {
 }
 
 async fn build_sessions(state: &AppState) -> Vec<api::SessionInfoDto> {
-    let devices: std::collections::HashMap<String, db::auth::Device> =
-        db::auth::Device::get_all(
-            &state
-                .ctx
-                .db,
-            None,
-        )
+    build_session_list(state, Some(Duration::from_secs(120)), None)
         .await
         .unwrap_or_default()
-        .into_iter()
-        .map(|d| (d.id.clone(), d))
-        .collect();
-
-    state
-        .ctx
-        .sessions
-        .get_all()
-        .into_iter()
-        .map(|session| {
-            let transcoding_info = session
-                .transcode
-                .as_ref()
-                .and_then(|ts| {
-                    ts.try_read()
-                        .ok()
-                })
-                .map(|ts| api::TranscodingInfo {
-                    audio_codec: Some(
-                        ts.audio_codec
-                            .clone(),
-                    ),
-                    video_codec: Some(
-                        ts.video_codec
-                            .clone(),
-                    ),
-                    container: Some("ts".to_string()),
-                    is_video_direct: ts.video_codec == "copy",
-                    is_audio_direct: ts.audio_codec == "copy",
-                    transcode_reasons: ts
-                        .transcode_reasons
-                        .clone(),
-                    ..Default::default()
-                });
-
-            let play_state = api::PlayerStateInfo {
-                position_ticks: Some(session.position_ticks),
-                can_seek: session.can_seek,
-                is_paused: session.is_paused,
-                is_muted: session.is_muted,
-                volume_level: session.volume_level,
-                audio_stream_index: session.audio_stream_index,
-                subtitle_stream_index: session.subtitle_stream_index,
-                media_source_id: session
-                    .media_source_id
-                    .clone(),
-                play_method: session
-                    .play_method
-                    .clone(),
-                repeat_mode: "RepeatNone".to_string(),
-                playback_order: "Default".to_string(),
-            };
-
-            let device = devices.get(&session.device_id);
-            let capabilities = device.and_then(|d| d.parsed_capabilities());
-            // Prefer persisted device metadata when present; fall back to
-            // transient playback-session values for compatibility.
-            let device_name = device
-                .map(|d| {
-                    d.name
-                        .clone()
-                })
-                .filter(|v| !v.is_empty())
-                .unwrap_or_else(|| {
-                    session
-                        .device_id
-                        .clone()
-                });
-            let client_name = device
-                .map(|d| {
-                    d.app_name
-                        .clone()
-                })
-                .filter(|v| !v.is_empty())
-                .unwrap_or_else(|| {
-                    session
-                        .client_name
-                        .clone()
-                });
-            let application_version = device
-                .map(|d| {
-                    d.app_version
-                        .clone()
-                })
-                .filter(|v| !v.is_empty());
-
-            let (
-                playable_media_types,
-                supported_commands,
-                supports_media_control,
-                supports_remote_control,
-            ) = capabilities
-                .as_ref()
-                .map_or((vec![], vec![], true, true), |c| {
-                    (
-                        c.playable_media_types
-                            .clone(),
-                        c.supported_commands
-                            .clone(),
-                        c.supports_media_control,
-                        c.supports_media_control,
-                    )
-                });
-
-            api::SessionInfoDto {
-                id: Some(
-                    session
-                        .play_session_id
-                        .clone(),
-                ),
-                device_id: Some(
-                    session
-                        .device_id
-                        .clone(),
-                ),
-                device_name: Some(device_name),
-                client: Some(client_name),
-                application_version,
-                user_id: session
-                    .user_id
-                    .to_string(),
-                last_activity_date: session.last_activity,
-                last_playback_check_in: session.last_activity,
-                last_paused_date: session.last_paused_at,
-                play_state: Some(play_state),
-                capabilities,
-                playable_media_types,
-                supported_commands,
-                supports_media_control,
-                supports_remote_control,
-                now_playing_item: Some({
-                    let kind = session
-                        .item_kind
-                        .clone();
-                    let media_type = match &kind {
-                        Some(
-                            db::MediaKind::Movie
-                            | db::MediaKind::Episode
-                            | db::MediaKind::TvChannel
-                            | db::MediaKind::TvProgram
-                            | db::MediaKind::Stream
-                            | db::MediaKind::StreamGroup,
-                        ) => api::MediaType::Video,
-                        Some(db::MediaKind::Track) => api::MediaType::Audio,
-                        _ => api::MediaType::Video,
-                    };
-                    api::BaseItemDto {
-                        id: session.item_id,
-                        type_: kind
-                            .map(|k| k.into())
-                            .unwrap_or(api::MediaType::Movie),
-                        media_type,
-                        ..Default::default()
-                    }
-                }),
-
-                now_playing_queue: session
-                    .now_playing_queue
-                    .clone()
-                    .unwrap_or_default(),
-                playlist_item_id: session
-                    .playlist_item_id
-                    .clone(),
-                transcoding_info,
-                is_active: true,
-                server_id: crate::common::server_id(),
-                ..Default::default()
-            }
-        })
-        .collect()
 }
