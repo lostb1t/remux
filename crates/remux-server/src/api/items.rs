@@ -1527,30 +1527,40 @@ pub async fn item(
     let show_ungrouped = server_config
         .stream_groups_show_ungrouped
         .unwrap_or(true);
-    let mut media = match MediaResolveService::resolve_item(id, &state.ctx).await? {
-        Some(m) => db::Media::get_by_filter(
-            &state
-                .ctx
-                .db,
-            &db::MediaFilter {
-                id: Some(vec![m.id]),
-                include_user_state: true,
-                include_child_count: true,
-                user_id: Some(
-                    session
-                        .user
-                        .id,
-                ),
-                ..Default::default()
-            },
-        )
-        .await?
-        .records
-        .into_iter()
-        .next()
-        .unwrap_or(m),
+    let resolved_id = match MediaResolveService::resolve_item(id, &state.ctx).await? {
+        Some(m) if m.kind == db::MediaKind::StreamGroup => {
+            // A StreamGroup UUID is a client-facing source ID, not a browsable item.
+            // Redirect to the parent movie/episode so clients like Android TV land on
+            // the actual content item instead of a bare StreamGroup record.
+            match m.parent_id {
+                Some(pid) => pid,
+                None => return Ok(None),
+            }
+        }
+        Some(m) => m.id,
         None => return Ok(None),
     };
+    let mut media = db::Media::get_by_filter(
+        &state
+            .ctx
+            .db,
+        &db::MediaFilter {
+            id: Some(vec![resolved_id]),
+            include_user_state: true,
+            include_child_count: true,
+            user_id: Some(
+                session
+                    .user
+                    .id,
+            ),
+            ..Default::default()
+        },
+    )
+    .await?
+    .records
+    .into_iter()
+    .next()
+    .context_not_found("item not found")?;
 
     let needs_streams = want_streams
         && matches!(

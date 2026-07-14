@@ -940,11 +940,10 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                     .into_iter()
                     .map(MediaSourceInfo::from)
                     .collect();
-                // All sources must expose the parent item's ID so clients like
-                // Android TV don't navigate to stream-group UUIDs as standalone items.
-                for info in &mut infos {
-                    info.id = media.id;
-                    info.e_tag = media.id;
+                // Clients expect the first source's ID to equal the parent item's ID.
+                if !infos.is_empty() {
+                    infos[0].id = media.id;
+                    infos[0].e_tag = media.id;
                 }
                 Some(infos)
             }
