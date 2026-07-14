@@ -71,6 +71,16 @@ impl StreamService {
     /// Populates `self.group`, `self.stream`, and `self.streams`. Must be called
     /// before any of the selection or ID-mapping methods.
     pub async fn load(&mut self, media: db::Media) -> anyhow::Result<()> {
+        if let Some(rid) = self.requested_id {
+            if let Some(g_media) = db::Media::get_by_id(&self.ctx.db, &rid).await? {
+                if g_media.kind == db::MediaKind::StreamGroup {
+                    self.resolve_stream_group(g_media)
+                        .await?;
+                    return Ok(());
+                }
+            }
+        }
+
         if media.kind == db::MediaKind::StreamGroup {
             self.resolve_stream_group(media)
                 .await?;

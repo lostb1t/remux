@@ -1656,6 +1656,14 @@ pub async fn item(
                 .db,
         )
         .await?;
+    if let Some(ref sources) = media.sources {
+        for s in sources {
+            let client_id = s.group_id.unwrap_or(s.id);
+            if client_id != media.id {
+                state.ctx.store.insert(format!("parent:{}", client_id), media.id, std::time::Duration::from_secs(24 * 3600));
+            }
+        }
+    }
     let mut base_item = api::db_media_to_item(media.clone(), false);
 
     // For tracks, wrap the Source row(s) as HLS-transcoded MediaSources.

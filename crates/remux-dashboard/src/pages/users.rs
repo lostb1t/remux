@@ -268,6 +268,12 @@ pub fn UserForm(
             })
             .unwrap_or(true)
     });
+    let mut hide_from_login = use_signal(|| {
+        existing
+            .as_ref()
+            .map(|u| u.policy.is_hidden)
+            .unwrap_or(false)
+    });
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
@@ -309,6 +315,7 @@ pub fn UserForm(
         let remote_search_snapshot = *enable_remote_search.peek();
         let max_sessions_snapshot = *max_active_sessions.peek();
         let video_transcoding_snapshot = *enable_video_transcoding.peek();
+        let hide_from_login_snapshot = *hide_from_login.peek();
 
         saving.set(true);
         err.set(None);
@@ -354,6 +361,7 @@ pub fn UserForm(
                         .policy
                         .clone();
                     policy.is_administrator = admin;
+                    policy.is_hidden = hide_from_login_snapshot;
                     policy.filter_rules = filter_rules.clone();
                     policy.stream_filter = stream_filter.clone();
                     policy.enable_remote_search = remote_search_snapshot;
@@ -380,30 +388,23 @@ pub fn UserForm(
                     let new_user = client
                         .execute(CreateUser { name, password: pw })
                         .await?;
-                    if admin
-                        || filter_rules.is_some()
-                        || stream_filter.is_some()
-                        || !remote_search_snapshot
-                        || max_sessions_snapshot > 0
-                        || !video_transcoding_snapshot
-                    {
-                        let mut policy = new_user
-                            .policy
-                            .clone();
-                        policy.is_administrator = admin;
-                        policy.filter_rules = filter_rules.clone();
-                        policy.stream_filter = stream_filter.clone();
-                        policy.enable_remote_search = remote_search_snapshot;
-                        policy.max_active_sessions = max_sessions_snapshot;
-                        policy.enable_video_playback_transcoding =
-                            video_transcoding_snapshot;
-                        client
-                            .execute(UpdateUserPolicy {
-                                user_id: new_user.id,
-                                policy,
-                            })
-                            .await?;
-                    }
+                    let mut policy = new_user
+                        .policy
+                        .clone();
+                    policy.is_administrator = admin;
+                    policy.is_hidden = hide_from_login_snapshot;
+                    policy.filter_rules = filter_rules.clone();
+                    policy.stream_filter = stream_filter.clone();
+                    policy.enable_remote_search = remote_search_snapshot;
+                    policy.max_active_sessions = max_sessions_snapshot;
+                    policy.enable_video_playback_transcoding =
+                        video_transcoding_snapshot;
+                    client
+                        .execute(UpdateUserPolicy {
+                            user_id: new_user.id,
+                            policy,
+                        })
+                        .await?;
                 }
                 Ok(())
             }
@@ -485,6 +486,12 @@ pub fn UserForm(
                 label: "Allow Video Transcoding",
                 checked: *enable_video_transcoding.read(),
                 on_change: move |v| enable_video_transcoding.set(v),
+            }
+
+            ToggleRow {
+                label: "Hide user from login screens",
+                checked: *hide_from_login.read(),
+                on_change: move |v| hide_from_login.set(v),
             }
 
             div { class: "field",

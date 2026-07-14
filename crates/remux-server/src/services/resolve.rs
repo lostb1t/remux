@@ -317,9 +317,19 @@ impl MediaResolveService {
     ///
     /// Uses a per-ID mutex to prevent duplicate persists from concurrent requests.
     pub(crate) async fn resolve_item(
-        id: Uuid,
+        mut id: Uuid,
         ctx: &AppContext,
     ) -> anyhow::Result<Option<db::Media>> {
+        if let Some(pid) = ctx.store.get::<Uuid>(&format!("parent:{}", id)) {
+            id = pid;
+        } else if let Some(media) = db::Media::get_by_id(&ctx.db, &id).await? {
+            if media.kind == db::MediaKind::Stream {
+                if let Some(pid) = media.parent_id {
+                    id = pid;
+                }
+            }
+        }
+
         // Fast path: already in DB or aliased to a stable UUID in the store.
         if let Some(media) = db::Media::get_by_id(&ctx.db, &id).await? {
             return Ok(Some(media));

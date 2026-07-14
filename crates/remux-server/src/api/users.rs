@@ -761,8 +761,32 @@ pub async fn update_user(
 // ===== Route aliases (same handler, different path) =====
 
 #[get("/users/public")]
-pub async fn users_public() -> Result<impl IntoResponse> {
-    Ok(Json::<Vec<api::UserDto>>(vec![]).into_response())
+pub async fn users_public(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
+    let all_users = sqlx::query_as::<_, User>("SELECT * FROM users")
+        .fetch_all(&state.ctx.db)
+        .await?;
+
+    let dtos: Vec<api::UserDto> = all_users
+        .into_iter()
+        .filter(|u| {
+            let policy = u.policy.as_ref().map(|p| &p.0);
+            let is_hidden = policy.map(|p| p.is_hidden).unwrap_or(true);
+            !is_hidden
+        })
+        .map(|u| {
+            let mut dto = api::db_user_to_dto(&state.ctx.config.data_dir, u);
+            dto.policy = api::UserPolicy {
+                is_hidden: dto.policy.is_hidden,
+                ..Default::default()
+            };
+            dto.configuration = None;
+            dto
+        })
+        .collect();
+
+    Ok(Json(dtos).into_response())
 }
 
 #[get("/users/{user_id}")]
@@ -2902,5 +2926,86 @@ mod e2e_tests {
             Some(0),
             "null-date episode must not be counted as unplayed when the release-date filter is active"
         );
+    }
+
+    /// Verifies that the public users endpoint correctly filters out users
+    /// marked as hidden, defaults users without policies to hidden, and
+    /// redacts sensitive configuration and policy fields.
+    #[tokio::test]
+    async fn test_users_public() {
+        let (server, ctx) = new_test_server().await.unwrap();
+        let db = &ctx.0.db;
+
+        // Create a user with no stored policy (defaults to hidden).
+        let id_no_policy = uuid::Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash, is_admin, policy) VALUES (?, ?, ?, ?, NULL)"
+        )
+        .bind(id_no_policy)
+        .bind("user_no_policy")
+        .bind("hash")
+        .bind(false)
+        .execute(db)
+        .await
+        .unwrap();
+
+        // Create a visible user with is_hidden set to false.
+        let id_visible = uuid::Uuid::new_v4();
+        let mut policy_visible = crate::api::UserPolicy::default();
+        policy_visible.is_hidden = false;
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash, is_admin, policy) VALUES (?, ?, ?, ?, ?)"
+        )
+        .bind(id_visible)
+        .bind("user_visible")
+        .bind("hash")
+        .bind(false)
+        .bind(sqlx::types::Json(policy_visible))
+        .execute(db)
+        .await
+        .unwrap();
+
+        // Create a hidden user with is_hidden set to true.
+        let id_hidden = uuid::Uuid::new_v4();
+        let mut policy_hidden = crate::api::UserPolicy::default();
+        policy_hidden.is_hidden = true;
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash, is_admin, policy) VALUES (?, ?, ?, ?, ?)"
+        )
+        .bind(id_hidden)
+        .bind("user_hidden")
+        .bind("hash")
+        .bind(false)
+        .bind(sqlx::types::Json(policy_hidden))
+        .execute(db)
+        .await
+        .unwrap();
+
+        // Query the public users endpoint.
+        let response = server.get("/users/public").await;
+        let body: serde_json::Value = response.json();
+
+        // Assert that the response is a JSON array.
+        let users = body.as_array().expect("Response must be a JSON array");
+
+        // Inspect the names of the public users returned.
+        let names: Vec<&str> = users
+            .iter()
+            .map(|u| u["Name"].as_str().unwrap())
+            .collect();
+
+        // Assert that only the visible user is returned and hidden/policy-less users are filtered.
+        assert!(names.contains(&"user_visible"), "user_visible must be present in public users");
+        assert!(!names.contains(&"user_hidden"), "user_hidden must be filtered out");
+        assert!(!names.contains(&"user_no_policy"), "user_no_policy must be filtered out as default policy is hidden");
+
+        // Verify that sensitive configuration and policy fields are redacted.
+        for user in users {
+            if user["Name"].as_str().unwrap() == "user_visible" {
+                assert!(user["Configuration"].is_null());
+                assert!(user["Policy"]["BlockedTags"].as_array().unwrap().is_empty());
+                assert!(user["Policy"]["FilterRules"].is_null());
+            }
+        }
     }
 }

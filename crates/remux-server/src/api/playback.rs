@@ -348,6 +348,80 @@ async fn items_playbackinfo_inner(
             }
         }
 
+        // If the effective audio selection (from user language preference, explicit client
+        // index, or saved recall) targets a track that is *not* the file's default audio
+        // stream, force a transcode so that AudioStreamIndex is passed to ffmpeg and the
+        // correct track is actually delivered. In direct-play the client opens the raw URL
+        // and ignores DefaultAudioStreamIndex entirely.
+        {
+            let user_cfg = session
+                .user
+                .configuration
+                .as_ref()
+                .map(|c| c.0.clone())
+                .unwrap_or_default();
+
+            // Determine what audio index the prefs system would choose (mirrors the
+            // logic in apply_user_playback_prefs, but read-only for this check).
+            let client_wants_audio = q.audio_stream_index.map(|x| x >= 0).unwrap_or(false);
+            let effective_audio_idx: Option<i64> = if client_wants_audio {
+                q.audio_stream_index
+            } else if let Some(ref pref) = user_cfg.audio_language_preference {
+                let pref_two = lang_to_two_letter(pref);
+                pref_two.as_deref().and_then(|target| {
+                    source
+                        .media_streams
+                        .iter()
+                        .find(|s| {
+                            matches!(s.type_, Some(api::MediaStreamType::Audio))
+                                && s.language
+                                    .as_deref()
+                                    .and_then(lang_to_two_letter)
+                                    .as_deref()
+                                    == Some(target)
+                        })
+                        .map(|s| s.index)
+                })
+            } else {
+                None
+            };
+
+            if let Some(want_idx) = effective_audio_idx {
+                // Check whether this index is already the file's default audio stream.
+                let is_already_default = source
+                    .media_streams
+                    .iter()
+                    .find(|s| {
+                        s.index == want_idx
+                            && matches!(s.type_, Some(api::MediaStreamType::Audio))
+                    })
+                    .map(|s| s.is_default.unwrap_or(false))
+                    .unwrap_or(false);
+
+                if !is_already_default {
+                    // The desired track differs from the file default — the client
+                    // cannot honour this in direct-play, so require a (re)mux.
+                    let audio_codec = source
+                        .media_streams
+                        .iter()
+                        .find(|s| {
+                            s.index == want_idx
+                                && matches!(s.type_, Some(api::MediaStreamType::Audio))
+                        })
+                        .and_then(|s| s.codec.clone())
+                        .unwrap_or_default();
+                    transcode_reasons
+                        .insert(api::TranscodeReason::AudioCodecNotSupported(audio_codec));
+                }
+                // Set the index on the source NOW so build_transcode_decision picks it
+                // up when building the transcode URL (decision.rs reads
+                // source.default_audio_stream_index to append &AudioStreamIndex=N).
+                // apply_user_playback_prefs runs after the URL is already built, so
+                // without this the URL would have no AudioStreamIndex parameter.
+                source.default_audio_stream_index = Some(want_idx);
+            }
+        }
+
         debug!(
             stream_id = %stream.id,
             transcode_reasons = ?transcode_reasons,
@@ -440,6 +514,12 @@ async fn items_playbackinfo_inner(
     if !specific_stream_requested && !media_sources.is_empty() {
         media_sources[0].id = id;
         media_sources[0].e_tag = id;
+    }
+
+    for source in &media_sources {
+        if source.id != id {
+            state.ctx.store.insert(format!("parent:{}", source.id), id, std::time::Duration::from_secs(24 * 3600));
+        }
     }
 
     // Live TV: apply stream flags on top of whatever the probe/transcoding decided.
@@ -2808,13 +2888,18 @@ async fn apply_user_playback_prefs(
             }
         }
 
+        // --- play_default_audio_track ---
+        // Clear the default track first. The language preference below can still
+        // override this when an explicit preferred-language match is found.
+        if !cfg.play_default_audio_track {
+            source.default_audio_stream_index = None;
+        }
+
         // --- audio_language_preference ---
-        // Only act if the client didn't specify a track and no default is already chosen.
-        if !client_wants_audio
-            && source
-                .default_audio_stream_index
-                .is_none()
-        {
+        // If the client didn't specify a track, look for a matching preferred language track.
+        // This runs *after* the play_default_audio_track clear so the user's explicit language
+        // preference always wins, even when play_default_audio_track is disabled.
+        if !client_wants_audio {
             if let Some(ref pref) = cfg.audio_language_preference {
                 let pref_two = lang_to_two_letter(pref);
                 if let Some(ref target) = pref_two {
@@ -2836,18 +2921,9 @@ async fn apply_user_playback_prefs(
             }
         }
 
-        // --- play_default_audio_track ---
-        if !cfg.play_default_audio_track {
-            source.default_audio_stream_index = None;
-        }
-
         // --- subtitle_language_preference ---
-        // Only act if the client didn't specify a track and no subtitle default is already set.
-        if !client_wants_subtitle
-            && source
-                .default_subtitle_stream_index
-                .is_none()
-        {
+        // If the client didn't specify a track, look for a matching preferred language track.
+        if !client_wants_subtitle {
             if let Some(ref pref) = cfg.subtitle_language_preference {
                 let pref_two = lang_to_two_letter(pref);
                 if let Some(ref target) = pref_two {

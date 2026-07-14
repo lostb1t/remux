@@ -105,6 +105,9 @@ pub async fn post_startup_user(
             None,
         )?;
         user.is_admin = true;
+        let mut policy = crate::api::UserPolicy::default();
+        policy.is_hidden = true;
+        user.policy = Some(sqlx::types::Json(policy));
         user.save_by_username(
             &state
                 .ctx
