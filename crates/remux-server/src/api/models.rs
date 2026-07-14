@@ -936,16 +936,10 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                     .into(),
             ]),
             Some(sources) => {
-                let mut infos: Vec<MediaSourceInfo> = sources
+                let infos: Vec<MediaSourceInfo> = sources
                     .into_iter()
                     .map(MediaSourceInfo::from)
                     .collect();
-                // All sources must expose the parent item's ID so clients like
-                // Android TV don't navigate to stream-group UUIDs as standalone items.
-                for info in &mut infos {
-                    info.id = media.id;
-                    info.e_tag = media.id;
-                }
                 Some(infos)
             }
             None => Some(vec![

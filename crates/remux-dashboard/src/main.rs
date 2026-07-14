@@ -1,4 +1,5 @@
 use dioxus::prelude::*;
+use gloo_storage::{LocalStorage, Storage};
 use web_sys::wasm_bindgen::JsCast;
 use remux_sdks::{
     remux::{
@@ -31,6 +32,17 @@ fn App() -> Element {
     let mut wizard_needed: Signal<Option<bool>> = use_signal(|| None);
     let mut logged_in = use_signal(|| get_stored_server().is_some());
     use_context_provider(|| logged_in);
+
+    use_effect(move || {
+        let initial_theme = LocalStorage::get::<String>("theme").unwrap_or_else(|_| "auto".to_string());
+        if let Some(window) = web_sys::window() {
+            if let Some(document) = window.document() {
+                if let Some(html) = document.document_element() {
+                    let _ = html.set_attribute("data-theme", &initial_theme);
+                }
+            }
+        }
+    });
 
     use_effect(move || {
         spawn(async move {
