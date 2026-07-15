@@ -1114,8 +1114,12 @@ pub struct MediaFilter {
     /// of these content kinds. Used for smart-collection genre queries where
     /// items float freely and cannot be scoped via parent_id / CTE.
     pub genre_related_kinds: Option<Vec<MediaKind>>,
-    /// When true, exclude collections/folders that have no visible items.
-    /// Smart and catalog collections are always shown regardless of this flag.
+    /// When true, exclude collections/folders/playlists whose `child_count` is 0
+    /// after child-count computation. Structural containers whose
+    /// `collection_media_kind` is `Collection` (i.e. the "Collections" index
+    /// container) are always kept regardless of their count. All other
+    /// container kinds — including smart and catalog collections — are dropped
+    /// when empty.
     pub exclude_childless: bool,
 }
 
@@ -2965,15 +2969,17 @@ impl Media {
                 .kind
                 .as_deref()
                 .map_or(false, |ks| {
-                    ks.iter()
-                        .all(|k| {
-                            matches!(
-                                k,
-                                MediaKind::Collection
-                                    | MediaKind::Folder
-                                    | MediaKind::Playlist
-                            )
-                        })
+                    !ks.is_empty()
+                        && ks
+                            .iter()
+                            .all(|k| {
+                                matches!(
+                                    k,
+                                    MediaKind::Collection
+                                        | MediaKind::Folder
+                                        | MediaKind::Playlist
+                                )
+                            })
                 });
             if !container_only {
                 if let Some(ref f) = filter.policy_filter {
@@ -3388,7 +3394,11 @@ impl Media {
                 for id in &folder_ids {
                     sep.push_bind(id);
                 }
-                cc_qb.push(") GROUP BY parent_id");
+                cc_qb.push(")");
+                if let Some(pf) = child_policy_filter {
+                    apply_filter_rules(&mut cc_qb, pf);
+                }
+                cc_qb.push(" GROUP BY parent_id");
                 match cc_qb
                     .build()
                     .fetch_all(db)
@@ -3427,7 +3437,16 @@ impl Media {
                 for id in &playlist_ids {
                     sep.push_bind(id);
                 }
-                pl_qb.push(") GROUP BY left_media_id");
+                if let Some(pf) = child_policy_filter {
+                    pl_qb.push(
+                        ") AND right_media_id IN (SELECT id FROM media WHERE 1=1",
+                    );
+                    apply_filter_rules(&mut pl_qb, pf);
+                    pl_qb.push(")");
+                } else {
+                    pl_qb.push(")");
+                }
+                pl_qb.push(" GROUP BY left_media_id");
                 match pl_qb
                     .build()
                     .fetch_all(db)
@@ -3476,12 +3495,16 @@ impl Media {
                 for id in &manual_coll_ids {
                     sep.push_bind(id);
                 }
-                // Only count members the user can actually see.
-                mc_qb.push(") AND right_media_id IN (SELECT id FROM media WHERE 1=1");
                 if let Some(pf) = child_policy_filter {
+                    mc_qb.push(
+                        ") AND right_media_id IN (SELECT id FROM media WHERE 1=1",
+                    );
                     apply_filter_rules(&mut mc_qb, pf);
+                    mc_qb.push(")");
+                } else {
+                    mc_qb.push(")");
                 }
-                mc_qb.push(") GROUP BY left_media_id");
+                mc_qb.push(" GROUP BY left_media_id");
                 match mc_qb
                     .build()
                     .fetch_all(db)
@@ -3549,12 +3572,17 @@ impl Media {
                 if let Some(pf) = child_policy_filter {
                     apply_filter_rules(&mut qb, pf);
                 }
-                media.child_count = Some(
-                    qb.build_query_scalar()
-                        .fetch_one(db)
-                        .await
-                        .unwrap_or(0),
-                );
+                match qb
+                    .build_query_scalar()
+                    .fetch_one(db)
+                    .await
+                {
+                    Ok(cnt) => media.child_count = Some(cnt),
+                    Err(e) => warn!(
+                        "failed to load child count for collection {}: {e}",
+                        media.id
+                    ),
+                }
             }
 
             // For series: populate recursive_item_count with total episode count
@@ -3854,8 +3882,7 @@ impl Media {
                     return true;
                 }
                 m.child_count
-                    .unwrap_or(0)
-                    > 0
+                    .map_or(true, |c| c > 0)
             });
         }
 
