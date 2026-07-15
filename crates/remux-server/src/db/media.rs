@@ -1116,7 +1116,7 @@ pub struct MediaFilter {
     pub genre_related_kinds: Option<Vec<MediaKind>>,
     /// When true, exclude collections/folders that have no visible items.
     /// Smart and catalog collections are always shown regardless of this flag.
-    pub hide_empty: bool,
+    pub exclude_childless: bool,
 }
 
 /// Normalise any country string to an ISO 3166-1 alpha-2 code (e.g. "US").
@@ -3333,8 +3333,9 @@ impl Media {
             }
         }
 
-        // hide_empty needs child counts to decide what to drop; force them on.
-        let effective_child_count = filter.include_child_count || filter.hide_empty;
+        // exclude_childless needs child counts to decide what to drop; force them on.
+        let effective_child_count =
+            filter.include_child_count || filter.exclude_childless;
 
         if effective_child_count && !records.is_empty() {
             let folder_ids: Vec<Uuid> = records
@@ -3476,7 +3477,7 @@ impl Media {
             }
 
             // For smart/catalog collections: run each collection's filter rules to
-            // get the true item count. This also powers hide_empty filtering.
+            // get the true item count. This also powers exclude_childless filtering.
             for media in records
                 .iter_mut()
                 .filter(|m| {
@@ -3804,7 +3805,7 @@ impl Media {
         // Drop empty containers when requested. child_count is already populated
         // for all container kinds (including smart/catalog) by the branches above.
         // Structural "collection of collections" containers always show.
-        if filter.hide_empty {
+        if filter.exclude_childless {
             records.retain(|m| {
                 if !matches!(
                     m.kind,
@@ -4264,9 +4265,9 @@ impl Media {
                     }),
                 grandparent_id: filter.series_id,
                 parent: parent.cloned(),
-                hide_empty: targeting_containers
+                exclude_childless: targeting_containers
                     && !filter
-                        .include_empty
+                        .include_childless
                         .unwrap_or(false),
                 ..Default::default()
             },

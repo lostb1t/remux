@@ -522,8 +522,8 @@ pub async fn get_items(
                             .sort_order
                             .clone()
                             .unwrap_or_default(),
-                        hide_empty: !q
-                            .include_empty
+                        exclude_childless: !q
+                            .include_childless
                             .unwrap_or(false),
                         ..Default::default()
                     },

@@ -857,7 +857,7 @@ pub async fn userviews(
     let library_filter = db::MediaFilter {
         kind: Some(vec![db::MediaKind::Collection, db::MediaKind::Folder]),
         promoted: Some(true),
-        hide_empty: true,
+        exclude_childless: true,
         sort_by: vec![api::ItemSortBy::DisplayOrder],
         sort_order: vec![api::SortOrder::Ascending],
         ..Default::default()
