@@ -437,6 +437,30 @@ pub struct Config {
     /// Base URL for the Trakt API. Overridable for testing.
     #[serde(default = "default_trakt_base_url")]
     pub trakt_base_url: String,
+    /// Optional cap on how many orphaned local tracks the `GroupLocalMusic`
+    /// task groups per run. `None` (the default) processes every orphaned
+    /// local track; set a small value to validate tag-based grouping on a
+    /// subset before committing to a full library pass.
+    #[serde(default)]
+    pub group_local_music_limit: Option<i64>,
+    /// Request timeout (seconds) for the shared addon HTTP client used by
+    /// metadata, lyrics, and stream-resolver addons. Bounds how long a single
+    /// upstream request may hang before it becomes a retryable failure, so a
+    /// stalled resolver cannot pin a playback resolution indefinitely.
+    /// Defaults to 20.
+    #[serde(default = "default_addon_http_timeout_secs")]
+    pub addon_http_timeout_secs: u64,
+    /// Connect timeout (seconds) for the shared addon HTTP client. Defaults to 8.
+    #[serde(default = "default_addon_http_connect_timeout_secs")]
+    pub addon_http_connect_timeout_secs: u64,
+}
+
+fn default_addon_http_timeout_secs() -> u64 {
+    20
+}
+
+fn default_addon_http_connect_timeout_secs() -> u64 {
+    8
 }
 
 fn default_tmdb_base_url() -> String {
@@ -506,6 +530,9 @@ impl Default for Config {
             bgutil_script_path: default_bgutil_script_path(),
             tmdb_base_url: default_tmdb_base_url(),
             trakt_base_url: default_trakt_base_url(),
+            group_local_music_limit: None,
+            addon_http_timeout_secs: default_addon_http_timeout_secs(),
+            addon_http_connect_timeout_secs: default_addon_http_connect_timeout_secs(),
         }
         .resolve()
     }

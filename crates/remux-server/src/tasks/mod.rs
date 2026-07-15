@@ -22,6 +22,7 @@ mod catalog_import_shared;
 mod clean_transcode_folder;
 mod clear_cache;
 mod clear_image_cache;
+mod group_local_music;
 mod jellyfin_import;
 mod import_audio_features;
 mod purge_iptv;
@@ -38,6 +39,7 @@ pub use crate::common::ProgressReporter;
 use clean_transcode_folder::CleanTranscodeFolderTask;
 use clear_cache::ClearCacheTask;
 use clear_image_cache::ClearImageCacheTask;
+use group_local_music::GroupLocalMusicTask;
 use jellyfin_import::JellyfinImportTask;
 use import_audio_features::ImportAudioFeaturesTask;
 use purge_iptv::PurgeIptvTask;
@@ -363,6 +365,9 @@ impl TaskService {
             .await?;
         service
             .register_task(Arc::new(RefreshAllMetaTask))
+            .await?;
+        service
+            .register_task(Arc::new(GroupLocalMusicTask))
             .await?;
         // service.register_task(Arc::new(SeriesSyncTask)).await?;
         service
