@@ -2960,43 +2960,6 @@ impl Media {
             if let Some(ref f) = filter.policy_filter {
                 apply_filter_rules(qb, f);
             }
-
-            if filter.hide_empty {
-                // A container is considered non-empty when:
-                //  1. It is a structural container-of-collections (always visible).
-                //  2. It is a manual collection with at least one member via media_relations.
-                //  3. It is a folder/library with at least one non-container child.
-                //  4. It is a smart/catalog collection AND at least one item of its
-                //     target kind exists anywhere in the DB.
-                //     (Smart collections with specific filter rules that yield zero
-                //      results are removed in a second pass in Rust after the query.)
-                qb.push(
-                    " AND (\
-                        collection_media_kind = 'collection' \
-                        OR EXISTS (\
-                            SELECT 1 FROM media_relations mr \
-                            WHERE mr.left_media_id = media.id AND mr.role = 'collection'\
-                        ) \
-                        OR EXISTS (\
-                            SELECT 1 FROM media m2 \
-                            WHERE m2.parent_id = media.id \
-                            AND m2.kind NOT IN ('collection','folder','playlist','tv_channel')\
-                        ) \
-                        OR (\
-                            collection_kind IN ('smart', 'catalog') \
-                            AND EXISTS (\
-                                SELECT 1 FROM media m3 WHERE \
-                                (media.collection_media_kind = 'movie'    AND m3.kind = 'movie') OR \
-                                (media.collection_media_kind = 'series'   AND m3.kind = 'series') OR \
-                                (media.collection_media_kind = 'mixed'    AND m3.kind IN ('movie','series')) OR \
-                                (media.collection_media_kind = 'music'    AND m3.kind IN ('track','album','artist')) OR \
-                                (media.collection_media_kind = 'playlist' AND m3.kind = 'playlist') OR \
-                                (media.collection_media_kind IS NULL)\
-                            )\
-                        )\
-                    )",
-                );
-            }
         }
         // Apply ORDER BY driven by the sort_by field, with per-kind fallbacks.
         let is_channel_query = filter
@@ -3370,7 +3333,10 @@ impl Media {
             }
         }
 
-        if filter.include_child_count && !records.is_empty() {
+        // hide_empty needs child counts to decide what to drop; force them on.
+        let effective_child_count = filter.include_child_count || filter.hide_empty;
+
+        if effective_child_count && !records.is_empty() {
             let folder_ids: Vec<Uuid> = records
                 .iter()
                 .filter(|m| {
@@ -3460,6 +3426,99 @@ impl Media {
                         warn!("failed to load playlist child counts: {e}");
                     }
                 }
+            }
+
+            // For manual collections: count members via media_relations (role='collection').
+            // The parent_id branch above always returns 0 for these — they store
+            // membership in media_relations, not via parent_id.
+            let manual_coll_ids: Vec<Uuid> = records
+                .iter()
+                .filter(|m| {
+                    m.kind == MediaKind::Collection
+                        && m.collection_kind == Some(CollectionKind::Manual)
+                })
+                .map(|m| m.id)
+                .collect();
+            if !manual_coll_ids.is_empty() {
+                let mut mc_qb = sqlx::QueryBuilder::new(
+                    "SELECT left_media_id, COUNT(*) FROM media_relations \
+                     WHERE role = 'collection' AND left_media_id IN (",
+                );
+                let mut sep = mc_qb.separated(", ");
+                for id in &manual_coll_ids {
+                    sep.push_bind(id);
+                }
+                mc_qb.push(") GROUP BY left_media_id");
+                match mc_qb
+                    .build()
+                    .fetch_all(db)
+                    .await
+                {
+                    Ok(rows) => {
+                        let mut cc_map: HashMap<Uuid, i64> = HashMap::new();
+                        for row in rows {
+                            cc_map.insert(row.get(0), row.get(1));
+                        }
+                        for media in &mut records {
+                            if manual_coll_ids.contains(&media.id) {
+                                media.child_count = Some(
+                                    *cc_map
+                                        .get(&media.id)
+                                        .unwrap_or(&0),
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("failed to load manual collection child counts: {e}")
+                    }
+                }
+            }
+
+            // For smart/catalog collections: run each collection's filter rules to
+            // get the true item count. This also powers hide_empty filtering.
+            for media in records
+                .iter_mut()
+                .filter(|m| {
+                    m.kind == MediaKind::Collection
+                        && matches!(
+                            m.collection_kind,
+                            Some(CollectionKind::Smart) | Some(CollectionKind::Catalog)
+                        )
+                })
+            {
+                let kinds: Option<Vec<&'static str>> = media
+                    .collection_media_kind
+                    .as_ref()
+                    .map(|k| match k {
+                        CollectionMediaKind::Movie => vec!["movie"],
+                        CollectionMediaKind::Series => vec!["series"],
+                        CollectionMediaKind::Mixed => vec!["movie", "series"],
+                        CollectionMediaKind::Music => vec!["track", "album", "artist"],
+                        CollectionMediaKind::Playlist => vec!["playlist"],
+                        CollectionMediaKind::Collection => vec!["collection"],
+                    });
+                let mut qb =
+                    sqlx::QueryBuilder::new("SELECT COUNT(*) FROM media WHERE 1=1");
+                if let Some(ks) = &kinds {
+                    if !ks.is_empty() {
+                        qb.push(" AND kind IN (");
+                        let mut sep = qb.separated(", ");
+                        for k in ks {
+                            sep.push_bind(*k);
+                        }
+                        qb.push(")");
+                    }
+                }
+                if let Some(sf) = media.parse_smart_filter() {
+                    apply_filter_rules(&mut qb, sf);
+                }
+                media.child_count = Some(
+                    qb.build_query_scalar()
+                        .fetch_one(db)
+                        .await
+                        .unwrap_or(0),
+                );
             }
 
             // For series: populate recursive_item_count with total episode count
@@ -3742,87 +3801,24 @@ impl Media {
             }
         }
 
-        // Second pass: smart/catalog collections with non-trivial filter rules may
-        // pass the SQL check above (because items of the right kind exist) but still
-        // return zero results when their specific rules are applied. Drop those here.
+        // Drop empty containers when requested. child_count is already populated
+        // for all container kinds (including smart/catalog) by the branches above.
+        // Structural "collection of collections" containers always show.
         if filter.hide_empty {
-            let to_check: Vec<(
-                Uuid,
-                remux_sdks::remux::CollectionFilter,
-                Option<CollectionMediaKind>,
-            )> = records
-                .iter()
-                .filter(|m| {
-                    matches!(
-                        m.collection_kind,
-                        Some(CollectionKind::Smart) | Some(CollectionKind::Catalog)
-                    )
-                })
-                .filter_map(|m| {
-                    let sf = m.parse_smart_filter()?;
-                    let has_rules = sf
-                        .groups
-                        .iter()
-                        .any(|g| {
-                            !g.rules
-                                .is_empty()
-                        });
-                    has_rules.then(|| {
-                        (
-                            m.id,
-                            sf.clone(),
-                            m.collection_media_kind
-                                .clone(),
-                        )
-                    })
-                })
-                .collect();
-
-            if !to_check.is_empty() {
-                let mut empty_ids: Vec<Uuid> = Vec::new();
-                for (id, sf, media_kind) in &to_check {
-                    let kinds: Option<Vec<&'static str>> = media_kind
-                        .as_ref()
-                        .map(|k| match k {
-                            CollectionMediaKind::Movie => vec!["movie"],
-                            CollectionMediaKind::Series => vec!["series"],
-                            CollectionMediaKind::Mixed => vec!["movie", "series"],
-                            CollectionMediaKind::Music => {
-                                vec!["track", "album", "artist"]
-                            }
-                            CollectionMediaKind::Playlist => vec!["playlist"],
-                            CollectionMediaKind::Collection => vec!["collection"],
-                        });
-
-                    let mut qb =
-                        sqlx::QueryBuilder::new("SELECT COUNT(*) FROM media WHERE 1=1");
-                    if let Some(ks) = &kinds {
-                        if !ks.is_empty() {
-                            qb.push(" AND kind IN (");
-                            let mut sep = qb.separated(", ");
-                            for k in ks {
-                                sep.push_bind(*k);
-                            }
-                            qb.push(")");
-                        }
-                    }
-                    apply_filter_rules(&mut qb, sf);
-
-                    let count: i64 = qb
-                        .build_query_scalar()
-                        .fetch_one(db)
-                        .await
-                        .unwrap_or(0);
-
-                    if count == 0 {
-                        empty_ids.push(*id);
-                    }
+            records.retain(|m| {
+                if !matches!(
+                    m.kind,
+                    MediaKind::Collection | MediaKind::Folder | MediaKind::Playlist
+                ) {
+                    return true;
                 }
-
-                if !empty_ids.is_empty() {
-                    records.retain(|m| !empty_ids.contains(&m.id));
+                if m.collection_media_kind == Some(CollectionMediaKind::Collection) {
+                    return true;
                 }
-            }
+                m.child_count
+                    .unwrap_or(0)
+                    > 0
+            });
         }
 
         Ok(FilterResult {
