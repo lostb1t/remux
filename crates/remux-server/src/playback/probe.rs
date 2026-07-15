@@ -985,11 +985,21 @@ where
 
         match probe_result {
             Ok(Ok(Ok((mut probed, segments)))) => {
-                // Reject streams whose probed duration is suspiciously short
-                // relative to the known metadata runtime (or absolutely < 3 min
-                // when unknown) — these are typically error/copyright-strike
-                // placeholder videos, not real content.
-                if let Some(probed_ticks) = probed.run_time_ticks {
+                // Reject *video* streams whose probed duration is suspiciously
+                // short relative to the known metadata runtime (or absolutely
+                // < 3 min when unknown) — these are typically error/copyright-
+                // strike placeholder videos, not real content. Gate on the
+                // probed content having a video stream: audio-only content
+                // (music) must NEVER be rejected for being short, since real
+                // songs are routinely under 3 minutes. Applying this to audio
+                // discarded every usable stream → 500 → Finamp `-1008`, and it
+                // is not caught by a kind check because the probe runs against
+                // the resolved Stream row, not the original Track.
+                if probed
+                    .video_stream()
+                    .is_some()
+                    && let Some(probed_ticks) = probed.run_time_ticks
+                {
                     let max_threshold = 5_i64
                         .to_ticks(TickUnit::Minutes)
                         .unwrap_or(0);
