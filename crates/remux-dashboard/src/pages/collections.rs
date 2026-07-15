@@ -42,6 +42,7 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
             match client
                 .execute(GetItems(GetItemsQuery {
                     include_item_types: Some(vec![MediaType::BoxSet]),
+                    include_empty: Some(true),
                     sort_by: Some(vec![ItemSortBy::DisplayOrder]),
                     sort_order: Some(vec![SortOrder::Ascending]),
                     ..Default::default()

@@ -1114,6 +1114,9 @@ pub struct MediaFilter {
     /// of these content kinds. Used for smart-collection genre queries where
     /// items float freely and cannot be scoped via parent_id / CTE.
     pub genre_related_kinds: Option<Vec<MediaKind>>,
+    /// When true, exclude collections/folders that have no visible items.
+    /// Smart and catalog collections are always shown regardless of this flag.
+    pub hide_empty: bool,
 }
 
 /// Normalise any country string to an ISO 3166-1 alpha-2 code (e.g. "US").
@@ -2957,6 +2960,43 @@ impl Media {
             if let Some(ref f) = filter.policy_filter {
                 apply_filter_rules(qb, f);
             }
+
+            if filter.hide_empty {
+                // A container is considered non-empty when:
+                //  1. It is a structural container-of-collections (always visible).
+                //  2. It is a manual collection with at least one member via media_relations.
+                //  3. It is a folder/library with at least one non-container child.
+                //  4. It is a smart/catalog collection AND at least one item of its
+                //     target kind exists anywhere in the DB.
+                //     (Smart collections with specific filter rules that yield zero
+                //      results are removed in a second pass in Rust after the query.)
+                qb.push(
+                    " AND (\
+                        collection_media_kind = 'collection' \
+                        OR EXISTS (\
+                            SELECT 1 FROM media_relations mr \
+                            WHERE mr.left_media_id = media.id AND mr.role = 'collection'\
+                        ) \
+                        OR EXISTS (\
+                            SELECT 1 FROM media m2 \
+                            WHERE m2.parent_id = media.id \
+                            AND m2.kind NOT IN ('collection','folder','playlist','tv_channel')\
+                        ) \
+                        OR (\
+                            collection_kind IN ('smart', 'catalog') \
+                            AND EXISTS (\
+                                SELECT 1 FROM media m3 WHERE \
+                                (media.collection_media_kind = 'movie'    AND m3.kind = 'movie') OR \
+                                (media.collection_media_kind = 'series'   AND m3.kind = 'series') OR \
+                                (media.collection_media_kind = 'mixed'    AND m3.kind IN ('movie','series')) OR \
+                                (media.collection_media_kind = 'music'    AND m3.kind IN ('track','album','artist')) OR \
+                                (media.collection_media_kind = 'playlist' AND m3.kind = 'playlist') OR \
+                                (media.collection_media_kind IS NULL)\
+                            )\
+                        )\
+                    )",
+                );
+            }
         }
         // Apply ORDER BY driven by the sort_by field, with per-kind fallbacks.
         let is_channel_query = filter
@@ -3702,6 +3742,89 @@ impl Media {
             }
         }
 
+        // Second pass: smart/catalog collections with non-trivial filter rules may
+        // pass the SQL check above (because items of the right kind exist) but still
+        // return zero results when their specific rules are applied. Drop those here.
+        if filter.hide_empty {
+            let to_check: Vec<(
+                Uuid,
+                remux_sdks::remux::CollectionFilter,
+                Option<CollectionMediaKind>,
+            )> = records
+                .iter()
+                .filter(|m| {
+                    matches!(
+                        m.collection_kind,
+                        Some(CollectionKind::Smart) | Some(CollectionKind::Catalog)
+                    )
+                })
+                .filter_map(|m| {
+                    let sf = m.parse_smart_filter()?;
+                    let has_rules = sf
+                        .groups
+                        .iter()
+                        .any(|g| {
+                            !g.rules
+                                .is_empty()
+                        });
+                    has_rules.then(|| {
+                        (
+                            m.id,
+                            sf.clone(),
+                            m.collection_media_kind
+                                .clone(),
+                        )
+                    })
+                })
+                .collect();
+
+            if !to_check.is_empty() {
+                let mut empty_ids: Vec<Uuid> = Vec::new();
+                for (id, sf, media_kind) in &to_check {
+                    let kinds: Option<Vec<&'static str>> = media_kind
+                        .as_ref()
+                        .map(|k| match k {
+                            CollectionMediaKind::Movie => vec!["movie"],
+                            CollectionMediaKind::Series => vec!["series"],
+                            CollectionMediaKind::Mixed => vec!["movie", "series"],
+                            CollectionMediaKind::Music => {
+                                vec!["track", "album", "artist"]
+                            }
+                            CollectionMediaKind::Playlist => vec!["playlist"],
+                            CollectionMediaKind::Collection => vec!["collection"],
+                        });
+
+                    let mut qb =
+                        sqlx::QueryBuilder::new("SELECT COUNT(*) FROM media WHERE 1=1");
+                    if let Some(ks) = &kinds {
+                        if !ks.is_empty() {
+                            qb.push(" AND kind IN (");
+                            let mut sep = qb.separated(", ");
+                            for k in ks {
+                                sep.push_bind(*k);
+                            }
+                            qb.push(")");
+                        }
+                    }
+                    apply_filter_rules(&mut qb, sf);
+
+                    let count: i64 = qb
+                        .build_query_scalar()
+                        .fetch_one(db)
+                        .await
+                        .unwrap_or(0);
+
+                    if count == 0 {
+                        empty_ids.push(*id);
+                    }
+                }
+
+                if !empty_ids.is_empty() {
+                    records.retain(|m| !empty_ids.contains(&m.id));
+                }
+            }
+        }
+
         Ok(FilterResult {
             records,
             total_count: count?,
@@ -4145,70 +4268,14 @@ impl Media {
                     }),
                 grandparent_id: filter.series_id,
                 parent: parent.cloned(),
+                hide_empty: targeting_containers
+                    && !filter
+                        .include_empty
+                        .unwrap_or(false),
                 ..Default::default()
             },
         )
         .await?;
-
-        // Hide containers that contain zero items visible to the user after applying
-        // their content filter rules.
-        if targeting_containers
-            && !result
-                .records
-                .is_empty()
-        {
-            if let Some(pf) = user_policy_filter {
-                if pf
-                    .groups
-                    .iter()
-                    .any(|g| {
-                        !g.rules
-                            .is_empty()
-                    })
-                {
-                    let container_ids: Vec<uuid::Uuid> = result
-                        .records
-                        .iter()
-                        .map(|m| m.id)
-                        .collect();
-                    let mut qb = sqlx::QueryBuilder::new(
-                        "SELECT parent_id, COUNT(*) FROM media WHERE parent_id IN (",
-                    );
-                    let mut sep = qb.separated(", ");
-                    for id in &container_ids {
-                        sep.push_bind(*id);
-                    }
-                    qb.push(
-                        ") AND kind NOT IN ('collection', 'folder', 'playlist', 'tv_channel')",
-                    );
-                    apply_filter_rules(&mut qb, pf);
-                    qb.push(" GROUP BY parent_id");
-
-                    if let Ok(rows) = qb
-                        .build()
-                        .fetch_all(db)
-                        .await
-                    {
-                        let counts: HashMap<uuid::Uuid, i64> = rows
-                            .into_iter()
-                            .map(|r| (r.get::<uuid::Uuid, _>(0), r.get::<i64, _>(1)))
-                            .collect();
-                        result
-                            .records
-                            .retain(|m| {
-                                counts
-                                    .get(&m.id)
-                                    .copied()
-                                    .unwrap_or(0)
-                                    > 0
-                            });
-                        result.total_count = result
-                            .records
-                            .len();
-                    }
-                }
-            }
-        }
 
         Ok(result)
     }
@@ -5721,27 +5788,38 @@ pub fn apply_filter_rules(
 ) {
     use remux_sdks::remux::FilterMatchMode;
 
-    let non_empty: Vec<_> = filter
-        .groups
-        .iter()
-        .filter(|g| {
-            !g.rules
-                .is_empty()
-        })
-        .collect();
-
-    if non_empty.is_empty() {
-        return;
-    }
-
     let group_sep = match filter.match_mode {
         FilterMatchMode::All => " AND ",
         FilterMatchMode::Any => " OR ",
     };
 
+    // Pre-compute SQL for every rule so groups with no valid rules are skipped.
+    // filter_rule_to_sql returns None for rules with empty value lists, which
+    // would otherwise produce `()` — an invalid SQLite IN clause.
+    let valid_groups: Vec<(_, Vec<(String, bool)>)> = filter
+        .groups
+        .iter()
+        .filter_map(|g| {
+            let rules: Vec<_> = g
+                .rules
+                .iter()
+                .filter_map(filter_rule_to_sql)
+                .collect();
+            if rules.is_empty() {
+                None
+            } else {
+                Some((g, rules))
+            }
+        })
+        .collect();
+
+    if valid_groups.is_empty() {
+        return;
+    }
+
     qb.push(" AND (");
     let mut first_group = true;
-    for group in non_empty {
+    for (group, rules) in valid_groups {
         if !first_group {
             qb.push(group_sep);
         }
@@ -5754,19 +5832,17 @@ pub fn apply_filter_rules(
 
         qb.push("(");
         let mut first_rule = true;
-        for rule in &group.rules {
-            if let Some((sql, negated)) = filter_rule_to_sql(rule) {
-                if !first_rule {
-                    qb.push(rule_sep);
-                }
-                first_rule = false;
-                if negated {
-                    qb.push("NOT (");
-                }
-                qb.push(sql);
-                if negated {
-                    qb.push(")");
-                }
+        for (sql, negated) in rules {
+            if !first_rule {
+                qb.push(rule_sep);
+            }
+            first_rule = false;
+            if negated {
+                qb.push("NOT (");
+            }
+            qb.push(sql);
+            if negated {
+                qb.push(")");
             }
         }
         qb.push(")");

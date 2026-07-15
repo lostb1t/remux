@@ -1295,6 +1295,10 @@ pub struct GetItemsQuery {
     pub recursive: bool,
     pub series_id: Option<Uuid>,
     pub start_item_id: Option<Uuid>,
+    /// Remux extension: when true, include collections/folders that have no items.
+    /// Regular Jellyfin clients never send this; it is used by the admin dashboard.
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
+    pub include_empty: Option<bool>,
 }
 
 impl GetItemsQuery {

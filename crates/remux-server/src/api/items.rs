@@ -522,6 +522,9 @@ pub async fn get_items(
                             .sort_order
                             .clone()
                             .unwrap_or_default(),
+                        hide_empty: !q
+                            .include_empty
+                            .unwrap_or(false),
                         ..Default::default()
                     },
                 )
@@ -3073,6 +3076,9 @@ pub async fn media_segments(
 mod tests {
     use chrono::Utc;
     use http::header::HeaderValue;
+    use remux_sdks::remux::{
+        CollectionFilter, FilterGroup, FilterMatchMode, FilterRule, SetOp,
+    };
     use uuid::Uuid;
 
     use crate::{
@@ -3080,6 +3086,60 @@ mod tests {
         db::{ExternalIds, MediaIdRaw, NonEmptyString},
         integration_test::{auth_header_with_token, authenticated_server},
     };
+
+    // The "Collections" container from seed data — shows non-promoted collections.
+    const COLLECTIONS_PARENT_ID: &str = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
+
+    async fn get_user_id(server: &axum_test::TestServer, auth: &str) -> String {
+        let resp: serde_json::Value = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(auth).unwrap(),
+            )
+            .await
+            .json();
+        resp["Id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    fn tag_filter(tag: &str) -> CollectionFilter {
+        CollectionFilter {
+            match_mode: FilterMatchMode::All,
+            groups: vec![FilterGroup {
+                match_mode: FilterMatchMode::All,
+                rules: vec![FilterRule::Tag {
+                    op: SetOp::In,
+                    values: vec![tag.to_string()],
+                }],
+            }],
+        }
+    }
+
+    async fn insert_smart_collection_with_filter(
+        db: &sqlx::SqlitePool,
+        title: &str,
+        media_kind: db::CollectionMediaKind,
+        filter: Option<CollectionFilter>,
+    ) -> db::Media {
+        let now = Utc::now().naive_utc();
+        let mut c = db::Media {
+            title: title.to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Smart),
+            collection_media_kind: Some(media_kind),
+            collection_smart_filter: filter,
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        c.save(db)
+            .await
+            .unwrap();
+        c
+    }
 
     fn make_content_ids(kind: db::MediaKind, imdb: &str) -> (Uuid, ExternalIds) {
         let ext = ExternalIds {
@@ -3301,6 +3361,152 @@ mod tests {
                 .unwrap_or(0)
                 > 0,
             "unfiltered query on series collection must return series"
+        );
+    }
+
+    // Browsing the Collections container must not return smart collections whose
+    // filter rules match nothing (e.g. Netflix tag with no Netflix content).
+    #[tokio::test]
+    async fn collections_parent_hides_empty_smart_collection() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(&server, &auth).await;
+
+        // A smart movie collection that requires a tag no movie in the DB has.
+        insert_smart_collection_with_filter(
+            db,
+            "Top Provider Movies",
+            db::CollectionMediaKind::Movie,
+            Some(tag_filter("provider:NonExistent")),
+        )
+        .await;
+
+        let body: serde_json::Value = server
+            .get(&format!("/users/{user_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[("parentId", COLLECTIONS_PARENT_ID)])
+            .await
+            .json();
+
+        let empty = vec![];
+        let names: Vec<&str> = body["Items"]
+            .as_array()
+            .unwrap_or(&empty)
+            .iter()
+            .filter_map(|i| i["Name"].as_str())
+            .collect();
+
+        assert!(
+            !names.contains(&"Top Provider Movies"),
+            "empty smart collection must not appear in Collections browse; got: {names:?}"
+        );
+    }
+
+    // Browsing the Collections container must return smart collections that
+    // do have matching content.
+    #[tokio::test]
+    async fn collections_parent_shows_non_empty_smart_collection() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(&server, &auth).await;
+
+        // Insert a movie tagged so the collection below matches it.
+        let movie =
+            insert_media(db, "Tagged Movie", db::MediaKind::Movie, "tt9991234").await;
+        sqlx::query("INSERT OR IGNORE INTO media_tags (media_id, tag) VALUES (?, ?)")
+            .bind(movie.id)
+            .bind("provider:TestNet")
+            .execute(db)
+            .await
+            .unwrap();
+
+        insert_smart_collection_with_filter(
+            db,
+            "TestNet Movies",
+            db::CollectionMediaKind::Movie,
+            Some(tag_filter("provider:TestNet")),
+        )
+        .await;
+
+        let body: serde_json::Value = server
+            .get(&format!("/users/{user_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[("parentId", COLLECTIONS_PARENT_ID)])
+            .await
+            .json();
+
+        let empty = vec![];
+        let names: Vec<&str> = body["Items"]
+            .as_array()
+            .unwrap_or(&empty)
+            .iter()
+            .filter_map(|i| i["Name"].as_str())
+            .collect();
+
+        assert!(
+            names.contains(&"TestNet Movies"),
+            "non-empty smart collection must appear in Collections browse; got: {names:?}"
+        );
+    }
+
+    // /UserViews must not return a promoted smart collection with no matching content.
+    #[tokio::test]
+    async fn userviews_hides_empty_smart_collection() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(&server, &auth).await;
+
+        let now = Utc::now().naive_utc();
+        let mut c = db::Media {
+            title: "Empty Provider Shows".to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Smart),
+            collection_media_kind: Some(db::CollectionMediaKind::Series),
+            collection_smart_filter: Some(tag_filter("provider:NobodyHasThis")),
+            promoted: true,
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        c.save(db)
+            .await
+            .unwrap();
+
+        let body: serde_json::Value = server
+            .get(&format!("/userviews?userId={user_id}"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+
+        let empty = vec![];
+        let names: Vec<&str> = body["Items"]
+            .as_array()
+            .unwrap_or(&empty)
+            .iter()
+            .filter_map(|i| i["Name"].as_str())
+            .collect();
+
+        assert!(
+            !names.contains(&"Empty Provider Shows"),
+            "empty smart collection must not appear in /UserViews; got: {names:?}"
         );
     }
 }
