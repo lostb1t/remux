@@ -612,7 +612,16 @@ pub async fn get_items(
                         intersection
                     }
                 } else {
+                    // Bare music-library browse (no IncludeItemTypes) must not
+                    // surface MusicArtist index nodes: canonical Jellyfin exposes
+                    // artists only via /Artists, and Finamp hard-throws on a
+                    // MusicArtist item in an album/song list. Explicit
+                    // IncludeItemTypes=MusicArtist still works via the intersection
+                    // branch above (collection_types is unchanged).
                     collection_types
+                        .into_iter()
+                        .filter(|t| *t != api::MediaType::MusicArtist)
+                        .collect()
                 }
             });
 
