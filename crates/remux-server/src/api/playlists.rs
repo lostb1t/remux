@@ -178,6 +178,12 @@ pub async fn update_playlist(
 pub struct PlaylistItemsQuery {
     pub start_index: Option<u32>,
     pub limit: Option<u32>,
+    /// Jellyfin filters playlist contents by item type. Clients (e.g. Finamp)
+    /// request `IncludeItemTypes=Audio` when building a play queue and hard-throw
+    /// if a non-audio member (a playlist may contain a MusicArtist, MusicAlbum,
+    /// etc.) leaks through. Empty means "no type filter".
+    #[serde(default)]
+    pub include_item_types: CommaSeparatedList<api::MediaType>,
 }
 
 #[get("/playlists/{id}/items")]
@@ -205,6 +211,44 @@ pub async fn get_playlist_items(
         &id,
     )
     .await?;
+
+    // Apply IncludeItemTypes to the playlist's contents before paginating, the
+    // way Jellyfin does. A playlist may contain non-audio members (a MusicArtist,
+    // a MusicAlbum, ...); without this filter a client's typed query (e.g.
+    // Finamp's `IncludeItemTypes=Audio` play-queue build) receives the stray
+    // member and throws `Wrong BaseItemDto type`. We resolve the members' kinds
+    // in one batch query and keep only the requested ones.
+    let allowed_kinds: Vec<db::MediaKind> = q
+        .include_item_types
+        .iter()
+        .filter_map(|t| db::MediaKind::try_from(t.clone()).ok())
+        .collect();
+    let relations = if allowed_kinds.is_empty() || relations.is_empty() {
+        relations
+    } else {
+        let mut qb =
+            sqlx::QueryBuilder::new("SELECT id, kind FROM media WHERE id IN (");
+        let mut sep = qb.separated(", ");
+        for rel in &relations {
+            sep.push_bind(rel.right_media_id);
+        }
+        qb.push(")");
+        let kinds: std::collections::HashMap<Uuid, db::MediaKind> = qb
+            .build_query_as::<(Uuid, db::MediaKind)>()
+            .fetch_all(&state.ctx.db)
+            .await?
+            .into_iter()
+            .collect();
+        relations
+            .into_iter()
+            .filter(|rel| {
+                kinds
+                    .get(&rel.right_media_id)
+                    .is_some_and(|k| allowed_kinds.contains(k))
+            })
+            .collect()
+    };
+
     let total = relations.len() as i64;
 
     let start = q
