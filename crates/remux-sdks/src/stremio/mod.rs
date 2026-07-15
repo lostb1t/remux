@@ -349,10 +349,9 @@ pub struct Subtitle {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Trailer {
-    pub source: String,
-    //pub r#type: String,
-    //pub name: String,
-    //pub lang: String,
+    pub source: Option<String>,
+    pub name: Option<String>,
+    pub lang: Option<String>,
 }
 
 #[derive(

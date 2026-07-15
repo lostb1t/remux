@@ -5177,7 +5177,7 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                 .map(|trailers| {
                     trailers
                         .into_iter()
-                        .map(|t| t.source)
+                        .filter_map(|t| t.source)
                         .collect::<Vec<String>>()
                 }),
             id: {
