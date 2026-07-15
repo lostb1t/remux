@@ -503,9 +503,18 @@ impl From<crate::stream::StreamInfo> for db::Media {
 pub struct AddonPresetRegistration(pub fn() -> Box<dyn AddonPreset>);
 inventory::collect!(AddonPresetRegistration);
 
-pub(super) fn make_http_client() -> reqwest::Client {
+pub(super) fn make_http_client(config: &crate::Config) -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent("remux-server/1.0")
+        // Bound request and connect time (operator-tunable via Config) so a
+        // stalled upstream (e.g. a hung stream-resolver worker) cannot pin a
+        // playback resolution forever and starve the resolver-concurrency
+        // budget. A timed-out request is a retryable error (see
+        // `eclipse::worker_get_json`).
+        .timeout(std::time::Duration::from_secs(config.addon_http_timeout_secs))
+        .connect_timeout(std::time::Duration::from_secs(
+            config.addon_http_connect_timeout_secs,
+        ))
         .build()
         .expect("failed to build HTTP client")
 }

@@ -41,10 +41,10 @@ impl AddonPreset for LrcLibPreset {
         &self,
         _addon_id: Uuid,
         _cfg: &serde_json::Value,
-        _config: &crate::Config,
+        config: &crate::Config,
     ) -> Result<AddonCapabilities> {
         let addon = Arc::new(LrcLibAddon {
-            client: super::make_http_client(),
+            client: super::make_http_client(config),
         });
         Ok(AddonCapabilities {
             kind: Some(addon.clone()),

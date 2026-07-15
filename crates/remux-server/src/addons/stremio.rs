@@ -64,7 +64,7 @@ impl AddonPreset for StremioPreset {
         &self,
         _addon_id: Uuid,
         cfg: &serde_json::Value,
-        _config: &crate::Config,
+        config: &crate::Config,
     ) -> Result<AddonCapabilities> {
         let raw_url = cfg
             .get("manifest_url")
@@ -73,7 +73,7 @@ impl AddonPreset for StremioPreset {
             .to_string();
         let manifest_url = StremioManifestUrl::try_new(raw_url)
             .map_err(|e| anyhow!("Invalid manifest_url: {e}"))?;
-        let client = super::make_http_client();
+        let client = super::make_http_client(config);
         let addon = Arc::new(StremioAddon {
             manifest_url,
             client,

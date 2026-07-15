@@ -54,6 +54,7 @@ fn eclipse_preset_options(
 fn eclipse_from_cfg(
     default_url: &'static str,
     cfg: &serde_json::Value,
+    config: &crate::Config,
 ) -> Result<AddonCapabilities> {
     let raw_url = cfg
         .get("manifest_url")
@@ -66,7 +67,7 @@ fn eclipse_from_cfg(
         .to_string();
     let manifest_url = StremioManifestUrl::try_new(raw_url)
         .map_err(|e| anyhow!("Invalid manifest_url: {e}"))?;
-    let client = super::make_http_client();
+    let client = super::make_http_client(config);
     let addon = Arc::new(EclipseAddon {
         manifest_url,
         client,
@@ -115,9 +116,9 @@ impl AddonPreset for MonochromePreset {
         &self,
         _id: Uuid,
         cfg: &serde_json::Value,
-        _config: &crate::Config,
+        config: &crate::Config,
     ) -> Result<AddonCapabilities> {
-        eclipse_from_cfg(MONOCHROME_URL, cfg)
+        eclipse_from_cfg(MONOCHROME_URL, cfg, config)
     }
 }
 
@@ -159,9 +160,9 @@ impl AddonPreset for SpotiFLACPreset {
         &self,
         _id: Uuid,
         cfg: &serde_json::Value,
-        _config: &crate::Config,
+        config: &crate::Config,
     ) -> Result<AddonCapabilities> {
-        eclipse_from_cfg(SPOTIFLAC_URL, cfg)
+        eclipse_from_cfg(SPOTIFLAC_URL, cfg, config)
     }
 }
 
@@ -221,6 +222,46 @@ impl StreamAddon for EclipseAddon {
     }
 }
 
+/// Bounds concurrent requests to the stream-resolver worker.
+///
+/// Most tracks carry no stored source and are resolved live through an external
+/// worker that rate-limits (HTTP 429) under load. When a client opens a full
+/// album or queue, remux would otherwise fire many resolutions at once and
+/// self-inflict 429s that surface to the client as playback failures (Finamp
+/// reports these as `-1008 resource unavailable`). Capping in-flight worker
+/// requests keeps resolution under the worker's limit while retaining useful
+/// parallelism. Mirrors the `DB_WRITE_SEMAPHORE` pattern in the db layer.
+static WORKER_CONCURRENCY: std::sync::LazyLock<tokio::sync::Semaphore> =
+    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(4));
+
+/// GET and decode a JSON document from the resolver worker with bounded
+/// concurrency and transient-failure retries.
+///
+/// 429 rate-limits and network blips are retried with exponential backoff and
+/// jitter (via the shared `retry!` helper) instead of bubbling straight up as a
+/// hard error — the previous behaviour turned a transient 429 into a permanent
+/// "no source", which the caller swallowed and served to the client as a 500 /
+/// Finamp `-1008`.
+async fn worker_get_json<T: serde::de::DeserializeOwned>(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<T> {
+    let _permit = WORKER_CONCURRENCY
+        .acquire()
+        .await
+        .expect("worker concurrency semaphore is never closed");
+    let resp = remux_utils::retry!(attempts: 4, delay: 300, {
+        client
+            .get(url)
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+    })?;
+    resp.json::<T>()
+        .await
+        .map_err(Into::into)
+}
+
 async fn eclipse_streams(
     client: &reqwest::Client,
     base_url: &str,
@@ -246,13 +287,7 @@ async fn eclipse_streams(
     };
 
     let search_url = format!("{}/search?q={}", base_url, urlencoding::encode(&query));
-    let resp = client
-        .get(&search_url)
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<EclipseSearchResponse>()
-        .await?;
+    let resp: EclipseSearchResponse = worker_get_json(client, &search_url).await?;
 
     if resp
         .tracks
@@ -276,13 +311,7 @@ async fn eclipse_streams(
         .unwrap_or(&resp.tracks[0]);
 
     let stream_url = format!("{}/stream/{}", base_url, track.id);
-    let stream_resp = client
-        .get(&stream_url)
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<EclipseStreamResponse>()
-        .await?;
+    let stream_resp: EclipseStreamResponse = worker_get_json(client, &stream_url).await?;
 
     Ok(vec![StreamInfo {
         descriptor: StreamDescriptor::http(stream_resp.url),
