@@ -1,15 +1,19 @@
 # PR DRAFT — Finamp music compatibility: browse crash, local-library grouping, playback resilience
 
-Status: **implemented + built.** Server-side fixes for three Finamp-beta breakages plus a
-diagnosed client-side issue. Verified against the live Remux instance (see each section's
-verification). Do not push to `main` — PR branch only.
+Status: **implemented + built + deployed + verified** against the live Remux instance (see each
+section's verification). Covers the browse crash (A), local-library grouping (C), playback
+resilience (B), the download white-screen (D/F), the playlist-playback crash (E), and
+Jellyfin-spec audit follow-ups. Do not push to `main` — PR branch only.
 
 ## Background
 
 Finamp Beta (the `redesign` branch of `finamp-app/finamp`) surfaced several breakages against
 Remux's Jellyfin-compatible API. Each is a distinct root cause; they are documented and fixed
-independently below. Issues A, B, C are server-side and fixed here. Issue D is a Finamp client
-bug; the server change that reduces its triggers overlaps with B/C.
+independently below. All are server-side. A recurring theme (D, F, E, and the audit follow-ups):
+Remux returned an **empty array or unfiltered list where stock Jellyfin returns a populated array,
+null, or a filtered list**, and Finamp — which works against stock Jellyfin — force-unwraps
+(`.first`) or type-wraps those and crashes. Fixing the response shape to match Jellyfin is the
+throughline.
 
 ---
 
@@ -120,19 +124,82 @@ the live catalog, so it is documented here rather than patched blind.
 
 ## D — Finamp download shows a white screen (diagnosed; client-side)
 
-**Root cause (client).** Not a server bug. Finamp's downloads screen reads a **synchronous**
-provider (`userDownloadedItemsProvider`) with no error boundary and force-unwraps
-`stub.baseItem!` in `lib/components/DownloadsScreen/downloaded_items_list.dart`. When a
-downloaded/enumerated item has a null `baseItem` — which Remux produces via 0-track albums and
-tracks that fail to resolve (500 / `-1008`) — the null-check throws during `build()` and Flutter
-renders a blank (white) screen. This is the same defect class as Finamp issue
-[#748](https://github.com/finamp-app/finamp/issues/748) (partially fixed by PR #749, which
-stopped the type enum from throwing but left the render-layer `!` unwraps). The download path
-does **not** use `/scheduledtasks` (its repeated 401 is unrelated and admin-gated by design).
+**Root cause (server response shape — corrected).** An earlier hypothesis blamed a Finamp null
+`baseItem`; the actual trigger is server-side. Finamp's download dialog estimates size with
+`mediaSources?.first...mediaStreams.first.codec` (`lib/components/AlbumScreen/download_dialog.dart`).
+The `?.` guards a **null** `MediaSources`/`MediaStreams` but **not an empty `[]`**, so Dart's
+`List.first` throws `Bad state: No element` synchronously in `build()` → blank/white screen. Remux
+served every track's `MediaSources[0].MediaStreams` as `[]` (empty) when the track had no probe
+data. Stock Jellyfin always ships at least one stream, so it never crashes — this is a
+Remux-vs-Jellyfin shape gap, not a pure Finamp bug. (The `/scheduledtasks` 401 is unrelated —
+the download path never calls it.)
 
-**Server mitigation.** The complete fix is upstream in Finamp (null-safety + filtering). Server
-side, issue B's resolver resilience reduces the no-source tracks that produce null items, and
-resolving the 0-track-album follow-up above would remove the other trigger.
+**Fix (issue F).** `crates/remux-server/src/conversions.rs` — `From<db::Media> for MediaSourceInfo`
+now synthesizes a minimal audio stream (`type=Audio`, codec from the container) when the probed
+stream list is empty, so `MediaStreams` is never `[]`.
+
+---
+
+## E — `Wrong BaseItemDto type: MusicArtist` when playing a playlist (fixed & verified)
+
+**Root cause.** A separate live instance of the same class as A, in the playlist path — and the
+actual reason the MusicArtist error persisted after clearing the client cache. A playlist may
+contain non-audio members (the user's "car time" playlist contained the artist *sadeyes*), and
+`GET /playlists/{id}/items` (`api/playlists.rs`) **ignored `IncludeItemTypes` entirely**. Finamp
+requests `IncludeItemTypes=Audio` to build a play queue and hard-throws on the leaked MusicArtist;
+stock Jellyfin filters it.
+
+**Fix.** `get_playlist_items` now resolves the members' kinds in one batch query and applies the
+`IncludeItemTypes` filter before paginating, Jellyfin-style. The artist remains a playlist member
+for unfiltered views.
+
+---
+
+## Jellyfin-spec audit follow-ups (fixed & verified)
+
+Diffing Remux's responses against the Jellyfin OpenAPI schema surfaced more of the same
+empty-array anti-pattern:
+
+- **Null, not `[]`, for empty `Artists`/`ArtistItems`/`AlbumArtists`** on tracks with no linked
+  artist (`api/models.rs`) — Finamp `.first`-crashes on empty arrays but tolerates null.
+- **`MusicGenre`/`Genre` `IsFolder=true`** (`db/media.rs` `is_folder`) — genres are browsable
+  containers in Jellyfin, not playable leaves.
+
+Deferred (documented, not patched): some tracks omit `RunTimeTicks` (needs probe data; not
+implicated in the reported crashes); `/System/Info` omits some cosmetic fields.
+
+---
+
+## G — Local music won't play; `-1008` on short tracks (fixed & verified)
+
+Two problems made music fail to play with `(-1008) resource unavailable`:
+
+1. **The probe rejected short audio.** `playback::probe` discarded any stream whose probed
+   duration was under ~3 minutes as a "suspiciously short placeholder" — a heuristic meant for
+   copyright-strike *videos*, applied to the resolved `Stream` row (so a `kind` check doesn't
+   help). Real songs are routinely under 3 minutes, so it discarded every usable stream → 500 →
+   `-1008`, for local files and short streaming tracks alike. Fix
+   (`crates/remux-server/src/playback/probe.rs`): gate the short-duration rejection on the probed
+   content having a **video stream** — audio-only content is never rejected for being short.
+
+2. **Local files were never served.** The six `opendal-local` music addons added 2026-07-10
+   (`1tb4music`, …) were registered `catalog`-only, so they indexed files but could not serve
+   them; only the original `10tbmusic` carried the `stream` resource. And Monochrome (the live
+   stream resolver, priority −20) outranked the local addons (priority 0), so even a track with a
+   local file resolved to a (often wrong, fuzzy) Qobuz match first. **Operational fix via the
+   admin addon API** (no code): added `stream` to all local-music addons' `resources`, and set
+   their `priority` to −30 (above Monochrome) so a track you have on disk plays from disk, with
+   Monochrome as the fallback for streaming-only tracks — exactly the "disk + streaming backend"
+   behaviour. Verified: the local 9TAILS track and 8 random local tracks across artists all play
+   (`PlaybackInfo=200`, source = the local file), while Deezer-only tracks still resolve via
+   Monochrome.
+
+---
+
+## Favorited-artist data cleanup
+
+All favorited *artist* rows were unfavorited across users (they were a second MusicArtist trigger
+on Finamp's favorites screen). Reversible; no schema change.
 
 ---
 
@@ -148,3 +215,7 @@ resolving the 0-track-album follow-up above would remove the other trigger.
 | `crates/remux-server/src/addons/mod.rs` | B | HTTP client timeouts (config-driven) |
 | `crates/remux-server/src/addons/{stremio,lrclib}.rs` | B | Thread `Config` into `make_http_client` |
 | `crates/remux-server/src/lib.rs` | B, C | `Config` fields: `group_local_music_limit`, `addon_http_timeout_secs`, `addon_http_connect_timeout_secs` |
+| `crates/remux-server/src/api/playlists.rs` | E | Apply `IncludeItemTypes` to playlist items |
+| `crates/remux-server/src/conversions.rs` | F | Never emit empty `MediaStreams` on a MediaSource |
+| `crates/remux-server/src/api/models.rs` | audit | Null (not `[]`) for empty artist arrays |
+| `crates/remux-server/src/db/media.rs` | audit | `MusicGenre`/`Genre` `IsFolder=true` |
