@@ -352,6 +352,7 @@ pub struct Trailer {
     pub source: Option<String>,
     pub name: Option<String>,
     pub lang: Option<String>,
+    pub r#type: Option<String>,
 }
 
 #[derive(
