@@ -223,6 +223,23 @@ impl From<db::Media> for api::MediaSourceInfo {
                     )
                 })
                 .unwrap_or_default();
+        // Never emit an empty MediaStreams array. Some clients (e.g. Finamp's
+        // download size estimate) call `.first` on MediaStreams without guarding
+        // for empty and throw `Bad state: No element`, white-screening the
+        // download dialog — whereas a null/absent array is handled safely. When a
+        // track has not been probed yet, synthesize a minimal audio stream from
+        // the container so the array always carries at least one element.
+        let media_streams = if media_streams.is_empty() {
+            vec![api::MediaStream {
+                type_: Some(api::MediaStreamType::Audio),
+                index: 0,
+                codec: Some(container.clone()),
+                is_default: Some(true),
+                ..Default::default()
+            }]
+        } else {
+            media_streams
+        };
         api::MediaSourceInfo {
             id: client_id,
             e_tag: client_id,
