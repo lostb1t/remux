@@ -688,47 +688,56 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                     })
             })
             .flatten(),
-        album_artists: is_music_metadata_item(&media.kind).then(|| {
-            media
-                .grandparent_id
-                .zip(
-                    media
-                        .grandparent
-                        .as_ref()
-                        .map(|gp| {
-                            gp.title
-                                .clone()
-                        }),
-                )
-                .map(|(id, name)| vec![NameIdPair { id, name }])
-                .unwrap_or_default()
-        }),
-        artists: is_music_metadata_item(&media.kind).then(|| {
-            media
-                .grandparent
-                .as_ref()
-                .map(|gp| {
-                    vec![gp
-                        .title
-                        .clone()]
-                })
-                .unwrap_or_default()
-        }),
-        artist_items: is_music_metadata_item(&media.kind).then(|| {
-            media
-                .grandparent_id
-                .zip(
-                    media
-                        .grandparent
-                        .as_ref()
-                        .map(|gp| {
-                            gp.title
-                                .clone()
-                        }),
-                )
-                .map(|(id, name)| vec![NameIdPair { id, name }])
-                .unwrap_or_default()
-        }),
+        // Emit null (not an empty array) when a track has no linked artist:
+        // Finamp force-unwraps `.first` on these lists and throws on `[]`, but
+        // handles null safely (same anti-pattern as the empty MediaStreams bug).
+        album_artists: is_music_metadata_item(&media.kind)
+            .then(|| {
+                media
+                    .grandparent_id
+                    .zip(
+                        media
+                            .grandparent
+                            .as_ref()
+                            .map(|gp| {
+                                gp.title
+                                    .clone()
+                            }),
+                    )
+                    .map(|(id, name)| vec![NameIdPair { id, name }])
+                    .unwrap_or_default()
+            })
+            .filter(|v| !v.is_empty()),
+        artists: is_music_metadata_item(&media.kind)
+            .then(|| {
+                media
+                    .grandparent
+                    .as_ref()
+                    .map(|gp| {
+                        vec![gp
+                            .title
+                            .clone()]
+                    })
+                    .unwrap_or_default()
+            })
+            .filter(|v| !v.is_empty()),
+        artist_items: is_music_metadata_item(&media.kind)
+            .then(|| {
+                media
+                    .grandparent_id
+                    .zip(
+                        media
+                            .grandparent
+                            .as_ref()
+                            .map(|gp| {
+                                gp.title
+                                    .clone()
+                            }),
+                    )
+                    .map(|(id, name)| vec![NameIdPair { id, name }])
+                    .unwrap_or_default()
+            })
+            .filter(|v| !v.is_empty()),
         tags: media
             .tags
             .clone(),

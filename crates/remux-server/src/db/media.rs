@@ -158,6 +158,10 @@ impl MediaKind {
                 | Self::Playlist
                 | Self::Album
                 | Self::Artist
+                // Genres are browsable containers in Jellyfin (IsFolder=true);
+                // clients navigate into them rather than treating them as leaves.
+                | Self::MusicGenre
+                | Self::Genre
         )
     }
 }
