@@ -71,7 +71,9 @@ pub fn DashboardLayout() -> Element {
     });
 
     use_effect(move || {
-        let current_theme = theme.read().clone();
+        let current_theme = theme
+            .read()
+            .clone();
         let _ = LocalStorage::set("theme", &current_theme);
         if let Some(window) = web_sys::window() {
             if let Some(document) = window.document() {

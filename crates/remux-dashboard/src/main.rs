@@ -33,7 +33,8 @@ fn App() -> Element {
     use_context_provider(|| logged_in);
 
     use_effect(move || {
-        let initial_theme = LocalStorage::get::<String>("theme").unwrap_or_else(|_| "auto".to_string());
+        let initial_theme =
+            LocalStorage::get::<String>("theme").unwrap_or_else(|_| "auto".to_string());
         if let Some(window) = web_sys::window() {
             if let Some(document) = window.document() {
                 if let Some(html) = document.document_element() {

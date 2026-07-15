@@ -48,7 +48,12 @@ pub async fn system_info_public(
         version: "10.11.8".to_string(),
         remux_version: env!("CARGO_PKG_VERSION").to_string(),
         id: server_id(),
-        remux_started_at: Some(state.ctx.started_at.to_rfc3339()),
+        remux_started_at: Some(
+            state
+                .ctx
+                .started_at
+                .to_rfc3339(),
+        ),
         ..Default::default()
     }))
 }

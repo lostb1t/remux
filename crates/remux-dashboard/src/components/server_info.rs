@@ -4,7 +4,6 @@ use crate::{
 };
 use dioxus::prelude::*;
 use remux_sdks::remux::{GetItemCounts, ItemCounts, PublicSystemInfo, RestartServer};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Parse an RFC 3339 timestamp (the format chrono::to_rfc3339() produces)
 /// into seconds since the Unix epoch.
@@ -13,12 +12,24 @@ fn parse_rfc3339(s: &str) -> Option<u64> {
     if s.len() < 19 || s.as_bytes()[10] != b'T' {
         return None;
     }
-    let year: i64 = s[0..4].parse().ok()?;
-    let month: u32 = s[5..7].parse().ok()?;
-    let day: u32 = s[8..10].parse().ok()?;
-    let hour: u32 = s[11..13].parse().ok()?;
-    let min: u32 = s[14..16].parse().ok()?;
-    let sec: u32 = s[17..19].parse().ok()?;
+    let year: i64 = s[0..4]
+        .parse()
+        .ok()?;
+    let month: u32 = s[5..7]
+        .parse()
+        .ok()?;
+    let day: u32 = s[8..10]
+        .parse()
+        .ok()?;
+    let hour: u32 = s[11..13]
+        .parse()
+        .ok()?;
+    let min: u32 = s[14..16]
+        .parse()
+        .ok()?;
+    let sec: u32 = s[17..19]
+        .parse()
+        .ok()?;
 
     // Convert to Unix timestamp using the Gregorian calendar algorithm.
     let (y, m) = if month <= 2 {
@@ -27,15 +38,13 @@ fn parse_rfc3339(s: &str) -> Option<u64> {
         (year, month as i64)
     };
     // Days since 1970-01-01
-    let days = y * 365 + y / 4 - y / 100 + y / 400 + (153 * m + 3) / 5 + day as i64 - 719469;
+    let days =
+        y * 365 + y / 4 - y / 100 + y / 400 + (153 * m + 3) / 5 + day as i64 - 719469;
     Some((days * 86400 + hour as i64 * 3600 + min as i64 * 60 + sec as i64) as u64)
 }
 
 fn format_uptime(started_at: &str) -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = (js_sys::Date::now() / 1000.0) as u64;
     let started = parse_rfc3339(started_at).unwrap_or(0);
     if started == 0 || started > now {
         return "N/A".to_string();
@@ -97,7 +106,10 @@ pub fn ServerInfoCard(app_state: AppState) -> Element {
             // Give the server a moment to restart, then refresh the page
             gloo_timers::future::sleep(std::time::Duration::from_secs(10)).await;
             if let Some(window) = web_sys::window() {
-                window.location().reload().ok();
+                window
+                    .location()
+                    .reload()
+                    .ok();
             }
         });
     };
