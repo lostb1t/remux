@@ -2108,7 +2108,7 @@ mod tests {
                 HeaderValue::from_str(&auth).unwrap(),
             )
             .json(&user_config_with(
-                json!({ "AudioLanguagePreference": "nl" }),
+                json!({ "AudioLanguagePreference": "nl", "PlayDefaultAudioTrack": false }),
             ))
             .await;
 
@@ -2175,6 +2175,56 @@ mod tests {
         assert!(
             body["MediaSources"][0]["DefaultAudioStreamIndex"].is_null(),
             "With no German track present, DefaultAudioStreamIndex should be null"
+        );
+    }
+
+    /// After reporting progress with `AudioStreamIndex=2`, the next PlaybackInfo
+    /// request should recall that selection as `DefaultAudioStreamIndex`.
+    #[tokio::test]
+    async fn test_play_default_audio_track_true_ignores_language_preference() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_multilang_source(&guard.0).await;
+
+        let me: serde_json::Value = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let user_id = me["Id"]
+            .as_str()
+            .unwrap();
+
+        // PlayDefaultAudioTrack=true means "play the container default regardless of language" —
+        // the language preference must be ignored.
+        server
+            .post(&format!("/users/{}/configuration", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&user_config_with(
+                json!({ "AudioLanguagePreference": "nl", "PlayDefaultAudioTrack": true }),
+            ))
+            .await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({}))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert!(
+            body["MediaSources"][0]["DefaultAudioStreamIndex"].is_null(),
+            "PlayDefaultAudioTrack=true should ignore AudioLanguagePreference; DefaultAudioStreamIndex must be null"
         );
     }
 
@@ -2809,8 +2859,12 @@ async fn apply_user_playback_prefs(
         }
 
         // --- audio_language_preference ---
-        // Only act if the client didn't specify a track and no default is already chosen.
-        if !client_wants_audio
+        // Only act when play_default_audio_track is false (the user wants their language
+        // preference honoured over the container default), the client didn't specify a
+        // track explicitly, and no default has already been chosen (e.g. remembered
+        // selection above takes precedence).
+        if !cfg.play_default_audio_track
+            && !client_wants_audio
             && source
                 .default_audio_stream_index
                 .is_none()
@@ -2834,16 +2888,6 @@ async fn apply_user_playback_prefs(
                     }
                 }
             }
-        }
-
-        // --- play_default_audio_track regardless of language ---
-        // When enabled, the container's default audio track should play even if the
-        // user has a language preference set. Clear any language-preference selection
-        // so the client falls back to the container's default (track with is_default,
-        // or first audio track).
-        // When disabled, the user's language preference (set above) is respected.
-        if cfg.play_default_audio_track {
-            source.default_audio_stream_index = None;
         }
 
         // --- subtitle_language_preference ---
