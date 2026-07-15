@@ -505,6 +505,30 @@ impl DeezerAddon {
             .collect()
     }
 
+    /// Deezer returns multiple catalog entries (regional variants) for the same album with
+    /// different IDs but identical titles. Keep the lowest ID (original release) per title.
+    fn dedup_albums(albums: Vec<dz::ArtistAlbumRef>) -> Vec<dz::ArtistAlbumRef> {
+        let mut seen: std::collections::HashMap<String, dz::ArtistAlbumRef> =
+            std::collections::HashMap::new();
+        for album in albums {
+            let key = album
+                .title
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .to_lowercase();
+            seen.entry(key)
+                .and_modify(|existing| {
+                    if album.id < existing.id {
+                        *existing = album.clone();
+                    }
+                })
+                .or_insert(album);
+        }
+        seen.into_values()
+            .collect()
+    }
+
     /// Returns minimal Album stubs for an Artist — direct children only, no track fetching.
     async fn list_artist_albums(&self, root: &db::Media) -> Result<Vec<db::Media>> {
         let Some(artist_id_raw) = root
@@ -527,7 +551,7 @@ impl DeezerAddon {
             )
             .await
         {
-            Ok(dz::DeezerResult::Ok(list)) => list.data,
+            Ok(dz::DeezerResult::Ok(list)) => Self::dedup_albums(list.data),
             Ok(dz::DeezerResult::Err { error }) => {
                 warn!(artist_id, %error, "Deezer artist albums returned error");
                 return Ok(vec![]);
@@ -625,7 +649,7 @@ impl DeezerAddon {
             )
             .await
         {
-            Ok(dz::DeezerResult::Ok(list)) => list.data,
+            Ok(dz::DeezerResult::Ok(list)) => Self::dedup_albums(list.data),
             Ok(dz::DeezerResult::Err { error }) => {
                 warn!(artist_id, %error, "Deezer artist albums returned error");
                 vec![]
