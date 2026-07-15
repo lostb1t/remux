@@ -860,6 +860,15 @@ pub async fn userviews(
         exclude_childless: true,
         sort_by: vec![api::ItemSortBy::DisplayOrder],
         sort_order: vec![api::SortOrder::Ascending],
+        policy_filter: session
+            .user
+            .policy
+            .as_ref()
+            .and_then(|p| {
+                p.filter_rules
+                    .as_ref()
+            })
+            .cloned(),
         ..Default::default()
     };
     let channel_filter = db::MediaFilter {

@@ -2957,8 +2957,28 @@ impl Media {
             if let Some(ref f) = filter.filter_rules {
                 apply_filter_rules(qb, f);
             }
-            if let Some(ref f) = filter.policy_filter {
-                apply_filter_rules(qb, f);
+            // CLAUDE.md: content policy must not filter container rows themselves.
+            // Applying tag/rating rules to Collection/Folder records would wrongly
+            // hide libraries. Child-count branches still use policy_filter via
+            // child_policy_filter to scope counts to what the user can see.
+            let container_only = filter
+                .kind
+                .as_deref()
+                .map_or(false, |ks| {
+                    ks.iter()
+                        .all(|k| {
+                            matches!(
+                                k,
+                                MediaKind::Collection
+                                    | MediaKind::Folder
+                                    | MediaKind::Playlist
+                            )
+                        })
+                });
+            if !container_only {
+                if let Some(ref f) = filter.policy_filter {
+                    apply_filter_rules(qb, f);
+                }
             }
         }
         // Apply ORDER BY driven by the sort_by field, with per-kind fallbacks.
@@ -3337,6 +3357,13 @@ impl Media {
         let effective_child_count =
             filter.include_child_count || filter.exclude_childless;
 
+        // policy_filter scopes child-count queries to what the user can see.
+        // Callers that have a user context (get_by_jellyfin_filter, items handlers)
+        // pass it in; fall back to None when no user is involved.
+        let child_policy_filter = filter
+            .policy_filter
+            .as_ref();
+
         if effective_child_count && !records.is_empty() {
             let folder_ids: Vec<Uuid> = records
                 .iter()
@@ -3449,6 +3476,11 @@ impl Media {
                 for id in &manual_coll_ids {
                     sep.push_bind(id);
                 }
+                // Only count members the user can actually see.
+                mc_qb.push(") AND right_media_id IN (SELECT id FROM media WHERE 1=1");
+                if let Some(pf) = child_policy_filter {
+                    apply_filter_rules(&mut mc_qb, pf);
+                }
                 mc_qb.push(") GROUP BY left_media_id");
                 match mc_qb
                     .build()
@@ -3513,6 +3545,9 @@ impl Media {
                 }
                 if let Some(sf) = media.parse_smart_filter() {
                     apply_filter_rules(&mut qb, sf);
+                }
+                if let Some(pf) = child_policy_filter {
+                    apply_filter_rules(&mut qb, pf);
                 }
                 media.child_count = Some(
                     qb.build_query_scalar()
@@ -3805,6 +3840,8 @@ impl Media {
         // Drop empty containers when requested. child_count is already populated
         // for all container kinds (including smart/catalog) by the branches above.
         // Structural "collection of collections" containers always show.
+        let sql_total = count?;
+
         if filter.exclude_childless {
             records.retain(|m| {
                 if !matches!(
@@ -3822,9 +3859,14 @@ impl Media {
             });
         }
 
+        let total_count = if filter.exclude_childless {
+            records.len()
+        } else {
+            sql_total
+        };
         Ok(FilterResult {
             records,
-            total_count: count?,
+            total_count,
         })
     }
 
@@ -4243,13 +4285,11 @@ impl Media {
                     .clone()
                     .unwrap_or_default(),
                 filter_rules: smart_filter.cloned(),
-                // Content filter rules must not apply to container queries — only
-                // to content (movies, episodes, etc.). See CLAUDE.md.
-                policy_filter: if !targeting_containers {
-                    user_policy_filter.cloned()
-                } else {
-                    None
-                },
+                // Always pass the policy filter so child-count queries inside
+                // get_by_filter can scope counts to what the user sees. The main
+                // WHERE clause in get_by_filter skips it for container-only queries
+                // (CLAUDE.md: content rules must not filter containers themselves).
+                policy_filter: user_policy_filter.cloned(),
                 artist_ids: filter
                     .artist_ids
                     .clone()

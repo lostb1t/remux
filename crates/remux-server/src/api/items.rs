@@ -525,6 +525,15 @@ pub async fn get_items(
                         exclude_childless: !q
                             .include_childless
                             .unwrap_or(false),
+                        policy_filter: session
+                            .user
+                            .policy
+                            .as_ref()
+                            .and_then(|p| {
+                                p.filter_rules
+                                    .as_ref()
+                            })
+                            .cloned(),
                         ..Default::default()
                     },
                 )
