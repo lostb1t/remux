@@ -411,11 +411,51 @@ pub(crate) fn apply_title_format(media: &mut db::Media) {
     }
     if media.kind == db::MediaKind::Episode {
         if let Some(ep) = media.idx {
-            media.title = match media.parent_idx {
-                Some(s) => format!("S{}E{} - {}", s, ep, media.title),
-                None => format!("E{} - {}", ep, media.title),
+            let prefix = match media.parent_idx {
+                Some(s) => format!("S{}E{} - ", s, ep),
+                None => format!("E{} - ", ep),
             };
+            if !media
+                .title
+                .starts_with(&prefix)
+            {
+                media.title = format!("{}{}", prefix, media.title);
+            }
         }
+    }
+}
+
+fn series_is_active(status: &Option<db::MediaStatus>) -> bool {
+    !matches!(
+        status,
+        Some(db::MediaStatus::Ended) | Some(db::MediaStatus::Unreleased)
+    )
+}
+
+fn episode_in_active_window(child: &db::Media) -> bool {
+    match child.digital_released_at {
+        None => true,
+        Some(dt) => {
+            let cutoff = chrono::Utc::now().naive_utc() - chrono::Duration::days(180);
+            dt > cutoff
+        }
+    }
+}
+
+fn child_refresh_force(
+    force_refresh: bool,
+    in_active_window: bool,
+    child: &db::Media,
+) -> Option<bool> {
+    if force_refresh || in_active_window {
+        Some(true)
+    } else if child
+        .refreshed_at
+        .is_none()
+    {
+        Some(false)
+    } else {
+        None
     }
 }
 
@@ -1777,15 +1817,21 @@ impl AddonService {
             yield media.clone();
 
             {
+                let is_continuing = series_is_active(&media.status);
                 let root_clone = media.clone();
                 let mut tree = std::pin::pin!(svc.get_tree(root_clone, &ctx));
                 while let Some(mut child) = futures::StreamExt::next(&mut tree).await {
                     if let Some(gp) = &gp_stub {
                         child.grandparent = Some(Box::new(gp.clone()));
                     }
-                    if force_refresh || child.refreshed_at.is_none() {
+                    let in_active_window = is_continuing
+                        && matches!(child.kind, db::MediaKind::Episode)
+                        && episode_in_active_window(&child);
+                    if let Some(effective_force) =
+                        child_refresh_force(force_refresh, in_active_window, &child)
+                    {
                         if let Err(e) = svc
-                            .refresh_meta(&mut child, &ctx, force_refresh, &config)
+                            .refresh_meta(&mut child, &ctx, effective_force, &config)
                             .await
                         {
                             warn!(id = %child.id, error = %e, "failed to refresh child meta");
@@ -2485,5 +2531,132 @@ mod tests {
                 .as_deref(),
             Some("old description")
         );
+    }
+
+    fn days_ago(n: i64) -> chrono::NaiveDateTime {
+        (chrono::Utc::now() - chrono::Duration::days(n)).naive_utc()
+    }
+
+    fn days_from_now(n: i64) -> chrono::NaiveDateTime {
+        (chrono::Utc::now() + chrono::Duration::days(n)).naive_utc()
+    }
+
+    fn child_with(
+        refreshed_at: Option<chrono::NaiveDateTime>,
+        digital_released_at: Option<chrono::NaiveDateTime>,
+    ) -> db::Media {
+        db::Media {
+            refreshed_at,
+            digital_released_at,
+            ..Default::default()
+        }
+    }
+
+    // --- child_refresh_force ---
+
+    #[test]
+    fn active_window_episode_returns_some_true() {
+        let child = child_with(Some(days_ago(1)), None);
+        assert_eq!(child_refresh_force(false, true, &child), Some(true));
+    }
+
+    #[test]
+    fn active_window_episode_no_refreshed_at_returns_some_true() {
+        let child = child_with(None, None);
+        assert_eq!(child_refresh_force(false, true, &child), Some(true));
+    }
+
+    #[test]
+    fn inactive_episode_with_refreshed_at_returns_none() {
+        let child = child_with(Some(days_ago(1)), None);
+        assert_eq!(child_refresh_force(false, false, &child), None);
+    }
+
+    #[test]
+    fn inactive_episode_no_refreshed_at_returns_some_false() {
+        let child = child_with(None, None);
+        assert_eq!(child_refresh_force(false, false, &child), Some(false));
+    }
+
+    #[test]
+    fn force_refresh_overrides_everything() {
+        let child = child_with(Some(days_ago(1)), Some(days_ago(300)));
+        assert_eq!(child_refresh_force(true, false, &child), Some(true));
+    }
+
+    // --- episode_in_active_window ---
+
+    #[test]
+    fn no_released_at_is_active() {
+        let child = child_with(None, None);
+        assert!(episode_in_active_window(&child));
+    }
+
+    #[test]
+    fn future_released_at_is_active() {
+        let child = child_with(None, Some(days_from_now(30)));
+        assert!(episode_in_active_window(&child));
+    }
+
+    #[test]
+    fn recent_released_at_is_active() {
+        let child = child_with(None, Some(days_ago(30)));
+        assert!(episode_in_active_window(&child));
+    }
+
+    #[test]
+    fn old_released_at_is_inactive() {
+        let child = child_with(None, Some(days_ago(200)));
+        assert!(!episode_in_active_window(&child));
+    }
+
+    // --- series_is_active ---
+
+    #[test]
+    fn series_active_when_status_none() {
+        assert!(series_is_active(&None));
+    }
+
+    #[test]
+    fn series_active_when_continuing() {
+        assert!(series_is_active(&Some(db::MediaStatus::Continuing)));
+    }
+
+    #[test]
+    fn series_inactive_when_ended() {
+        assert!(!series_is_active(&Some(db::MediaStatus::Ended)));
+    }
+
+    #[test]
+    fn series_inactive_when_unreleased() {
+        assert!(!series_is_active(&Some(db::MediaStatus::Unreleased)));
+    }
+
+    // --- apply_title_format idempotency ---
+
+    #[test]
+    fn apply_title_format_does_not_double_prefix_episode() {
+        let mut media = db::Media {
+            kind: db::MediaKind::Episode,
+            title: "S3E4 - Tumbleton".into(),
+            idx: Some(4),
+            parent_idx: Some(3),
+            ..Default::default()
+        };
+        apply_title_format(&mut media);
+        assert_eq!(media.title, "S3E4 - Tumbleton");
+    }
+
+    #[test]
+    fn apply_title_format_adds_prefix_to_raw_episode_title() {
+        let mut media = db::Media {
+            kind: db::MediaKind::Episode,
+            title: "Tumbleton".into(),
+            idx: Some(4),
+            parent_idx: Some(3),
+            ..Default::default()
+        };
+        apply_title_format(&mut media);
+        assert_eq!(media.title, "S3E4 - Tumbleton");
     }
 }
