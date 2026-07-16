@@ -857,9 +857,18 @@ pub async fn userviews(
     let library_filter = db::MediaFilter {
         kind: Some(vec![db::MediaKind::Collection, db::MediaKind::Folder]),
         promoted: Some(true),
-        include_child_count: true,
+        exclude_childless: true,
         sort_by: vec![api::ItemSortBy::DisplayOrder],
         sort_order: vec![api::SortOrder::Ascending],
+        policy_filter: session
+            .user
+            .policy
+            .as_ref()
+            .and_then(|p| {
+                p.filter_rules
+                    .as_ref()
+            })
+            .cloned(),
         ..Default::default()
     };
     let channel_filter = db::MediaFilter {
@@ -882,61 +891,7 @@ pub async fn userviews(
         ),
     );
 
-    let mut libraries = library_result?.records;
-
-    // Hide libraries/collections that contain zero items visible to this user.
-    // Hide libraries/collections that contain zero items visible to this user.
-    if let Some(pf) = session
-        .user
-        .policy
-        .as_ref()
-        .and_then(|p| {
-            p.filter_rules
-                .as_ref()
-        })
-        .filter(|pf| {
-            pf.groups
-                .iter()
-                .any(|g| {
-                    !g.rules
-                        .is_empty()
-                })
-        })
-    {
-        let mut to_remove = Vec::new();
-
-        for library in &libraries {
-            let mut qb = sqlx::QueryBuilder::new("SELECT 1 FROM media WHERE 1=1");
-
-            // base restriction (same as before)
-            qb.push(
-                " AND kind NOT IN ('collection', 'folder', 'playlist', 'tv_channel')",
-            );
-
-            // apply user rules
-            db::apply_filter_rules(&mut qb, pf);
-
-            // limit to 1 match (we only care if it exists)
-            qb.push(" LIMIT 1");
-
-            let exists = qb
-                .build()
-                .fetch_optional(
-                    &state
-                        .ctx
-                        .db,
-                )
-                .await
-                .map(|row| row.is_some())
-                .unwrap_or(false);
-
-            if !exists {
-                to_remove.push(library.id);
-            }
-        }
-
-        libraries.retain(|m| !to_remove.contains(&m.id));
-    }
+    let libraries = library_result?.records;
 
     let mut items = libraries
         .into_iter()

@@ -1114,6 +1114,13 @@ pub struct MediaFilter {
     /// of these content kinds. Used for smart-collection genre queries where
     /// items float freely and cannot be scoped via parent_id / CTE.
     pub genre_related_kinds: Option<Vec<MediaKind>>,
+    /// When true, exclude collections/folders/playlists whose `child_count` is 0
+    /// after child-count computation. Structural containers whose
+    /// `collection_media_kind` is `Collection` (i.e. the "Collections" index
+    /// container) are always kept regardless of their count. All other
+    /// container kinds — including smart and catalog collections — are dropped
+    /// when empty.
+    pub exclude_childless: bool,
 }
 
 /// Normalise any country string to an ISO 3166-1 alpha-2 code (e.g. "US").
@@ -2954,8 +2961,30 @@ impl Media {
             if let Some(ref f) = filter.filter_rules {
                 apply_filter_rules(qb, f);
             }
-            if let Some(ref f) = filter.policy_filter {
-                apply_filter_rules(qb, f);
+            // CLAUDE.md: content policy must not filter container rows themselves.
+            // Applying tag/rating rules to Collection/Folder records would wrongly
+            // hide libraries. Child-count branches still use policy_filter via
+            // child_policy_filter to scope counts to what the user can see.
+            let container_only = filter
+                .kind
+                .as_deref()
+                .map_or(false, |ks| {
+                    !ks.is_empty()
+                        && ks
+                            .iter()
+                            .all(|k| {
+                                matches!(
+                                    k,
+                                    MediaKind::Collection
+                                        | MediaKind::Folder
+                                        | MediaKind::Playlist
+                                )
+                            })
+                });
+            if !container_only {
+                if let Some(ref f) = filter.policy_filter {
+                    apply_filter_rules(qb, f);
+                }
             }
         }
         // Apply ORDER BY driven by the sort_by field, with per-kind fallbacks.
@@ -3330,7 +3359,18 @@ impl Media {
             }
         }
 
-        if filter.include_child_count && !records.is_empty() {
+        // exclude_childless needs child counts to decide what to drop; force them on.
+        let effective_child_count =
+            filter.include_child_count || filter.exclude_childless;
+
+        // policy_filter scopes child-count queries to what the user can see.
+        // Callers that have a user context (get_by_jellyfin_filter, items handlers)
+        // pass it in; fall back to None when no user is involved.
+        let child_policy_filter = filter
+            .policy_filter
+            .as_ref();
+
+        if effective_child_count && !records.is_empty() {
             let folder_ids: Vec<Uuid> = records
                 .iter()
                 .filter(|m| {
@@ -3354,7 +3394,11 @@ impl Media {
                 for id in &folder_ids {
                     sep.push_bind(id);
                 }
-                cc_qb.push(") GROUP BY parent_id");
+                cc_qb.push(")");
+                if let Some(pf) = child_policy_filter {
+                    apply_filter_rules(&mut cc_qb, pf);
+                }
+                cc_qb.push(" GROUP BY parent_id");
                 match cc_qb
                     .build()
                     .fetch_all(db)
@@ -3393,7 +3437,16 @@ impl Media {
                 for id in &playlist_ids {
                     sep.push_bind(id);
                 }
-                pl_qb.push(") GROUP BY left_media_id");
+                if let Some(pf) = child_policy_filter {
+                    pl_qb.push(
+                        ") AND right_media_id IN (SELECT id FROM media WHERE 1=1",
+                    );
+                    apply_filter_rules(&mut pl_qb, pf);
+                    pl_qb.push(")");
+                } else {
+                    pl_qb.push(")");
+                }
+                pl_qb.push(" GROUP BY left_media_id");
                 match pl_qb
                     .build()
                     .fetch_all(db)
@@ -3419,6 +3472,116 @@ impl Media {
                     Err(e) => {
                         warn!("failed to load playlist child counts: {e}");
                     }
+                }
+            }
+
+            // For manual collections: count members via media_relations (role='collection').
+            // The parent_id branch above always returns 0 for these — they store
+            // membership in media_relations, not via parent_id.
+            let manual_coll_ids: Vec<Uuid> = records
+                .iter()
+                .filter(|m| {
+                    m.kind == MediaKind::Collection
+                        && m.collection_kind == Some(CollectionKind::Manual)
+                })
+                .map(|m| m.id)
+                .collect();
+            if !manual_coll_ids.is_empty() {
+                let mut mc_qb = sqlx::QueryBuilder::new(
+                    "SELECT left_media_id, COUNT(*) FROM media_relations \
+                     WHERE role = 'collection' AND left_media_id IN (",
+                );
+                let mut sep = mc_qb.separated(", ");
+                for id in &manual_coll_ids {
+                    sep.push_bind(id);
+                }
+                if let Some(pf) = child_policy_filter {
+                    mc_qb.push(
+                        ") AND right_media_id IN (SELECT id FROM media WHERE 1=1",
+                    );
+                    apply_filter_rules(&mut mc_qb, pf);
+                    mc_qb.push(")");
+                } else {
+                    mc_qb.push(")");
+                }
+                mc_qb.push(" GROUP BY left_media_id");
+                match mc_qb
+                    .build()
+                    .fetch_all(db)
+                    .await
+                {
+                    Ok(rows) => {
+                        let mut cc_map: HashMap<Uuid, i64> = HashMap::new();
+                        for row in rows {
+                            cc_map.insert(row.get(0), row.get(1));
+                        }
+                        for media in &mut records {
+                            if manual_coll_ids.contains(&media.id) {
+                                media.child_count = Some(
+                                    *cc_map
+                                        .get(&media.id)
+                                        .unwrap_or(&0),
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("failed to load manual collection child counts: {e}")
+                    }
+                }
+            }
+
+            // For smart/catalog collections: run each collection's filter rules to
+            // get the true item count. This also powers exclude_childless filtering.
+            for media in records
+                .iter_mut()
+                .filter(|m| {
+                    m.kind == MediaKind::Collection
+                        && matches!(
+                            m.collection_kind,
+                            Some(CollectionKind::Smart) | Some(CollectionKind::Catalog)
+                        )
+                })
+            {
+                let kinds: Option<Vec<&'static str>> = media
+                    .collection_media_kind
+                    .as_ref()
+                    .map(|k| match k {
+                        CollectionMediaKind::Movie => vec!["movie"],
+                        CollectionMediaKind::Series => vec!["series"],
+                        CollectionMediaKind::Mixed => vec!["movie", "series"],
+                        CollectionMediaKind::Music => vec!["track", "album", "artist"],
+                        CollectionMediaKind::Playlist => vec!["playlist"],
+                        CollectionMediaKind::Collection => vec!["collection"],
+                    });
+                let mut qb =
+                    sqlx::QueryBuilder::new("SELECT COUNT(*) FROM media WHERE 1=1");
+                if let Some(ks) = &kinds {
+                    if !ks.is_empty() {
+                        qb.push(" AND kind IN (");
+                        let mut sep = qb.separated(", ");
+                        for k in ks {
+                            sep.push_bind(*k);
+                        }
+                        qb.push(")");
+                    }
+                }
+                if let Some(sf) = media.parse_smart_filter() {
+                    apply_filter_rules(&mut qb, sf);
+                }
+                if let Some(pf) = child_policy_filter {
+                    apply_filter_rules(&mut qb, pf);
+                }
+                match qb
+                    .build_query_scalar()
+                    .fetch_one(db)
+                    .await
+                {
+                    Ok(cnt) => media.child_count = Some(cnt),
+                    Err(e) => warn!(
+                        "failed to load child count for collection {}: {e}",
+                        media.id
+                    ),
                 }
             }
 
@@ -3702,9 +3865,35 @@ impl Media {
             }
         }
 
+        // Drop empty containers when requested. child_count is already populated
+        // for all container kinds (including smart/catalog) by the branches above.
+        // Structural "collection of collections" containers always show.
+        let sql_total = count?;
+
+        if filter.exclude_childless {
+            records.retain(|m| {
+                if !matches!(
+                    m.kind,
+                    MediaKind::Collection | MediaKind::Folder | MediaKind::Playlist
+                ) {
+                    return true;
+                }
+                if m.collection_media_kind == Some(CollectionMediaKind::Collection) {
+                    return true;
+                }
+                m.child_count
+                    .map_or(true, |c| c > 0)
+            });
+        }
+
+        let total_count = if filter.exclude_childless {
+            records.len()
+        } else {
+            sql_total
+        };
         Ok(FilterResult {
             records,
-            total_count: count?,
+            total_count,
         })
     }
 
@@ -4123,13 +4312,11 @@ impl Media {
                     .clone()
                     .unwrap_or_default(),
                 filter_rules: smart_filter.cloned(),
-                // Content filter rules must not apply to container queries — only
-                // to content (movies, episodes, etc.). See CLAUDE.md.
-                policy_filter: if !targeting_containers {
-                    user_policy_filter.cloned()
-                } else {
-                    None
-                },
+                // Always pass the policy filter so child-count queries inside
+                // get_by_filter can scope counts to what the user sees. The main
+                // WHERE clause in get_by_filter skips it for container-only queries
+                // (CLAUDE.md: content rules must not filter containers themselves).
+                policy_filter: user_policy_filter.cloned(),
                 artist_ids: filter
                     .artist_ids
                     .clone()
@@ -4145,70 +4332,14 @@ impl Media {
                     }),
                 grandparent_id: filter.series_id,
                 parent: parent.cloned(),
+                exclude_childless: targeting_containers
+                    && !filter
+                        .include_childless
+                        .unwrap_or(false),
                 ..Default::default()
             },
         )
         .await?;
-
-        // Hide containers that contain zero items visible to the user after applying
-        // their content filter rules.
-        if targeting_containers
-            && !result
-                .records
-                .is_empty()
-        {
-            if let Some(pf) = user_policy_filter {
-                if pf
-                    .groups
-                    .iter()
-                    .any(|g| {
-                        !g.rules
-                            .is_empty()
-                    })
-                {
-                    let container_ids: Vec<uuid::Uuid> = result
-                        .records
-                        .iter()
-                        .map(|m| m.id)
-                        .collect();
-                    let mut qb = sqlx::QueryBuilder::new(
-                        "SELECT parent_id, COUNT(*) FROM media WHERE parent_id IN (",
-                    );
-                    let mut sep = qb.separated(", ");
-                    for id in &container_ids {
-                        sep.push_bind(*id);
-                    }
-                    qb.push(
-                        ") AND kind NOT IN ('collection', 'folder', 'playlist', 'tv_channel')",
-                    );
-                    apply_filter_rules(&mut qb, pf);
-                    qb.push(" GROUP BY parent_id");
-
-                    if let Ok(rows) = qb
-                        .build()
-                        .fetch_all(db)
-                        .await
-                    {
-                        let counts: HashMap<uuid::Uuid, i64> = rows
-                            .into_iter()
-                            .map(|r| (r.get::<uuid::Uuid, _>(0), r.get::<i64, _>(1)))
-                            .collect();
-                        result
-                            .records
-                            .retain(|m| {
-                                counts
-                                    .get(&m.id)
-                                    .copied()
-                                    .unwrap_or(0)
-                                    > 0
-                            });
-                        result.total_count = result
-                            .records
-                            .len();
-                    }
-                }
-            }
-        }
 
         Ok(result)
     }
@@ -5721,27 +5852,38 @@ pub fn apply_filter_rules(
 ) {
     use remux_sdks::remux::FilterMatchMode;
 
-    let non_empty: Vec<_> = filter
-        .groups
-        .iter()
-        .filter(|g| {
-            !g.rules
-                .is_empty()
-        })
-        .collect();
-
-    if non_empty.is_empty() {
-        return;
-    }
-
     let group_sep = match filter.match_mode {
         FilterMatchMode::All => " AND ",
         FilterMatchMode::Any => " OR ",
     };
 
+    // Pre-compute SQL for every rule so groups with no valid rules are skipped.
+    // filter_rule_to_sql returns None for rules with empty value lists, which
+    // would otherwise produce `()` — an invalid SQLite IN clause.
+    let valid_groups: Vec<(_, Vec<(String, bool)>)> = filter
+        .groups
+        .iter()
+        .filter_map(|g| {
+            let rules: Vec<_> = g
+                .rules
+                .iter()
+                .filter_map(filter_rule_to_sql)
+                .collect();
+            if rules.is_empty() {
+                None
+            } else {
+                Some((g, rules))
+            }
+        })
+        .collect();
+
+    if valid_groups.is_empty() {
+        return;
+    }
+
     qb.push(" AND (");
     let mut first_group = true;
-    for group in non_empty {
+    for (group, rules) in valid_groups {
         if !first_group {
             qb.push(group_sep);
         }
@@ -5754,19 +5896,17 @@ pub fn apply_filter_rules(
 
         qb.push("(");
         let mut first_rule = true;
-        for rule in &group.rules {
-            if let Some((sql, negated)) = filter_rule_to_sql(rule) {
-                if !first_rule {
-                    qb.push(rule_sep);
-                }
-                first_rule = false;
-                if negated {
-                    qb.push("NOT (");
-                }
-                qb.push(sql);
-                if negated {
-                    qb.push(")");
-                }
+        for (sql, negated) in rules {
+            if !first_rule {
+                qb.push(rule_sep);
+            }
+            first_rule = false;
+            if negated {
+                qb.push("NOT (");
+            }
+            qb.push(sql);
+            if negated {
+                qb.push(")");
             }
         }
         qb.push(")");
