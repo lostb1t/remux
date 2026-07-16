@@ -8,6 +8,7 @@ use sqlx::{
 };
 use std::{str::FromStr, time::Duration};
 use tracing::{info, warn};
+use uuid::Uuid;
 pub mod api_key;
 pub mod auth;
 pub mod image;
@@ -103,6 +104,7 @@ pub async fn migrate(pool: &SqlitePool) -> Result<()> {
         .run(pool)
         .await?;
 
+    migrate_channel_ids(pool).await?;
     vacuum_if_needed(pool).await?;
     // Ensure query-planner statistics are fresh on every startup. PRAGMA optimize
     // only re-analyzes tables/indexes where stats are significantly out of date,
@@ -166,6 +168,178 @@ async fn backfill_certification_age(pool: &SqlitePool) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// One-time startup migration: re-key all `tv_channel` rows from the old
+/// tvg-id/name-based UUID scheme to a URL-based UUID scheme (matching Jellyfin).
+///
+/// The old scheme collapsed channels that shared a `tvg-id` (e.g. SD/HD/4K
+/// variants) into one row.  The new scheme seeds the UUID on the stream URL so
+/// every distinct URL gets its own channel, preserving user settings across the
+/// scheme change instead of wiping them on the next IPTV refresh.
+///
+/// Runs at most once (guarded by the `channel_id_scheme_v2_migrated` settings
+/// key).  For ~20 k channels the migration completes in under 20 seconds on
+/// slow hardware.
+pub async fn migrate_channel_ids(pool: &SqlitePool) -> Result<()> {
+    if Settings::get(pool, "channel_id_scheme_v2_migrated")
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    // Fetch every tv_channel that has both an iptv_source_id and a stream URL.
+    // Channels missing either cannot be re-keyed and are left unchanged.
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        id: Uuid,
+        title: String,
+        tvg_id: Option<String>,
+        iptv_source_id: String,
+        stream_url: String,
+    }
+    let rows = sqlx::query_as::<_, Row>(
+        "SELECT
+             id,
+             title,
+             tvg_id,
+             json_extract(external_ids, '$.iptv_source_id') AS iptv_source_id,
+             json_extract(stream_info,  '$.descriptor.Http.url') AS stream_url
+         FROM media
+         WHERE kind = 'tv_channel'
+           AND json_extract(external_ids, '$.iptv_source_id') IS NOT NULL
+           AND json_extract(stream_info,  '$.descriptor.Http.url') IS NOT NULL
+           AND json_extract(stream_info,  '$.descriptor.Http.url') != ''",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    if rows.is_empty() {
+        Settings::set(pool, "channel_id_scheme_v2_migrated", "1").await?;
+        return Ok(());
+    }
+
+    // Compute (old_uuid, new_uuid) pairs.
+    let mut pairs: Vec<(Uuid, Uuid)> = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let Ok(addon_id) = Uuid::try_parse(&row.iptv_source_id) else {
+            continue;
+        };
+        let tvg_key = row
+            .tvg_id
+            .as_deref()
+            .unwrap_or(&row.title);
+        let old_id = Uuid::new_v5(&addon_id, tvg_key.as_bytes());
+        // Skip rows that don't match the expected old UUID — they were already
+        // migrated or created by a different scheme.
+        if old_id != row.id {
+            continue;
+        }
+        let new_id = Uuid::new_v5(
+            &addon_id,
+            row.stream_url
+                .as_bytes(),
+        );
+        if old_id == new_id {
+            continue;
+        }
+        pairs.push((old_id, new_id));
+    }
+
+    if pairs.is_empty() {
+        Settings::set(pool, "channel_id_scheme_v2_migrated", "1").await?;
+        return Ok(());
+    }
+
+    info!(
+        count = pairs.len(),
+        "migrating IPTV channel UUIDs to URL-based scheme"
+    );
+
+    // Acquire a dedicated connection: PRAGMA foreign_keys is connection-scoped.
+    let mut conn = pool
+        .acquire()
+        .await?;
+    sqlx::query("PRAGMA foreign_keys = OFF")
+        .execute(&mut *conn)
+        .await?;
+
+    let result: Result<()> = async {
+        // Process 200 channels per batch to stay under SQLite's 999-param limit.
+        // Each batch fires 5 CASE-WHEN UPDATE statements (one per FK column) plus
+        // a WAL checkpoint to keep WAL size bounded during large migrations.
+        const BATCH: usize = 200;
+        for chunk in pairs.chunks(BATCH) {
+            sqlx::query("BEGIN IMMEDIATE")
+                .execute(&mut *conn)
+                .await?;
+
+            // Helper: build and execute one CASE-WHEN UPDATE for a given table/column.
+            // UPDATE <table> SET <col> = CASE <col> WHEN old THEN new ... END WHERE <col> IN (...)
+            macro_rules! rename_col {
+                ($table:expr, $col:expr) => {{
+                    let mut sql =
+                        format!("UPDATE {} SET {} = CASE {}", $table, $col, $col);
+                    for _ in chunk {
+                        sql.push_str(" WHEN ? THEN ?");
+                    }
+                    sql.push_str(" END WHERE ");
+                    sql.push_str($col);
+                    sql.push_str(" IN (");
+                    for i in 0..chunk.len() {
+                        if i > 0 {
+                            sql.push(',');
+                        }
+                        sql.push('?');
+                    }
+                    sql.push(')');
+
+                    let mut q = sqlx::query(&sql);
+                    for (old, new) in chunk {
+                        q = q
+                            .bind(old)
+                            .bind(new);
+                    }
+                    for (old, _) in chunk {
+                        q = q.bind(old);
+                    }
+                    q.execute(&mut *conn)
+                        .await?;
+                }};
+            }
+
+            // Child FK columns first, then the PK itself.
+            rename_col!("media", "parent_id");
+            rename_col!("media_relations", "right_media_id");
+            rename_col!("media_images", "media_id");
+            rename_col!("media_tags", "media_id");
+            rename_col!("media", "id");
+
+            sqlx::query("COMMIT")
+                .execute(&mut *conn)
+                .await?;
+
+            sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
+                .execute(&mut *conn)
+                .await
+                .ok();
+        }
+        Ok(())
+    }
+    .await;
+
+    // Always restore FK enforcement before returning.
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&mut *conn)
+        .await
+        .ok();
+
+    result?;
+
+    Settings::set(pool, "channel_id_scheme_v2_migrated", "1").await?;
+    info!("IPTV channel UUID migration complete");
     Ok(())
 }
 

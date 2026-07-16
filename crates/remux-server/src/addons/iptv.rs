@@ -249,11 +249,11 @@ fn channel_to_media(
     addon_id: Uuid,
     source_id: &str,
 ) -> db::Media {
-    let tvg_key = ch
-        .tvg_id
-        .as_deref()
-        .unwrap_or(&ch.name);
-    let id = Uuid::new_v5(&addon_id, tvg_key.as_bytes());
+    let id = Uuid::new_v5(
+        &addon_id,
+        ch.url
+            .as_bytes(),
+    );
     let mut media = db::Media {
         id,
         title: ch
