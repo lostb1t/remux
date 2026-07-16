@@ -1,3 +1,36 @@
+# [0.15.0](https://github.com/lostb1t/remux/compare/v0.14.0...v0.15.0) (2026-07-16)
+
+
+### Bug Fixes
+
+* **deezer:** deduplicate regional album variants by title (closes [#107](https://github.com/lostb1t/remux/issues/107)) ([56f9dcf](https://github.com/lostb1t/remux/commit/56f9dcf8b18686ef9ac6b02e4fb2482719e886e5))
+* default audio language [#102](https://github.com/lostb1t/remux/issues/102) ([d598e6c](https://github.com/lostb1t/remux/commit/d598e6c2f979883ac1228de41d5e60ad5c6fb548))
+* hide empty collections ([#109](https://github.com/lostb1t/remux/issues/109)) ([32e5c58](https://github.com/lostb1t/remux/commit/32e5c58f30817113c1091fca1575b8165ec2419d))
+* **hls:** implement live.m3u8 handler and force AAC for live channels ([#112](https://github.com/lostb1t/remux/issues/112)) ([ca2efc8](https://github.com/lostb1t/remux/commit/ca2efc8553cb5656cadda6019bbb26b3d23efd4b))
+* import stremio catalogs with unknown types (StarWars, Marvel, etc) ([c2250b0](https://github.com/lostb1t/remux/commit/c2250b0db6d6eb9b9332c6443c66d1dde75ed004))
+* inverted play_default_audio_track logic clears language preference when it should not ([f50d19a](https://github.com/lostb1t/remux/commit/f50d19a939988d69db75d918040ee8df20aaa6c3)), closes [#102](https://github.com/lostb1t/remux/issues/102)
+* **iptv:** use stream URL as channel UUID to preserve duplicate channels (closes [#78](https://github.com/lostb1t/remux/issues/78)) ([3557803](https://github.com/lostb1t/remux/commit/3557803c829e1eadd4f9ca85ffca7fd31d389c6a))
+* **meta:** treat series with null status as active for episode refresh ([be1e46f](https://github.com/lostb1t/remux/commit/be1e46f20ba303298e120f79579f8129c816126f))
+* **music:** improve music client compatibility ([#111](https://github.com/lostb1t/remux/issues/111)) ([8e55325](https://github.com/lostb1t/remux/commit/8e55325cff74eeec831d9957b7c16b152afdf9e4))
+* remuxdb_url serde default so it applies without explicit config ([85cfdf4](https://github.com/lostb1t/remux/commit/85cfdf4efa97e9f8dd5856145372eaaf1e589e07))
+* **stream_groups:** expose parent item ID on all MediaSources, not just the first ([3ed7594](https://github.com/lostb1t/remux/commit/3ed759409edf902a03c00bf74d9d6f1fc4d6bf16))
+* **stream_groups:** restore per-source IDs in GetItems and redirect StreamGroup item lookups to parent ([4a98576](https://github.com/lostb1t/remux/commit/4a98576b31335e66d5e37299e90d37e38eb2ae09))
+* **stream_groups:** use StreamGroup UUID as client-facing source ID ([ea40784](https://github.com/lostb1t/remux/commit/ea40784b0cdaa454078a80bde2f5c7054682fcbd))
+* **stremio:** add type field to Trailer ([5c87693](https://github.com/lostb1t/remux/commit/5c8769302cf44e621c16c4a7ddbe50736cb5919c))
+* **stremio:** make Trailer fields optional to handle missing source ([171d3fb](https://github.com/lostb1t/remux/commit/171d3fb5be0da35dd52b62eac9af5fb06b76ead9))
+* **stremio:** preserve inner value when formatting MediaType::Unknown ([9a6b91e](https://github.com/lostb1t/remux/commit/9a6b91e287aa612262f1e7eb5215b860e933b302))
+
+
+### Features
+
+* add kitsu_id, is_anamorphic, level, ref_frames to remuxdb mediainfo payload ([9f82f6a](https://github.com/lostb1t/remux/commit/9f82f6af846ce5846e9acd3942dbe43d25db6ced))
+* add per-user video transcoding toggle to user form ([#94](https://github.com/lostb1t/remux/issues/94)) ([fbe7cd8](https://github.com/lostb1t/remux/commit/fbe7cd8eaa91795eeaad751d2138b660996d88ce))
+* add remuxdb sdk module ([c3495e2](https://github.com/lostb1t/remux/commit/c3495e2f5105d92fde413808d1874b8900becf04))
+* dark theme ([#98](https://github.com/lostb1t/remux/issues/98)) ([92db73f](https://github.com/lostb1t/remux/commit/92db73f8347f288ca9d0a86685fdef006063848f))
+* remote control ([#96](https://github.com/lostb1t/remux/issues/96)) ([36c8992](https://github.com/lostb1t/remux/commit/36c8992154ef15d78e3a5c7db900407eaba90f0f))
+* submit probe data to remuxdb after live probes ([8a08139](https://github.com/lostb1t/remux/commit/8a08139d3f721ecdea228113da5fd717c0c3c8e4))
+* wire preferred_metadata_language to TMDB addon and expose in dashboard (closes [#81](https://github.com/lostb1t/remux/issues/81)) ([bd143de](https://github.com/lostb1t/remux/commit/bd143dea35a1813272a0b1ba79ac7e2418ff447f))
+
 # [0.14.0](https://github.com/lostb1t/remux/compare/v0.13.0...v0.14.0) (2026-07-10)
 
 
