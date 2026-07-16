@@ -2320,6 +2320,36 @@ pub async fn music_genres(
     }))
 }
 
+/// `/MusicGenres/{name}` — returns a single music genre item by display name.
+#[get("/musicgenres/{name}")]
+pub async fn get_music_genre_by_name(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse> {
+    use crate::OptionExt;
+    let id = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM media WHERE kind = 'genre' AND LOWER(title) = LOWER(?) LIMIT 1",
+    )
+    .bind(&name)
+    .fetch_optional(
+        &state
+            .ctx
+            .db,
+    )
+    .await?
+    .context_not_found("Genre not found")?;
+    let genre = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &id,
+    )
+    .await?
+    .context_not_found("Genre not found")?;
+    Ok(Json(api::db_media_to_item(genre, false)))
+}
+
 #[get("/items/{id}/metadataeditor")]
 pub async fn items_metadata_editor(
     State(state): State<AppState>,

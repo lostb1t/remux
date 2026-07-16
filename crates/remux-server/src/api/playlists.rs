@@ -230,6 +230,9 @@ pub async fn get_playlist_items(
         )
         .await?
         {
+            if media.kind != db::MediaKind::Track {
+                continue;
+            }
             let mut dto = api::db_media_to_item(media, false);
             dto.playlist_item_id = Some(
                 rel.relation_id

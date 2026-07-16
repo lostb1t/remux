@@ -164,6 +164,62 @@ pub async fn instant_mix_album(
 }
 
 // ---------------------------------------------------------------------------
+// GET /Artists/InstantMix?Id={artistId}  (query-param form)
+// ---------------------------------------------------------------------------
+
+#[query]
+#[derive(Debug)]
+pub struct InstantMixByIdQuery {
+    pub id: Option<Uuid>,
+    pub user_id: Option<Uuid>,
+    pub limit: Option<u32>,
+}
+
+#[get("/artists/instantmix")]
+pub async fn instant_mix_artist_by_query(
+    State(state): State<AppState>,
+    session: AuthSession,
+    Query(q): Query<InstantMixByIdQuery>,
+) -> Result<impl IntoResponse> {
+    let item_id =
+        q.id.context_bad_request("Id query parameter is required")?;
+    db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &item_id,
+    )
+    .await?
+    .context_not_found("Artist not found")?;
+    let items = build_mix(&state.ctx, &session, vec![], vec![item_id], q.limit).await?;
+    Ok(mix_response(items))
+}
+
+// ---------------------------------------------------------------------------
+// GET /MusicGenres/InstantMix?Id={genreId}  (query-param form)
+// ---------------------------------------------------------------------------
+
+#[get("/musicgenres/instantmix")]
+pub async fn instant_mix_genre_by_query(
+    State(state): State<AppState>,
+    session: AuthSession,
+    Query(q): Query<InstantMixByIdQuery>,
+) -> Result<impl IntoResponse> {
+    let item_id =
+        q.id.context_bad_request("Id query parameter is required")?;
+    db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &item_id,
+    )
+    .await?
+    .context_not_found("Genre not found")?;
+    let items = build_mix(&state.ctx, &session, vec![item_id], vec![], q.limit).await?;
+    Ok(mix_response(items))
+}
+
+// ---------------------------------------------------------------------------
 // GET /Artists/{itemId}/InstantMix
 // ---------------------------------------------------------------------------
 
