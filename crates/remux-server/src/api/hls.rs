@@ -208,18 +208,22 @@ async fn create_hls_session(
         // Use the URL-path item (`id`) to determine liveness so that a specific
         // stream source (MediaSourceId = stream child, kind = Stream) doesn't
         // incorrectly produce is_live = false for live-TV sessions.
-        let is_live = resolved_media.kind == db::MediaKind::TvChannel
-            || (id != media_source_id
-                && db::Media::get_by_id(
-                    &state
-                        .ctx
-                        .db,
-                    &id,
-                )
-                .await
-                .ok()
-                .flatten()
-                .map_or(false, |m| m.kind == db::MediaKind::TvChannel));
+        let parent_is_tv_channel = if id != media_source_id {
+            let db = &state
+                .ctx
+                .db;
+            match db::Media::get_by_id(db, &id).await {
+                Ok(opt) => opt.map_or(false, |m| m.kind == db::MediaKind::TvChannel),
+                Err(e) => {
+                    warn!(err = %e, item_id = %id, "failed to look up parent media for is_live; treating as not-live");
+                    false
+                }
+            }
+        } else {
+            false
+        };
+        let is_live =
+            resolved_media.kind == db::MediaKind::TvChannel || parent_is_tv_channel;
 
         // --- Why we force audio transcoding for live channels ---
         //
@@ -252,11 +256,7 @@ async fn create_hls_session(
         // live channels, regardless of what the client negotiated. The
         // existing audio_channels logic (None for copy, Some(2) for transcode)
         // then kicks in automatically and produces the correct stereo downmix.
-        let audio_codec = if is_live && audio_codec == "copy" {
-            "aac".to_string()
-        } else {
-            audio_codec
-        };
+        let audio_codec = resolve_live_audio_codec(is_live, &audio_codec);
 
         // Live streams have no fixed duration — skip all runtime lookups.
         let runtime_ticks = if is_live {
@@ -596,6 +596,20 @@ pub async fn variant_hls_video(
     variant_hls_video_inner(state, q).await
 }
 
+/// Returns the audio codec to use for HLS transcoding.
+///
+/// Live IPTV sources often carry LATM-encoded AAC (see the large comment block
+/// inside `create_hls_session`). When the client has negotiated `copy` for a
+/// live channel we override it to `aac` so ffmpeg re-encodes to standard ADTS
+/// stereo, which MSE-based players (Safari + hls.js) can actually decode.
+fn resolve_live_audio_codec(is_live: bool, requested: &str) -> String {
+    if is_live && requested == "copy" {
+        "aac".to_string()
+    } else {
+        requested.to_string()
+    }
+}
+
 fn should_serve_ffmpeg_variant_playlist(
     is_live: bool,
     use_fmp4: bool,
@@ -728,6 +742,14 @@ async fn variant_hls_video_inner(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn live_channel_forces_aac_over_copy() {
+        assert_eq!(super::resolve_live_audio_codec(true, "copy"), "aac");
+        assert_eq!(super::resolve_live_audio_codec(false, "copy"), "copy");
+        assert_eq!(super::resolve_live_audio_codec(true, "aac"), "aac");
+        assert_eq!(super::resolve_live_audio_codec(true, "ac3"), "ac3");
+    }
+
     #[test]
     fn resumed_ts_hls_uses_ffmpeg_variant_playlist() {
         assert!(!super::should_serve_ffmpeg_variant_playlist(
