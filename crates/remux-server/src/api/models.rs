@@ -679,11 +679,10 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                     })
             })
             .flatten(),
-        album_artists: matches!(
+        album_artists: if matches!(
             media.kind,
             db::MediaKind::Track | db::MediaKind::Album
-        )
-        .then(|| {
+        ) {
             media
                 .grandparent_id
                 .zip(
@@ -697,36 +696,43 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                 )
                 .map(|(id, name)| vec![NameIdPair { id, name }])
                 .unwrap_or_default()
-        }),
-        artists: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
-            .then(|| {
-                media
-                    .grandparent
-                    .as_ref()
-                    .map(|gp| {
-                        vec![
+        } else {
+            vec![]
+        },
+        artists: if matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album) {
+            media
+                .grandparent
+                .as_ref()
+                .map(|gp| {
+                    vec![
+                        gp.title
+                            .clone(),
+                    ]
+                })
+                .unwrap_or_default()
+        } else {
+            vec![]
+        },
+        artist_items: if matches!(
+            media.kind,
+            db::MediaKind::Track | db::MediaKind::Album
+        ) {
+            media
+                .grandparent_id
+                .zip(
+                    media
+                        .grandparent
+                        .as_ref()
+                        .map(|gp| {
                             gp.title
-                                .clone(),
-                        ]
-                    })
-                    .unwrap_or_default()
-            }),
-        artist_items: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
-            .then(|| {
-                media
-                    .grandparent_id
-                    .zip(
-                        media
-                            .grandparent
-                            .as_ref()
-                            .map(|gp| {
-                                gp.title
-                                    .clone()
-                            }),
-                    )
-                    .map(|(id, name)| vec![NameIdPair { id, name }])
-                    .unwrap_or_default()
-            }),
+                                .clone()
+                        }),
+                )
+                .map(|(id, name)| vec![NameIdPair { id, name }])
+                .unwrap_or_default()
+        } else {
+            vec![]
+        },
         tags: media
             .tags
             .clone(),

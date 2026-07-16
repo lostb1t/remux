@@ -2946,8 +2946,10 @@ pub struct BaseItemDto {
     pub primary_image_aspect_ratio: Option<f32>,
     //pub artists: Option<Vec<String>>,
     //pub artist_items: Option<Vec<NameIdPair>>,
-    pub artists: Option<Vec<String>>,
-    pub artist_items: Option<Vec<NameIdPair>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artists: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artist_items: Vec<NameIdPair>,
     pub album: Option<String>,
     pub collection_type: Option<CollectionType>,
     pub display_order: Option<String>,
@@ -2955,7 +2957,8 @@ pub struct BaseItemDto {
     pub album_primary_image_tag: Option<String>,
     pub series_primary_image_tag: Option<String>,
     pub album_artist: Option<String>,
-    pub album_artists: Option<Vec<NameIdPair>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub album_artists: Vec<NameIdPair>,
     pub season_name: Option<String>,
     pub media_streams: Option<Vec<MediaStream>>,
     pub video_type: Option<VideoType>,
