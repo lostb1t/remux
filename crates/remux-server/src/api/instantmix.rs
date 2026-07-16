@@ -170,7 +170,7 @@ pub async fn instant_mix_album(
 #[query]
 #[derive(Debug)]
 pub struct InstantMixByIdQuery {
-    pub id: Option<Uuid>,
+    pub id: Uuid,
     pub user_id: Option<Uuid>,
     pub limit: Option<u32>,
 }
@@ -181,17 +181,15 @@ pub async fn instant_mix_artist_by_query(
     session: AuthSession,
     Query(q): Query<InstantMixByIdQuery>,
 ) -> Result<impl IntoResponse> {
-    let item_id =
-        q.id.context_bad_request("Id query parameter is required")?;
     db::Media::get_by_id(
         &state
             .ctx
             .db,
-        &item_id,
+        &q.id,
     )
     .await?
     .context_not_found("Artist not found")?;
-    let items = build_mix(&state.ctx, &session, vec![], vec![item_id], q.limit).await?;
+    let items = build_mix(&state.ctx, &session, vec![], vec![q.id], q.limit).await?;
     Ok(mix_response(items))
 }
 
@@ -205,17 +203,15 @@ pub async fn instant_mix_genre_by_query(
     session: AuthSession,
     Query(q): Query<InstantMixByIdQuery>,
 ) -> Result<impl IntoResponse> {
-    let item_id =
-        q.id.context_bad_request("Id query parameter is required")?;
     db::Media::get_by_id(
         &state
             .ctx
             .db,
-        &item_id,
+        &q.id,
     )
     .await?
     .context_not_found("Genre not found")?;
-    let items = build_mix(&state.ctx, &session, vec![item_id], vec![], q.limit).await?;
+    let items = build_mix(&state.ctx, &session, vec![q.id], vec![], q.limit).await?;
     Ok(mix_response(items))
 }
 
