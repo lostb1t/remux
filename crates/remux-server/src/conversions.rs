@@ -187,17 +187,35 @@ impl From<db::Media> for api::MediaSourceInfo {
             .runtime
             .and_then(|r| r.to_ticks(common::TickUnit::Seconds));
         let run_time_ticks = probe_ticks.or(meta_ticks);
-        let (media_streams, default_audio_stream_index, default_subtitle_stream_index) =
-            source
-                .probe_data
-                .map(|p| {
-                    (
-                        p.media_streams,
-                        p.default_audio_stream_index,
-                        p.default_subtitle_stream_index,
-                    )
-                })
-                .unwrap_or_default();
+        let (
+            mut media_streams,
+            default_audio_stream_index,
+            default_subtitle_stream_index,
+        ) = source
+            .probe_data
+            .map(|p| {
+                (
+                    p.media_streams,
+                    p.default_audio_stream_index,
+                    p.default_subtitle_stream_index,
+                )
+            })
+            .unwrap_or_default();
+
+        // Clients that use /Items/{id}/File for direct playback inspect
+        // MediaStreams before deciding to play. Synthesize a stub so they
+        // don't reject unprobed tracks outright.
+        if source.kind == db::MediaKind::Track && media_streams.is_empty() {
+            media_streams = vec![api::MediaStream {
+                type_: Some(api::MediaStreamType::Audio),
+                codec: Some("aac".to_string()),
+                channels: Some(2),
+                is_default: Some(true),
+                display_title: Some("Audio".to_string()),
+                index: 0,
+                ..Default::default()
+            }];
+        }
         api::MediaSourceInfo {
             id: client_id,
             e_tag: client_id,

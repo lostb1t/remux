@@ -397,12 +397,20 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
         parent_index_number: media.parent_idx,
         image_tags: Some(ImageTags {
             primary: media_image_tag(&media, db::ImageKind::Primary).or_else(|| {
-                // For collections/folders with no poster image, set a synthetic
-                // tag so clients know to request the generated placeholder.
-                if matches!(
+                if media.kind == db::MediaKind::Track {
+                    // Tracks inherit album art when they have no dedicated cover.
+                    parent_image_tag(
+                        media
+                            .parent
+                            .as_deref(),
+                        db::ImageKind::Primary,
+                    )
+                } else if matches!(
                     media.kind,
                     db::MediaKind::Collection | db::MediaKind::Folder
                 ) {
+                    // For collections/folders with no poster image, set a synthetic
+                    // tag so clients know to request the generated placeholder.
                     Some(
                         media
                             .id
@@ -651,7 +659,14 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             })
             .flatten(),
         album_primary_image_tag: (media.kind == db::MediaKind::Track)
-            .then(|| media_image_tag(&media, db::ImageKind::Primary))
+            .then(|| {
+                parent_image_tag(
+                    media
+                        .parent
+                        .as_deref(),
+                    db::ImageKind::Primary,
+                )
+            })
             .flatten(),
         album_artist: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
             .then(|| {
@@ -681,8 +696,8 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                         }),
                 )
                 .map(|(id, name)| vec![NameIdPair { id, name }])
-        })
-        .flatten(),
+                .unwrap_or_default()
+        }),
         artists: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
             .then(|| {
                 media
@@ -694,8 +709,8 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                                 .clone(),
                         ]
                     })
-            })
-            .flatten(),
+                    .unwrap_or_default()
+            }),
         artist_items: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
             .then(|| {
                 media
@@ -710,8 +725,8 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                             }),
                     )
                     .map(|(id, name)| vec![NameIdPair { id, name }])
-            })
-            .flatten(),
+                    .unwrap_or_default()
+            }),
         tags: media
             .tags
             .clone(),
