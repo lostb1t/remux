@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{
     body::Body,
     extract::{Path, State},
@@ -25,23 +27,17 @@ use crate::{
 static TRANSCODE_CREATE_LOCKS: crate::keyed_lock::KeyedLock<String> =
     crate::keyed_lock::KeyedLock::new();
 
-#[get("/videos/{id}/master.m3u8")]
-pub async fn master_hls_video(
-    State(state): State<AppState>,
-    auth: auth::AuthSession,
-    Path(id): Path<Uuid>,
-    Query(q): Query<api::HlsVideoQuery>,
-) -> Result<impl IntoResponse> {
-    debug!("master_hls_video: item_id={}, q={:?}", id, q);
-
-    // Add debugging info for crash diagnosis
-    debug!(
-        "Starting HLS session setup for item {} with session ID: {:?}",
-        id, q.play_session_id
-    );
-
+/// Shared session setup: look up or create the transcode session for an HLS
+/// request. Returns the session handle and the resolved play_session_id.
+async fn create_hls_session(
+    state: &AppState,
+    auth: &auth::AuthSession,
+    id: Uuid,
+    q: &api::HlsVideoQuery,
+) -> Result<(Arc<tokio::sync::RwLock<TranscodeSession>>, String)> {
     let play_session_id = q
         .play_session_id
+        .clone()
         .unwrap_or_else(|| {
             common::get_uuid()
                 .as_simple()
@@ -71,6 +67,7 @@ pub async fn master_hls_video(
     };
     let audio_codec = q
         .audio_codec
+        .clone()
         .unwrap_or_else(|| "aac".to_string());
     let segment_length = q
         .segment_length
@@ -208,7 +205,58 @@ pub async fn master_hls_video(
         // Keep the API stable (no RunId in URLs) by reusing one on-disk path per
         // PlaySessionId and clearing stale segments when a transcode restarts.
         let _ = std::fs::remove_dir_all(&output_dir);
-        let is_live = resolved_media.kind == db::MediaKind::TvChannel;
+        // Use the URL-path item (`id`) to determine liveness so that a specific
+        // stream source (MediaSourceId = stream child, kind = Stream) doesn't
+        // incorrectly produce is_live = false for live-TV sessions.
+        let parent_is_tv_channel = if id != media_source_id {
+            let db = &state
+                .ctx
+                .db;
+            match db::Media::get_by_id(db, &id).await {
+                Ok(opt) => opt.map_or(false, |m| m.kind == db::MediaKind::TvChannel),
+                Err(e) => {
+                    warn!(err = %e, item_id = %id, "failed to look up parent media for is_live; treating as not-live");
+                    false
+                }
+            }
+        } else {
+            false
+        };
+        let is_live =
+            resolved_media.kind == db::MediaKind::TvChannel || parent_is_tv_channel;
+
+        // --- Why we force audio transcoding for live channels ---
+        //
+        // IPTV/broadcast streams frequently carry AAC encoded in LATM format
+        // (Low-overhead MPEG-4 Audio Transport Multiplex). ffprobe identifies
+        // LATM streams as codec "aac" but reports sample_rate=0 because the
+        // sample rate is stored implicitly inside the AudioSpecificConfig
+        // bitstream rather than in an ADTS header. When ffmpeg copies these
+        // bits into an HLS/TS segment without re-encoding, the resulting
+        // segment still contains LATM-framed audio.
+        //
+        // Native clients (Swiftfin, Streamyfin, VLC) decode via OS-level
+        // hardware decoders that handle LATM transparently. Safari running
+        // hls.js goes through the browser's Media Source Extensions (MSE)
+        // API, which only accepts standard ADTS-framed AAC. Feeding it LATM
+        // produces a silent or immediately-failed decode — the segment HTTP
+        // response is 200 and the bytes arrive, but the player can't present
+        // any video.
+        //
+        // The Jellyfin Web device profile declares MaxAudioChannels=6 and
+        // lists "aac" as a supported codec without any channel-count or
+        // sample-rate codec-profile conditions, so our PlaybackInfo decision
+        // layer has no basis on which to reject copy — it looks like a
+        // perfectly legal copy of a supported codec. Jellyfin server has a
+        // SampleRate<=0 guard in CanStreamCopyAudio, but that guard is gated
+        // on the client explicitly requesting an AudioSampleRate, which
+        // Jellyfin Web does not do; so Jellyfin server has the same gap.
+        //
+        // Workaround: always re-encode audio to standard ADTS AAC stereo for
+        // live channels, regardless of what the client negotiated. The
+        // existing audio_channels logic (None for copy, Some(2) for transcode)
+        // then kicks in automatically and produces the correct stereo downmix.
+        let audio_codec = resolve_live_audio_codec(is_live, &audio_codec);
 
         // Live streams have no fixed duration — skip all runtime lookups.
         let runtime_ticks = if is_live {
@@ -449,8 +497,10 @@ pub async fn master_hls_video(
             .device
             .app_name
             .clone();
+        let play_session_id_for_log = play_session_id.clone();
         let session_clone = session.clone();
         tokio::spawn(async move {
+            let play_session_id = play_session_id_for_log;
             let start_secs = params
                 .start_time_ticks
                 .unwrap_or(0)
@@ -485,19 +535,45 @@ pub async fn master_hls_video(
         session
     };
 
-    // Generate and return the master playlist
+    Ok((session, play_session_id))
+}
+
+#[get("/videos/{id}/master.m3u8")]
+pub async fn master_hls_video(
+    State(state): State<AppState>,
+    auth: auth::AuthSession,
+    Path(id): Path<Uuid>,
+    Query(q): Query<api::HlsVideoQuery>,
+) -> Result<impl IntoResponse> {
+    debug!("master_hls_video: item_id={}, q={:?}", id, q);
+    let (session, _) = create_hls_session(&state, &auth, id, &q).await?;
     let session_read = session
         .read()
         .await;
     let master_playlist =
         crate::playback::engine::generate_master_playlist(&session_read);
-
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/vnd.apple.mpegurl")
         .header("Cache-Control", "no-cache, no-store")
         .body(Body::from(master_playlist))
         .unwrap())
+}
+
+/// Safari/iOS live TV endpoint: creates the transcode session and returns the
+/// variant playlist directly so the player gets segment URLs without a
+/// master→variant redirect.
+#[get("/videos/{id}/live.m3u8")]
+pub async fn live_hls_video(
+    State(state): State<AppState>,
+    auth: auth::AuthSession,
+    Path(id): Path<Uuid>,
+    Query(mut q): Query<api::HlsVideoQuery>,
+) -> Result<impl IntoResponse> {
+    debug!("live_hls_video: item_id={}, q={:?}", id, q);
+    let (_, play_session_id) = create_hls_session(&state, &auth, id, &q).await?;
+    q.play_session_id = Some(play_session_id);
+    variant_hls_video_inner(state, q).await
 }
 
 /// Variant HLS playlist - alternate URL used by some clients.
@@ -518,6 +594,20 @@ pub async fn variant_hls_video(
     Query(q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     variant_hls_video_inner(state, q).await
+}
+
+/// Returns the audio codec to use for HLS transcoding.
+///
+/// Live IPTV sources often carry LATM-encoded AAC (see the large comment block
+/// inside `create_hls_session`). When the client has negotiated `copy` for a
+/// live channel we override it to `aac` so ffmpeg re-encodes to standard ADTS
+/// stereo, which MSE-based players (Safari + hls.js) can actually decode.
+fn resolve_live_audio_codec(is_live: bool, requested: &str) -> String {
+    if is_live && requested == "copy" {
+        "aac".to_string()
+    } else {
+        requested.to_string()
+    }
 }
 
 fn should_serve_ffmpeg_variant_playlist(
@@ -652,6 +742,14 @@ async fn variant_hls_video_inner(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn live_channel_forces_aac_over_copy() {
+        assert_eq!(super::resolve_live_audio_codec(true, "copy"), "aac");
+        assert_eq!(super::resolve_live_audio_codec(false, "copy"), "copy");
+        assert_eq!(super::resolve_live_audio_codec(true, "aac"), "aac");
+        assert_eq!(super::resolve_live_audio_codec(true, "ac3"), "ac3");
+    }
+
     #[test]
     fn resumed_ts_hls_uses_ffmpeg_variant_playlist() {
         assert!(!super::should_serve_ffmpeg_variant_playlist(
