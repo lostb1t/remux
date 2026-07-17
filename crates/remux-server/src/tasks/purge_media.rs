@@ -24,7 +24,7 @@ impl Task for PurgeMediaTask {
         "Wipes all imported media from the database (no physical files are deleted)."
     }
     fn category(&self) -> TaskCategory {
-        TaskCategory::Maintenance
+        TaskCategory::Purge
     }
     fn destructive(&self) -> bool {
         true

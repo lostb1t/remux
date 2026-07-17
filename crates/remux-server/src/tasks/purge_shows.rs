@@ -5,21 +5,21 @@ use std::sync::Arc;
 use super::{ProgressReporter, Task, TaskCategory, TaskService};
 use crate::AppContext;
 
-pub struct PurgeIptvTask;
+pub struct PurgeShowsTask;
 
 #[async_trait]
-impl Task for PurgeIptvTask {
+impl Task for PurgeShowsTask {
     fn key(&self) -> &str {
-        "PurgeIptv"
+        "PurgeShows"
     }
     fn name(&self) -> &str {
-        "Purge IPTV"
+        "Purge Shows"
     }
     fn description(&self) -> &str {
-        "Wipes all IPTV channels and programs from the database."
+        "Wipes all TV shows, seasons, and episodes from the database."
     }
     fn short_description(&self) -> &str {
-        "Removes all TV channels and programs (no physical files are deleted)."
+        "Removes all show items (no physical files are deleted)."
     }
     fn category(&self) -> TaskCategory {
         TaskCategory::Purge
@@ -34,9 +34,6 @@ impl Task for PurgeIptvTask {
         _tasks: Arc<TaskService>,
         _progress: ProgressReporter,
     ) -> Result<()> {
-        // Acquire a dedicated connection so we can toggle foreign_keys around the
-        // transaction. PRAGMA foreign_keys cannot be changed inside a transaction,
-        // and disabling it lets us delete relations explicitly without cascade overhead.
         let mut conn = ctx
             .db
             .acquire()
@@ -53,41 +50,40 @@ impl Task for PurgeIptvTask {
                 .await?;
 
             sqlx::query(
-                "CREATE TEMP TABLE _purge_iptv AS \
-                 SELECT id FROM media WHERE kind IN ('tv_channel', 'tv_program')",
+                "CREATE TEMP TABLE _purge_shows AS \
+                 SELECT id FROM media WHERE kind IN ('series', 'season', 'episode')",
             )
             .execute(&mut *conn)
             .await?;
-            sqlx::query("CREATE INDEX _purge_iptv_id ON _purge_iptv(id)")
+            sqlx::query("CREATE INDEX _purge_shows_id ON _purge_shows(id)")
                 .execute(&mut *conn)
                 .await?;
 
-            // left_media_id has no FK/cascade — must delete those orphans explicitly.
             sqlx::query(
                 "DELETE FROM media_relations \
-                 WHERE left_media_id  IN (SELECT id FROM _purge_iptv) \
-                    OR right_media_id IN (SELECT id FROM _purge_iptv)",
+                 WHERE left_media_id  IN (SELECT id FROM _purge_shows) \
+                    OR right_media_id IN (SELECT id FROM _purge_shows)",
             )
             .execute(&mut *conn)
             .await?;
 
             sqlx::query(
-                "DELETE FROM media_tags WHERE media_id IN (SELECT id FROM _purge_iptv)",
+                "DELETE FROM media_tags WHERE media_id IN (SELECT id FROM _purge_shows)",
             )
             .execute(&mut *conn)
             .await?;
 
             sqlx::query(
-                "DELETE FROM media_images WHERE media_id IN (SELECT id FROM _purge_iptv)",
+                "DELETE FROM media_images WHERE media_id IN (SELECT id FROM _purge_shows)",
             )
             .execute(&mut *conn)
             .await?;
 
-            sqlx::query("DELETE FROM media WHERE kind IN ('tv_channel', 'tv_program')")
+            sqlx::query("DELETE FROM media WHERE kind IN ('series', 'season', 'episode')")
                 .execute(&mut *conn)
                 .await?;
 
-            sqlx::query("DROP TABLE _purge_iptv")
+            sqlx::query("DROP TABLE _purge_shows")
                 .execute(&mut *conn)
                 .await?;
 
@@ -99,7 +95,6 @@ impl Task for PurgeIptvTask {
         }
         .await;
 
-        // Always restore FK before returning the connection to the pool.
         sqlx::query("PRAGMA foreign_keys = ON")
             .execute(&mut *conn)
             .await

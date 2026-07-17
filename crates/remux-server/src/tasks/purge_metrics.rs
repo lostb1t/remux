@@ -15,7 +15,7 @@ impl Task for PurgeMetricsTask {
     }
 
     fn name(&self) -> &str {
-        "Purge Metrics Data"
+        "Purge Metrics"
     }
 
     fn description(&self) -> &str {
@@ -27,7 +27,7 @@ impl Task for PurgeMetricsTask {
     }
 
     fn category(&self) -> TaskCategory {
-        TaskCategory::Maintenance
+        TaskCategory::Purge
     }
     fn destructive(&self) -> bool {
         true
