@@ -27,6 +27,7 @@ mod purge_media;
 mod purge_metrics;
 mod purge_movies;
 mod purge_music;
+mod purge_shared;
 mod purge_shows;
 mod refresh_all_meta;
 mod refresh_iptv;

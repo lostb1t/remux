@@ -34,78 +34,7 @@ impl Task for PurgeShowsTask {
         _tasks: Arc<TaskService>,
         _progress: ProgressReporter,
     ) -> Result<()> {
-        let mut conn = ctx
-            .db
-            .acquire()
-            .await?;
-
-        sqlx::query("PRAGMA foreign_keys = OFF")
-            .execute(&mut *conn)
+        super::purge_shared::purge_by_kinds(&ctx, &["series", "season", "episode"])
             .await
-            .ok();
-
-        let result: Result<()> = async {
-            sqlx::query("BEGIN IMMEDIATE")
-                .execute(&mut *conn)
-                .await?;
-
-            sqlx::query(
-                "CREATE TEMP TABLE _purge_shows AS \
-                 SELECT id FROM media WHERE kind IN ('series', 'season', 'episode')",
-            )
-            .execute(&mut *conn)
-            .await?;
-            sqlx::query("CREATE INDEX _purge_shows_id ON _purge_shows(id)")
-                .execute(&mut *conn)
-                .await?;
-
-            sqlx::query(
-                "DELETE FROM media_relations \
-                 WHERE left_media_id  IN (SELECT id FROM _purge_shows) \
-                    OR right_media_id IN (SELECT id FROM _purge_shows)",
-            )
-            .execute(&mut *conn)
-            .await?;
-
-            sqlx::query(
-                "DELETE FROM media_tags WHERE media_id IN (SELECT id FROM _purge_shows)",
-            )
-            .execute(&mut *conn)
-            .await?;
-
-            sqlx::query(
-                "DELETE FROM media_images WHERE media_id IN (SELECT id FROM _purge_shows)",
-            )
-            .execute(&mut *conn)
-            .await?;
-
-            sqlx::query("DELETE FROM media WHERE kind IN ('series', 'season', 'episode')")
-                .execute(&mut *conn)
-                .await?;
-
-            sqlx::query("DROP TABLE _purge_shows")
-                .execute(&mut *conn)
-                .await?;
-
-            sqlx::query("COMMIT")
-                .execute(&mut *conn)
-                .await?;
-
-            Ok(())
-        }
-        .await;
-
-        sqlx::query("PRAGMA foreign_keys = ON")
-            .execute(&mut *conn)
-            .await
-            .ok();
-
-        result?;
-
-        ctx.addons
-            .purge_indexes(&ctx)
-            .await?;
-
-        Ok(())
     }
 }
