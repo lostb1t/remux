@@ -91,11 +91,12 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                     let name = col.name.clone().unwrap_or_default();
                                     let col_type_label = match col.collection_type.as_ref() {
                                         Some(ct) => match ct {
-                                            remux_sdks::remux::CollectionType::Movies  => "Movies",
-                                            remux_sdks::remux::CollectionType::Tvshows => "Shows",
-                                            remux_sdks::remux::CollectionType::Mixed   => "Mixed",
-                                            remux_sdks::remux::CollectionType::Music   => "Music",
-                                            remux_sdks::remux::CollectionType::Boxsets => "Collections",
+                                            remux_sdks::remux::CollectionType::Movies    => "Movies",
+                                            remux_sdks::remux::CollectionType::Tvshows  => "Shows",
+                                            remux_sdks::remux::CollectionType::Mixed    => "Mixed",
+                                            remux_sdks::remux::CollectionType::Music    => "Music",
+                                            remux_sdks::remux::CollectionType::Boxsets  => "Collections",
+                                            remux_sdks::remux::CollectionType::Playlists => "Playlists",
                                             _ => "Unknown",
                                         },
                                         None => "Unknown",
@@ -281,6 +282,7 @@ pub fn CollectionForm(
                 remux_sdks::remux::MediaKind::Mixed => "mixed".to_string(),
                 remux_sdks::remux::MediaKind::Track => "music".to_string(),
                 remux_sdks::remux::MediaKind::Collection => "collections".to_string(),
+                remux_sdks::remux::MediaKind::Playlist => "playlists".to_string(),
                 _ => "movies".to_string(),
             };
         }
@@ -648,6 +650,7 @@ pub fn CollectionForm(
                     option { value: "mixed",       "Mixed (Movies & Shows)" }
                     option { value: "music",       "Music"       }
                     option { value: "collections", "Collections" }
+                    option { value: "playlists",   "Playlists"   }
                 }
             }
 
