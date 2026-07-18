@@ -227,28 +227,10 @@ pub(super) async fn relations_to_items(
     relations: &[db::MediaRelation],
     hide_sources: bool,
 ) -> Result<Vec<api::BaseItemDto>> {
-    // Resolve every member in one batch instead of two queries per member
-    // (`get_by_id` also loads images, so this was 2N round-trips — 1,684 for an
-    // 842-member playlist). `get_by_ids` has identical semantics: no policy
-    // filtering, images included.
-    //
-    // Look up with `get`+`clone` rather than `remove`: a playlist may legally
-    // contain the same item more than once, and removing on first use would
-    // silently drop the repeats. Cloning a `Media` is far cheaper than the two
-    // database round-trips it replaces.
-    let member_ids: Vec<uuid::Uuid> = relations
-        .iter()
-        .map(|relation| relation.right_media_id)
-        .collect();
-    let by_id = db::Media::get_by_ids(db, &member_ids).await?;
-
     let mut relation_ids = Vec::with_capacity(relations.len());
     let mut media = Vec::with_capacity(relations.len());
     for relation in relations {
-        if let Some(item) = by_id
-            .get(&relation.right_media_id)
-            .cloned()
-        {
+        if let Some(item) = db::Media::get_by_id(db, &relation.right_media_id).await? {
             relation_ids.push(relation.relation_id);
             media.push(item);
         }
