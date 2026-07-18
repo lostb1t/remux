@@ -365,7 +365,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                     }
                                     "Default"
                                 }
-                                span { class: "field-hint", "Runs for all users. Uncheck to restrict to per-user assignment only." }
+                                span { class: "field-hint", "Included in the default set for users without a per-user override." }
                             }
                             if let Some(meta) = &selected_kind_meta {
                                 for opt in meta.options.iter().cloned() {
@@ -473,7 +473,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                         }
                                         "Default"
                                     }
-                                    span { class: "field-hint", "Runs for all users. Uncheck to restrict to per-user assignment only." }
+                                    span { class: "field-hint", "Included in the default set for users without a per-user override." }
                                 }
                                 if let Some(meta) = &edit_kind_meta {
                                     for opt in meta.options.iter().cloned() {
