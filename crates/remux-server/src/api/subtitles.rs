@@ -237,7 +237,7 @@ pub(crate) async fn pre_extract_all_subtitles_to_cache(
 )]
 pub async fn subtitles_stream(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Path((item_id, media_source_id, stream_index, _start_ticks, format)): Path<(
         Uuid,
         Uuid,
@@ -301,6 +301,11 @@ pub async fn subtitles_stream(
                             .ctx
                             .db,
                         false,
+                        Some(
+                            session
+                                .user
+                                .id,
+                        ),
                     )
                     .await;
                 let source_info = api::MediaSourceInfo::from(source.clone());
@@ -712,10 +717,11 @@ pub(crate) async fn inject_external_subtitles(
     item_id: Uuid,
     api_key: &str,
     sub_langs: Vec<String>,
+    user_id: Option<uuid::Uuid>,
 ) {
     let subs = ctx
         .addons
-        .fetch_subtitles(subtitle_media, &ctx.db, false)
+        .fetch_subtitles(subtitle_media, &ctx.db, false, user_id)
         .await;
     if subs.is_empty() {
         return;

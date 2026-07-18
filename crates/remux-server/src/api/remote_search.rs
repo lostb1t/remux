@@ -254,7 +254,7 @@ pub struct SubtitleSearchQuery {
 #[get("/items/{itemid}/remotesearch/subtitles/{param}")]
 pub async fn search_remote_subtitles(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Path((item_id, language)): Path<(Uuid, String)>,
     Query(_q): Query<SubtitleSearchQuery>,
 ) -> Result<impl IntoResponse> {
@@ -276,6 +276,11 @@ pub async fn search_remote_subtitles(
                 .ctx
                 .db,
             false,
+            Some(
+                session
+                    .user
+                    .id,
+            ),
         )
         .await;
 

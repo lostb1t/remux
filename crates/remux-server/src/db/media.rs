@@ -5162,6 +5162,7 @@ impl From<sdks::stremio::Stream> for Media {
                 .clone(),
             probe_data: None,
             source: None,
+            addon_id: None,
             catchup_source: None,
             catchup_days: None,
         });

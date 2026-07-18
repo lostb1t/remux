@@ -1430,6 +1430,25 @@ html, body {
   border: 1px solid var(--border);
 }
 
+.addon-scope-badge {
+  font-size: .55rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.addon-scope-badge--scoped {
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  color: var(--primary);
+  border-color: color-mix(in srgb, var(--primary) 25%, transparent);
+}
+
 /* ── Form group (modal / inline forms) ──────────────────────────── */
 .form-group {
   display: flex;

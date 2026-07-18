@@ -35,6 +35,8 @@ pub fn AddonsPage(app_state: AppState) -> Element {
     // Edit-addon modal state
     let mut id_to_edit: Signal<Option<Uuid>> = use_signal(|| None);
     let mut edit_name_input = use_signal(String::new);
+    let mut edit_is_default = use_signal(|| true);
+    let mut create_is_default = use_signal(|| true);
     let mut edit_form_values: Signal<
         std::collections::HashMap<String, serde_json::Value>,
     > = use_signal(std::collections::HashMap::new);
@@ -110,6 +112,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                         form_values.set(std::collections::HashMap::new());
                         selected_kind.set(None);
                         create_step.set(0);
+                        create_is_default.set(true);
                         show_create.set(true);
                     },
                     "+ New Addon"
@@ -129,7 +132,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                 let id = addon.id;
                                 let addon_count = addons.read().len();
                                 rsx! {
-                                    div { class: "addon-card", key: "{id}",
+                                    div { class: "addon-card", key: "{id}", style: if !addon.is_default { "opacity:.45" } else { "" },
                                         div { class: "addon-card-header",
                                             span { class: "addon-card-name", "{addon.name}" }
                                             span { class: "addon-card-kind", "{addon.kind}" }
@@ -145,6 +148,9 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                         span { class: "addon-kind-type", "{t}" }
                                                     }
                                                 }
+                                            }
+                                            if addon.is_default {
+                                                span { class: "addon-kind-badge", style: "opacity:.6", "default" }
                                             }
                                         }
                                         div { class: "addon-card-actions",
@@ -233,6 +239,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                                 a.types.iter().map(|t| format!("{t}")).collect()
                                                             };
                                                             edit_types.set(type_set);
+                                                            edit_is_default.set(a.is_default);
                                                             let has_catalog = a.resources.contains(&ResourceType::Catalog);
                                                             edit_catalogs.set(Vec::new());
                                                             edit_catalog_settings.set(std::collections::HashMap::new());
@@ -349,6 +356,17 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                     oninput: move |e| name_input.set(e.value()),
                                 }
                             }
+                            div { class: "form-group",
+                                label { class: "check-row",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: *create_is_default.read(),
+                                        onchange: move |e| create_is_default.set(e.checked()),
+                                    }
+                                    "Default"
+                                }
+                                span { class: "field-hint", "Runs for all users. Uncheck to restrict to per-user assignment only." }
+                            }
                             if let Some(meta) = &selected_kind_meta {
                                 for opt in meta.options.iter().cloned() {
                                     AddonOptionField {
@@ -385,6 +403,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                             form_values.read().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
                                         );
                                         creating.set(true);
+                                        let is_default = *create_is_default.peek();
                                         let c = client.clone();
                                         spawn(async move {
                                             let payload = CreateAddonRequest {
@@ -393,6 +412,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                 resources: Vec::new(),
                                                 types: Vec::new(),
                                                 priority: 0,
+                                                is_default,
                                             };
                                             match c.execute(CreateAddon { payload }).await {
                                                 Ok(_) => {
@@ -443,6 +463,17 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                         value: "{edit_name_input}",
                                         oninput: move |e| edit_name_input.set(e.value()),
                                     }
+                                }
+                                div { class: "form-group",
+                                    label { class: "check-row",
+                                        input {
+                                            r#type: "checkbox",
+                                            checked: *edit_is_default.read(),
+                                            onchange: move |e| edit_is_default.set(e.checked()),
+                                        }
+                                        "Default"
+                                    }
+                                    span { class: "field-hint", "Runs for all users. Uncheck to restrict to per-user assignment only." }
                                 }
                                 if let Some(meta) = &edit_kind_meta {
                                     for opt in meta.options.iter().cloned() {
@@ -660,6 +691,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                 .collect();
                                             editing.set(true);
                                             let c = client.clone();
+                                            let is_default = *edit_is_default.peek();
                                             spawn(async move {
                                                 let payload = UpdateAddonRequest {
                                                     name: Some(name),
@@ -668,6 +700,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                     types: Some(types),
                                                     enabled: None,
                                                     priority: None,
+                                                    is_default: Some(is_default),
                                                 };
                                                 let addon_res = c.execute(UpdateAddon { id: edit_id, payload }).await;
                                                 let cat_res = if !catalog_updates.is_empty() {

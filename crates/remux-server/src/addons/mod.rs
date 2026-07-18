@@ -33,7 +33,7 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::{AppContext, api, common::ProgressReporter, db, sdks};
-pub use addon::{Addon, CatalogState};
+pub use addon::{Addon, CatalogState, set_user_addon_override, user_addon_override};
 
 pub use remux_sdks::remux::AddonPresetRef;
 use remux_sdks::remux::{LyricDto, MediaSegments, RemoteLyricInfoDto};
@@ -933,6 +933,33 @@ impl AddonRuntime {
     }
 }
 
+/// Returns true when `runtime` should run for the given user context.
+///
+/// `override_ids = None`        → no override active; all addons run (background tasks
+///                                and users whose addon list hasn't been customised).
+/// `override_ids = Some(ids)`   → user has a custom addon list; only those addon IDs run,
+///                                plus system addons which always run unconditionally.
+fn user_scoped(runtime: &AddonRuntime, override_ids: Option<&[Uuid]>) -> bool {
+    if runtime
+        .row
+        .system
+    {
+        return true;
+    }
+    match override_ids {
+        None => {
+            runtime
+                .row
+                .is_default
+        }
+        Some(ids) => ids.contains(
+            &runtime
+                .row
+                .id,
+        ),
+    }
+}
+
 fn kind_in_type_list(kind: &db::MediaKind, list: &[db::MediaKind]) -> bool {
     list.contains(kind)
         || (matches!(kind, db::MediaKind::Episode | db::MediaKind::Season)
@@ -1051,23 +1078,54 @@ impl PickCap<dyn SubtitleAddon> for AddonRuntime {
 }
 
 impl AddonService {
-    async fn addons_for<T>(&self, media: &db::Media) -> Vec<AddonRuntime>
+    async fn addons_for<T>(
+        &self,
+        media: &db::Media,
+        db: &SqlitePool,
+        user_id: Option<Uuid>,
+    ) -> Vec<AddonRuntime>
     where
         T: ?Sized + Send + Sync + 'static,
         AddonRuntime: PickCap<T>,
     {
+        let override_ids = match user_id {
+            Some(uid) => addon::user_addon_override(db, uid)
+                .await
+                .unwrap_or(None),
+            None => None,
+        };
         let mut out = Vec::new();
         for r in self
             .inner
             .load()
             .iter()
             .filter(|r| r.supports_type(&media.kind))
+            .filter(|r| user_scoped(r, override_ids.as_deref()))
         {
             if PickCap::<T>::pick(r, media).await {
                 out.push(r.clone());
             }
         }
         out
+    }
+
+    pub async fn list_for_user(
+        &self,
+        db: &SqlitePool,
+        user_id: Option<Uuid>,
+    ) -> Vec<AddonRuntime> {
+        let override_ids = match user_id {
+            Some(uid) => addon::user_addon_override(db, uid)
+                .await
+                .unwrap_or(None),
+            None => None,
+        };
+        self.inner
+            .load()
+            .iter()
+            .filter(|r| user_scoped(r, override_ids.as_deref()))
+            .cloned()
+            .collect()
     }
 
     pub async fn from_db(db: &SqlitePool, config: &crate::Config) -> Result<Self> {
@@ -1512,7 +1570,7 @@ impl AddonService {
         config: &api::ServerConfiguration,
     ) -> Result<()> {
         let applicable = self
-            .addons_for::<dyn MetaAddon>(media)
+            .addons_for::<dyn MetaAddon>(media, &ctx.db, None)
             .await;
 
         if applicable.is_empty() {
@@ -1859,7 +1917,14 @@ impl AddonService {
         query: &str,
         limit: usize,
         ctx: &AppContext,
+        user_id: Option<Uuid>,
     ) -> Result<Vec<db::Media>> {
+        let override_ids = match user_id {
+            Some(uid) => addon::user_addon_override(&ctx.db, uid)
+                .await
+                .unwrap_or(None),
+            None => None,
+        };
         let addons: Vec<AddonRuntime> = self
             .inner
             .load()
@@ -1871,6 +1936,7 @@ impl AddonService {
                         .contains(&ResourceType::Search)
                     && r.search
                         .is_some()
+                    && user_scoped(r, override_ids.as_deref())
             })
             .cloned()
             .collect();
@@ -1919,7 +1985,7 @@ impl AddonService {
         ctx: &AppContext,
     ) -> Result<Vec<crate::api::RemoteImageInfo>> {
         let addons = self
-            .addons_for::<dyn MetaAddon>(media)
+            .addons_for::<dyn MetaAddon>(media, &ctx.db, None)
             .await;
 
         let mut out = Vec::new();
@@ -1946,9 +2012,10 @@ impl AddonService {
         media: &db::Media,
         db: &SqlitePool,
         background: bool,
+        user_id: Option<Uuid>,
     ) -> Vec<SubtitleInfo> {
         let addons = self
-            .addons_for::<dyn SubtitleAddon>(media)
+            .addons_for::<dyn SubtitleAddon>(media, db, user_id)
             .await;
 
         debug!(count = addons.len(), "subtitle addons matched");
@@ -1984,9 +2051,10 @@ impl AddonService {
         &self,
         media: &db::Media,
         ctx: &AppContext,
+        user_id: Option<Uuid>,
     ) -> Result<Vec<db::Media>> {
         let addons = self
-            .addons_for::<dyn StreamAddon>(media)
+            .addons_for::<dyn StreamAddon>(media, &ctx.db, user_id)
             .await;
 
         debug!(
@@ -2006,8 +2074,10 @@ impl AddonService {
                             debug!(addon = %name, "addon: no streams");
                         } else {
                             debug!(addon = %name, count = streams.len(), "addon: streams found");
+                            let addon_id = r.row.id;
                             for s in &mut streams {
                                 s.source = Some(name.clone());
+                                s.addon_id = Some(addon_id);
                             }
                         }
                         streams
@@ -2061,6 +2131,7 @@ impl AddonService {
         &self,
         media: &mut db::Media,
         ctx: &AppContext,
+        user_id: Option<Uuid>,
     ) -> Result<()> {
         const STREAMS_TTL_SECS: i64 = 60;
         static STREAM_LOCKS: KeyedLock<Uuid> = KeyedLock::new();
@@ -2097,7 +2168,7 @@ impl AddonService {
 
         let instant = Instant::now();
         let raw = self
-            .get_streams(media, ctx)
+            .get_streams(media, ctx, user_id)
             .await?;
         debug!(raw_count = raw.len(), "raw streams fetched");
 

@@ -1,10 +1,11 @@
 use crate::{components::*, pages::streams::StreamFilterEditor, state::AppState};
 use dioxus::prelude::*;
 use remux_sdks::remux::{
-    AdminSetPassword, CollectionFilter, CreateUser, DeleteUser, FilterGroup,
-    FilterMatchMode, GetUsers, StreamFilter, StreamRule, UpdateUser, UpdateUserPolicy,
-    UserDto,
+    AddonDto, AdminSetPassword, CollectionFilter, CreateUser, DeleteUser, FilterGroup,
+    FilterMatchMode, GetUserAddons, GetUsers, ListAddons, SetUserAddons, StreamFilter,
+    StreamRule, UpdateUser, UpdateUserPolicy, UserDto,
 };
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub enum UserFormMode {
@@ -269,6 +270,65 @@ pub fn UserForm(
             .unwrap_or(true)
     });
 
+    // Addon override state — edit only.
+    // Each entry is (addon_id, enabled). Order is the user-defined priority.
+    // None = no override (use default list).
+    let mut all_addons: Signal<Vec<AddonDto>> = use_signal(Vec::new);
+    let mut addon_override: Signal<Option<Vec<(Uuid, bool)>>> = use_signal(|| None);
+    let edit_user_id = existing
+        .as_ref()
+        .map(|u| u.id);
+    let addon_client = app_state
+        .client
+        .clone();
+    use_effect(move || {
+        let Some(uid) = edit_user_id else {
+            return;
+        };
+        let c = addon_client.clone();
+        spawn(async move {
+            let (addons_res, override_res) = futures::join!(
+                c.execute(ListAddons),
+                c.execute(GetUserAddons { user_id: uid }),
+            );
+            if let Ok(ref a) = addons_res {
+                all_addons.set(a.clone());
+            }
+            if let Ok(enabled_ids) = override_res {
+                if !enabled_ids.is_empty() {
+                    // Reconstruct full ordered list: enabled IDs in saved order,
+                    // then any addons not in the saved list appended (disabled).
+                    let addons = addons_res.unwrap_or_default();
+                    let mut ordered: Vec<(Uuid, bool)> = enabled_ids
+                        .iter()
+                        .filter_map(|id| {
+                            addons
+                                .iter()
+                                .find(|a| a.id == *id)
+                                .map(|a| (a.id, true))
+                        })
+                        .collect();
+                    // Addons not in the saved list: default/system ones start checked, non-default unchecked.
+                    for a in &addons {
+                        if !enabled_ids.contains(&a.id) {
+                            ordered.push((a.id, false));
+                        }
+                    }
+                    // Always ensure system addons are marked enabled.
+                    for entry in ordered.iter_mut() {
+                        if addons
+                            .iter()
+                            .any(|a| a.id == entry.0 && a.system)
+                        {
+                            entry.1 = true;
+                        }
+                    }
+                    addon_override.set(Some(ordered));
+                }
+            }
+        });
+    });
+
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
         let pw = password
@@ -309,6 +369,9 @@ pub fn UserForm(
         let remote_search_snapshot = *enable_remote_search.peek();
         let max_sessions_snapshot = *max_active_sessions.peek();
         let video_transcoding_snapshot = *enable_video_transcoding.peek();
+        let addon_override_snapshot = addon_override
+            .peek()
+            .clone();
 
         saving.set(true);
         err.set(None);
@@ -375,6 +438,19 @@ pub fn UserForm(
                             })
                             .await?;
                     }
+                    // Save addon override: send enabled IDs in order (empty = clear override).
+                    let ids: Vec<Uuid> = addon_override_snapshot
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|(_, enabled)| *enabled)
+                        .map(|(id, _)| id)
+                        .collect();
+                    client
+                        .execute(SetUserAddons {
+                            user_id: user.id,
+                            addon_ids: ids,
+                        })
+                        .await?;
                 } else {
                     // Create user
                     let new_user = client
@@ -504,6 +580,112 @@ pub fn UserForm(
                     },
                 }
                 span { class: "field-hint", "Leave blank for unlimited" }
+            }
+
+            if is_edit && !all_addons.read().is_empty() {
+                div { class: "field",
+                    div { class: "field-row",
+                        label { class: "field-label", "Custom Addon List" }
+                        input {
+                            r#type: "checkbox",
+                            checked: addon_override.read().is_some(),
+                            onchange: move |e| {
+                                if e.checked() {
+                                    // Pre-check addons that are default (or system); non-default start unchecked.
+                                    let entries = all_addons.read().iter()
+                                        .map(|a| (a.id, a.is_default || a.system))
+                                        .collect();
+                                    addon_override.set(Some(entries));
+                                } else {
+                                    addon_override.set(None);
+                                }
+                            },
+                        }
+                    }
+                    span { class: "field-hint",
+                        "Override which addons run for this user and in what order. System addons always run regardless."
+                    }
+                    if addon_override.read().is_some() {
+                        {
+                            let entries = addon_override.read().clone().unwrap_or_default();
+                            let total = entries.len();
+                            rsx! {
+                                div { style: "display:flex;flex-direction:column;gap:2px;margin-top:8px",
+                                    for (idx, (aid, enabled)) in entries.iter().enumerate() {
+                                        {
+                                            let aid = *aid;
+                                            let enabled = *enabled;
+                                            let is_system = all_addons.read().iter()
+                                                .find(|a| a.id == aid)
+                                                .map(|a| a.system)
+                                                .unwrap_or(false);
+                                            let name = all_addons.read().iter()
+                                                .find(|a| a.id == aid)
+                                                .map(|a| a.name.clone())
+                                                .unwrap_or_default();
+                                            let kind = all_addons.read().iter()
+                                                .find(|a| a.id == aid)
+                                                .map(|a| a.kind.clone())
+                                                .unwrap_or_default();
+                                            rsx! {
+                                                div {
+                                                    key: "{aid}",
+                                                    style: if enabled { "display:flex;align-items:center;gap:6px;padding:4px 0" } else { "display:flex;align-items:center;gap:6px;padding:4px 0;opacity:.4" },
+                                                    if is_system {
+                                                        span { style: "width:16px;text-align:center;font-size:.65rem;color:var(--text-dim)", "🔒" }
+                                                    } else {
+                                                        input {
+                                                            r#type: "checkbox",
+                                                            checked: enabled,
+                                                            onchange: move |e| {
+                                                                let mut ov = addon_override.write();
+                                                                if let Some(ref mut list) = *ov {
+                                                                    if let Some(entry) = list.iter_mut().find(|(id, _)| *id == aid) {
+                                                                        entry.1 = e.checked();
+                                                                    }
+                                                                }
+                                                            },
+                                                        }
+                                                    }
+                                                    span { style: "flex:1", "{name}" }
+                                                    span { class: "addon-card-kind", style: "font-size:.65rem", "{kind}" }
+                                                    div { style: "display:flex;flex-direction:column;gap:1px",
+                                                        button {
+                                                            r#type: "button",
+                                                            class: "btn btn-ghost",
+                                                            style: "padding:0 4px;height:16px;font-size:.6rem;line-height:1",
+                                                            disabled: idx == 0,
+                                                            onclick: move |_| {
+                                                                let mut ov = addon_override.write();
+                                                                if let Some(ref mut list) = *ov {
+                                                                    if idx > 0 { list.swap(idx - 1, idx); }
+                                                                }
+                                                            },
+                                                            "↑"
+                                                        }
+                                                        button {
+                                                            r#type: "button",
+                                                            class: "btn btn-ghost",
+                                                            style: "padding:0 4px;height:16px;font-size:.6rem;line-height:1",
+                                                            disabled: idx == total - 1,
+                                                            onclick: move |_| {
+                                                                let mut ov = addon_override.write();
+                                                                if let Some(ref mut list) = *ov {
+                                                                    if idx < list.len() - 1 { list.swap(idx, idx + 1); }
+                                                                }
+                                                            },
+                                                            "↓"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             FilterRuleEditor {

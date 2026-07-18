@@ -162,6 +162,10 @@ pub struct StreamInfo {
     /// Addon that produced this stream (stamped by the service layer).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// UUID of the addon that produced this stream. Used to filter streams
+    /// by the requesting user's effective addon set at serve time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub addon_id: Option<Uuid>,
     pub seeders: Option<i64>,
     pub size: Option<i64>,
     pub duration: Option<i64>,

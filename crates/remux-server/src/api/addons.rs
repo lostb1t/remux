@@ -15,6 +15,7 @@ use crate::{
     addons::{
         Addon, AddonCatalogDto, AddonDto, AddonMetadata, CreateAddonRequest,
         UpdateAddonCatalogRequest, UpdateAddonRequest, registered_presets,
+        set_user_addon_override, user_addon_override,
     },
     db::{MediaKind as DbMediaKind, auth},
 };
@@ -111,6 +112,7 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
         supported_types,
         priority: addon.priority,
         system: addon.system,
+        is_default: addon.is_default,
         created_at: addon.created_at,
         updated_at: addon.updated_at,
     }
@@ -298,7 +300,7 @@ pub async fn create_addon(
     };
 
     let now = Utc::now().naive_utc();
-    let mut addon = Addon {
+    let addon = Addon {
         id: addon_id,
         preset: payload.preset,
         name: payload.name,
@@ -309,6 +311,7 @@ pub async fn create_addon(
         created_at: now,
         updated_at: now,
         system: false,
+        is_default: payload.is_default,
     };
 
     addon
@@ -396,6 +399,9 @@ pub async fn update_addon(
     }
     if let Some(priority) = payload.priority {
         addon.priority = priority;
+    }
+    if let Some(is_default) = payload.is_default {
+        addon.is_default = is_default;
     }
     addon.updated_at = Utc::now().naive_utc();
 
@@ -656,6 +662,45 @@ pub async fn update_addon_catalogs(
         )
         .await?;
 
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Get a user's addon override list (ordered by priority).
+/// Returns an empty array when the user has no override (uses the default list).
+#[get("/users/{user_id}/addons")]
+pub async fn get_user_addons(
+    State(state): State<AppState>,
+    _session: auth::AdminSession,
+    Path(user_id): Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    let ids = user_addon_override(
+        &state
+            .ctx
+            .db,
+        user_id,
+    )
+    .await?
+    .unwrap_or_default();
+    Ok(Json(ids))
+}
+
+/// Set a user's addon override list. Send an empty array to clear the override
+/// and fall back to the default addon list.
+#[post("/users/{user_id}/addons")]
+pub async fn set_user_addons(
+    State(state): State<AppState>,
+    _session: auth::AdminSession,
+    Path(user_id): Path<Uuid>,
+    Json(addon_ids): Json<Vec<Uuid>>,
+) -> Result<StatusCode> {
+    set_user_addon_override(
+        &state
+            .ctx
+            .db,
+        user_id,
+        &addon_ids,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

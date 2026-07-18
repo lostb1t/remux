@@ -202,6 +202,9 @@ pub struct AddonDto {
     pub priority: i64,
     #[serde(default)]
     pub system: bool,
+    /// Included in the default addon list (users with no override see this addon).
+    #[serde(default = "default_true")]
+    pub is_default: bool,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
@@ -218,6 +221,8 @@ pub struct CreateAddonRequest {
     pub types: Vec<MediaKind>,
     #[serde(default)]
     pub priority: i64,
+    #[serde(default = "default_true")]
+    pub is_default: bool,
 }
 
 /// Update payload — `POST /addons/{id}`.
@@ -231,6 +236,7 @@ pub struct UpdateAddonRequest {
     pub types: Option<Vec<MediaKind>>,
     pub enabled: Option<bool>,
     pub priority: Option<i64>,
+    pub is_default: Option<bool>,
 }
 
 /// One catalog exposed by an addon, merged with its current config state.
@@ -5366,6 +5372,40 @@ impl Endpoint for UpdateAddonCatalogs {
     }
     fn body(&self) -> Body {
         Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
+    }
+}
+
+/// Get the addon override list for a user (ordered by priority).
+/// Returns `[]` when the user has no override.
+#[derive(Debug, Clone)]
+pub struct GetUserAddons {
+    pub user_id: Uuid,
+}
+
+impl Endpoint for GetUserAddons {
+    type Output = Vec<Uuid>;
+    fn path(&self) -> String {
+        format!("/users/{}/addons", self.user_id)
+    }
+}
+
+/// Set the addon override list for a user. Send `[]` to clear the override.
+#[derive(Debug, Clone)]
+pub struct SetUserAddons {
+    pub user_id: Uuid,
+    pub addon_ids: Vec<Uuid>,
+}
+
+impl Endpoint for SetUserAddons {
+    type Output = ();
+    fn path(&self) -> String {
+        format!("/users/{}/addons", self.user_id)
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.addon_ids).unwrap_or_default())
     }
 }
 
