@@ -139,6 +139,8 @@ CREATE TABLE IF NOT EXISTS media_images (
 
 CREATE INDEX IF NOT EXISTS idx_media_images_media_id ON media_images(media_id);
 
+-- user_id is intentionally not a FOREIGN KEY — watch state/favorites are
+-- preserved even after user deletion (e.g. for re-creation or historical stats).
 CREATE TABLE IF NOT EXISTS user_media_state (
     user_id           BLOB     NOT NULL,
     media_id          BLOB     NOT NULL,

@@ -276,6 +276,15 @@ impl User {
     }
 
     pub async fn delete(db: &SqlitePool, id: &Uuid) -> Result<bool> {
+        sqlx::query("DELETE FROM jellyfin_display_prefs WHERE user_id = ?1")
+            .bind(id)
+            .execute(db)
+            .await?;
+        sqlx::query("DELETE FROM devices WHERE user_id = ?1")
+            .bind(id)
+            .execute(db)
+            .await?;
+        // user_media_state is intentionally not cleaned up — see schema comment
         let result = sqlx::query("DELETE FROM users WHERE id = ?1")
             .bind(id)
             .execute(db)
