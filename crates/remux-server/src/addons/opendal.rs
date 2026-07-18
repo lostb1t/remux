@@ -1791,6 +1791,7 @@ mod tests {
             enabled: true,
             priority: 0,
             system: false,
+            is_default: true,
             created_at: now,
             updated_at: now,
         };
@@ -1929,7 +1930,7 @@ mod tests {
                 ..Default::default()
             };
             let streams = addon
-                .get_streams(&stub, ctx, None)
+                .get_streams(&stub, ctx)
                 .await
                 .unwrap();
             assert!(
@@ -2348,7 +2349,7 @@ mod tests {
             );
 
             let streams = addon
-                .get_streams(ep, ctx, None)
+                .get_streams(ep, ctx)
                 .await
                 .unwrap();
             assert!(
@@ -3591,7 +3592,7 @@ mod tests {
         // get_streams must return a Local stream for each track (matched by title).
         for item in &catalog {
             let streams = addon
-                .get_streams(item, ctx, None)
+                .get_streams(item, ctx)
                 .await
                 .unwrap();
             assert!(
@@ -3658,7 +3659,7 @@ mod tests {
             ..Default::default()
         };
         let streams = addon
-            .get_streams(&stub, ctx, None)
+            .get_streams(&stub, ctx)
             .await
             .unwrap();
         assert_eq!(streams.len(), 1);
