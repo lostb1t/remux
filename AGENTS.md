@@ -51,6 +51,27 @@ Filter rules must **not** apply to collection/folder container queries — only 
 
 - Custom fields are allowed only as **additive extensions**.
 - All custom fields MUST live under a `remux` namespace object.
+
+## Admin dashboard conventions (`remux-dashboard`)
+
+- **Theme presets are paired with CSS.** Every entry in `THEME_PRESETS`
+  (`src/theme.rs`) except `default` MUST have a matching
+  `:root[data-preset="<id>"]` block in `assets/theme.css`, or selecting it
+  applies no palette. This is enforced by the `every_preset_has_a_css_block`
+  test — run `cargo test -p remux-dashboard` after touching either.
+- **New pages** = a `Route` variant (`src/router.rs`) + a `NavSubItem`
+  (`src/layout.rs`, plus `page_title`/breadcrumb `section` arms) + a page under
+  `src/pages/` + a typed `Endpoint` command in `remux-sdks`. Extract pure
+  helpers (formatting, mapping) as free functions with colocated `#[cfg(test)]`
+  tests — the dashboard is a `bin` crate, so run tests with
+  `cargo test -p remux-dashboard` (no `--lib`).
+
+## Activity log
+
+The audit log (`GET /System/ActivityLog/Entries`) is backed by the
+`activity_log` table via `db::ActivityLog`. Record real events at their source
+with `db::ActivityLog::record_ignore(...)` (fire-and-forget; never fails the
+request). Use the `ActivityKind`/`ActivitySeverity` enums, not raw strings.
   Example:
   ```json
   {
