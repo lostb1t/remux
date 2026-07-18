@@ -1,9 +1,7 @@
 use std::{
-    collections::HashMap,
     convert::Infallible,
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex},
     task::{Context, Poll},
 };
 
@@ -16,53 +14,24 @@ use tower::{Layer, Service};
 use crate::web_patches::{CSS, JS};
 
 #[derive(Clone, Default)]
-pub struct TransformCache(Arc<Mutex<HashMap<String, Bytes>>>);
-
-impl TransformCache {
-    pub fn get(&self, path: &str) -> Option<Bytes> {
-        self.0
-            .lock()
-            .unwrap()
-            .get(path)
-            .cloned()
-    }
-    pub fn insert(&self, path: String, bytes: Bytes) {
-        self.0
-            .lock()
-            .unwrap()
-            .insert(path, bytes);
-    }
-}
-
-#[derive(Clone)]
-pub struct TransformLayer {
-    cache: TransformCache,
-}
+pub struct TransformLayer;
 
 impl TransformLayer {
     pub fn new() -> Self {
-        Self {
-            cache: TransformCache::default(),
-        }
+        Self
     }
 }
 
 impl<S> Layer<S> for TransformLayer {
     type Service = TransformService<S>;
     fn layer(&self, inner: S) -> Self::Service {
-        TransformService {
-            inner,
-            cache: self
-                .cache
-                .clone(),
-        }
+        TransformService { inner }
     }
 }
 
 #[derive(Clone)]
 pub struct TransformService<S> {
     inner: S,
-    cache: TransformCache,
 }
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for TransformService<S>
@@ -87,13 +56,6 @@ where
     }
 
     fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
-        let path = req
-            .uri()
-            .path()
-            .to_string();
-        let cache = self
-            .cache
-            .clone();
         let fut = self
             .inner
             .call(req);

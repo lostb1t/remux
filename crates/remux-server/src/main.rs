@@ -28,16 +28,20 @@ fn load_cli_config(
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
-    setup_logging();
     let cfg = std::env::var("CONFIG").unwrap_or_else(|_| "/data/config".to_string());
     let cli_config = load_cli_config(&cfg, config::Environment::default())?;
-    serve(
-        cli_config
-            .base
-            .resolve(),
-        cli_config.paths,
-    )
-    .await
+    let base = cli_config
+        .base
+        .resolve();
+    // Logging is initialised after config load so the file appender can target
+    // the resolved `log_dir`. The guard must live for the whole process, so it
+    // is bound here and only dropped as `main` returns.
+    let _log_guard = setup_logging(
+        base.log_dir
+            .as_deref()
+            .map(std::path::Path::new),
+    );
+    serve(base, cli_config.paths).await
 }
 
 #[cfg(test)]

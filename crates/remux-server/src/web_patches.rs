@@ -2,9 +2,6 @@
 /// Targets stable `data-*` attributes and semantic class names rather than
 /// minified JS internals, so it survives jellyfin-web bundle updates.
 pub static CSS: &str = r##"
-  /* ── Sidebar: whole sections ─────────────────────────────── */
-  [aria-labelledby="plugins-subheader"]   { display: none !important; }
-
   /* ── Async media-sources spinner ─────────────────────────── */
   @keyframes remux-spin {
     to { transform: rotate(360deg); }
@@ -24,54 +21,15 @@ pub static CSS: &str = r##"
 "##;
 
 /// JS injected before `</body>` of every HTML response.
-/// Intercepts React Router (History API) navigation to /wizard and /dashboard
-/// and redirects to our admin UI at /admin.
+///
+/// Behavior patches for the bundled jellyfin-web client. This intentionally does
+/// **not** redirect jellyfin-web's own admin dashboard (`/dashboard`) or setup
+/// wizard (`/wizard`) to Remux's custom `/admin` UI: both admin panels are
+/// first-class and must remain reachable. The custom panel lives at `/admin`;
+/// jellyfin-web's dashboard is served from its own routes and backed by the
+/// Jellyfin-compatible API (see `api/admin_stubs.rs` for the endpoints that make
+/// its Plugins/Notifications/ConfigurationPages sections load cleanly).
 pub static JS: &str = r#"
-
-(function () {
-  var ADMIN = ['/wizard', '/dashboard'];
-
-  function matchesAdmin(p) {
-    for (var i = 0; i < ADMIN.length; i++) {
-      var a = ADMIN[i];
-      if (p === a || p.startsWith(a + '/') || p.startsWith(a + '?')) return true;
-    }
-    return false;
-  }
-
-  // Check both pathname and hash (createHashRouter stores route in hash)
-  function checkUrl(url) {
-    try {
-      var u = new URL(String(url), location.href);
-      if (matchesAdmin(u.pathname)) { location.replace('/admin'); return true; }
-      if (u.hash) {
-        var h = '/' + u.hash.replace(/^#\/?/, '');
-        if (matchesAdmin(h)) { location.replace('/admin'); return true; }
-      }
-    } catch(e) {}
-    return false;
-  }
-
-  function checkCurrent() {
-    return checkUrl(location.href);
-  }
-
-  if (checkCurrent()) return;
-
-  // Intercept React Router History API (covers both BrowserRouter and HashRouter)
-  var _push = history.pushState.bind(history);
-  var _replace = history.replaceState.bind(history);
-  history.pushState = function(s, t, url) {
-    if (url && checkUrl(url)) return;
-    return _push(s, t, url);
-  };
-  history.replaceState = function(s, t, url) {
-    if (url && checkUrl(url)) return;
-    return _replace(s, t, url);
-  };
-  window.addEventListener('popstate', checkCurrent);
-  window.addEventListener('hashchange', checkCurrent);
-}());
 
 (function () {
   var _get = Storage.prototype.getItem;
@@ -463,3 +421,50 @@ pub static JS: &str = r#"
   };
 }());
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::{CSS, JS};
+
+    /// The bundled jellyfin-web admin dashboard and setup wizard must stay
+    /// reachable: the old history-interception patch that redirected
+    /// `/dashboard` and `/wizard` to `/admin` must not creep back in.
+    #[test]
+    fn js_does_not_hijack_jellyfin_web_admin() {
+        assert!(
+            !JS.contains("location.replace('/admin')"),
+            "JS must not redirect jellyfin-web routes to /admin"
+        );
+        assert!(
+            !JS.contains("['/wizard', '/dashboard']"),
+            "the /wizard + /dashboard interception block must stay removed"
+        );
+    }
+
+    /// Plugins now return valid (empty) JSON, so the jellyfin-web sidebar's
+    /// Plugins section must no longer be hidden.
+    #[test]
+    fn css_does_not_hide_plugins_section() {
+        assert!(
+            !CSS.contains("plugins-subheader"),
+            "the Plugins sidebar section must not be CSS-hidden"
+        );
+    }
+
+    /// The unrelated behavior patches must remain intact.
+    #[test]
+    fn js_retains_behavior_patches() {
+        assert!(
+            JS.contains("maxbitrate-video-false"),
+            "maxbitrate shim missing"
+        );
+        assert!(
+            JS.contains("_remuxGetItemPatched"),
+            "async MediaSources loader missing"
+        );
+        assert!(
+            JS.contains("Recently Added in "),
+            "section-title cleaner missing"
+        );
+    }
+}

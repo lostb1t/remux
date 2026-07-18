@@ -165,9 +165,22 @@ fn Login(on_login: EventHandler) -> Element {
                     if let (Some(token), Some(user)) =
                         (result.access_token, result.user)
                     {
+                        // Store the server's real name so the admin panel brands
+                        // itself with the server it manages.
+                        let name = client
+                            .execute(PublicSystemInfo::default())
+                            .await
+                            .ok()
+                            .map(|i| {
+                                i.server_name
+                                    .trim()
+                                    .to_string()
+                            })
+                            .filter(|n| !n.is_empty())
+                            .unwrap_or_else(|| "Remux".to_string());
                         store_credentials(StoredServer {
                             id: result.server_id,
-                            name: "Remux".to_string(),
+                            name,
                             manual_address: url,
                             access_token: token,
                             user_id: user

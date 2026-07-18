@@ -1,3 +1,9 @@
+// Shared bench scaffolding. Each bench target includes this file via
+// `#[path = "common.rs"]`, so any target that doesn't happen to use a given
+// helper (e.g. `BenchQuery`, `Fixture::user_id`) would otherwise warn about it
+// as dead code — the item is live, just not in that particular target.
+#![allow(dead_code)]
+
 use remux_server::{AppContext, Config, db, init_app_with_ctx};
 use serde_json::json;
 use std::sync::OnceLock;
@@ -34,6 +40,7 @@ pub struct Fixture {
     pub client: reqwest::Client,
     pub base_url: String,
     pub token: String,
+    pub user_id: Uuid,
     pub rt: tokio::runtime::Runtime,
     pub _ctx: AppContext,
 }
@@ -50,7 +57,7 @@ pub fn fixture() -> &'static Fixture {
             .build()
             .unwrap();
 
-        let (client, ctx, token, base_url) = rt.block_on(async {
+        let (client, ctx, token, base_url, user_id) = rt.block_on(async {
             let config = Config {
                 database_url: Some("sqlite::memory:".into()),
                 disable_dht: true,
@@ -122,13 +129,14 @@ pub fn fixture() -> &'static Fixture {
 
             seed_all(&ctx.db, user_id).await;
 
-            (client, ctx, token, base_url)
+            (client, ctx, token, base_url, user_id)
         });
 
         Fixture {
             client,
             base_url,
             token,
+            user_id,
             rt,
             _ctx: ctx,
         }

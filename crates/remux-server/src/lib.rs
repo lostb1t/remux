@@ -9,7 +9,11 @@ use axum::{
     Json, Router, ServiceExt,
     body::Body,
     extract::{FromRequestParts, Request},
-    http::{StatusCode, request::Parts},
+    http::{
+        HeaderName, StatusCode,
+        header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, RANGE},
+        request::Parts,
+    },
     middleware,
     middleware::Next,
     response::{IntoResponse, Redirect, Response},
@@ -46,6 +50,7 @@ mod conversions;
 pub mod device_profile;
 mod errors;
 mod keyed_lock;
+pub mod metrics;
 pub mod sdks {
     pub use remux_sdks::*;
 }
@@ -178,8 +183,13 @@ pub async fn init_app(
             .as_deref()
             .expect("Config::resolve() must be called before init_app"),
         config.slow_query_threshold_ms,
+        config.db_max_connections,
     )
     .await?;
+    info!(
+        db_max_connections = config.db_max_connections,
+        "database pool ready"
+    );
 
     info!("Running database migrations. Do not interrupt!");
     db::migrate(&conn).await?;
@@ -251,6 +261,7 @@ pub async fn init_app(
         config,
         db: conn.clone(),
         store: Store::new_weighted(128 * 1024 * 1024),
+        metrics: metrics::Metrics::default(),
         sessions: playback_session::PlaybackSessionManager::new("transcode_sessions"),
         torrent: Arc::new(torrent_mgr),
         ws_tx: tokio::sync::broadcast::channel(128).0,
@@ -296,7 +307,13 @@ pub async fn init_app(
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
-        .allow_headers(Any)
+        .allow_headers([
+            ACCEPT,
+            AUTHORIZATION,
+            CONTENT_TYPE,
+            RANGE,
+            HeaderName::from_static("x-emby-token"),
+        ])
         .expose_headers(Any);
 
     let base = Router::new()
@@ -306,10 +323,15 @@ pub async fn init_app(
 
     let router = base
         .nest_service("/admin", admin)
-        .with_state(state)
+        .with_state(state.clone())
         .fallback_service(web_client);
 
     let router = router
+        // Innermost app layer: wraps the routes after axum has matched them, so
+        // `MatchedPath` is populated and the recorded latency is the handler +
+        // extractor time (auth is a per-handler extractor) without the outer
+        // trace/cors layers. No-op unless `config.metrics_enabled`.
+        .layer(middleware::from_fn_with_state(state, metrics::track))
         .layer(on_error(log_api_error))
         .layer(
             tower_http::trace::TraceLayer::new_for_http()
@@ -346,6 +368,9 @@ pub struct AppContext {
     pub config: Config,
     pub db: sqlx::SqlitePool,
     pub store: Store,
+    /// Per-endpoint latency metrics. Collection is gated behind
+    /// [`Config::metrics_enabled`]; see [`metrics`].
+    pub metrics: metrics::Metrics,
     pub sessions: playback_session::PlaybackSessionManager,
     pub torrent: Arc<torrent::TorrentManager>,
     pub ws_tx: tokio::sync::broadcast::Sender<ws::WsEvent>,
@@ -407,6 +432,13 @@ pub struct Config {
     pub data_dir: std::path::PathBuf,
     /// `None` means derive from `data_dir` — call `resolve()` after loading.
     pub database_url: Option<String>,
+    /// Read-only path to a retired Jellyfin database used to migrate passwords
+    /// during a short, explicitly configured cutover window.
+    #[serde(default)]
+    pub legacy_jellyfin_db_path: Option<std::path::PathBuf>,
+    /// RFC 3339 deadline for legacy Jellyfin password migration.
+    #[serde(default)]
+    pub legacy_jellyfin_auth_expires_at: Option<String>,
     /// `None` means derive from `data_dir` — call `resolve()` after loading.
     pub torrent_data_dir: Option<String>,
     #[serde(default = "default_port")]
@@ -453,6 +485,58 @@ pub struct Config {
     /// Connect timeout (seconds) for the shared addon HTTP client. Defaults to 8.
     #[serde(default = "default_addon_http_connect_timeout_secs")]
     pub addon_http_connect_timeout_secs: u64,
+    /// Directory for server log files (daily-rolled `remux.log`), surfaced by
+    /// the admin dashboard's Logs page. `None` derives `<data_dir>/log` in
+    /// [`Config::resolve`]. Kept separate from client-log uploads
+    /// (`<data_dir>/logs`, see `api/client_log.rs`).
+    pub log_dir: Option<String>,
+    /// Enable per-endpoint latency collection ([`metrics`]) and the
+    /// admin-gated `GET /remux/metrics` snapshot endpoint. Off by default so
+    /// production pays only a single bool check per request. Meant for
+    /// benchmarking and A/B profiling.
+    #[serde(default)]
+    pub metrics_enabled: bool,
+    /// Persist sampled request and playback telemetry for the admin dashboard.
+    /// Unlike the legacy in-memory benchmark metrics this survives restarts.
+    #[serde(default = "default_telemetry_enabled")]
+    pub telemetry_enabled: bool,
+    /// Healthy request sample rate. Errors and slow requests are always kept.
+    #[serde(default = "default_telemetry_sample_rate")]
+    pub telemetry_sample_rate: f64,
+    #[serde(default = "default_telemetry_slow_request_ms")]
+    pub telemetry_slow_request_ms: u64,
+    /// Size of the SQLite connection pool. WAL mode permits unlimited
+    /// concurrent readers, so this bounds how many requests can touch the
+    /// database at once; too small a value simply queues readers behind each
+    /// other. Each connection carries its own page cache (`cache_size`, 16 MiB),
+    /// so this trades memory for read concurrency. Defaults to
+    /// [`default_db_max_connections`].
+    #[serde(default = "default_db_max_connections")]
+    pub db_max_connections: u32,
+}
+
+/// Connection-pool default.
+///
+/// Deliberately small, and **measured** rather than assumed. The intuition that
+/// a 32-core host should run far more concurrent SQLite readers is wrong here:
+/// benchmarking 39 concurrent `/items` requests against a 1.3M-row library
+/// (same binary, same database, only this value changed, run in both orders)
+/// gave a median of 1636 ms at 5 connections, 2143 ms at 8, and 2598 ms at 24 —
+/// latency and total throughput both degrade as the pool grows, because extra
+/// readers contend on the shared page cache and each connection carries its own
+/// `cache_size` (16 MiB). Raise it only with a measurement that says otherwise.
+fn default_db_max_connections() -> u32 {
+    5
+}
+
+fn default_telemetry_enabled() -> bool {
+    true
+}
+fn default_telemetry_sample_rate() -> f64 {
+    0.05
+}
+fn default_telemetry_slow_request_ms() -> u64 {
+    1_000
 }
 
 fn default_addon_http_timeout_secs() -> u64 {
@@ -488,6 +572,16 @@ fn default_torrent_peer_port() -> Option<u16> {
 }
 
 impl Config {
+    pub fn legacy_jellyfin_auth_enabled(&self) -> bool {
+        self.legacy_jellyfin_db_path
+            .is_some()
+            && self
+                .legacy_jellyfin_auth_expires_at
+                .as_deref()
+                .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                .is_some_and(|expires_at| expires_at > chrono::Utc::now())
+    }
+
     /// Fill in `None` fields that derive from `data_dir`. Call once after loading.
     pub fn resolve(mut self) -> Self {
         if self
@@ -512,6 +606,17 @@ impl Config {
                     .into_owned(),
             );
         }
+        if self
+            .log_dir
+            .is_none()
+        {
+            self.log_dir = Some(
+                self.data_dir
+                    .join("log")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
         self
     }
 }
@@ -521,6 +626,8 @@ impl Default for Config {
         Self {
             data_dir: default_data_dir(),
             database_url: None,
+            legacy_jellyfin_db_path: None,
+            legacy_jellyfin_auth_expires_at: None,
             torrent_data_dir: None,
             port: default_port(),
             torrent_http_port: default_torrent_http_port_opt(),
@@ -533,6 +640,12 @@ impl Default for Config {
             group_local_music_limit: None,
             addon_http_timeout_secs: default_addon_http_timeout_secs(),
             addon_http_connect_timeout_secs: default_addon_http_connect_timeout_secs(),
+            log_dir: None,
+            metrics_enabled: false,
+            telemetry_enabled: default_telemetry_enabled(),
+            telemetry_sample_rate: default_telemetry_sample_rate(),
+            telemetry_slow_request_ms: default_telemetry_slow_request_ms(),
+            db_max_connections: default_db_max_connections(),
         }
         .resolve()
     }
@@ -582,7 +695,18 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
     req
 }
 
-pub fn setup_logging() {
+/// Initialise tracing: a compact stdout layer plus, when `log_dir` is given, a
+/// daily-rolled `remux.log` file layer (ANSI stripped, so downloaded logs are
+/// clean text).
+///
+/// The returned [`WorkerGuard`](tracing_appender::non_blocking::WorkerGuard)
+/// **must be held for the process lifetime** — dropping it stops the background
+/// writer and silently discards buffered log lines. Returns `None` when no file
+/// layer was installed (no `log_dir`, or the directory could not be created).
+#[must_use = "hold the returned WorkerGuard for the process lifetime or file logs are dropped"]
+pub fn setup_logging(
+    log_dir: Option<&std::path::Path>,
+) -> Option<tracing_appender::non_blocking::WorkerGuard> {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("warn,remux=info"));
 
@@ -593,11 +717,44 @@ pub fn setup_logging() {
         .with_file(false)
         .compact();
 
+    // Optional rolling file layer. `Option<Layer>` is itself a `Layer` (a no-op
+    // when `None`), so we can always `.with(file_layer)`.
+    let (file_layer, guard) = match log_dir {
+        Some(dir) => match std::fs::create_dir_all(dir) {
+            Ok(()) => {
+                let appender = tracing_appender::rolling::daily(dir, "remux.log");
+                let (writer, guard) = tracing_appender::non_blocking(appender);
+                let layer = fmt::layer()
+                    .with_ansi(false)
+                    .with_writer(writer)
+                    .with_timer(fmt::time::ChronoLocal::new(
+                        "%Y-%m-%d %H:%M:%S%.3f".to_string(),
+                    ))
+                    .with_target(true)
+                    .with_line_number(true)
+                    .with_file(false)
+                    .compact();
+                (Some(layer), Some(guard))
+            }
+            Err(e) => {
+                eprintln!(
+                    "warning: could not create log dir {}: {e}; file logging disabled",
+                    dir.display()
+                );
+                (None, None)
+            }
+        },
+        None => (None, None),
+    };
+
     tracing_subscriber::registry()
         .with(filter)
         .with(fmt_layer)
+        .with(file_layer)
         .try_init()
         .ok(); // try_init + ok() so tests don't panic on repeated calls
+
+    guard
 }
 
 async fn handle_404(uri: axum::http::Uri) -> impl IntoResponse {

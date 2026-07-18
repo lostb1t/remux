@@ -610,6 +610,30 @@ where
     }
 }
 
+/// Serialize an `Option<f64>` the way .NET's `System.Text.Json` renders a
+/// `double?`: whole values print without a fractional part (`0`, `41`) while
+/// genuinely fractional values keep their decimal (`23.976`). serde_json would
+/// otherwise emit `0.0`/`41.0`, which differs byte-for-byte from Jellyfin.
+///
+/// Applied to numeric MediaStream fields (e.g. `Level`) so responses are 1:1
+/// with Jellyfin on the wire while the field stays a `number` in the OpenAPI
+/// schema. The `#[dto]` macro's `skip_serializing_none` still omits `None`.
+pub fn serialize_option_whole_f64<S>(v: &Option<f64>, s: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    // 2^53 is the largest integer an f64 represents exactly; beyond it the
+    // whole-number check is meaningless, so fall back to float formatting.
+    const MAX_EXACT_INT_F64: f64 = 9_007_199_254_740_992.0;
+    match v {
+        None => s.serialize_none(),
+        Some(f) if f.is_finite() && f.fract() == 0.0 && f.abs() < MAX_EXACT_INT_F64 => {
+            s.serialize_i64(*f as i64)
+        }
+        Some(f) => s.serialize_f64(*f),
+    }
+}
+
 impl From<stremio::MediaType> for remux::MediaType {
     fn from(kind: stremio::MediaType) -> Self {
         match kind {

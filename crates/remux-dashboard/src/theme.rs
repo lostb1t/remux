@@ -89,39 +89,161 @@ pub struct AccentPreset {
     pub hex: &'static str,
 }
 
-/// Built-in accent presets. The first entry is the brand default.
+/// Built-in accent swatches. The first entry is the brand default. A broad,
+/// harmonious spectrum so the user has "tons of color options".
 pub const ACCENT_PRESETS: &[AccentPreset] = &[
     AccentPreset {
         name: "Emerald",
         hex: "#009245",
     },
     AccentPreset {
+        name: "Green",
+        hex: "#22c55e",
+    },
+    AccentPreset {
+        name: "Teal",
+        hex: "#14b8a6",
+    },
+    AccentPreset {
+        name: "Cyan",
+        hex: "#06b6d4",
+    },
+    AccentPreset {
+        name: "Sky",
+        hex: "#0ea5e9",
+    },
+    AccentPreset {
         name: "Blue",
-        hex: "#2f80ed",
+        hex: "#3b82f6",
     },
     AccentPreset {
         name: "Indigo",
         hex: "#6366f1",
     },
     AccentPreset {
-        name: "Teal",
-        hex: "#0d9488",
-    },
-    AccentPreset {
-        name: "Purple",
+        name: "Violet",
         hex: "#8b5cf6",
     },
     AccentPreset {
-        name: "Orange",
-        hex: "#e67e22",
+        name: "Purple",
+        hex: "#a855f7",
+    },
+    AccentPreset {
+        name: "Fuchsia",
+        hex: "#d946ef",
+    },
+    AccentPreset {
+        name: "Pink",
+        hex: "#ec4899",
     },
     AccentPreset {
         name: "Rose",
-        hex: "#e5484d",
+        hex: "#f43f5e",
+    },
+    AccentPreset {
+        name: "Red",
+        hex: "#ef4444",
+    },
+    AccentPreset {
+        name: "Orange",
+        hex: "#f97316",
+    },
+    AccentPreset {
+        name: "Amber",
+        hex: "#f59e0b",
+    },
+    AccentPreset {
+        name: "Yellow",
+        hex: "#eab308",
+    },
+    AccentPreset {
+        name: "Lime",
+        hex: "#84cc16",
     },
     AccentPreset {
         name: "Slate",
         hex: "#64748b",
+    },
+];
+
+/// Default theme-preset id (the built-in Remux palette; no `data-preset`).
+pub const DEFAULT_PRESET: &str = "default";
+
+/// A named, complete color palette (surfaces + text) applied via the
+/// `data-preset` attribute on `<html>`. The palette values themselves live in
+/// `theme.css` under `:root[data-preset="<id>"]`; this struct is the registry
+/// the picker renders from and pairs each preset with a fitting default accent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThemePreset {
+    /// `data-preset` value / storage id.
+    pub id: &'static str,
+    /// Human-readable name.
+    pub name: &'static str,
+    /// Accent this preset ships with (applied when the preset is chosen).
+    pub accent: &'static str,
+    /// Representative background color for the picker card preview.
+    pub swatch_bg: &'static str,
+    /// Representative surface color for the picker card preview.
+    pub swatch_panel: &'static str,
+}
+
+/// Built-in theme presets. `default` is the native Remux palette.
+pub const THEME_PRESETS: &[ThemePreset] = &[
+    ThemePreset {
+        id: "default",
+        name: "Remux",
+        accent: "#009245",
+        swatch_bg: "#0b0c0f",
+        swatch_panel: "#1a1d24",
+    },
+    ThemePreset {
+        id: "midnight",
+        name: "Midnight",
+        accent: "#5b8def",
+        swatch_bg: "#080b14",
+        swatch_panel: "#131a2b",
+    },
+    ThemePreset {
+        id: "nord",
+        name: "Nord",
+        accent: "#88c0d0",
+        swatch_bg: "#2e3440",
+        swatch_panel: "#3b4252",
+    },
+    ThemePreset {
+        id: "dracula",
+        name: "Dracula",
+        accent: "#bd93f9",
+        swatch_bg: "#282a36",
+        swatch_panel: "#44475a",
+    },
+    ThemePreset {
+        id: "catppuccin",
+        name: "Catppuccin",
+        accent: "#cba6f7",
+        swatch_bg: "#1e1e2e",
+        swatch_panel: "#302f42",
+    },
+    ThemePreset {
+        id: "rose-pine",
+        name: "Rosé Pine",
+        accent: "#ebbcba",
+        swatch_bg: "#191724",
+        swatch_panel: "#26233a",
+    },
+    ThemePreset {
+        id: "solarized",
+        name: "Solarized",
+        accent: "#268bd2",
+        swatch_bg: "#002b36",
+        swatch_panel: "#073642",
+    },
+    ThemePreset {
+        id: "gruvbox",
+        name: "Gruvbox",
+        accent: "#fabd2f",
+        swatch_bg: "#282828",
+        swatch_panel: "#3a3735",
     },
 ];
 
@@ -134,6 +256,10 @@ pub struct ThemePrefs {
     /// Accent color as `#rrggbb` (drives the whole primary family in CSS).
     #[serde(default = "default_accent")]
     pub accent: String,
+    /// Theme-preset id (full palette), applied via `data-preset`. See
+    /// [`THEME_PRESETS`]; [`DEFAULT_PRESET`] = the native Remux palette.
+    #[serde(default = "default_preset")]
+    pub preset: String,
     /// Global UI scale as a whole percentage (see [`MIN_SCALE`]/[`MAX_SCALE`]).
     #[serde(default = "default_scale")]
     pub scale: u8,
@@ -141,6 +267,10 @@ pub struct ThemePrefs {
 
 fn default_accent() -> String {
     DEFAULT_ACCENT.to_string()
+}
+
+fn default_preset() -> String {
+    DEFAULT_PRESET.to_string()
 }
 
 fn default_scale() -> u8 {
@@ -152,6 +282,7 @@ impl Default for ThemePrefs {
         Self {
             mode: ThemeMode::default(),
             accent: default_accent(),
+            preset: default_preset(),
             scale: default_scale(),
         }
     }
@@ -176,6 +307,12 @@ impl ThemePrefs {
     pub fn normalize(&mut self) {
         if !is_valid_hex(&self.accent) {
             self.accent = default_accent();
+        }
+        if !THEME_PRESETS
+            .iter()
+            .any(|p| p.id == self.preset)
+        {
+            self.preset = default_preset();
         }
         self.scale = self
             .scale
@@ -213,22 +350,31 @@ pub fn theme_style_css(prefs: &ThemePrefs) -> String {
     )
 }
 
-/// Apply the theme *mode* to `<html>` via `web-sys`: set `data-theme` for an
-/// explicit light/dark choice, or remove it for System.
-pub fn apply_mode_to_dom(mode: ThemeMode) {
+/// Apply the theme *mode* and *preset* to `<html>` via `web-sys`:
+/// `data-theme` for an explicit light/dark choice (removed for System), and
+/// `data-preset` for a non-default palette (removed for the native Remux one).
+pub fn apply_to_dom(prefs: &ThemePrefs) {
     let Some(root) = web_sys::window()
         .and_then(|w| w.document())
         .and_then(|d| d.document_element())
     else {
         return;
     };
-    match mode.data_attr() {
+    match prefs
+        .mode
+        .data_attr()
+    {
         Some(value) => {
             let _ = root.set_attribute("data-theme", value);
         }
         None => {
             let _ = root.remove_attribute("data-theme");
         }
+    }
+    if prefs.preset == DEFAULT_PRESET {
+        let _ = root.remove_attribute("data-preset");
+    } else {
+        let _ = root.set_attribute("data-preset", &prefs.preset);
     }
 }
 
@@ -242,17 +388,17 @@ pub fn use_theme() -> Signal<ThemePrefs> {
     // Load once and apply the mode synchronously on first render.
     let prefs = use_signal(|| {
         let prefs = ThemePrefs::load();
-        apply_mode_to_dom(prefs.mode);
+        apply_to_dom(&prefs);
         prefs
     });
     // Make preferences available to the sidebar control and Appearance page.
     use_context_provider(|| prefs);
-    // Re-apply the mode and persist whenever any preference changes.
+    // Re-apply mode + preset and persist whenever any preference changes.
     use_effect(move || {
         let prefs = prefs
             .read()
             .clone();
-        apply_mode_to_dom(prefs.mode);
+        apply_to_dom(&prefs);
         prefs.save();
     });
     prefs
@@ -281,6 +427,7 @@ mod tests {
         let prefs = ThemePrefs {
             mode: ThemeMode::Dark,
             accent: "#123abc".into(),
+            preset: "nord".into(),
             scale: 110,
         };
         let json = serde_json::to_string(&prefs).unwrap();
@@ -294,6 +441,7 @@ mod tests {
         let prefs: ThemePrefs = serde_json::from_str("{}").unwrap();
         assert_eq!(prefs.mode, ThemeMode::System);
         assert_eq!(prefs.accent, DEFAULT_ACCENT);
+        assert_eq!(prefs.preset, DEFAULT_PRESET);
         assert_eq!(prefs.scale, DEFAULT_SCALE);
     }
 
@@ -302,10 +450,12 @@ mod tests {
         let mut prefs = ThemePrefs {
             mode: ThemeMode::Light,
             accent: "not-a-color".into(),
+            preset: "bogus-preset".into(),
             scale: 250,
         };
         prefs.normalize();
         assert_eq!(prefs.accent, DEFAULT_ACCENT);
+        assert_eq!(prefs.preset, DEFAULT_PRESET);
         assert_eq!(prefs.scale, MAX_SCALE);
 
         let mut tiny = ThemePrefs {
@@ -330,11 +480,96 @@ mod tests {
         let prefs = ThemePrefs {
             mode: ThemeMode::System,
             accent: "#009245".into(),
+            preset: default_preset(),
             scale: 110,
         };
         assert!((prefs.scale_factor() - 1.10).abs() < f32::EPSILON);
         let css = theme_style_css(&prefs);
         assert!(css.contains("--accent:#009245"));
         assert!(css.contains("--ui-scale:1.10"));
+    }
+
+    /// Registry invariants: ids are unique, every accent is a valid hex, and the
+    /// default preset id is present. Guards against a malformed preset/accent
+    /// entry silently breaking `--accent` or the picker.
+    #[test]
+    fn theme_presets_registry_is_well_formed() {
+        let mut ids = std::collections::HashSet::new();
+        for preset in THEME_PRESETS {
+            assert!(ids.insert(preset.id), "duplicate preset id: {}", preset.id);
+            assert!(
+                is_valid_hex(preset.accent),
+                "preset {} has invalid accent {}",
+                preset.id,
+                preset.accent
+            );
+            assert!(
+                is_valid_hex(preset.swatch_bg) && is_valid_hex(preset.swatch_panel),
+                "preset {} has an invalid swatch color",
+                preset.id
+            );
+        }
+        assert!(
+            THEME_PRESETS
+                .iter()
+                .any(|p| p.id == DEFAULT_PRESET),
+            "the default preset id must exist in the registry"
+        );
+    }
+
+    #[test]
+    fn accent_presets_are_valid_hex_and_unique() {
+        let mut hexes = std::collections::HashSet::new();
+        for accent in ACCENT_PRESETS {
+            assert!(
+                is_valid_hex(accent.hex),
+                "accent {} has invalid hex {}",
+                accent.name,
+                accent.hex
+            );
+            assert!(
+                hexes.insert(accent.hex),
+                "duplicate accent hex: {}",
+                accent.hex
+            );
+        }
+        assert_eq!(
+            ACCENT_PRESETS[0].hex, DEFAULT_ACCENT,
+            "first accent preset must be the brand default"
+        );
+    }
+
+    #[test]
+    fn scale_options_are_within_bounds() {
+        for &s in SCALE_OPTIONS {
+            assert!(
+                (MIN_SCALE..=MAX_SCALE).contains(&s),
+                "scale option {s} is out of [{MIN_SCALE}, {MAX_SCALE}]"
+            );
+        }
+        assert!(
+            SCALE_OPTIONS.contains(&DEFAULT_SCALE),
+            "the default scale must be offered as an option"
+        );
+    }
+
+    /// Mechanical registry↔CSS parity: every non-default preset in the registry
+    /// MUST have a matching `:root[data-preset="<id>"]` block in `theme.css`,
+    /// or selecting it would apply no palette. `default` uses bare `:root`.
+    #[test]
+    fn every_preset_has_a_css_block() {
+        const THEME_CSS: &str = include_str!("../assets/theme.css");
+        for preset in THEME_PRESETS {
+            if preset.id == DEFAULT_PRESET {
+                continue;
+            }
+            let selector = format!("data-preset=\"{}\"", preset.id);
+            assert!(
+                THEME_CSS.contains(&selector),
+                "theme.css is missing a [{}] block for preset {}",
+                selector,
+                preset.name
+            );
+        }
     }
 }

@@ -381,7 +381,10 @@ fn hw_input_args(
     };
 
     match accel {
-        HardwareAccelerationType::Nvenc => vec!["-hwaccel".into(), "cuda".into()],
+        // NVENC is an encoder API. Keep decoded frames in system memory until
+        // this pipeline uses CUDA-native filters; combining CUDA decode with
+        // the software scale filter can corrupt the chroma planes.
+        HardwareAccelerationType::Nvenc => vec![],
         HardwareAccelerationType::Vaapi => {
             // Initialise the VAAPI device via init_hw_device so that the
             // driver= option takes effect (fixes iHD resolution on Intel).
@@ -802,7 +805,8 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         };
         if let Some(ref filter) = vf {
             args.extend(["-vf".into(), filter.clone()]);
-        } else if let Some(audio_idx) = params.audio_stream_index {
+        }
+        if let Some(audio_idx) = params.audio_stream_index {
             args.extend([
                 "-map".into(),
                 "0:v:0".into(),
@@ -1552,7 +1556,8 @@ pub(crate) fn build_progressive_args(
         };
         if let Some(ref filter) = vf {
             args.extend(["-vf".into(), filter.clone()]);
-        } else if params
+        }
+        if params
             .audio_stream_index
             .is_some()
             || params
@@ -2423,6 +2428,7 @@ mod tests {
             runtime_ticks: 120i64
                 .to_ticks(TickUnit::Seconds)
                 .unwrap(),
+            runtime_is_probed: true,
             is_live: false,
             source_video_codec: Some("h264".into()),
             source_audio_codec: Some("aac".into()),
@@ -2560,18 +2566,13 @@ mod tests {
             ..default_hls(dir)
         });
 
-        // Input flag before -i
-        let hwaccel_pos = args
-            .iter()
-            .position(|a| a == "-hwaccel")
-            .expect("-hwaccel missing");
-        let i_pos = args
-            .iter()
-            .position(|a| a == "-i")
-            .expect("-i missing");
-        assert!(hwaccel_pos < i_pos);
-        assert_eq!(args[hwaccel_pos + 1], "cuda");
-        // Encoder remapped
+        // The current scale chain operates on system-memory frames, so decode
+        // in software and upload only when NVENC consumes the frame.
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg == "-hwaccel")
+        );
         assert_eq!(arg_after(&args, "-c:v"), Some("h264_nvenc"));
     }
 

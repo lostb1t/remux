@@ -588,17 +588,158 @@ pub async fn get_branding_css_dotcss(
     branding_css_response(&state).await
 }
 
-/// Get activity log entries
+#[query]
+pub struct ActivityLogQuery {
+    pub start_index: Option<i64>,
+    pub limit: Option<i64>,
+    /// ISO8601 lower bound (`minDate`); entries strictly older are excluded.
+    pub min_date: Option<String>,
+    /// When present, keep only entries that do (`true`) or do not (`false`)
+    /// have an associated user.
+    pub has_user_id: Option<bool>,
+}
+
+/// `GET /System/ActivityLog/Entries` — paged audit log, newest first.
 #[get("/system/activitylog/entries")]
 pub async fn system_activity_log(
     State(state): State<AppState>,
     _session: auth::AdminSession,
+    Query(q): Query<ActivityLogQuery>,
 ) -> Result<impl IntoResponse> {
-    // Return an empty activity log
+    let start_index = q
+        .start_index
+        .unwrap_or(0)
+        .max(0);
+    let limit = q
+        .limit
+        .unwrap_or(100)
+        .clamp(0, 1000);
+    let min_date = q
+        .min_date
+        .as_deref()
+        .and_then(|s| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .ok()
+                .map(|d| d.with_timezone(&chrono::Utc))
+        });
+
+    let (items, total) = db::ActivityLog::query(
+        &state
+            .ctx
+            .db,
+        start_index,
+        limit,
+        min_date,
+        q.has_user_id,
+    )
+    .await?;
+
     Ok(Json(json!({
-        "Items": [],
-        "TotalRecordCount": 0
+        "Items": items,
+        "TotalRecordCount": total,
+        "StartIndex": start_index,
     })))
+}
+
+/// `GET /System/Logs` — list the server log files in the configured `log_dir`,
+/// newest first. Returns `LogFile[]`. Missing/unconfigured directory → empty list.
+#[get("/system/logs")]
+pub async fn system_logs(
+    State(state): State<AppState>,
+    _session: auth::AdminSession,
+) -> Result<impl IntoResponse> {
+    let mut files: Vec<api::LogFile> = Vec::new();
+
+    if let Some(dir) = state
+        .ctx
+        .config
+        .log_dir
+        .as_deref()
+    {
+        if let Ok(mut entries) = tokio::fs::read_dir(dir).await {
+            while let Some(entry) = entries
+                .next_entry()
+                .await?
+            {
+                let meta = match entry
+                    .metadata()
+                    .await
+                {
+                    Ok(m) if m.is_file() => m,
+                    _ => continue,
+                };
+                files.push(api::LogFile {
+                    name: Some(
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .into_owned(),
+                    ),
+                    size: Some(meta.len() as i64),
+                    date_created: meta
+                        .created()
+                        .ok()
+                        .map(chrono::DateTime::<chrono::Utc>::from),
+                    date_modified: meta
+                        .modified()
+                        .ok()
+                        .map(chrono::DateTime::<chrono::Utc>::from),
+                });
+            }
+        }
+    }
+
+    // Newest first, so the current day's log surfaces at the top.
+    files.sort_by(|a, b| {
+        b.date_modified
+            .cmp(&a.date_modified)
+    });
+
+    Ok(Json(files))
+}
+
+#[query]
+pub struct LogFileQuery {
+    pub name: String,
+}
+
+/// `GET /System/Logs/Log?name=` — download a single log file as plain text.
+///
+/// The `name` is hardened against path traversal: it must be a bare filename
+/// (no `/`, `\`, or `..`), and is resolved strictly inside `log_dir`.
+#[get("/system/logs/log")]
+pub async fn system_log_file(
+    State(state): State<AppState>,
+    _session: auth::AdminSession,
+    Query(q): Query<LogFileQuery>,
+) -> Result<Response> {
+    if q.name
+        .is_empty()
+        || q.name
+            .contains('/')
+        || q.name
+            .contains('\\')
+        || q.name
+            .contains("..")
+    {
+        return Ok((StatusCode::BAD_REQUEST, "invalid log name").into_response());
+    }
+
+    let dir = state
+        .ctx
+        .config
+        .log_dir
+        .as_deref()
+        .context_not_found("logging directory not configured")?;
+
+    let path = std::path::Path::new(dir).join(&q.name);
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => Ok(
+            ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], bytes)
+                .into_response(),
+        ),
+        Err(_) => Ok((StatusCode::NOT_FOUND, "log not found").into_response()),
+    }
 }
 
 /// Return the current UTC time (no auth required — Jellyfin calls this before login)
@@ -1124,5 +1265,146 @@ mod test {
             .await;
         dotcss_resp.assert_status_ok();
         assert_eq!(dotcss_resp.text(), css);
+    }
+
+    #[tokio::test]
+    async fn system_logs_lists_downloads_and_guards_traversal() {
+        use crate::Config;
+        use crate::integration_test::new_test_server_with_config;
+        use http::header::{AUTHORIZATION, HeaderValue};
+
+        let db_dir = tempfile::tempdir().unwrap();
+        let log_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            log_dir
+                .path()
+                .join("remux.log"),
+            b"hello log\n",
+        )
+        .unwrap();
+
+        let db_path = db_dir
+            .path()
+            .join("remux-test.sqlite");
+        let (server, _guard) = new_test_server_with_config(Config {
+            database_url: Some(format!("sqlite://{}?mode=rwc", db_path.display())),
+            torrent_http_port: None,
+            disable_dht: true,
+            torrent_peer_port: None,
+            log_dir: Some(
+                log_dir
+                    .path()
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        // Authenticate as the seeded admin user.
+        let auth_resp = server
+            .post("/users/authenticatebyname")
+            .add_header(AUTHORIZATION, HeaderValue::from_static(AUTH_HEADER))
+            .json(&json!({ "Username": "test", "Pw": "test" }))
+            .await;
+        let token = auth_resp.json::<serde_json::Value>()["AccessToken"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let auth = auth_header_with_token(&token);
+        let header = || HeaderValue::from_str(&auth).unwrap();
+
+        // List includes remux.log with its byte size.
+        let list = server
+            .get("/system/logs")
+            .add_header(AUTHORIZATION, header())
+            .await;
+        list.assert_status_ok();
+        let body: serde_json::Value = list.json();
+        let entry = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["Name"] == "remux.log")
+            .expect("remux.log should be listed");
+        assert_eq!(entry["Size"], 10);
+
+        // Download returns the exact contents as text.
+        let dl = server
+            .get("/system/logs/log")
+            .add_query_param("name", "remux.log")
+            .add_header(AUTHORIZATION, header())
+            .await;
+        dl.assert_status_ok();
+        assert_eq!(dl.text(), "hello log\n");
+
+        // Path traversal is rejected before touching the filesystem.
+        let bad = server
+            .get("/system/logs/log")
+            .add_query_param("name", "../remux-test.sqlite")
+            .add_header(AUTHORIZATION, header())
+            .expect_failure()
+            .await;
+        assert_eq!(bad.status_code(), StatusCode::BAD_REQUEST);
+
+        // Admin-gated.
+        let unauth = server
+            .get("/system/logs")
+            .expect_failure()
+            .await;
+        assert_eq!(unauth.status_code(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn activity_log_records_login_event() {
+        use http::header::{AUTHORIZATION, HeaderValue};
+
+        // `authenticated_server` performs a real login, which records an
+        // `AuthenticationSucceeded` activity entry.
+        let (server, _guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        let resp = server
+            .get("/system/activitylog/entries")
+            .add_header(AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .await;
+        resp.assert_status_ok();
+
+        let body: serde_json::Value = resp.json();
+        assert!(
+            body["TotalRecordCount"]
+                .as_i64()
+                .unwrap()
+                >= 1,
+            "expected at least one activity entry"
+        );
+        assert_eq!(body["StartIndex"], 0);
+        let items = body["Items"]
+            .as_array()
+            .unwrap();
+        assert!(
+            items
+                .iter()
+                .any(|e| e["Type"] == "AuthenticationSucceeded"),
+            "login should be recorded as AuthenticationSucceeded"
+        );
+
+        // The `hasUserId=false` filter must exclude the (user-attributed) login.
+        let system_only = server
+            .get("/system/activitylog/entries")
+            .add_query_param("hasUserId", "false")
+            .add_header(AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .await;
+        system_only.assert_status_ok();
+        let sys_body: serde_json::Value = system_only.json();
+        assert!(
+            sys_body["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|e| e["Type"] != "AuthenticationSucceeded"),
+            "hasUserId=false must exclude user login events"
+        );
     }
 }

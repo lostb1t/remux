@@ -322,23 +322,17 @@ async fn users_interests_for(
     .await?
     .records;
 
-    for (idx, event) in events
-        .iter()
-        .enumerate()
-    {
-        let recency = 1.0 / (1.0 + (idx as f32 / 60.0));
-        let mut weight = recency * if event.completed { 1.8 } else { 1.0 };
-        if let Some(runtime_seconds) = event.runtime_seconds {
-            if runtime_seconds > 0 {
-                let progress = event.position_ticks as f32
-                    / (runtime_seconds as f32 * 10_000_000.0);
-                if progress >= 0.9 {
-                    weight += 0.6;
-                } else if progress >= 0.5 {
-                    weight += 0.2;
-                }
-            }
+    let now = chrono::Utc::now().naive_utc();
+    let mut seen_sessions = HashSet::new();
+    for event in &events {
+        if let Some(session_id) = &event.session_id
+            && !seen_sessions.insert((event.media_id, session_id.clone()))
+        {
+            continue;
         }
+        let Some(weight) = event.recommendation_weight_at(now) else {
+            continue;
+        };
         media_scores
             .entry(event.media_id)
             .and_modify(|s| *s += weight)
@@ -423,6 +417,11 @@ async fn users_interests_for(
     let mut actors: HashMap<(Uuid, String), InterestAccumulator> = HashMap::new();
     let mut directors: HashMap<(Uuid, String), InterestAccumulator> = HashMap::new();
 
+    let interest_media_ids: Vec<Uuid> = media
+        .iter()
+        .map(|item| item.id)
+        .collect();
+
     for item in media {
         let weight = candidate_scores
             .get(&item.id)
@@ -448,45 +447,79 @@ async fn users_interests_for(
                 break;
             }
         }
+    }
 
-        if let Some(relations) = item.relations {
-            for (rel, related) in relations {
-                let related_name = related
-                    .title
-                    .clone();
-                if let Some(role) = &rel.role {
-                    match role {
-                        db::RelationRole::Actor => add_interest_signal_with_id(
-                            &mut actors,
-                            related.id,
-                            related_name.clone(),
-                            item.id,
-                            weight,
-                        ),
-                        db::RelationRole::Director => add_interest_signal_with_id(
-                            &mut directors,
-                            related.id,
-                            related_name.clone(),
-                            item.id,
-                            weight,
-                        ),
-                        _ => {}
-                    }
-                }
+    // Load relationship signals in one query. Include parent and grandparent
+    // relations so episode watches inherit the series' genres and credits.
+    let mut relations_qb = sqlx::QueryBuilder::new(
+        "SELECT DISTINCT source.id, mr.role, related.id, related.title, related.kind \
+         FROM media source \
+         JOIN media_relations mr ON mr.left_media_id IN (source.id, source.parent_id, source.grandparent_id) \
+         JOIN media related ON related.id = mr.right_media_id \
+         WHERE source.id IN (",
+    );
+    if interest_media_ids.is_empty() {
+        relations_qb.push("NULL");
+    } else {
+        let mut media_ids = relations_qb.separated(", ");
+        for media_id in &interest_media_ids {
+            media_ids.push_bind(media_id);
+        }
+    }
+    relations_qb.push(
+        ") AND (related.kind IN ('genre', 'music_genre') OR mr.role IN ('actor', 'director'))",
+    );
 
-                if matches!(
-                    related.kind,
-                    db::MediaKind::Genre | db::MediaKind::MusicGenre
-                ) {
-                    add_interest_signal_with_id(
-                        &mut genres,
-                        related.id,
-                        related_name,
-                        item.id,
-                        weight,
-                    );
-                }
-            }
+    for row in relations_qb
+        .build()
+        .fetch_all(
+            &state
+                .ctx
+                .db,
+        )
+        .await?
+    {
+        let source_id: Uuid = row.get(0);
+        let Some(weight) = candidate_scores
+            .get(&source_id)
+            .copied()
+        else {
+            continue;
+        };
+        let role: Option<db::RelationRole> = row.get(1);
+        let related_id: Uuid = row.get(2);
+        let related_name: String = row.get(3);
+        let related_kind: db::MediaKind = row.get(4);
+
+        match role {
+            Some(db::RelationRole::Actor) => add_interest_signal_with_id(
+                &mut actors,
+                related_id,
+                related_name.clone(),
+                source_id,
+                weight,
+            ),
+            Some(db::RelationRole::Director) => add_interest_signal_with_id(
+                &mut directors,
+                related_id,
+                related_name.clone(),
+                source_id,
+                weight,
+            ),
+            _ => {}
+        }
+
+        if matches!(
+            related_kind,
+            db::MediaKind::Genre | db::MediaKind::MusicGenre
+        ) {
+            add_interest_signal_with_id(
+                &mut genres,
+                related_id,
+                related_name,
+                source_id,
+                weight,
+            );
         }
     }
 
@@ -627,7 +660,10 @@ pub async fn update_display_preferences(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-fn require_self_or_admin(target_id: Uuid, session: &auth::AuthSession) -> Result<()> {
+pub(super) fn require_self_or_admin(
+    target_id: Uuid,
+    session: &auth::AuthSession,
+) -> Result<()> {
     if target_id
         != session
             .user
@@ -708,10 +744,13 @@ pub async fn users_authenticatebyname(
     auth_header: auth::JellyfinAuthHeader,
     Json(data): Json<api::AuthenticateUserByName>,
 ) -> Result<impl IntoResponse> {
-    let user = User::authenticate(
+    let user = User::authenticate_with_legacy_fallback(
         &state
             .ctx
             .db,
+        &state
+            .ctx
+            .config,
         data.username
             .as_deref()
             .unwrap_or(""),
@@ -729,6 +768,21 @@ pub async fn users_authenticatebyname(
                 .db,
         )
         .await?;
+
+    db::ActivityLog::record_ignore(
+        &state
+            .ctx
+            .db,
+        db::NewActivity::info(
+            format!("{} is online from {}", user.username, device.name),
+            db::ActivityKind::AuthenticationSucceeded,
+        )
+        .with_user(
+            user.id
+                .to_string(),
+        ),
+    )
+    .await;
 
     Ok(build_auth_response(
         &state
@@ -788,6 +842,7 @@ pub async fn authenticate_with_quickconnect(
         last_activity_at: None,
         capabilities: None,
         remote_ip: None,
+        custom_name: None,
     };
     device
         .save(
@@ -806,6 +861,24 @@ pub async fn authenticate_with_quickconnect(
         .ctx
         .store
         .delete(format!("qc:code:{}", entry.code));
+
+    db::ActivityLog::record_ignore(
+        &state
+            .ctx
+            .db,
+        db::NewActivity::info(
+            format!(
+                "{} is online from {} (Quick Connect)",
+                user.username, device.name
+            ),
+            db::ActivityKind::AuthenticationSucceeded,
+        )
+        .with_user(
+            user.id
+                .to_string(),
+        ),
+    )
+    .await;
 
     Ok(build_auth_response(
         &state
@@ -1008,6 +1081,24 @@ pub async fn create_user(
     session: auth::AdminSession,
     Json(payload): Json<api::CreateUserByName>,
 ) -> Result<impl IntoResponse> {
+    let username = payload
+        .name
+        .as_ref();
+    if User::get_by_username(
+        &state
+            .ctx
+            .db,
+        username,
+    )
+    .await?
+    .is_some()
+    {
+        // Jellyfin clients use this route for account creation.  Letting the
+        // database unique-index violation escape turns a normal duplicate
+        // username into a 500, which makes clients report signup as broken.
+        return Ok(StatusCode::CONFLICT.into_response());
+    }
+
     let password = payload
         .password
         .as_deref()
@@ -1030,6 +1121,22 @@ pub async fn create_user(
         .ctx
         .ws_tx
         .send(WsEvent::UserUpdated(user.id));
+
+    db::ActivityLog::record_ignore(
+        &state
+            .ctx
+            .db,
+        db::NewActivity::info(
+            format!("User {} was created", user.username),
+            db::ActivityKind::UserCreated,
+        )
+        .with_user(
+            user.id
+                .to_string(),
+        ),
+    )
+    .await;
+
     Ok((
         StatusCode::OK,
         Json(api::db_user_to_dto(
@@ -1057,6 +1164,18 @@ pub async fn delete_user(
         return Err(anyhow::anyhow!("Cannot delete yourself")
             .context_bad_request("cannot delete own account"));
     }
+    // Capture the name before deletion so the audit entry is meaningful.
+    let deleted_name = db::User::get_by_id(
+        &state
+            .ctx
+            .db,
+        &user_id,
+    )
+    .await
+    .ok()
+    .flatten()
+    .map(|u| u.username);
+
     db::User::delete(
         &state
             .ctx
@@ -1068,6 +1187,22 @@ pub async fn delete_user(
         .ctx
         .ws_tx
         .send(WsEvent::UserDeleted(user_id));
+
+    db::ActivityLog::record_ignore(
+        &state
+            .ctx
+            .db,
+        db::NewActivity::info(
+            match &deleted_name {
+                Some(name) => format!("User {name} was deleted"),
+                None => "A user was deleted".to_string(),
+            },
+            db::ActivityKind::UserDeleted,
+        )
+        .with_user(user_id.to_string()),
+    )
+    .await;
+
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -1298,6 +1433,12 @@ pub async fn userviews(
     let channel_filter = db::MediaFilter {
         kind: Some(vec![db::MediaKind::TvChannel]),
         enabled: Some(true),
+        // Result is only tested with `is_empty()` (to decide whether to inject
+        // the Live TV view), so one row answers the question. Currently cheap
+        // here because no channels are enabled, but without the limit this
+        // silently becomes a full channel scan the moment any are — the same
+        // trap that made `/livetv/info` take 334 ms.
+        limit: Some(1),
         ..Default::default()
     };
     let (library_result, channel_result) = tokio::join!(

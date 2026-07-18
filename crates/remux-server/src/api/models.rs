@@ -3,6 +3,7 @@ pub use remux_sdks::remux::*;
 use crate::{common, db};
 use anyhow::Result;
 use chrono::Datelike;
+use uuid::Uuid;
 
 pub fn inject_lyric_stream(source: &mut MediaSourceInfo) {
     let next_idx = source
@@ -74,7 +75,9 @@ pub fn device_info_from(device: &db::auth::Device) -> DeviceInfo {
                 .name
                 .clone(),
         ),
-        custom_name: None,
+        custom_name: device
+            .custom_name
+            .clone(),
         access_token: Some(
             device
                 .access_token
@@ -224,22 +227,61 @@ fn image_tag(url: Option<&str>) -> Option<String> {
     url.map(|u| u.to_string())
 }
 
+/// Stable client-facing artwork revision. The database UUID remains the
+/// server-side source key; deriving this value lets a compatibility revision
+/// invalidate stale client image caches without rewriting media rows.
+pub(crate) fn image_tag_for_id(id: Uuid) -> String {
+    Uuid::new_v5(&id, b"remux-artwork-v2").to_string()
+}
+
 fn media_image_tag(media: &db::Media, kind: db::ImageKind) -> Option<String> {
     media
         .images
         .get(kind)
-        .map(|i| {
-            i.id.to_string()
-        })
+        .map(|i| image_tag_for_id(i.id))
 }
 
 fn parent_image_tag(parent: Option<&db::Media>, kind: db::ImageKind) -> Option<String> {
     parent?
         .images
         .get(kind)
-        .map(|i| {
-            i.id.to_string()
+        .map(|i| image_tag_for_id(i.id))
+}
+
+/// Jellyfin audio items inherit their album cover when they do not own a
+/// primary image. Keep the item id paired with the tag: clients use this pair
+/// to construct `/Items/{ParentPrimaryImageItemId}/Images/Primary` URLs.
+fn inherited_track_primary_image(media: &db::Media) -> Option<(Uuid, String)> {
+    (media.kind == db::MediaKind::Track)
+        .then(|| {
+            [
+                media
+                    .parent
+                    .as_deref(),
+                media
+                    .grandparent
+                    .as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            .find_map(|parent| {
+                parent_image_tag(Some(parent), db::ImageKind::Primary)
+                    .map(|tag| (parent.id, tag))
+            })
         })
+        .flatten()
+}
+
+/// The album-art URL fields must always identify the item that owns the tag.
+/// A track may carry embedded art without a linked album, in which case the
+/// track itself is the image item.  Several music clients use this field
+/// instead of `ImageTags.Primary` when rendering the now-playing artwork.
+fn track_album_primary_image(media: &db::Media) -> Option<(Uuid, String)> {
+    inherited_track_primary_image(media).or_else(|| {
+        (media.kind == db::MediaKind::Track).then(|| {
+            media_image_tag(media, db::ImageKind::Primary).map(|tag| (media.id, tag))
+        })?
+    })
 }
 
 fn jellyfin_datetime(date: chrono::NaiveDateTime) -> String {
@@ -301,6 +343,25 @@ pub fn db_state_to_dto(
     }
 }
 
+/// Whether an Audio item should advertise `HasLyrics`. Streaming tracks keep
+/// `true` because a lyrics addon can resolve them on demand; a local track only
+/// claims lyrics when it actually carries a lyric stream (embedded, or a sidecar
+/// injected at probe time). This matches Jellyfin, which reports `HasLyrics:false`
+/// for a bare audio file with no lyrics.
+fn track_has_lyrics(media: &db::Media) -> bool {
+    if media.is_remote_url() {
+        return true;
+    }
+    media
+        .probe_data
+        .as_ref()
+        .is_some_and(|p| {
+            p.media_streams
+                .iter()
+                .any(|s| s.type_ == Some(MediaStreamType::Lyric))
+        })
+}
+
 pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
     use crate::common::{IntoVec, ToRunTimeTicks};
 
@@ -313,7 +374,10 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
         id: media
             .id
             .clone(),
-        etag: Some(media.id),
+        // Discrete caches item DTOs by Etag. Keep the item id namespace but
+        // revision artwork-bearing DTOs so clients refresh image references
+        // after a server-side artwork repair.
+        etag: Some(Uuid::new_v5(&media.id, b"remux-artwork-v3")),
         server_id: common::server_id(),
         name: Some(
             media
@@ -326,7 +390,8 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
         play_access: Some("Full".to_string()),
         can_delete: Some(false),
         can_download: Some(false),
-        has_lyrics: (media.kind == db::MediaKind::Track).then_some(true),
+        has_lyrics: (media.kind == db::MediaKind::Track)
+            .then(|| track_has_lyrics(&media)),
         type_,
         parent_id: media
             .parent_id
@@ -420,22 +485,21 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             .clone(),
         parent_index_number: media.parent_idx,
         image_tags: Some(ImageTags {
-            primary: media_image_tag(&media, db::ImageKind::Primary).or_else(|| {
-                // For collections/folders with no poster image, set a synthetic
-                // tag so clients know to request the generated placeholder.
-                if matches!(
-                    media.kind,
-                    db::MediaKind::Collection | db::MediaKind::Folder
-                ) {
-                    Some(
+            primary: media_image_tag(&media, db::ImageKind::Primary)
+                .or_else(|| inherited_track_primary_image(&media).map(|(_, tag)| tag))
+                .or_else(|| {
+                    // For collections/folders with no poster image, set a synthetic
+                    // tag so clients know to request the generated placeholder.
+                    matches!(
+                        media.kind,
+                        db::MediaKind::Collection | db::MediaKind::Folder
+                    )
+                    .then(|| {
                         media
                             .id
-                            .to_string(),
-                    )
-                } else {
-                    None
-                }
-            }),
+                            .to_string()
+                    })
+                }),
             logo: media_image_tag(&media, db::ImageKind::Logo),
             backdrop: media_image_tag(&media, db::ImageKind::Backdrop),
             thumb: media_image_tag(&media, db::ImageKind::Thumb),
@@ -674,9 +738,13 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                     .map(|id| id.to_string())
             })
             .flatten(),
-        album_primary_image_tag: (media.kind == db::MediaKind::Track)
-            .then(|| media_image_tag(&media, db::ImageKind::Primary))
-            .flatten(),
+        album_primary_image_tag: track_album_primary_image(&media).map(|(_, tag)| tag),
+        album_primary_image_item_id: track_album_primary_image(&media)
+            .map(|(id, _)| id.to_string()),
+        parent_primary_image_item_id: inherited_track_primary_image(&media)
+            .map(|(id, _)| id.to_string()),
+        parent_primary_image_tag: inherited_track_primary_image(&media)
+            .map(|(_, tag)| tag),
         album_artist: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
             .then(|| {
                 media
@@ -688,56 +756,51 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                     })
             })
             .flatten(),
-        // Emit null (not an empty array) when a track has no linked artist:
-        // Finamp force-unwraps `.first` on these lists and throws on `[]`, but
-        // handles null safely (same anti-pattern as the empty MediaStreams bug).
-        album_artists: is_music_metadata_item(&media.kind)
-            .then(|| {
-                media
-                    .grandparent_id
-                    .zip(
-                        media
-                            .grandparent
-                            .as_ref()
-                            .map(|gp| {
-                                gp.title
-                                    .clone()
-                            }),
-                    )
-                    .map(|(id, name)| vec![NameIdPair { id, name }])
-                    .unwrap_or_default()
-            })
-            .filter(|v| !v.is_empty()),
-        artists: is_music_metadata_item(&media.kind)
-            .then(|| {
-                media
-                    .grandparent
-                    .as_ref()
-                    .map(|gp| {
-                        vec![gp
-                            .title
-                            .clone()]
-                    })
-                    .unwrap_or_default()
-            })
-            .filter(|v| !v.is_empty()),
-        artist_items: is_music_metadata_item(&media.kind)
-            .then(|| {
-                media
-                    .grandparent_id
-                    .zip(
-                        media
-                            .grandparent
-                            .as_ref()
-                            .map(|gp| {
-                                gp.title
-                                    .clone()
-                            }),
-                    )
-                    .map(|(id, name)| vec![NameIdPair { id, name }])
-                    .unwrap_or_default()
-            })
-            .filter(|v| !v.is_empty()),
+        // Jellyfin initializes these arrays for music DTOs, including sparse
+        // tracks with no linked artist. Some clients distinguish [] from an
+        // omitted field, so preserve the stock wire shape here.
+        album_artists: is_music_metadata_item(&media.kind).then(|| {
+            media
+                .grandparent_id
+                .zip(
+                    media
+                        .grandparent
+                        .as_ref()
+                        .map(|gp| {
+                            gp.title
+                                .clone()
+                        }),
+                )
+                .map(|(id, name)| vec![NameIdPair { id, name }])
+                .unwrap_or_default()
+        }),
+        artists: is_music_metadata_item(&media.kind).then(|| {
+            media
+                .grandparent
+                .as_ref()
+                .map(|gp| {
+                    vec![
+                        gp.title
+                            .clone(),
+                    ]
+                })
+                .unwrap_or_default()
+        }),
+        artist_items: is_music_metadata_item(&media.kind).then(|| {
+            media
+                .grandparent_id
+                .zip(
+                    media
+                        .grandparent
+                        .as_ref()
+                        .map(|gp| {
+                            gp.title
+                                .clone()
+                        }),
+                )
+                .map(|(id, name)| vec![NameIdPair { id, name }])
+                .unwrap_or_default()
+        }),
         tags: media
             .tags
             .clone(),
@@ -758,9 +821,32 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                 .to_ascii_lowercase(),
         ),
         primary_image_aspect_ratio: Some(
-            media
-                .images
-                .get(db::ImageKind::Primary)
+            media_image_tag(&media, db::ImageKind::Primary)
+                .and_then(|_| {
+                    media
+                        .images
+                        .get(db::ImageKind::Primary)
+                })
+                .or_else(|| {
+                    inherited_track_primary_image(&media).and_then(|(parent_id, _)| {
+                        [
+                            media
+                                .parent
+                                .as_deref(),
+                            media
+                                .grandparent
+                                .as_deref(),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .find(|parent| parent.id == parent_id)
+                        .and_then(|parent| {
+                            parent
+                                .images
+                                .get(db::ImageKind::Primary)
+                        })
+                    })
+                })
                 .and_then(|i| {
                     let (w, h) = (i.width?, i.height?);
                     if h == 0 {
@@ -772,6 +858,13 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                     db::MediaKind::Episode
                     | db::MediaKind::Collection
                     | db::MediaKind::Folder => 16.0 / 9.0,
+                    // Music cover art is conventionally square. Reporting the
+                    // poster fallback (0.6) when an upstream image has no
+                    // stored dimensions makes music clients lay it out as a
+                    // poster and can suppress the artwork request entirely.
+                    db::MediaKind::Track
+                    | db::MediaKind::Album
+                    | db::MediaKind::Artist => 1.0,
                     _ => 0.6,
                 }),
         ),
@@ -950,9 +1043,11 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             .sources
             .clone()
         {
-            Some(sources) if sources.is_empty() => Some(vec![media
-                .clone()
-                .into()]),
+            Some(sources) if sources.is_empty() => Some(vec![
+                media
+                    .clone()
+                    .into(),
+            ]),
             Some(sources) => {
                 let mut infos: Vec<MediaSourceInfo> = sources
                     .into_iter()
@@ -965,9 +1060,11 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                 }
                 Some(infos)
             }
-            None => Some(vec![media
-                .clone()
-                .into()]),
+            None => Some(vec![
+                media
+                    .clone()
+                    .into(),
+            ]),
         };
         item.path = item
             .media_sources
@@ -978,6 +1075,32 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                     .as_deref()
             })
             .map(|p| format!("{}.strm", p));
+        // Jellyfin sets item-level Container from the primary media source.
+        item.container = item
+            .media_sources
+            .as_ref()
+            .and_then(|s| s.first())
+            .and_then(|s| {
+                s.container
+                    .clone()
+            });
+        // Jellyfin mirrors the primary source's streams at the item level.
+        if let Some(first) = item
+            .media_sources
+            .as_ref()
+            .and_then(|s| s.first())
+        {
+            if !first
+                .media_streams
+                .is_empty()
+            {
+                item.media_streams = Some(
+                    first
+                        .media_streams
+                        .clone(),
+                );
+            }
+        }
         if media.kind != db::MediaKind::Track {
             item.video_type = Some(VideoType::VideoFile);
         }
@@ -1036,7 +1159,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             supports_direct_stream: true,
             supports_transcoding: true,
             type_: MediaSourceType::Placeholder,
-            video_type: VideoType::VideoFile,
+            video_type: Some(VideoType::VideoFile),
             ..Default::default()
         }]);
     }
@@ -1119,4 +1242,26 @@ pub struct RemoteSubtitleInfo {
     pub is_hash_match: Option<bool>,
     pub ai_translated: Option<bool>,
     pub machine_translated: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sparse_track_keeps_initialized_music_arrays() {
+        let item = db_media_to_item(
+            db::Media {
+                title: "Sparse Track".to_string(),
+                kind: db::MediaKind::Track,
+                ..Default::default()
+            },
+            true,
+        );
+        let json = serde_json::to_value(item).unwrap();
+
+        assert_eq!(json.get("Artists"), Some(&serde_json::json!([])));
+        assert_eq!(json.get("ArtistItems"), Some(&serde_json::json!([])));
+        assert_eq!(json.get("AlbumArtists"), Some(&serde_json::json!([])));
+    }
 }

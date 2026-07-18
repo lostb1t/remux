@@ -1,7 +1,7 @@
 use crate::{
     addons::SubtitleInfo,
     api, common,
-    common::{get_uuid, ToRunTimeTicks},
+    common::{ToRunTimeTicks, get_uuid},
     db,
     sdks::stremio,
     stream::StreamDescriptor,
@@ -153,6 +153,9 @@ fn fallback_media_streams(source: &db::Media) -> Vec<api::MediaStream> {
 
 impl From<db::Media> for api::MediaSourceInfo {
     fn from(source: db::Media) -> Self {
+        // VideoType is a video concept; audio (Track) sources omit it. Captured
+        // up front because `source.kind` is moved later.
+        let is_track = matches!(source.kind, db::MediaKind::Track);
         let descriptor = source
             .stream_info
             .as_ref()
@@ -180,23 +183,36 @@ impl From<db::Media> for api::MediaSourceInfo {
                 .and_then(|si| serde_json::to_value(si).ok()),
         });
 
-        let path = Some({
-            let stem = source
-                .stream_info
-                .as_ref()
-                .and_then(|si| {
-                    si.filename
-                        .as_deref()
-                })
-                .and_then(|f| {
-                    std::path::Path::new(f)
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                });
-            match stem {
-                Some(s) => format!("/remux/{}/{}", source.id, s),
-                None => format!("/remux/{}", source.id),
-            }
+        // The file name without extension. Jellyfin labels a MediaSource with the
+        // file stem (e.g. "Chief Keef - Bang - 01 - Fuck Niggas (intro)"), not the
+        // track title, so reuse it for both `Path` and `Name`. Streaming sources
+        // carry it in `stream_info.filename`; local tracks (no `stream_info`) stash
+        // it on `probe_data.name` at probe time (see GroupLocalMusic).
+        let file_stem: Option<String> = source
+            .stream_info
+            .as_ref()
+            .and_then(|si| {
+                si.filename
+                    .as_deref()
+            })
+            .and_then(|f| {
+                std::path::Path::new(f)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string())
+            })
+            .or_else(|| {
+                source
+                    .probe_data
+                    .as_ref()
+                    .and_then(|p| {
+                        p.name
+                            .clone()
+                    })
+            });
+        let path = Some(match &file_stem {
+            Some(s) => format!("/remux/{}/{}", source.id, s),
+            None => format!("/remux/{}", source.id),
         });
         let is_remote = false;
         let protocol = api::MediaProtocol::File;
@@ -208,6 +224,17 @@ impl From<db::Media> for api::MediaSourceInfo {
             .probe_data
             .as_ref()
             .and_then(|p| p.run_time_ticks);
+        // Carry overall bitrate/size through from the probe so the browse
+        // MediaSource matches Jellyfin (previously dropped).
+        let probe_bitrate = source
+            .probe_data
+            .as_ref()
+            .and_then(|p| p.bitrate);
+        let probe_size = source
+            .probe_data
+            .as_ref()
+            .and_then(|p| p.size);
+        let video_type = (!is_track).then_some(api::VideoType::VideoFile);
         let meta_ticks = source
             .runtime
             .and_then(|r| r.to_ticks(common::TickUnit::Seconds));
@@ -246,16 +273,19 @@ impl From<db::Media> for api::MediaSourceInfo {
             path,
             protocol,
             is_remote,
-            name: Some(
+            name: Some(file_stem.unwrap_or_else(|| {
                 source
                     .title
-                    .clone(),
-            ),
+                    .clone()
+            })),
             container: Some(container),
+            bitrate: probe_bitrate,
+            size: probe_size,
+            video_type,
             remux,
             has_segments: !is_stub,
-            formats: Some(vec![]),
-            required_http_headers: Some(HashMap::new()),
+            formats: vec![],
+            required_http_headers: HashMap::new(),
             run_time_ticks,
             media_streams,
             default_audio_stream_index,
@@ -538,4 +568,222 @@ fn srt_timestamp_to_ticks(ts: &str) -> Option<i64> {
         0
     };
     Some(((h * 3600 + m * 60 + s) * 1000 + ms) * 10_000)
+}
+
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+
+    /// A local audio Track must serialize a MediaSource matching Jellyfin's
+    /// audio shape: File protocol, not remote, no VideoType, and Container /
+    /// Bitrate / Size carried through from the probe.
+    #[test]
+    fn track_media_source_matches_jellyfin_audio_shape() {
+        let mut media = db::Media {
+            kind: db::MediaKind::Track,
+            title: "Fuck Niggas (intro)".to_string(),
+            ..Default::default()
+        };
+        media.probe_data = Some(api::MediaSourceInfo {
+            container: Some("flac".to_string()),
+            bitrate: Some(1_017_103),
+            size: Some(10_763_303),
+            // Local tracks stash the file stem here (see GroupLocalMusic); the
+            // MediaSource Name must be the file stem, not the track title.
+            name: Some("Chief Keef - Bang - 01 - Fuck Niggas (intro)".to_string()),
+            media_streams: vec![api::MediaStream {
+                type_: Some(api::MediaStreamType::Audio),
+                codec: Some("flac".to_string()),
+                bit_rate: Some(1_017_103),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+
+        let source: api::MediaSourceInfo = media.into();
+
+        assert_eq!(source.video_type, None, "audio must omit VideoType");
+        assert!(!source.is_remote, "local source must not be remote");
+        assert_eq!(source.protocol, api::MediaProtocol::File);
+        assert_eq!(
+            source
+                .container
+                .as_deref(),
+            Some("flac")
+        );
+        assert_eq!(source.bitrate, Some(1_017_103));
+        assert_eq!(source.size, Some(10_763_303));
+        assert!(
+            !source
+                .media_streams
+                .is_empty()
+        );
+        assert_eq!(
+            source
+                .name
+                .as_deref(),
+            Some("Chief Keef - Bang - 01 - Fuck Niggas (intro)"),
+            "MediaSource Name must be the file stem, not the track title"
+        );
+    }
+
+    /// The whole-double serializer must render `MediaStream.Level` as Jellyfin's
+    /// `.NET` writer does: whole values with no decimal, fractional values intact.
+    #[test]
+    fn level_serializes_as_whole_number_like_jellyfin() {
+        let stream = api::MediaStream {
+            type_: Some(api::MediaStreamType::Audio),
+            level: Some(0.0),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&stream).unwrap();
+        // `0.0` must serialize as `0`, matching Jellyfin byte-for-byte.
+        assert_eq!(v.get("Level"), Some(&serde_json::json!(0)));
+
+        let fractional = api::MediaStream {
+            type_: Some(api::MediaStreamType::Video),
+            level: Some(4.1),
+            ..Default::default()
+        };
+        let v2 = serde_json::to_value(&fractional).unwrap();
+        assert_eq!(v2.get("Level"), Some(&serde_json::json!(4.1)));
+    }
+
+    /// A video source keeps VideoType (regression guard for the Option change).
+    #[test]
+    fn video_source_retains_video_type() {
+        let media = db::Media {
+            kind: db::MediaKind::Movie,
+            ..Default::default()
+        };
+        let source: api::MediaSourceInfo = media.into();
+        assert_eq!(source.video_type, Some(api::VideoType::VideoFile));
+    }
+}
+
+#[cfg(test)]
+mod subtitle_conversion_tests {
+    use super::*;
+
+    #[test]
+    fn srt_converts_index_and_comma_timecodes() {
+        let srt = "1\n00:00:01,000 --> 00:00:04,000\nHello world\n\n\
+                   2\n00:00:05,500 --> 00:00:08,000\nSecond line\n";
+        assert_eq!(
+            srt_to_vtt(srt),
+            "WEBVTT\n\n00:00:01.000 --> 00:00:04.000\nHello world\n\n\
+             00:00:05.500 --> 00:00:08.000\nSecond line\n\n",
+        );
+    }
+
+    #[test]
+    fn srt_to_vtt_strips_bom_before_converting() {
+        let srt = "\u{FEFF}1\n00:00:01,000 --> 00:00:02,000\nHi";
+        let vtt = srt_to_vtt(srt);
+        assert!(vtt.starts_with("WEBVTT\n\n"));
+        assert!(vtt.contains("00:00:01.000 --> 00:00:02.000"));
+        assert!(!vtt.contains('\u{FEFF}'));
+    }
+
+    #[test]
+    fn already_webvtt_is_passed_through() {
+        let already_vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHi\n";
+        assert_eq!(srt_to_vtt(already_vtt), already_vtt);
+    }
+
+    #[test]
+    fn double_webvtt_header_keeps_only_the_real_cues() {
+        // OpenSubtitles sometimes prepends a metadata WEBVTT block; the real cues
+        // start at the second header.
+        let doubled_header = "WEBVTT\n\nNOTE opensubtitles metadata\n\n\
+                     WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nReal cue\n";
+        let deduped = srt_to_vtt(doubled_header);
+        assert_eq!(
+            deduped,
+            "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nReal cue\n"
+        );
+        assert!(!deduped.contains("opensubtitles"));
+    }
+}
+
+#[cfg(test)]
+mod inference_tests {
+    use super::*;
+
+    #[test]
+    fn infers_container_from_url_extensions() {
+        assert_eq!(
+            infer_container_from_url("https://x.tld/a/b/video.mkv"),
+            Some("mkv".to_string())
+        );
+        // Query string is stripped; extension is case-insensitive.
+        assert_eq!(
+            infer_container_from_url("https://x.tld/v.MP4?token=1"),
+            Some("mp4".to_string())
+        );
+        assert_eq!(
+            infer_container_from_url("https://x.tld/live/stream.m3u8"),
+            Some("ts".to_string())
+        );
+        assert_eq!(
+            infer_container_from_url("https://x.tld/clip.mov"),
+            Some("mp4".to_string())
+        );
+        // Bare (non-URL) paths still resolve by extension.
+        assert_eq!(
+            infer_container_from_url("song.flac"),
+            Some("flac".to_string())
+        );
+        // No extension / unknown extension → no guess.
+        assert_eq!(infer_container_from_url("https://x.tld/noext"), None);
+        assert_eq!(infer_container_from_url("https://x.tld/file.xyz"), None);
+    }
+
+    #[test]
+    fn infers_video_codec_with_hevc_priority() {
+        assert_eq!(
+            infer_video_codec("movie.2160p.x265.mkv"),
+            Some("hevc".to_string())
+        );
+        assert_eq!(infer_video_codec("clip h264 web"), Some("h264".to_string()));
+        assert_eq!(
+            infer_video_codec("something av1 test"),
+            Some("av1".to_string())
+        );
+        // hevc is checked before the avc/h264 branch.
+        assert_eq!(infer_video_codec("hevc and avc"), Some("hevc".to_string()));
+        assert_eq!(infer_video_codec("mystery codec"), None);
+    }
+
+    #[test]
+    fn infers_audio_codec_and_channels() {
+        assert_eq!(
+            infer_audio_codec("dolby truehd atmos"),
+            Some("truehd".to_string())
+        );
+        assert_eq!(infer_audio_codec("dts-hd ma"), Some("dts".to_string()));
+        assert_eq!(infer_audio_codec("ddp 5.1"), Some("eac3".to_string()));
+        assert_eq!(infer_audio_codec("plain aac"), Some("aac".to_string()));
+        assert_eq!(infer_audio_codec("silence"), None);
+
+        assert_eq!(infer_audio_channels("movie 7.1 atmos"), Some(8));
+        assert_eq!(infer_audio_channels("show 5.1"), Some(6));
+        assert_eq!(infer_audio_channels("stereo mix"), Some(2));
+        assert_eq!(infer_audio_channels("mono-ish"), None);
+    }
+
+    #[test]
+    fn srt_to_jellyfin_json_emits_tick_timed_events() {
+        let srt = "1\n00:00:01,000 --> 00:00:04,000\nHello";
+        let json: serde_json::Value =
+            serde_json::from_str(&srt_to_jellyfin_json(srt)).unwrap();
+        let events = json["TrackEvents"]
+            .as_array()
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["Text"], "Hello");
+        // 1 tick = 100 ns → 1 s = 10_000_000 ticks.
+        assert_eq!(events[0]["StartPositionTicks"], 10_000_000_i64);
+        assert_eq!(events[0]["EndPositionTicks"], 40_000_000_i64);
+    }
 }

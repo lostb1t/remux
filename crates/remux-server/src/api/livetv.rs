@@ -28,6 +28,11 @@ pub async fn livetv_info(
 ) -> Result<impl IntoResponse> {
     let channel_filter = db::MediaFilter {
         kind: Some(vec![db::MediaKind::TvChannel]),
+        // Only existence is needed (`has_channels` below), so stop at the first
+        // row. Without this the endpoint fetched and decoded *every* channel —
+        // 7,473 fully-materialised 47-column rows on a real library — to
+        // evaluate `!is_empty()`. Same boolean, a fraction of the work.
+        limit: Some(1),
         ..Default::default()
     };
     let user_filter = db::UserFilter::default();

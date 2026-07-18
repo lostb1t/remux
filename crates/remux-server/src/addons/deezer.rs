@@ -21,6 +21,7 @@ use crate::{
 
 const CACHE_TTL: Duration = Duration::from_secs(60);
 const PLAYLIST_CACHE_TTL: Duration = Duration::from_secs(3600);
+const DEEZER_EMPTY_IMAGE_HASH: &str = "d41d8cd98f00b204e9800998ecf8427e";
 
 fn parse_release_date(s: &str) -> Option<NaiveDateTime> {
     chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
@@ -29,6 +30,15 @@ fn parse_release_date(s: &str) -> Option<NaiveDateTime> {
             d.and_hms_opt(0, 0, 0)
                 .unwrap()
         })
+}
+
+fn usable_deezer_image(url: Option<String>) -> Option<String> {
+    url.filter(|url| {
+        let lower = url.to_ascii_lowercase();
+        lower.starts_with("http")
+            && !lower.contains(DEEZER_EMPTY_IMAGE_HASH)
+            && !lower.contains("/images/artist//")
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +151,10 @@ impl DeezerAddon {
             db::MediaKind::Album => media
                 .external_ids
                 .deezer_album
+                .is_some(),
+            db::MediaKind::Artist => media
+                .external_ids
+                .deezer_artist
                 .is_some(),
             _ => false,
         }
@@ -380,6 +394,55 @@ impl DeezerAddon {
             if !names.is_empty() {
                 patch.relations = Some(Self::build_genre_relations(patch.id, &names));
             }
+        }
+        Ok(Some(patch))
+    }
+
+    async fn fetch_artist_meta(
+        &self,
+        deezer_id: &str,
+        base: &db::Media,
+    ) -> Result<Option<db::Media>> {
+        let Ok(id) = deezer_id.parse::<u64>() else {
+            return Ok(None);
+        };
+        let a = match self
+            .client
+            .execute(dz::ArtistEndpoint { id }.with_cache(CACHE_TTL))
+            .await
+        {
+            Ok(dz::DeezerResult::Ok(a)) => a,
+            Ok(dz::DeezerResult::Err { error }) => {
+                warn!(deezer_id, %error, "Deezer artist detail returned error");
+                return Ok(None);
+            }
+            Err(e) => {
+                warn!(deezer_id, error = %e, "Deezer artist detail HTTP error");
+                return Ok(None);
+            }
+        };
+
+        debug!(deezer_id, "Deezer artist detail fetched");
+        let mut patch = db::Media {
+            id: base.id,
+            title: if a
+                .name
+                .is_empty()
+            {
+                base.title
+                    .clone()
+            } else {
+                a.name
+            },
+            kind: db::MediaKind::Artist,
+            external_ids: db::ExternalIds {
+                deezer_artist: Some(a.id as i64),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        if let Some(url) = usable_deezer_image(a.picture_xl) {
+            patch.set_image(db::ImageKind::Primary, url);
         }
         Ok(Some(patch))
     }
@@ -937,7 +1000,7 @@ impl DeezerAddon {
                     },
                     ..Default::default()
                 };
-                if let Some(url) = a.picture_xl {
+                if let Some(url) = usable_deezer_image(a.picture_xl) {
                     artist.set_image(db::ImageKind::Primary, url);
                 }
                 artist
@@ -1063,6 +1126,16 @@ impl MetaAddon for DeezerAddon {
                     return Ok(None);
                 };
                 self.fetch_album_meta(&id.to_string(), media)
+                    .await
+            }
+            db::MediaKind::Artist => {
+                let Some(id) = media
+                    .external_ids
+                    .deezer_artist
+                else {
+                    return Ok(None);
+                };
+                self.fetch_artist_meta(&id.to_string(), media)
                     .await
             }
             _ => Ok(None),

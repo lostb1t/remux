@@ -15,6 +15,43 @@ pub fn KvRow(label: &'static str, value: String) -> Element {
     }
 }
 
+/// Group digits with thousands separators (`104727` → `104,727`) so large
+/// library counts read at a glance. Pure, so it is unit-tested.
+pub fn fmt_count(n: impl Into<i64>) -> String {
+    let n = n.into();
+    let digits = n
+        .unsigned_abs()
+        .to_string();
+    let len = digits.len();
+    let mut out = String::with_capacity(len + len / 3 + 1);
+    for (i, ch) in digits
+        .chars()
+        .enumerate()
+    {
+        // Insert a separator before every group of three from the right.
+        if i != 0 && (len - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    if n < 0 {
+        format!("-{out}")
+    } else {
+        out
+    }
+}
+
+/// A single dashboard statistic: a large tabular number over a label.
+#[component]
+pub fn StatTile(num: String, label: &'static str) -> Element {
+    rsx! {
+        div { class: "stat-tile",
+            span { class: "stat-num", "{num}" }
+            span { class: "stat-key", "{label}" }
+        }
+    }
+}
+
 #[component]
 pub fn ServerInfoCard(app_state: AppState) -> Element {
     let mut server_info: Signal<Option<PublicSystemInfo>> = use_signal(|| None);
@@ -86,12 +123,31 @@ pub fn MediaStatsCard(app_state: AppState) -> Element {
             } else if let Some(err) = error.read().as_ref() {
                 span { class: "loading-text", style: "color:var(--error)", "{err}" }
             } else if let Some(c) = counts.read().as_ref() {
-                KvRow { label: "Movies", value: c.movie_count.to_string() }
-                KvRow { label: "Series", value: c.series_count.to_string() }
-                KvRow { label: "Episodes", value: c.episode_count.to_string() }
-                KvRow { label: "Albums", value: c.album_count.to_string() }
-                KvRow { label: "Tracks", value: c.song_count.to_string() }
+                div { class: "stat-grid",
+                    StatTile { num: fmt_count(c.movie_count), label: "Movies" }
+                    StatTile { num: fmt_count(c.series_count), label: "Series" }
+                    StatTile { num: fmt_count(c.episode_count), label: "Episodes" }
+                    StatTile { num: fmt_count(c.album_count), label: "Albums" }
+                    StatTile { num: fmt_count(c.song_count), label: "Tracks" }
+                }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fmt_count;
+
+    #[test]
+    fn fmt_count_groups_thousands() {
+        assert_eq!(fmt_count(0), "0");
+        assert_eq!(fmt_count(42), "42");
+        assert_eq!(fmt_count(999), "999");
+        assert_eq!(fmt_count(1000), "1,000");
+        assert_eq!(fmt_count(5310), "5,310");
+        assert_eq!(fmt_count(715062), "715,062");
+        assert_eq!(fmt_count(1234567), "1,234,567");
+        assert_eq!(fmt_count(-1234), "-1,234");
     }
 }

@@ -194,6 +194,21 @@ impl StreamService {
             }
             db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track => {
                 let mut media = media;
+                // Legacy direct-file clients (notably Manet) do not request
+                // PlaybackInfo first. Refresh here as well so their source lookup
+                // observes the same 60-second TTL as the PlaybackInfo path instead
+                // of reading an empty or expired cached source indefinitely.
+                if requested_id.is_none() || requested_id == Some(item_id) {
+                    ctx.addons
+                        .refresh_streams(&mut media, ctx)
+                        .await
+                        .inspect_err(|error| {
+                            tracing::error!(
+                                item_id = %item_id,
+                                "direct stream refresh failed: {error:#}"
+                            );
+                        });
+                }
                 let sources = media
                     .streams(&ctx.db)
                     .await?;

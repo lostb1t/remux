@@ -450,6 +450,16 @@ pub async fn get_items(
                 &parent.id,
             )
             .await?;
+            let relations = super::playlists::filter_relations_by_item_types(
+                &state
+                    .ctx
+                    .db,
+                relations,
+                q.include_item_types
+                    .as_deref()
+                    .unwrap_or_default(),
+            )
+            .await?;
             let total = relations.len() as i64;
             let start = q
                 .start_index
@@ -464,24 +474,14 @@ pub async fn get_items(
                 }
                 None => &relations[start.min(relations.len())..],
             };
-            let mut items = Vec::with_capacity(slice.len());
-            for rel in slice {
-                if let Some(media) = db::Media::get_by_id(
-                    &state
-                        .ctx
-                        .db,
-                    &rel.right_media_id,
-                )
-                .await?
-                {
-                    let mut dto = api::db_media_to_item(media, hide_sources);
-                    dto.playlist_item_id = Some(
-                        rel.relation_id
-                            .to_string(),
-                    );
-                    items.push(dto);
-                }
-            }
+            let items = super::playlists::relations_to_items(
+                &state
+                    .ctx
+                    .db,
+                slice,
+                hide_sources,
+            )
+            .await?;
             return Ok(ItemsQueryResultBuilder::with_dtos(session, items, total));
         }
 
@@ -752,6 +752,12 @@ pub async fn get_items(
         }
     }
 
+    // Capture the pool before `state` is (conditionally) moved into `item()`.
+    let db = state
+        .ctx
+        .db
+        .clone();
+
     // handle details request
     if let Some(ids) = &q.ids {
         if ids.len() == 1 {
@@ -767,6 +773,20 @@ pub async fn get_items(
                 return Ok(ItemsQueryResultBuilder::with_dtos(session, vec![media], 1));
             }
         }
+    }
+
+    // Batch-hydrate relation-derived fields (Genres/GenreItems) on the list path
+    // when the client asked for them or fetched explicit ids for hydration. The
+    // single-item branch above already loads relations via `item()`; without this
+    // a multi-id `/Items?Ids=` fetch returns empty Genres where Jellyfin does not.
+    let wants_relations = q
+        .ids
+        .is_some()
+        || q.fields
+            .as_ref()
+            .is_some_and(|f| f.contains(&api::ItemFields::Genres));
+    if wants_relations {
+        db::Media::load_relations_for_many(&db, &mut result.records).await?;
     }
 
     Ok(ItemsQueryResultBuilder::with_items(
@@ -1667,9 +1687,20 @@ pub async fn item(
         .await?;
     let mut base_item = api::db_media_to_item(media.clone(), false);
 
-    // For tracks, wrap the Source row(s) as HLS-transcoded MediaSources.
-    // CDN URLs are IP-locked to the server; the client must go through the HLS pipeline.
-    if media.kind == db::MediaKind::Track {
+    // For *streaming* tracks, wrap the Source row(s) as HLS-transcoded MediaSources:
+    // their CDN URLs are IP-locked to the server, so the client must go through the
+    // HLS pipeline. Local library files (opendal-backed) must NOT be wrapped — they
+    // are served as a direct `File` source. `db_media_to_item` already built that
+    // correct File source above (matching the batch `/Items?Ids=` path and the parity
+    // harness); the unconditional wrap here previously mislabeled local tracks as
+    // `Protocol: Http` / `IsRemote: true` with a *video* transcoding URL, which broke
+    // single-item playback and metadata for the whole local library.
+    let is_local_file = media
+        .external_ids
+        .custom_stremio_id
+        .as_deref()
+        .is_some_and(|s| s.starts_with("opendal:"));
+    if media.kind == db::MediaKind::Track && !is_local_file {
         let transcoding_url = format!(
             "/videos/{}/master.m3u8?MediaSourceId={}&VideoCodec=copy&AudioCodec=aac&ApiKey={}",
             media.id,
@@ -2317,6 +2348,39 @@ pub async fn music_genres(
             .unwrap_or(0),
         ..Default::default()
     }))
+}
+
+/// Jellyfin compatibility lookup for clients that address a music genre by name.
+#[get("/musicgenres/{name}")]
+pub async fn music_genre_by_name(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse> {
+    let result = db::Media::get_by_filter(
+        &state
+            .ctx
+            .db,
+        &db::MediaFilter {
+            kind: Some(vec![db::MediaKind::MusicGenre, db::MediaKind::Genre]),
+            title_contains: Some(name.clone()),
+            limit: Some(50),
+            ..Default::default()
+        },
+    )
+    .await?;
+    let genre = result
+        .records
+        .into_iter()
+        .find(|item| {
+            item.title
+                .eq_ignore_ascii_case(&name)
+        })
+        .context_not_found("Music genre not found")?;
+    let dto = item(state, session, genre.id, None)
+        .await?
+        .context_not_found("Music genre not found")?;
+    Ok(Json(dto))
 }
 
 #[get("/items/{id}/metadataeditor")]
@@ -3101,7 +3165,14 @@ mod tests {
         imdb: &str,
     ) -> db::Media {
         let now = Utc::now().naive_utc();
-        let (id, ext) = make_content_ids(kind.clone(), imdb);
+        let (mut id, mut ext) = make_content_ids(kind.clone(), imdb);
+        if matches!(
+            kind,
+            db::MediaKind::Track | db::MediaKind::Artist | db::MediaKind::Album
+        ) {
+            ext.custom_stremio_id = Some(format!("test:{imdb}"));
+            id = crate::common::stable_media_uuid(&kind, imdb);
+        }
         let mut m = db::Media {
             id,
             title: title.to_string(),
@@ -3137,6 +3208,283 @@ mod tests {
             .await
             .expect("insert_smart_collection failed");
         c
+    }
+
+    #[tokio::test]
+    async fn playlist_browse_filters_item_types_before_pagination() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let mut playlist = db::Media {
+            title: "Mixed music playlist".to_string(),
+            kind: db::MediaKind::Playlist,
+            ..Default::default()
+        };
+        playlist
+            .save(db)
+            .await
+            .unwrap();
+        let track =
+            insert_media(db, "Playlist track", db::MediaKind::Track, "track-1").await;
+        let artist =
+            insert_media(db, "Playlist artist", db::MediaKind::Artist, "artist-1")
+                .await;
+        db::MediaRelation::add_playlist_items(db, &playlist.id, &[artist.id, track.id])
+            .await
+            .unwrap();
+
+        let response = server
+            .get("/items")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[
+                (
+                    "parentId",
+                    playlist
+                        .id
+                        .to_string()
+                        .as_str(),
+                ),
+                ("includeItemTypes", "Audio"),
+                ("startIndex", "0"),
+                ("limit", "1"),
+            ])
+            .await;
+
+        response.assert_status_ok();
+        let body: serde_json::Value = response.json();
+        assert_eq!(body["TotalRecordCount"], 1);
+        assert_eq!(
+            body["Items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            body["Items"][0]["Id"],
+            track
+                .id
+                .to_string()
+        );
+        assert_eq!(body["Items"][0]["Type"], "Audio");
+    }
+
+    #[tokio::test]
+    async fn playlist_tracks_inherit_and_serve_shared_album_art() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let album =
+            insert_media(db, "Artwork album", db::MediaKind::Album, "album-art").await;
+        let mut first =
+            insert_media(db, "First track", db::MediaKind::Track, "art-track-1").await;
+        first.parent_id = Some(album.id);
+        sqlx::query("UPDATE media SET parent_id = ? WHERE id = ?")
+            .bind(album.id)
+            .bind(first.id)
+            .execute(db)
+            .await
+            .unwrap();
+        let mut second =
+            insert_media(db, "Second track", db::MediaKind::Track, "art-track-2").await;
+        second.parent_id = Some(album.id);
+        sqlx::query("UPDATE media SET parent_id = ? WHERE id = ?")
+            .bind(album.id)
+            .bind(second.id)
+            .execute(db)
+            .await
+            .unwrap();
+
+        let mut image_bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut image_bytes, image::ImageFormat::Png)
+            .unwrap();
+        let image_file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(image_file.path(), image_bytes.into_inner()).unwrap();
+        db::MediaImage::save(
+            db,
+            album.id,
+            db::ImageKind::Primary,
+            image_file
+                .path()
+                .to_str()
+                .unwrap(),
+            Some(2),
+            Some(2),
+        )
+        .await
+        .unwrap();
+        let mut second_image_bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(3, 3)
+            .write_to(&mut second_image_bytes, image::ImageFormat::Png)
+            .unwrap();
+        let second_image_file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(second_image_file.path(), second_image_bytes.into_inner())
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO media_images (id, media_id, image_type, image_index, path, width, height) \
+             VALUES (?, ?, 'primary', 1, ?, 3, 3)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(album.id)
+        .bind(second_image_file.path().to_str().unwrap())
+        .execute(db)
+        .await
+        .unwrap();
+        let image_id = db::MediaImage::get_for_media(db, &album.id)
+            .await
+            .unwrap()
+            .get(db::ImageKind::Primary)
+            .unwrap()
+            .id;
+        let image_tag = crate::api::models::image_tag_for_id(image_id);
+
+        let mut playlist = db::Media {
+            title: "Artwork playlist".to_string(),
+            kind: db::MediaKind::Playlist,
+            ..Default::default()
+        };
+        playlist
+            .save(db)
+            .await
+            .unwrap();
+        db::MediaRelation::add_playlist_items(db, &playlist.id, &[first.id, second.id])
+            .await
+            .unwrap();
+
+        let response = server
+            .get("/items")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[(
+                "parentId",
+                playlist
+                    .id
+                    .to_string()
+                    .as_str(),
+            )])
+            .await;
+        response.assert_status_ok();
+        let body: serde_json::Value = response.json();
+        let items = body["Items"]
+            .as_array()
+            .unwrap();
+        assert_eq!(items.len(), 2);
+        for item in items {
+            assert_eq!(item["AlbumPrimaryImageTag"], image_tag);
+            assert_eq!(
+                item["AlbumPrimaryImageItemId"],
+                album
+                    .id
+                    .to_string()
+            );
+            assert_eq!(item["ImageTags"]["Primary"], image_tag);
+            assert_eq!(
+                item["ParentPrimaryImageItemId"],
+                album
+                    .id
+                    .to_string()
+            );
+            assert_eq!(item["ParentPrimaryImageTag"], image_tag);
+        }
+
+        let image_response = server
+            .get(&format!("/items/{}/images/primary", first.id))
+            .await;
+        image_response.assert_status_ok();
+        assert_eq!(
+            image_response
+                .header(http::header::CONTENT_TYPE)
+                .as_bytes(),
+            b"image/png"
+        );
+        let image = image::load_from_memory(image_response.as_bytes()).unwrap();
+        assert_eq!((image.width(), image.height()), (2, 2));
+
+        let thumb_response = server
+            .get(&format!("/items/{}/images/thumb", first.id))
+            .await;
+        thumb_response.assert_status_ok();
+        let thumb = image::load_from_memory(thumb_response.as_bytes()).unwrap();
+        assert_eq!((thumb.width(), thumb.height()), (2, 2));
+
+        // Jellyfin clients discover the same inherited artwork through the
+        // ImageInfos endpoint before fetching it by the track id.
+        let infos_response = server
+            .get(&format!("/items/{}/images", first.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        infos_response.assert_status_ok();
+        let infos: serde_json::Value = infos_response.json();
+        let primary = infos
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|image| image["ImageType"] == "Primary")
+            .unwrap();
+        assert_eq!(primary["ImageTag"], image_tag);
+        assert_eq!(primary["Width"], 2);
+        assert_eq!(primary["Height"], 2);
+
+        // Both generic Item-image forms are used by Jellyfin clients.
+        let indexed_response = server
+            .get(&format!(
+                "/items/{}/images/primary/0?width=1&format=png",
+                first.id
+            ))
+            .await;
+        indexed_response.assert_status_ok();
+        assert_eq!(
+            indexed_response
+                .header(http::header::CONTENT_TYPE)
+                .as_bytes(),
+            b"image/png"
+        );
+        let transformed = image::load_from_memory(indexed_response.as_bytes()).unwrap();
+        assert_eq!((transformed.width(), transformed.height()), (1, 1));
+
+        let head_response = server
+            .method(
+                http::Method::HEAD,
+                &format!("/items/{}/images/primary", first.id),
+            )
+            .await;
+        head_response.assert_status_ok();
+
+        let album_image_response = server
+            .get(&format!("/items/{}/images/primary/0", album.id))
+            .await;
+        album_image_response.assert_status_ok();
+        let first_album_bytes = album_image_response
+            .as_bytes()
+            .to_vec();
+        let first_album = image::load_from_memory(&first_album_bytes).unwrap();
+        assert_eq!((first_album.width(), first_album.height()), (2, 2));
+        let indexed_album_response = server
+            .get(&format!("/items/{}/images/primary/1", album.id))
+            .await;
+        indexed_album_response.assert_status_ok();
+        let second_album =
+            image::load_from_memory(indexed_album_response.as_bytes()).unwrap();
+        assert_eq!((second_album.width(), second_album.height()), (3, 3));
+        assert_ne!(
+            indexed_album_response.as_bytes(),
+            first_album_bytes.as_slice()
+        );
     }
 
     // Requests movies from a series-only smart collection; must return nothing.
@@ -3301,5 +3649,39 @@ mod tests {
                 > 0,
             "unfiltered query on series collection must return series"
         );
+    }
+
+    #[tokio::test]
+    async fn music_genre_name_lookup_matches_jellyfin_route() {
+        let (server, guard, token) = authenticated_server().await;
+        let now = Utc::now().naive_utc();
+        let mut genre = db::Media {
+            title: "Contract Genre".to_string(),
+            kind: db::MediaKind::MusicGenre,
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        genre
+            .save(
+                &guard
+                    .0
+                    .db,
+            )
+            .await
+            .unwrap();
+
+        let response = server
+            .get("/musicgenres/Contract%20Genre")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+            .await;
+        response.assert_status_ok();
+        let body: serde_json::Value = response.json();
+        assert_eq!(body["Name"], "Contract Genre");
+        assert_eq!(body["Type"], "MusicGenre");
+        assert_eq!(body["IsFolder"], true);
     }
 }

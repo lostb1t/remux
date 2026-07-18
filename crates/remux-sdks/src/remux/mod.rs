@@ -10,7 +10,7 @@ use std::{collections::HashMap, str::FromStr};
 use uuid::Uuid;
 
 pub use crate::stremio::ResourceType;
-use crate::{stremio, Auth, Body, Endpoint, RestClient};
+use crate::{Auth, Body, Endpoint, RestClient, stremio};
 
 fn serialize_comma<S>(v: &[String], s: S) -> Result<S::Ok, S::Error>
 where
@@ -448,6 +448,12 @@ pub struct ServerConfiguration {
     pub feature_dataset_url: Option<String>,
     #[default(true)]
     pub enable_audio_feature_instant_mix: bool,
+    /// Instant-mix: weight tracks by audio-feature similarity.
+    #[default(Some(true))]
+    pub mix_audio_features: Option<bool>,
+    /// Instant-mix: include tracks from related artists.
+    #[default(Some(true))]
+    pub mix_related_artists: Option<bool>,
     pub subtitle_languages: Option<Vec<String>>,
     #[default(Some(false))]
     pub enable_subtitles_detail: Option<bool>,
@@ -872,7 +878,9 @@ pub struct SystemInfo {
     pub supports_library_monitor: bool,
     #[default(8096_u16)]
     pub web_socket_port_number: u16,
-    pub completed_installations: Option<Vec<String>>,
+    /// Must always serialize as an array (never `null`): jellyfin-web's admin
+    /// dashboard calls `.map()` on it, so a `null` here crashes the page.
+    pub completed_installations: Vec<String>,
     pub can_self_restart: Option<bool>,
     pub can_launch_web_browser: Option<bool>,
     pub program_data_path: Option<String>,
@@ -1067,6 +1075,25 @@ pub struct DeviceInfo {
     pub last_user_id: Option<Uuid>,
     pub date_last_activity: Option<DateTime<Utc>>,
     pub icon_url: Option<String>,
+}
+
+/// Jellyfin `DeviceOptionsDto` — the operator-editable options for one device.
+/// Used by the admin dashboard's Devices page to rename a client device.
+#[dto]
+pub struct DeviceOptions {
+    pub id: Option<i64>,
+    pub device_id: Option<String>,
+    pub custom_name: Option<String>,
+}
+
+/// Jellyfin `LogFile` — one entry in the server log directory, as listed by
+/// `GET /System/Logs`.
+#[dto]
+pub struct LogFile {
+    pub name: Option<String>,
+    pub size: Option<i64>,
+    pub date_created: Option<DateTime<Utc>>,
+    pub date_modified: Option<DateTime<Utc>>,
 }
 
 #[dto]
@@ -1546,11 +1573,40 @@ mod tests {
     fn base_item_serializes_empty_client_compat_arrays() {
         let json = serde_json::to_value(BaseItemDto::default()).unwrap();
 
+        assert_eq!(json.get("ExternalUrls"), Some(&serde_json::json!([])));
+        assert_eq!(json.get("Taglines"), Some(&serde_json::json!([])));
         assert_eq!(json.get("Genres"), Some(&serde_json::json!([])));
         assert_eq!(json.get("GenreItems"), Some(&serde_json::json!([])));
         assert_eq!(json.get("People"), Some(&serde_json::json!([])));
         assert_eq!(json.get("Studios"), Some(&serde_json::json!([])));
+        assert_eq!(json.get("RemoteTrailers"), Some(&serde_json::json!([])));
         assert_eq!(json.get("Tags"), Some(&serde_json::json!([])));
+        assert_eq!(json.get("LockedFields"), Some(&serde_json::json!([])));
+    }
+
+    #[test]
+    fn media_source_serializes_jellyfin_collection_defaults() {
+        let json = serde_json::to_value(MediaSourceInfo::default()).unwrap();
+
+        assert_eq!(json.get("MediaStreams"), Some(&serde_json::json!([])));
+        assert_eq!(json.get("MediaAttachments"), Some(&serde_json::json!([])));
+        assert_eq!(json.get("Formats"), Some(&serde_json::json!([])));
+        assert_eq!(
+            json.get("RequiredHttpHeaders"),
+            Some(&serde_json::json!({}))
+        );
+        assert_eq!(
+            json.get("SupportsTranscoding"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            json.get("SupportsDirectStream"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            json.get("SupportsDirectPlay"),
+            Some(&serde_json::json!(true))
+        );
     }
 }
 
@@ -1792,6 +1848,9 @@ pub enum RecommendationType {
     HasActorFromRecentlyPlayed,
     HasLikedDirector,
     HasLikedActor,
+    MatchesUserTaste,
+    Popular,
+    RecentlyAdded,
 }
 
 #[dto]
@@ -1978,7 +2037,8 @@ pub struct MediaSourceInfo {
     pub encoder_path: Option<String>,
     //  pub encoder_protocol: Option<MediaProtocol>,
     pub fallback_max_streaming_bitrate: Option<i64>,
-    pub formats: Option<Vec<String>>,
+    #[default(vec![])]
+    pub formats: Vec<String>,
     #[default(false)]
     pub gen_pts_input: bool,
     #[default(false)]
@@ -1994,7 +2054,8 @@ pub struct MediaSourceInfo {
     pub is_remote: bool,
     //pub iso_type: Option<IsoType>,
     pub live_stream_id: Option<String>,
-    //pub media_attachments: Option<Vec<MediaAttachment>>,
+    #[default(vec![])]
+    pub media_attachments: Vec<serde_json::Value>,
     #[default(vec![])]
     pub media_streams: Vec<MediaStream>,
     pub name: Option<String>,
@@ -2003,7 +2064,8 @@ pub struct MediaSourceInfo {
     pub protocol: MediaProtocol,
     #[default(false)]
     pub read_at_native_framerate: bool,
-    pub required_http_headers: Option<HashMap<String, String>>,
+    #[default(HashMap::new())]
+    pub required_http_headers: HashMap<String, String>,
     #[default(false)]
     pub requires_closing: bool,
     #[default(false)]
@@ -2030,7 +2092,10 @@ pub struct MediaSourceInfo {
     #[default(false)]
     pub use_most_compatible_transcoding_profile: bool,
     //  pub video3_d_format: Option<Video3DFormat>,
-    pub video_type: VideoType,
+    // Jellyfin omits VideoType for audio sources; keep it optional so audio
+    // MediaSources emit no VideoType instead of a bogus `VideoFile`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video_type: Option<VideoType>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub segments: Option<MediaSegments>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2491,6 +2556,8 @@ pub struct MediaStream {
     #[serde(default)]
     pub index: i64,
     pub is_anamorphic: Option<bool>,
+    // Jellyfin serializes this as `IsAVC` (uppercase initialism), not `IsAvc`.
+    #[serde(rename = "IsAVC")]
     pub is_avc: Option<bool>,
     pub is_default: Option<bool>,
     #[serde(default)]
@@ -2505,6 +2572,7 @@ pub struct MediaStream {
     #[serde(default)]
     pub is_text_subtitle_stream: bool,
     pub language: Option<String>,
+    #[serde(serialize_with = "crate::serialize_option_whole_f64")]
     pub level: Option<f64>,
     pub localized_default: Option<String>,
     pub localized_external: Option<String>,
@@ -2912,7 +2980,7 @@ pub struct BaseItemDto {
     pub video_3d_format: Option<String>,
     //#[serde_as(as = "Option<DisplayFromStr>")]
     pub premiere_date: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub external_urls: Vec<ExternalUrl>,
     pub media_sources: Option<Vec<MediaSourceInfo>>,
     pub critic_rating: Option<f64>,
@@ -2923,7 +2991,7 @@ pub struct BaseItemDto {
     pub channel_id: Option<String>,
     pub channel_name: Option<String>,
     pub overview: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub taglines: Vec<String>,
     #[serde(default)]
     pub genres: Vec<String>,
@@ -2955,7 +3023,7 @@ pub struct BaseItemDto {
     pub parent_backdrop_item_id: Option<String>,
     pub parent_backdrop_image_tags: Option<Vec<String>>,
     pub local_trailer_count: Option<i64>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub remote_trailers: Vec<ExternalUrl>,
     pub user_data: Option<UserItemDataDto>,
     pub recursive_item_count: Option<i64>,
@@ -2982,6 +3050,7 @@ pub struct BaseItemDto {
     pub display_order: Option<String>,
     pub album_id: Option<String>,
     pub album_primary_image_tag: Option<String>,
+    pub album_primary_image_item_id: Option<String>,
     pub series_primary_image_tag: Option<String>,
     pub album_artist: Option<String>,
     pub album_artists: Option<Vec<NameIdPair>>,
@@ -3006,7 +3075,7 @@ pub struct BaseItemDto {
     #[default(MediaType::Unknown)]
     pub media_type: MediaType,
     pub end_date: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub locked_fields: Vec<String>,
     pub trailer_count: Option<i64>,
     pub movie_count: Option<i64>,
@@ -4873,6 +4942,52 @@ impl Endpoint for GetMetricsStatus {
     }
 }
 
+#[dto]
+pub struct TelemetryOverview {
+    pub since: String,
+    pub request_count: i64,
+    pub error_count: i64,
+    pub mean_latency_ms: f64,
+    pub max_latency_ms: f64,
+    pub playback_events: i64,
+    pub startup_failures: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GetTelemetryOverview;
+
+impl Endpoint for GetTelemetryOverview {
+    type Output = TelemetryOverview;
+    fn path(&self) -> String {
+        "/remux/telemetry/overview".into()
+    }
+}
+
+#[dto]
+pub struct TelemetryRankingRow {
+    pub label: String,
+    pub count: i64,
+    pub error_count: i64,
+    pub mean_latency_ms: f64,
+    pub max_latency_ms: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct GetTelemetryRankings {
+    pub dimension: String,
+    pub hours: i64,
+}
+
+impl Endpoint for GetTelemetryRankings {
+    type Output = Vec<TelemetryRankingRow>;
+    fn path(&self) -> String {
+        format!(
+            "/remux/telemetry/rankings?dimension={}&hours={}",
+            self.dimension, self.hours
+        )
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct GetCurrentUser;
 
@@ -5259,6 +5374,116 @@ impl Endpoint for DeleteApiKey {
     }
     fn method(&self) -> Method {
         Method::DELETE
+    }
+}
+
+// --- Devices (admin) ---
+
+#[derive(Debug, Clone, Default)]
+pub struct GetDevices;
+
+impl Endpoint for GetDevices {
+    type Output = QueryResult<DeviceInfo>;
+    fn path(&self) -> String {
+        "/devices".into()
+    }
+}
+
+/// Set a device's operator-assigned custom name (`POST /Devices/Options?id=`).
+#[derive(Debug, Clone)]
+pub struct SetDeviceOptions {
+    pub id: String,
+    pub custom_name: String,
+}
+
+impl Endpoint for SetDeviceOptions {
+    type Output = ();
+    fn path(&self) -> String {
+        "/devices/options".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn query(&self) -> Vec<(String, String)> {
+        vec![(
+            "id".into(),
+            self.id
+                .clone(),
+        )]
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::json!({ "CustomName": self.custom_name }))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeleteDevice {
+    pub id: String,
+}
+
+impl Endpoint for DeleteDevice {
+    type Output = ();
+    fn path(&self) -> String {
+        "/devices".into()
+    }
+    fn method(&self) -> Method {
+        Method::DELETE
+    }
+    fn query(&self) -> Vec<(String, String)> {
+        vec![(
+            "id".into(),
+            self.id
+                .clone(),
+        )]
+    }
+}
+
+// --- Server logs (admin) ---
+
+#[derive(Debug, Clone, Default)]
+pub struct GetLogFiles;
+
+impl Endpoint for GetLogFiles {
+    type Output = Vec<LogFile>;
+    fn path(&self) -> String {
+        "/system/logs".into()
+    }
+}
+
+// --- Activity log (admin) ---
+
+/// Jellyfin `ActivityLogEntry` as returned by `GET /System/ActivityLog/Entries`.
+#[dto]
+pub struct ActivityLogEntry {
+    pub id: Option<i64>,
+    pub name: Option<String>,
+    pub overview: Option<String>,
+    pub short_overview: Option<String>,
+    #[serde(rename = "Type")]
+    pub type_: Option<String>,
+    pub item_id: Option<String>,
+    pub user_id: Option<String>,
+    pub date: Option<DateTime<Utc>>,
+    pub severity: Option<String>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct GetActivityLog {
+    #[serde(rename = "startIndex")]
+    pub start_index: Option<i64>,
+    pub limit: Option<i64>,
+    #[serde(rename = "hasUserId")]
+    pub has_user_id: Option<bool>,
+}
+
+impl Endpoint for GetActivityLog {
+    type Output = QueryResult<ActivityLogEntry>;
+    fn path(&self) -> String {
+        "/system/activitylog/entries".into()
+    }
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }
 

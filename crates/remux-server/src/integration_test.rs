@@ -19,7 +19,7 @@ pub fn auth_header_with_token(token: &str) -> String {
 
 /// RAII guard that shuts down the `AppContext` (releases torrent/DHT sockets)
 /// when the test ends. Hold this for the lifetime of the test.
-pub struct TestGuard(pub AppContext);
+pub struct TestGuard(pub AppContext, Option<tempfile::TempDir>);
 
 impl Drop for TestGuard {
     fn drop(&mut self) {
@@ -38,8 +38,11 @@ impl Drop for TestGuard {
 /// Creates a test server from the given config, seeds an admin user "test"/"test",
 /// and returns the server alongside a [`TestGuard`].
 pub async fn new_test_server_with_config(
-    config: Config,
+    mut config: Config,
 ) -> Result<(TestServer, TestGuard)> {
+    // Test servers never need a stable peer-listening port. Using the runtime
+    // default (6881..6891) makes parallel integration tests exhaust that range.
+    config.torrent_peer_port = None;
     let (app, ctx) = init_app_with_ctx(config).await?;
 
     let server = TestServer::builder()
@@ -58,20 +61,27 @@ pub async fn new_test_server_with_config(
         .post("/startup/complete")
         .await;
 
-    Ok((server, TestGuard(ctx)))
+    Ok((server, TestGuard(ctx, None)))
 }
 
-/// Creates a test server with an in-memory SQLite DB, seeds an admin user
+/// Creates a test server with a temporary SQLite DB, seeds an admin user
 /// "test"/"test", and returns the server alongside a [`TestGuard`] (which
 /// carries the `AppContext` and shuts down background services on drop).
 pub async fn new_test_server() -> Result<(TestServer, TestGuard)> {
-    new_test_server_with_config(Config {
-        database_url: Some("sqlite::memory:".into()),
+    let temp_dir = tempfile::tempdir()?;
+    let database_path = temp_dir
+        .path()
+        .join("remux-test.sqlite");
+    let (server, mut guard) = new_test_server_with_config(Config {
+        database_url: Some(format!("sqlite://{}?mode=rwc", database_path.display())),
         torrent_http_port: None, // OS picks a free ephemeral port
         disable_dht: true,       // no DHT needed in tests; avoids socket conflicts
+        torrent_peer_port: None,
         ..Default::default()
     })
-    .await
+    .await?;
+    guard.1 = Some(temp_dir);
+    Ok((server, guard))
 }
 
 /// Spins up a test server and authenticates as the seeded "test" user.

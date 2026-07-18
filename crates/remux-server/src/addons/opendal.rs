@@ -625,15 +625,66 @@ impl StreamAddon for OpendalAddon {
                 .fetch_all(&ctx.db)
                 .await?
             } else {
-                sqlx::query_as(
-                    "SELECT path, name, title, imdb_id, season, episode, track_number, year, size \
-                     FROM opendal_files \
-                     WHERE addon_id = ? AND media_kind = 'track' AND LOWER(title) = LOWER(?)",
+                // Fallback for a NON-local track (e.g. a streaming/addon-backed
+                // track) that has a local library copy. Match strictly on track
+                // title + album + artist against the `media` table — which
+                // GroupLocalMusic populates reliably — rather than the old
+                // `LOWER(opendal_files.title)` match, because that column is derived
+                // from filenames and is untrustworthy (it frequently holds the
+                // artist name, so it both missed real twins and matched unrelated
+                // songs that merely shared a title). Requiring an unambiguous single
+                // match means two different songs sharing a title are never
+                // conflated. This makes the reliable local file an available source,
+                // healing streaming tracks whose signed upstream URL is dead (410).
+                let album_title: Option<String> = match media.parent_id {
+                    Some(pid) => {
+                        sqlx::query_scalar("SELECT title FROM media WHERE id = ?")
+                            .bind(pid)
+                            .fetch_optional(&ctx.db)
+                            .await?
+                    }
+                    None => None,
+                };
+                let artist_title: Option<String> = match media.grandparent_id {
+                    Some(gid) => {
+                        sqlx::query_scalar("SELECT title FROM media WHERE id = ?")
+                            .bind(gid)
+                            .fetch_optional(&ctx.db)
+                            .await?
+                    }
+                    None => None,
+                };
+                // Without both album and artist we cannot match strictly — skip
+                // rather than guess.
+                let (Some(album_title), Some(artist_title)) =
+                    (album_title, artist_title)
+                else {
+                    return Ok(vec![]);
+                };
+                let candidates: Vec<OpendalFile> = sqlx::query_as(
+                    "SELECT f.path, f.name, f.title, f.imdb_id, f.season, f.episode, \
+                            f.track_number, f.year, f.size \
+                     FROM opendal_files f \
+                     JOIN media m ON m.id = f.id \
+                     JOIN media alb ON alb.id = m.parent_id \
+                     JOIN media art ON art.id = m.grandparent_id \
+                     WHERE f.addon_id = ? AND f.media_kind = 'track' \
+                       AND LOWER(m.title) = LOWER(?) \
+                       AND LOWER(alb.title) = LOWER(?) \
+                       AND LOWER(art.title) = LOWER(?)",
                 )
                 .bind(self.addon_id)
                 .bind(&media.title)
+                .bind(&album_title)
+                .bind(&artist_title)
                 .fetch_all(&ctx.db)
-                .await?
+                .await?;
+                // Only a single, unambiguous local candidate is trusted.
+                if candidates.len() == 1 {
+                    candidates
+                } else {
+                    Vec::new()
+                }
             }
         } else {
             // Episodes are identified by series_imdb (the show's IMDB ID scraped from the
@@ -1056,7 +1107,11 @@ async fn scan_addon(
         VIDEO_EXTENSIONS
     };
 
-    let track_num_re = Regex::new(r"^(\d{1,3})[.\s\-_\[\]]+").unwrap();
+    // Compiled once per process rather than on every scan invocation
+    // (regex compilation is orders of magnitude more expensive than matching).
+    static TRACK_NUM_RE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"^(\d{1,3})[.\s\-_\[\]]+").unwrap());
+    let track_num_re = &*TRACK_NUM_RE;
 
     // Build (operator, list_from, path_prefix) for each configured path.
     // Local: one Fs operator per root, list from "/", prefix gives absolute stored path.

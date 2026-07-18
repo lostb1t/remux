@@ -26,6 +26,24 @@ pub struct GetMovieRecommendationsQuery {
     pub shuffle_seed: Option<u64>,
 }
 
+const DEFAULT_RECOMMENDATION_CATEGORY_LIMIT: u32 = 5;
+const DEFAULT_RECOMMENDATION_ITEM_LIMIT: u32 = 8;
+const MAX_RECOMMENDATION_CATEGORY_LIMIT: u32 = 12;
+const MAX_RECOMMENDATION_ITEM_LIMIT: u32 = 12;
+
+pub(super) fn recommendation_limits(
+    category_limit: Option<u32>,
+    item_limit: Option<u32>,
+) -> (usize, u32) {
+    let category_limit = category_limit
+        .unwrap_or(DEFAULT_RECOMMENDATION_CATEGORY_LIMIT)
+        .clamp(1, MAX_RECOMMENDATION_CATEGORY_LIMIT) as usize;
+    let item_limit = item_limit
+        .unwrap_or(DEFAULT_RECOMMENDATION_ITEM_LIMIT)
+        .clamp(1, MAX_RECOMMENDATION_ITEM_LIMIT);
+    (category_limit, item_limit)
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct RecommendationCacheKey {
     user_id: Uuid,
@@ -37,13 +55,18 @@ struct RecommendationCacheKey {
     shuffle_seed: u64,
 }
 
-static RECOMMENDATION_CACHE: LazyLock<Cache<RecommendationCacheKey, Vec<api::RecommendationDto>>> =
-    LazyLock::new(|| {
-        Cache::builder()
-            .max_capacity(256)
-            .time_to_live(Duration::from_secs(60))
-            .build()
-    });
+static RECOMMENDATION_CACHE: LazyLock<
+    Cache<RecommendationCacheKey, Vec<api::RecommendationDto>>,
+> = LazyLock::new(|| {
+    Cache::builder()
+        .max_capacity(256)
+        .time_to_live(Duration::from_secs(60))
+        .build()
+});
+
+pub(crate) fn invalidate_recommendation_cache() {
+    RECOMMENDATION_CACHE.invalidate_all();
+}
 
 #[get("/movies/recommendations")]
 pub async fn movies_recommendations(
@@ -58,12 +81,9 @@ pub async fn movies_recommendations(
                 .user
                 .id,
         );
-    let category_limit = q
-        .category_limit
-        .unwrap_or(5) as usize;
-    let item_limit = q
-        .item_limit
-        .unwrap_or(8);
+    super::users::require_self_or_admin(user_id, &session)?;
+    let (category_limit, item_limit) =
+        recommendation_limits(q.category_limit, q.item_limit);
     let started = std::time::Instant::now();
     let categories = build_recommendations(
         &state
@@ -105,6 +125,7 @@ pub async fn build_recommendations(
     shuffle_seed: u64,
 ) -> Result<Vec<api::RecommendationDto>> {
     let recommendations_started_at = Instant::now();
+    let shuffle_seed = if shuffle { shuffle_seed } else { 0 };
     let cache_key = RecommendationCacheKey {
         user_id,
         parent_id,
@@ -146,11 +167,12 @@ pub async fn build_recommendations(
         .map(|m| m.id)
         .collect();
 
-    // Liked/favorited items (up to 10), random order, excluding recently played.
+    // Liked/favorited items (up to 10), most recently played first.
     let liked: Vec<_> = db::Media::get_by_filter(
         db,
         &db::MediaFilter {
             kind: Some(vec![kind.clone()]),
+            user_id: Some(user_id),
             parent_id,
             recursive: parent_id.is_some(),
             user_state: Some(db::UserMediaStateFilter {
@@ -158,7 +180,8 @@ pub async fn build_recommendations(
                 favorite: Some(true),
                 ..Default::default()
             }),
-            sort_by: vec![api::ItemSortBy::Random],
+            sort_by: vec![api::ItemSortBy::DatePlayed],
+            sort_order: vec![api::SortOrder::Descending],
             limit: Some(10),
             total_count: false,
             ..Default::default()
@@ -188,16 +211,28 @@ pub async fn build_recommendations(
         MAX_RECOMMENDATION_PROFILE_TAGS,
         MIN_RECOMMENDATION_PROFILE_TAG_APPEARANCES,
     );
-    let has_segmented_recommendation_profile = segmented_profile_seed_count(
-        &recently_played,
-        &liked,
-    ) >= MIN_SEGMENTED_RECOMMENDATION_PROFILE_ITEMS;
+    let has_segmented_recommendation_profile =
+        segmented_profile_seed_count(&recently_played, &liked)
+            >= MIN_SEGMENTED_RECOMMENDATION_PROFILE_ITEMS;
     if !has_segmented_recommendation_profile {
-        baseline_tags.retain(|tag| !SEGMENTED_RECOMMENDATION_TAGS.contains(&tag.as_str()));
+        baseline_tags
+            .retain(|tag| !SEGMENTED_RECOMMENDATION_TAGS.contains(&tag.as_str()));
     }
+    let compatibility_profile = RecommendationCompatibilityProfile {
+        allowed_languages: recommendation_language_profile(
+            db,
+            user_id,
+            &recently_played,
+            &liked,
+        )
+        .await?,
+        allow_segmented_language: has_segmented_recommendation_profile,
+    };
 
     let min_similarity_overlap = if baseline_tags.len() >= 8 { 3 } else { 2 };
-    let profile_elapsed_ms = profile_started_at.elapsed().as_millis();
+    let profile_elapsed_ms = profile_started_at
+        .elapsed()
+        .as_millis();
 
     let title_rows_started_at = Instant::now();
     // Build SimilarToRecentlyPlayed and SimilarToLikedItem categories, genre-filtered per baseline.
@@ -218,6 +253,7 @@ pub async fn build_recommendations(
         &excluded_title_keys,
         &recently_played,
         &baseline_tags,
+        &compatibility_profile,
         kind.clone(),
         parent_id,
         item_limit,
@@ -234,6 +270,7 @@ pub async fn build_recommendations(
         &excluded_title_keys,
         &liked,
         &baseline_tags,
+        &compatibility_profile,
         kind.clone(),
         parent_id,
         item_limit,
@@ -248,7 +285,9 @@ pub async fn build_recommendations(
         split_thin_title_categories(similar_recent_raw, title_row_min_items);
     let (similar_liked, merged_liked_items, merged_liked_sources) =
         split_thin_title_categories(similar_liked_raw, title_row_min_items);
-    let title_rows_elapsed_ms = title_rows_started_at.elapsed().as_millis();
+    let title_rows_elapsed_ms = title_rows_started_at
+        .elapsed()
+        .as_millis();
 
     let has_content_based_similarities =
         !similar_recent.is_empty() || !similar_liked.is_empty();
@@ -297,6 +336,7 @@ pub async fn build_recommendations(
             &recently_played,
             &liked,
             &baseline_tags,
+            &compatibility_profile,
             has_segmented_recommendation_profile,
             kind.clone(),
             parent_id,
@@ -307,7 +347,9 @@ pub async fn build_recommendations(
         .await?,
         title_row_min_items,
     );
-    let taste_rows_elapsed_ms = taste_rows_started_at.elapsed().as_millis();
+    let taste_rows_elapsed_ms = taste_rows_started_at
+        .elapsed()
+        .as_millis();
 
     let person_rows_started_at = Instant::now();
     // Build role-based categories from top recently played media, then interleave with similar rows.
@@ -320,6 +362,7 @@ pub async fn build_recommendations(
             &recently_played,
             &liked,
             &baseline_tags,
+            &compatibility_profile,
             kind.clone(),
             parent_id,
             actor_row_item_limit,
@@ -346,6 +389,7 @@ pub async fn build_recommendations(
             &recently_played,
             &liked,
             &baseline_tags,
+            &compatibility_profile,
             kind.clone(),
             parent_id,
             director_row_item_limit,
@@ -363,7 +407,9 @@ pub async fn build_recommendations(
     } else {
         Vec::new()
     };
-    let person_rows_elapsed_ms = person_rows_started_at.elapsed().as_millis();
+    let person_rows_elapsed_ms = person_rows_started_at
+        .elapsed()
+        .as_millis();
 
     let assembly_started_at = Instant::now();
     // Interleave high-confidence title/person rows with broader taste rows.
@@ -394,7 +440,13 @@ pub async fn build_recommendations(
         merged_cats.push(category);
     }
 
-    let mut result = Vec::with_capacity(category_limit);
+    let assembly_limit = similar_recent.len()
+        + similar_liked.len()
+        + fallback_taste_categories.len()
+        + merged_cats.len()
+        + actor_cats.len()
+        + director_cats.len();
+    let mut result = Vec::with_capacity(assembly_limit);
     let mut ri = 0usize;
     let mut li = 0usize;
     let mut fi = 0usize;
@@ -409,7 +461,7 @@ pub async fn build_recommendations(
             result.push(similar_recent[ri].clone());
             ri += 1;
             any = true;
-            if result.len() >= category_limit {
+            if result.len() >= assembly_limit {
                 break 'outer;
             }
         }
@@ -418,7 +470,7 @@ pub async fn build_recommendations(
             result.push(fallback_taste_categories[fi].clone());
             fi += 1;
             any = true;
-            if result.len() >= category_limit {
+            if result.len() >= assembly_limit {
                 break 'outer;
             }
         }
@@ -427,7 +479,7 @@ pub async fn build_recommendations(
             result.push(similar_liked[li].clone());
             li += 1;
             any = true;
-            if result.len() >= category_limit {
+            if result.len() >= assembly_limit {
                 break 'outer;
             }
         }
@@ -436,7 +488,7 @@ pub async fn build_recommendations(
             result.push(merged_cats[mi].clone());
             mi += 1;
             any = true;
-            if result.len() >= category_limit {
+            if result.len() >= assembly_limit {
                 break 'outer;
             }
         }
@@ -445,7 +497,7 @@ pub async fn build_recommendations(
             result.push(actor_cats[ai].clone());
             ai += 1;
             any = true;
-            if result.len() >= category_limit {
+            if result.len() >= assembly_limit {
                 break 'outer;
             }
         }
@@ -454,7 +506,7 @@ pub async fn build_recommendations(
             result.push(director_cats[di].clone());
             di += 1;
             any = true;
-            if result.len() >= category_limit {
+            if result.len() >= assembly_limit {
                 break 'outer;
             }
         }
@@ -464,40 +516,35 @@ pub async fn build_recommendations(
         }
     }
 
-    while result.len() < category_limit && fi < fallback_taste_categories.len() {
+    while result.len() < assembly_limit && fi < fallback_taste_categories.len() {
         result.push(fallback_taste_categories[fi].clone());
         fi += 1;
     }
 
-    while result.len() < category_limit && mi < merged_cats.len() {
+    while result.len() < assembly_limit && mi < merged_cats.len() {
         result.push(merged_cats[mi].clone());
         mi += 1;
     }
 
-    while result.len() < category_limit && ri < similar_recent.len() {
+    while result.len() < assembly_limit && ri < similar_recent.len() {
         result.push(similar_recent[ri].clone());
         ri += 1;
     }
 
-    while result.len() < category_limit && li < similar_liked.len() {
+    while result.len() < assembly_limit && li < similar_liked.len() {
         result.push(similar_liked[li].clone());
         li += 1;
     }
 
-    result = dedupe_recommendation_items(result);
-    result = dedupe_recommendation_categories(result);
+    result = finalize_recommendation_categories(result, category_limit);
 
     if shuffle {
-        let mut rng = StdRng::seed_from_u64(shuffle_seed);
-        for category in &mut result {
-            category
-                .items
-                .shuffle(&mut rng);
-        }
-        result.shuffle(&mut rng);
+        shuffle_recommendation_tails(&mut result, shuffle_seed);
     }
 
-    let assembly_elapsed_ms = assembly_started_at.elapsed().as_millis();
+    let assembly_elapsed_ms = assembly_started_at
+        .elapsed()
+        .as_millis();
     tracing::debug!(
         target: "remux_server::recommendations",
         kind = ?kind,
@@ -548,6 +595,16 @@ fn dedupe_recommendation_items(
     filtered
 }
 
+fn finalize_recommendation_categories(
+    categories: Vec<api::RecommendationDto>,
+    category_limit: usize,
+) -> Vec<api::RecommendationDto> {
+    let mut categories = dedupe_recommendation_items(categories);
+    categories = dedupe_recommendation_categories(categories);
+    categories.truncate(category_limit);
+    categories
+}
+
 fn dedupe_recommendation_categories(
     mut categories: Vec<api::RecommendationDto>,
 ) -> Vec<api::RecommendationDto> {
@@ -566,6 +623,22 @@ fn dedupe_recommendation_categories(
     });
 
     categories
+}
+
+fn shuffle_recommendation_tails(
+    categories: &mut [api::RecommendationDto],
+    shuffle_seed: u64,
+) {
+    let mut rng = StdRng::seed_from_u64(shuffle_seed);
+    for category in categories {
+        if category
+            .items
+            .len()
+            > 2
+        {
+            category.items[2..].shuffle(&mut rng);
+        }
+    }
 }
 
 const BANNED_RECOMMENDATION_TAGS: [&str; 11] = [
@@ -619,6 +692,16 @@ const MOOD_RECOMMENDATION_TAGS: [&str; 17] = [
     "playful",
 ];
 const MOOD_RECOMMENDATION_TAG_WEIGHT: f64 = 0.45;
+const SOURCE_MATERIAL_RECOMMENDATION_TAG_WEIGHT: f64 = 0.25;
+const YOUTH_AUDIENCE_TAGS: [&str; 4] =
+    ["children", "kids", "preschool", "young-children"];
+const ADULT_AUDIENCE_TAGS: [&str; 4] = [
+    "adult-animation",
+    "adult-comedy",
+    "adult-humor",
+    "mature-audiences",
+];
+const NICHE_FORMAT_TAGS: [&str; 1] = ["silent-film"];
 const MAX_TAG_TASTE_ROWS: usize = 4;
 const MIN_TAG_TASTE_ROW_ITEMS: usize = 3;
 const TAG_TASTE_FETCH_LIMIT_MULTIPLIER: u32 = 16;
@@ -666,7 +749,8 @@ fn is_blocked_recommendation_tag(tag: &str) -> bool {
     if matches!(
         normalized.as_str(),
         "top" | "top rated" | "trending" | "popular"
-    ) || BANNED_EXACT_RECOMMENDATION_TAGS.contains(&normalized.as_str()) {
+    ) || BANNED_EXACT_RECOMMENDATION_TAGS.contains(&normalized.as_str())
+    {
         return true;
     }
 
@@ -707,12 +791,138 @@ fn media_has_segmented_identity(media: &db::Media) -> bool {
             .is_some_and(external_id_looks_segmented)
 }
 
-fn segmented_profile_seed_count(recently_played: &[db::Media], liked: &[db::Media]) -> usize {
+fn audience_segments_compatible(baseline: &db::Media, candidate: &db::Media) -> bool {
+    let has_any_tag = |media: &db::Media, tags: &[&str]| {
+        media
+            .tags
+            .iter()
+            .filter_map(|tag| clean_recommendation_tag(tag))
+            .any(|tag| tags.contains(&tag.as_str()))
+    };
+    let is_youth = |media: &db::Media| {
+        media
+            .certification_age
+            .is_some_and(|age| age <= 7)
+            || has_any_tag(media, &YOUTH_AUDIENCE_TAGS)
+    };
+    let is_adult = |media: &db::Media| {
+        media
+            .certification_age
+            .is_some_and(|age| age >= 18)
+            || has_any_tag(media, &ADULT_AUDIENCE_TAGS)
+    };
+
+    !(is_youth(baseline) && is_adult(candidate)
+        || is_adult(baseline) && is_youth(candidate))
+}
+
+fn recommendation_language_code(language: &str) -> Option<String> {
+    crate::api::subtitles::lang_to_two_letter(language).or_else(|| {
+        let normalized = language
+            .trim()
+            .to_lowercase();
+        (!normalized.is_empty()).then_some(normalized)
+    })
+}
+
+fn candidate_language_compatible(
+    allowed_languages: &HashSet<String>,
+    allow_segmented_language: bool,
+    baseline_language: Option<&str>,
+    candidate: &db::Media,
+) -> bool {
+    let Some(candidate_language) = candidate
+        .original_language
+        .as_deref()
+        .and_then(recommendation_language_code)
+    else {
+        return true;
+    };
+    if allowed_languages.contains(&candidate_language) {
+        return true;
+    }
+    if baseline_language
+        .and_then(recommendation_language_code)
+        .is_some_and(|language| language == candidate_language)
+    {
+        return true;
+    }
+
+    allow_segmented_language && media_has_segmented_identity(candidate)
+}
+
+struct RecommendationCompatibilityProfile {
+    allowed_languages: HashSet<String>,
+    allow_segmented_language: bool,
+}
+
+impl RecommendationCompatibilityProfile {
+    fn allows(&self, candidate: &db::Media, baseline_language: Option<&str>) -> bool {
+        candidate_language_compatible(
+            &self.allowed_languages,
+            self.allow_segmented_language,
+            baseline_language,
+            candidate,
+        )
+    }
+}
+
+async fn recommendation_language_profile(
+    db: &sqlx::SqlitePool,
+    user_id: Uuid,
+    recently_played: &[db::Media],
+    liked: &[db::Media],
+) -> Result<HashSet<String>> {
+    let configured_language = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT json_extract(configuration, '$.AudioLanguagePreference') \
+         FROM users WHERE id = ?",
+    )
+    .bind(user_id)
+    .fetch_optional(db)
+    .await?
+    .flatten();
+
+    let mut languages = HashSet::new();
+    if let Some(language) = configured_language
+        .as_deref()
+        .and_then(recommendation_language_code)
+    {
+        languages.insert(language);
+    }
+    let mut consumed_counts: HashMap<String, usize> = HashMap::new();
+    for media in recently_played
+        .iter()
+        .chain(liked.iter())
+    {
+        if let Some(language) = media
+            .original_language
+            .as_deref()
+            .and_then(recommendation_language_code)
+        {
+            *consumed_counts
+                .entry(language)
+                .or_insert(0) += 1;
+        }
+    }
+    languages.extend(
+        consumed_counts
+            .into_iter()
+            .filter_map(|(language, count)| (count >= 2).then_some(language)),
+    );
+    Ok(languages)
+}
+
+fn segmented_profile_seed_count(
+    recently_played: &[db::Media],
+    liked: &[db::Media],
+) -> usize {
     let mut seen_ids = HashSet::new();
     recently_played
         .iter()
         .chain(liked.iter())
-        .filter(|media| seen_ids.insert(media.id) && media_has_segmented_identity(media))
+        .filter(|media| {
+            seen_ids.insert(media.id) && media_has_segmented_identity(media)
+        })
         .count()
 }
 
@@ -752,6 +962,19 @@ fn passes_segmented_media_gate(
         return false;
     }
 
+    let unsupported_niche_format = media
+        .tags
+        .iter()
+        .filter_map(|tag| clean_recommendation_tag(tag))
+        .any(|tag| {
+            NICHE_FORMAT_TAGS.contains(&tag.as_str())
+                && !profile_tags.contains(&tag)
+                && !local_baseline_tags.is_some_and(|tags| tags.contains(&tag))
+        });
+    if unsupported_niche_format {
+        return false;
+    }
+
     passes_segmented_tag_gate(profile_tags, local_baseline_tags, &media.tags)
 }
 
@@ -768,17 +991,47 @@ fn shared_tag_count(baseline_tags: &HashSet<String>, media_tags: &[String]) -> u
     count
 }
 
+fn shared_primary_tag_count(
+    baseline_tags: &HashSet<String>,
+    media_tags: &[String],
+) -> usize {
+    let mut count = 0usize;
+    let mut seen = HashSet::new();
+    for tag in media_tags {
+        if let Some(cleaned) = clean_recommendation_tag(tag) {
+            if !is_secondary_recommendation_tag(&cleaned)
+                && seen.insert(cleaned.clone())
+                && baseline_tags.contains(&cleaned)
+            {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
 fn is_mood_recommendation_tag(tag: &str) -> bool {
     MOOD_RECOMMENDATION_TAGS.contains(&tag)
 }
 
-fn is_strong_taste_row_tag(tag: &str) -> bool {
-    !is_mood_recommendation_tag(tag) && !SEGMENTED_RECOMMENDATION_TAGS.contains(&tag)
+fn is_source_material_recommendation_tag(tag: &str) -> bool {
+    tag.starts_with("based-on-")
 }
 
-fn recommendation_tag_weight(tag: &str) -> f64 {
+fn is_secondary_recommendation_tag(tag: &str) -> bool {
+    is_mood_recommendation_tag(tag) || is_source_material_recommendation_tag(tag)
+}
+
+fn is_strong_taste_row_tag(tag: &str) -> bool {
+    !is_secondary_recommendation_tag(tag)
+        && !SEGMENTED_RECOMMENDATION_TAGS.contains(&tag)
+}
+
+pub(crate) fn recommendation_tag_weight(tag: &str) -> f64 {
     if is_mood_recommendation_tag(tag) {
         MOOD_RECOMMENDATION_TAG_WEIGHT
+    } else if is_source_material_recommendation_tag(tag) {
+        SOURCE_MATERIAL_RECOMMENDATION_TAG_WEIGHT
     } else {
         1.0
     }
@@ -808,6 +1061,9 @@ fn has_meaningful_overlap(
     let shared_tags = shared_tag_count(baseline_tags, media_tags);
     if baseline_tags.is_empty() {
         return overlap_genres >= 2;
+    }
+    if shared_primary_tag_count(baseline_tags, media_tags) == 0 {
+        return false;
     }
     if overlap_genres >= 4 {
         return shared_tags >= 2;
@@ -927,7 +1183,14 @@ where
         .into_iter()
         .collect();
     ranked.sort_by(|a, b| {
-        b.1.cmp(&a.1)
+        let a_weighted = a.1 as f64 * recommendation_tag_weight(&a.0);
+        let b_weighted = b.1 as f64 * recommendation_tag_weight(&b.0);
+        b_weighted
+            .partial_cmp(&a_weighted)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                b.1.cmp(&a.1)
+            })
             .then_with(|| {
                 a.0.cmp(&b.0)
             })
@@ -961,7 +1224,7 @@ fn has_profile_overlap(
     min_shared: usize,
 ) -> bool {
     baseline_tags.is_empty()
-        || shared_tag_count(baseline_tags, media_tags) >= min_shared
+        || shared_primary_tag_count(baseline_tags, media_tags) >= min_shared
 }
 
 fn build_recommendation_signal(
@@ -980,7 +1243,7 @@ fn build_recommendation_signal(
     }
 }
 
-fn clean_recommendation_tag(tag: &str) -> Option<String> {
+pub(crate) fn clean_recommendation_tag(tag: &str) -> Option<String> {
     let cleaned = tag
         .trim()
         .replace('_', " ");
@@ -1035,10 +1298,10 @@ fn append_signals_from_common_tags(
         .filter(|tag| baseline_tags.contains(tag))
         .collect();
     tags.sort_by(|left, right| {
-        let left_mood = is_mood_recommendation_tag(left);
-        let right_mood = is_mood_recommendation_tag(right);
-        left_mood
-            .cmp(&right_mood)
+        let left_secondary = is_secondary_recommendation_tag(left);
+        let right_secondary = is_secondary_recommendation_tag(right);
+        left_secondary
+            .cmp(&right_secondary)
             .then_with(|| left.cmp(right))
     });
     tags.dedup();
@@ -1068,20 +1331,20 @@ fn top_overlap_context_tags(
     tags.sort_by(|left, right| {
         let left_segmented = SEGMENTED_RECOMMENDATION_TAGS.contains(&left.as_str());
         let right_segmented = SEGMENTED_RECOMMENDATION_TAGS.contains(&right.as_str());
-        let left_mood = is_mood_recommendation_tag(left);
-        let right_mood = is_mood_recommendation_tag(right);
+        let left_secondary = is_secondary_recommendation_tag(left);
+        let right_secondary = is_secondary_recommendation_tag(right);
         right_segmented
             .cmp(&left_segmented)
-            .then_with(|| left_mood.cmp(&right_mood))
+            .then_with(|| left_secondary.cmp(&right_secondary))
             .then_with(|| left.cmp(right))
     });
     tags.dedup();
-    let non_mood_count = tags
+    let primary_count = tags
         .iter()
-        .filter(|tag| !is_mood_recommendation_tag(tag))
+        .filter(|tag| !is_secondary_recommendation_tag(tag))
         .count();
-    if non_mood_count >= limit {
-        tags.retain(|tag| !is_mood_recommendation_tag(tag));
+    if primary_count >= limit {
+        tags.retain(|tag| !is_secondary_recommendation_tag(tag));
     }
     tags.truncate(limit);
     tags
@@ -1229,6 +1492,23 @@ fn reason_for_recommendation_type(
                 )
             }
         }
+        api::RecommendationType::MatchesUserTaste => {
+            taste_profile_reason(Some(baseline_name), context)
+        }
+        api::RecommendationType::Popular => {
+            if baseline_name.is_empty() {
+                "Popular unwatched titles".to_string()
+            } else {
+                baseline_name.to_string()
+            }
+        }
+        api::RecommendationType::RecentlyAdded => {
+            if baseline_name.is_empty() {
+                "Recently added titles".to_string()
+            } else {
+                baseline_name.to_string()
+            }
+        }
     }
 }
 
@@ -1312,14 +1592,23 @@ fn filter_categories_by_min_items(
 ) -> Vec<api::RecommendationDto> {
     categories
         .into_iter()
-        .filter(|category| category.items.len() >= min_items)
+        .filter(|category| {
+            category
+                .items
+                .len()
+                >= min_items
+        })
         .collect()
 }
 
 fn split_thin_title_categories(
     categories: Vec<api::RecommendationDto>,
     min_items: usize,
-) -> (Vec<api::RecommendationDto>, Vec<api::BaseItemDto>, Vec<String>) {
+) -> (
+    Vec<api::RecommendationDto>,
+    Vec<api::BaseItemDto>,
+    Vec<String>,
+) {
     let mut strong = Vec::new();
     let mut merged_items = Vec::new();
     let mut merged_sources = Vec::new();
@@ -1327,7 +1616,14 @@ fn split_thin_title_categories(
     let mut segmented_merged_sources = Vec::new();
 
     for category in categories {
-        if category.baseline_item_id.is_some() && category.items.len() < min_items {
+        if category
+            .baseline_item_id
+            .is_some()
+            && category
+                .items
+                .len()
+                < min_items
+        {
             let is_segmented = category
                 .items
                 .iter()
@@ -1337,7 +1633,10 @@ fn split_thin_title_categories(
             } else {
                 (&mut merged_items, &mut merged_sources)
             };
-            if let Some(name) = category.baseline_item_name.clone() {
+            if let Some(name) = category
+                .baseline_item_name
+                .clone()
+            {
                 if !target_sources.contains(&name) {
                     target_sources.push(name);
                 }
@@ -1357,19 +1656,30 @@ fn split_thin_title_categories(
 }
 
 fn item_has_segmented_recommendation_signal(item: &api::BaseItemDto) -> bool {
-    item
-        .remux
+    item.remux
         .as_ref()
-        .and_then(|remux| remux.recommendation_explanation.as_ref())
-        .and_then(|explanation| explanation.signals.as_ref())
+        .and_then(|remux| {
+            remux
+                .recommendation_explanation
+                .as_ref()
+        })
+        .and_then(|explanation| {
+            explanation
+                .signals
+                .as_ref()
+        })
         .map(|signals| {
-            signals.iter().any(|signal| {
-                signal
-                    .value
-                    .as_deref()
-                    .and_then(clean_recommendation_tag)
-                    .is_some_and(|tag| SEGMENTED_RECOMMENDATION_TAGS.contains(&tag.as_str()))
-            })
+            signals
+                .iter()
+                .any(|signal| {
+                    signal
+                        .value
+                        .as_deref()
+                        .and_then(clean_recommendation_tag)
+                        .is_some_and(|tag| {
+                            SEGMENTED_RECOMMENDATION_TAGS.contains(&tag.as_str())
+                        })
+                })
         })
         .unwrap_or(false)
 }
@@ -1384,7 +1694,7 @@ fn merged_source_label(source_names: &[String], fallback_name: &str) -> String {
         .take(3)
         .cloned()
         .collect::<Vec<_>>()
-        .join(", " );
+        .join(", ");
     if source_names.len() > 3 {
         label.push_str(", and more");
     }
@@ -1433,6 +1743,7 @@ async fn build_tag_taste_categories(
     recently_played: &[db::Media],
     liked: &[db::Media],
     baseline_tags: &HashSet<String>,
+    compatibility_profile: &RecommendationCompatibilityProfile,
     allow_segmented_rows: bool,
     kind: db::MediaKind,
     parent_id: Option<Uuid>,
@@ -1445,66 +1756,116 @@ async fn build_tag_taste_categories(
     }
 
     let mut tag_scores: HashMap<String, usize> = HashMap::new();
-    for media in recently_played.iter().chain(liked.iter()) {
+    for media in recently_played
+        .iter()
+        .chain(liked.iter())
+    {
         let mut seen_media_tags = HashSet::new();
-        for tag in media.tags.iter().filter_map(|value| clean_recommendation_tag(value)) {
+        for tag in media
+            .tags
+            .iter()
+            .filter_map(|value| clean_recommendation_tag(value))
+        {
             if baseline_tags.contains(&tag)
                 && is_strong_taste_row_tag(&tag)
                 && seen_media_tags.insert(tag.clone())
             {
-                *tag_scores.entry(tag).or_insert(0) += 1;
+                *tag_scores
+                    .entry(tag)
+                    .or_insert(0) += 1;
             }
         }
     }
 
-    let mut profile_tags: Vec<(String, usize)> = tag_scores.into_iter().collect();
+    let mut profile_tags: Vec<(String, usize)> = tag_scores
+        .into_iter()
+        .collect();
     profile_tags.sort_by(|left, right| {
         right
             .1
             .cmp(&left.1)
-            .then_with(|| left.0.cmp(&right.0))
+            .then_with(|| {
+                left.0
+                    .cmp(&right.0)
+            })
     });
     profile_tags.truncate(MAX_TAG_TASTE_ROWS.min(max_categories));
     if profile_tags.is_empty() {
         return Ok(Vec::new());
     }
 
+    let row_tags: Vec<String> = profile_tags
+        .into_iter()
+        .map(|(tag, _score)| tag)
+        .filter(|tag| {
+            allow_segmented_rows
+                || !SEGMENTED_RECOMMENDATION_TAGS.contains(&tag.as_str())
+        })
+        .collect();
+    if row_tags.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let fetch_limit = item_limit
         .saturating_mul(TAG_TASTE_FETCH_LIMIT_MULTIPLIER)
         .clamp(48, 128);
-    let candidates = db::Media::get_by_filter(
-        db,
-        &db::MediaFilter {
-            kind: Some(vec![kind.clone()]),
+    let mut profile_tag_values: Vec<String> = baseline_tags
+        .iter()
+        .cloned()
+        .collect();
+    profile_tag_values.sort();
+    let candidate_ids_by_tag =
+        db::Media::get_tag_taste_candidates_for_recommendations_batch(
+            db,
+            &user_id,
+            &kind,
             parent_id,
-            recursive: parent_id.is_some(),
-            user_id: Some(user_id),
-            user_state: Some(db::UserMediaStateFilter {
-                user_id: Some(user_id),
-                played: Some(false),
+            &row_tags,
+            &profile_tag_values,
+            fetch_limit,
+        )
+        .await?;
+    let candidate_ids: Vec<Uuid> = candidate_ids_by_tag
+        .values()
+        .flatten()
+        .copied()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let candidates = if candidate_ids.is_empty() {
+        HashMap::new()
+    } else {
+        db::Media::get_by_filter(
+            db,
+            &db::MediaFilter {
+                id: Some(candidate_ids.clone()),
+                kind: Some(vec![kind.clone()]),
+                limit: Some(candidate_ids.len() as u32),
+                total_count: false,
                 ..Default::default()
-            }),
-            sort_by: vec![api::ItemSortBy::SimilarityScore],
-            sort_order: vec![api::SortOrder::Descending],
-            limit: Some(fetch_limit),
-            total_count: false,
-            ..Default::default()
-        },
-    )
-    .await?
-    .records;
+            },
+        )
+        .await?
+        .records
+        .into_iter()
+        .map(|media| (media.id, media))
+        .collect::<HashMap<_, _>>()
+    };
 
     let mut categories = Vec::new();
-    for (tag, _tag_score) in profile_tags {
-        if !allow_segmented_rows && SEGMENTED_RECOMMENDATION_TAGS.contains(&tag.as_str()) {
-            continue;
-        }
-
-        let mut row_candidates: Vec<_> = candidates
-            .iter()
+    for tag in row_tags {
+        let row_candidates: Vec<_> = candidate_ids_by_tag
+            .get(&tag)
+            .into_iter()
+            .flatten()
             .enumerate()
-            .filter_map(|(index, media)| {
-                if excluded_title_keys.contains(&recommendation_title_key(&media.title)) {
+            .filter_map(|(index, id)| {
+                let media = candidates.get(id)?;
+                if !compatibility_profile.allows(media, None) {
+                    return None;
+                }
+                if excluded_title_keys.contains(&recommendation_title_key(&media.title))
+                {
                     return None;
                 }
                 if !passes_segmented_media_gate(baseline_tags, None, media) {
@@ -1551,32 +1912,23 @@ async fn build_tag_taste_categories(
             })
             .collect();
 
-        row_candidates.sort_by(|left, right| {
-            right
-                .2
-                .partial_cmp(&left.2)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| left.3.cmp(&right.3))
-        });
-        let items: Vec<_> = row_candidates
-            .into_iter()
-            .filter_map(|(id, item, _confidence, _index)| {
-                if seen_item_ids.insert(id) {
-                    Some(item)
-                } else {
-                    None
-                }
-            })
-            .take(item_limit as usize)
-            .collect();
+        let items = select_ranked_unseen_items(
+            row_candidates
+                .into_iter()
+                .map(|(_id, item, confidence, _index)| (item, confidence))
+                .collect(),
+            seen_item_ids,
+            item_limit as usize,
+            MIN_TAG_TASTE_ROW_ITEMS,
+        );
 
-        if items.len() >= MIN_TAG_TASTE_ROW_ITEMS {
+        if !items.is_empty() {
             categories.push(api::RecommendationDto {
                 category_id: Some(Uuid::new_v5(
                     &Uuid::NAMESPACE_OID,
                     format!("remux-taste-tag-{tag}").as_bytes(),
                 )),
-                recommendation_type: api::RecommendationType::SimilarToRecentlyPlayed,
+                recommendation_type: api::RecommendationType::MatchesUserTaste,
                 baseline_item_name: Some(tag),
                 baseline_item_id: None,
                 items,
@@ -1598,6 +1950,7 @@ async fn build_taste_similarity_categories(
     recently_played: &[db::Media],
     liked: &[db::Media],
     baseline_tags: &HashSet<String>,
+    compatibility_profile: &RecommendationCompatibilityProfile,
     allow_segmented_genre_rows: bool,
     kind: db::MediaKind,
     parent_id: Option<Uuid>,
@@ -1611,7 +1964,7 @@ async fn build_taste_similarity_categories(
 
     let mut genre_scores: HashMap<Uuid, usize> = HashMap::new();
     let fetch_limit = item_limit
-        .saturating_mul(8)
+        .saturating_mul(4)
         .clamp(24, 64);
 
     let mut categories = build_tag_taste_categories(
@@ -1621,6 +1974,7 @@ async fn build_taste_similarity_categories(
         recently_played,
         liked,
         baseline_tags,
+        compatibility_profile,
         allow_segmented_genre_rows,
         kind.clone(),
         parent_id,
@@ -1669,10 +2023,13 @@ async fn build_taste_similarity_categories(
         .collect();
     top_genres.sort_by(|a, b| {
         b.1.cmp(&a.1)
+            .then_with(|| {
+                a.0.cmp(&b.0)
+            })
     });
     let top_genre_ids: Vec<Uuid> = top_genres
         .into_iter()
-        .take(max_categories)
+        .take(max_categories.saturating_sub(categories.len()))
         .map(|(id, _)| id)
         .collect();
 
@@ -1680,6 +2037,43 @@ async fn build_taste_similarity_categories(
         HashMap::new()
     } else {
         genre_names_for_ids(db, &top_genre_ids).await?
+    };
+
+    let candidate_ids_by_genre =
+        db::Media::get_genre_taste_candidates_for_recommendations_batch(
+            db,
+            &user_id,
+            &kind,
+            parent_id,
+            &top_genre_ids,
+            fetch_limit,
+        )
+        .await?;
+    let candidate_ids: Vec<Uuid> = candidate_ids_by_genre
+        .values()
+        .flatten()
+        .copied()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let candidate_media = if candidate_ids.is_empty() {
+        HashMap::new()
+    } else {
+        db::Media::get_by_filter(
+            db,
+            &db::MediaFilter {
+                id: Some(candidate_ids.clone()),
+                kind: Some(vec![kind.clone()]),
+                limit: Some(candidate_ids.len() as u32),
+                total_count: false,
+                ..Default::default()
+            },
+        )
+        .await?
+        .records
+        .into_iter()
+        .map(|media| (media.id, media))
+        .collect::<HashMap<_, _>>()
     };
 
     for genre_id in top_genre_ids {
@@ -1697,27 +2091,16 @@ async fn build_taste_similarity_categories(
             continue;
         }
 
-        let items = db::Media::get_by_filter(
-            db,
-            &db::MediaFilter {
-                kind: Some(vec![kind.clone()]),
-                parent_id,
-                recursive: parent_id.is_some(),
-                genre_ids: Some(vec![genre_id]),
-                user_state: Some(db::UserMediaStateFilter {
-                    user_id: Some(user_id),
-                    played: Some(false),
-                    ..Default::default()
-                }),
-                sort_by: vec![api::ItemSortBy::CommunityRating],
-                sort_order: vec![api::SortOrder::Descending],
-                limit: Some(fetch_limit),
-                total_count: false,
-                ..Default::default()
-            },
-        )
-        .await?
-        .records;
+        let items: Vec<db::Media> = candidate_ids_by_genre
+            .get(&genre_id)
+            .into_iter()
+            .flatten()
+            .filter_map(|id| {
+                candidate_media
+                    .get(id)
+                    .cloned()
+            })
+            .collect();
 
         if items.is_empty() {
             continue;
@@ -1727,7 +2110,11 @@ async fn build_taste_similarity_categories(
             .into_iter()
             .enumerate()
             .filter_map(|(index, media)| {
-                if excluded_title_keys.contains(&recommendation_title_key(&media.title)) {
+                if !compatibility_profile.allows(&media, None) {
+                    return None;
+                }
+                if excluded_title_keys.contains(&recommendation_title_key(&media.title))
+                {
                     return None;
                 }
                 if !passes_segmented_media_gate(baseline_tags, None, &media) {
@@ -1763,7 +2150,9 @@ async fn build_taste_similarity_categories(
                 let context = top_overlap_context_tags(baseline_tags, &media, 2);
                 let reason = taste_profile_reason(Some(&genre_name), &context);
                 attach_recommendation_explanation(&mut item, &reason, signals);
-                let row_context = context.first().cloned();
+                let row_context = context
+                    .first()
+                    .cloned();
                 Some((media.id, item, confidence, index, row_context))
             })
             .collect();
@@ -1772,7 +2161,10 @@ async fn build_taste_similarity_categories(
                 .2
                 .partial_cmp(&left.2)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| left.3.cmp(&right.3))
+                .then_with(|| {
+                    left.3
+                        .cmp(&right.3)
+                })
         });
         let mut row_context_counts: HashMap<String, usize> = HashMap::new();
         let category_items: Vec<_> = candidate_items
@@ -1780,7 +2172,9 @@ async fn build_taste_similarity_categories(
             .filter_map(|(id, item, _confidence, _index, row_context)| {
                 if seen_item_ids.insert(id) {
                     if let Some(row_context) = row_context {
-                        *row_context_counts.entry(row_context).or_insert(0) += 1;
+                        *row_context_counts
+                            .entry(row_context)
+                            .or_insert(0) += 1;
                     }
                     Some(item)
                 } else {
@@ -1797,7 +2191,11 @@ async fn build_taste_similarity_categories(
                 .max_by(|left, right| {
                     left.1
                         .cmp(&right.1)
-                        .then_with(|| right.0.cmp(&left.0))
+                        .then_with(|| {
+                            right
+                                .0
+                                .cmp(&left.0)
+                        })
                 })
                 .map(|(tag, _count)| tag);
             let baseline_name = row_context
@@ -1809,7 +2207,7 @@ async fn build_taste_similarity_categories(
                     &Uuid::NAMESPACE_OID,
                     format!("remux-taste-{baseline_name}").as_bytes(),
                 )),
-                recommendation_type: api::RecommendationType::SimilarToRecentlyPlayed,
+                recommendation_type: api::RecommendationType::MatchesUserTaste,
                 baseline_item_name: Some(baseline_name),
                 baseline_item_id: None,
                 items: category_items,
@@ -1861,6 +2259,9 @@ async fn build_taste_similarity_categories(
         .into_iter()
         .enumerate()
         .filter_map(|(index, media)| {
+            if !compatibility_profile.allows(&media, None) {
+                return None;
+            }
             if excluded_title_keys.contains(&recommendation_title_key(&media.title)) {
                 return None;
             }
@@ -1886,13 +2287,19 @@ async fn build_taste_similarity_categories(
                 SIGNAL_SCORE_TAG_MATCH,
             );
             let context = top_overlap_context_tags(baseline_tags, &media, 2);
-            let reason = match kind {
-                db::MediaKind::Series => popular_taste_reason(
-                    "popular unwatched shows",
-                    &context,
-                ),
-                _ if categories.is_empty() => taste_profile_reason(None, &context),
-                _ => popular_taste_reason("popular unwatched titles", &context),
+            let reason = if baseline_tags.is_empty() {
+                match kind {
+                    db::MediaKind::Series => "Popular unwatched shows".to_string(),
+                    _ => "Popular unwatched titles".to_string(),
+                }
+            } else {
+                match kind {
+                    db::MediaKind::Series => {
+                        popular_taste_reason("popular unwatched shows", &context)
+                    }
+                    _ if categories.is_empty() => taste_profile_reason(None, &context),
+                    _ => popular_taste_reason("popular unwatched titles", &context),
+                }
             };
             attach_recommendation_explanation(&mut item, &reason, signals);
             Some((media.id, item, confidence, index))
@@ -1903,7 +2310,10 @@ async fn build_taste_similarity_categories(
             .2
             .partial_cmp(&left.2)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.3.cmp(&right.3))
+            .then_with(|| {
+                left.3
+                    .cmp(&right.3)
+            })
     });
     let items: Vec<_> = candidate_items
         .into_iter()
@@ -1919,13 +2329,31 @@ async fn build_taste_similarity_categories(
 
     if !items.is_empty() {
         categories.push(api::RecommendationDto {
-            category_id: Some(Uuid::new_v5(&Uuid::NAMESPACE_OID, b"remux-taste-popular")),
-            recommendation_type: api::RecommendationType::SimilarToRecentlyPlayed,
-            baseline_item_name: Some(match kind {
-                db::MediaKind::Series => "popular unwatched shows matching your taste",
-                _ => "popular picks matching your taste",
-            }
-            .to_string()),
+            category_id: Some(Uuid::new_v5(
+                &Uuid::NAMESPACE_OID,
+                b"remux-taste-popular",
+            )),
+            recommendation_type: if baseline_tags.is_empty() {
+                api::RecommendationType::Popular
+            } else {
+                api::RecommendationType::MatchesUserTaste
+            },
+            baseline_item_name: Some(
+                if baseline_tags.is_empty() {
+                    match kind {
+                        db::MediaKind::Series => "popular unwatched shows",
+                        _ => "popular picks",
+                    }
+                } else {
+                    match kind {
+                        db::MediaKind::Series => {
+                            "popular unwatched shows matching your taste"
+                        }
+                        _ => "popular picks matching your taste",
+                    }
+                }
+                .to_string(),
+            ),
             baseline_item_id: None,
             items,
         });
@@ -1956,13 +2384,18 @@ async fn build_taste_similarity_categories(
         let recent_items: Vec<_> = recent_items
             .into_iter()
             .filter_map(|media| {
-                if excluded_title_keys.contains(&recommendation_title_key(&media.title)) {
+                if !compatibility_profile.allows(&media, None) {
+                    return None;
+                }
+                if excluded_title_keys.contains(&recommendation_title_key(&media.title))
+                {
                     return None;
                 }
                 if !passes_segmented_media_gate(baseline_tags, None, &media) {
                     return None;
                 }
-                if !has_profile_overlap(baseline_tags, &media.tags, min_overlap.max(1)) {
+                if !has_profile_overlap(baseline_tags, &media.tags, min_overlap.max(1))
+                {
                     return None;
                 }
                 if !seen_item_ids.insert(media.id) {
@@ -1979,12 +2412,18 @@ async fn build_taste_similarity_categories(
                     SIGNAL_SCORE_TAG_MATCH,
                 );
                 let context = top_overlap_context_tags(baseline_tags, &media, 2);
-                let reason = match kind {
-                    db::MediaKind::Series => recent_taste_reason(
-                        "recently added shows",
-                        &context,
-                    ),
-                    _ => recent_taste_reason("recently added titles", &context),
+                let reason = if baseline_tags.is_empty() {
+                    match kind {
+                        db::MediaKind::Series => "Recently added shows".to_string(),
+                        _ => "Recently added titles".to_string(),
+                    }
+                } else {
+                    match kind {
+                        db::MediaKind::Series => {
+                            recent_taste_reason("recently added shows", &context)
+                        }
+                        _ => recent_taste_reason("recently added titles", &context),
+                    }
                 };
                 attach_recommendation_explanation(&mut item, &reason, signals);
                 Some(item)
@@ -1994,13 +2433,31 @@ async fn build_taste_similarity_categories(
 
         if !recent_items.is_empty() {
             categories.push(api::RecommendationDto {
-                category_id: Some(Uuid::new_v5(&Uuid::NAMESPACE_OID, b"remux-taste-recent")),
-                recommendation_type: api::RecommendationType::SimilarToRecentlyPlayed,
-                baseline_item_name: Some(match kind {
-                    db::MediaKind::Series => "recently added shows matching your taste",
-                    _ => "recently added picks matching your taste",
-                }
-                .to_string()),
+                category_id: Some(Uuid::new_v5(
+                    &Uuid::NAMESPACE_OID,
+                    b"remux-taste-recent",
+                )),
+                recommendation_type: if baseline_tags.is_empty() {
+                    api::RecommendationType::RecentlyAdded
+                } else {
+                    api::RecommendationType::MatchesUserTaste
+                },
+                baseline_item_name: Some(
+                    if baseline_tags.is_empty() {
+                        match kind {
+                            db::MediaKind::Series => "recently added shows",
+                            _ => "recently added picks",
+                        }
+                    } else {
+                        match kind {
+                            db::MediaKind::Series => {
+                                "recently added shows matching your taste"
+                            }
+                            _ => "recently added picks matching your taste",
+                        }
+                    }
+                    .to_string(),
+                ),
                 baseline_item_id: None,
                 items: recent_items,
             });
@@ -2085,8 +2542,21 @@ async fn gather_recently_consumed(
         .await?
         .records;
 
+        let now = chrono::Utc::now().naive_utc();
+        let mut seen_sessions = HashSet::new();
         let mut media_ids: Vec<Uuid> = Vec::new();
         for event in events {
+            if let Some(session_id) = &event.session_id
+                && !seen_sessions.insert((event.media_id, session_id.clone()))
+            {
+                continue;
+            }
+            if event
+                .recommendation_weight_at(now)
+                .is_none()
+            {
+                continue;
+            }
             if event_ids.insert(event.media_id) {
                 media_ids.push(event.media_id);
             }
@@ -2172,6 +2642,8 @@ async fn gather_recently_consumed_series(
            SELECT media_id, COALESCE(created_at, '1970-01-01 00:00:00') AS activity_at \
            FROM watch_history \
            WHERE user_id = ? AND event_type = 'playback_stop' \
+             AND (completed = 1 OR position_ticks >= 1200000000 \
+                  OR (runtime_seconds > 0 AND position_ticks >= runtime_seconds * 1000000)) \
          ) active \
          JOIN media e ON e.id = active.media_id \
          WHERE e.kind = 'episode' AND e.grandparent_id IS NOT NULL \
@@ -2230,6 +2702,7 @@ async fn build_similar_categories(
     excluded_title_keys: &HashSet<String>,
     baselines: &[db::Media],
     baseline_tags: &HashSet<String>,
+    compatibility_profile: &RecommendationCompatibilityProfile,
     kind: db::MediaKind,
     parent_id: Option<Uuid>,
     item_limit: u32,
@@ -2249,10 +2722,16 @@ async fn build_similar_categories(
     let mut record_fetch_elapsed_ms = 0u128;
     let mut candidate_filter_elapsed_ms = 0u128;
     let baseline_scan_limit = similar_baseline_scan_limit(item_limit, baselines.len());
-    for baseline in baselines.iter().take(baseline_scan_limit) {
+    let candidate_fetch_limit = item_limit
+        .saturating_mul(6)
+        .clamp(24, 48);
+    let mut prepared_baselines = Vec::new();
+    for baseline in baselines
+        .iter()
+        .take(baseline_scan_limit)
+    {
         scanned_baselines += 1;
-        let baseline = baseline.clone();
-        let mut baseline = baseline;
+        let mut baseline = baseline.clone();
 
         let relation_load_started_at = Instant::now();
         if baseline
@@ -2263,13 +2742,9 @@ async fn build_similar_categories(
                 .load_relations(db)
                 .await?;
         }
-        relation_load_elapsed_ms += relation_load_started_at.elapsed().as_millis();
-        let baseline_tag_set: HashSet<String> = baseline
-            .tags
-            .iter()
-            .filter_map(|tag| clean_recommendation_tag(tag))
-            .collect();
-        let baseline_is_segmented = media_has_segmented_identity(&baseline);
+        relation_load_elapsed_ms += relation_load_started_at
+            .elapsed()
+            .as_millis();
         let baseline_genre_ids: Vec<Uuid> = baseline
             .relations
             .as_ref()
@@ -2297,23 +2772,44 @@ async fn build_similar_categories(
         if baseline_genre_ids.len() < 2 {
             continue;
         }
-        let genre_name_started_at = Instant::now();
-        let baseline_genre_names = genre_names_for_ids(db, &baseline_genre_ids).await?;
-        genre_name_elapsed_ms += genre_name_started_at.elapsed().as_millis();
+        prepared_baselines.push((baseline, baseline_genre_ids));
+    }
 
-        let candidate_fetch_limit = item_limit
-            .saturating_mul(6)
-            .clamp(24, 48);
-        let similar_query_started_at = Instant::now();
-        let scored_ids = db::Media::get_similar_by_genres_for_recommendations(
+    let batch_input: Vec<_> = prepared_baselines
+        .iter()
+        .map(|(baseline, genre_ids)| (baseline.id, genre_ids.clone()))
+        .collect();
+    let similar_query_started_at = Instant::now();
+    let mut scored_ids_by_baseline =
+        db::Media::get_similar_by_genres_for_recommendations_batch(
             db,
-            &baseline.id,
+            &user_id,
             &kind,
-            &baseline_genre_ids,
+            parent_id,
+            &batch_input,
             candidate_fetch_limit,
         )
         .await?;
-        similar_query_elapsed_ms += similar_query_started_at.elapsed().as_millis();
+    similar_query_elapsed_ms += similar_query_started_at
+        .elapsed()
+        .as_millis();
+
+    for (baseline, baseline_genre_ids) in prepared_baselines {
+        let baseline_tag_set: HashSet<String> = baseline
+            .tags
+            .iter()
+            .filter_map(|tag| clean_recommendation_tag(tag))
+            .collect();
+        let baseline_is_segmented = media_has_segmented_identity(&baseline);
+        let genre_name_started_at = Instant::now();
+        let baseline_genre_names = genre_names_for_ids(db, &baseline_genre_ids).await?;
+        genre_name_elapsed_ms += genre_name_started_at
+            .elapsed()
+            .as_millis();
+
+        let scored_ids = scored_ids_by_baseline
+            .remove(&baseline.id)
+            .unwrap_or_default();
 
         if scored_ids.is_empty() {
             continue;
@@ -2362,7 +2858,9 @@ async fn build_similar_categories(
         let overlap_query_started_at = Instant::now();
         let overlap_by_item =
             overlapping_genres_by_item(db, &ordered_ids, &baseline_genre_ids).await?;
-        overlap_query_elapsed_ms += overlap_query_started_at.elapsed().as_millis();
+        overlap_query_elapsed_ms += overlap_query_started_at
+            .elapsed()
+            .as_millis();
         let record_limit = std::cmp::min(
             ordered_ids.len(),
             (item_limit as usize)
@@ -2391,7 +2889,9 @@ async fn build_similar_categories(
         )
         .await?
         .records;
-        record_fetch_elapsed_ms += record_fetch_started_at.elapsed().as_millis();
+        record_fetch_elapsed_ms += record_fetch_started_at
+            .elapsed()
+            .as_millis();
 
         let mut media_by_id: HashMap<Uuid, db::Media> = HashMap::new();
         for media in records {
@@ -2402,19 +2902,34 @@ async fn build_similar_categories(
         let mut candidate_items: Vec<_> = ordered_ids
             .iter()
             .copied()
-            .filter_map(|id| media_by_id.get(&id).cloned())
+            .filter_map(|id| {
+                media_by_id
+                    .get(&id)
+                    .cloned()
+            })
             .take(
                 (item_limit as usize)
                     .saturating_mul(4)
                     .max(32),
             )
             .filter_map(|m| {
+                if !compatibility_profile.allows(
+                    &m,
+                    baseline
+                        .original_language
+                        .as_deref(),
+                ) {
+                    return None;
+                }
                 if m.id == baseline.id
                     || excluded_title_keys.contains(&recommendation_title_key(&m.title))
                 {
                     return None;
                 }
                 if media_has_segmented_identity(&m) != baseline_is_segmented {
+                    return None;
+                }
+                if !audience_segments_compatible(&baseline, &m) {
                     return None;
                 }
                 if !passes_segmented_media_gate(
@@ -2451,6 +2966,9 @@ async fn build_similar_categories(
                 if !has_profile_overlap(&baseline_tag_set, &m.tags, baseline_overlap) {
                     return None;
                 }
+                if shared_primary_tag_count(&baseline_tag_set, &m.tags) == 0 {
+                    return None;
+                }
                 if !has_profile_overlap(
                     baseline_tags,
                     &m.tags,
@@ -2464,14 +2982,13 @@ async fn build_similar_categories(
                 if overlap_count < min_overlap as usize {
                     return None;
                 }
-                if !seen_item_ids.insert(m.id) {
+                if seen_item_ids.contains(&m.id) {
                     return None;
                 }
 
                 let baseline_tags_overlap =
                     shared_tag_score(&baseline_tag_set, &m.tags);
-                let global_tags_overlap =
-                    shared_tag_score(baseline_tags, &m.tags);
+                let global_tags_overlap = shared_tag_score(baseline_tags, &m.tags);
                 let confidence = (baseline_tags_overlap
                     * RECOMMENDATION_SCORE_BASELINE_TAG_WEIGHT)
                     + (global_tags_overlap * RECOMMENDATION_SCORE_PROFILE_TAG_WEIGHT)
@@ -2510,14 +3027,30 @@ async fn build_similar_categories(
             let mut fallback_items: Vec<_> = ordered_ids
                 .iter()
                 .copied()
-                .filter_map(|id| media_by_id.get(&id).cloned())
+                .filter_map(|id| {
+                    media_by_id
+                        .get(&id)
+                        .cloned()
+                })
                 .filter_map(|m| {
+                    if !compatibility_profile.allows(
+                        &m,
+                        baseline
+                            .original_language
+                            .as_deref(),
+                    ) {
+                        return None;
+                    }
                     if m.id == baseline.id
-                        || excluded_title_keys.contains(&recommendation_title_key(&m.title))
+                        || excluded_title_keys
+                            .contains(&recommendation_title_key(&m.title))
                     {
                         return None;
                     }
                     if media_has_segmented_identity(&m) != baseline_is_segmented {
+                        return None;
+                    }
+                    if !audience_segments_compatible(&baseline, &m) {
                         return None;
                     }
                     if !passes_segmented_media_gate(
@@ -2537,27 +3070,36 @@ async fn build_similar_categories(
                         return None;
                     }
 
-                        let baseline_tags_overlap_count = shared_tag_count(&baseline_tag_set, &m.tags);
-                    let global_tags_overlap_count = shared_tag_count(baseline_tags, &m.tags);
+                    if shared_primary_tag_count(&baseline_tag_set, &m.tags) == 0 {
+                        return None;
+                    }
+
+                    let baseline_tags_overlap_count =
+                        shared_tag_count(&baseline_tag_set, &m.tags);
+                    let global_tags_overlap_count =
+                        shared_tag_count(baseline_tags, &m.tags);
                     if baseline_tags_overlap_count == 0
                         && global_tags_overlap_count == 0
                         && overlap_count < (min_overlap as usize).saturating_add(1)
                     {
                         return None;
                     }
-                    if !seen_item_ids.insert(m.id) {
+                    if seen_item_ids.contains(&m.id) {
                         return None;
                     }
 
                     let genre_overlap_score = scored_overlap
                         .get(&m.id)
                         .copied()
-                        .unwrap_or(0) as f64;
-                    let baseline_tags_overlap = shared_tag_score(&baseline_tag_set, &m.tags);
+                        .unwrap_or(0)
+                        as f64;
+                    let baseline_tags_overlap =
+                        shared_tag_score(&baseline_tag_set, &m.tags);
                     let global_tags_overlap = shared_tag_score(baseline_tags, &m.tags);
                     let confidence = (baseline_tags_overlap
                         * RECOMMENDATION_SCORE_BASELINE_TAG_WEIGHT)
-                        + (global_tags_overlap * RECOMMENDATION_SCORE_PROFILE_TAG_WEIGHT)
+                        + (global_tags_overlap
+                            * RECOMMENDATION_SCORE_PROFILE_TAG_WEIGHT)
                         + (genre_overlap_score * RECOMMENDATION_SCORE_GENRE_WEIGHT);
 
                     let mut item = api::db_media_to_item(m.clone(), false);
@@ -2583,30 +3125,28 @@ async fn build_similar_categories(
                         SIGNAL_SCORE_TAG_MATCH,
                     );
                     let context = top_overlap_context_tags(&baseline_tag_set, &m, 2);
-                    let reason =
-                        reason_for_recommendation_type(rec_type, &baseline.title, &context);
+                    let reason = reason_for_recommendation_type(
+                        rec_type,
+                        &baseline.title,
+                        &context,
+                    );
                     attach_recommendation_explanation(&mut item, &reason, signals);
                     Some((item, confidence))
                 })
                 .collect();
             candidate_items.append(&mut fallback_items);
         }
-        candidate_filter_elapsed_ms += candidate_filter_started_at.elapsed().as_millis();
+        candidate_filter_elapsed_ms += candidate_filter_started_at
+            .elapsed()
+            .as_millis();
 
-        candidate_items.sort_by(|left, right| {
-            right
-                .1
-                .partial_cmp(&left.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        let take_limit = item_limit as usize;
-        let mut items: Vec<_> = candidate_items
-            .into_iter()
-            .map(|(item, _)| item)
-            .take(take_limit)
-            .collect();
-        if items.len() < min_items {
+        let items = select_ranked_unseen_items(
+            candidate_items,
+            seen_item_ids,
+            item_limit as usize,
+            min_items,
+        );
+        if items.is_empty() {
             continue;
         }
         cats.push(api::RecommendationDto {
@@ -2644,6 +3184,50 @@ async fn build_similar_categories(
 fn similar_baseline_scan_limit(item_limit: u32, baseline_count: usize) -> usize {
     let scan_limit = if item_limit <= 5 { 4 } else { 5 };
     baseline_count.min(scan_limit)
+}
+
+fn select_ranked_unseen_items(
+    mut candidates: Vec<(api::BaseItemDto, f64)>,
+    seen_item_ids: &mut HashSet<Uuid>,
+    item_limit: usize,
+    min_items: usize,
+) -> Vec<api::BaseItemDto> {
+    candidates.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                left.0
+                    .id
+                    .cmp(
+                        &right
+                            .0
+                            .id,
+                    )
+            })
+    });
+
+    let mut selected_ids = HashSet::new();
+    let selected: Vec<_> = candidates
+        .into_iter()
+        .filter(|(item, _)| {
+            !seen_item_ids.contains(&item.id) && selected_ids.insert(item.id)
+        })
+        .map(|(item, _)| item)
+        .take(item_limit)
+        .collect();
+
+    if selected.len() < min_items {
+        return Vec::new();
+    }
+
+    seen_item_ids.extend(
+        selected
+            .iter()
+            .map(|item| item.id),
+    );
+    selected
 }
 
 #[cfg(test)]
@@ -2699,6 +3283,151 @@ mod tests {
     }
 
     #[test]
+    fn mood_tags_cannot_be_the_only_title_similarity_evidence() {
+        let yesterday_tags = tag_set(&[
+            "alternative-reality",
+            "cheerful",
+            "musician",
+            "rock-concert",
+        ]);
+        let trolls_tags = vec![
+            "cheerful".to_string(),
+            "friendship".to_string(),
+            "jukebox-musical".to_string(),
+        ];
+
+        assert_eq!(shared_tag_count(&yesterday_tags, &trolls_tags), 1);
+        assert_eq!(shared_primary_tag_count(&yesterday_tags, &trolls_tags), 0);
+        assert!(!has_meaningful_overlap(&yesterday_tags, 3, &trolls_tags));
+    }
+
+    #[test]
+    fn source_material_tags_are_secondary_evidence() {
+        let profile = tag_set(&[
+            "based-on-novel-or-book",
+            "based-on-comic",
+            "alien",
+            "time-travel",
+        ]);
+        let candidate = db::Media {
+            tags: vec![
+                "based-on-novel-or-book".to_string(),
+                "based-on-comic".to_string(),
+                "alien".to_string(),
+                "time-travel".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(shared_primary_tag_count(&profile, &candidate.tags), 2);
+        assert_eq!(shared_tag_score(&profile, &candidate.tags), 2.5);
+        assert!(!is_strong_taste_row_tag("based-on-novel-or-book"));
+        assert_eq!(
+            top_overlap_context_tags(&profile, &candidate, 2),
+            vec!["alien".to_string(), "time-travel".to_string()]
+        );
+
+        let mut profile_history = vec!["based-on-novel-or-book".to_string(); 10];
+        profile_history.extend(vec!["alien".to_string(); 3]);
+        assert_eq!(
+            recommendation_profile_tags(profile_history.iter(), 1, 2),
+            tag_set(&["alien"])
+        );
+    }
+
+    #[test]
+    fn explicit_adult_and_young_children_audiences_do_not_cross_match() {
+        let rick_and_morty = db::Media {
+            title: "Rick and Morty".to_string(),
+            certification_age: Some(14),
+            tags: vec!["adult-animation".to_string(), "alien".to_string()],
+            ..Default::default()
+        };
+        let ben_10 = db::Media {
+            title: "Ben 10".to_string(),
+            certification_age: Some(7),
+            tags: vec!["alien".to_string(), "time-travel".to_string()],
+            ..Default::default()
+        };
+        let ordinary_teen_animation = db::Media {
+            title: "Ordinary animation".to_string(),
+            certification_age: Some(14),
+            tags: vec!["animation".to_string(), "alien".to_string()],
+            ..Default::default()
+        };
+
+        assert!(!audience_segments_compatible(&rick_and_morty, &ben_10));
+        assert!(!audience_segments_compatible(&ben_10, &rick_and_morty));
+        assert!(audience_segments_compatible(
+            &ordinary_teen_animation,
+            &ben_10
+        ));
+    }
+
+    #[test]
+    fn language_profile_filters_unfamiliar_languages_but_keeps_profiled_anime() {
+        let allowed = tag_set(&["en"]);
+        let cinema_paradiso = db::Media {
+            original_language: Some("it".to_string()),
+            ..Default::default()
+        };
+        let the_chorus = db::Media {
+            original_language: Some("fr".to_string()),
+            ..Default::default()
+        };
+        let anime = db::Media {
+            original_language: Some("ja".to_string()),
+            tags: vec!["anime".to_string()],
+            ..Default::default()
+        };
+
+        assert!(!candidate_language_compatible(
+            &allowed,
+            false,
+            None,
+            &cinema_paradiso
+        ));
+        assert!(!candidate_language_compatible(
+            &allowed,
+            false,
+            None,
+            &the_chorus
+        ));
+        assert!(candidate_language_compatible(&allowed, true, None, &anime));
+        assert!(candidate_language_compatible(
+            &allowed,
+            false,
+            Some("it"),
+            &cinema_paradiso
+        ));
+    }
+
+    #[test]
+    fn silent_films_require_explicit_format_affinity() {
+        let modern_times = db::Media {
+            tags: vec![
+                "black-and-white".to_string(),
+                "silent-film".to_string(),
+                "slapstick-comedy".to_string(),
+            ],
+            ..Default::default()
+        };
+        let comedy_profile = tag_set(&["comedy", "romance"]);
+        let silent_profile = tag_set(&["comedy", "silent-film"]);
+
+        assert!(!passes_segmented_media_gate(
+            &comedy_profile,
+            None,
+            &modern_times
+        ));
+        assert!(passes_segmented_media_gate(
+            &silent_profile,
+            None,
+            &modern_times
+        ));
+    }
+
+    #[test]
     fn recommendation_profile_tags_uses_frequent_tags_first() {
         let raw = vec![
             "action".to_string(),
@@ -2725,7 +3454,11 @@ mod tests {
         let anime_media_tags = vec!["anime".to_string(), "adventure".to_string()];
         let anime_profile = tag_set(&["anime", "adventure"]);
         let adventure_profile = tag_set(&["adventure"]);
-        assert!(passes_segmented_tag_gate(&anime_profile, None, &anime_media_tags));
+        assert!(passes_segmented_tag_gate(
+            &anime_profile,
+            None,
+            &anime_media_tags
+        ));
         assert!(!passes_segmented_tag_gate(
             &adventure_profile,
             None,
@@ -2889,6 +3622,434 @@ mod tests {
 
         assert_eq!(deduped.len(), 3);
     }
+
+    #[test]
+    fn final_category_dedupe_refills_from_trailing_rows() {
+        let duplicate_category_id = Uuid::new_v4();
+        let replacement_category_id = Uuid::new_v4();
+        let item = |name: &str| api::BaseItemDto {
+            id: Uuid::new_v4(),
+            name: Some(name.to_string()),
+            ..Default::default()
+        };
+        let category = |category_id, name: &str, item| api::RecommendationDto {
+            category_id: Some(category_id),
+            recommendation_type: api::RecommendationType::MatchesUserTaste,
+            baseline_item_name: Some(name.to_string()),
+            baseline_item_id: None,
+            items: vec![item],
+        };
+
+        let finalized = finalize_recommendation_categories(
+            vec![
+                category(duplicate_category_id, "Drama", item("First")),
+                category(duplicate_category_id, "Drama", item("Duplicate row")),
+                category(replacement_category_id, "Comedy", item("Replacement")),
+            ],
+            2,
+        );
+
+        assert_eq!(finalized.len(), 2);
+        assert_eq!(finalized[0].category_id, Some(duplicate_category_id));
+        assert_eq!(finalized[1].category_id, Some(replacement_category_id));
+    }
+
+    #[test]
+    fn ranked_selection_only_reserves_items_that_are_emitted() {
+        let top_id = Uuid::new_v4();
+        let unused_id = Uuid::new_v4();
+        let mut seen = HashSet::new();
+        let selected = select_ranked_unseen_items(
+            vec![
+                (
+                    api::BaseItemDto {
+                        id: unused_id,
+                        ..Default::default()
+                    },
+                    1.0,
+                ),
+                (
+                    api::BaseItemDto {
+                        id: top_id,
+                        ..Default::default()
+                    },
+                    2.0,
+                ),
+            ],
+            &mut seen,
+            1,
+            1,
+        );
+
+        assert_eq!(
+            selected
+                .iter()
+                .map(|item| item.id)
+                .collect::<Vec<_>>(),
+            vec![top_id]
+        );
+        assert!(seen.contains(&top_id));
+        assert!(!seen.contains(&unused_id));
+    }
+
+    #[test]
+    fn ranked_selection_does_not_reserve_an_incomplete_row() {
+        let candidate_id = Uuid::new_v4();
+        let mut seen = HashSet::new();
+        let selected = select_ranked_unseen_items(
+            vec![(
+                api::BaseItemDto {
+                    id: candidate_id,
+                    ..Default::default()
+                },
+                1.0,
+            )],
+            &mut seen,
+            5,
+            2,
+        );
+
+        assert!(selected.is_empty());
+        assert!(!seen.contains(&candidate_id));
+    }
+
+    #[test]
+    fn recommendation_limits_apply_defaults_and_bounds() {
+        assert_eq!(recommendation_limits(None, None), (5, 8));
+        assert_eq!(recommendation_limits(Some(0), Some(0)), (1, 1));
+        assert_eq!(recommendation_limits(Some(100), Some(100)), (12, 12));
+    }
+
+    #[test]
+    fn shuffle_preserves_categories_and_top_ranked_items() {
+        let category_ids = [Uuid::new_v4(), Uuid::new_v4()];
+        let mut categories: Vec<_> = category_ids
+            .iter()
+            .map(|category_id| api::RecommendationDto {
+                category_id: Some(*category_id),
+                recommendation_type: api::RecommendationType::MatchesUserTaste,
+                baseline_item_name: None,
+                baseline_item_id: None,
+                items: (0..6)
+                    .map(|_| api::BaseItemDto {
+                        id: Uuid::new_v4(),
+                        ..Default::default()
+                    })
+                    .collect(),
+            })
+            .collect();
+        let original = categories.clone();
+        let mut repeated = categories.clone();
+
+        shuffle_recommendation_tails(&mut categories, 42);
+        shuffle_recommendation_tails(&mut repeated, 42);
+
+        assert_eq!(categories, repeated);
+        for (index, category) in categories
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(category.category_id, Some(category_ids[index]));
+            assert_eq!(category.items[0].id, original[index].items[0].id);
+            assert_eq!(category.items[1].id, original[index].items[1].id);
+        }
+    }
+
+    #[test]
+    fn taste_recommendation_types_serialize_explicitly() {
+        assert_eq!(
+            serde_json::to_string(&api::RecommendationType::MatchesUserTaste).unwrap(),
+            "\"MatchesUserTaste\""
+        );
+        assert_eq!(
+            serde_json::to_string(&api::RecommendationType::Popular).unwrap(),
+            "\"Popular\""
+        );
+        assert_eq!(
+            serde_json::to_string(&api::RecommendationType::RecentlyAdded).unwrap(),
+            "\"RecentlyAdded\""
+        );
+    }
+
+    #[tokio::test]
+    async fn batched_similarity_retrieval_scopes_excludes_and_ranks_per_baseline() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE media (id BLOB PRIMARY KEY, kind TEXT NOT NULL, parent_id BLOB); \
+             CREATE TABLE media_relations (left_media_id BLOB NOT NULL, right_media_id BLOB NOT NULL); \
+             CREATE TABLE user_media_state (user_id BLOB NOT NULL, media_id BLOB NOT NULL, play_count INTEGER NOT NULL DEFAULT 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let user_id = Uuid::new_v4();
+        let root_id = Uuid::new_v4();
+        let other_root_id = Uuid::new_v4();
+        let baseline_a = Uuid::new_v4();
+        let baseline_b = Uuid::new_v4();
+        let genre_a = Uuid::new_v4();
+        let genre_b = Uuid::new_v4();
+        let genre_c = Uuid::new_v4();
+        let candidate_a = Uuid::new_v4();
+        let candidate_b = Uuid::new_v4();
+        let played_candidate = Uuid::new_v4();
+        let outside_candidate = Uuid::new_v4();
+
+        for (id, parent_id) in [
+            (candidate_a, root_id),
+            (candidate_b, root_id),
+            (played_candidate, root_id),
+            (outside_candidate, other_root_id),
+        ] {
+            sqlx::query(
+                "INSERT INTO media (id, kind, parent_id) VALUES (?, 'movie', ?)",
+            )
+            .bind(id)
+            .bind(parent_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        for (media_id, genre_id) in [
+            (candidate_a, genre_a),
+            (candidate_a, genre_b),
+            (candidate_b, genre_b),
+            (candidate_b, genre_c),
+            (played_candidate, genre_a),
+            (played_candidate, genre_b),
+            (outside_candidate, genre_a),
+            (outside_candidate, genre_b),
+        ] {
+            sqlx::query(
+                "INSERT INTO media_relations (left_media_id, right_media_id) VALUES (?, ?)",
+            )
+            .bind(media_id)
+            .bind(genre_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO user_media_state (user_id, media_id, play_count) VALUES (?, ?, 1)",
+        )
+        .bind(user_id)
+        .bind(played_candidate)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let results = db::Media::get_similar_by_genres_for_recommendations_batch(
+            &pool,
+            &user_id,
+            &db::MediaKind::Movie,
+            Some(root_id),
+            &[
+                (baseline_a, vec![genre_a, genre_b]),
+                (baseline_b, vec![genre_b, genre_c]),
+            ],
+            1,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(results.get(&baseline_a), Some(&vec![(candidate_a, 2)]));
+        assert_eq!(results.get(&baseline_b), Some(&vec![(candidate_b, 2)]));
+        assert!(
+            results
+                .values()
+                .flatten()
+                .all(|(id, _)| { *id != played_candidate && *id != outside_candidate })
+        );
+    }
+
+    #[tokio::test]
+    async fn batched_genre_taste_retrieval_ranks_scopes_and_excludes_played_items() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE media (\
+                 id BLOB PRIMARY KEY, kind TEXT NOT NULL, parent_id BLOB, \
+                 rating_audience REAL, rating_critic REAL\
+             ); \
+             CREATE TABLE media_relations (left_media_id BLOB NOT NULL, right_media_id BLOB NOT NULL); \
+             CREATE TABLE user_media_state (\
+                 user_id BLOB NOT NULL, media_id BLOB NOT NULL, \
+                 play_count INTEGER NOT NULL DEFAULT 0\
+             )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let user_id = Uuid::new_v4();
+        let root_id = Uuid::new_v4();
+        let other_root_id = Uuid::new_v4();
+        let genre_a = Uuid::new_v4();
+        let genre_b = Uuid::new_v4();
+        let candidate_a = Uuid::new_v4();
+        let candidate_b = Uuid::new_v4();
+        let played_candidate = Uuid::new_v4();
+        let outside_candidate = Uuid::new_v4();
+
+        for (id, parent_id, rating) in [
+            (candidate_a, root_id, 8.5),
+            (candidate_b, root_id, 7.5),
+            (played_candidate, root_id, 10.0),
+            (outside_candidate, other_root_id, 9.5),
+        ] {
+            sqlx::query(
+                "INSERT INTO media (id, kind, parent_id, rating_audience) \
+                 VALUES (?, 'series', ?, ?)",
+            )
+            .bind(id)
+            .bind(parent_id)
+            .bind(rating)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        for (media_id, genre_id) in [
+            (candidate_a, genre_a),
+            (candidate_b, genre_b),
+            (played_candidate, genre_a),
+            (outside_candidate, genre_b),
+        ] {
+            sqlx::query(
+                "INSERT INTO media_relations (left_media_id, right_media_id) VALUES (?, ?)",
+            )
+            .bind(media_id)
+            .bind(genre_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO user_media_state (user_id, media_id, play_count) VALUES (?, ?, 1)",
+        )
+        .bind(user_id)
+        .bind(played_candidate)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let results = db::Media::get_genre_taste_candidates_for_recommendations_batch(
+            &pool,
+            &user_id,
+            &db::MediaKind::Series,
+            Some(root_id),
+            &[genre_a, genre_b],
+            2,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(results.get(&genre_a), Some(&vec![candidate_a]));
+        assert_eq!(results.get(&genre_b), Some(&vec![candidate_b]));
+        assert!(
+            results
+                .values()
+                .flatten()
+                .all(|id| { *id != played_candidate && *id != outside_candidate })
+        );
+    }
+
+    #[tokio::test]
+    async fn batched_tag_taste_retrieval_ranks_overlap_and_excludes_played_items() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE media (\
+                 id BLOB PRIMARY KEY, kind TEXT NOT NULL, parent_id BLOB, \
+                 rating_audience REAL, rating_critic REAL\
+             ); \
+             CREATE TABLE media_tags (media_id BLOB NOT NULL, tag TEXT NOT NULL COLLATE NOCASE); \
+             CREATE TABLE user_media_state (\
+                 user_id BLOB NOT NULL, media_id BLOB NOT NULL, \
+                 play_count INTEGER NOT NULL DEFAULT 0\
+             )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let user_id = Uuid::new_v4();
+        let root_id = Uuid::new_v4();
+        let other_root_id = Uuid::new_v4();
+        let strong_candidate = Uuid::new_v4();
+        let popular_candidate = Uuid::new_v4();
+        let played_candidate = Uuid::new_v4();
+        let outside_candidate = Uuid::new_v4();
+
+        for (id, parent_id, rating) in [
+            (strong_candidate, root_id, 7.0),
+            (popular_candidate, root_id, 9.0),
+            (played_candidate, root_id, 10.0),
+            (outside_candidate, other_root_id, 10.0),
+        ] {
+            sqlx::query(
+                "INSERT INTO media (id, kind, parent_id, rating_audience) \
+                 VALUES (?, 'series', ?, ?)",
+            )
+            .bind(id)
+            .bind(parent_id)
+            .bind(rating)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        for (media_id, tag) in [
+            (strong_candidate, "crime"),
+            (strong_candidate, "drama"),
+            (popular_candidate, "crime"),
+            (played_candidate, "crime"),
+            (played_candidate, "drama"),
+            (outside_candidate, "crime"),
+            (outside_candidate, "drama"),
+        ] {
+            sqlx::query("INSERT INTO media_tags (media_id, tag) VALUES (?, ?)")
+                .bind(media_id)
+                .bind(tag)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO user_media_state (user_id, media_id, play_count) VALUES (?, ?, 1)",
+        )
+        .bind(user_id)
+        .bind(played_candidate)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let results = db::Media::get_tag_taste_candidates_for_recommendations_batch(
+            &pool,
+            &user_id,
+            &db::MediaKind::Series,
+            Some(root_id),
+            &["crime".to_string()],
+            &["crime".to_string(), "drama".to_string()],
+            2,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            results.get("crime"),
+            Some(&vec![strong_candidate, popular_candidate])
+        );
+    }
 }
 
 async fn build_person_categories(
@@ -2898,6 +4059,7 @@ async fn build_person_categories(
     recently_played: &[db::Media],
     liked: &[db::Media],
     baseline_tags: &HashSet<String>,
+    compatibility_profile: &RecommendationCompatibilityProfile,
     kind: db::MediaKind,
     parent_id: Option<Uuid>,
     item_limit: u32,
@@ -3209,6 +4371,9 @@ async fn build_person_categories(
         .into_iter()
         .take(candidate_fetch_limit as usize)
         .filter_map(|m| {
+            if !compatibility_profile.allows(&m, None) {
+                return None;
+            }
             if excluded_title_keys.contains(&recommendation_title_key(&m.title)) {
                 return None;
             }
@@ -3263,7 +4428,7 @@ async fn build_person_categories(
             if !person_signal_strength || !baseline_signal_strength {
                 return None;
             }
-            if !seen_item_ids.insert(m.id) {
+            if seen_item_ids.contains(&m.id) {
                 return None;
             }
 
@@ -3313,22 +4478,14 @@ async fn build_person_categories(
             Some((item, score))
         })
         .collect::<Vec<_>>();
-        let mut items: Vec<_> = items
-            .into_iter()
-            .collect();
-        items.sort_by(|left, right| {
-            right
-                .1
-                .partial_cmp(&left.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        let items: Vec<_> = items
-            .into_iter()
-            .map(|(item, _)| item)
-            .take(item_limit as usize)
-            .collect();
+        let items = select_ranked_unseen_items(
+            items,
+            seen_item_ids,
+            item_limit as usize,
+            min_items,
+        );
 
-        if items.len() >= min_items {
+        if !items.is_empty() {
             cats.push(api::RecommendationDto {
                 category_id: Some(Uuid::new_v5(
                     &Uuid::NAMESPACE_OID,

@@ -19,7 +19,7 @@ pub mod ytdlp;
 use anyhow::{Result, anyhow};
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use futures::Stream;
+use futures::{Stream, StreamExt, stream::FuturesUnordered};
 use sqlx::SqlitePool;
 use std::{
     pin::Pin,
@@ -511,7 +511,9 @@ pub(super) fn make_http_client(config: &crate::Config) -> reqwest::Client {
         // playback resolution forever and starve the resolver-concurrency
         // budget. A timed-out request is a retryable error (see
         // `eclipse::worker_get_json`).
-        .timeout(std::time::Duration::from_secs(config.addon_http_timeout_secs))
+        .timeout(std::time::Duration::from_secs(
+            config.addon_http_timeout_secs,
+        ))
         .connect_timeout(std::time::Duration::from_secs(
             config.addon_http_connect_timeout_secs,
         ))
@@ -1972,6 +1974,101 @@ impl AddonService {
         subs
     }
 
+    async fn resolve_stream_addon(
+        runtime: AddonRuntime,
+        media: &db::Media,
+        ctx: &AppContext,
+    ) -> Vec<db::Media> {
+        let name = &runtime
+            .row
+            .name;
+        match runtime
+            .stream
+            .as_ref()
+            .expect("stream addon capability disappeared")
+            .get_streams(media, ctx)
+            .await
+        {
+            Ok(mut streams) => {
+                if streams.is_empty() {
+                    debug!(addon = %name, "addon: no streams");
+                } else {
+                    debug!(addon = %name, count = streams.len(), "addon: streams found");
+                    for stream in &mut streams {
+                        stream.source = Some(name.clone());
+                    }
+                }
+                streams
+                    .into_iter()
+                    .map(db::Media::from)
+                    .collect()
+            }
+            Err(error) => {
+                warn!(addon = %name, error = %error, "stream addon failed");
+                vec![]
+            }
+        }
+    }
+
+    async fn first_non_empty<T, F>(futures: impl IntoIterator<Item = F>) -> Vec<T>
+    where
+        F: std::future::Future<Output = Vec<T>>,
+    {
+        let mut pending: FuturesUnordered<F> = futures
+            .into_iter()
+            .collect();
+        while let Some(result) = pending
+            .next()
+            .await
+        {
+            if !result.is_empty() {
+                return result;
+            }
+        }
+        vec![]
+    }
+
+    async fn get_track_streams(
+        addons: Vec<AddonRuntime>,
+        media: &db::Media,
+        ctx: &AppContext,
+    ) -> Vec<db::Media> {
+        let mut start = 0;
+        while start < addons.len() {
+            let priority = addons[start]
+                .row
+                .priority;
+            let end = addons[start..]
+                .iter()
+                .position(|runtime| {
+                    runtime
+                        .row
+                        .priority
+                        != priority
+                })
+                .map_or(addons.len(), |offset| start + offset);
+            let tier = addons[start..end]
+                .iter()
+                .cloned()
+                .map(|runtime| Self::resolve_stream_addon(runtime, media, ctx));
+            let streams = Self::first_non_empty(tier).await;
+            if !streams.is_empty() {
+                debug!(
+                    priority,
+                    streams = streams.len(),
+                    "music stream tier selected"
+                );
+                return streams;
+            }
+            debug!(
+                priority,
+                "music stream tier exhausted; trying fallback tier"
+            );
+            start = end;
+        }
+        vec![]
+    }
+
     pub async fn get_streams(
         &self,
         media: &db::Media,
@@ -1988,36 +2085,18 @@ impl AddonService {
             "resolving streams"
         );
 
-        let tasks: Vec<_> = addons
+        if media.kind == db::MediaKind::Track {
+            return Ok(Self::get_track_streams(addons, media, ctx).await);
+        }
+
+        let tasks = addons
             .into_iter()
-            .map(|r| async move {
-                let name = &r.row.name;
-                match r.stream.as_ref().unwrap().get_streams(media, ctx).await {
-                    Ok(mut streams) => {
-                        if streams.is_empty() {
-                            debug!(addon = %name, "addon: no streams");
-                        } else {
-                            debug!(addon = %name, count = streams.len(), "addon: streams found");
-                            for s in &mut streams {
-                                s.source = Some(name.clone());
-                            }
-                        }
-                        streams
-                    }
-                    Err(e) => {
-                        warn!(addon = %name, error = %e, "stream addon failed");
-                        vec![]
-                    }
-                }
-            })
-            .collect();
-        let all: Vec<db::Media> = futures::future::join_all(tasks)
+            .map(|runtime| Self::resolve_stream_addon(runtime, media, ctx));
+        Ok(futures::future::join_all(tasks)
             .await
             .into_iter()
             .flatten()
-            .map(db::Media::from)
-            .collect();
-        Ok(all)
+            .collect())
     }
 
     fn stream_dedup_key(s: &db::Media) -> Option<String> {
@@ -2372,6 +2451,32 @@ pub fn make_media_id(addon_id: Uuid, local_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::{FutureExt, future::BoxFuture};
+
+    #[tokio::test]
+    async fn first_successful_stream_result_does_not_wait_for_slower_addons() {
+        let tasks: Vec<BoxFuture<'static, Vec<i32>>> = vec![
+            futures::future::pending().boxed(),
+            async { vec![42] }.boxed(),
+        ];
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            AddonService::first_non_empty(tasks),
+        )
+        .await
+        .expect("successful provider should cancel the unfinished provider");
+
+        assert_eq!(result, vec![42]);
+    }
+
+    #[tokio::test]
+    async fn empty_stream_results_allow_another_provider_to_win() {
+        let tasks: Vec<BoxFuture<'static, Vec<i32>>> =
+            vec![async { vec![] }.boxed(), async { vec![7] }.boxed()];
+
+        assert_eq!(AddonService::first_non_empty(tasks).await, vec![7]);
+    }
 
     fn make_image(path: &str) -> db::MediaImage {
         db::MediaImage {

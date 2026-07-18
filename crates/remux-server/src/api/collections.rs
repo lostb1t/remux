@@ -63,15 +63,30 @@ pub async fn get_collection_items(
         None => &relations[start.min(relations.len())..],
     };
 
+    // Resolve every member in one batch rather than two queries per member;
+    // `get_by_ids` mirrors `get_by_id` semantics exactly (no policy filtering,
+    // images included), so the response is unchanged. Iterating `slice` keeps
+    // the relation ordering, and members with no row are skipped just as
+    // `get_by_id` returning `None` skipped them before.
+    let member_ids: Vec<uuid::Uuid> = slice
+        .iter()
+        .map(|rel| rel.right_media_id)
+        .collect();
+    let by_id = db::Media::get_by_ids(
+        &state
+            .ctx
+            .db,
+        &member_ids,
+    )
+    .await?;
+
     let mut items = Vec::with_capacity(slice.len());
     for rel in slice {
-        if let Some(media) = db::Media::get_by_id(
-            &state
-                .ctx
-                .db,
-            &rel.right_media_id,
-        )
-        .await?
+        // `get`+`clone`, not `remove`: a collection may contain the same item
+        // twice, and removing on first use would silently drop the repeat.
+        if let Some(media) = by_id
+            .get(&rel.right_media_id)
+            .cloned()
         {
             let mut dto = api::db_media_to_item(media, false);
             dto.playlist_item_id = Some(

@@ -82,6 +82,51 @@ pub async fn sessions_capabilities_by_id(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Best-effort audit record for a playback event. Looks up the item title so the
+/// entry reads naturally, and never fails the calling request.
+async fn record_playback(
+    state: &AppState,
+    session: &auth::AuthSession,
+    item_id: &Uuid,
+    kind: db::ActivityKind,
+    verb: &str,
+) {
+    let title = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        item_id,
+    )
+    .await
+    .ok()
+    .flatten()
+    .map(|m| m.title)
+    .unwrap_or_else(|| "an item".to_string());
+
+    db::ActivityLog::record_ignore(
+        &state
+            .ctx
+            .db,
+        db::NewActivity::info(
+            format!(
+                "{} {verb} {title}",
+                session
+                    .user
+                    .username
+            ),
+            kind,
+        )
+        .with_user(
+            session
+                .user
+                .id
+                .to_string(),
+        )
+        .with_item(item_id.to_string()),
+    )
+    .await;
+}
+
 #[post("/sessions/playing")]
 pub async fn report_playback_start(
     State(state): State<AppState>,
@@ -109,6 +154,14 @@ pub async fn report_playback_start(
                 e.context_internal("failed to start session")
             }
         })?;
+    record_playback(
+        &state,
+        &session,
+        &data.item_id,
+        db::ActivityKind::VideoPlayback,
+        "is playing",
+    )
+    .await;
     let _ = state
         .ctx
         .ws_tx
@@ -192,6 +245,15 @@ pub async fn report_playback_stopped(
             )
             .await
             .context_internal("failed to record stop")?;
+        super::movies::invalidate_recommendation_cache();
+        record_playback(
+            &state,
+            &session,
+            &data.item_id,
+            db::ActivityKind::VideoPlaybackStopped,
+            "has finished playing",
+        )
+        .await;
         let _ = state
             .ctx
             .ws_tx
@@ -610,17 +672,32 @@ pub async fn get_sessions(
                 .clone()
         });
 
-        // Populate NowPlayingQueueFullItems from queue item IDs.
+        // Populate NowPlayingQueueFullItems from queue item IDs. Batched: this
+        // runs per session in `/sessions`, and resolving the queue one id at a
+        // time issued two queries per entry. `get_by_ids` has the same
+        // semantics as `get_by_id`, queue order is preserved by iterating
+        // `now_playing_queue`, and entries with no row are skipped exactly as
+        // the `Ok(Some(_))` match skipped them before.
+        let queue_ids: Vec<uuid::Uuid> = now_playing_queue
+            .iter()
+            .map(|qi| qi.id)
+            .collect();
+        let queue_media = db::Media::get_by_ids(
+            &state
+                .ctx
+                .db,
+            &queue_ids,
+        )
+        .await
+        .unwrap_or_default();
         let mut now_playing_queue_full_items =
             Vec::with_capacity(now_playing_queue.len());
         for qi in &now_playing_queue {
-            if let Ok(Some(m)) = db::Media::get_by_id(
-                &state
-                    .ctx
-                    .db,
-                &qi.id,
-            )
-            .await
+            // `get`+`clone`, not `remove`: a play queue may legitimately contain
+            // the same track twice, and removing on first use would drop it.
+            if let Some(m) = queue_media
+                .get(&qi.id)
+                .cloned()
             {
                 now_playing_queue_full_items.push(api::db_media_to_item(m, false));
             }

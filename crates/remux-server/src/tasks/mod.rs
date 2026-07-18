@@ -23,8 +23,8 @@ mod clean_transcode_folder;
 mod clear_cache;
 mod clear_image_cache;
 mod group_local_music;
-mod jellyfin_import;
 mod import_audio_features;
+mod jellyfin_import;
 mod purge_iptv;
 mod purge_media;
 mod purge_metrics;
@@ -40,8 +40,8 @@ use clean_transcode_folder::CleanTranscodeFolderTask;
 use clear_cache::ClearCacheTask;
 use clear_image_cache::ClearImageCacheTask;
 use group_local_music::GroupLocalMusicTask;
-use jellyfin_import::JellyfinImportTask;
 use import_audio_features::ImportAudioFeaturesTask;
+use jellyfin_import::JellyfinImportTask;
 use purge_iptv::PurgeIptvTask;
 use purge_media::PurgeMediaTask;
 use purge_metrics::PurgeMetricsTask;
@@ -51,7 +51,6 @@ use refresh_library::RefreshLibraryTask;
 use refresh_popularity::RefreshPopularityTask;
 use series_sync::SeriesSyncTask;
 use watch_history_backfill::BackfillWatchHistoryTask;
-
 
 #[derive(Debug, Clone, Copy, Default)]
 struct ProcessMemorySnapshot {
@@ -66,7 +65,10 @@ fn parse_status_kb(value: &str) -> Option<u64> {
     value
         .split_whitespace()
         .next()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| {
+            v.parse()
+                .ok()
+        })
 }
 
 fn read_process_memory_snapshot() -> Option<ProcessMemorySnapshot> {
@@ -86,7 +88,10 @@ fn read_process_memory_snapshot() -> Option<ProcessMemorySnapshot> {
             snapshot.threads = value
                 .split_whitespace()
                 .next()
-                .and_then(|v| v.parse().ok());
+                .and_then(|v| {
+                    v.parse()
+                        .ok()
+                });
         }
     }
 
@@ -100,10 +105,18 @@ pub(crate) fn log_process_memory(label: &str) {
 
     info!(
         label,
-        vm_peak_mb = snapshot.vm_peak_kb.map(|v| v / 1024),
-        vm_rss_mb = snapshot.vm_rss_kb.map(|v| v / 1024),
-        rss_anon_mb = snapshot.rss_anon_kb.map(|v| v / 1024),
-        vm_data_mb = snapshot.vm_data_kb.map(|v| v / 1024),
+        vm_peak_mb = snapshot
+            .vm_peak_kb
+            .map(|v| v / 1024),
+        vm_rss_mb = snapshot
+            .vm_rss_kb
+            .map(|v| v / 1024),
+        rss_anon_mb = snapshot
+            .rss_anon_kb
+            .map(|v| v / 1024),
+        vm_data_mb = snapshot
+            .vm_data_kb
+            .map(|v| v / 1024),
         threads = snapshot.threads,
         "process memory snapshot"
     );
@@ -290,6 +303,19 @@ impl TaskHandler {
                 }
                 Err(e) => {
                     error!(task = %task_key, error = %e, "failed");
+                    db::ActivityLog::record_ignore(
+                        &ctx.db,
+                        db::NewActivity {
+                            name: format!("Scheduled task '{}' failed", task.name()),
+                            kind: db::ActivityKind::ScheduledTaskFailed,
+                            severity: db::ActivitySeverity::Error,
+                            overview: Some(e.to_string()),
+                            short_overview: None,
+                            item_id: None,
+                            user_id: None,
+                        },
+                    )
+                    .await;
                     (
                         TaskStatus::Failed(e.to_string()),
                         db::TaskResultStatus::Failed,

@@ -2,12 +2,14 @@ use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::{self, StreamExt};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use tracing::info;
 use uuid::Uuid;
 
 use super::{ProgressReporter, Task, TaskCategory, TaskService};
-use crate::{AppContext, common, db};
+use crate::{AppContext, api, common, db, playback::probe::probe_media};
 
 /// Reads embedded tags from local (opendal-local) audio files and groups
 /// orphaned track rows (no parent album / grandparent artist) into synthesized
@@ -28,6 +30,163 @@ struct Derived {
     artist_name: String,
     album_name: String,
     track_no: Option<i64>,
+    /// Disc number (drives `ParentIndexNumber`).
+    disc_no: Option<i64>,
+    /// Release year (drives `ProductionYear` / `PremiereDate`).
+    year: Option<i32>,
+    /// Directory of the file, used to find a folder cover for the album.
+    dir: String,
+    /// Source file used to extract embedded album artwork when no folder cover exists.
+    path: String,
+    /// Duration in whole seconds (drives item-level `RunTimeTicks`).
+    runtime_secs: Option<i64>,
+    /// Full ffprobe result (container, bitrate, size, real media streams) —
+    /// populates `MediaSources` so local tracks match Jellyfin's shape.
+    probe_data: Option<api::MediaSourceInfo>,
+    /// Genre names parsed from the `genre` tag; become `MusicGenre` entities +
+    /// `media_relations` so `Genres`/`GenreItems` match Jellyfin.
+    genres: Vec<String>,
+}
+
+/// Split a `genre` tag into individual genre names. Jellyfin treats `;`, `/`,
+/// `|` and `\` as multi-value delimiters; commas are left intact because real
+/// genres contain them (e.g. "Folk, World, & Country"). Trims, drops blanks,
+/// de-duplicates case-insensitively while preserving first-seen casing.
+fn parse_genres(tags: &HashMap<String, String>) -> Vec<String> {
+    let raw = match tags.get("genre") {
+        Some(v) if !v.is_empty() => v.as_str(),
+        _ => return Vec::new(),
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for part in raw.split([';', '/', '|', '\\']) {
+        let name = part.trim();
+        if !name.is_empty() && seen.insert(name.to_lowercase()) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// Parse a 4-digit year from a `date`/`year` tag like "2018", "2018-05-01".
+fn parse_year(tags: &HashMap<String, String>) -> Option<i32> {
+    for k in ["date", "originaldate", "year"] {
+        if let Some(v) = tags.get(k) {
+            let digits: String = v
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            if digits.len() == 4 {
+                if let Ok(y) = digits.parse::<i32>() {
+                    if (1000..=3000).contains(&y) {
+                        return Some(y);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn dir_of(path: &str) -> String {
+    match path.rsplit_once('/') {
+        Some((d, _)) => d.to_string(),
+        None => String::new(),
+    }
+}
+
+/// Midnight on Jan 1 of `year` — Jellyfin derives ProductionYear/PremiereDate
+/// from the release date.
+fn year_to_date(year: i32) -> Option<chrono::NaiveDateTime> {
+    chrono::NaiveDate::from_ymd_opt(year, 1, 1)?.and_hms_opt(0, 0, 0)
+}
+
+/// Find a folder cover image next to the tracks (cover/folder/front/albumart).
+fn find_folder_cover(dir: &str) -> Option<String> {
+    const STEMS: &[&str] = &["cover", "folder", "front", "albumart", "album", "thumb"];
+    const EXTS: &[&str] = &["jpg", "jpeg", "png", "webp"];
+    for entry in std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+    {
+        let name = entry
+            .file_name()
+            .to_string_lossy()
+            .to_lowercase();
+        if let Some((stem, ext)) = name.rsplit_once('.') {
+            if EXTS.contains(&ext) && STEMS.contains(&stem) {
+                return Some(
+                    entry
+                        .path()
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+    }
+    None
+}
+
+fn extract_embedded_cover(
+    source: &str,
+    data_dir: &Path,
+    album_id: Uuid,
+) -> Option<String> {
+    let target =
+        crate::services::image::ImageService::image_path(data_dir, album_id, "primary");
+    if target
+        .metadata()
+        .is_ok_and(|metadata| metadata.len() > 0)
+    {
+        return Some(
+            target
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+
+    let parent = target.parent()?;
+    std::fs::create_dir_all(parent).ok()?;
+    let temporary = temporary_cover_path(&target);
+    let ffmpeg = std::env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".into());
+    let status = Command::new(ffmpeg)
+        .args([
+            "-v",
+            "error",
+            "-y",
+            "-i",
+            source,
+            "-map",
+            "0:v:0",
+            "-frames:v",
+            "1",
+            "-an",
+            "-c:v",
+            "mjpeg",
+        ])
+        .arg(&temporary)
+        .status()
+        .ok()?;
+
+    if !status.success()
+        || !temporary
+            .metadata()
+            .is_ok_and(|metadata| metadata.len() > 0)
+    {
+        let _ = std::fs::remove_file(&temporary);
+        return None;
+    }
+
+    std::fs::rename(&temporary, &target).ok()?;
+    Some(
+        target
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+fn temporary_cover_path(target: &Path) -> PathBuf {
+    target.with_file_name("primary.tmp.jpg")
 }
 
 fn normalize(s: &str) -> String {
@@ -73,7 +232,8 @@ fn ffprobe_tags(path: &str) -> HashMap<String, String> {
             "-v",
             "quiet",
             "-show_entries",
-            "format_tags=artist,album_artist,albumartist,album,title,track",
+            "format_tags=artist,album_artist,albumartist,album,title,track,\
+disc,disc_number,date,originaldate,year,genre",
             "-of",
             "json",
             path,
@@ -197,12 +357,24 @@ fn derive(
         .or(opendal_title)
         .unwrap_or_else(|| stem(path));
     let track_no = parse_track_no(tags.get("track"), opendal_track_no);
+    let disc_no = parse_track_no(
+        tags.get("disc")
+            .or_else(|| tags.get("disc_number")),
+        None,
+    );
     Derived {
         track_id,
         title,
         artist_name,
         album_name,
         track_no,
+        disc_no,
+        year: parse_year(tags),
+        dir: dir_of(path),
+        path: path.to_string(),
+        runtime_secs: None,
+        probe_data: None,
+        genres: parse_genres(tags),
     }
 }
 
@@ -237,9 +409,23 @@ impl Task for GroupLocalMusicTask {
             .group_local_music_limit;
 
         // 1. Orphaned local tracks (no album parent) with their file path.
+        // Process local tracks that still need grouping (no album parent) OR
+        // that were grouped by an earlier run but never probed (no probe_data →
+        // no duration/streams/container). Re-running is idempotent.
         let base = "SELECT f.id, f.path, f.track_number, f.title \
                     FROM opendal_files f JOIN media m ON m.id = f.id \
-                    WHERE f.media_kind = 'track' AND m.kind = 'track' AND m.parent_id IS NULL";
+                    LEFT JOIN media parent ON parent.id = m.parent_id \
+                    WHERE f.media_kind = 'track' AND m.kind = 'track' \
+                      AND (m.parent_id IS NULL OR m.probe_data IS NULL \
+                           OR (json_extract(parent.external_ids, '$.custom_stremio_id') LIKE 'localalbum:%' \
+                               AND NOT EXISTS (SELECT 1 FROM media_images image \
+                                               WHERE image.media_id = parent.id \
+                                                 AND image.image_type = 'primary') \
+                               AND f.id = (SELECT candidate.id FROM opendal_files candidate \
+                                           JOIN media candidate_media ON candidate_media.id = candidate.id \
+                                           WHERE candidate_media.parent_id = parent.id \
+                                             AND candidate.media_kind = 'track' \
+                                           LIMIT 1)))";
         let sql = match limit {
             Some(n) => format!("{base} LIMIT {n}"),
             None => base.to_string(),
@@ -249,7 +435,7 @@ impl Task for GroupLocalMusicTask {
                 .fetch_all(&ctx.db)
                 .await?;
         let total = rows.len();
-        info!("GroupLocalMusic: {total} orphaned local tracks to group");
+        info!("GroupLocalMusic: {total} local tracks to group/probe");
         if total == 0 {
             progress.set(100.0);
             return Ok(());
@@ -282,7 +468,12 @@ impl Task for GroupLocalMusicTask {
             .collect();
         let mut album_by_key: HashMap<(Uuid, String), Uuid> = HashMap::new();
         for (id, title, gp) in sqlx::query_as::<_, (Uuid, String, Option<Uuid>)>(
-            "SELECT id, title, grandparent_id FROM media WHERE kind = 'album'",
+            // Exclude our own synthesized local albums from the dedup map so a
+            // re-run re-creates them (same stable id → upsert updates) and can
+            // backfill folder art + release year onto existing rows.
+            "SELECT id, title, grandparent_id FROM media WHERE kind = 'album' \
+             AND (external_ids IS NULL \
+                  OR json_extract(external_ids, '$.custom_stremio_id') NOT LIKE 'localalbum:%')",
         )
         .fetch_all(&ctx.db)
         .await?
@@ -298,10 +489,30 @@ impl Task for GroupLocalMusicTask {
                 let roots = Arc::clone(&roots);
                 async move {
                     let p = path.clone();
-                    let tags = tokio::task::spawn_blocking(move || ffprobe_tags(&p))
-                        .await
-                        .unwrap_or_default();
-                    derive(id, &path, track_no, opendal_title, &tags, &roots)
+                    // One blocking hop reads tags (for grouping) and runs a full
+                    // ffprobe (for duration + real media streams).
+                    let (tags, probe) = tokio::task::spawn_blocking(move || {
+                        let tags = ffprobe_tags(&p);
+                        let probe = probe_media(&p).ok();
+                        (tags, probe)
+                    })
+                    .await
+                    .unwrap_or_default();
+                    let mut d =
+                        derive(id, &path, track_no, opendal_title, &tags, &roots);
+                    if let Some((mut source, _segments)) = probe {
+                        // 100ns ticks → whole seconds for media.runtime.
+                        d.runtime_secs = source
+                            .run_time_ticks
+                            .map(|t| t / 10_000_000)
+                            .filter(|s| *s > 0);
+                        // Jellyfin names a MediaSource after the file (stem), not
+                        // the track title. Local tracks have no `stream_info`, so
+                        // stash the stem on the stored source for the serializer.
+                        source.name = Some(stem(&path));
+                        d.probe_data = Some(source);
+                    }
+                    d
                 }
             })
             .buffer_unordered(8)
@@ -312,6 +523,13 @@ impl Task for GroupLocalMusicTask {
         let mut new_artists: Vec<db::Media> = Vec::new();
         let mut new_albums: Vec<db::Media> = Vec::new();
         let mut track_updates: Vec<db::Media> = Vec::with_capacity(derived.len());
+        // Genre entities (deduped by stable id) + track→genre relations, so
+        // `Genres`/`GenreItems` populate like a stock Jellyfin library.
+        let mut new_genres: HashMap<Uuid, db::Media> = HashMap::new();
+        let mut genre_relations: Vec<db::MediaRelation> = Vec::new();
+        let data_dir = &ctx
+            .config
+            .data_dir;
 
         for d in &derived {
             let norm_artist = normalize(&d.artist_name);
@@ -349,7 +567,7 @@ impl Task for GroupLocalMusicTask {
                         &db::MediaKind::Album,
                         &format!("local:{norm_artist}:{norm_album}"),
                     );
-                    new_albums.push(db::Media {
+                    let mut album = db::Media {
                         id,
                         title: d
                             .album_name
@@ -357,6 +575,9 @@ impl Task for GroupLocalMusicTask {
                             .to_string(),
                         kind: db::MediaKind::Album,
                         grandparent_id: Some(artist_id),
+                        released_at: d
+                            .year
+                            .and_then(year_to_date),
                         external_ids: db::ExternalIds {
                             custom_stremio_id: Some(format!(
                                 "localalbum:{norm_artist}:{norm_album}"
@@ -364,7 +585,16 @@ impl Task for GroupLocalMusicTask {
                             ..Default::default()
                         },
                         ..Default::default()
-                    });
+                    };
+                    // Adopt a folder cover so album+track artwork appears in
+                    // clients (served directly from disk); tracks inherit it via
+                    // AlbumPrimaryImageTag.
+                    if let Some(cover) = find_folder_cover(&d.dir)
+                        .or_else(|| extract_embedded_cover(&d.path, data_dir, id))
+                    {
+                        album.set_image(db::ImageKind::Primary, cover);
+                    }
+                    new_albums.push(album);
                     id
                 });
 
@@ -376,7 +606,20 @@ impl Task for GroupLocalMusicTask {
                 kind: db::MediaKind::Track,
                 parent_id: Some(album_id),
                 grandparent_id: Some(artist_id),
-                parent_idx: d.track_no,
+                // `idx` is the track's IndexNumber (track number); `parent_idx`
+                // is ParentIndexNumber (disc). The track number belongs in `idx`.
+                idx: d.track_no,
+                parent_idx: d.disc_no,
+                released_at: d
+                    .year
+                    .and_then(year_to_date),
+                // Real duration + probed source shape so local tracks carry
+                // RunTimeTicks / Container / Bitrate / Size / MediaStreams like
+                // a stock Jellyfin library track.
+                runtime: d.runtime_secs,
+                probe_data: d
+                    .probe_data
+                    .clone(),
                 external_ids: db::ExternalIds {
                     // Preserve the opendal marker so Track validation passes and
                     // the source keeps resolving.
@@ -385,18 +628,38 @@ impl Task for GroupLocalMusicTask {
                 },
                 ..Default::default()
             });
+
+            // Track genres: reuse the shared builder so ids/kind stay identical
+            // to every other genre source, then dedupe entities by id.
+            for (rel, genre) in db::build_genre_relations_from_names(
+                d.track_id,
+                &d.genres,
+                db::MediaKind::MusicGenre,
+            ) {
+                new_genres
+                    .entry(genre.id)
+                    .or_insert(genre);
+                genre_relations.push(rel);
+            }
         }
 
         info!(
-            "GroupLocalMusic: {} new artists, {} new albums, {} tracks relinked",
+            "GroupLocalMusic: {} new artists, {} new albums, {} tracks relinked, {} genres, {} genre links",
             new_artists.len(),
             new_albums.len(),
-            track_updates.len()
+            track_updates.len(),
+            new_genres.len(),
+            genre_relations.len(),
         );
 
         // 5. Persist parents before children (parent_id/grandparent_id FKs).
         db::Media::upsert(&ctx.db, &new_artists).await?;
         db::Media::upsert(&ctx.db, &new_albums).await?;
+        // Genre entities before their relations (right_media_id FK).
+        let genre_rows: Vec<db::Media> = new_genres
+            .into_values()
+            .collect();
+        db::Media::upsert(&ctx.db, &genre_rows).await?;
         for (i, chunk) in track_updates
             .chunks(500)
             .enumerate()
@@ -404,6 +667,7 @@ impl Task for GroupLocalMusicTask {
             db::Media::upsert(&ctx.db, chunk).await?;
             progress.report((i + 1) * 500, total.max(1));
         }
+        db::MediaRelation::upsert(&ctx.db, &genre_relations).await?;
         progress.set(100.0);
         info!("GroupLocalMusic: complete");
         Ok(())
@@ -433,6 +697,29 @@ mod tests {
             clean_album_name("Live @ Rex Club (Paris)"),
             "Live @ Rex Club (Paris)"
         );
+    }
+
+    #[test]
+    fn parse_genres_splits_dedupes_and_preserves_commas() {
+        let mut tags = HashMap::new();
+        tags.insert(
+            "genre".to_string(),
+            "Drill / Chicago Drill; Drill \\ Gangsta Rap".to_string(),
+        );
+        // Split on ; / | \, case-insensitive dedupe ("Drill" once), first casing kept.
+        assert_eq!(
+            parse_genres(&tags),
+            vec!["Drill", "Chicago Drill", "Gangsta Rap"]
+        );
+
+        // A comma is part of the genre name, not a delimiter.
+        tags.insert("genre".to_string(), "Folk, World, & Country".to_string());
+        assert_eq!(parse_genres(&tags), vec!["Folk, World, & Country"]);
+
+        // Missing / empty tag → no genres.
+        assert!(parse_genres(&HashMap::new()).is_empty());
+        tags.insert("genre".to_string(), String::new());
+        assert!(parse_genres(&tags).is_empty());
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use crate::{
-    components::{EmptyState, FormGroup, LoadingText, Modal},
+    components::{EmptyState, FormGroup, LoadingText, Modal, Select, SelectOption},
     state::AppState,
 };
 use dioxus::prelude::*;
@@ -32,29 +32,34 @@ pub(crate) fn StreamRuleRow(
     rsx! {
         div { style: "display:flex;align-items:flex-start;gap:6px",
             // Field selector
-            select {
-                class: "select-input",
-                style: "flex:1.2",
-                value: "{field_val}",
-                onchange: move |e| {
+            Select {
+                class: "flex-[1.2]".to_string(),
+                value: field_val.to_string(),
+                options: vec![
+                    SelectOption::new("resolution", "Resolution"),
+                    SelectOption::new("quality", "Quality"),
+                    SelectOption::new("codec", "Codec"),
+                ],
+                on_change: move |v: String| {
                     if let Some(r) = rules.write().get_mut(idx) {
-                        *r = match e.value().as_str() {
+                        *r = match v.as_str() {
                             "quality" => StreamRule::Quality { op: SetOp::In, values: vec![] },
                             "codec"  => StreamRule::Codec  { op: SetOp::In, values: vec![] },
                             _        => StreamRule::Resolution { op: SetOp::In, values: vec![] },
                         };
                     }
                 },
-                option { value: "resolution", selected: field_val == "resolution", "Resolution" }
-                option { value: "quality",     selected: field_val == "quality",     "Quality" }
-                option { value: "codec",      selected: field_val == "codec",      "Codec" }
             }
             // Operator selector
-            select {
-                class: "select-input",
-                style: "flex:1",
-                onchange: move |e| {
-                    let new_op = if e.value() == "not_in" { SetOp::NotIn } else { SetOp::In };
+            Select {
+                class: "flex-[1]".to_string(),
+                value: if op_not_in { "not_in".to_string() } else { "in".to_string() },
+                options: vec![
+                    SelectOption::new("in", "In"),
+                    SelectOption::new("not_in", "Not in"),
+                ],
+                on_change: move |v: String| {
+                    let new_op = if v == "not_in" { SetOp::NotIn } else { SetOp::In };
                     if let Some(r) = rules.write().get_mut(idx) {
                         *r = match r.clone() {
                             StreamRule::Resolution { values, .. } => StreamRule::Resolution { op: new_op, values },
@@ -63,8 +68,6 @@ pub(crate) fn StreamRuleRow(
                         };
                     }
                 },
-                option { value: "in",     selected: !op_not_in, "In" }
-                option { value: "not_in", selected:  op_not_in, "Not in" }
             }
             // Value checkboxes
             div { style: "flex:2;display:flex;flex-wrap:wrap;gap:6px;padding-top:2px",

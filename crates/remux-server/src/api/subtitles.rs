@@ -23,28 +23,143 @@ fn ffmpeg_bin() -> String {
 
 /// Tracks in-progress batch subtitle extractions. Subtitle endpoint waits on these
 /// instead of launching a competing on-demand FFmpeg process.
-static BATCH_EXTRACTING: OnceLock<Mutex<HashMap<Uuid, watch::Receiver<bool>>>> =
-    OnceLock::new();
+type SubtitleExtractionKey = (Uuid, Uuid);
 
-fn batch_extraction_map() -> &'static Mutex<HashMap<Uuid, watch::Receiver<bool>>> {
+static BATCH_EXTRACTING: OnceLock<
+    Mutex<HashMap<SubtitleExtractionKey, watch::Receiver<bool>>>,
+> = OnceLock::new();
+
+fn batch_extraction_map()
+-> &'static Mutex<HashMap<SubtitleExtractionKey, watch::Receiver<bool>>> {
     BATCH_EXTRACTING.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+pub(crate) fn subtitle_cache_source_id(
+    media: &db::Media,
+    probed_size: Option<i64>,
+) -> Uuid {
+    let Some(stream_info) = media
+        .stream_info
+        .as_ref()
+    else {
+        return media.id;
+    };
+    let normalized_filename = stream_info
+        .filename
+        .as_deref()
+        .map(|filename| {
+            filename
+                .replace('\\', "/")
+                .to_ascii_lowercase()
+        });
+    let size = probed_size.or(stream_info.size);
+    let identity = match &stream_info.descriptor {
+        crate::stream::StreamDescriptor::Torrent {
+            info_hash,
+            file_hint,
+            file_idx,
+            ..
+        } => Some(format!(
+            "torrent:{}:{}:{}",
+            info_hash.to_ascii_lowercase(),
+            file_idx.map_or_else(String::new, |index| index.to_string()),
+            normalized_filename
+                .as_deref()
+                .or(file_hint.as_deref())
+                .unwrap_or_default()
+        )),
+        crate::stream::StreamDescriptor::Http { .. } => normalized_filename
+            .zip(size)
+            .map(|(filename, size)| format!("http:{filename}:{size}")),
+        crate::stream::StreamDescriptor::Local(path) => {
+            Some(format!("local:{}", path.to_string_lossy()))
+        }
+        crate::stream::StreamDescriptor::Opendal { addon_id, path } => {
+            Some(format!("opendal:{addon_id}:{path}"))
+        }
+        crate::stream::StreamDescriptor::Rtsp { .. } => None,
+    };
+
+    identity
+        .map(|identity| Uuid::new_v5(&Uuid::NAMESPACE_URL, identity.as_bytes()))
+        .unwrap_or(media.id)
+}
+
+fn is_valid_ass_document(bytes: &[u8]) -> bool {
+    let content = String::from_utf8_lossy(bytes);
+    content.contains("[Script Info]")
+        && content.contains("[Events]")
+        && content
+            .lines()
+            .any(|line| {
+                line.trim_start()
+                    .starts_with("Dialogue:")
+            })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_valid_ass_document, subtitle_cache_source_id};
+    use crate::{db, stream};
+    use uuid::Uuid;
+
+    fn http_stream_media(id: Uuid, url: &str) -> db::Media {
+        db::Media {
+            id,
+            stream_info: Some(stream::StreamInfo {
+                descriptor: stream::StreamDescriptor::http(url),
+                filename: Some("S01E03-Kingdom of Lies.mkv".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ass_validation_requires_dialogue_events() {
+        assert!(!is_valid_ass_document(
+            b"[Script Info]\n[Events]\nFormat: Layer, Start, End, Text\n"
+        ));
+        assert!(is_valid_ass_document(
+            b"[Script Info]\n[Events]\nDialogue: 0,0:00:00.00,0:00:01.00,Hello\n"
+        ));
+    }
+
+    #[test]
+    fn stable_cache_identity_ignores_refreshed_http_url() {
+        let first = http_stream_media(Uuid::new_v4(), "https://debrid/first-token");
+        let refreshed =
+            http_stream_media(Uuid::new_v4(), "https://debrid/second-token");
+
+        assert_eq!(
+            subtitle_cache_source_id(&first, Some(6_302_221_349)),
+            subtitle_cache_source_id(&refreshed, Some(6_302_221_349))
+        );
+        assert_ne!(
+            subtitle_cache_source_id(&first, Some(6_302_221_349)),
+            subtitle_cache_source_id(&refreshed, Some(1_450_000_000))
+        );
+    }
+}
+
 /// Extract an embedded subtitle stream to the SRT cache and return the cache path.
-/// The cache key is `{data_dir}/subtitle-cache/{item_id}_{stream_index}.srt`.
+/// The cache key is
+/// `{data_dir}/subtitle-cache/{item_id}_{cache_source_id}_{stream_index}.srt`.
 /// Returns immediately if the cache already exists and is non-empty.
 pub(crate) async fn extract_subtitle_to_cache(
     data_dir: &std::path::Path,
     input_url: &str,
     map_spec: &str,
     item_id: uuid::Uuid,
+    cache_source_id: uuid::Uuid,
     stream_index: i64,
 ) -> anyhow::Result<std::path::PathBuf> {
     let cache_dir = data_dir.join("subtitle-cache");
     tokio::fs::create_dir_all(&cache_dir)
         .await
         .map_err(|e| anyhow!("failed to create subtitle cache dir: {e}"))?;
-    let cache_path = cache_dir.join(format!("{item_id}_{stream_index}.srt"));
+    let cache_path =
+        cache_dir.join(format!("{item_id}_{cache_source_id}_{stream_index}.srt"));
 
     // Return cached copy if it exists and is non-empty.
     if cache_path.exists() {
@@ -119,45 +234,74 @@ pub(crate) async fn extract_subtitle_to_cache(
 }
 
 /// Pre-extract all embedded text subtitle streams for a media source in one FFmpeg pass.
+/// ASS/SSA streams also retain a raw styled copy for renderer-capable clients.
 /// Mirrors Jellyfin's approach: one command, multiple outputs, fire-and-forget at PlaybackInfo time.
 /// The `subtitles_stream` endpoint falls back to on-demand extraction for any cache misses.
 pub(crate) async fn pre_extract_all_subtitles_to_cache(
     data_dir: std::path::PathBuf,
     input_url: String,
     item_id: uuid::Uuid,
-    stream_indices: Vec<i64>,
+    cache_source_id: uuid::Uuid,
+    subtitle_streams: Vec<(i64, bool)>,
 ) {
     let cache_dir = data_dir.join("subtitle-cache");
     let _ = tokio::fs::create_dir_all(&cache_dir).await;
 
-    let mut to_extract: Vec<(i64, std::path::PathBuf)> = Vec::new();
-    for idx in &stream_indices {
-        let path = cache_dir.join(format!("{item_id}_{idx}.srt"));
-        if path.exists() {
-            if let Ok(b) = tokio::fs::read(&path).await {
-                if !String::from_utf8_lossy(&b)
-                    .trim()
-                    .is_empty()
+    let cache_is_populated = |path: &std::path::Path| {
+        std::fs::read(path)
+            .ok()
+            .map(|bytes| {
+                if path
+                    .to_string_lossy()
+                    .contains(".ass")
                 {
-                    debug!(%item_id, stream_index = idx, "subtitle cache hit, skipping");
-                    continue;
+                    is_valid_ass_document(&bytes)
+                } else {
+                    !bytes.is_empty()
+                        && !String::from_utf8_lossy(&bytes)
+                            .trim()
+                            .is_empty()
                 }
-            }
+            })
+            .unwrap_or(false)
+    };
+    let mut to_extract = Vec::new();
+    for (idx, preserve_ass) in &subtitle_streams {
+        let srt_path = cache_dir.join(format!("{item_id}_{cache_source_id}_{idx}.srt"));
+        let raw_ass_path =
+            cache_dir.join(format!("{item_id}_{cache_source_id}_{idx}.ass"));
+        let needs_srt = !cache_is_populated(&srt_path);
+        let needs_raw_ass = *preserve_ass && !cache_is_populated(&raw_ass_path);
+        if needs_srt || needs_raw_ass {
+            let raw_ass_temp_path = needs_raw_ass.then(|| {
+                cache_dir.join(format!(
+                    "{item_id}_{cache_source_id}_{idx}_{}.ass.batch.tmp",
+                    Uuid::new_v4()
+                ))
+            });
+            to_extract.push((
+                *idx,
+                needs_srt.then_some(srt_path),
+                raw_ass_temp_path,
+                raw_ass_path,
+            ));
+        } else {
+            debug!(%item_id, stream_index = idx, "subtitle caches hit, skipping");
         }
-        to_extract.push((*idx, path));
     }
 
     if to_extract.is_empty() {
-        debug!(%item_id, "all {} subtitle track(s) already cached", stream_indices.len());
+        debug!(%item_id, "all {} subtitle track(s) already cached", subtitle_streams.len());
         return;
     }
 
     let indices: Vec<i64> = to_extract
         .iter()
-        .map(|(i, _)| *i)
+        .map(|(i, _, _, _)| *i)
         .collect();
     info!(
         %item_id,
+        %cache_source_id,
         ?indices,
         "pre-extracting {} subtitle track(s) in background",
         to_extract.len()
@@ -165,11 +309,18 @@ pub(crate) async fn pre_extract_all_subtitles_to_cache(
 
     // Register in-progress signal so the subtitle endpoint can wait on us
     // instead of launching a competing FFmpeg process.
+    let extraction_key = (item_id, cache_source_id);
     let (done_tx, done_rx) = watch::channel(false);
-    batch_extraction_map()
-        .lock()
-        .unwrap()
-        .insert(item_id, done_rx);
+    {
+        let mut extracting = batch_extraction_map()
+            .lock()
+            .unwrap();
+        if extracting.contains_key(&extraction_key) {
+            debug!(%item_id, %cache_source_id, "subtitle extraction already in progress, reusing existing work");
+            return;
+        }
+        extracting.insert(extraction_key, done_rx);
+    }
 
     let mut cmd = tokio::process::Command::new(ffmpeg_bin());
     cmd.kill_on_drop(true);
@@ -177,8 +328,11 @@ pub(crate) async fn pre_extract_all_subtitles_to_cache(
     // -nostdin: don't read from stdin at all
     // -c:s srt: convert to SRT so the cache is always valid SRT (not raw ASS/VTT bytes)
     cmd.args(["-y", "-nostdin", "-i", &input_url]);
-    for (idx, path) in &to_extract {
-        if let Some(p) = path.to_str() {
+    for (idx, srt_path, raw_ass_temp_path, _) in &to_extract {
+        if let Some(p) = srt_path
+            .as_ref()
+            .and_then(|path| path.to_str())
+        {
             cmd.args([
                 "-map",
                 &format!("0:{idx}"),
@@ -188,6 +342,22 @@ pub(crate) async fn pre_extract_all_subtitles_to_cache(
                 "srt",
                 "-flush_packets",
                 "1",
+                p,
+            ]);
+        }
+        if let Some(p) = raw_ass_temp_path
+            .as_ref()
+            .and_then(|path| path.to_str())
+        {
+            cmd.args([
+                "-map",
+                &format!("0:{idx}"),
+                "-an",
+                "-vn",
+                "-c:s",
+                "copy",
+                "-f",
+                "ass",
                 p,
             ]);
         }
@@ -207,17 +377,46 @@ pub(crate) async fn pre_extract_all_subtitles_to_cache(
                 .status
                 .success()
             {
-                info!(%item_id, ?indices, elapsed_secs = elapsed, "batch subtitle extraction completed");
+                for (_, _, raw_ass_temp_path, raw_ass_path) in &to_extract {
+                    if let Some(temp_path) = raw_ass_temp_path {
+                        if cache_is_populated(temp_path) {
+                            if tokio::fs::rename(temp_path, raw_ass_path)
+                                .await
+                                .is_err()
+                            {
+                                let _ = tokio::fs::remove_file(temp_path).await;
+                            }
+                        } else {
+                            let _ = tokio::fs::remove_file(temp_path).await;
+                        }
+                    }
+                }
+                info!(%item_id, %cache_source_id, ?indices, elapsed_secs = elapsed, "batch subtitle extraction completed");
             } else {
+                for (_, _, raw_ass_temp_path, _) in &to_extract {
+                    if let Some(temp_path) = raw_ass_temp_path {
+                        let _ = tokio::fs::remove_file(temp_path).await;
+                    }
+                }
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                warn!(%item_id, ?indices, elapsed_secs = elapsed, %stderr, "batch subtitle extraction non-zero exit");
+                warn!(%item_id, %cache_source_id, ?indices, elapsed_secs = elapsed, %stderr, "batch subtitle extraction non-zero exit");
             }
         }
         Ok(Err(e)) => {
-            warn!(%item_id, ?indices, "failed to spawn ffmpeg for batch subtitle extraction: {e}");
+            for (_, _, raw_ass_temp_path, _) in &to_extract {
+                if let Some(temp_path) = raw_ass_temp_path {
+                    let _ = tokio::fs::remove_file(temp_path).await;
+                }
+            }
+            warn!(%item_id, %cache_source_id, ?indices, "failed to spawn ffmpeg for batch subtitle extraction: {e}");
         }
         Err(_) => {
-            warn!(%item_id, ?indices, "batch subtitle extraction timed out after 120s");
+            for (_, _, raw_ass_temp_path, _) in &to_extract {
+                if let Some(temp_path) = raw_ass_temp_path {
+                    let _ = tokio::fs::remove_file(temp_path).await;
+                }
+            }
+            warn!(%item_id, %cache_source_id, ?indices, "batch subtitle extraction timed out after 120s");
         }
     }
 
@@ -226,7 +425,7 @@ pub(crate) async fn pre_extract_all_subtitles_to_cache(
     batch_extraction_map()
         .lock()
         .unwrap()
-        .remove(&item_id);
+        .remove(&extraction_key);
 }
 
 /// Subtitle extraction endpoint - extracts a subtitle stream from a media source
@@ -381,6 +580,13 @@ pub async fn subtitles_stream(
         None,
     )
     .await?;
+    let cache_source_id = subtitle_cache_source_id(
+        &media,
+        media
+            .probe_data
+            .as_ref()
+            .and_then(|probe| probe.size),
+    );
 
     let url = media
         .stream_info
@@ -408,7 +614,7 @@ pub async fn subtitles_stream(
         _ => ("srt", "text/plain; charset=utf-8"),
     };
 
-    let map_spec = media
+    let subtitle_ordinal = media
         .probe_data
         .as_ref()
         .and_then(|probe| {
@@ -422,13 +628,124 @@ pub async fn subtitles_stream(
             sub_indexes
                 .iter()
                 .position(|idx| *idx == stream_index)
-                .map(|ordinal| format!("0:s:{}", ordinal))
         })
         .context_not_found("subtitle stream not found")?;
+    let map_spec = format!("0:s:{subtitle_ordinal}");
 
     let is_passthrough =
         matches!(output_format.as_str(), "ass" | "ssa" | "sup" | "pgssub");
     let is_binary = matches!(output_format.as_str(), "sup" | "pgssub");
+
+    // ASS/SSA must bypass the SRT cache. Converting to SRT destroys styles,
+    // drawings, transforms, and karaoke effects that client renderers need.
+    if matches!(output_format.as_str(), "ass" | "ssa") {
+        let cache_dir = state
+            .ctx
+            .config
+            .data_dir
+            .join("subtitle-cache");
+        tokio::fs::create_dir_all(&cache_dir)
+            .await
+            .map_err(|e| anyhow!("failed to create subtitle cache dir: {e}"))?;
+        let cache_path =
+            cache_dir.join(format!("{item_id}_{cache_source_id}_{stream_index}.ass"));
+
+        let mut cached = tokio::fs::read(&cache_path)
+            .await
+            .ok()
+            .filter(|bytes| is_valid_ass_document(bytes));
+        if cached.is_none() {
+            let in_progress_rx = batch_extraction_map()
+                .lock()
+                .unwrap()
+                .get(&(item_id, cache_source_id))
+                .cloned();
+            if let Some(mut rx) = in_progress_rx {
+                if !*rx.borrow() {
+                    info!(%item_id, %media_source_id, stream_index, "batch ASS extraction in progress - waiting for it to finish");
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(120),
+                        rx.changed(),
+                    )
+                    .await;
+                    cached = tokio::fs::read(&cache_path)
+                        .await
+                        .ok()
+                        .filter(|bytes| is_valid_ass_document(bytes));
+                }
+            }
+        }
+        let bytes = if let Some(bytes) = cached {
+            debug!(%item_id, %media_source_id, stream_index, "raw ASS subtitle cache hit");
+            bytes
+        } else {
+            let temp_path = cache_dir.join(format!(
+                "{item_id}_{cache_source_id}_{stream_index}_{}.ass.tmp",
+                Uuid::new_v4()
+            ));
+            let mut cmd = tokio::process::Command::new(ffmpeg_bin());
+            cmd.kill_on_drop(true);
+            cmd.args([
+                "-y",
+                "-nostdin",
+                "-copyts",
+                "-i",
+                &url,
+                "-map",
+                &map_spec,
+                "-an",
+                "-vn",
+                "-c:s",
+                "copy",
+                "-f",
+                "ass",
+                temp_path
+                    .to_str()
+                    .ok_or_else(|| anyhow!("invalid ASS cache path"))?,
+            ]);
+            cmd.stdin(std::process::Stdio::null());
+            cmd.stdout(std::process::Stdio::null());
+            cmd.stderr(std::process::Stdio::piped());
+            let output =
+                tokio::time::timeout(std::time::Duration::from_secs(120), cmd.output())
+                    .await
+                    .map_err(|_| anyhow!("ASS subtitle extraction timed out"))?
+                    .map_err(|e| anyhow!("failed to run ffmpeg: {e}"))?;
+            if !output
+                .status
+                .success()
+            {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(anyhow!("ASS subtitle extraction failed: {stderr}").into());
+            }
+            let bytes = tokio::fs::read(&temp_path)
+                .await
+                .map_err(|e| anyhow!("failed to read ASS subtitle: {e}"))?;
+            if !is_valid_ass_document(&bytes) {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return Err(anyhow!(
+                    "ASS subtitle extraction produced no dialogue events"
+                )
+                .into());
+            }
+            if tokio::fs::rename(&temp_path, &cache_path)
+                .await
+                .is_err()
+            {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+            }
+            bytes
+        };
+
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", content_type)
+            .header("Cache-Control", "public, max-age=3600")
+            .header("Access-Control-Allow-Origin", "*")
+            .body(Body::from(bytes))
+            .unwrap());
+    }
 
     // Binary formats (PGS/SUP): extract on-the-fly as raw bytes.
     if is_binary {
@@ -478,7 +795,7 @@ pub async fn subtitles_stream(
         .config
         .data_dir
         .join("subtitle-cache")
-        .join(format!("{item_id}_{stream_index}.srt"));
+        .join(format!("{item_id}_{cache_source_id}_{stream_index}.srt"));
     let is_cached = |path: &std::path::Path| -> bool {
         path.exists()
             && std::fs::read(path)
@@ -499,7 +816,7 @@ pub async fn subtitles_stream(
         let in_progress_rx = batch_extraction_map()
             .lock()
             .unwrap()
-            .get(&item_id)
+            .get(&(item_id, cache_source_id))
             .cloned();
         if let Some(mut rx) = in_progress_rx {
             if !*rx.borrow() {
@@ -526,6 +843,7 @@ pub async fn subtitles_stream(
         &url,
         &map_spec,
         item_id,
+        cache_source_id,
         stream_index,
     )
     .await
@@ -755,5 +1073,24 @@ pub(crate) async fn inject_external_subtitles(
                 .media_streams
                 .push(stream);
         }
+    }
+}
+
+#[cfg(test)]
+mod language_code_tests {
+    use super::*;
+
+    #[test]
+    fn lang_to_two_letter_normalizes_codes() {
+        // Already two letters: kept as-is, just trimmed and lowercased.
+        assert_eq!(lang_to_two_letter("en"), Some("en".to_string()));
+        assert_eq!(lang_to_two_letter("  EN "), Some("en".to_string()));
+        // Three-letter ISO 639-3 codes are mapped down to two letters.
+        assert_eq!(lang_to_two_letter("eng"), Some("en".to_string()));
+        assert_eq!(lang_to_two_letter("spa"), Some("es".to_string()));
+        // Empty or unrecognizable input gives nothing back.
+        assert_eq!(lang_to_two_letter(""), None);
+        assert_eq!(lang_to_two_letter("   "), None);
+        assert_eq!(lang_to_two_letter("xyz"), None);
     }
 }

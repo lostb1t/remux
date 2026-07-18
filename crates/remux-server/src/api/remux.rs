@@ -580,6 +580,259 @@ pub async fn remux_metrics_status(
     }))
 }
 
+/// Per-endpoint latency snapshot for every route seen since startup, sorted by
+/// total time spent. Admin-gated and only available when `metrics_enabled` is
+/// set in config; returns 404 otherwise so it stays invisible in production.
+#[get("/remux/metrics")]
+pub async fn remux_metrics(
+    State(state): State<AppState>,
+    _admin: auth::AdminSession,
+) -> Result<Response> {
+    if !state
+        .ctx
+        .config
+        .metrics_enabled
+    {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    }
+    let routes = state
+        .ctx
+        .metrics
+        .snapshot();
+    Ok(Json(json!({ "routes": routes })).into_response())
+}
+
+/// Jellyflix playback milestones. Authentication supplies the authoritative
+/// user/device identity; clients only provide playback context and timings.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryPlaybackEventRequest {
+    pub playback_key: String,
+    pub event: String,
+    pub elapsed_ms: Option<f64>,
+    pub item_id: Option<String>,
+    pub item_name: Option<String>,
+    pub series_name: Option<String>,
+    pub source_id: Option<String>,
+    pub source_name: Option<String>,
+    pub delivery_class: Option<String>,
+    pub error_category: Option<String>,
+    pub details: Option<serde_json::Value>,
+}
+
+#[post("/remux/telemetry/playback")]
+pub async fn telemetry_playback_event(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Json(event): Json<TelemetryPlaybackEventRequest>,
+) -> Result<impl IntoResponse> {
+    if !state
+        .ctx
+        .config
+        .telemetry_enabled
+    {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    let playback_key = event
+        .playback_key
+        .trim();
+    let event_name = event
+        .event
+        .trim();
+    if playback_key.is_empty()
+        || event_name.is_empty()
+        || playback_key.len() > 160
+        || event_name.len() > 120
+    {
+        return Ok(StatusCode::BAD_REQUEST);
+    }
+    let details = event
+        .details
+        .map(|value| {
+            // Bound the diagnostic payload and never preserve arbitrary large data.
+            let mut text = value.to_string();
+            text.truncate(2_000);
+            text
+        });
+    sqlx::query(
+        "INSERT INTO telemetry_playback_events \
+         (playback_key, event, elapsed_ms, item_id, item_name, series_name, source_id, source_name, delivery_class, error_category, user_id, device_id, device_name, client_name, client_version, details_json) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    .bind(playback_key)
+    .bind(event_name)
+    .bind(event.elapsed_ms.filter(|value| value.is_finite() && *value >= 0.0))
+    .bind(event.item_id.map(|value| value.chars().take(120).collect::<String>()))
+    .bind(event.item_name.map(|value| value.chars().take(500).collect::<String>()))
+    .bind(event.series_name.map(|value| value.chars().take(500).collect::<String>()))
+    .bind(event.source_id.map(|value| value.chars().take(160).collect::<String>()))
+    .bind(event.source_name.map(|value| value.chars().take(500).collect::<String>()))
+    .bind(event.delivery_class.map(|value| value.chars().take(80).collect::<String>()))
+    .bind(event.error_category.map(|value| value.chars().take(120).collect::<String>()))
+    .bind(session.user.id.to_string())
+    .bind(&session.device.id)
+    .bind(&session.device.name)
+    .bind(&session.device.app_name)
+    .bind(&session.device.app_version)
+    .bind(details)
+    .execute(&state.ctx.db)
+    .await?;
+    Ok(StatusCode::CREATED)
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryOverviewResponse {
+    pub since: String,
+    pub request_count: i64,
+    pub error_count: i64,
+    pub mean_latency_ms: f64,
+    pub max_latency_ms: f64,
+    pub playback_events: i64,
+    pub startup_failures: i64,
+}
+
+/// Compact default overview; detailed graph/filter endpoints can build on the
+/// raw tables without exposing them to non-admin users.
+#[get("/remux/telemetry/overview")]
+pub async fn telemetry_overview(
+    State(state): State<AppState>,
+    _admin: auth::AdminSession,
+) -> Result<impl IntoResponse> {
+    let row = sqlx::query_as::<_, (i64, i64, f64, f64)>(
+        "SELECT COUNT(*), SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END), COALESCE(AVG(latency_ms), 0), COALESCE(MAX(latency_ms), 0) \
+         FROM telemetry_request_events WHERE created_at >= datetime('now', '-24 hours')"
+    ).fetch_one(&state.ctx.db).await?;
+    let playback = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT COUNT(*), SUM(CASE WHEN event IN ('startup-timeout', 'error') THEN 1 ELSE 0 END) \
+         FROM telemetry_playback_events WHERE created_at >= datetime('now', '-24 hours')"
+    ).fetch_one(&state.ctx.db).await?;
+    Ok(Json(TelemetryOverviewResponse {
+        since: "24h".to_string(),
+        request_count: row.0,
+        error_count: row.1,
+        mean_latency_ms: row.2,
+        max_latency_ms: row.3,
+        playback_events: playback.0,
+        startup_failures: playback.1,
+    }))
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryRankingQuery {
+    pub dimension: Option<String>,
+    pub hours: Option<i64>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryRankingRow {
+    pub label: String,
+    pub count: i64,
+    pub error_count: i64,
+    pub mean_latency_ms: f64,
+    pub max_latency_ms: f64,
+}
+
+/// Admin drill-down ranking for the dimensions operators use to identify slow
+/// endpoints, devices, clients, users, and content. The column is whitelisted.
+#[get("/remux/telemetry/rankings")]
+pub async fn telemetry_rankings(
+    State(state): State<AppState>,
+    _admin: auth::AdminSession,
+    Query(query): Query<TelemetryRankingQuery>,
+) -> Result<impl IntoResponse> {
+    let column = match query
+        .dimension
+        .as_deref()
+    {
+        Some("device") => "device_name",
+        Some("client") => "client_name",
+        Some("user") => "user_id",
+        Some("content") => "item_id",
+        _ => "route_template",
+    };
+    let hours = query
+        .hours
+        .unwrap_or(24)
+        .clamp(1, 24 * 30);
+    let limit = query
+        .limit
+        .unwrap_or(25)
+        .clamp(1, 200);
+    let sql = format!(
+        "SELECT COALESCE({column}, 'Unknown') AS label, COUNT(*) AS count, \
+         SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END) AS error_count, \
+         COALESCE(AVG(latency_ms), 0) AS mean_latency_ms, COALESCE(MAX(latency_ms), 0) AS max_latency_ms \
+         FROM telemetry_request_events WHERE created_at >= datetime('now', ?1) \
+         GROUP BY {column} ORDER BY mean_latency_ms DESC, count DESC LIMIT ?2"
+    );
+    let window = format!("-{} hours", hours);
+    let rows = sqlx::query_as::<_, TelemetryRankingRow>(&sql)
+        .bind(window)
+        .bind(limit)
+        .fetch_all(
+            &state
+                .ctx
+                .db,
+        )
+        .await?;
+    Ok(Json(rows))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveTelemetryViewRequest {
+    pub name: String,
+    pub config: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetrySavedView {
+    pub id: String,
+    pub name: String,
+    pub config_json: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[get("/remux/telemetry/views")]
+pub async fn list_telemetry_views(
+    State(state): State<AppState>,
+    _admin: auth::AdminSession,
+) -> Result<impl IntoResponse> {
+    Ok(Json(sqlx::query_as::<_, TelemetrySavedView>(
+        "SELECT id, name, config_json, created_at, updated_at FROM telemetry_saved_views ORDER BY updated_at DESC"
+    ).fetch_all(&state.ctx.db).await?))
+}
+
+#[post("/remux/telemetry/views")]
+pub async fn save_telemetry_view(
+    State(state): State<AppState>,
+    _admin: auth::AdminSession,
+    Json(view): Json<SaveTelemetryViewRequest>,
+) -> Result<impl IntoResponse> {
+    let name = view
+        .name
+        .trim();
+    if name.is_empty() || name.len() > 120 {
+        return Ok(StatusCode::BAD_REQUEST.into_response());
+    }
+    let mut config_json = view
+        .config
+        .to_string();
+    config_json.truncate(8_000);
+    let id = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO telemetry_saved_views (id, name, config_json) VALUES (?, ?, ?) \
+         ON CONFLICT(name) DO UPDATE SET config_json=excluded.config_json, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')"
+    ).bind(&id).bind(name).bind(config_json).execute(&state.ctx.db).await?;
+    Ok(Json(serde_json::json!({"id": id})).into_response())
+}
+
 #[get("/remux/streams/{id}")]
 pub async fn remux_streams(
     State(state): State<AppState>,
@@ -651,5 +904,109 @@ pub async fn remux_meta(
         Err(_) => {
             Ok((StatusCode::NOT_FOUND, Json(serde_json::Value::Null)).into_response())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Config;
+    use crate::integration_test::{
+        AUTH_HEADER, TestGuard, auth_header_with_token, new_test_server_with_config,
+    };
+    use http::header::HeaderValue;
+
+    async fn boot(
+        enabled: bool,
+    ) -> (axum_test::TestServer, TestGuard, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir
+            .path()
+            .join("remux-metrics-test.sqlite");
+        let (server, guard) = new_test_server_with_config(Config {
+            database_url: Some(format!("sqlite://{}?mode=rwc", db_path.display())),
+            torrent_http_port: None,
+            disable_dht: true,
+            torrent_peer_port: None,
+            metrics_enabled: enabled,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        (server, guard, temp_dir)
+    }
+
+    async fn admin_token(server: &axum_test::TestServer) -> String {
+        let resp = server
+            .post("/users/authenticatebyname")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_static(AUTH_HEADER),
+            )
+            .json(&json!({ "Username": "test", "Pw": "test" }))
+            .await;
+        resp.json::<serde_json::Value>()["AccessToken"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// The middleware must record the matched route *template* (not the concrete
+    /// URI) and the snapshot endpoint must surface it — proving `MatchedPath` is
+    /// populated at the layer's position in the stack.
+    #[tokio::test]
+    async fn metrics_records_matched_route_template() {
+        let (server, _guard, _tmp) = boot(true).await;
+
+        server
+            .get("/system/info/public")
+            .await;
+        server
+            .get("/system/info/public")
+            .await;
+
+        let token = admin_token(&server).await;
+        let resp = server
+            .get("/remux/metrics")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+
+        let body: serde_json::Value = resp.json();
+        let routes = body["routes"]
+            .as_array()
+            .unwrap();
+        let hit = routes
+            .iter()
+            .find(|r| r["template"] == "/system/info/public")
+            .expect("matched route template should be recorded");
+        assert_eq!(hit["method"], "GET");
+        assert_eq!(hit["mutation"], false);
+        assert!(
+            hit["count"]
+                .as_u64()
+                .unwrap()
+                >= 2
+        );
+    }
+
+    /// When `metrics_enabled` is false the endpoint is invisible (404), so it
+    /// stays dark in production even though the route is always registered.
+    #[tokio::test]
+    async fn metrics_endpoint_gated_off_by_config() {
+        let (server, _guard, _tmp) = boot(false).await;
+        let token = admin_token(&server).await;
+        let resp = server
+            .get("/remux/metrics")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+            .expect_failure()
+            .await;
+        assert_eq!(resp.status_code(), StatusCode::NOT_FOUND);
     }
 }

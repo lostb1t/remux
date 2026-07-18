@@ -272,7 +272,7 @@ mod tests {
     use super::*;
 
     async fn test_db() -> SqlitePool {
-        let db = crate::db::connect("sqlite::memory:", 10_000)
+        let db = crate::db::connect("sqlite::memory:", 10_000, 5)
             .await
             .unwrap();
         crate::db::migrate(&db)

@@ -635,30 +635,30 @@ pub fn CollectionForm(
 
             div { class: "field",
                 label { class: "field-label", r#for: "col-type", "Media Kind" }
-                select {
-                    id: "col-type",
-                    class: "select-input",
-                    value: "{col_type}",
-                    onchange: move |e| col_type.set(e.value()),
-                    option { value: "movies",      "Movies"      }
-                    option { value: "tvshows",     "TV Shows"    }
-                    option { value: "mixed",       "Mixed (Movies & Shows)" }
-                    option { value: "music",       "Music"       }
-                    option { value: "collections", "Collections" }
+                Select {
+                    value: col_type.read().clone(),
+                    options: vec![
+                        SelectOption::new("movies", "Movies"),
+                        SelectOption::new("tvshows", "TV Shows"),
+                        SelectOption::new("mixed", "Mixed (Movies & Shows)"),
+                        SelectOption::new("music", "Music"),
+                        SelectOption::new("collections", "Collections"),
+                    ],
+                    on_change: move |v: String| col_type.set(v),
                 }
             }
 
             if col_type.read().as_str() != "collections" {
                 div { class: "field",
                     label { class: "field-label", r#for: "col-kind", "Collection Kind" }
-                    select {
-                        id: "col-kind",
-                        class: "select-input",
-                        value: "{col_kind}",
+                    Select {
+                        value: col_kind.read().clone(),
                         disabled: is_edit,
-                        onchange: move |e| col_kind.set(e.value()),
-                        option { value: "smart",  "Smart"  }
-                        option { value: "manual", "Manual" }
+                        options: vec![
+                            SelectOption::new("smart", "Smart"),
+                            SelectOption::new("manual", "Manual"),
+                        ],
+                        on_change: move |v: String| col_kind.set(v),
                     }
                 }
             }
@@ -774,36 +774,39 @@ pub fn CollectionForm(
                     label { class: "field-label", "Default Sort Override" }
                     p { class: "field-hint", "Overrides the sort order when the client sends no preference or its default (Sort Name). Note: the client UI may still show its own sort label." }
                     div { style: "display:flex;gap:8px",
-                        select {
-                            class: "select-input",
-                            style: "flex:1;min-width:0",
-                            value: "{default_sort}",
-                            onchange: move |e| default_sort.set(e.value()),
-                            option { value: "", selected: default_sort.read().is_empty(), "— None —" }
-                            if sf_groups.read().iter().flat_map(|g| g.rules.iter()).any(|r| matches!(r, remux_sdks::remux::FilterRule::Catalog { .. })) {
-                                option { value: "CatalogOrder", selected: *default_sort.read() == "CatalogOrder", "Catalog Order" }
-                            }
-                            option { value: "SortName",           selected: *default_sort.read() == "SortName",           "Name" }
-                            option { value: "PremiereDate",       selected: *default_sort.read() == "PremiereDate",       "Release Date" }
-                            option { value: "DigitalReleaseDate", selected: *default_sort.read() == "DigitalReleaseDate", "Digital Release Date" }
-                            option { value: "DateCreated",        selected: *default_sort.read() == "DateCreated",        "Date Added" }
-                            option { value: "CommunityRating",    selected: *default_sort.read() == "CommunityRating",    "Community Rating" }
-                            option { value: "PopularityDay",      selected: *default_sort.read() == "PopularityDay",      "Popularity (Today)" }
-                            option { value: "PopularityWeek",     selected: *default_sort.read() == "PopularityWeek",     "Popularity (This Week)" }
-                            option { value: "PopularityMonth",    selected: *default_sort.read() == "PopularityMonth",    "Popularity (This Month)" }
-                            option { value: "PopularityAllTime",  selected: *default_sort.read() == "PopularityAllTime",  "Popularity (All Time)" }
-                            option { value: "TrendingWeek",       selected: *default_sort.read() == "TrendingWeek",       "Trending (7 days)" }
-                            option { value: "TrendingMonth",      selected: *default_sort.read() == "TrendingMonth",      "Trending (30 days)" }
-                            option { value: "Random",             selected: *default_sort.read() == "Random",             "Random" }
+                        Select {
+                            class: "flex-1 min-w-0".to_string(),
+                            value: default_sort.read().clone(),
+                            options: {
+                                let mut opts = vec![SelectOption::new("", "— None —")];
+                                if sf_groups.read().iter().flat_map(|g| g.rules.iter()).any(|r| matches!(r, remux_sdks::remux::FilterRule::Catalog { .. })) {
+                                    opts.push(SelectOption::new("CatalogOrder", "Catalog Order"));
+                                }
+                                opts.push(SelectOption::new("SortName", "Name"));
+                                opts.push(SelectOption::new("PremiereDate", "Release Date"));
+                                opts.push(SelectOption::new("DigitalReleaseDate", "Digital Release Date"));
+                                opts.push(SelectOption::new("DateCreated", "Date Added"));
+                                opts.push(SelectOption::new("CommunityRating", "Community Rating"));
+                                opts.push(SelectOption::new("PopularityDay", "Popularity (Today)"));
+                                opts.push(SelectOption::new("PopularityWeek", "Popularity (This Week)"));
+                                opts.push(SelectOption::new("PopularityMonth", "Popularity (This Month)"));
+                                opts.push(SelectOption::new("PopularityAllTime", "Popularity (All Time)"));
+                                opts.push(SelectOption::new("TrendingWeek", "Trending (7 days)"));
+                                opts.push(SelectOption::new("TrendingMonth", "Trending (30 days)"));
+                                opts.push(SelectOption::new("Random", "Random"));
+                                opts
+                            },
+                            on_change: move |v: String| default_sort.set(v),
                         }
                         if !default_sort.read().is_empty() && *default_sort.read() != "Random" {
-                            select {
-                                class: "select-input",
-                                style: "flex:0 0 auto;width:auto",
-                                value: "{default_sort_order}",
-                                onchange: move |e| default_sort_order.set(e.value()),
-                                option { value: "Ascending",  selected: *default_sort_order.read() == "Ascending",  "Asc" }
-                                option { value: "Descending", selected: *default_sort_order.read() == "Descending", "Desc" }
+                            Select {
+                                class: "flex-[0_0_auto] w-auto".to_string(),
+                                value: default_sort_order.read().clone(),
+                                options: vec![
+                                    SelectOption::new("Ascending", "Asc"),
+                                    SelectOption::new("Descending", "Desc"),
+                                ],
+                                on_change: move |v: String| default_sort_order.set(v),
                             }
                         }
                     }

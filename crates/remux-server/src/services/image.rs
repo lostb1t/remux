@@ -132,6 +132,18 @@ impl ImageProcessOptions {
 pub struct ImageService;
 
 impl ImageService {
+    /// A valid JPEG for artwork records whose upstream provider has removed the
+    /// original image.  Image endpoints must never advertise artwork and then
+    /// return a JSON 404: native clients commonly treat that as a permanent
+    /// artwork failure.
+    pub async fn unavailable_artwork() -> anyhow::Result<Vec<u8>> {
+        tokio::task::spawn_blocking(|| {
+            let image = draw_label(solid_background(), "Artwork unavailable")?;
+            encode_jpeg(image)
+        })
+        .await?
+    }
+
     /// Returns the directory for a library item's local images.
     pub fn image_dir(data_dir: &std::path::Path, id: Uuid) -> PathBuf {
         data_dir
@@ -603,4 +615,20 @@ fn apply_sizing(img: DynamicImage, opts: &ImageProcessOptions) -> DynamicImage {
     }
 
     img
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ImageService;
+
+    #[tokio::test]
+    async fn unavailable_artwork_is_a_decodable_jpeg() {
+        let bytes = ImageService::unavailable_artwork()
+            .await
+            .unwrap();
+        let image = image::load_from_memory(&bytes).unwrap();
+
+        assert_eq!(image.width(), 960);
+        assert_eq!(image.height(), 540);
+    }
 }

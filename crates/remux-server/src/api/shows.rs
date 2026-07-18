@@ -542,12 +542,9 @@ pub async fn shows_recommendations(
                 .user
                 .id,
         );
-    let category_limit = q
-        .category_limit
-        .unwrap_or(5) as usize;
-    let item_limit = q
-        .item_limit
-        .unwrap_or(8);
+    super::users::require_self_or_admin(user_id, &session)?;
+    let (category_limit, item_limit) =
+        super::movies::recommendation_limits(q.category_limit, q.item_limit);
     let started = std::time::Instant::now();
     let categories = super::movies::build_recommendations(
         &state
@@ -585,7 +582,7 @@ mod test {
     use sqlx::SqlitePool;
 
     async fn test_db() -> SqlitePool {
-        let db = db::connect("sqlite::memory:", 10_000)
+        let db = db::connect("sqlite::memory:", 10_000, 5)
             .await
             .unwrap();
         db::migrate(&db)

@@ -6,7 +6,24 @@ use super::{
 pub const CHUNK_SIZE: usize = 250;
 const SQLITE_VAR_LIMIT: usize = SQLITE_BIND_LIMIT;
 const SIMILARITY_SORT_PROFILE_SOURCE_LIMIT: u32 = 300;
-const SIMILARITY_SORT_PROFILE_TAG_LIMIT: usize = 64;
+const SIMILARITY_SORT_PROFILE_PRESELECT_LIMIT: usize = 64;
+const SIMILARITY_SORT_PROFILE_TAG_LIMIT: usize = 20;
+const SIMILARITY_SORT_SOURCE_WEIGHT_CAP: f32 = 4.8;
+const SIMILARITY_SORT_MAX_TAG_SHARE: f32 = 0.05;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SimilarityAudience {
+    Adult,
+    Youth,
+}
+
+#[derive(Debug, Default)]
+struct SimilaritySortProfile {
+    tags: Vec<(String, f32)>,
+    languages: Vec<String>,
+    audience: Option<SimilarityAudience>,
+    user_id: Option<Uuid>,
+}
 
 static DB_WRITE_SEMAPHORE: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(1));
@@ -1410,7 +1427,8 @@ impl Media {
             if let Some(pid) = media.parent_id {
                 if let Some(row) = parent_map.get(&pid) {
                     let imgs = parent_images
-                        .remove(&pid)
+                        .get(&pid)
+                        .cloned()
                         .unwrap_or_default();
                     media.parent = Some(make_stub(row, imgs));
                 }
@@ -1427,7 +1445,8 @@ impl Media {
             if let Some(gid) = gp_id {
                 if let Some(row) = parent_map.get(&gid) {
                     let imgs = parent_images
-                        .remove(&gid)
+                        .get(&gid)
+                        .cloned()
                         .unwrap_or_default();
                     media.grandparent = Some(make_stub(row, imgs));
                 }
@@ -2227,40 +2246,301 @@ impl Media {
         Ok((scored, total))
     }
 
-
-    pub async fn get_similar_by_genres_for_recommendations(
+    pub async fn get_similar_by_genres_for_recommendations_batch(
         db: &SqlitePool,
-        source_id: &Uuid,
+        user_id: &Uuid,
         kind: &MediaKind,
-        genre_ids: &[Uuid],
-        limit: u32,
-    ) -> Result<Vec<(Uuid, i64)>> {
-        if matches!(kind, MediaKind::Episode) || genre_ids.is_empty() {
-            return Ok(Vec::new());
+        parent_id: Option<Uuid>,
+        baselines: &[(Uuid, Vec<Uuid>)],
+        limit_per_baseline: u32,
+    ) -> Result<HashMap<Uuid, Vec<(Uuid, i64)>>> {
+        let baselines: Vec<_> = baselines
+            .iter()
+            .filter(|(_, genre_ids)| !genre_ids.is_empty())
+            .collect();
+        if baselines.is_empty() || matches!(kind, MediaKind::Episode) {
+            return Ok(HashMap::new());
         }
 
-        let kind_str = kind.to_string();
-        let mut qb = sqlx::QueryBuilder::new(
-            "SELECT m.id, COUNT(DISTINCT mr.right_media_id) as score \
-             FROM media_relations mr \
-             JOIN media m ON m.id = mr.left_media_id \
-             WHERE mr.right_media_id IN (",
+        let mut qb = if let Some(parent_id) = parent_id {
+            let mut qb = sqlx::QueryBuilder::new(
+                "WITH RECURSIVE subtree(id) AS (\
+                    SELECT id FROM media WHERE parent_id = ",
+            );
+            qb.push_bind(parent_id);
+            qb.push(
+                " UNION ALL SELECT m.id FROM media m \
+                 JOIN subtree s ON m.parent_id = s.id), ",
+            );
+            qb
+        } else {
+            sqlx::QueryBuilder::new("WITH ")
+        };
+
+        qb.push("baseline_genres(baseline_id, genre_id) AS (VALUES ");
+        let mut first_value = true;
+        for (baseline_id, genre_ids) in &baselines {
+            for genre_id in genre_ids.iter() {
+                if !first_value {
+                    qb.push(", ");
+                }
+                first_value = false;
+                qb.push("(")
+                    .push_bind(baseline_id)
+                    .push(", ")
+                    .push_bind(*genre_id)
+                    .push(")");
+            }
+        }
+        qb.push(
+            "), relevant_relations AS MATERIALIZED (\
+                SELECT mr.left_media_id AS candidate_id, \
+                       mr.right_media_id AS genre_id \
+                FROM media_relations mr \
+                JOIN media m ON m.id = mr.left_media_id \
+                WHERE mr.right_media_id IN (\
+                    SELECT DISTINCT genre_id FROM baseline_genres\
+                ) AND m.kind = ",
         );
-        let mut sep = qb.separated(", ");
-        for genre_id in genre_ids {
-            sep.push_bind(*genre_id);
+        qb.push_bind(kind.to_string());
+        qb.push(
+            " AND NOT EXISTS (SELECT 1 FROM user_media_state ums \
+                 WHERE ums.user_id = ",
+        );
+        qb.push_bind(user_id);
+        qb.push(" AND ums.media_id = m.id AND ums.play_count > 0)");
+        if parent_id.is_some() {
+            qb.push(" AND m.id IN (SELECT id FROM subtree)");
         }
-        qb.push(") AND m.kind = ");
-        qb.push_bind(kind_str);
-        qb.push(" AND m.id != ");
-        qb.push_bind(source_id);
-        qb.push(" GROUP BY m.id ORDER BY score DESC LIMIT ");
-        qb.push_bind(limit as i64);
+        qb.push(
+            "), scored AS (\
+                SELECT bg.baseline_id, rr.candidate_id, \
+                       COUNT(DISTINCT bg.genre_id) AS score \
+                FROM baseline_genres bg \
+                JOIN relevant_relations rr ON rr.genre_id = bg.genre_id \
+                WHERE rr.candidate_id != bg.baseline_id \
+                GROUP BY bg.baseline_id, rr.candidate_id\
+             ), ranked AS (\
+                SELECT baseline_id, candidate_id, score, \
+                       ROW_NUMBER() OVER (\
+                           PARTITION BY baseline_id \
+                           ORDER BY score DESC, candidate_id ASC\
+                       ) AS candidate_rank \
+                FROM scored\
+             ) \
+             SELECT baseline_id, candidate_id, score \
+             FROM ranked WHERE candidate_rank <= ",
+        );
+        qb.push_bind(limit_per_baseline as i64);
+        qb.push(" ORDER BY baseline_id, candidate_rank");
 
-        Ok(qb
+        let rows: Vec<(Uuid, Uuid, i64)> = qb
             .build_query_as()
             .fetch_all(db)
-            .await?)
+            .await?;
+        let mut by_baseline: HashMap<Uuid, Vec<(Uuid, i64)>> = HashMap::new();
+        for (baseline_id, candidate_id, score) in rows {
+            by_baseline
+                .entry(baseline_id)
+                .or_default()
+                .push((candidate_id, score));
+        }
+        Ok(by_baseline)
+    }
+
+    pub async fn get_genre_taste_candidates_for_recommendations_batch(
+        db: &SqlitePool,
+        user_id: &Uuid,
+        kind: &MediaKind,
+        parent_id: Option<Uuid>,
+        genre_ids: &[Uuid],
+        limit_per_genre: u32,
+    ) -> Result<HashMap<Uuid, Vec<Uuid>>> {
+        if genre_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut qb = if let Some(parent_id) = parent_id {
+            let mut qb = sqlx::QueryBuilder::new(
+                "WITH RECURSIVE subtree(id) AS (\
+                    SELECT id FROM media WHERE parent_id = ",
+            );
+            qb.push_bind(parent_id);
+            qb.push(
+                " UNION ALL SELECT m.id FROM media m \
+                 JOIN subtree s ON m.parent_id = s.id), ",
+            );
+            qb
+        } else {
+            sqlx::QueryBuilder::new("WITH ")
+        };
+
+        qb.push("desired_genres(genre_id) AS (VALUES ");
+        for (index, genre_id) in genre_ids
+            .iter()
+            .enumerate()
+        {
+            if index > 0 {
+                qb.push(", ");
+            }
+            qb.push("(")
+                .push_bind(*genre_id)
+                .push(")");
+        }
+        qb.push(
+            "), candidates AS MATERIALIZED (\
+                SELECT dg.genre_id, mr.left_media_id AS candidate_id, \
+                       COALESCE(m.rating_audience, m.rating_critic, 0) AS rating \
+                FROM desired_genres dg \
+                JOIN media_relations mr ON mr.right_media_id = dg.genre_id \
+                JOIN media m ON m.id = mr.left_media_id \
+                WHERE m.kind = ",
+        );
+        qb.push_bind(kind.to_string());
+        qb.push(
+            " AND NOT EXISTS (SELECT 1 FROM user_media_state ums \
+                 WHERE ums.user_id = ",
+        );
+        qb.push_bind(user_id);
+        qb.push(" AND ums.media_id = m.id AND ums.play_count > 0)");
+        if parent_id.is_some() {
+            qb.push(" AND m.id IN (SELECT id FROM subtree)");
+        }
+        qb.push(
+            "), ranked AS (\
+                SELECT genre_id, candidate_id, \
+                       ROW_NUMBER() OVER (\
+                           PARTITION BY genre_id \
+                           ORDER BY rating DESC, candidate_id ASC\
+                       ) AS candidate_rank \
+                FROM candidates\
+             ) \
+             SELECT genre_id, candidate_id FROM ranked \
+             WHERE candidate_rank <= ",
+        );
+        qb.push_bind(limit_per_genre as i64);
+        qb.push(" ORDER BY genre_id, candidate_rank");
+
+        let rows: Vec<(Uuid, Uuid)> = qb
+            .build_query_as()
+            .fetch_all(db)
+            .await?;
+        let mut by_genre: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
+        for (genre_id, candidate_id) in rows {
+            by_genre
+                .entry(genre_id)
+                .or_default()
+                .push(candidate_id);
+        }
+        Ok(by_genre)
+    }
+
+    pub async fn get_tag_taste_candidates_for_recommendations_batch(
+        db: &SqlitePool,
+        user_id: &Uuid,
+        kind: &MediaKind,
+        parent_id: Option<Uuid>,
+        row_tags: &[String],
+        profile_tags: &[String],
+        limit_per_tag: u32,
+    ) -> Result<HashMap<String, Vec<Uuid>>> {
+        if row_tags.is_empty() || profile_tags.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut qb = if let Some(parent_id) = parent_id {
+            let mut qb = sqlx::QueryBuilder::new(
+                "WITH RECURSIVE subtree(id) AS (\
+                    SELECT id FROM media WHERE parent_id = ",
+            );
+            qb.push_bind(parent_id);
+            qb.push(
+                " UNION ALL SELECT m.id FROM media m \
+                 JOIN subtree s ON m.parent_id = s.id), ",
+            );
+            qb
+        } else {
+            sqlx::QueryBuilder::new("WITH ")
+        };
+
+        qb.push("desired_tags(tag) AS (VALUES ");
+        for (index, tag) in row_tags
+            .iter()
+            .enumerate()
+        {
+            if index > 0 {
+                qb.push(", ");
+            }
+            qb.push("(")
+                .push_bind(tag)
+                .push(")");
+        }
+        qb.push("), profile_tags(tag) AS (VALUES ");
+        for (index, tag) in profile_tags
+            .iter()
+            .enumerate()
+        {
+            if index > 0 {
+                qb.push(", ");
+            }
+            qb.push("(")
+                .push_bind(tag)
+                .push(")");
+        }
+        qb.push(
+            "), row_matches AS MATERIALIZED (\
+                SELECT dt.tag AS row_tag, mt.media_id AS candidate_id \
+                FROM desired_tags dt \
+                JOIN media_tags mt ON mt.tag = dt.tag COLLATE NOCASE \
+                JOIN media m ON m.id = mt.media_id \
+                WHERE m.kind = ",
+        );
+        qb.push_bind(kind.to_string());
+        qb.push(
+            " AND NOT EXISTS (SELECT 1 FROM user_media_state ums \
+                 WHERE ums.user_id = ",
+        );
+        qb.push_bind(user_id);
+        qb.push(" AND ums.media_id = m.id AND ums.play_count > 0)");
+        if parent_id.is_some() {
+            qb.push(" AND m.id IN (SELECT id FROM subtree)");
+        }
+        qb.push(
+            "), scored AS (\
+                SELECT rm.row_tag, rm.candidate_id, \
+                       COUNT(DISTINCT pt.tag) AS profile_overlap, \
+                       COALESCE(m.rating_audience, m.rating_critic, 0) AS rating \
+                FROM row_matches rm \
+                JOIN media m ON m.id = rm.candidate_id \
+                LEFT JOIN media_tags mt ON mt.media_id = rm.candidate_id \
+                LEFT JOIN profile_tags pt ON pt.tag = mt.tag COLLATE NOCASE \
+                GROUP BY rm.row_tag, rm.candidate_id\
+             ), ranked AS (\
+                SELECT row_tag, candidate_id, \
+                       ROW_NUMBER() OVER (\
+                           PARTITION BY row_tag \
+                           ORDER BY profile_overlap DESC, rating DESC, candidate_id ASC\
+                       ) AS candidate_rank \
+                FROM scored\
+             ) \
+             SELECT row_tag, candidate_id FROM ranked \
+             WHERE candidate_rank <= ",
+        );
+        qb.push_bind(limit_per_tag as i64);
+        qb.push(" ORDER BY row_tag, candidate_rank");
+
+        let rows: Vec<(String, Uuid)> = qb
+            .build_query_as()
+            .fetch_all(db)
+            .await?;
+        let mut by_tag: HashMap<String, Vec<Uuid>> = HashMap::new();
+        for (tag, candidate_id) in rows {
+            by_tag
+                .entry(tag)
+                .or_default()
+                .push(candidate_id);
+        }
+        Ok(by_tag)
     }
 
     /// Return distinct Genre records linked (via media_relations) to media of the given kinds.
@@ -2315,6 +2595,45 @@ impl Media {
         Ok(row)
     }
 
+    /// Batched [`Self::get_by_id`]. Same semantics — a plain `SELECT *` with no
+    /// policy/availability filtering, plus each record's images — but in two
+    /// queries total instead of two *per id*. Callers that resolved a list of
+    /// ids in a loop (collection/playlist members, now-playing queues) were
+    /// issuing 2N queries and holding a pooled connection for each; the pool is
+    /// the scarce resource under concurrent load.
+    ///
+    /// Returns a map so callers can preserve their own ordering; ids with no
+    /// row are simply absent, matching `get_by_id` returning `None`.
+    pub async fn get_by_ids(
+        db: &SqlitePool,
+        ids: &[Uuid],
+    ) -> Result<std::collections::HashMap<Uuid, Self>, sqlx::Error> {
+        if ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let mut qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE id IN (");
+        let mut sep = qb.separated(", ");
+        for id in ids {
+            sep.push_bind(id);
+        }
+        qb.push(")");
+        let rows = qb
+            .build_query_as::<Self>()
+            .fetch_all(db)
+            .await?;
+
+        let mut images = MediaImage::get_for_media_ids(db, ids).await?;
+        Ok(rows
+            .into_iter()
+            .map(|mut media| {
+                media.images = images
+                    .remove(&media.id)
+                    .unwrap_or_default();
+                (media.id, media)
+            })
+            .collect())
+    }
+
     pub async fn get_ancestors(db: &SqlitePool, id: &Uuid) -> Result<Vec<Self>> {
         let rows = sqlx::query_as::<_, Self>(
             "WITH RECURSIVE ancestors AS (
@@ -2362,6 +2681,13 @@ impl Media {
         db: &SqlitePool,
         filter: &MediaFilter,
     ) -> Result<FilterResult<Media>> {
+        // Intra-handler timing for the core browse query. Called once per
+        // request (not per row), and compiled down to one `Instant::now()` plus
+        // an atomic level check when `remux_server::perf` is not at DEBUG, so
+        // it is free in production. Enable with
+        // `RUST_LOG=remux_server::perf=debug` — no rebuild needed.
+        let _perf = crate::metrics::perf_span("db::Media::get_by_filter");
+
         let is_manual_collection = filter
             .parent
             .as_ref()
@@ -2447,7 +2773,7 @@ impl Media {
             filter
                 .user_id
                 .as_ref()
-                .map(|user_id| Self::build_similarity_profile_tags(db, user_id, filter))
+                .map(|user_id| Self::build_similarity_profile(db, user_id, filter))
         } else {
             None
         };
@@ -2758,6 +3084,16 @@ impl Media {
 
             if let Some(genre_ids) = &filter.genre_ids {
                 if !genre_ids.is_empty() {
+                    // NOTE: rewriting this correlated EXISTS as
+                    // `media.id IN (SELECT mr.left_media_id ...)` looks like an
+                    // obvious win and is result-identical, but do not do it. In
+                    // isolation the IN form benchmarks faster (29.1 ms -> 20.9 ms
+                    // on a 1.3M-row library), yet end-to-end on the *full* query
+                    // — which also carries excludeItemTypes and the
+                    // release-date availability CASE — it measured roughly 2x
+                    // SLOWER (interleaved A/B, min 66.9 ms -> 124.8 ms). The
+                    // simplified query used for the microbenchmark produced a
+                    // different plan than the real one.
                     qb.push(" AND EXISTS (SELECT 1 FROM media_relations mr WHERE mr.left_media_id = media.id AND mr.right_media_id IN (");
                     let mut sep = qb.separated(", ");
                     for id in genre_ids {
@@ -2902,6 +3238,16 @@ impl Media {
 
             if let Some(studio_ids) = &filter.studio_ids {
                 if !studio_ids.is_empty() {
+                    // NOTE: rewriting this correlated EXISTS as
+                    // `media.id IN (SELECT mr.left_media_id ...)` looks like an
+                    // obvious win and is result-identical, but do not do it. In
+                    // isolation the IN form benchmarks faster (29.1 ms -> 20.9 ms
+                    // on a 1.3M-row library), yet end-to-end on the *full* query
+                    // — which also carries excludeItemTypes and the
+                    // release-date availability CASE — it measured roughly 2x
+                    // SLOWER (interleaved A/B, min 66.9 ms -> 124.8 ms). The
+                    // simplified query used for the microbenchmark produced a
+                    // different plan than the real one.
                     qb.push(" AND EXISTS (SELECT 1 FROM media_relations mr WHERE mr.left_media_id = media.id AND mr.right_media_id IN (");
                     let mut sep = qb.separated(", ");
                     for id in studio_ids {
@@ -2913,6 +3259,16 @@ impl Media {
 
             if let Some(person_ids) = &filter.person_ids {
                 if !person_ids.is_empty() {
+                    // NOTE: rewriting this correlated EXISTS as
+                    // `media.id IN (SELECT mr.left_media_id ...)` looks like an
+                    // obvious win and is result-identical, but do not do it. In
+                    // isolation the IN form benchmarks faster (29.1 ms -> 20.9 ms
+                    // on a 1.3M-row library), yet end-to-end on the *full* query
+                    // — which also carries excludeItemTypes and the
+                    // release-date availability CASE — it measured roughly 2x
+                    // SLOWER (interleaved A/B, min 66.9 ms -> 124.8 ms). The
+                    // simplified query used for the microbenchmark produced a
+                    // different plan than the real one.
                     qb.push(" AND EXISTS (SELECT 1 FROM media_relations mr WHERE mr.left_media_id = media.id AND mr.right_media_id IN (");
                     let mut sep = qb.separated(", ");
                     for id in person_ids {
@@ -3062,7 +3418,12 @@ impl Media {
                             format!("title COLLATE NOCASE {}", dir)
                         }
                         api::ItemSortBy::DateCreated => {
-                            format!("datetime(created_at) {}", dir)
+                            // Tiebreak equal timestamps by id for a stable total
+                            // order (deterministic pagination). Matching the
+                            // trailing `id` and direction lets the composite
+                            // index idx_media_created_at_id (datetime(created_at),
+                            // id) serve this ORDER BY without a temp b-tree sort.
+                            format!("datetime(created_at) {dir}, id {dir}")
                         }
                         api::ItemSortBy::PremiereDate
                         | api::ItemSortBy::ProductionYear => {
@@ -3102,11 +3463,9 @@ impl Media {
                             format!("(sort_order IS NULL), COALESCE(sort_order, 999999) {dir}, title COLLATE NOCASE")
                         }
                         api::ItemSortBy::SimilarityScore => {
-                            Self::build_similarity_sort_clause(
-                                similarity_profile
-                                    .as_deref()
-                                    .unwrap_or_default(),
-                                dir,
+                            similarity_profile.as_ref().map_or_else(
+                                || Self::similarity_quality_sort_clause().to_string(),
+                                |profile| Self::build_similarity_sort_clause(profile, dir),
                             )
                         }
                         api::ItemSortBy::CatalogOrder => {
@@ -3786,55 +4145,70 @@ impl Media {
         })
     }
 
-    fn is_blocked_similarity_tag(tag: &str) -> bool {
-        const BLOCKED_INTEREST_TAGS: [&str; 11] = [
-            "tmdb",
-            "imdb",
-            "tvdb",
-            "language",
-            "format",
-            "subtitle",
-            "audio",
-            "country",
-            "collection",
-            "tag:",
-            "studio:",
-        ];
-
-        let normalized = tag
-            .trim()
-            .to_lowercase();
-        if normalized.is_empty() {
-            return true;
-        }
-
-        BLOCKED_INTEREST_TAGS
-            .iter()
-            .any(|prefix| normalized.starts_with(prefix))
-    }
-
-    fn normalize_similarity_tag(tag: &str) -> Option<String> {
-        let normalized = tag
-            .trim()
-            .replace('_', " ")
-            .trim()
-            .to_lowercase();
-        if Self::is_blocked_similarity_tag(&normalized) {
-            return None;
-        }
-
-        Some(normalized)
-    }
-
-    fn escape_sql_like_literal(value: &str) -> String {
+    fn escape_similarity_sql_literal(value: &str) -> String {
         value.replace('\'', "''")
     }
 
-    async fn build_similarity_profile_tags(
+    fn canonical_similarity_source(
+        kind: &MediaKind,
+        id: Uuid,
+        parent_id: Option<Uuid>,
+        grandparent_id: Option<Uuid>,
+    ) -> Option<Uuid> {
+        match kind {
+            MediaKind::Movie | MediaKind::Series => Some(id),
+            MediaKind::Episode => grandparent_id.or(parent_id),
+            MediaKind::Season => parent_id,
+            _ => None,
+        }
+    }
+
+    fn similarity_quality_sort_clause() -> &'static str {
+        "COALESCE(rating_audience, rating_critic, 0) DESC, \
+         COALESCE(digital_released_at, released_at, created_at) DESC, \
+         title COLLATE NOCASE ASC"
+    }
+
+    fn similarity_idf(candidate_count: i64, frequency: i64) -> f32 {
+        (1.0 + (candidate_count.max(1) as f32 / (1.0 + frequency.max(0) as f32))).ln()
+    }
+
+    fn similarity_tag_specificity(
+        candidate_count: i64,
+        frequency: i64,
+        source_support: usize,
+    ) -> f32 {
+        let idf = Self::similarity_idf(candidate_count, frequency);
+        match source_support {
+            0 => 0.0,
+            1 => idf.min(2.0) * 0.25,
+            2 => idf.min(4.0) * 0.75,
+            _ => idf,
+        }
+    }
+
+    fn normalize_similarity_tag_weights(tags: &mut [(String, f32)]) {
+        let total_weight: f32 = tags
+            .iter()
+            .map(|(_, weight)| *weight)
+            .sum();
+        if total_weight <= 0.0 {
+            return;
+        }
+        for (_, weight) in tags {
+            *weight = (*weight / total_weight).min(SIMILARITY_SORT_MAX_TAG_SHARE);
+        }
+    }
+
+    async fn build_similarity_profile(
         db: &SqlitePool,
         user_id: &Uuid,
         filter: &MediaFilter,
-    ) -> Result<Vec<(String, f32)>> {
+    ) -> Result<SimilaritySortProfile> {
+        let empty_profile = || SimilaritySortProfile {
+            user_id: Some(*user_id),
+            ..Default::default()
+        };
         let events = super::WatchHistory::get_by_filter(
             db,
             &super::WatchHistoryFilter {
@@ -3847,142 +4221,330 @@ impl Media {
         )
         .await?;
 
-        let mut media_scores: HashMap<Uuid, f32> = HashMap::new();
+        let mut event_scores: HashMap<Uuid, f32> = HashMap::new();
 
-        for (idx, event) in events
-            .records
-            .iter()
-            .enumerate()
-        {
-            let recency = 1.0_f32 / (1.0_f32 + (idx as f32 / 60.0));
-            let mut weight = recency * if event.completed { 1.8 } else { 1.0 };
-
-            if let Some(runtime_seconds) = event.runtime_seconds {
-                if runtime_seconds > 0 {
-                    let progress = event.position_ticks as f32
-                        / (runtime_seconds as f32 * 10_000_000.0);
-                    if progress >= 0.9 {
-                        weight += 0.6;
-                    } else if progress >= 0.5 {
-                        weight += 0.2;
-                    }
-                }
+        let now = chrono::Utc::now().naive_utc();
+        let mut seen_sessions = HashSet::new();
+        for event in &events.records {
+            if let Some(session_id) = &event.session_id
+                && !seen_sessions.insert((event.media_id, session_id.clone()))
+            {
+                continue;
             }
-
-            media_scores
+            let Some(weight) = event.recommendation_weight_at(now) else {
+                continue;
+            };
+            event_scores
                 .entry(event.media_id)
                 .and_modify(|score| *score += weight)
                 .or_insert(weight);
         }
 
-        if media_scores.is_empty() {
-            return Ok(Vec::new());
+        if event_scores.is_empty() {
+            return Ok(empty_profile());
         }
 
-        let mut media_ranking: Vec<(Uuid, f32)> = media_scores
-            .iter()
-            .map(|(media_id, score)| (*media_id, *score))
-            .collect();
-        media_ranking.sort_by(|a, b| {
-            b.1
-                .partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        let media_ids: Vec<Uuid> = media_ranking
-            .iter()
-            .take(200)
-            .map(|(media_id, _)| *media_id)
-            .collect();
-
-        let mut tags_qb = sqlx::QueryBuilder::new(
-            "SELECT mt.media_id, mt.tag FROM media_tags mt JOIN media m ON m.id = mt.media_id WHERE mt.media_id IN (",
+        let mut source_qb = sqlx::QueryBuilder::new(
+            "SELECT id, kind, parent_id, grandparent_id FROM media WHERE id IN (",
         );
-        let mut sep = tags_qb.separated(", ");
-        for id in &media_ids {
+        let mut sep = source_qb.separated(", ");
+        for id in event_scores.keys() {
             sep.push_bind(id);
         }
-        tags_qb.push(")");
-
-        if let Some(kinds) = &filter.kind {
-            if !kinds.is_empty() {
-                tags_qb.push(" AND m.kind IN (");
-                let mut sep = tags_qb.separated(", ");
-                for kind in kinds {
-                    sep.push_bind(kind);
-                }
-                tags_qb.push(")");
-            }
-        }
-        if filter.parent_id.is_some() && !filter.recursive {
-            tags_qb.push(" AND m.parent_id = ");
-            tags_qb.push_bind(
-                filter
-                    .parent_id
-                    .as_ref()
-                    .unwrap(),
-            );
-        }
-
-        let mut tag_rows = tags_qb
-            .build()
+        source_qb.push(")");
+        let source_rows: Vec<(Uuid, MediaKind, Option<Uuid>, Option<Uuid>)> = source_qb
+            .build_query_as()
             .fetch_all(db)
             .await?;
 
-        let mut profile_scores: HashMap<String, f32> = HashMap::new();
-        for row in tag_rows.drain(..) {
-            let media_id: Uuid = row.get(0);
-            let tag: String = row.get(1);
-
-            let Some(weight) = media_scores
-                .get(&media_id)
-                .copied()
+        let mut source_scores: HashMap<Uuid, f32> = HashMap::new();
+        for (id, kind, parent_id, grandparent_id) in source_rows {
+            let Some(source_id) =
+                Self::canonical_similarity_source(&kind, id, parent_id, grandparent_id)
             else {
                 continue;
             };
-
-            if let Some(normalized) = Self::normalize_similarity_tag(&tag) {
-                profile_scores
-                    .entry(normalized)
-                    .and_modify(|s| *s += weight)
-                    .or_insert(weight);
+            if let Some(weight) = event_scores.get(&id) {
+                source_scores
+                    .entry(source_id)
+                    .and_modify(|score| {
+                        *score =
+                            (*score + *weight).min(SIMILARITY_SORT_SOURCE_WEIGHT_CAP)
+                    })
+                    .or_insert((*weight).min(SIMILARITY_SORT_SOURCE_WEIGHT_CAP));
             }
         }
 
-        let mut sorted = profile_scores
-            .into_iter()
-            .collect::<Vec<(String, f32)>>();
-        sorted.sort_by(|a, b| {
-            b.1
-                .partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        sorted.truncate(SIMILARITY_SORT_PROFILE_TAG_LIMIT);
-
-        let mut deduped = HashSet::new();
-        sorted.retain(|(tag, _)| deduped.insert(tag.to_string()));
-
-        Ok(sorted)
-    }
-
-    fn build_similarity_sort_clause(profile_tags: &[(String, f32)], dir: &str) -> String {
-        if profile_tags.is_empty() {
-            return format!("0.0 {dir}");
+        if source_scores.is_empty() {
+            return Ok(empty_profile());
         }
 
-        let terms = profile_tags
-            .iter()
-            .map(|(tag, weight)| {
-                format!(
-                    "CASE WHEN EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND mt.tag = '{}') THEN {:.8} ELSE 0.0 END",
-                    Self::escape_sql_like_literal(tag),
-                    weight,
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" + ");
+        let mut profile_qb = sqlx::QueryBuilder::new(
+            "SELECT m.id, m.original_language, m.certification_age, mt.tag \
+             FROM media m LEFT JOIN media_tags mt ON mt.media_id = m.id \
+             WHERE m.id IN (",
+        );
+        let mut sep = profile_qb.separated(", ");
+        for id in source_scores.keys() {
+            sep.push_bind(id);
+        }
+        profile_qb.push(")");
+        let profile_rows: Vec<(Uuid, Option<String>, Option<i32>, Option<String>)> =
+            profile_qb
+                .build_query_as()
+                .fetch_all(db)
+                .await?;
 
-        format!("({terms}) {dir}, title COLLATE NOCASE {dir}")
+        let mut profile_scores: HashMap<String, f32> = HashMap::new();
+        let mut tag_sources: HashMap<String, HashSet<Uuid>> = HashMap::new();
+        let mut language_sources: HashMap<String, HashSet<Uuid>> = HashMap::new();
+        let mut adult_sources = HashSet::new();
+        let mut youth_sources = HashSet::new();
+        for (media_id, language, certification_age, tag) in profile_rows {
+            let weight = source_scores
+                .get(&media_id)
+                .copied()
+                .unwrap_or_default();
+            if let Some(language) = language
+                .as_deref()
+                .and_then(crate::api::subtitles::lang_to_two_letter)
+            {
+                language_sources
+                    .entry(language)
+                    .or_default()
+                    .insert(media_id);
+            }
+            if certification_age.is_some_and(|age| age >= 18) {
+                adult_sources.insert(media_id);
+            } else if certification_age.is_some_and(|age| age <= 7) {
+                youth_sources.insert(media_id);
+            }
+
+            if let Some(normalized) = tag
+                .as_deref()
+                .and_then(crate::api::movies::clean_recommendation_tag)
+            {
+                if matches!(
+                    normalized.as_str(),
+                    "adult-animation"
+                        | "adult-comedy"
+                        | "adult-humor"
+                        | "mature-audiences"
+                ) {
+                    adult_sources.insert(media_id);
+                }
+                if matches!(
+                    normalized.as_str(),
+                    "children" | "kids" | "preschool" | "young-children"
+                ) {
+                    youth_sources.insert(media_id);
+                }
+                let semantic_weight =
+                    crate::api::movies::recommendation_tag_weight(&normalized) as f32;
+                tag_sources
+                    .entry(normalized.clone())
+                    .or_default()
+                    .insert(media_id);
+                profile_scores
+                    .entry(normalized)
+                    .and_modify(|score| *score += weight * semantic_weight)
+                    .or_insert(weight * semantic_weight);
+            }
+        }
+
+        let mut preliminary = profile_scores
+            .into_iter()
+            .collect::<Vec<(String, f32)>>();
+        preliminary.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    a.0.cmp(&b.0)
+                })
+        });
+        preliminary.truncate(SIMILARITY_SORT_PROFILE_PRESELECT_LIMIT);
+
+        let default_candidate_kinds = [MediaKind::Movie, MediaKind::Series];
+        let candidate_kinds = filter
+            .kind
+            .as_deref()
+            .filter(|kinds| !kinds.is_empty())
+            .unwrap_or(&default_candidate_kinds);
+        let mut frequency_qb = sqlx::QueryBuilder::new(
+            "SELECT mt.tag, COUNT(DISTINCT mt.media_id) \
+             FROM media_tags mt JOIN media m ON m.id = mt.media_id \
+             WHERE mt.tag IN (",
+        );
+        let mut sep = frequency_qb.separated(", ");
+        for (tag, _) in &preliminary {
+            sep.push_bind(tag);
+        }
+        frequency_qb.push(") AND m.kind IN (");
+        let mut sep = frequency_qb.separated(", ");
+        for kind in candidate_kinds {
+            sep.push_bind(kind);
+        }
+        frequency_qb.push(") GROUP BY mt.tag COLLATE NOCASE");
+        let frequencies: Vec<(String, i64)> = frequency_qb
+            .build_query_as()
+            .fetch_all(db)
+            .await?;
+        let frequencies: HashMap<String, i64> = frequencies
+            .into_iter()
+            .map(|(tag, count)| (tag.to_lowercase(), count))
+            .collect();
+
+        let mut count_qb =
+            sqlx::QueryBuilder::new("SELECT COUNT(*) FROM media WHERE kind IN (");
+        let mut sep = count_qb.separated(", ");
+        for kind in candidate_kinds {
+            sep.push_bind(kind);
+        }
+        count_qb.push(")");
+        let candidate_count: i64 = count_qb
+            .build_query_scalar()
+            .fetch_one(db)
+            .await?;
+
+        for (tag, score) in &mut preliminary {
+            let frequency = frequencies
+                .get(tag)
+                .copied()
+                .unwrap_or(0);
+            let source_support = tag_sources
+                .get(tag)
+                .map_or(0, HashSet::len);
+            *score *= Self::similarity_tag_specificity(
+                candidate_count,
+                frequency,
+                source_support,
+            );
+        }
+        preliminary.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    a.0.cmp(&b.0)
+                })
+        });
+        preliminary.truncate(SIMILARITY_SORT_PROFILE_TAG_LIMIT);
+        Self::normalize_similarity_tag_weights(&mut preliminary);
+
+        let configured_language = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT json_extract(configuration, '$.AudioLanguagePreference') FROM users WHERE id = ?",
+        )
+        .bind(user_id)
+        .fetch_optional(db)
+        .await?
+        .flatten()
+        .and_then(|language| crate::api::subtitles::lang_to_two_letter(&language));
+        let mut languages = configured_language
+            .into_iter()
+            .collect::<Vec<_>>();
+        languages.extend(
+            language_sources
+                .into_iter()
+                .filter_map(|(language, sources)| {
+                    (sources.len() >= 2).then_some(language)
+                }),
+        );
+        languages.sort();
+        languages.dedup();
+
+        let audience = if !adult_sources.is_empty() && youth_sources.is_empty() {
+            Some(SimilarityAudience::Adult)
+        } else if !youth_sources.is_empty() && adult_sources.is_empty() {
+            Some(SimilarityAudience::Youth)
+        } else {
+            None
+        };
+
+        Ok(SimilaritySortProfile {
+            tags: preliminary,
+            languages,
+            audience,
+            user_id: Some(*user_id),
+        })
+    }
+
+    fn build_similarity_sort_clause(
+        profile: &SimilaritySortProfile,
+        dir: &str,
+    ) -> String {
+        let affinity_terms = if profile
+            .tags
+            .is_empty()
+        {
+            "0.0".to_string()
+        } else {
+            profile.tags
+                .iter()
+                .map(|(tag, weight)| {
+                    format!(
+                        "CASE WHEN EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND mt.tag = '{}') THEN {:.8} ELSE 0.0 END",
+                        Self::escape_similarity_sql_literal(tag),
+                        weight,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" + ")
+        };
+
+        let language_clause = if profile
+            .languages
+            .is_empty()
+        {
+            String::new()
+        } else {
+            let languages = profile
+                .languages
+                .iter()
+                .map(|language| {
+                    format!("'{}'", Self::escape_similarity_sql_literal(language))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "CASE WHEN original_language IS NULL OR lower(original_language) IN ({languages}) THEN 1 ELSE 0 END DESC, "
+            )
+        };
+        let audience_clause = match profile.audience {
+            Some(SimilarityAudience::Adult) => {
+                "CASE WHEN certification_age <= 7 OR EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND mt.tag IN ('children', 'kids', 'preschool', 'young-children')) THEN 0 ELSE 1 END DESC, "
+            }
+            Some(SimilarityAudience::Youth) => {
+                "CASE WHEN certification_age >= 18 OR EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND mt.tag IN ('adult-animation', 'adult-comedy', 'adult-humor', 'mature-audiences')) THEN 0 ELSE 1 END DESC, "
+            }
+            None => "",
+        };
+        let popularity_score = "(MAX(0.0, COALESCE(\
+            (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id \
+             AND pa.period = 'all' AND pa.period_key = 'all'), 0.0)) / \
+            (10.0 + MAX(0.0, COALESCE(\
+            (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id \
+             AND pa.period = 'all' AND pa.period_key = 'all'), 0.0))))";
+        let watch_factor = profile.user_id.map_or_else(
+            || "1.0".to_string(),
+            |user_id| {
+                let user_blob = user_id.simple();
+                format!(
+                    "COALESCE((SELECT CASE \
+                       WHEN ums.playback_position > 0 AND ums.play_count = 0 THEN 1.08 \
+                       WHEN ums.play_count > 0 AND COALESCE(ums.last_played_at, ums.played_at) >= datetime('now', '-180 days') THEN 0.55 \
+                       WHEN ums.play_count > 0 THEN 0.80 \
+                       ELSE 1.0 END \
+                     FROM user_media_state ums WHERE ums.user_id = X'{user_blob}' \
+                     AND ums.media_id = media.id), 1.0)"
+                )
+            },
+        );
+
+        format!(
+            "{language_clause}{audience_clause}(((0.65 * ({affinity_terms})) + \
+             (0.25 * (MIN(10.0, MAX(0.0, COALESCE(rating_audience, rating_critic, 0.0))) / 10.0)) + \
+             (0.10 * {popularity_score})) * {watch_factor}) {dir}, {}",
+            Self::similarity_quality_sort_clause()
+        )
     }
 
     pub async fn get_refreshable(
@@ -5238,6 +5800,98 @@ impl Media {
             .collect();
 
         self.relations = Some(pairs);
+        Ok(())
+    }
+
+    /// Batch-load `relations` for many media in a fixed number of queries,
+    /// avoiding the N+1 of calling [`Self::load_relations`] per item. Items that
+    /// already carry `relations = Some(_)` are left untouched. List endpoints use
+    /// this so `Genres`/`GenreItems`/`ArtistItems` populate on browse identically
+    /// to a single-item fetch (Jellyfin includes them whenever the client asks).
+    pub async fn load_relations_for_many(
+        db: &SqlitePool,
+        items: &mut [Media],
+    ) -> Result<()> {
+        let want: Vec<Uuid> = items
+            .iter()
+            .filter(|m| {
+                m.relations
+                    .is_none()
+            })
+            .map(|m| m.id)
+            .collect();
+        if want.is_empty() {
+            return Ok(());
+        }
+
+        // 1. Every relation whose left side is one of our items. Each item id sits
+        //    in exactly one chunk, so a single item's relations always come from
+        //    one query and keep their weight ordering.
+        let mut all_rels: Vec<MediaRelation> = Vec::new();
+        for chunk in want.chunks(CHUNK_SIZE) {
+            let mut qb = sqlx::QueryBuilder::new(
+                "SELECT * FROM media_relations WHERE left_media_id IN (",
+            );
+            let mut sep = qb.separated(", ");
+            for id in chunk {
+                sep.push_bind(*id);
+            }
+            qb.push(") ORDER BY weight ASC");
+            let rows = qb
+                .build_query_as::<MediaRelation>()
+                .fetch_all(db)
+                .await?;
+            all_rels.extend(rows);
+        }
+
+        // 2. Resolve all distinct right-side media in one filter query.
+        let mut right_ids: Vec<Uuid> = all_rels
+            .iter()
+            .map(|r| r.right_media_id)
+            .collect();
+        right_ids.sort();
+        right_ids.dedup();
+        let related_map: std::collections::HashMap<Uuid, Media> =
+            if right_ids.is_empty() {
+                std::collections::HashMap::new()
+            } else {
+                Self::get_by_filter(
+                    db,
+                    &MediaFilter {
+                        id: Some(right_ids),
+                        ..Default::default()
+                    },
+                )
+                .await?
+                .records
+                .into_iter()
+                .map(|m| (m.id, m))
+                .collect()
+            };
+
+        // 3. Group by left id (preserving query/weight order) and attach.
+        let mut by_left: std::collections::HashMap<Uuid, Vec<(MediaRelation, Media)>> =
+            std::collections::HashMap::new();
+        for rel in all_rels {
+            if let Some(m) = related_map.get(&rel.right_media_id) {
+                by_left
+                    .entry(rel.left_media_id)
+                    .or_default()
+                    .push((rel, m.clone()));
+            }
+        }
+        for item in items.iter_mut() {
+            if item
+                .relations
+                .is_none()
+            {
+                item.relations = Some(
+                    by_left
+                        .remove(&item.id)
+                        .unwrap_or_default(),
+                );
+            }
+        }
         Ok(())
     }
 
@@ -6767,6 +7421,137 @@ mod tests {
     use crate::db::MediaIdRaw;
 
     #[test]
+    fn similarity_sources_canonicalize_episodes_to_series() {
+        let episode_id = Uuid::new_v4();
+        let season_id = Uuid::new_v4();
+        let series_id = Uuid::new_v4();
+
+        assert_eq!(
+            Media::canonical_similarity_source(
+                &MediaKind::Episode,
+                episode_id,
+                Some(season_id),
+                Some(series_id),
+            ),
+            Some(series_id),
+        );
+        assert_eq!(
+            Media::canonical_similarity_source(
+                &MediaKind::Season,
+                season_id,
+                Some(series_id),
+                None,
+            ),
+            Some(series_id),
+        );
+        assert_eq!(
+            Media::canonical_similarity_source(
+                &MediaKind::Track,
+                Uuid::new_v4(),
+                None,
+                None,
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn similarity_empty_profile_falls_back_to_quality() {
+        let clause = Media::build_similarity_sort_clause(
+            &SimilaritySortProfile::default(),
+            "DESC",
+        );
+
+        assert!(clause.contains("rating_audience"));
+        assert!(clause.contains("released_at"));
+        assert!(!clause.contains("0.0 DESC"));
+    }
+
+    #[test]
+    fn similarity_sort_applies_compatibility_before_tag_score() {
+        let profile = SimilaritySortProfile {
+            tags: vec![("alien".to_string(), 3.0)],
+            languages: vec!["en".to_string()],
+            audience: Some(SimilarityAudience::Adult),
+            user_id: Some(Uuid::new_v4()),
+        };
+        let clause = Media::build_similarity_sort_clause(&profile, "DESC");
+
+        let language_position = clause
+            .find("original_language")
+            .unwrap();
+        let audience_position = clause
+            .find("certification_age")
+            .unwrap();
+        let score_position = clause
+            .find("alien")
+            .unwrap();
+        assert!(language_position < audience_position);
+        assert!(audience_position < score_position);
+        assert!(clause.contains("0.65 *"));
+        assert!(clause.contains("0.25 *"));
+        assert!(clause.contains("popularity_agg"));
+        assert!(clause.contains("user_media_state"));
+    }
+
+    #[tokio::test]
+    async fn similarity_sort_clause_executes_on_server_sqlite() {
+        let db = SqlitePool::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for statement in [
+            "CREATE TABLE media (id BLOB PRIMARY KEY, title TEXT, original_language TEXT, certification_age INTEGER, rating_audience REAL, rating_critic REAL, digital_released_at DATETIME, released_at DATETIME, created_at DATETIME)",
+            "CREATE TABLE media_tags (media_id BLOB, tag TEXT COLLATE NOCASE)",
+            "CREATE TABLE popularity_agg (media_id BLOB, period TEXT, period_key TEXT, avg REAL)",
+            "CREATE TABLE user_media_state (user_id BLOB, media_id BLOB, playback_position INTEGER, play_count INTEGER, last_played_at DATETIME, played_at DATETIME)",
+        ] {
+            sqlx::query(statement)
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+        let profile = SimilaritySortProfile {
+            tags: vec![("alien".to_string(), 1.0)],
+            languages: vec!["en".to_string()],
+            audience: Some(SimilarityAudience::Adult),
+            user_id: Some(Uuid::new_v4()),
+        };
+        let clause = Media::build_similarity_sort_clause(&profile, "DESC");
+        let query = format!("SELECT id FROM media ORDER BY {clause} LIMIT 1");
+
+        sqlx::query(&query)
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn similarity_idf_rewards_specific_tags() {
+        let rare = Media::similarity_idf(10_000, 10);
+        let common = Media::similarity_idf(10_000, 5_000);
+        assert!(rare > common * 4.0);
+    }
+
+    #[test]
+    fn similarity_specificity_suppresses_one_source_overfitting() {
+        let one_source = Media::similarity_tag_specificity(10_000, 1, 1);
+        let repeated_taste = Media::similarity_tag_specificity(10_000, 100, 3);
+        assert!(repeated_taste > one_source * 4.0);
+    }
+
+    #[test]
+    fn similarity_profile_caps_single_tag_dominance() {
+        let mut tags = vec![
+            ("reincarnation".to_string(), 96.0),
+            ("magic".to_string(), 4.0),
+        ];
+        Media::normalize_similarity_tag_weights(&mut tags);
+
+        assert_eq!(tags[0].1, SIMILARITY_SORT_MAX_TAG_SHARE);
+        assert!((tags[1].1 - 0.04).abs() < 0.001);
+    }
+
+    #[test]
     fn stale_episode_id_recomputes_to_canonical_and_validates() {
         let series_imdb = NonEmptyString::try_new("tt1844624".to_string()).unwrap();
         let mut ep = Media {
@@ -7078,6 +7863,114 @@ mod tests {
             titles.contains(&"Has Digital Release"),
             "movie with digital release date must be shown; got: {:?}",
             titles
+        );
+    }
+}
+
+#[cfg(test)]
+mod created_at_ordering_tests {
+    use super::*;
+    use crate::db::MediaIdRaw;
+
+    /// Ask the database for movies sorted by "date created" and return their ids
+    /// in the order they came back — but only the ones we care about, so any
+    /// rows the test server seeds on its own don't get in the way.
+    async fn movie_ids_by_date_created(
+        db: &SqlitePool,
+        direction: api::SortOrder,
+        ids_we_care_about: &[uuid::Uuid],
+    ) -> Vec<uuid::Uuid> {
+        Media::get_by_filter(
+            db,
+            &MediaFilter {
+                kind: Some(vec![MediaKind::Movie]),
+                sort_by: vec![api::ItemSortBy::DateCreated],
+                sort_order: vec![direction],
+                limit: Some(1000),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .records
+        .iter()
+        .map(|movie| movie.id)
+        .filter(|id| ids_we_care_about.contains(id))
+        .collect()
+    }
+
+    /// When several movies were created at the exact same time, the database has
+    /// to pick *some* order for them. If that order were random, paging through
+    /// results could show the same movie twice or skip one. So the query breaks
+    /// ties using each row's `id`, giving one fixed, repeatable order. This test
+    /// is the safety net for that behaviour (added with the perf-audit index).
+    #[tokio::test]
+    async fn movies_created_at_the_same_time_sort_by_id() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+
+        // Give every movie the identical creation time, so the id tiebreaker is
+        // the *only* thing that can decide their order.
+        let same_creation_time = chrono::NaiveDate::from_ymd_opt(2020, 1, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+
+        let mut movie_ids = Vec::new();
+        for imdb_id in ["tt7000001", "tt7000002", "tt7000003"] {
+            let external_ids = ExternalIds {
+                imdb: Some(NonEmptyString::try_new(imdb_id.to_string()).unwrap()),
+                ..Default::default()
+            };
+            let id = uuid::Uuid::from(&MediaIdRaw {
+                kind: MediaKind::Movie,
+                external_ids: external_ids.clone(),
+                season: None,
+                episode: None,
+            });
+            movie_ids.push(id);
+            Media {
+                id,
+                title: format!("Same-time movie {imdb_id}"),
+                kind: MediaKind::Movie,
+                external_ids,
+                created_at: same_creation_time,
+                ..Default::default()
+            }
+            .save(db)
+            .await
+            .unwrap();
+        }
+
+        let ascending =
+            movie_ids_by_date_created(db, api::SortOrder::Ascending, &movie_ids).await;
+        let descending =
+            movie_ids_by_date_created(db, api::SortOrder::Descending, &movie_ids).await;
+        let ascending_again =
+            movie_ids_by_date_created(db, api::SortOrder::Ascending, &movie_ids).await;
+
+        // Ascending should come back sorted by id...
+        let mut expected_ascending = movie_ids.clone();
+        expected_ascending.sort();
+        // ...and descending should be that exact list reversed.
+        let mut expected_descending = expected_ascending.clone();
+        expected_descending.reverse();
+
+        assert_eq!(
+            ascending, expected_ascending,
+            "tied rows must come back ordered by id"
+        );
+        assert_eq!(
+            ascending, ascending_again,
+            "running the same query twice must give the same order"
+        );
+        assert_eq!(
+            descending, expected_descending,
+            "descending must be the exact reverse of ascending"
         );
     }
 }

@@ -8,6 +8,7 @@ use sqlx::{
 };
 use std::{str::FromStr, time::Duration};
 use tracing::{info, warn};
+pub mod activity_log;
 pub mod api_key;
 pub mod auth;
 pub mod image;
@@ -17,6 +18,7 @@ pub mod settings;
 pub mod stream_group;
 pub mod task;
 pub mod user;
+pub use activity_log::*;
 pub use api_key::*;
 pub use image::*;
 pub use iptv::*;
@@ -26,7 +28,11 @@ pub use stream_group::*;
 pub use task::*;
 pub use user::*;
 
-pub async fn connect(url: &str, slow_query_threshold_ms: u64) -> Result<SqlitePool> {
+pub async fn connect(
+    url: &str,
+    slow_query_threshold_ms: u64,
+    max_connections: u32,
+) -> Result<SqlitePool> {
     let opts = SqliteConnectOptions::from_str(url)?
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Normal)
@@ -42,8 +48,14 @@ pub async fn connect(url: &str, slow_query_threshold_ms: u64) -> Result<SqlitePo
             log::LevelFilter::Warn,
             Duration::from_millis(slow_query_threshold_ms),
         );
+    // SQLite in WAL mode allows unlimited *concurrent readers* (only writers
+    // serialise, and those are additionally gated by DB_WRITE_SEMAPHORE). A
+    // small pool therefore does not protect the database — it just queues
+    // readers. Measured: 13 concurrent `/items` requests against a 5-connection
+    // pool inflated per-request latency from 57 ms to 552 ms purely from
+    // waiting for a connection. Sized via `Config::db_max_connections`.
     Ok(SqlitePoolOptions::new()
-        .max_connections(5)
+        .max_connections(max_connections)
         .connect_with(opts)
         .await?)
 }
@@ -62,7 +74,23 @@ async fn prepare_squash(pool: &SqlitePool) -> Result<()> {
     .flatten();
 
     match last {
-        None => {}
+        None => {
+            // Retained feature migrations predate the squash version but refer
+            // to media_relations. Bootstrap it for a fresh database; the squash
+            // later sees the complete table and adds the remaining indexes.
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS media_relations (\
+                    relation_id TEXT NOT NULL PRIMARY KEY, \
+                    left_media_id TEXT NOT NULL, \
+                    right_media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE, \
+                    weight INTEGER, \
+                    role TEXT, \
+                    character TEXT\
+                )",
+            )
+            .execute(pool)
+            .await?;
+        }
         Some(v) if v < LAST_PRE_SQUASH => anyhow::bail!(
             "Database schema is outdated. Please update to remux v0.8.0 first, \
              then upgrade to this version."

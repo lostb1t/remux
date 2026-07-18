@@ -211,11 +211,11 @@ pub async fn master_hls_video(
         let is_live = resolved_media.kind == db::MediaKind::TvChannel;
 
         // Live streams have no fixed duration — skip all runtime lookups.
-        let runtime_ticks = if is_live {
-            0
+        let (runtime_ticks, runtime_is_probed) = if is_live {
+            (0, false)
         } else {
-            // Take the maximum of stored runtime and probe data so a stale/short
-            // metadata value can't truncate the playlist for a longer file.
+            // A successful probe describes the selected file and is authoritative.
+            // Stored runtime is item metadata and may describe another cut.
             let stored_ticks = resolved_media
                 .runtime
                 .or(media.runtime)
@@ -226,11 +226,8 @@ pub async fn master_hls_video(
                 .as_ref()
                 .and_then(|p| p.run_time_ticks)
                 .filter(|&t| t > 0);
-            let rt = match (stored_ticks, probe_ticks) {
-                (Some(a), Some(b)) => Some(a.max(b)),
-                (a, b) => a.or(b),
-            };
-            match rt {
+            let rt = probe_ticks.or(stored_ticks);
+            let runtime_ticks = match rt {
                 Some(t) if t > 0 => t,
                 _ => db::Media::get_by_id(
                     &state
@@ -245,7 +242,8 @@ pub async fn master_hls_video(
                 .filter(|&r| r > 0)
                 .and_then(|r| r.to_ticks(TickUnit::Seconds))
                 .unwrap_or(0),
-            }
+            };
+            (runtime_ticks, probe_ticks.is_some())
         };
         debug!(runtime_ticks, is_live, segment_length, "transcode session");
         let source_video_stream = resolved_media
@@ -320,6 +318,7 @@ pub async fn master_hls_video(
                 .map(api::TranscodeReasons::from_query_value)
                 .unwrap_or_default(),
             runtime_ticks,
+            runtime_is_probed,
             is_live,
             source_video_codec,
             source_audio_codec,
@@ -520,14 +519,6 @@ pub async fn variant_hls_video(
     variant_hls_video_inner(state, q).await
 }
 
-fn should_serve_ffmpeg_variant_playlist(
-    is_live: bool,
-    use_fmp4: bool,
-    start_time_secs: u32,
-) -> bool {
-    is_live || use_fmp4
-}
-
 async fn variant_hls_video_inner(
     state: AppState,
     q: api::HlsVideoQuery,
@@ -552,25 +543,15 @@ async fn variant_hls_video_inner(
         .read()
         .await;
     let is_live = session_read.is_live;
-    let use_fmp4 = session_read.use_fmp4();
     let playlist_path = session_read.variant_playlist_path();
     let psid = session_read
         .id
         .clone();
 
-    // For live streams, fMP4 sessions, and resumed TS-HLS sessions we must
-    // serve the ffmpeg-written playlist:
-    // - live streams need the rolling EVENT playlist
-    // - fMP4 segments snap to keyframe boundaries, so actual durations differ
-    //   from the target and the playlist must reflect the real segment timing
-    // - resumed TS-HLS sessions start ffmpeg at a non-zero segment number; a
-    //   synthetic zero-based playlist would point clients at segment_00000 even
-    //   though ffmpeg is writing segment_{start_number}.ts
-    if should_serve_ffmpeg_variant_playlist(
-        is_live,
-        use_fmp4,
-        session_read.start_time_secs,
-    ) {
+    // FFmpeg is authoritative for every HLS segment boundary. Source keyframes
+    // routinely make real segment durations differ from the requested target,
+    // so a synthetic playlist can reference segments FFmpeg will never create.
+    {
         drop(session_read);
         // For live streams, serve the ffmpeg-written EVENT playlist directly.
         // For fMP4 VOD, also use ffmpeg's playlist because fMP4 segments snap to
@@ -629,39 +610,6 @@ async fn variant_hls_video_inner(
             .header("Cache-Control", "no-cache, no-store")
             .body(Body::from(content))
             .unwrap());
-    }
-
-    debug!(
-        runtime_ticks = session_read.runtime_ticks,
-        segment_length = session_read.segment_length,
-        play_session_id = %play_session_id,
-        "Generating VOD variant playlist"
-    );
-    let content = crate::playback::engine::generate_variant_playlist(
-        &session_read,
-        "", // no extra query string needed
-    );
-
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/vnd.apple.mpegurl")
-        .header("Cache-Control", "no-cache, no-store")
-        .body(Body::from(content))
-        .unwrap())
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn resumed_ts_hls_uses_ffmpeg_variant_playlist() {
-        assert!(!super::should_serve_ffmpeg_variant_playlist(
-            false, false, 0
-        ));
-        assert!(!super::should_serve_ffmpeg_variant_playlist(
-            false, false, 1
-        ));
-        assert!(super::should_serve_ffmpeg_variant_playlist(false, true, 0));
-        assert!(super::should_serve_ffmpeg_variant_playlist(true, false, 0));
     }
 }
 

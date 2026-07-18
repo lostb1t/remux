@@ -52,10 +52,60 @@ async fn fetch_upstream(url: &str) -> anyhow::Result<(Vec<u8>, String)> {
     Ok((bytes, ct))
 }
 
+async fn unavailable_artwork(
+    id: Uuid,
+    source_key: String,
+) -> Result<(Vec<u8>, String, String, bool)> {
+    tracing::warn!(%id, "artwork source was unavailable; serving generated fallback");
+    Ok((
+        ImageService::unavailable_artwork().await?,
+        "image/jpeg".to_string(),
+        format!("unavailable-artwork:{source_key}"),
+        false,
+    ))
+}
+
+async fn inherited_track_image(
+    db: &sqlx::SqlitePool,
+    media: &db::Media,
+) -> Result<Option<db::MediaImage>> {
+    if media.kind != db::MediaKind::Track {
+        return Ok(None);
+    }
+
+    for parent_id in [media.parent_id, media.grandparent_id]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(image) = db::MediaImage::get_for_media(db, &parent_id)
+            .await?
+            .get(ImageKind::Primary)
+            .cloned()
+        {
+            return Ok(Some(image));
+        }
+    }
+
+    Ok(None)
+}
+
+fn image_at(
+    images: &db::MediaImages,
+    kind: ImageKind,
+    index: i64,
+) -> Option<&db::MediaImage> {
+    images
+        .iter()
+        .find(|image| {
+            image.image_type == kind.to_string() && image.image_index == index
+        })
+}
+
 async fn items_images_inner(
     state: AppState,
     id: Uuid,
     image_type: api::ImageType,
+    image_index: Option<i64>,
     q: api::ImageQuery,
 ) -> Result<impl IntoResponse> {
     let opts = ImageProcessOptions {
@@ -84,10 +134,10 @@ async fn items_images_inner(
             .as_ref()
             .filter(|t| t.contains("://"))
         {
-            let (b, ct) = fetch_upstream(url)
-                .await
-                .context_not_found("image fetch failed")?;
-            (b, ct, url.clone(), true)
+            match fetch_upstream(url).await {
+                Ok((b, ct)) => (b, ct, url.clone(), true),
+                Err(_) => unavailable_artwork(id, url.clone()).await?,
+            }
         } else {
             let key = id.to_string();
             if let Some(media) = db::Media::get_by_id(
@@ -103,18 +153,30 @@ async fn items_images_inner(
                     .parse()
                     .unwrap_or(ImageKind::Primary);
                 // If Thumb is requested but not stored, fall back to Primary.
-                let img_row = media
-                    .images
-                    .get(kind)
+                let image_index = image_index.unwrap_or(0);
+                let img_row = image_at(&media.images, kind, image_index)
                     .or_else(|| {
-                        if kind == ImageKind::Thumb {
-                            media
-                                .images
-                                .get(ImageKind::Primary)
+                        if kind == ImageKind::Thumb && image_index == 0 {
+                            image_at(&media.images, ImageKind::Primary, 0)
                         } else {
                             None
                         }
-                    });
+                    })
+                    .cloned();
+                let img_row = if img_row.is_none()
+                    && image_index == 0
+                    && matches!(kind, ImageKind::Primary | ImageKind::Thumb)
+                {
+                    inherited_track_image(
+                        &state
+                            .ctx
+                            .db,
+                        &media,
+                    )
+                    .await?
+                } else {
+                    img_row
+                };
 
                 if let Some(img) = img_row {
                     let source_key = img
@@ -125,17 +187,17 @@ async fn items_images_inner(
                         .starts_with('/')
                     {
                         let path = std::path::PathBuf::from(&img.path);
-                        let (b, ct) = ImageService::serve_local(&path)
-                            .await
-                            .context_not_found("image file not found")?;
-                        (b, ct.to_string(), source_key, false)
+                        match ImageService::serve_local(&path).await {
+                            Ok((b, ct)) => (b, ct.to_string(), source_key, false),
+                            Err(_) => unavailable_artwork(id, source_key).await?,
+                        }
                     } else {
                         // Always proxy external URLs rather than redirecting — some clients
                         // (e.g. Infuse) do not follow redirects for image requests.
-                        let (b, ct) = fetch_upstream(&img.path)
-                            .await
-                            .context_not_found("image fetch failed")?;
-                        (b, ct, source_key, true)
+                        match fetch_upstream(&img.path).await {
+                            Ok((b, ct)) => (b, ct, source_key, true),
+                            Err(_) => unavailable_artwork(id, source_key).await?,
+                        }
                     }
                 } else if matches!(
                     image_type,
@@ -198,17 +260,46 @@ async fn items_images_inner(
                         }
                     });
                 let url = url.context_not_found("media image not found")?;
-                let (b, ct) = fetch_upstream(&url)
-                    .await
-                    .context_not_found("image fetch failed")?;
-                (b, ct, url, true)
+                match fetch_upstream(&url).await {
+                    Ok((b, ct)) => (b, ct, url, true),
+                    Err(_) => unavailable_artwork(id, url).await?,
+                }
             }
         };
 
-    // Apply resize/quality/blur/format transforms (cached) for local images only.
-    // Remote images are proxied as-is — re-encoding adds latency with no benefit.
+    // Jellyfin clients use the image query parameters for layout sizing. Remote
+    // providers (e.g. Deezer covers) must honour them too: returning an original
+    // 1000px image for `fillWidth=380` breaks clients that budget decoding and
+    // layout based on the requested size. Processed results are cached by the
+    // upstream URL and options, so this only fetches and re-encodes once per
+    // variant.
+    // Remote artwork used to be cached as its raw upstream bytes. Version its
+    // source key so those incompatible cache entries cannot survive the switch
+    // to transformed remote images.
+    let processing_source_key =
+        is_remote.then(|| format!("remote-art-v2:{source_key}"));
+    let processing_source_key = processing_source_key
+        .as_deref()
+        .unwrap_or(&source_key);
+
     let (final_bytes, content_type): (Vec<u8>, String) = if is_remote {
-        (bytes, raw_ct)
+        if opts.needs_processing() {
+            let (b, ct) = ImageService::process_image(
+                &state
+                    .ctx
+                    .config
+                    .data_dir,
+                bytes,
+                &opts,
+                processing_source_key,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))
+            .context_internal("image processing failed")?;
+            (b, ct.to_string())
+        } else {
+            (bytes, raw_ct)
+        }
     } else {
         let (b, ct) = ImageService::process_image(
             &state
@@ -217,7 +308,7 @@ async fn items_images_inner(
                 .data_dir,
             bytes,
             &opts,
-            &source_key,
+            processing_source_key,
         )
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))
@@ -258,7 +349,7 @@ pub async fn get_item_image_infos(
         size: u64,
     }
 
-    let images = db::MediaImage::get_for_media(
+    let mut images = db::MediaImage::get_for_media(
         &state
             .ctx
             .db,
@@ -266,19 +357,72 @@ pub async fn get_item_image_infos(
     )
     .await?;
 
-    let infos: Vec<ImageInfo> = images
-        .into_iter()
-        .map(|img| {
-            let size = if img
-                .path
-                .starts_with('/')
+    // Audio inherits album/artist primary art. The item DTO advertises that
+    // image under ImageTags.Primary, so ImageInfos must report the same image
+    // and tag for clients that discover artwork through this endpoint first.
+    if images
+        .get(ImageKind::Primary)
+        .is_none()
+    {
+        if let Some(media) = db::Media::get_by_id(
+            &state
+                .ctx
+                .db,
+            &id,
+        )
+        .await?
+        {
+            if let Some(image) = inherited_track_image(
+                &state
+                    .ctx
+                    .db,
+                &media,
+            )
+            .await?
             {
-                std::fs::metadata(&img.path)
-                    .map(|m| m.len())
-                    .unwrap_or(0)
-            } else {
-                0
-            };
+                images
+                    .primary
+                    .push(image);
+            }
+        }
+    }
+
+    // Stat every local image on a blocking thread. This ran as a synchronous
+    // `std::fs::metadata` per image row inside the map below, stalling the
+    // async worker once per image — which matters most exactly when many
+    // requests are in flight. Order is preserved by zipping against the same
+    // Vec the sizes were computed from.
+    let imgs: Vec<_> = images
+        .into_iter()
+        .collect();
+    let paths: Vec<String> = imgs
+        .iter()
+        .map(|img| {
+            img.path
+                .clone()
+        })
+        .collect();
+    let sizes: Vec<u64> = tokio::task::spawn_blocking(move || {
+        paths
+            .into_iter()
+            .map(|path| {
+                if path.starts_with('/') {
+                    std::fs::metadata(&path)
+                        .map(|m| m.len())
+                        .unwrap_or(0)
+                } else {
+                    0
+                }
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_else(|_| vec![0; imgs.len()]);
+
+    let infos: Vec<ImageInfo> = imgs
+        .into_iter()
+        .zip(sizes)
+        .map(|(img, size)| {
             let image_type = match img
                 .image_type
                 .as_str()
@@ -297,10 +441,7 @@ pub async fn get_item_image_infos(
                 } else {
                     Some(img.image_index)
                 },
-                image_tag: img
-                    .id
-                    .simple()
-                    .to_string(),
+                image_tag: crate::api::models::image_tag_for_id(img.id),
                 path: img.path,
                 width: img.width,
                 height: img.height,
@@ -318,16 +459,16 @@ pub async fn items_images(
     Path((id, image_type)): Path<(Uuid, api::ImageType)>,
     Query(q): Query<api::ImageQuery>,
 ) -> Result<impl IntoResponse> {
-    items_images_inner(state, id, image_type, q).await
+    items_images_inner(state, id, image_type, None, q).await
 }
 
 #[get("/items/{id}/images/{image_type}/{index}")]
 pub async fn items_images_indexed(
     State(state): State<AppState>,
-    Path((id, image_type, _index)): Path<(Uuid, api::ImageType, usize)>,
+    Path((id, image_type, index)): Path<(Uuid, api::ImageType, usize)>,
     Query(q): Query<api::ImageQuery>,
 ) -> Result<impl IntoResponse> {
-    items_images_inner(state, id, image_type, q).await
+    items_images_inner(state, id, image_type, Some(index as i64), q).await
 }
 
 // --- POST (upload) ---

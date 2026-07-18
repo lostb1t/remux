@@ -151,9 +151,7 @@ fn display_title_audio(m: &StreamMeta) -> Option<String> {
         attrs.push(format!("{} ch", ch));
     }
 
-    if m.is_default {
-        attrs.push("Default".into());
-    }
+    // Jellyfin does not append "Default" to an audio stream's DisplayTitle.
     if m.is_external {
         attrs.push("External".into());
     }
@@ -278,6 +276,9 @@ struct FfprobeStream {
     channels: Option<i64>,
     channel_layout: Option<String>,
     sample_rate: Option<String>,
+    bits_per_raw_sample: Option<String>,
+    bits_per_sample: Option<i64>,
+    time_base: Option<String>,
     #[serde(default)]
     tags: HashMap<String, String>,
     #[serde(default)]
@@ -289,6 +290,7 @@ struct FfprobeFormat {
     duration: Option<String>,
     format_name: Option<String>,
     bit_rate: Option<String>,
+    size: Option<String>,
 }
 
 fn parse_frame_rate(s: &str) -> Option<f64> {
@@ -464,6 +466,16 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
         })
         .and_then(nonzero);
 
+    let overall_size = probe
+        .format
+        .size
+        .as_deref()
+        .and_then(|s| {
+            s.parse::<i64>()
+                .ok()
+        })
+        .and_then(nonzero);
+
     debug!(?run_time_ticks, ?container, "probe container info");
 
     let mut streams: Vec<api::MediaStream> = Vec::new();
@@ -626,7 +638,12 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     .parse::<AudioCodec>()
                     .unwrap()
                     .to_string();
-                let is_default = audio_idx == 0;
+                // Match Jellyfin: default flag comes from the stream disposition,
+                // not stream ordering.
+                let is_default = s
+                    .disposition
+                    .default
+                    != 0;
                 let is_forced = s
                     .disposition
                     .forced
@@ -634,6 +651,28 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                 let channel_layout = s
                     .channel_layout
                     .as_deref();
+                // FLAC (and some codecs) report no per-stream bit_rate; Jellyfin
+                // derives it from the container. Fall back to the overall bitrate
+                // for the primary audio stream.
+                let stream_bit_rate = bitrate.or(if audio_idx == 0 {
+                    overall_bitrate
+                } else {
+                    None
+                });
+                let bit_depth = s
+                    .bits_per_raw_sample
+                    .as_deref()
+                    .and_then(|b| {
+                        b.parse::<i64>()
+                            .ok()
+                    })
+                    .or(s.bits_per_sample)
+                    .and_then(nonzero);
+                // Audio time_base is 1/sample_rate (Jellyfin), not a fixed 1/1000.
+                let time_base = s
+                    .time_base
+                    .clone()
+                    .or_else(|| sample_rate.map(|sr| format!("1/{sr}")));
 
                 let meta = StreamMeta {
                     language,
@@ -660,11 +699,17 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     channels,
                     channel_layout: channel_layout.map(str::to_string),
                     sample_rate,
-                    bit_rate: bitrate,
+                    bit_rate: stream_bit_rate,
+                    bit_depth,
+                    // Jellyfin always emits Level (0 for audio when unknown).
+                    level: Some(
+                        s.level
+                            .unwrap_or(0.0),
+                    ),
                     is_default: Some(is_default),
                     is_forced,
                     is_avc: Some(false),
-                    time_base: Some("1/1000".to_string()),
+                    time_base,
                     video_range: Some(api::VideoRange::Unknown),
                     video_range_type: Some(api::VideoRangeType::Unknown),
                     audio_spatial_format: Some("None".to_string()),
@@ -772,10 +817,15 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
 
     Ok((
         api::MediaSourceInfo {
+            video_type: streams
+                .iter()
+                .any(|s| matches!(s.type_, Some(api::MediaStreamType::Video)))
+                .then_some(api::VideoType::VideoFile),
             media_streams: streams,
             container,
             run_time_ticks,
             bitrate: overall_bitrate,
+            size: overall_size,
             default_audio_stream_index,
             default_subtitle_stream_index,
             ..Default::default()
@@ -1146,7 +1196,7 @@ mod probe_tests {
     }
 
     async fn test_db() -> sqlx::SqlitePool {
-        let db = crate::db::connect("sqlite::memory:", 5_000)
+        let db = crate::db::connect("sqlite::memory:", 5_000, 5)
             .await
             .unwrap();
         crate::db::migrate(&db)

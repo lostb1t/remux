@@ -50,6 +50,10 @@ pub struct Device {
     pub last_activity_at: Option<DateTime<Utc>>,
     pub capabilities: Option<sqlx::types::Json<crate::api::ClientCapabilitiesDto>>,
     pub remote_ip: Option<String>,
+    /// Operator-assigned display name (Jellyfin `DeviceOptions.CustomName`).
+    /// `None` means fall back to the client-reported [`Device::name`]. Preserved
+    /// across logins: `save()` never overwrites it.
+    pub custom_name: Option<String>,
 }
 
 impl Device {
@@ -178,6 +182,41 @@ impl Device {
 
     pub async fn delete_by_id(db: &SqlitePool, device_id: &str) -> Result<bool> {
         let result = sqlx::query("DELETE FROM devices WHERE id = ?")
+            .bind(device_id)
+            .execute(db)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Look up a device by its (client-reported) device id. The primary key is
+    /// `(user_id, id)`; in practice a device id maps to a single row, so we take
+    /// the first match ordered by most-recent activity.
+    pub async fn get_by_id(db: &SqlitePool, device_id: &str) -> Result<Option<Self>> {
+        let row = sqlx::query_as::<_, Self>(
+            r#"
+            SELECT *
+            FROM devices
+            WHERE id = ?1
+            ORDER BY last_activity_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(device_id)
+        .fetch_optional(db)
+        .await?;
+
+        Ok(row)
+    }
+
+    /// Set (or clear, with `None`) the operator-assigned custom name for every
+    /// row with this device id. Returns whether any row was updated.
+    pub async fn set_custom_name(
+        db: &SqlitePool,
+        device_id: &str,
+        custom_name: Option<&str>,
+    ) -> Result<bool> {
+        let result = sqlx::query("UPDATE devices SET custom_name = ? WHERE id = ?")
+            .bind(custom_name)
             .bind(device_id)
             .execute(db)
             .await?;
@@ -409,6 +448,7 @@ impl FromRequestParts<AppState> for AuthSession {
             last_activity_at: None,
             capabilities: None,
             remote_ip: None,
+            custom_name: None,
         };
 
         tracing::Span::current().record(

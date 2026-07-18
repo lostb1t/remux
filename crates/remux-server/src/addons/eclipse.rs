@@ -35,6 +35,18 @@ struct EclipseStreamResponse {
     quality: String,
 }
 
+/// Some Eclipse-compatible resolvers occasionally prefix an absolute media URL
+/// to the same absolute URL again. Keep the final absolute URL, which is the
+/// actual signed CDN resource, instead of persisting an unplayable descriptor.
+fn normalize_stream_url(url: &str) -> &str {
+    ["/https://", "/http://"]
+        .into_iter()
+        .filter_map(|marker| url.rfind(marker))
+        .max()
+        .map(|index| &url[index + 1..])
+        .unwrap_or(url)
+}
+
 fn eclipse_preset_options(
     default_url: &'static str,
     generate_url: &'static str,
@@ -311,13 +323,30 @@ async fn eclipse_streams(
         .unwrap_or(&resp.tracks[0]);
 
     let stream_url = format!("{}/stream/{}", base_url, track.id);
-    let stream_resp: EclipseStreamResponse = worker_get_json(client, &stream_url).await?;
+    let stream_resp: EclipseStreamResponse =
+        worker_get_json(client, &stream_url).await?;
 
     Ok(vec![StreamInfo {
-        descriptor: StreamDescriptor::http(stream_resp.url),
+        descriptor: StreamDescriptor::http(normalize_stream_url(&stream_resp.url)),
         name: Some(format!("Eclipse · {}", stream_resp.quality)),
         description: Some(format!("{} · {}", track.artist, track.album)),
         duration: Some(track.duration),
         ..Default::default()
     }])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_stream_url;
+
+    #[test]
+    fn normalizes_duplicated_absolute_media_url() {
+        let valid =
+            "https://sp-ad-fa.audio.tidal.com/mediatracks/token/0.mp4?token=signed";
+        let malformed =
+            format!("https://sp-ad-fa.audio.tidal.com/mediatracks/token/{valid}");
+
+        assert_eq!(normalize_stream_url(&malformed), valid);
+        assert_eq!(normalize_stream_url(valid), valid);
+    }
 }

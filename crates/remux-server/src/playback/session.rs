@@ -43,6 +43,9 @@ pub struct TranscodeSession {
     pub playback_offset_secs: Arc<AtomicU32>,
     /// Total runtime of the media in Jellyfin ticks (100-ns units).
     pub runtime_ticks: i64,
+    /// Whether runtime_ticks came from probing the selected media source.
+    /// Unprobed runtimes are metadata estimates and must not define a VOD timeline.
+    pub runtime_is_probed: bool,
     /// True for live TV — variant playlist is served from the ffmpeg-written EVENT file.
     pub is_live: bool,
     /// Codec name of the source video stream (e.g. "hevc", "h264"), used when
@@ -80,6 +83,7 @@ impl TranscodeSession {
         segment_length: u32,
         transcode_reasons: TranscodeReasons,
         runtime_ticks: i64,
+        runtime_is_probed: bool,
         is_live: bool,
         source_video_codec: Option<String>,
         source_audio_codec: Option<String>,
@@ -114,6 +118,7 @@ impl TranscodeSession {
             start_time_secs: 0,
             playback_offset_secs: Arc::new(AtomicU32::new(0)),
             runtime_ticks,
+            runtime_is_probed,
             is_live,
             source_video_codec,
             source_audio_codec,

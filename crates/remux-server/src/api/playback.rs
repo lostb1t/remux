@@ -269,7 +269,7 @@ async fn items_playbackinfo_inner(
                     .server_input(effective_stream.id, port)
             });
         if let Some(ref input_url) = effective_url {
-            let text_sub_indices: Vec<i64> = source
+            let text_sub_streams: Vec<(i64, bool)> = source
                 .media_streams
                 .iter()
                 .filter(|s| {
@@ -277,21 +277,40 @@ async fn items_playbackinfo_inner(
                         && !s.is_external
                         && s.is_text_subtitle_stream
                 })
-                .map(|s| s.index)
+                .map(|s| {
+                    let preserve_ass = s
+                        .codec
+                        .as_deref()
+                        .map(|codec| {
+                            matches!(
+                                codec
+                                    .to_ascii_lowercase()
+                                    .as_str(),
+                                "ass" | "ssa"
+                            )
+                        })
+                        .unwrap_or(false);
+                    (s.index, preserve_ass)
+                })
                 .collect();
-            if !text_sub_indices.is_empty() {
+            if !text_sub_streams.is_empty() {
                 let data_dir = state
                     .ctx
                     .config
                     .data_dir
                     .clone();
                 let url = input_url.clone();
+                let cache_source_id = crate::api::subtitles::subtitle_cache_source_id(
+                    &effective_stream,
+                    source.size,
+                );
                 tokio::spawn(
                     crate::api::subtitles::pre_extract_all_subtitles_to_cache(
                         data_dir,
                         url,
                         id,
-                        text_sub_indices,
+                        cache_source_id,
+                        text_sub_streams,
                     ),
                 );
             }
@@ -2358,6 +2377,33 @@ mod tests {
             "Client's explicit AudioStreamIndex must prevent language preference from selecting Dutch (index 1)"
         );
     }
+
+    #[tokio::test]
+    async fn playback_info_initializes_jellyfin_media_source_collections() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_test_source(&guard.0).await;
+
+        let response = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({}))
+            .await;
+        response.assert_status_ok();
+        let body: serde_json::Value = response.json();
+        let source = &body["MediaSources"][0];
+
+        assert!(source["MediaStreams"].is_array());
+        assert!(source["MediaAttachments"].is_array());
+        assert!(source["Formats"].is_array());
+        assert!(source["RequiredHttpHeaders"].is_object());
+        assert_eq!(source["SupportsTranscoding"], true);
+        assert_eq!(source["SupportsDirectStream"], true);
+        assert_eq!(source["SupportsDirectPlay"], true);
+    }
 }
 
 /// Returns additional parts for a multi-file video item.
@@ -2377,22 +2423,16 @@ pub async fn audio_universal(
     Path(id): Path<Uuid>,
     Query(q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
-    let mut media = db::Media::get_by_id(
-        &state
-            .ctx
-            .db,
-        &id,
-    )
-    .await?
-    .context_not_found("track not found")?;
-
-    state
-        .ctx
-        .addons
-        .refresh_streams(&mut media, &state.ctx)
-        .await
-        .inspect_err(|e| error!("refresh_streams failed: {e:#}"));
-
+    // `/Audio/{id}/universal` must serve AUDIO. The previous implementation
+    // redirected into the *video* HLS pipeline
+    // (`/videos/{id}/master.m3u8?VideoCodec=copy&AudioCodec=aac`), so a music
+    // client asking for a track received a video manifest for an audio-only item
+    // and playback failed or misbehaved. Redirect instead to the range-capable
+    // direct audio stream — the exact source `PlaybackInfo` advertises as
+    // `SupportsDirectPlay=true`. `/audio/{id}/stream` resolves the source itself
+    // (including refreshing addon-backed streams), so no extra fetch is needed
+    // here. Clients that genuinely cannot decode the source negotiate a transcode
+    // through `PlaybackInfo`'s `TranscodingUrl`, not through this redirect.
     let play_session_id = q
         .play_session_id
         .unwrap_or_else(|| {
@@ -2400,18 +2440,21 @@ pub async fn audio_universal(
                 .as_simple()
                 .to_string()
         });
+    let media_source_id = q
+        .media_source_id
+        .unwrap_or(id);
 
-    let transcoding_url = format!(
-        "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec=copy&AudioCodec=aac&ApiKey={}",
+    let stream_url = format!(
+        "/audio/{}/stream?static=true&MediaSourceId={}&PlaySessionId={}&api_key={}",
         id,
+        media_source_id,
         play_session_id,
-        id,
         session
             .device
             .access_token
     );
 
-    Ok(axum::response::Redirect::temporary(&transcoding_url).into_response())
+    Ok(axum::response::Redirect::temporary(&stream_url).into_response())
 }
 
 /// Bitrate test endpoint - returns a body of the requested size for bandwidth measurement.

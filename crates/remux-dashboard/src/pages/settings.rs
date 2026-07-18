@@ -1,5 +1,8 @@
 use crate::{
-    components::{Card, ErrorAlert, FormActions, LoadingText, SuccessAlert, ToggleRow},
+    components::{
+        Card, ErrorAlert, FormActions, LoadingText, Select, SelectOption, SuccessAlert,
+        ToggleRow,
+    },
     state::AppState,
 };
 use dioxus::prelude::*;
@@ -23,7 +26,8 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut digital_release_buffer = use_signal(|| 0_i64);
     let mut subtitle_languages = use_signal(String::new);
     let mut feature_dataset_url = use_signal(String::new);
-    let mut enable_audio_feature_instant_mix = use_signal(|| true);
+    let mut mix_audio_features = use_signal(|| false);
+    let mut mix_related_artists = use_signal(|| false);
     let mut quick_connect_enabled = use_signal(|| true);
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
@@ -69,7 +73,14 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                             .clone()
                             .unwrap_or_default(),
                     );
-                    enable_audio_feature_instant_mix.set(cfg.enable_audio_feature_instant_mix);
+                    mix_audio_features.set(
+                        cfg.mix_audio_features
+                            .unwrap_or(false),
+                    );
+                    mix_related_artists.set(
+                        cfg.mix_related_artists
+                            .unwrap_or(false),
+                    );
                     quick_connect_enabled.set(
                         cfg.quick_connect_available
                             .unwrap_or(true),
@@ -106,8 +117,11 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
         let sub_langs_str = subtitle_languages
             .peek()
             .clone();
-        let feature_url = feature_dataset_url.peek().clone();
-        let use_audio_features = *enable_audio_feature_instant_mix.peek();
+        let feature_url = feature_dataset_url
+            .peek()
+            .clone();
+        let use_audio_features = *mix_audio_features.peek();
+        let use_related_artists = *mix_related_artists.peek();
         let qc_enabled = *quick_connect_enabled.peek();
 
         let mut cfg = base_cfg
@@ -131,12 +145,20 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                 .filter(|s| !s.is_empty())
                 .collect(),
         );
-        cfg.feature_dataset_url = if feature_url.trim().is_empty() {
+        cfg.feature_dataset_url = if feature_url
+            .trim()
+            .is_empty()
+        {
             None
         } else {
-            Some(feature_url.trim().to_string())
+            Some(
+                feature_url
+                    .trim()
+                    .to_string(),
+            )
         };
-        cfg.enable_audio_feature_instant_mix = use_audio_features;
+        cfg.mix_audio_features = Some(use_audio_features);
+        cfg.mix_related_artists = Some(use_related_artists);
 
         saving.set(true);
         error.set(None);
@@ -175,18 +197,13 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
 
                         div { class: "field",
                             label { class: "field-label", r#for: "s-country", "Metadata Country" }
-                            select {
-                                id: "s-country",
-                                class: "select-input",
-                                value: "{metadata_country}",
-                                onchange: move |e| metadata_country.set(e.value()),
-                                for country in countries.read().iter() {
-                                    option {
-                                        value: "{country.two_letter_iso_region_name}",
-                                        selected: metadata_country.read().as_str() == country.two_letter_iso_region_name,
-                                        "{country.name} ({country.two_letter_iso_region_name})"
-                                    }
-                                }
+                            Select {
+                                value: metadata_country.read().clone(),
+                                options: countries.read().iter().map(|country| SelectOption::new(
+                                    country.two_letter_iso_region_name.clone(),
+                                    format!("{} ({})", country.name, country.two_letter_iso_region_name),
+                                )).collect(),
+                                on_change: move |v: String| metadata_country.set(v),
                             }
                         }
 
@@ -301,13 +318,27 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                             label { class: "field-label",
                                 input {
                                     r#type: "checkbox",
-                                    checked: *enable_audio_feature_instant_mix.read(),
-                                    oninput: move |e| enable_audio_feature_instant_mix.set(e.checked()),
+                                    checked: *mix_audio_features.read(),
+                                    oninput: move |e| mix_audio_features.set(e.checked()),
                                 }
                                 " Use audio features for Instant Mix"
                             }
                             p { class: "field-hint",
                                 "When imported feature rows are available, Instant Mix ranks tracks by acoustic similarity before falling back to genre and artist matching."
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *mix_related_artists.read(),
+                                    oninput: move |e| mix_related_artists.set(e.checked()),
+                                }
+                                " Expand Instant Mix with Deezer related artists"
+                            }
+                            p { class: "field-hint",
+                                "When Deezer artist relationships are available, artist mixes may include related artists instead of only the seed artist."
                             }
                         }
 
@@ -540,13 +571,14 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                             div { class: "field-hint",
                                 "What to do with embedded subtitle streams the client device doesn't support. Burn encodes them into the video. Extract delivers them separately via the subtitle stream endpoint (may be slow for remote sources). Strip removes them from the media source so the client never sees them — no subtitle-triggered transcoding."
                             }
-                            select {
-                                class: "select-input",
+                            Select {
                                 value: subtitle_mode.read().clone(),
-                                onchange: move |e| subtitle_mode.set(e.value()),
-                                option { value: "Burn", "Burn into video (default)" }
-                                option { value: "Extract", "Extract and deliver separately" }
-                                option { value: "Strip", "Strip (remove, no transcoding)" }
+                                options: vec![
+                                    SelectOption::new("Burn", "Burn into video (default)"),
+                                    SelectOption::new("Extract", "Extract and deliver separately"),
+                                    SelectOption::new("Strip", "Strip (remove, no transcoding)"),
+                                ],
+                                on_change: move |v: String| subtitle_mode.set(v),
                             }
                         }
 
@@ -563,20 +595,20 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                                 }
                                 "Auto-detect at startup"
                             }
-                            select {
-                                id: "hw-accel",
-                                class: "select-input",
+                            Select {
+                                value: hw_accel.read().clone(),
                                 disabled: *auto_detect.read(),
-                                value: "{hw_accel}",
-                                onchange: move |e| hw_accel.set(e.value()),
-                                option { value: "none", "None (Software)" }
-                                option { value: "vaapi", "VAAPI (Intel/AMD on Linux)" }
-                                option { value: "nvenc", "NVENC (NVIDIA)" }
-                                option { value: "qsv", "Quick Sync (Intel)" }
-                                option { value: "amf", "AMF (AMD on Windows)" }
-                                option { value: "videotoolbox", "VideoToolBox (macOS/Apple)" }
-                                option { value: "v4l2m2m", "V4L2M2M (ARM/embedded)" }
-                                option { value: "rkmpp", "RKMPP (Rockchip)" }
+                                options: vec![
+                                    SelectOption::new("none", "None (Software)"),
+                                    SelectOption::new("vaapi", "VAAPI (Intel/AMD on Linux)"),
+                                    SelectOption::new("nvenc", "NVENC (NVIDIA)"),
+                                    SelectOption::new("qsv", "Quick Sync (Intel)"),
+                                    SelectOption::new("amf", "AMF (AMD on Windows)"),
+                                    SelectOption::new("videotoolbox", "VideoToolBox (macOS/Apple)"),
+                                    SelectOption::new("v4l2m2m", "V4L2M2M (ARM/embedded)"),
+                                    SelectOption::new("rkmpp", "RKMPP (Rockchip)"),
+                                ],
+                                on_change: move |v: String| hw_accel.set(v),
                             }
                             if *auto_detect.read() {
                                 div { class: "field-hint", style: "margin-top:6px",
@@ -588,20 +620,20 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                         div { class: "field",
                             label { class: "field-label", r#for: "encoding-preset", "Encoding Preset" }
                             div { class: "field-hint", "FFmpeg -preset for software transcoding. Faster presets use more CPU; slower presets produce smaller files." }
-                            select {
-                                id: "encoding-preset",
-                                class: "select-input",
-                                value: "{encoding_preset}",
-                                onchange: move |e| encoding_preset.set(e.value()),
-                                option { value: "ultrafast", "Ultrafast (default)" }
-                                option { value: "superfast", "Superfast" }
-                                option { value: "veryfast", "Veryfast" }
-                                option { value: "faster", "Faster" }
-                                option { value: "fast", "Fast" }
-                                option { value: "medium", "Medium" }
-                                option { value: "slow", "Slow" }
-                                option { value: "slower", "Slower" }
-                                option { value: "slowest", "Slowest" }
+                            Select {
+                                value: encoding_preset.read().clone(),
+                                options: vec![
+                                    SelectOption::new("ultrafast", "Ultrafast (default)"),
+                                    SelectOption::new("superfast", "Superfast"),
+                                    SelectOption::new("veryfast", "Veryfast"),
+                                    SelectOption::new("faster", "Faster"),
+                                    SelectOption::new("fast", "Fast"),
+                                    SelectOption::new("medium", "Medium"),
+                                    SelectOption::new("slow", "Slow"),
+                                    SelectOption::new("slower", "Slower"),
+                                    SelectOption::new("slowest", "Slowest"),
+                                ],
+                                on_change: move |v: String| encoding_preset.set(v),
                             }
                         }
 
@@ -689,18 +721,18 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                             if *enable_tonemapping.read() && !*enable_vpp_tonemapping.read() {
                                 div { style: "margin-top:4px",
                                     label { class: "field-label", r#for: "tonemap-algo", style: "font-size:0.85em", "Algorithm" }
-                                    select {
-                                        id: "tonemap-algo",
-                                        class: "select-input",
-                                        style: "margin-top:4px",
-                                        value: "{tonemapping_algorithm}",
-                                        onchange: move |e| tonemapping_algorithm.set(e.value()),
-                                        option { value: "hable", "Hable (Filmic, default)" }
-                                        option { value: "reinhard", "Reinhard" }
-                                        option { value: "mobius", "Mobius" }
-                                        option { value: "bt2390", "BT.2390 (perceptual quantizer)" }
-                                        option { value: "bt2446a", "BT.2446a" }
-                                        option { value: "none", "None (clip)" }
+                                    Select {
+                                        class: "mt-1".to_string(),
+                                        value: tonemapping_algorithm.read().clone(),
+                                        options: vec![
+                                            SelectOption::new("hable", "Hable (Filmic, default)"),
+                                            SelectOption::new("reinhard", "Reinhard"),
+                                            SelectOption::new("mobius", "Mobius"),
+                                            SelectOption::new("bt2390", "BT.2390 (perceptual quantizer)"),
+                                            SelectOption::new("bt2446a", "BT.2446a"),
+                                            SelectOption::new("none", "None (clip)"),
+                                        ],
+                                        on_change: move |v: String| tonemapping_algorithm.set(v),
                                     }
                                     div { style: "display:flex;gap:16px;flex-wrap:wrap;margin-top:8px",
                                         div { style: "display:flex;flex-direction:column;gap:4px",
@@ -1536,13 +1568,13 @@ pub fn IntroSettingsCard(app_state: AppState) -> Element {
                     div { class: "field",
                         label { class: "field-label", r#for: "intro-order", "Playback Order" }
                         div { class: "field-hint", "How to pick an intro when multiple files are present." }
-                        select {
-                            id: "intro-order",
-                            class: "select-input",
-                            value: "{order}",
-                            onchange: move |e| order.set(e.value()),
-                            option { value: "random", "Random" }
-                            option { value: "sequential", "Sequential (round-robin)" }
+                        Select {
+                            value: order.read().clone(),
+                            options: vec![
+                                SelectOption::new("random", "Random"),
+                                SelectOption::new("sequential", "Sequential (round-robin)"),
+                            ],
+                            on_change: move |v: String| order.set(v),
                         }
                     }
 

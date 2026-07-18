@@ -41,10 +41,18 @@ pub enum Route {
     AccessUsersRoute,
     #[route("/access/apikeys")]
     AccessApiKeysRoute,
+    #[route("/access/devices")]
+    AccessDevicesRoute,
     #[route("/tasks")]
     TasksRoute,
-    #[route("/activity")]
-    ActivityRoute,
+    #[route("/system/logs")]
+    SystemLogsRoute,
+    #[route("/system/activity")]
+    SystemActivityRoute,
+    #[route("/system/telemetry")]
+    SystemTelemetryRoute,
+    #[route("/sessions")]
+    SessionsRoute,
     #[end_layout]
     #[route("/:..segments")]
     NotFound { segments: Vec<String> },
@@ -146,13 +154,37 @@ pub(crate) fn AccessApiKeysRoute() -> Element {
 }
 
 #[component]
+pub(crate) fn AccessDevicesRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { DevicesPage { app_state } }
+}
+
+#[component]
 pub(crate) fn TasksRoute() -> Element {
     let app_state = use_context::<AppState>();
     rsx! { TasksCard { app_state } }
 }
 
 #[component]
-pub(crate) fn ActivityRoute() -> Element {
+pub(crate) fn SystemLogsRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { LogsPage { app_state } }
+}
+
+#[component]
+pub(crate) fn SystemActivityRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { ActivityLogPage { app_state } }
+}
+
+#[component]
+pub(crate) fn SystemTelemetryRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { TelemetryPage { app_state } }
+}
+
+#[component]
+pub(crate) fn SessionsRoute() -> Element {
     let app_state = use_context::<AppState>();
     rsx! { SessionsCard { app_state } }
 }

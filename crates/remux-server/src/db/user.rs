@@ -24,17 +24,27 @@ use axum::{
     routing::{get, post},
 };
 use axum_anyhow::{ApiError, ApiResult, on_error, set_expose_errors};
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD, STANDARD_NO_PAD},
+};
 use chrono::{Duration, Utc, prelude::*};
 use config::{self, Config};
 use default2;
 use futures::future::BoxFuture;
 use futures_util::StreamExt;
 use http::Uri;
+use pbkdf2::pbkdf2_hmac;
 use reqwest::{self, header::LOCATION};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::{Row, SqlitePool};
+use sha2::Sha512;
+use sqlx::{
+    Row, SqlitePool,
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+};
 use std::{self, collections::HashMap, env, fs, path::Path, sync::Arc};
+use subtle::ConstantTimeEq;
 use timed;
 use tower::{Layer, util::MapRequestLayer};
 use tower_http::{
@@ -275,6 +285,45 @@ impl User {
         }
     }
 
+    /// Fall back to the retired Jellyfin credential store only during an
+    /// explicitly configured migration window. Successful logins are upgraded
+    /// to the native Argon2 credential immediately.
+    pub async fn authenticate_with_legacy_fallback(
+        db: &SqlitePool,
+        config: &crate::Config,
+        username: &str,
+        password: &str,
+    ) -> Result<Option<Self>> {
+        let Some(mut user) = Self::get_by_username(db, username).await? else {
+            return Ok(None);
+        };
+        if user.verify_password(password)? {
+            return Ok(Some(user));
+        }
+        if !config.legacy_jellyfin_auth_enabled() {
+            return Ok(None);
+        }
+        let legacy_db_path = config
+            .legacy_jellyfin_db_path
+            .as_deref()
+            .expect("legacy auth requires a database path");
+        match verify_legacy_jellyfin_password(legacy_db_path, username, password).await
+        {
+            Ok(true) => {
+                user.set_password(password)?;
+                user.save(db)
+                    .await?;
+                tracing::info!(user_id = %user.id, "migrated a password from the retired Jellyfin database");
+                Ok(Some(user))
+            }
+            Ok(false) => Ok(None),
+            Err(error) => {
+                tracing::warn!(error = %error, "legacy Jellyfin password migration check failed");
+                Ok(None)
+            }
+        }
+    }
+
     pub async fn delete(db: &SqlitePool, id: &Uuid) -> Result<bool> {
         let result = sqlx::query("DELETE FROM users WHERE id = ?1")
             .bind(id)
@@ -290,6 +339,82 @@ impl User {
     ) -> Result<Option<UserMediaState>> {
         Ok(UserMediaState::get_by_user_and_media(db, self, media).await?)
     }
+}
+
+async fn verify_legacy_jellyfin_password(
+    database_path: &Path,
+    username: &str,
+    password: &str,
+) -> Result<bool> {
+    let options = SqliteConnectOptions::new()
+        .filename(database_path)
+        .read_only(true)
+        .create_if_missing(false);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await?;
+    let password_hash: Option<String> = sqlx::query_scalar(
+        "SELECT Password FROM Users WHERE Username = ?1 COLLATE NOCASE LIMIT 1",
+    )
+    .bind(username)
+    .fetch_optional(&pool)
+    .await?;
+    pool.close()
+        .await;
+    Ok(password_hash
+        .as_deref()
+        .is_some_and(|hash| verify_jellyfin_pbkdf2_sha512(hash, password)))
+}
+
+fn verify_jellyfin_pbkdf2_sha512(stored_hash: &str, password: &str) -> bool {
+    let mut parts = stored_hash.split('$');
+    if parts.next() != Some("") || parts.next() != Some("PBKDF2-SHA512") {
+        return false;
+    }
+    let Some(iterations) = parts
+        .next()
+        .and_then(|value| value.strip_prefix("iterations="))
+        .and_then(|value| {
+            value
+                .parse::<u32>()
+                .ok()
+        })
+        .filter(|iterations| *iterations > 0)
+    else {
+        return false;
+    };
+    let Some(salt) = parts
+        .next()
+        .and_then(decode_base64)
+    else {
+        return false;
+    };
+    let Some(expected) = parts
+        .next()
+        .and_then(decode_base64)
+    else {
+        return false;
+    };
+    if parts
+        .next()
+        .is_some()
+        || expected.is_empty()
+    {
+        return false;
+    }
+    let mut derived = vec![0_u8; expected.len()];
+    pbkdf2_hmac::<Sha512>(password.as_bytes(), &salt, iterations, &mut derived);
+    derived
+        .ct_eq(&expected)
+        .into()
+}
+
+fn decode_base64(value: &str) -> Option<Vec<u8>> {
+    STANDARD
+        .decode(value)
+        .or_else(|_| STANDARD_NO_PAD.decode(value))
+        .ok()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -443,6 +568,52 @@ pub struct WatchHistoryFilter {
 }
 
 impl WatchHistory {
+    pub fn recommendation_weight_at(&self, now: NaiveDateTime) -> Option<f32> {
+        const MIN_POSITION_SECONDS: i64 = 120;
+        const MIN_PROGRESS: f32 = 0.10;
+        const RECENCY_HALF_LIFE_DAYS: f32 = 90.0;
+
+        let position_seconds = self
+            .position_ticks
+            .max(0)
+            / 10_000_000;
+        let progress = self
+            .runtime_seconds
+            .filter(|runtime| *runtime > 0)
+            .map(|runtime| (position_seconds as f32 / runtime as f32).clamp(0.0, 1.0));
+
+        if !self.completed
+            && position_seconds < MIN_POSITION_SECONDS
+            && progress.unwrap_or(0.0) < MIN_PROGRESS
+        {
+            return None;
+        }
+
+        let engagement = if self.completed || progress.is_some_and(|value| value >= 0.9)
+        {
+            2.4
+        } else if progress.is_some_and(|value| value >= 0.5) {
+            1.4
+        } else if progress.is_some_and(|value| value >= MIN_PROGRESS) {
+            0.65
+        } else {
+            0.3
+        };
+
+        let age_days = self
+            .created_at
+            .map(|created_at| {
+                now.signed_duration_since(created_at)
+                    .num_seconds()
+                    .max(0) as f32
+                    / 86_400.0
+            })
+            .unwrap_or(0.0);
+        let recency = 0.5_f32.powf(age_days / RECENCY_HALF_LIFE_DAYS);
+
+        Some(engagement * recency)
+    }
+
     pub async fn record_playback_stop(
         db: &SqlitePool,
         user: &User,
@@ -513,9 +684,8 @@ impl WatchHistory {
         let mut count_qb = sqlx::QueryBuilder::new(
             "SELECT COUNT(*) as count FROM watch_history WHERE 1=1",
         );
-        let mut records_qb = sqlx::QueryBuilder::new(
-            "SELECT * FROM watch_history WHERE 1=1",
-        );
+        let mut records_qb =
+            sqlx::QueryBuilder::new("SELECT * FROM watch_history WHERE 1=1");
 
         for qb in [&mut count_qb, &mut records_qb] {
             if let Some(user_id) = &filter.user_id {
@@ -563,6 +733,70 @@ impl WatchHistory {
             records: records?,
             total_count: if filter.total_count { count? } else { 0 },
         })
+    }
+}
+
+#[cfg(test)]
+mod watch_history_tests {
+    use super::*;
+
+    fn event(
+        position_seconds: i64,
+        runtime_seconds: Option<i64>,
+        completed: bool,
+    ) -> WatchHistory {
+        WatchHistory {
+            position_ticks: position_seconds * 10_000_000,
+            runtime_seconds,
+            completed,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn recommendation_weight_ignores_trivial_stops() {
+        let now = Utc::now().naive_utc();
+        assert_eq!(
+            event(30, Some(3_600), false).recommendation_weight_at(now),
+            None
+        );
+    }
+
+    #[test]
+    fn recommendation_weight_accepts_meaningful_progress() {
+        let now = Utc::now().naive_utc();
+        assert!(
+            event(90, Some(600), false)
+                .recommendation_weight_at(now)
+                .is_some()
+        );
+        assert!(
+            event(120, None, false)
+                .recommendation_weight_at(now)
+                .is_some()
+        );
+        assert!(
+            event(30, Some(3_600), true)
+                .recommendation_weight_at(now)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn recommendation_weight_rewards_completion_and_decays_with_age() {
+        let now = Utc::now().naive_utc();
+        let recent = event(5_400, Some(5_400), true);
+        let mut old = recent.clone();
+        old.created_at = Some(now - Duration::days(90));
+
+        let recent_weight = recent
+            .recommendation_weight_at(now)
+            .unwrap();
+        let old_weight = old
+            .recommendation_weight_at(now)
+            .unwrap();
+        assert!(recent_weight > old_weight);
+        assert!((old_weight - recent_weight * 0.5).abs() < 0.001);
     }
 }
 
@@ -1015,5 +1249,85 @@ impl JellyfinDisplayPrefs {
             records: records?,
             total_count: if filter.total_count { count? } else { 0 },
         })
+    }
+}
+
+#[cfg(test)]
+mod pbkdf2_verify_tests {
+    use super::*;
+    use base64::Engine as _;
+
+    /// Build a Jellyfin-format `$PBKDF2-SHA512$iterations=N$salt$hash` string for
+    /// a known password, using the same primitives the verifier uses.
+    fn jellyfin_hash(password: &str, iterations: u32, salt: &[u8]) -> String {
+        let mut derived = vec![0_u8; 64];
+        pbkdf2_hmac::<Sha512>(password.as_bytes(), salt, iterations, &mut derived);
+        format!(
+            "$PBKDF2-SHA512$iterations={iterations}${}${}",
+            STANDARD.encode(salt),
+            STANDARD.encode(&derived),
+        )
+    }
+
+    #[test]
+    fn accepts_correct_password() {
+        let hash = jellyfin_hash("hunter2", 210_000, b"a-random-salt");
+        assert!(verify_jellyfin_pbkdf2_sha512(&hash, "hunter2"));
+    }
+
+    #[test]
+    fn rejects_wrong_password() {
+        let hash = jellyfin_hash("hunter2", 210_000, b"a-random-salt");
+        assert!(!verify_jellyfin_pbkdf2_sha512(&hash, "hunter3"));
+        assert!(!verify_jellyfin_pbkdf2_sha512(&hash, ""));
+    }
+
+    #[test]
+    fn accepts_unpadded_base64() {
+        // Jellyfin hashes are sometimes stored without base64 padding; the
+        // verifier must accept both padded and unpadded encodings.
+        let salt = b"sixteen-byte-slt";
+        let mut derived = vec![0_u8; 64];
+        pbkdf2_hmac::<Sha512>(b"pw", salt, 1_000, &mut derived);
+        let hash = format!(
+            "$PBKDF2-SHA512$iterations=1000${}${}",
+            STANDARD_NO_PAD.encode(salt),
+            STANDARD_NO_PAD.encode(&derived),
+        );
+        assert!(verify_jellyfin_pbkdf2_sha512(&hash, "pw"));
+    }
+
+    #[test]
+    fn rejects_malformed_hashes() {
+        let valid_hash = jellyfin_hash("pw", 1_000, b"salt");
+
+        // Wrong algorithm label.
+        assert!(!verify_jellyfin_pbkdf2_sha512(
+            &valid_hash.replace("PBKDF2-SHA512", "PBKDF2-SHA256"),
+            "pw",
+        ));
+        // Zero iterations are rejected before any hashing happens.
+        assert!(!verify_jellyfin_pbkdf2_sha512(
+            "$PBKDF2-SHA512$iterations=0$c2FsdA==$c2FsdA==",
+            "pw",
+        ));
+        // Non-numeric iteration count.
+        assert!(!verify_jellyfin_pbkdf2_sha512(
+            "$PBKDF2-SHA512$iterations=abc$c2FsdA==$c2FsdA==",
+            "pw",
+        ));
+        // Not enough fields.
+        assert!(!verify_jellyfin_pbkdf2_sha512(
+            "$PBKDF2-SHA512$iterations=1000",
+            "pw",
+        ));
+        // Trailing extra field.
+        assert!(!verify_jellyfin_pbkdf2_sha512(
+            &format!("{valid_hash}$extra"),
+            "pw"
+        ));
+        // Outright garbage.
+        assert!(!verify_jellyfin_pbkdf2_sha512("", "pw"));
+        assert!(!verify_jellyfin_pbkdf2_sha512("not-a-hash", "pw"));
     }
 }

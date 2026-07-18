@@ -1,5 +1,5 @@
 use crate::{
-    components::{FormGroup, LoadingText, Modal},
+    components::{FormGroup, LoadingText, Modal, Select, SelectOption},
     state::AppState,
 };
 use dioxus::prelude::*;
@@ -407,47 +407,49 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
                         }
                     }
                     FormGroup { label: "Sort by",
-                        select {
-                            class: "form-input",
-                            value: "{sort_mode.read()}",
-                            onchange: move |e| { sort_mode.set(e.value()); page.set(0); },
-                            option { value: "order", "Order" }
-                            option { value: "name", "Name" }
+                        Select {
+                            value: sort_mode.read().clone(),
+                            options: vec![
+                                SelectOption::new("order", "Order"),
+                                SelectOption::new("name", "Name"),
+                            ],
+                            on_change: move |v: String| { sort_mode.set(v); page.set(0); },
                         }
                     }
                     FormGroup { label: "Status",
-                        select {
-                            class: "form-input",
-                            value: "{enabled_filter.read()}",
-                            onchange: move |e| { enabled_filter.set(e.value()); page.set(0); },
-                            option { value: "all", "All" }
-                            option { value: "true", "Enabled" }
-                            option { value: "false", "Disabled" }
+                        Select {
+                            value: enabled_filter.read().clone(),
+                            options: vec![
+                                SelectOption::new("all", "All"),
+                                SelectOption::new("true", "Enabled"),
+                                SelectOption::new("false", "Disabled"),
+                            ],
+                            on_change: move |v: String| { enabled_filter.set(v); page.set(0); },
                         }
                     }
                     if !countries.read().is_empty() {
                         FormGroup { label: "Country",
-                            select {
-                                class: "form-input",
-                                value: "{country_filter.read()}",
-                                onchange: move |e| { country_filter.set(e.value()); page.set(0); },
-                                option { value: "", "All countries" }
-                                for c in countries.read().clone() {
-                                    option { value: "{c}", "{c}" }
-                                }
+                            Select {
+                                value: country_filter.read().clone(),
+                                options: {
+                                    let mut opts = vec![SelectOption::new("", "All countries")];
+                                    opts.extend(countries.read().iter().map(|c| SelectOption::new(c.to_string(), c.to_string())));
+                                    opts
+                                },
+                                on_change: move |v: String| { country_filter.set(v); page.set(0); },
                             }
                         }
                     }
                     if !groups.read().is_empty() {
                         FormGroup { label: "Group",
-                            select {
-                                class: "form-input",
-                                value: "{group_filter.read()}",
-                                onchange: move |e| { group_filter.set(e.value()); page.set(0); },
-                                option { value: "", "All groups" }
-                                for g in groups.read().clone() {
-                                    option { value: "{g}", "{g}" }
-                                }
+                            Select {
+                                value: group_filter.read().clone(),
+                                options: {
+                                    let mut opts = vec![SelectOption::new("", "All groups")];
+                                    opts.extend(groups.read().iter().map(|g| SelectOption::new(g.to_string(), g.to_string())));
+                                    opts
+                                },
+                                on_change: move |v: String| { group_filter.set(v); page.set(0); },
                             }
                         }
                     }

@@ -1,5 +1,7 @@
 use crate::{
-    components::{EmptyState, FormGroup, LoadingText, Modal, ModalSize},
+    components::{
+        EmptyState, FormGroup, LoadingText, Modal, ModalSize, Select, SelectOption,
+    },
     state::AppState,
 };
 use dioxus::prelude::*;
@@ -856,16 +858,13 @@ pub(crate) fn AddonOptionField(
                     }
                 },
                 AddonOptionType::Select { options } => rsx! {
-                    select {
-                        class: "form-input",
-                        value: "{current_str}",
-                        onchange: move |e| {
+                    Select {
+                        value: current_str.clone(),
+                        options: options.iter().map(|so| SelectOption::new(so.value.clone(), so.label.clone())).collect(),
+                        on_change: move |v: String| {
                             let mut map = values.write();
-                            map.insert(id_select.clone(), serde_json::Value::String(e.value()));
+                            map.insert(id_select.clone(), serde_json::Value::String(v));
                         },
-                        for so in options.iter().cloned() {
-                            option { value: "{so.value}", "{so.label}" }
-                        }
                     }
                 },
                 AddonOptionType::MultiSelect { .. } => rsx! {

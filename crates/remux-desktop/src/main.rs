@@ -42,7 +42,9 @@ fn ensure_data_dirs(config: &remux_server::Config) -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    remux_server::setup_logging();
+    // Desktop keeps stdout-only logging (no `log_dir`); the returned guard is
+    // `None` but is bound for symmetry with the server entry point.
+    let _log_guard = remux_server::setup_logging(None);
 
     // Point server at bundled jellyfin-ffmpeg binaries placed next to the exe.
     set_ffmpeg_paths();

@@ -957,11 +957,17 @@ impl SearchAddon for YtDlpAddon {
 impl StreamAddon for YtDlpAddon {
     fn supports(&self, media: &db::Media) -> bool {
         media.kind == db::MediaKind::Track
-            && (media.external_ids.youtube_id.is_some()
+            && (media
+                .external_ids
+                .youtube_id
+                .is_some()
                 || media
                     .stream_info
                     .as_ref()
-                    .and_then(|si| si.descriptor.as_http_url())
+                    .and_then(|si| {
+                        si.descriptor
+                            .as_http_url()
+                    })
                     .is_some())
     }
 

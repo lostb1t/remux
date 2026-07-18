@@ -186,6 +186,86 @@ pub struct PlaylistItemsQuery {
     pub include_item_types: CommaSeparatedList<api::MediaType>,
 }
 
+pub(super) async fn filter_relations_by_item_types(
+    db: &sqlx::SqlitePool,
+    relations: Vec<db::MediaRelation>,
+    item_types: &[api::MediaType],
+) -> Result<Vec<db::MediaRelation>> {
+    let allowed_kinds: Vec<db::MediaKind> = item_types
+        .iter()
+        .filter_map(|item_type| db::MediaKind::try_from(item_type.clone()).ok())
+        .collect();
+    if allowed_kinds.is_empty() || relations.is_empty() {
+        return Ok(relations);
+    }
+
+    let mut qb = sqlx::QueryBuilder::new("SELECT id, kind FROM media WHERE id IN (");
+    let mut sep = qb.separated(", ");
+    for relation in &relations {
+        sep.push_bind(relation.right_media_id);
+    }
+    qb.push(")");
+    let kinds: std::collections::HashMap<Uuid, db::MediaKind> = qb
+        .build_query_as::<(Uuid, db::MediaKind)>()
+        .fetch_all(db)
+        .await?
+        .into_iter()
+        .collect();
+
+    Ok(relations
+        .into_iter()
+        .filter(|relation| {
+            kinds
+                .get(&relation.right_media_id)
+                .is_some_and(|kind| allowed_kinds.contains(kind))
+        })
+        .collect())
+}
+
+pub(super) async fn relations_to_items(
+    db: &sqlx::SqlitePool,
+    relations: &[db::MediaRelation],
+    hide_sources: bool,
+) -> Result<Vec<api::BaseItemDto>> {
+    // Resolve every member in one batch instead of two queries per member
+    // (`get_by_id` also loads images, so this was 2N round-trips — 1,684 for an
+    // 842-member playlist). `get_by_ids` has identical semantics: no policy
+    // filtering, images included.
+    //
+    // Look up with `get`+`clone` rather than `remove`: a playlist may legally
+    // contain the same item more than once, and removing on first use would
+    // silently drop the repeats. Cloning a `Media` is far cheaper than the two
+    // database round-trips it replaces.
+    let member_ids: Vec<uuid::Uuid> = relations
+        .iter()
+        .map(|relation| relation.right_media_id)
+        .collect();
+    let by_id = db::Media::get_by_ids(db, &member_ids).await?;
+
+    let mut relation_ids = Vec::with_capacity(relations.len());
+    let mut media = Vec::with_capacity(relations.len());
+    for relation in relations {
+        if let Some(item) = by_id
+            .get(&relation.right_media_id)
+            .cloned()
+        {
+            relation_ids.push(relation.relation_id);
+            media.push(item);
+        }
+    }
+
+    db::Media::preload_parents(db, &mut media).await;
+    Ok(media
+        .into_iter()
+        .zip(relation_ids)
+        .map(|(item, relation_id)| {
+            let mut dto = api::db_media_to_item(item, hide_sources);
+            dto.playlist_item_id = Some(relation_id.to_string());
+            dto
+        })
+        .collect())
+}
+
 #[get("/playlists/{id}/items")]
 pub async fn get_playlist_items(
     State(state): State<AppState>,
@@ -218,36 +298,14 @@ pub async fn get_playlist_items(
     // Finamp's `IncludeItemTypes=Audio` play-queue build) receives the stray
     // member and throws `Wrong BaseItemDto type`. We resolve the members' kinds
     // in one batch query and keep only the requested ones.
-    let allowed_kinds: Vec<db::MediaKind> = q
-        .include_item_types
-        .iter()
-        .filter_map(|t| db::MediaKind::try_from(t.clone()).ok())
-        .collect();
-    let relations = if allowed_kinds.is_empty() || relations.is_empty() {
-        relations
-    } else {
-        let mut qb =
-            sqlx::QueryBuilder::new("SELECT id, kind FROM media WHERE id IN (");
-        let mut sep = qb.separated(", ");
-        for rel in &relations {
-            sep.push_bind(rel.right_media_id);
-        }
-        qb.push(")");
-        let kinds: std::collections::HashMap<Uuid, db::MediaKind> = qb
-            .build_query_as::<(Uuid, db::MediaKind)>()
-            .fetch_all(&state.ctx.db)
-            .await?
-            .into_iter()
-            .collect();
-        relations
-            .into_iter()
-            .filter(|rel| {
-                kinds
-                    .get(&rel.right_media_id)
-                    .is_some_and(|k| allowed_kinds.contains(k))
-            })
-            .collect()
-    };
+    let relations = filter_relations_by_item_types(
+        &state
+            .ctx
+            .db,
+        relations,
+        &q.include_item_types,
+    )
+    .await?;
 
     let total = relations.len() as i64;
 
@@ -264,24 +322,14 @@ pub async fn get_playlist_items(
         None => &relations[start.min(relations.len())..],
     };
 
-    let mut items = Vec::with_capacity(slice.len());
-    for rel in slice {
-        if let Some(media) = db::Media::get_by_id(
-            &state
-                .ctx
-                .db,
-            &rel.right_media_id,
-        )
-        .await?
-        {
-            let mut dto = api::db_media_to_item(media, false);
-            dto.playlist_item_id = Some(
-                rel.relation_id
-                    .to_string(),
-            );
-            items.push(dto);
-        }
-    }
+    let items = relations_to_items(
+        &state
+            .ctx
+            .db,
+        slice,
+        false,
+    )
+    .await?;
 
     Ok(Json(api::BaseItemDtoQueryResult {
         items,
