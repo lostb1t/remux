@@ -308,7 +308,8 @@ pub fn UserForm(
                                 .map(|a| (a.id, true))
                         })
                         .collect();
-                    // Addons not in the saved list: default/system ones start checked, non-default unchecked.
+                    // Addons not in the saved list are appended as unchecked — the user
+                    // hasn't opted them into their custom list.
                     for a in &addons {
                         if !enabled_ids.contains(&a.id) {
                             ordered.push((a.id, false));
@@ -372,6 +373,11 @@ pub fn UserForm(
         let addon_override_snapshot = addon_override
             .peek()
             .clone();
+        // Only save addon override when the addon list loaded successfully.
+        // If it failed, all_addons is empty and we must not POST [] (which would clear the override).
+        let addons_loaded = !all_addons
+            .peek()
+            .is_empty();
 
         saving.set(true);
         err.set(None);
@@ -438,19 +444,21 @@ pub fn UserForm(
                             })
                             .await?;
                     }
-                    // Save addon override: send enabled IDs in order (empty = clear override).
-                    let ids: Vec<Uuid> = addon_override_snapshot
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter(|(_, enabled)| *enabled)
-                        .map(|(id, _)| id)
-                        .collect();
-                    client
-                        .execute(SetUserAddons {
-                            user_id: user.id,
-                            addon_ids: ids,
-                        })
-                        .await?;
+                    // Save addon override only when the addon list loaded successfully.
+                    if addons_loaded {
+                        let ids: Vec<Uuid> = addon_override_snapshot
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|(_, enabled)| *enabled)
+                            .map(|(id, _)| id)
+                            .collect();
+                        client
+                            .execute(SetUserAddons {
+                                user_id: user.id,
+                                addon_ids: ids,
+                            })
+                            .await?;
+                    }
                 } else {
                     // Create user
                     let new_user = client

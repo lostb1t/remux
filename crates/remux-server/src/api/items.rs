@@ -981,9 +981,9 @@ pub async fn refresh_item(
 
     // new files
     if q.metadata_refresh_mode == api::MetadataRefreshMode::Default {
-        // Invalidate the stream cache so each user's next request re-fetches
-        // with their own addon scope. Do NOT call refresh_streams here — this
-        // is an admin endpoint with no user context.
+        // Invalidate the stream cache. The next request that hits this item
+        // will re-fetch streams with the requesting user's addon scope.
+        // Do NOT call refresh_streams here — this is an admin endpoint with no user context.
         sqlx::query("UPDATE media SET streams_refreshed_at = NULL WHERE id = ?")
             .bind(media.id)
             .execute(

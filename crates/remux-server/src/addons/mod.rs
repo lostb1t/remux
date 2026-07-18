@@ -935,8 +935,8 @@ impl AddonRuntime {
 
 /// Returns true when `runtime` should run for the given user context.
 ///
-/// `override_ids = None`        → no override active; all addons run (background tasks
-///                                and users whose addon list hasn't been customised).
+/// `override_ids = None`        → no override active; only `is_default` addons run (background
+///                                tasks and users whose addon list hasn't been customised).
 /// `override_ids = Some(ids)`   → user has a custom addon list; only those addon IDs run,
 ///                                plus system addons which always run unconditionally.
 fn user_scoped(runtime: &AddonRuntime, override_ids: Option<&[Uuid]>) -> bool {
@@ -1089,15 +1089,20 @@ impl AddonService {
         AddonRuntime: PickCap<T>,
     {
         let override_ids = match user_id {
-            Some(uid) => addon::user_addon_override(db, uid)
-                .await
-                .unwrap_or(None),
+            Some(uid) => match addon::user_addon_override(db, uid).await {
+                Ok(ids) => ids,
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to load user addon override");
+                    return Vec::new();
+                }
+            },
             None => None,
         };
-        let mut out = Vec::new();
-        for r in self
+        let all = self
             .inner
-            .load()
+            .load();
+        let mut out = Vec::new();
+        for r in all
             .iter()
             .filter(|r| r.supports_type(&media.kind))
             .filter(|r| user_scoped(r, override_ids.as_deref()))
@@ -1105,6 +1110,17 @@ impl AddonService {
             if PickCap::<T>::pick(r, media).await {
                 out.push(r.clone());
             }
+        }
+        if let Some(ids) = &override_ids {
+            out.sort_by_key(|r| {
+                ids.iter()
+                    .position(|id| {
+                        *id == r
+                            .row
+                            .id
+                    })
+                    .unwrap_or(usize::MAX)
+            });
         }
         out
     }
@@ -1115,17 +1131,34 @@ impl AddonService {
         user_id: Option<Uuid>,
     ) -> Vec<AddonRuntime> {
         let override_ids = match user_id {
-            Some(uid) => addon::user_addon_override(db, uid)
-                .await
-                .unwrap_or(None),
+            Some(uid) => match addon::user_addon_override(db, uid).await {
+                Ok(ids) => ids,
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to load user addon override");
+                    return Vec::new();
+                }
+            },
             None => None,
         };
-        self.inner
+        let mut out: Vec<AddonRuntime> = self
+            .inner
             .load()
             .iter()
             .filter(|r| user_scoped(r, override_ids.as_deref()))
             .cloned()
-            .collect()
+            .collect();
+        if let Some(ids) = &override_ids {
+            out.sort_by_key(|r| {
+                ids.iter()
+                    .position(|id| {
+                        *id == r
+                            .row
+                            .id
+                    })
+                    .unwrap_or(usize::MAX)
+            });
+        }
+        out
     }
 
     pub async fn from_db(db: &SqlitePool, config: &crate::Config) -> Result<Self> {

@@ -149,9 +149,12 @@ pub async fn set_user_addon_override(
     user_id: Uuid,
     addon_ids: &[Uuid],
 ) -> Result<()> {
+    let mut tx = db
+        .begin()
+        .await?;
     sqlx::query("DELETE FROM addon_users WHERE user_id = ?1")
         .bind(user_id)
-        .execute(db)
+        .execute(&mut *tx)
         .await?;
     for (priority, addon_id) in addon_ids
         .iter()
@@ -163,8 +166,10 @@ pub async fn set_user_addon_override(
         .bind(addon_id)
         .bind(user_id)
         .bind(priority as i64)
-        .execute(db)
+        .execute(&mut *tx)
         .await?;
     }
+    tx.commit()
+        .await?;
     Ok(())
 }
