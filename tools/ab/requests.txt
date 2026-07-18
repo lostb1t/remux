@@ -1,0 +1,44 @@
+# Request corpus for `ab.py verify` — one request per line: "[METHOD] path".
+# METHOD defaults to GET. Lines are replayed against the baseline and treatment
+# builds after the startup wizard + authentication, and their JSON responses are
+# compared (volatile fields stripped). Keep to read-only endpoints so replaying
+# against two servers is side-effect free. These exercise response *shape* and
+# field semantics on a freshly-seeded (empty-library) server; data-heavy timing
+# equivalence is covered by `ab.py bench` + the divan suite.
+
+/system/info/public
+/system/info
+/system/ping
+/system/endpoint
+/system/configuration
+/system/configuration/encoding
+/localization/options
+/localization/countries
+/localization/cultures
+/branding/configuration
+/users/me
+/users/public
+/userviews
+/userviews/groupingoptions
+/items
+/items/latest
+/items/counts
+/items/filters
+/items/filters2
+/genres
+/musicgenres
+/persons
+/studios
+/years
+/artists
+/artists/albumartists
+/shows/nextup
+/shows/upcoming
+/search/hints?searchTerm=test
+/library/mediafolders
+/library/virtualfolders
+/useritems/resume
+/scheduledtasks
+/devices
+/plugins
+/packages

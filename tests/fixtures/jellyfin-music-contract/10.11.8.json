@@ -1,0 +1,122 @@
+{
+  "reference": {
+    "version": "10.11.8",
+    "image": "jellyfin/jellyfin@sha256:1694ff069f0c9dafb283c36765175606866769f5d72f2ed56b6a0f1be922fc37"
+  },
+  "query_result_empty": {
+    "Items": [],
+    "TotalRecordCount": 0,
+    "StartIndex": 0
+  },
+  "complete_track": {
+    "Artists": [
+      "Contract Artist"
+    ],
+    "ArtistItems": [
+      {
+        "Name": "Contract Artist",
+        "Id": "c45b144c8a85397ff5fd04b891f50f29"
+      }
+    ],
+    "AlbumArtists": [
+      {
+        "Name": "Contract Artist",
+        "Id": "c45b144c8a85397ff5fd04b891f50f29"
+      }
+    ],
+    "Genres": [
+      "Contract Genre"
+    ],
+    "GenreItems": [
+      {
+        "Name": "Contract Genre",
+        "Id": "d4d3049cde7dab8a4bf2371e3119c22a"
+      }
+    ],
+    "People": [],
+    "Tags": [],
+    "ImageTags": {},
+    "BackdropImageTags": [],
+    "ProviderIds": {}
+  },
+  "sparse_track": {
+    "Artists": [],
+    "ArtistItems": [],
+    "AlbumArtists": [],
+    "Genres": [],
+    "GenreItems": [],
+    "People": [],
+    "Tags": [],
+    "ImageTags": {},
+    "BackdropImageTags": [],
+    "ProviderIds": {}
+  },
+  "item_detail_empty_collections": {
+    "ExternalUrls": [],
+    "Taglines": [],
+    "People": [],
+    "Studios": [],
+    "RemoteTrailers": [],
+    "Tags": [],
+    "LockedFields": [],
+    "ImageTags": {},
+    "BackdropImageTags": [],
+    "ProviderIds": {}
+  },
+  "browse_shapes": {
+    "artists": {
+      "keys": [
+        "Items",
+        "StartIndex",
+        "TotalRecordCount"
+      ],
+      "item_type": "MusicArtist"
+    },
+    "music_genres": {
+      "keys": [
+        "Items",
+        "StartIndex",
+        "TotalRecordCount"
+      ],
+      "item_type": "MusicGenre"
+    }
+  },
+  "playback_info": {
+    "keys": [
+      "MediaSources",
+      "PlaySessionId"
+    ],
+    "source_presence": {
+      "MediaStreams": true,
+      "MediaAttachments": true,
+      "Formats": true,
+      "RequiredHttpHeaders": true
+    },
+    "source_collections": {
+      "MediaStreamsCount": 1,
+      "MediaAttachments": [],
+      "Formats": [],
+      "RequiredHttpHeaders": {}
+    },
+    "capabilities": {
+      "SupportsTranscoding": true,
+      "SupportsDirectStream": true,
+      "SupportsDirectPlay": true,
+      "SupportsProbing": true
+    }
+  },
+  "http": {
+    "missing_lyrics": {
+      "status": 404
+    },
+    "audio_stream_range": {
+      "status": 200,
+      "content_type": "audio/flac",
+      "accept_ranges": "none"
+    },
+    "download_range": {
+      "status": 206,
+      "content_disposition": "attachment; filename=\"01 Complete Track.flac\"; filename*=UTF-8''01%20Complete%20Track.flac"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+=== bucket summary (track item) ===
+  MISSING: 240
+  VALUE_DIFF: 100
+  EMPTY_ARRAY_VS_POPULATED: 40
+
+=== top gaps (field -> jf vs remux) ===
+  [MISSING] Container                        JF=flac                               RMX=None  (x20)
+  [MISSING] PremiereDate                     JF=2021-10-12T00:00:00.0000000Z       RMX=None  (x20)
+  [MISSING] MediaSources[0].Size             JF=10763303                           RMX=None  (x20)
+  [MISSING] MediaSources[0].MediaStreams[0].IsAVC JF=False                              RMX=None  (x20)
+  [MISSING] MediaSources[0].MediaStreams[0].BitRate JF=1017103                            RMX=None  (x20)
+  [MISSING] MediaSources[0].MediaStreams[0].BitDepth JF=16                                 RMX=None  (x20)
+  [MISSING] MediaSources[0].MediaStreams[0].Level JF=0                                  RMX=None  (x20)
+  [MISSING] MediaSources[0].Bitrate          JF=1017103                            RMX=None  (x20)
+  [EMPTY_ARRAY_VS_POPULATED] Genres                           JF=['Chicago Drill', 'Drill', 'Gangst RMX=[]  (x20)
+  [MISSING] ProductionYear                   JF=2021                               RMX=None  (x20)
+  [MISSING] ParentIndexNumber                JF=1                                  RMX=None  (x20)
+  [EMPTY_ARRAY_VS_POPULATED] GenreItems                       JF=['Chicago Drill', 'Drill', 'Gangst RMX=[]  (x20)
+  [MISSING] AlbumPrimaryImageTag             JF=17737885dd6edc289627bddccf3a713f   RMX=None  (x20)
+  [MISSING] MediaStreams                     JF=[{'Codec': 'flac', 'TimeBase': '1/ RMX=None  (x20)
+
+RESULT: FAIL — 280 real gaps

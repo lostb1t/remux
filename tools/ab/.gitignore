@@ -1,0 +1,3 @@
+# Baseline file snapshots taken by `ab.py snapshot` — local working state only.
+.snapshots/
+__pycache__/
