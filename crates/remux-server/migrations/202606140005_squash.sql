@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS jellyfin_display_prefs (
     user_id TEXT NOT NULL,
     client  TEXT NOT NULL,
     data    TEXT NOT NULL,
-    FOREIGN KEY (user_id) REFERENCES users(id)
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS media (
