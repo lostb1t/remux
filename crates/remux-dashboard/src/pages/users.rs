@@ -627,36 +627,52 @@ pub fn UserForm(
                                                 .find(|a| a.id == aid)
                                                 .map(|a| a.system)
                                                 .unwrap_or(false);
-                                            let name = all_addons.read().iter()
+                                            let addon_info = all_addons.read().iter()
                                                 .find(|a| a.id == aid)
-                                                .map(|a| a.name.clone())
-                                                .unwrap_or_default();
-                                            let kind = all_addons.read().iter()
-                                                .find(|a| a.id == aid)
-                                                .map(|a| a.kind.clone())
-                                                .unwrap_or_default();
+                                                .cloned();
+                                            let name = addon_info.as_ref().map(|a| a.name.clone()).unwrap_or_default();
+                                            let kind = addon_info.as_ref().map(|a| a.kind.clone()).unwrap_or_default();
+                                            let resources = addon_info.as_ref().map(|a| a.supported_resources_user.clone()).unwrap_or_default();
+                                            let display_types = addon_info.as_ref().map(|a| a.supported_types_user.clone()).unwrap_or_default();
                                             rsx! {
                                                 div {
                                                     key: "{aid}",
-                                                    style: if enabled { "display:flex;align-items:center;gap:6px;padding:4px 0" } else { "display:flex;align-items:center;gap:6px;padding:4px 0;opacity:.4" },
-                                                    if is_system {
-                                                        span { style: "width:16px;text-align:center;font-size:.65rem;color:var(--text-dim)", "🔒" }
-                                                    } else {
-                                                        input {
-                                                            r#type: "checkbox",
-                                                            checked: enabled,
-                                                            onchange: move |e| {
-                                                                let mut ov = addon_override.write();
-                                                                if let Some(ref mut list) = *ov {
-                                                                    if let Some(entry) = list.iter_mut().find(|(id, _)| *id == aid) {
-                                                                        entry.1 = e.checked();
+                                                    style: if enabled { "display:flex;gap:6px;padding:6px 0;border-bottom:1px solid var(--border)" } else { "display:flex;gap:6px;padding:6px 0;border-bottom:1px solid var(--border);opacity:.4" },
+                                                    // Checkbox / lock
+                                                    div { style: "padding-top:2px",
+                                                        if is_system {
+                                                            span { style: "font-size:.65rem;color:var(--text-dim)", "🔒" }
+                                                        } else {
+                                                            input {
+                                                                r#type: "checkbox",
+                                                                checked: enabled,
+                                                                onchange: move |e| {
+                                                                    let mut ov = addon_override.write();
+                                                                    if let Some(ref mut list) = *ov {
+                                                                        if let Some(entry) = list.iter_mut().find(|(id, _)| *id == aid) {
+                                                                            entry.1 = e.checked();
+                                                                        }
                                                                     }
-                                                                }
-                                                            },
+                                                                },
+                                                            }
                                                         }
                                                     }
-                                                    span { style: "flex:1", "{name}" }
-                                                    span { class: "addon-card-kind", style: "font-size:.65rem", "{kind}" }
+                                                    // Name + badges stacked
+                                                    div { style: "flex:1;display:flex;flex-direction:column;gap:3px;min-width:0",
+                                                        div { style: "display:flex;align-items:center;gap:6px",
+                                                            span { style: "font-size:.8rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", "{name}" }
+                                                            span { class: "addon-card-kind", style: "font-size:.6rem", "{kind}" }
+                                                        }
+                                                        div { class: "addon-kind-card-badges",
+                                                            for res in resources.iter() {
+                                                                span { class: "addon-kind-badge", "{res}" }
+                                                            }
+                                                            for t in display_types.iter() {
+                                                                span { class: "addon-kind-type", "{t}" }
+                                                            }
+                                                        }
+                                                    }
+                                                    // Reorder buttons
                                                     div { style: "display:flex;flex-direction:column;gap:1px",
                                                         button {
                                                             r#type: "button",

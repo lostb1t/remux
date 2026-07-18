@@ -158,6 +158,14 @@ pub struct AddonMetadata {
     pub icon: Option<String>,
     pub supported_resources: Vec<crate::stremio::ResourceRef>,
     pub supported_types: Vec<MediaKind>,
+    /// Resources available when this addon is used in user (non-default) scope.
+    /// Excludes Catalog and Meta; empty means the addon cannot be used in user scope.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_resources_user: Vec<ResourceType>,
+    /// Content types available when used in user scope.
+    /// Excludes TvChannel; empty means the addon cannot be used in user scope.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_types_user: Vec<MediaKind>,
     pub options: Vec<AddonOption>,
 }
 
@@ -199,6 +207,12 @@ pub struct AddonDto {
     /// the manifest; for other kinds from the static preset metadata.
     #[serde(default)]
     pub supported_types: Vec<MediaKind>,
+    /// Resources available when used in user (non-default) scope. Excludes Catalog/Meta.
+    #[serde(default)]
+    pub supported_resources_user: Vec<ResourceType>,
+    /// Content types available in user scope. Excludes TvChannel.
+    #[serde(default)]
+    pub supported_types_user: Vec<MediaKind>,
     pub priority: i64,
     #[serde(default)]
     pub system: bool,

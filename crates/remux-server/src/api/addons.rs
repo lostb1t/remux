@@ -32,8 +32,19 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
                     .kind
         });
 
-    let (supported_resources, supported_types) = if let Some(ref p) = preset {
+    let (
+        supported_resources,
+        supported_types,
+        supported_resources_user,
+        supported_types_user,
+    ) = if let Some(ref p) = preset {
         let meta = p.metadata();
+        let resources_user = meta
+            .supported_resources_user
+            .clone();
+        let types_user = meta
+            .supported_types_user
+            .clone();
         match p.from_cfg(
             addon.id,
             &addon
@@ -68,7 +79,7 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
                                     .map(Into::into)
                             })
                             .collect();
-                        (resources, types)
+                        (resources, types, resources_user, types_user)
                     }
                     None => (
                         meta.supported_resources
@@ -76,6 +87,8 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
                             .map(|r| r.name)
                             .collect(),
                         meta.supported_types,
+                        resources_user,
+                        types_user,
                     ),
                 }
             }
@@ -85,10 +98,12 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
                     .map(|r| r.name)
                     .collect(),
                 meta.supported_types,
+                resources_user,
+                types_user,
             ),
         }
     } else {
-        (vec![], vec![])
+        (vec![], vec![], vec![], vec![])
     };
 
     AddonDto {
@@ -110,6 +125,8 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
         enabled: addon.enabled,
         supported_resources,
         supported_types,
+        supported_resources_user,
+        supported_types_user,
         priority: addon.priority,
         system: addon.system,
         is_default: addon.is_default,

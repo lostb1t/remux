@@ -33,6 +33,8 @@ impl AddonPreset for LrcLibPreset {
                 ResourceType::Lyrics,
             )],
             supported_types: vec![MediaKind::Track],
+            supported_resources_user: vec![ResourceType::Lyrics],
+            supported_types_user: vec![MediaKind::Track],
             options: vec![],
         }
     }

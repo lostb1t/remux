@@ -36,6 +36,8 @@ impl AddonPreset for IptvM3uPreset {
                 AddonMetadata::simple_resource(ResourceType::Catalog),
             ],
             supported_types: vec![MediaKind::TvChannel],
+            supported_resources_user: vec![],
+            supported_types_user: vec![],
             options: vec![
                 AddonOption {
                     id: "url".to_string(),
@@ -120,6 +122,8 @@ impl AddonPreset for IptvXstreamPreset {
             icon: None,
             supported_resources: vec![AddonMetadata::simple_resource(ResourceType::Stream), AddonMetadata::simple_resource(ResourceType::Catalog)],
             supported_types: vec![MediaKind::TvChannel],
+            supported_resources_user: vec![],
+            supported_types_user: vec![],
             options: vec![
                 AddonOption {
                     id: "server_url".to_string(),

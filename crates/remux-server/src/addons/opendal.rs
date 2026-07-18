@@ -117,6 +117,15 @@ impl AddonPreset for OpendalLocalPreset {
                 MediaKind::Episode,
                 MediaKind::Track,
             ],
+            supported_resources_user: vec![
+                ResourceType::Stream,
+                ResourceType::Subtitles,
+            ],
+            supported_types_user: vec![
+                MediaKind::Movie,
+                MediaKind::Episode,
+                MediaKind::Track,
+            ],
             options: vec![
                 media_kind_option(),
                 AddonOption {
@@ -197,6 +206,15 @@ impl AddonPreset for OpendalWebdavPreset {
                 AddonMetadata::simple_resource(ResourceType::Subtitles),
             ],
             supported_types: vec![
+                MediaKind::Movie,
+                MediaKind::Episode,
+                MediaKind::Track,
+            ],
+            supported_resources_user: vec![
+                ResourceType::Stream,
+                ResourceType::Subtitles,
+            ],
+            supported_types_user: vec![
                 MediaKind::Movie,
                 MediaKind::Episode,
                 MediaKind::Track,
