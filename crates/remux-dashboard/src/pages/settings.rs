@@ -1601,7 +1601,6 @@ pub fn IntroSettingsCard(app_state: AppState) -> Element {
 pub fn RemuxdbSettingsCard(app_state: AppState) -> Element {
     let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
     let mut enabled = use_signal(|| true);
-    let mut token = use_signal(String::new);
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(|| Option::<String>::None);
@@ -1622,11 +1621,6 @@ pub fn RemuxdbSettingsCard(app_state: AppState) -> Element {
                         cfg.remuxdb_enabled
                             .unwrap_or(true),
                     );
-                    token.set(
-                        cfg.remuxdb_token
-                            .clone()
-                            .unwrap_or_default(),
-                    );
                     base_cfg.set(Some(cfg));
                 }
                 Err(e) => error.set(Some(format!("Failed to load: {e}"))),
@@ -1646,16 +1640,8 @@ pub fn RemuxdbSettingsCard(app_state: AppState) -> Element {
         else {
             return;
         };
-        let token_val = token
-            .peek()
-            .clone();
         let updated = ServerConfiguration {
             remuxdb_enabled: Some(*enabled.peek()),
-            remuxdb_token: if token_val.is_empty() {
-                None
-            } else {
-                Some(token_val)
-            },
             ..cfg
         };
         saving.set(true);
@@ -1674,11 +1660,17 @@ pub fn RemuxdbSettingsCard(app_state: AppState) -> Element {
     };
 
     rsx! {
-        Card { title: "Remuxdb",
+        Card { title: "RemuxDB",
             if *loading.read() {
                 LoadingText {}
             } else {
                 form { onsubmit: on_submit, style: "display:flex;flex-direction:column;gap:14px",
+                    p { style: "font-size:.8rem;color:var(--text-secondary);line-height:1.5;margin:0",
+                        "RemuxDB is a comprehensive media metadata database for torrents. Instead of relying on file names, it probes the actual files to build accurate stream information."
+                    }
+                    p { style: "font-size:.8rem;color:var(--text-secondary);line-height:1.5;margin:0",
+                        "Want to help populate the DB faster? You can run a worker! Join Discord for more info."
+                    }
                     div { class: "field",
                         label { class: "field-label",
                             input {
@@ -1686,26 +1678,10 @@ pub fn RemuxdbSettingsCard(app_state: AppState) -> Element {
                                 checked: *enabled.read(),
                                 oninput: move |e| enabled.set(e.checked()),
                             }
-                            " Enable Remuxdb"
+                            " Enable RemuxDB"
                         }
-                        p { class: "field-hint", "Submit probe data to remuxdb after each live probe." }
+                        p { class: "field-hint", "Submit probe data to RemuxDB after each live probe." }
                     }
-
-                    if *enabled.read() {
-                        div { class: "field",
-                            label { class: "field-label", r#for: "remuxdb-token", "User Token" }
-                            input {
-                                id: "remuxdb-token",
-                                r#type: "password",
-                                class: "field-input",
-                                placeholder: "••••••••••••••••",
-                                value: "{token}",
-                                oninput: move |e| token.set(e.value()),
-                            }
-                            p { class: "field-hint", "Optional bearer token for your remuxdb account." }
-                        }
-                    }
-
                     if let Some(err) = error.read().as_ref() {
                         ErrorAlert { message: err.clone() }
                     }
