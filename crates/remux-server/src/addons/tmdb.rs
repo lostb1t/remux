@@ -44,6 +44,13 @@ impl AddonPreset for TmdbPreset {
                 MediaKind::Episode,
                 MediaKind::Person,
             ],
+            supported_resources_user: vec![ResourceType::Search, ResourceType::Metrics],
+            supported_types_user: vec![
+                MediaKind::Movie,
+                MediaKind::Series,
+                MediaKind::Episode,
+                MediaKind::Person,
+            ],
             options: vec![],
         }
     }

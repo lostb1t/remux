@@ -107,6 +107,12 @@ impl AddonPreset for MonochromePreset {
                 MediaKind::Album,
                 MediaKind::Artist,
             ],
+            supported_resources_user: vec![ResourceType::Stream, ResourceType::Search],
+            supported_types_user: vec![
+                MediaKind::Track,
+                MediaKind::Album,
+                MediaKind::Artist,
+            ],
             options: eclipse_preset_options(MONOCHROME_URL, MONOCHROME_GENERATE_URL),
         }
     }
@@ -147,6 +153,12 @@ impl AddonPreset for SpotiFLACPreset {
                 AddonMetadata::simple_resource(ResourceType::Search),
             ],
             supported_types: vec![
+                MediaKind::Track,
+                MediaKind::Album,
+                MediaKind::Artist,
+            ],
+            supported_resources_user: vec![ResourceType::Stream, ResourceType::Search],
+            supported_types_user: vec![
                 MediaKind::Track,
                 MediaKind::Album,
                 MediaKind::Artist,

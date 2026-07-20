@@ -121,6 +121,11 @@ async fn items_playbackinfo_inner(
                 p.stream_filter
                     .clone()
             }),
+        user_id: Some(
+            session
+                .user
+                .id,
+        ),
     });
     let is_live = media.is_live();
     let is_track_item = media.is_track();
@@ -409,6 +414,11 @@ async fn items_playbackinfo_inner(
                 .device
                 .access_token,
             sub_langs,
+            Some(
+                session
+                    .user
+                    .id,
+            ),
         )
         .await;
     }
@@ -2671,7 +2681,15 @@ pub async fn audio_universal(
     state
         .ctx
         .addons
-        .refresh_streams(&mut media, &state.ctx)
+        .refresh_streams(
+            &mut media,
+            &state.ctx,
+            Some(
+                session
+                    .user
+                    .id,
+            ),
+        )
         .await
         .inspect_err(|e| error!("refresh_streams failed: {e:#}"));
 

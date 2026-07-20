@@ -29,6 +29,8 @@ impl AddonPreset for ProbePreset {
                 ResourceType::Segment,
             )],
             supported_types: vec![MediaKind::Movie, MediaKind::Episode],
+            supported_resources_user: vec![],
+            supported_types_user: vec![],
             options: vec![],
         }
     }

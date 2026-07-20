@@ -49,6 +49,12 @@ impl AddonPreset for StremioPreset {
                 AddonMetadata::simple_resource(ResourceType::Stream),
             ],
             supported_types: vec![MediaKind::Movie, MediaKind::Series],
+            supported_resources_user: vec![
+                ResourceType::Search,
+                ResourceType::Subtitles,
+                ResourceType::Stream,
+            ],
+            supported_types_user: vec![MediaKind::Movie, MediaKind::Series],
             options: vec![AddonOption {
                 id: "manifest_url".to_string(),
                 name: "Manifest URL".to_string(),

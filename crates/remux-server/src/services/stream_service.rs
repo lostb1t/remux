@@ -33,6 +33,7 @@ pub(crate) struct StreamServiceConfig {
     pub requested_id: Option<Uuid>,
     pub show_ungrouped: bool,
     pub stream_filter: Option<StreamFilter>,
+    pub user_id: Option<Uuid>,
 }
 
 /// Central service for stream selection on a single playback request.
@@ -46,6 +47,7 @@ pub(crate) struct StreamService {
     pub requested_id: Option<Uuid>,
     show_ungrouped: bool,
     stream_filter: Option<StreamFilter>,
+    user_id: Option<Uuid>,
     // Populated by resolve()
     group: Option<(Uuid, String, Vec<db::Media>)>,
     stream: Option<db::Media>,
@@ -60,6 +62,7 @@ impl StreamService {
             requested_id: cfg.requested_id,
             show_ungrouped: cfg.show_ungrouped,
             stream_filter: cfg.stream_filter,
+            user_id: cfg.user_id,
             group: None,
             stream: None,
             streams: vec![],
@@ -88,7 +91,7 @@ impl StreamService {
 
         self.ctx
             .addons
-            .refresh_streams(&mut root, &self.ctx)
+            .refresh_streams(&mut root, &self.ctx, self.user_id)
             .await
             .inspect_err(|e| tracing::error!("refresh_streams failed: {e:#}"));
 

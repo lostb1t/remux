@@ -26,7 +26,7 @@ pub struct MusicSearchResult {
 #[get("/music/search")]
 pub async fn music_search(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Query(q): Query<MusicSearchQuery>,
 ) -> Result<impl IntoResponse> {
     let term =
@@ -45,7 +45,17 @@ pub async fn music_search(
     let results = state
         .ctx
         .addons
-        .search(&db::MediaKind::Track, &term, limit, &state.ctx)
+        .search(
+            &db::MediaKind::Track,
+            &term,
+            limit,
+            &state.ctx,
+            Some(
+                session
+                    .user
+                    .id,
+            ),
+        )
         .await?;
 
     let items: Vec<api::BaseItemDto> = results

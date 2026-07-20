@@ -332,7 +332,17 @@ pub async fn get_items(
                     state
                         .ctx
                         .addons
-                        .search(k, s, kind_limit(k, limit), &state.ctx)
+                        .search(
+                            k,
+                            s,
+                            kind_limit(k, limit),
+                            &state.ctx,
+                            Some(
+                                session
+                                    .user
+                                    .id,
+                            ),
+                        )
                 })
                 .collect();
             let remote_results = futures::future::join_all(remote_futs).await;
@@ -971,7 +981,9 @@ pub async fn refresh_item(
 
     // new files
     if q.metadata_refresh_mode == api::MetadataRefreshMode::Default {
-        // Force-refresh streams by clearing the timestamp first.
+        // Invalidate the stream cache. The next request that hits this item
+        // will re-fetch streams with the requesting user's addon scope.
+        // Do NOT call refresh_streams here — this is an admin endpoint with no user context.
         sqlx::query("UPDATE media SET streams_refreshed_at = NULL WHERE id = ?")
             .bind(media.id)
             .execute(
@@ -981,13 +993,6 @@ pub async fn refresh_item(
             )
             .await
             .ok();
-
-        state
-            .ctx
-            .addons
-            .refresh_streams(&mut media, &state.ctx)
-            .await
-            .inspect_err(|e| error!("Could not refresh streams: {e:#}"));
 
         if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
             warm_providers_cache(&state.ctx, &media);
@@ -1587,7 +1592,15 @@ pub async fn item(
         state
             .ctx
             .addons
-            .refresh_streams(&mut media, &state.ctx)
+            .refresh_streams(
+                &mut media,
+                &state.ctx,
+                Some(
+                    session
+                        .user
+                        .id,
+                ),
+            )
             .await
             .log_err("failed to refresh sources");
     }
@@ -3017,7 +3030,7 @@ fn warm_providers_cache(ctx: &crate::AppContext, media: &db::Media) {
     tokio::spawn(async move {
         let _ = ctx
             .addons
-            .fetch_subtitles(&media, &ctx.db, true)
+            .fetch_subtitles(&media, &ctx.db, true, None)
             .await;
         let _ = ctx
             .addons

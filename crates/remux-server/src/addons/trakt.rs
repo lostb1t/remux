@@ -26,6 +26,8 @@ impl AddonPreset for TraktPreset {
             icon: None,
             supported_resources: vec![AddonMetadata::simple_resource(ResourceType::Metrics)],
             supported_types: vec![MediaKind::Movie, MediaKind::Series],
+            supported_resources_user: vec![ResourceType::Metrics],
+            supported_types_user: vec![MediaKind::Movie, MediaKind::Series],
             options: vec![AddonOption {
                 id: "client_id".to_string(),
                 name: "Trakt Client ID".to_string(),

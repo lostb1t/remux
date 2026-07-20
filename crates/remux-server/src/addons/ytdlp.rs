@@ -37,6 +37,8 @@ impl AddonPreset for YtDlpPreset {
                 ResourceType::Stream,
             )],
             supported_types: vec![MediaKind::Track],
+            supported_resources_user: vec![ResourceType::Stream],
+            supported_types_user: vec![MediaKind::Track],
             options: vec![
                 AddonOption {
                     id: "cookies".to_string(),

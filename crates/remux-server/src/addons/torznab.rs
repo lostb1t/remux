@@ -33,6 +33,8 @@ impl AddonPreset for TorznabPreset {
             icon: None,
             supported_resources: vec![AddonMetadata::simple_resource(ResourceType::Stream)],
             supported_types: vec![MediaKind::Track, MediaKind::Movie, MediaKind::Episode],
+            supported_resources_user: vec![ResourceType::Stream],
+            supported_types_user: vec![MediaKind::Track, MediaKind::Movie, MediaKind::Episode],
             options: vec![
                 AddonOption {
                     id: "url".to_string(),

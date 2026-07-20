@@ -62,6 +62,13 @@ impl AddonPreset for DeezerPreset {
                 MediaKind::Artist,
                 MediaKind::Playlist,
             ],
+            supported_resources_user: vec![ResourceType::Search],
+            supported_types_user: vec![
+                MediaKind::Track,
+                MediaKind::Album,
+                MediaKind::Artist,
+                MediaKind::Playlist,
+            ],
             options: vec![AddonOption {
                 id: "playlists".to_string(),
                 name: "Playlist IDs".to_string(),

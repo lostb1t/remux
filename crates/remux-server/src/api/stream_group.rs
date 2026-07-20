@@ -169,7 +169,7 @@ struct PreviewResponse {
 #[get("/remux/stream-groups/preview")]
 pub async fn stream_group_preview(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Query(q): Query<PreviewQuery>,
 ) -> Result<impl IntoResponse> {
     let stub = Media {
@@ -184,7 +184,15 @@ pub async fn stream_group_preview(
     let raw_streams = state
         .ctx
         .addons
-        .get_streams(&stub, &state.ctx)
+        .get_streams(
+            &stub,
+            &state.ctx,
+            Some(
+                session
+                    .user
+                    .id,
+            ),
+        )
         .await?;
 
     let groups = StreamGroup::list(

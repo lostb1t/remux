@@ -21,6 +21,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
     let mut loading = use_signal(|| true);
     let mut error: Signal<Option<String>> = use_signal(|| None);
     let mut refresh = use_signal(|| 0_u32);
+    let mut active_tab: Signal<&'static str> = use_signal(|| "global");
 
     // Add-addon modal state
     let mut show_create = use_signal(|| false);
@@ -35,6 +36,8 @@ pub fn AddonsPage(app_state: AppState) -> Element {
     // Edit-addon modal state
     let mut id_to_edit: Signal<Option<Uuid>> = use_signal(|| None);
     let mut edit_name_input = use_signal(String::new);
+    let mut edit_is_default = use_signal(|| true);
+    let mut create_is_default = use_signal(|| true);
     let mut edit_form_values: Signal<
         std::collections::HashMap<String, serde_json::Value>,
     > = use_signal(std::collections::HashMap::new);
@@ -110,6 +113,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                         form_values.set(std::collections::HashMap::new());
                         selected_kind.set(None);
                         create_step.set(0);
+                        create_is_default.set(*active_tab.read() == "global");
                         show_create.set(true);
                     },
                     "+ New Addon"
@@ -120,27 +124,57 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                     LoadingText {}
                 } else if let Some(err) = error.read().as_ref() {
                     span { class: "loading-text", style: "color:var(--error)", "{err}" }
-                } else if addons.read().is_empty() {
-                    EmptyState { message: "No addons configured — add one to get started." }
                 } else {
-                    div { class: "addon-list",
-                        for (addon_idx, addon) in addons.read().clone().into_iter().enumerate() {
-                            {
-                                let id = addon.id;
-                                let addon_count = addons.read().len();
-                                rsx! {
-                                    div { class: "addon-card", key: "{id}",
+                    div { class: "tab-group",
+                        button {
+                            class: if *active_tab.read() == "global" { "tab-btn active" } else { "tab-btn" },
+                            onclick: move |_| active_tab.set("global"),
+                            "Global"
+                        }
+                        button {
+                            class: if *active_tab.read() == "user" { "tab-btn active" } else { "tab-btn" },
+                            onclick: move |_| active_tab.set("user"),
+                            "User"
+                        }
+                    }
+                    {
+                        let visible: Vec<AddonDto> = addons.read().clone().into_iter()
+                            .filter(|a| if *active_tab.read() == "global" { a.is_default } else { !a.is_default })
+                            .collect();
+                        if visible.is_empty() {
+                            rsx! { EmptyState { message: "No addons configured — add one to get started." } }
+                        } else {
+                            rsx! {
+                                div { class: "addon-list",
+                                    for (addon_idx, addon) in visible.into_iter().enumerate() {
+                                        {
+                                            let id = addon.id;
+                                            let addon_count = addons.read().iter().filter(|a| if *active_tab.read() == "global" { a.is_default } else { !a.is_default }).count();
+                                            rsx! {
+                                                div { class: "addon-card", key: "{id}",
                                         div { class: "addon-card-header",
                                             span { class: "addon-card-name", "{addon.name}" }
                                             span { class: "addon-card-kind", "{addon.kind}" }
                                         }
                                         div { class: "addon-kind-card-badges",
-                                            for res in addon.resources.iter() {
-                                                span { class: "addon-kind-badge", "{res}" }
-                                            }
                                             {
-                                                let display_types = if addon.types.is_empty() { &addon.supported_types } else { &addon.types };
+                                                let is_user_tab = *active_tab.read() == "user";
+                                                let res_list = if is_user_tab {
+                                                    addon.supported_resources_user.clone()
+                                                } else {
+                                                    addon.resources.clone()
+                                                };
+                                                let display_types = if is_user_tab {
+                                                    addon.supported_types_user.clone()
+                                                } else if addon.types.is_empty() {
+                                                    addon.supported_types.clone()
+                                                } else {
+                                                    addon.types.clone()
+                                                };
                                                 rsx! {
+                                                    for res in res_list.iter() {
+                                                        span { class: "addon-kind-badge", "{res}" }
+                                                    }
                                                     for t in display_types.iter() {
                                                         span { class: "addon-kind-type", "{t}" }
                                                     }
@@ -233,6 +267,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                                 a.types.iter().map(|t| format!("{t}")).collect()
                                                             };
                                                             edit_types.set(type_set);
+                                                            edit_is_default.set(a.is_default);
                                                             let has_catalog = a.resources.contains(&ResourceType::Catalog);
                                                             edit_catalogs.set(Vec::new());
                                                             edit_catalog_settings.set(std::collections::HashMap::new());
@@ -283,6 +318,9 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                     }
                 }
             }
+                    }
+                }
+            }
         }
 
         if *show_create.read() {
@@ -297,11 +335,14 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                         if *create_step.read() == 0 {
                             // ── Step 1: kind picker ──
                             div { class: "addon-kind-list",
-                                for k in kinds.read().clone() {
+                                for k in kinds.read().clone().into_iter().filter(|k| {
+                                    if *active_tab.read() == "user" { !k.supported_resources_user.is_empty() } else { true }
+                                }) {
                                     {
                                         let k_id = k.id.clone();
                                         let k_name = k.display_name.clone();
                                         let is_selected = selected_kind.read().as_deref() == Some(&k.id);
+                                        let is_user_tab = *active_tab.read() == "user";
                                         rsx! {
                                             div {
                                                 class: if is_selected { "addon-kind-card addon-kind-card--selected" } else { "addon-kind-card" },
@@ -312,11 +353,20 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                 div { class: "addon-kind-card-name", "{k.display_name}" }
                                                 div { class: "addon-kind-card-desc", "{k.description}" }
                                                 div { class: "addon-kind-card-badges",
-                                                    for res in k.supported_resources.iter() {
-                                                        span { class: "addon-kind-badge", "{res.name}" }
-                                                    }
-                                                    for t in k.supported_types.iter() {
-                                                        span { class: "addon-kind-type", "{t}" }
+                                                    if is_user_tab {
+                                                        for res in k.supported_resources_user.iter() {
+                                                            span { class: "addon-kind-badge", "{res}" }
+                                                        }
+                                                        for t in k.supported_types_user.iter() {
+                                                            span { class: "addon-kind-type", "{t}" }
+                                                        }
+                                                    } else {
+                                                        for res in k.supported_resources.iter() {
+                                                            span { class: "addon-kind-badge", "{res.name}" }
+                                                        }
+                                                        for t in k.supported_types.iter() {
+                                                            span { class: "addon-kind-type", "{t}" }
+                                                        }
                                                     }
                                                 }
                                                 if is_selected {
@@ -385,6 +435,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                             form_values.read().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
                                         );
                                         creating.set(true);
+                                        let is_default = *create_is_default.peek();
                                         let c = client.clone();
                                         spawn(async move {
                                             let payload = CreateAddonRequest {
@@ -393,6 +444,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                 resources: Vec::new(),
                                                 types: Vec::new(),
                                                 priority: 0,
+                                                is_default,
                                             };
                                             match c.execute(CreateAddon { payload }).await {
                                                 Ok(_) => {
@@ -422,11 +474,12 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                 let edit_kind_meta = edit_kind.as_ref().and_then(|k| kinds.read().iter().find(|m| m.id == *k).cloned());
                 // Use supported_resources from the addon row (manifest-derived for Stremio,
                 // kind-static for others) as the checkbox option list.
+                let is_user_addon = !*edit_is_default.read();
                 let resource_options: Vec<ResourceType> = addons
                     .read()
                     .iter()
                     .find(|a| a.id == edit_id)
-                    .map(|a| a.supported_resources.clone())
+                    .map(|a| if is_user_addon { a.supported_resources_user.clone() } else { a.supported_resources.clone() })
                     .unwrap_or_default();
                 rsx! {
                     div { class: "modal-backdrop",
@@ -443,6 +496,17 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                         value: "{edit_name_input}",
                                         oninput: move |e| edit_name_input.set(e.value()),
                                     }
+                                }
+                                div { class: "form-group",
+                                    label { class: "check-row",
+                                        input {
+                                            r#type: "checkbox",
+                                            checked: *edit_is_default.read(),
+                                            onchange: move |e| edit_is_default.set(e.checked()),
+                                        }
+                                        "Default"
+                                    }
+                                    span { class: "field-hint", "Included in the default set for users without a per-user override." }
                                 }
                                 if let Some(meta) = &edit_kind_meta {
                                     for opt in meta.options.iter().cloned() {
@@ -492,7 +556,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                         .read()
                                         .iter()
                                         .find(|a| a.id == edit_id)
-                                        .map(|a| a.supported_types.clone())
+                                        .map(|a| if is_user_addon { a.supported_types_user.clone() } else { a.supported_types.clone() })
                                         .unwrap_or_default();
                                     if !type_options.is_empty() {
                                         rsx! {
@@ -532,8 +596,8 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                         rsx! {}
                                     }
                                 }
-                                // Catalogs section (only shown when catalog resource is active)
-                                if edit_resources.read().contains("catalog") {
+                                // Catalogs section (only shown for global addons with catalog resource active)
+                                if *edit_is_default.read() && edit_resources.read().contains("catalog") {
                                     div { class: "form-group",
                                         label { class: "form-label", "Catalogs" }
                                         if *edit_catalogs_loading.read() {
@@ -660,6 +724,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                 .collect();
                                             editing.set(true);
                                             let c = client.clone();
+                                            let is_default = *edit_is_default.peek();
                                             spawn(async move {
                                                 let payload = UpdateAddonRequest {
                                                     name: Some(name),
@@ -668,6 +733,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                     types: Some(types),
                                                     enabled: None,
                                                     priority: None,
+                                                    is_default: Some(is_default),
                                                 };
                                                 let addon_res = c.execute(UpdateAddon { id: edit_id, payload }).await;
                                                 let cat_res = if !catalog_updates.is_empty() {

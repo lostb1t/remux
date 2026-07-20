@@ -34,33 +34,38 @@ pub struct Addon {
     pub updated_at: NaiveDateTime,
     /// System addons cannot be deleted or have their resources/content types modified.
     pub system: bool,
+    /// Included in the default addon list (users with no override see this addon).
+    /// Set to false for per-user-only addons that must be explicitly assigned.
+    pub is_default: bool,
 }
 
-const ADDON_COLS: &str = "id, name, preset, resources, types, enabled, priority, created_at, updated_at, system";
+const ADDON_COLS: &str = "id, name, preset, resources, types, enabled, priority, created_at, updated_at, system, is_default";
 
 impl Addon {
     pub async fn list(db: &SqlitePool) -> Result<Vec<Self>> {
-        Ok(sqlx::query_as::<_, Self>(&format!(
+        let addons = sqlx::query_as::<_, Self>(&format!(
             "SELECT {ADDON_COLS} FROM addons ORDER BY priority ASC, created_at ASC"
         ))
         .fetch_all(db)
-        .await?)
+        .await?;
+        Ok(addons)
     }
 
     pub async fn get(db: &SqlitePool, id: Uuid) -> Result<Option<Self>> {
-        Ok(sqlx::query_as::<_, Self>(&format!(
+        let addon = sqlx::query_as::<_, Self>(&format!(
             "SELECT {ADDON_COLS} FROM addons WHERE id = ?1"
         ))
         .bind(id)
         .fetch_optional(db)
-        .await?)
+        .await?;
+        Ok(addon)
     }
 
     pub async fn insert(&self, db: &SqlitePool) -> Result<()> {
         sqlx::query(
             "INSERT INTO addons \
-             (id, name, preset, resources, types, enabled, priority, created_at, updated_at, system) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             (id, name, preset, resources, types, enabled, priority, created_at, updated_at, system, is_default) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         )
         .bind(self.id)
         .bind(&self.name)
@@ -72,6 +77,7 @@ impl Addon {
         .bind(self.created_at)
         .bind(self.updated_at)
         .bind(self.system)
+        .bind(self.is_default)
         .execute(db)
         .await?;
         Ok(())
@@ -81,7 +87,7 @@ impl Addon {
         sqlx::query(
             "UPDATE addons \
              SET name = ?2, preset = ?3, resources = ?4, types = ?5, \
-                 enabled = ?6, priority = ?7, updated_at = ?8 \
+                 enabled = ?6, priority = ?7, updated_at = ?8, is_default = ?9 \
              WHERE id = ?1",
         )
         .bind(self.id)
@@ -92,6 +98,7 @@ impl Addon {
         .bind(self.enabled)
         .bind(self.priority)
         .bind(self.updated_at)
+        .bind(self.is_default)
         .execute(db)
         .await?;
         Ok(())
@@ -118,4 +125,51 @@ impl Addon {
             .config["catalogs"] = serde_json::to_value(states).unwrap_or_default();
         self.updated_at = Utc::now().naive_utc();
     }
+}
+
+/// Returns the ordered list of addon IDs for a user's override, or `None` if the user
+/// has no override (meaning they use the full default addon list).
+pub async fn user_addon_override(
+    db: &SqlitePool,
+    user_id: Uuid,
+) -> Result<Option<Vec<Uuid>>> {
+    let ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT addon_id FROM addon_users WHERE user_id = ?1 ORDER BY priority ASC",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await?;
+    Ok(if ids.is_empty() { None } else { Some(ids) })
+}
+
+/// Replace the addon override list for a user.
+/// Passing an empty slice removes the override (user falls back to the default list).
+pub async fn set_user_addon_override(
+    db: &SqlitePool,
+    user_id: Uuid,
+    addon_ids: &[Uuid],
+) -> Result<()> {
+    let mut tx = db
+        .begin()
+        .await?;
+    sqlx::query("DELETE FROM addon_users WHERE user_id = ?1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    for (priority, addon_id) in addon_ids
+        .iter()
+        .enumerate()
+    {
+        sqlx::query(
+            "INSERT OR IGNORE INTO addon_users (addon_id, user_id, priority) VALUES (?1, ?2, ?3)",
+        )
+        .bind(addon_id)
+        .bind(user_id)
+        .bind(priority as i64)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit()
+        .await?;
+    Ok(())
 }
