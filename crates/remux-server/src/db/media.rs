@@ -5796,8 +5796,9 @@ pub fn stremio_meta_season_episodes(
 ///
 /// Resolution priority (CASE expression):
 /// 1. `digital_released_at` — explicit digital/streaming date; used as-is.
-/// 2. `released_at` within the past year → NULL (hidden). A recent theatrical release
-///    with no digital date confirmed is still considered unreleased digitally.
+/// 2. Movies with `released_at` within the past year → NULL (hidden). A recent
+///    theatrical release with no digital date confirmed is still considered
+///    unreleased digitally. TV air dates remain valid release dates for episodes.
 /// 3. ELSE — depends on `use_parent_fallback`:
 ///    - `true`  (episodes, series, movies): fall back to the parent row's dates via a
 ///      correlated subquery. This lets undated episodes of old series (e.g. a 1990s
@@ -5830,7 +5831,7 @@ pub fn push_release_date_filter(
     qb.push(format!(
         " AND CASE \
             WHEN {a}digital_released_at IS NOT NULL THEN {a}digital_released_at \
-            WHEN {a}released_at IS NOT NULL AND datetime({a}released_at) > datetime('now', '-1 year') THEN NULL \
+            WHEN {a}kind = 'movie' AND {a}released_at IS NOT NULL AND datetime({a}released_at) > datetime('now', '-1 year') THEN NULL \
             ELSE {else_expr} \
           END <= "
     ))
@@ -6571,6 +6572,82 @@ mod tests {
         assert!(
             titles.contains(&"Has Digital Release"),
             "movie with digital release date must be shown; got: {:?}",
+            titles
+        );
+    }
+
+    /// TV episode air dates are digital availability dates in practice. A recently
+    /// aired episode without a separate digital date must remain visible, while a
+    /// future episode must still be hidden.
+    #[tokio::test]
+    async fn release_date_filter_uses_episode_air_dates() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let now = chrono::Utc::now().naive_utc();
+
+        for (episode_number, title, released_at) in [
+            (1, "Recently Aired Episode", now - chrono::Duration::days(1)),
+            (2, "Future Episode", now + chrono::Duration::days(1)),
+        ] {
+            let external_ids = ExternalIds {
+                series_imdb: Some(
+                    NonEmptyString::try_new("tt14688458".to_string()).unwrap(),
+                ),
+                ..Default::default()
+            };
+            let mut episode = Media {
+                id: Uuid::from(&MediaIdRaw {
+                    kind: MediaKind::Episode,
+                    external_ids: external_ids.clone(),
+                    season: Some(1),
+                    episode: Some(episode_number),
+                }),
+                title: title.to_string(),
+                kind: MediaKind::Episode,
+                idx: Some(episode_number),
+                parent_idx: Some(1),
+                external_ids,
+                released_at: Some(released_at),
+                digital_released_at: None,
+                ..Default::default()
+            };
+            episode
+                .save(db)
+                .await
+                .unwrap();
+        }
+
+        let result = Media::get_by_filter(
+            db,
+            &MediaFilter {
+                kind: Some(vec![MediaKind::Episode]),
+                digital_released_before: Some(now),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let titles: Vec<&str> = result
+            .records
+            .iter()
+            .map(|m| {
+                m.title
+                    .as_str()
+            })
+            .collect();
+
+        assert!(
+            titles.contains(&"Recently Aired Episode"),
+            "recently aired episode must be visible; got: {:?}",
+            titles
+        );
+        assert!(
+            !titles.contains(&"Future Episode"),
+            "future episode must remain hidden; got: {:?}",
             titles
         );
     }
