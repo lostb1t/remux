@@ -188,13 +188,13 @@ pub async fn get_items(
         .parent_id
         .clone()
     {
-        db::Media::get_by_id(
-            &state
-                .ctx
-                .db,
-            &parent_id,
-        )
-        .await?
+        let resolved = MediaResolveService::resolve_item(parent_id, &state.ctx).await?;
+        if let Some(ref m) = resolved {
+            if m.id != parent_id {
+                q.parent_id = Some(m.id);
+            }
+        }
+        resolved
     } else {
         None
     };
