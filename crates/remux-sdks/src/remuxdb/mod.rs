@@ -1,4 +1,9 @@
-use crate::{ClientError, Endpoint, RestClient};
+use crate::{
+    ClientError, Endpoint, RestClient,
+    remux::{
+        MediaSourceInfo, MediaStream, MediaStreamType, VideoRange, VideoRangeType,
+    },
+};
 use http::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
@@ -16,12 +21,16 @@ pub struct ExternalIds {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct MediaInfo {
+pub struct MediaInfoPayload {
     pub client_id: String,
     pub kind: String,
     pub filename: String,
     pub torrent_info_hash: Option<String>,
     pub torrent_file_idx: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usenet_guid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usenet_indexer: Option<String>,
     pub container: String,
     pub size: i64,
     pub duration: f64,
@@ -116,7 +125,7 @@ pub struct SubtitleTrackPayload {
     pub is_hearing_impaired: bool,
 }
 
-impl MediaInfo {
+impl MediaInfoPayload {
     pub async fn submit(self, base_url: String, token: Option<String>) {
         let url = format!("{}/api/mediainfo", base_url.trim_end_matches('/'));
         let body = match serde_json::to_string(&self) {
@@ -215,9 +224,11 @@ pub struct TrackDetail {
 
 /// One physical-file version returned by `GET /api/media/info`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MediaProbeVersion {
+pub struct MediaInfo {
     pub torrent_info_hash: Option<String>,
     pub torrent_file_idx: Option<i32>,
+    pub usenet_guid: Option<String>,
+    pub usenet_indexer: Option<String>,
     pub filename: Option<String>,
     pub size: Option<i64>,
     pub duration: Option<f64>,
@@ -236,7 +247,7 @@ struct MediaInfoEndpoint {
 }
 
 impl Endpoint for MediaInfoEndpoint {
-    type Output = Vec<MediaProbeVersion>;
+    type Output = Vec<MediaInfo>;
 
     fn path(&self) -> String {
         let mut path = format!("/api/media/info?imdb_id={}", self.imdb_id);
@@ -274,7 +285,7 @@ pub async fn fetch_probe(
     imdb_id: &str,
     season: Option<i32>,
     episode: Option<i32>,
-) -> Option<Vec<MediaProbeVersion>> {
+) -> Option<Vec<MediaInfo>> {
     let client = match RestClient::new(base_url.trim_end_matches('/')) {
         Ok(c) => c,
         Err(e) => {
@@ -301,6 +312,166 @@ pub async fn fetch_probe(
         Err(e) => {
             warn!(error = %e, "remuxdb: probe fetch failed");
             None
+        }
+    }
+}
+
+impl From<&TrackDetail> for MediaStream {
+    fn from(t: &TrackDetail) -> Self {
+        let type_ = match t
+            .kind
+            .as_str()
+        {
+            "video" => Some(MediaStreamType::Video),
+            "audio" => Some(MediaStreamType::Audio),
+            "subtitle" => Some(MediaStreamType::Subtitle),
+            _ => None,
+        };
+        let range_type = if let Some(dv) = t.dv_profile {
+            if dv > 0 {
+                match t.dv_bl_signal_compat_id {
+                    Some(1) | Some(6) => VideoRangeType::DoviWithHdr10,
+                    Some(4) => VideoRangeType::DoviWithHlg,
+                    Some(2) => VideoRangeType::DoviWithSdr,
+                    _ => VideoRangeType::Dovi,
+                }
+            } else {
+                VideoRangeType::Sdr
+            }
+        } else if t.hdr10_plus_present {
+            VideoRangeType::Hdr10Plus
+        } else {
+            match t
+                .color_transfer
+                .as_deref()
+            {
+                Some("smpte2084") => VideoRangeType::Hdr10,
+                Some("arib-std-b67") => VideoRangeType::Hlg,
+                _ => VideoRangeType::Sdr,
+            }
+        };
+        let video_range = match range_type {
+            VideoRangeType::Sdr | VideoRangeType::Unknown => VideoRange::Sdr,
+            _ => VideoRange::Hdr,
+        };
+        MediaStream {
+            index: t.idx as i64,
+            type_,
+            codec: t
+                .codec
+                .clone(),
+            bit_rate: t.bit_rate,
+            bit_depth: t
+                .bit_depth
+                .map(|v| v as i64),
+            profile: t
+                .profile
+                .clone(),
+            codec_tag: t
+                .codec_tag
+                .clone(),
+            comment: t
+                .comment
+                .clone(),
+            title: t
+                .title
+                .clone(),
+            language: t
+                .language
+                .clone(),
+            is_default: Some(t.is_default),
+            is_forced: t.is_forced,
+            is_external: t.is_external,
+            is_hearing_impaired: t.is_hearing_impaired,
+            width: t
+                .width
+                .map(|v| v as i64),
+            height: t
+                .height
+                .map(|v| v as i64),
+            real_frame_rate: t
+                .fps
+                .map(|v| v as f32),
+            average_frame_rate: t
+                .avg_fps
+                .map(|v| v as f32),
+            color_primaries: t
+                .color_primaries
+                .clone(),
+            color_range: t
+                .color_range
+                .clone(),
+            color_space: t
+                .color_space
+                .clone(),
+            color_transfer: t
+                .color_transfer
+                .clone(),
+            aspect_ratio: t
+                .aspect_ratio
+                .clone(),
+            rotation: t
+                .rotation
+                .map(|v| v as i64),
+            is_interlaced: t.is_interlaced,
+            video_range: Some(video_range),
+            video_range_type: Some(range_type),
+            dv_profile: t
+                .dv_profile
+                .map(|v| v as i64),
+            dv_level: t
+                .dv_level
+                .map(|v| v as i64),
+            dv_version_major: t
+                .dv_version_major
+                .map(|v| v as i64),
+            dv_version_minor: t
+                .dv_version_minor
+                .map(|v| v as i64),
+            dv_bl_signal_compatibility_id: t
+                .dv_bl_signal_compat_id
+                .map(|v| v as i64),
+            rpu_present_flag: Some(t.dv_rpu_present as i64),
+            bl_present_flag: Some(t.dv_bl_present as i64),
+            el_present_flag: Some(t.dv_el_present as i64),
+            is_anamorphic: Some(t.is_anamorphic),
+            level: t
+                .level
+                .map(|v| v as f64),
+            ref_frames: t
+                .ref_frames
+                .map(|v| v as i64),
+            channels: t
+                .channels
+                .map(|v| v as i64),
+            sample_rate: t
+                .sample_rate
+                .map(|v| v as i64),
+            channel_layout: t
+                .channel_layout
+                .clone(),
+            ..Default::default()
+        }
+    }
+}
+
+impl From<&MediaInfo> for MediaSourceInfo {
+    fn from(version: &MediaInfo) -> Self {
+        MediaSourceInfo {
+            container: version
+                .container
+                .clone(),
+            size: version.size,
+            run_time_ticks: version
+                .duration
+                .map(|d| (d * 10_000_000.0).round() as i64),
+            bitrate: version.bitrate,
+            media_streams: version
+                .tracks
+                .iter()
+                .map(MediaStream::from)
+                .collect(),
+            ..Default::default()
         }
     }
 }

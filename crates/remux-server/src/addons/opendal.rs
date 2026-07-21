@@ -956,7 +956,7 @@ impl TreeAddon for OpendalAddon {
 // Opendal file index scanning (backing refresh_index)
 // ---------------------------------------------------------------------------
 
-const VIDEO_EXTENSIONS: &[&str] = &[
+pub(crate) const VIDEO_EXTENSIONS: &[&str] = &[
     "mkv", "mp4", "avi", "mov", "m4v", "ts", "wmv", "webm", "strm",
 ];
 

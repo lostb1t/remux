@@ -590,8 +590,8 @@ fn media_info_from_probe(
     probe: &api::MediaSourceInfo,
     stream: &db::Media,
     item: Option<&db::Media>,
-) -> Option<remuxdb::MediaInfo> {
-    let (info_hash, file_idx, filename) = match stream
+) -> Option<remuxdb::MediaInfoPayload> {
+    let (info_hash, file_idx, usenet_guid, usenet_indexer, filename) = match stream
         .stream_info
         .as_ref()
     {
@@ -607,6 +607,10 @@ fn media_info_from_probe(
             (
                 hash,
                 idx,
+                si.usenet_guid
+                    .clone(),
+                si.usenet_indexer
+                    .clone(),
                 si.filename
                     .clone()
                     .unwrap_or_else(|| {
@@ -617,6 +621,8 @@ fn media_info_from_probe(
             )
         }
         None => (
+            None,
+            None,
             None,
             None,
             stream
@@ -858,12 +864,14 @@ fn media_info_from_probe(
         })
         .collect();
 
-    Some(remuxdb::MediaInfo {
+    Some(remuxdb::MediaInfoPayload {
         client_id: crate::common::server_id(),
         kind,
         filename,
         torrent_info_hash: info_hash,
         torrent_file_idx: file_idx,
+        usenet_guid,
+        usenet_indexer,
         container: probe
             .container
             .clone()

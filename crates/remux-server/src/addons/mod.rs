@@ -2163,10 +2163,19 @@ impl AddonService {
     }
 }
 
+fn strip_video_ext(name: &str) -> &str {
+    if let Some((stem, ext)) = name.rsplit_once('.') {
+        if opendal::VIDEO_EXTENSIONS.contains(&ext) {
+            return stem;
+        }
+    }
+    name
+}
+
 fn match_probe_version<'a>(
-    versions: &'a [remuxdb::MediaProbeVersion],
+    versions: &'a [remuxdb::MediaInfo],
     stream: &db::Media,
-) -> Option<&'a remuxdb::MediaProbeVersion> {
+) -> Option<&'a remuxdb::MediaInfo> {
     let si = stream
         .stream_info
         .as_ref()?;
@@ -2188,6 +2197,24 @@ fn match_probe_version<'a>(
             });
     }
 
+    // Usenet: match by GUID (+ indexer when available)
+    if let Some(ref guid) = si.usenet_guid {
+        if let Some(v) = versions
+            .iter()
+            .find(|v| {
+                v.usenet_guid
+                    .as_deref()
+                    == Some(guid.as_str())
+                    && (si
+                        .usenet_indexer
+                        .is_none()
+                        || v.usenet_indexer == si.usenet_indexer)
+            })
+        {
+            return Some(v);
+        }
+    }
+
     // HTTP: match by exact file size
     if let Some(size) = si.size {
         if let Some(v) = versions
@@ -2198,187 +2225,19 @@ fn match_probe_version<'a>(
         }
     }
 
-    // Fallback: match by filename
+    // Fallback: match by filename, trying with and without video extension
     let filename = si
         .filename
         .as_deref()?;
+    let stem = strip_video_ext(filename);
     versions
         .iter()
         .find(|v| {
             v.filename
                 .as_deref()
-                == Some(filename)
+                .map(|vf| vf == filename || strip_video_ext(vf) == stem)
+                .unwrap_or(false)
         })
-}
-
-fn derive_video_range(
-    t: &remuxdb::TrackDetail,
-) -> (Option<api::VideoRange>, Option<api::VideoRangeType>) {
-    use api::{VideoRange, VideoRangeType};
-    let range_type = if let Some(dv) = t.dv_profile {
-        if dv > 0 {
-            match t.dv_bl_signal_compat_id {
-                Some(1) | Some(6) => VideoRangeType::DoviWithHdr10,
-                Some(4) => VideoRangeType::DoviWithHlg,
-                Some(2) => VideoRangeType::DoviWithSdr,
-                _ => VideoRangeType::Dovi,
-            }
-        } else {
-            VideoRangeType::Sdr
-        }
-    } else if t.hdr10_plus_present {
-        VideoRangeType::Hdr10Plus
-    } else {
-        match t
-            .color_transfer
-            .as_deref()
-        {
-            Some("smpte2084") => VideoRangeType::Hdr10,
-            Some("arib-std-b67") => VideoRangeType::Hlg,
-            _ => VideoRangeType::Sdr,
-        }
-    };
-    let range = match range_type {
-        VideoRangeType::Sdr | VideoRangeType::Unknown => VideoRange::Sdr,
-        _ => VideoRange::Hdr,
-    };
-    (Some(range), Some(range_type))
-}
-
-fn probe_data_from_version(
-    version: &remuxdb::MediaProbeVersion,
-) -> api::MediaSourceInfo {
-    use remux_sdks::remux::{MediaStream, MediaStreamType};
-
-    let media_streams = version
-        .tracks
-        .iter()
-        .map(|t| {
-            let type_ = match t
-                .kind
-                .as_str()
-            {
-                "video" => Some(MediaStreamType::Video),
-                "audio" => Some(MediaStreamType::Audio),
-                "subtitle" => Some(MediaStreamType::Subtitle),
-                _ => None,
-            };
-            let (video_range, video_range_type) = derive_video_range(t);
-            MediaStream {
-                index: t.idx as i64,
-                type_,
-                codec: t
-                    .codec
-                    .clone(),
-                bit_rate: t.bit_rate,
-                bit_depth: t
-                    .bit_depth
-                    .map(|v| v as i64),
-                profile: t
-                    .profile
-                    .clone(),
-                codec_tag: t
-                    .codec_tag
-                    .clone(),
-                comment: t
-                    .comment
-                    .clone(),
-                title: t
-                    .title
-                    .clone(),
-                language: t
-                    .language
-                    .clone(),
-                is_default: Some(t.is_default),
-                is_forced: t.is_forced,
-                is_external: t.is_external,
-                is_hearing_impaired: t.is_hearing_impaired,
-                // video
-                width: t
-                    .width
-                    .map(|v| v as i64),
-                height: t
-                    .height
-                    .map(|v| v as i64),
-                real_frame_rate: t
-                    .fps
-                    .map(|v| v as f32),
-                average_frame_rate: t
-                    .avg_fps
-                    .map(|v| v as f32),
-                color_primaries: t
-                    .color_primaries
-                    .clone(),
-                color_range: t
-                    .color_range
-                    .clone(),
-                color_space: t
-                    .color_space
-                    .clone(),
-                color_transfer: t
-                    .color_transfer
-                    .clone(),
-                aspect_ratio: t
-                    .aspect_ratio
-                    .clone(),
-                rotation: t
-                    .rotation
-                    .map(|v| v as i64),
-                is_interlaced: t.is_interlaced,
-                video_range,
-                video_range_type,
-                dv_profile: t
-                    .dv_profile
-                    .map(|v| v as i64),
-                dv_level: t
-                    .dv_level
-                    .map(|v| v as i64),
-                dv_version_major: t
-                    .dv_version_major
-                    .map(|v| v as i64),
-                dv_version_minor: t
-                    .dv_version_minor
-                    .map(|v| v as i64),
-                dv_bl_signal_compatibility_id: t
-                    .dv_bl_signal_compat_id
-                    .map(|v| v as i64),
-                rpu_present_flag: Some(t.dv_rpu_present as i64),
-                bl_present_flag: Some(t.dv_bl_present as i64),
-                el_present_flag: Some(t.dv_el_present as i64),
-                is_anamorphic: Some(t.is_anamorphic),
-                level: t
-                    .level
-                    .map(|v| v as f64),
-                ref_frames: t
-                    .ref_frames
-                    .map(|v| v as i64),
-                // audio
-                channels: t
-                    .channels
-                    .map(|v| v as i64),
-                sample_rate: t
-                    .sample_rate
-                    .map(|v| v as i64),
-                channel_layout: t
-                    .channel_layout
-                    .clone(),
-                ..Default::default()
-            }
-        })
-        .collect();
-
-    api::MediaSourceInfo {
-        container: version
-            .container
-            .clone(),
-        size: version.size,
-        run_time_ticks: version
-            .duration
-            .map(|d| (d * 10_000_000.0).round() as i64),
-        bitrate: version.bitrate,
-        media_streams,
-        ..Default::default()
-    }
 }
 
 impl AddonService {
@@ -2536,7 +2395,7 @@ impl AddonService {
                     continue;
                 }
                 if let Some(version) = match_probe_version(versions, source) {
-                    source.probe_data = Some(probe_data_from_version(version));
+                    source.probe_data = Some(version.into());
                     debug!(id = %source.id, "remuxdb: probe data applied from version");
                 }
             }

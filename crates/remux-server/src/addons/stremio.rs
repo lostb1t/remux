@@ -1373,6 +1373,15 @@ async fn stremio_streams(
                 (None, Some(d)) => d.to_string(),
                 _ => "Stream".to_string(),
             };
+            let usenet_guid = s
+                .nzb_url
+                .as_deref()
+                .and_then(|u| {
+                    url::Url::parse(u)
+                        .ok()?
+                        .query_pairs()
+                        .find_map(|(k, v)| (k == "id").then(|| v.into_owned()))
+                });
             Some(crate::stream::StreamInfo {
                 descriptor,
                 name: Some(label),
@@ -1395,6 +1404,10 @@ async fn stremio_streams(
                 duration: s.duration,
                 subtitles: s
                     .subtitles
+                    .clone(),
+                usenet_guid,
+                usenet_indexer: s
+                    .indexer
                     .clone(),
                 probe_data: None,
                 ..Default::default()
