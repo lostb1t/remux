@@ -87,23 +87,23 @@ fn append_tags_to_title(title: &str, tags: &[String]) -> String {
     result
 }
 
-struct StreamMeta<'a> {
-    language: Option<&'a str>,
-    codec: Option<&'a str>,
-    profile: Option<&'a str>,
-    channels: Option<i64>,
-    channel_layout: Option<&'a str>,
-    width: Option<i64>,
-    height: Option<i64>,
-    video_range: Option<&'a api::VideoRange>,
-    is_default: bool,
-    is_forced: bool,
-    is_external: bool,
-    is_hearing_impaired: bool,
-    title: Option<&'a str>,
+pub(crate) struct StreamMeta<'a> {
+    pub language: Option<&'a str>,
+    pub codec: Option<&'a str>,
+    pub profile: Option<&'a str>,
+    pub channels: Option<i64>,
+    pub channel_layout: Option<&'a str>,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub video_range: Option<&'a api::VideoRange>,
+    pub is_default: bool,
+    pub is_forced: bool,
+    pub is_external: bool,
+    pub is_hearing_impaired: bool,
+    pub title: Option<&'a str>,
 }
 
-fn display_title_audio(m: &StreamMeta) -> Option<String> {
+pub(crate) fn display_title_audio(m: &StreamMeta) -> Option<String> {
     let mut attrs: Vec<String> = vec![];
 
     if let Some(lang) = m.language {
@@ -168,7 +168,7 @@ fn display_title_audio(m: &StreamMeta) -> Option<String> {
     }
 }
 
-fn display_title_video(m: &StreamMeta) -> Option<String> {
+pub(crate) fn display_title_video(m: &StreamMeta) -> Option<String> {
     let mut attrs: Vec<String> = vec![];
 
     if let Some(res) = video_resolution_text(m.width, m.height) {
@@ -193,7 +193,7 @@ fn display_title_video(m: &StreamMeta) -> Option<String> {
     }
 }
 
-fn display_title_subtitle(m: &StreamMeta) -> Option<String> {
+pub(crate) fn display_title_subtitle(m: &StreamMeta) -> Option<String> {
     let mut attrs: Vec<String> = vec![];
 
     if let Some(lang) = m.language {

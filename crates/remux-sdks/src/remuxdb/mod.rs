@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
 #[derive(Debug, Clone, Serialize)]
@@ -154,6 +154,148 @@ impl MediaInfo {
             Err(e) => {
                 warn!(url, error = %e, "remuxdb mediainfo submission error");
             }
+        }
+    }
+}
+
+/// Flat track returned by `GET /api/media/info`. The `kind` field discriminates video/audio/subtitle.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TrackDetail {
+    pub kind: String,
+    pub idx: i32,
+    pub codec: Option<String>,
+    pub bit_rate: Option<i64>,
+    pub bit_depth: Option<i32>,
+    pub profile: Option<String>,
+    pub codec_tag: Option<String>,
+    pub comment: Option<String>,
+    pub title: Option<String>,
+    pub language: Option<String>,
+    pub is_default: bool,
+    pub is_forced: bool,
+    pub is_external: bool,
+    pub is_hearing_impaired: bool,
+    // video
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub fps: Option<f64>,
+    pub avg_fps: Option<f64>,
+    pub color_primaries: Option<String>,
+    pub color_range: Option<String>,
+    pub color_space: Option<String>,
+    pub color_transfer: Option<String>,
+    pub aspect_ratio: Option<String>,
+    pub rotation: Option<i32>,
+    #[serde(default)]
+    pub is_interlaced: bool,
+    #[serde(default)]
+    pub hdr10_plus_present: bool,
+    pub dv_profile: Option<i32>,
+    pub dv_level: Option<i32>,
+    pub dv_version_major: Option<i32>,
+    pub dv_version_minor: Option<i32>,
+    pub dv_bl_signal_compat_id: Option<i32>,
+    #[serde(default)]
+    pub dv_rpu_present: bool,
+    #[serde(default)]
+    pub dv_bl_present: bool,
+    #[serde(default)]
+    pub dv_el_present: bool,
+    #[serde(default)]
+    pub is_anamorphic: bool,
+    pub level: Option<i32>,
+    pub ref_frames: Option<i32>,
+    // audio
+    pub channels: Option<i32>,
+    pub sample_rate: Option<i32>,
+    pub channel_layout: Option<String>,
+}
+
+/// One physical-file version returned by `GET /api/media/info`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MediaProbeVersion {
+    pub torrent_info_hash: Option<String>,
+    pub torrent_file_idx: Option<i32>,
+    pub filename: Option<String>,
+    pub size: Option<i64>,
+    pub duration: Option<f64>,
+    pub bitrate: Option<i64>,
+    pub container: Option<String>,
+    pub tracks: Vec<TrackDetail>,
+}
+
+/// Fetch probe versions for a media title from RemuxDB.
+/// Returns `None` on 404 or any error (failures are logged at debug level).
+pub async fn fetch_probe(
+    base_url: &str,
+    token: Option<&str>,
+    client_id: Option<&str>,
+    imdb_id: &str,
+    season: Option<i32>,
+    episode: Option<i32>,
+) -> Option<Vec<MediaProbeVersion>> {
+    let mut url = format!(
+        "{}/api/media/info?imdb_id={}",
+        base_url.trim_end_matches('/'),
+        imdb_id
+    );
+    if let Some(s) = season {
+        url.push_str(&format!("&season={s}"));
+    }
+    if let Some(e) = episode {
+        url.push_str(&format!("&episode={e}"));
+    }
+
+    let mut req = reqwest::Client::new().get(&url);
+    if let Some(t) = token {
+        req = req.bearer_auth(t);
+    }
+    if let Some(id) = client_id {
+        req = req.header("x-client-id", id);
+    }
+
+    match req
+        .send()
+        .await
+    {
+        Ok(resp)
+            if resp
+                .status()
+                .as_u16()
+                == 404 =>
+        {
+            None
+        }
+        Ok(resp)
+            if resp
+                .status()
+                .is_success() =>
+        {
+            match resp
+                .json::<Vec<MediaProbeVersion>>()
+                .await
+            {
+                Ok(versions) => {
+                    debug!(
+                        url,
+                        count = versions.len(),
+                        "remuxdb: probe versions fetched"
+                    );
+                    Some(versions)
+                }
+                Err(e) => {
+                    warn!(url, error = %e, "remuxdb: probe response parse error");
+                    None
+                }
+            }
+        }
+        Ok(resp) => {
+            warn!(url, status = %resp.status(), "remuxdb: probe fetch failed");
+            None
+        }
+        Err(e) => {
+            warn!(url, error = %e, "remuxdb: probe fetch error");
+            None
         }
     }
 }

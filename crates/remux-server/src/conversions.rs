@@ -3,6 +3,9 @@ use crate::{
     api, common,
     common::{ToRunTimeTicks, get_uuid},
     db,
+    playback::probe::{
+        StreamMeta, display_title_audio, display_title_subtitle, display_title_video,
+    },
     sdks::stremio,
     stream::StreamDescriptor,
 };
@@ -201,6 +204,51 @@ impl From<db::Media> for api::MediaSourceInfo {
                 )
             })
             .unwrap_or_default();
+
+        // Derive display_title for any stream that doesn't have one yet.
+        // This covers streams loaded from RemuxDB probe data where only raw
+        // track facts are stored; FFprobe-sourced streams may already have it.
+        for stream in &mut media_streams {
+            if stream
+                .display_title
+                .is_some()
+            {
+                continue;
+            }
+            let meta = StreamMeta {
+                language: stream
+                    .language
+                    .as_deref(),
+                codec: stream
+                    .codec
+                    .as_deref(),
+                profile: stream
+                    .profile
+                    .as_deref(),
+                channels: stream.channels,
+                channel_layout: stream
+                    .channel_layout
+                    .as_deref(),
+                width: stream.width,
+                height: stream.height,
+                video_range: None,
+                is_default: stream
+                    .is_default
+                    .unwrap_or(false),
+                is_forced: stream.is_forced,
+                is_external: stream.is_external,
+                is_hearing_impaired: stream.is_hearing_impaired,
+                title: stream
+                    .title
+                    .as_deref(),
+            };
+            stream.display_title = match stream.type_ {
+                Some(api::MediaStreamType::Video) => display_title_video(&meta),
+                Some(api::MediaStreamType::Audio) => display_title_audio(&meta),
+                Some(api::MediaStreamType::Subtitle) => display_title_subtitle(&meta),
+                _ => None,
+            };
+        }
 
         // Clients that use /Items/{id}/File for direct playback inspect
         // MediaStreams before deciding to play. Synthesize a stub so they
