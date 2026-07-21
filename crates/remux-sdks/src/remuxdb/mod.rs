@@ -21,19 +21,29 @@ pub struct ExternalIds {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct NzbSubmission {
+    pub indexer: String,
+    pub indexer_guid: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct MediaInfoPayload {
-    pub client_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
     pub kind: String,
     pub filename: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub torrent_info_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub torrent_file_idx: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub usenet_guid: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub usenet_indexer: Option<String>,
+    pub nzb: Option<NzbSubmission>,
     pub container: String,
     pub size: i64,
     pub duration: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bitrate: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub season: Option<i32>,
@@ -58,37 +68,71 @@ pub struct VideoTrackPayload {
     pub codec: String,
     pub width: i32,
     pub height: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fps: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub avg_fps: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bit_rate: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bit_depth: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pixel_format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub codec_tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub color_primaries: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub color_range: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub color_space: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub color_transfer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub aspect_ratio: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub rotation: Option<i32>,
-    pub is_default: bool,
-    pub is_forced: bool,
-    pub is_external: bool,
-    pub is_hearing_impaired: bool,
-    pub is_interlaced: bool,
-    pub hdr10_plus_present: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_default: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_forced: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_external: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_hearing_impaired: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_interlaced: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_anamorphic: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hdr10_plus_present: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub dv_profile: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub dv_level: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub dv_version_major: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub dv_version_minor: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub dv_bl_signal_compat_id: Option<i32>,
-    pub dv_rpu_present: bool,
-    pub dv_bl_present: bool,
-    pub dv_el_present: bool,
-    pub is_anamorphic: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dv_rpu_present: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dv_bl_present: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dv_el_present: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub level: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ref_frames: Option<i32>,
 }
 
@@ -98,31 +142,51 @@ pub struct AudioTrackPayload {
     pub codec: String,
     pub channels: i32,
     pub sample_rate: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bit_rate: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bit_depth: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_layout: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub codec_tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
-    pub is_default: bool,
-    pub is_forced: bool,
-    pub is_external: bool,
-    pub is_hearing_impaired: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_default: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_forced: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_external: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_hearing_impaired: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SubtitleTrackPayload {
     pub idx: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub codec: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
-    pub is_default: bool,
-    pub is_forced: bool,
-    pub is_external: bool,
-    pub is_hearing_impaired: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_default: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_forced: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_external: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_hearing_impaired: Option<bool>,
 }
 
 impl MediaInfoPayload {
@@ -169,71 +233,81 @@ impl MediaInfoPayload {
     }
 }
 
-/// Flat track returned by `GET /api/media/info`. The `kind` field discriminates video/audio/subtitle.
+/// Flat track returned by `GET /api/media/info`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackDetail {
     pub kind: String,
     pub idx: i32,
+    #[serde(default)]
+    pub is_default: bool,
+    #[serde(default)]
+    pub is_forced: bool,
+    #[serde(default)]
+    pub is_hearing_impaired: bool,
+    #[serde(default)]
+    pub is_external: bool,
+    #[serde(default)]
+    pub is_anamorphic: bool,
+    #[serde(default)]
+    pub hdr10_plus_present: bool,
     pub codec: Option<String>,
+    pub language: Option<String>,
+    pub title: Option<String>,
     pub bit_rate: Option<i64>,
     pub bit_depth: Option<i32>,
+    pub pixel_format: Option<String>,
     pub profile: Option<String>,
-    pub codec_tag: Option<String>,
-    pub comment: Option<String>,
-    pub title: Option<String>,
-    pub language: Option<String>,
-    pub is_default: bool,
-    pub is_forced: bool,
-    pub is_external: bool,
-    pub is_hearing_impaired: bool,
+    pub level: Option<i32>,
+    pub ref_frames: Option<i32>,
     // video
     pub width: Option<i32>,
     pub height: Option<i32>,
     pub fps: Option<f64>,
-    pub avg_fps: Option<f64>,
+    pub aspect_ratio: Option<String>,
+    pub rotation: Option<i32>,
     pub color_primaries: Option<String>,
     pub color_range: Option<String>,
     pub color_space: Option<String>,
     pub color_transfer: Option<String>,
-    pub aspect_ratio: Option<String>,
-    pub rotation: Option<i32>,
-    #[serde(default)]
-    pub is_interlaced: bool,
-    #[serde(default)]
-    pub hdr10_plus_present: bool,
     pub dv_profile: Option<i32>,
-    pub dv_level: Option<i32>,
-    pub dv_version_major: Option<i32>,
-    pub dv_version_minor: Option<i32>,
-    pub dv_bl_signal_compat_id: Option<i32>,
-    #[serde(default)]
-    pub dv_rpu_present: bool,
-    #[serde(default)]
-    pub dv_bl_present: bool,
-    #[serde(default)]
-    pub dv_el_present: bool,
-    #[serde(default)]
-    pub is_anamorphic: bool,
-    pub level: Option<i32>,
-    pub ref_frames: Option<i32>,
     // audio
     pub channels: Option<i32>,
     pub sample_rate: Option<i32>,
     pub channel_layout: Option<String>,
 }
 
-/// One physical-file version returned by `GET /api/media/info`.
+/// A source (torrent or NZB) within a MediaInfo group.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MediaInfo {
+pub struct ProbeSource {
+    pub kind: String,
+    pub filename: Option<String>,
+    pub indexer: Option<String>,
+    pub indexer_guid: Option<String>,
     pub torrent_info_hash: Option<String>,
     pub torrent_file_idx: Option<i32>,
-    pub usenet_guid: Option<String>,
-    pub usenet_indexer: Option<String>,
-    pub filename: Option<String>,
-    pub size: Option<i64>,
-    pub duration: Option<f64>,
-    pub bitrate: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChapterDetail {
+    pub id: Option<i32>,
+    pub title: Option<String>,
+    pub start_time: Option<f64>,
+    pub end_time: Option<f64>,
+}
+
+/// One probe result returned by `GET /api/media/info`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaInfo {
+    pub content_hash: Option<String>,
     pub container: Option<String>,
+    pub duration: Option<f64>,
+    pub size: Option<i64>,
+    pub bitrate: Option<i64>,
+    #[serde(default)]
+    pub virtual_chapters: bool,
+    #[serde(default)]
+    pub chapters: Vec<ChapterDetail>,
+    pub sources: Vec<ProbeSource>,
     pub tracks: Vec<TrackDetail>,
 }
 
@@ -329,12 +403,7 @@ impl From<&TrackDetail> for MediaStream {
         };
         let range_type = if let Some(dv) = t.dv_profile {
             if dv > 0 {
-                match t.dv_bl_signal_compat_id {
-                    Some(1) | Some(6) => VideoRangeType::DoviWithHdr10,
-                    Some(4) => VideoRangeType::DoviWithHlg,
-                    Some(2) => VideoRangeType::DoviWithSdr,
-                    _ => VideoRangeType::Dovi,
-                }
+                VideoRangeType::Dovi
             } else {
                 VideoRangeType::Sdr
             }
@@ -364,14 +433,11 @@ impl From<&TrackDetail> for MediaStream {
             bit_depth: t
                 .bit_depth
                 .map(|v| v as i64),
+            pixel_format: t
+                .pixel_format
+                .clone(),
             profile: t
                 .profile
-                .clone(),
-            codec_tag: t
-                .codec_tag
-                .clone(),
-            comment: t
-                .comment
                 .clone(),
             title: t
                 .title
@@ -392,9 +458,6 @@ impl From<&TrackDetail> for MediaStream {
             real_frame_rate: t
                 .fps
                 .map(|v| v as f32),
-            average_frame_rate: t
-                .avg_fps
-                .map(|v| v as f32),
             color_primaries: t
                 .color_primaries
                 .clone(),
@@ -413,27 +476,11 @@ impl From<&TrackDetail> for MediaStream {
             rotation: t
                 .rotation
                 .map(|v| v as i64),
-            is_interlaced: t.is_interlaced,
             video_range: Some(video_range),
             video_range_type: Some(range_type),
             dv_profile: t
                 .dv_profile
                 .map(|v| v as i64),
-            dv_level: t
-                .dv_level
-                .map(|v| v as i64),
-            dv_version_major: t
-                .dv_version_major
-                .map(|v| v as i64),
-            dv_version_minor: t
-                .dv_version_minor
-                .map(|v| v as i64),
-            dv_bl_signal_compatibility_id: t
-                .dv_bl_signal_compat_id
-                .map(|v| v as i64),
-            rpu_present_flag: Some(t.dv_rpu_present as i64),
-            bl_present_flag: Some(t.dv_bl_present as i64),
-            el_present_flag: Some(t.dv_el_present as i64),
             is_anamorphic: Some(t.is_anamorphic),
             level: t
                 .level

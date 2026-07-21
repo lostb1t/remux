@@ -591,7 +591,7 @@ fn media_info_from_probe(
     stream: &db::Media,
     item: Option<&db::Media>,
 ) -> Option<remuxdb::MediaInfoPayload> {
-    let (info_hash, file_idx, usenet_guid, usenet_indexer, filename) = match stream
+    let (info_hash, file_idx, nzb, filename) = match stream
         .stream_info
         .as_ref()
     {
@@ -604,13 +604,24 @@ fn media_info_from_probe(
                 } => (Some(info_hash.clone()), file_idx.map(|i| i as i32)),
                 _ => (None, None),
             };
+            let nzb = si
+                .usenet_guid
+                .as_ref()
+                .zip(
+                    si.usenet_indexer
+                        .as_ref(),
+                )
+                .map(|(guid, indexer)| remuxdb::NzbSubmission {
+                    indexer: indexer.clone(),
+                    indexer_guid: guid.clone(),
+                    title: si
+                        .filename
+                        .clone(),
+                });
             (
                 hash,
                 idx,
-                si.usenet_guid
-                    .clone(),
-                si.usenet_indexer
-                    .clone(),
+                nzb,
                 si.filename
                     .clone()
                     .unwrap_or_else(|| {
@@ -621,7 +632,6 @@ fn media_info_from_probe(
             )
         }
         None => (
-            None,
             None,
             None,
             None,
@@ -715,6 +725,9 @@ fn media_info_from_probe(
                     bit_depth: ms
                         .bit_depth
                         .map(|d| d as i32),
+                    pixel_format: ms
+                        .pixel_format
+                        .clone(),
                     profile: ms
                         .profile
                         .clone(),
@@ -748,17 +761,16 @@ fn media_info_from_probe(
                     rotation: ms
                         .rotation
                         .map(|r| r as i32),
-                    is_default: ms
-                        .is_default
-                        .unwrap_or(false),
-                    is_forced: ms.is_forced,
-                    is_external: ms.is_external,
-                    is_hearing_impaired: ms.is_hearing_impaired,
-                    is_interlaced: ms.is_interlaced,
-                    hdr10_plus_present: matches!(
+                    is_default: ms.is_default,
+                    is_forced: Some(ms.is_forced),
+                    is_external: Some(ms.is_external),
+                    is_hearing_impaired: Some(ms.is_hearing_impaired),
+                    is_interlaced: Some(ms.is_interlaced),
+                    is_anamorphic: ms.is_anamorphic,
+                    hdr10_plus_present: Some(matches!(
                         ms.video_range_type,
                         Some(VideoRangeType::Hdr10Plus)
-                    ),
+                    )),
                     dv_profile: ms
                         .dv_profile
                         .map(|v| v as i32),
@@ -776,16 +788,13 @@ fn media_info_from_probe(
                         .map(|v| v as i32),
                     dv_rpu_present: ms
                         .rpu_present_flag
-                        .map_or(false, |v| v != 0),
+                        .map(|v| v != 0),
                     dv_bl_present: ms
                         .bl_present_flag
-                        .map_or(false, |v| v != 0),
+                        .map(|v| v != 0),
                     dv_el_present: ms
                         .el_present_flag
-                        .map_or(false, |v| v != 0),
-                    is_anamorphic: ms
-                        .is_anamorphic
-                        .unwrap_or(false),
+                        .map(|v| v != 0),
                     level: ms
                         .level
                         .map(|v| v as i32),
@@ -829,12 +838,10 @@ fn media_info_from_probe(
                     language: ms
                         .language
                         .clone(),
-                    is_default: ms
-                        .is_default
-                        .unwrap_or(false),
-                    is_forced: ms.is_forced,
-                    is_external: ms.is_external,
-                    is_hearing_impaired: ms.is_hearing_impaired,
+                    is_default: ms.is_default,
+                    is_forced: Some(ms.is_forced),
+                    is_external: Some(ms.is_external),
+                    is_hearing_impaired: Some(ms.is_hearing_impaired),
                 }))
             }
             MediaStreamType::Subtitle => Some(remuxdb::TrackPayload::Subtitle(
@@ -852,12 +859,10 @@ fn media_info_from_probe(
                     comment: ms
                         .comment
                         .clone(),
-                    is_default: ms
-                        .is_default
-                        .unwrap_or(false),
-                    is_forced: ms.is_forced,
-                    is_external: ms.is_external,
-                    is_hearing_impaired: ms.is_hearing_impaired,
+                    is_default: ms.is_default,
+                    is_forced: Some(ms.is_forced),
+                    is_external: Some(ms.is_external),
+                    is_hearing_impaired: Some(ms.is_hearing_impaired),
                 },
             )),
             _ => None,
@@ -865,13 +870,12 @@ fn media_info_from_probe(
         .collect();
 
     Some(remuxdb::MediaInfoPayload {
-        client_id: crate::common::server_id(),
+        client_id: Some(crate::common::server_id()),
         kind,
         filename,
         torrent_info_hash: info_hash,
         torrent_file_idx: file_idx,
-        usenet_guid,
-        usenet_indexer,
+        nzb,
         container: probe
             .container
             .clone()

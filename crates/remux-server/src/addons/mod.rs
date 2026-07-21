@@ -2180,7 +2180,7 @@ fn match_probe_version<'a>(
         .stream_info
         .as_ref()?;
 
-    // Torrent: match by info_hash + file_idx (exact)
+    // Torrent: match by info_hash + file_idx against version sources
     if let StreamDescriptor::Torrent {
         ref info_hash,
         file_idx,
@@ -2190,25 +2190,33 @@ fn match_probe_version<'a>(
         return versions
             .iter()
             .find(|v| {
-                v.torrent_info_hash
-                    .as_deref()
-                    == Some(info_hash.as_str())
-                    && v.torrent_file_idx == file_idx.map(|i| i as i32)
+                v.sources
+                    .iter()
+                    .any(|s| {
+                        s.torrent_info_hash
+                            .as_deref()
+                            == Some(info_hash.as_str())
+                            && s.torrent_file_idx == file_idx.map(|i| i as i32)
+                    })
             });
     }
 
-    // Usenet: match by GUID (+ indexer when available)
+    // Usenet: match by indexer_guid (+ indexer name when available) against version sources
     if let Some(ref guid) = si.usenet_guid {
         if let Some(v) = versions
             .iter()
             .find(|v| {
-                v.usenet_guid
-                    .as_deref()
-                    == Some(guid.as_str())
-                    && (si
-                        .usenet_indexer
-                        .is_none()
-                        || v.usenet_indexer == si.usenet_indexer)
+                v.sources
+                    .iter()
+                    .any(|s| {
+                        s.indexer_guid
+                            .as_deref()
+                            == Some(guid.as_str())
+                            && (si
+                                .usenet_indexer
+                                .is_none()
+                                || s.indexer == si.usenet_indexer)
+                    })
             })
         {
             return Some(v);
@@ -2225,7 +2233,7 @@ fn match_probe_version<'a>(
         }
     }
 
-    // Fallback: match by filename, trying with and without video extension
+    // Fallback: match by filename (with and without video extension) against version sources
     let filename = si
         .filename
         .as_deref()?;
@@ -2233,10 +2241,14 @@ fn match_probe_version<'a>(
     versions
         .iter()
         .find(|v| {
-            v.filename
-                .as_deref()
-                .map(|vf| vf == filename || strip_video_ext(vf) == stem)
-                .unwrap_or(false)
+            v.sources
+                .iter()
+                .any(|s| {
+                    s.filename
+                        .as_deref()
+                        .map(|sf| sf == filename || strip_video_ext(sf) == stem)
+                        .unwrap_or(false)
+                })
         })
 }
 
