@@ -483,6 +483,7 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
             h264_crf: Some(*h264_crf.peek()),
             h265_crf: Some(*h265_crf.peek()),
             enable_video_transcoding: Some(*enable_video_transcoding.peek()),
+            normalize_audio_loudness: None,
             subtitle_mode: subtitle_mode
                 .peek()
                 .parse::<EmbeddedSubtitleHandling>()

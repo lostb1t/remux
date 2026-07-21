@@ -835,6 +835,9 @@ async fn videos_stream_inner(
         h265_crf: encoding_opts
             .h265_crf
             .unwrap_or(28),
+        normalize_audio_loudness: encoding_opts
+            .normalize_audio_loudness
+            .unwrap_or(true),
     };
 
     let stream = crate::playback::engine::start_progressive_transcode(params)?;
