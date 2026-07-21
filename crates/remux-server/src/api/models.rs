@@ -99,6 +99,9 @@ pub fn device_info_from(device: &db::auth::Device) -> DeviceInfo {
         last_user_id: Some(device.user_id),
         date_last_activity: device.last_activity_at,
         icon_url: None,
+        date_created: device.created_at,
+        remote_end_point: device.remote_ip.clone(),
+        user_id: Some(device.user_id),
     }
 }
 

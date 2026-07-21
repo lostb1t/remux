@@ -1090,6 +1090,30 @@ pub struct DeviceInfo {
     pub last_user_id: Option<Uuid>,
     pub date_last_activity: Option<DateTime<Utc>>,
     pub icon_url: Option<String>,
+    pub date_created: Option<DateTime<Utc>>,
+    pub remote_end_point: Option<String>,
+    pub user_id: Option<Uuid>,
+}
+
+#[dto]
+pub struct ActivityLogEntry {
+    pub id: Option<String>,
+    pub timestamp: Option<DateTime<Utc>>,
+    pub user_id: Option<String>,
+    pub user_name: Option<String>,
+    pub action: Option<String>,
+    pub target_user_id: Option<String>,
+    pub target_user_name: Option<String>,
+    pub device_id: Option<String>,
+    pub device_name: Option<String>,
+    pub details: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct ActivityLogResult {
+    pub items: Vec<ActivityLogEntry>,
+    pub total_record_count: i64,
 }
 
 #[dto]
@@ -4131,6 +4155,88 @@ impl Endpoint for GetSessions {
 
     fn path(&self) -> String {
         "/sessions".into()
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
+    }
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct GetDevices {
+    #[serde(rename = "userId")]
+    pub user_id: Option<Uuid>,
+}
+
+impl Endpoint for GetDevices {
+    type Output = QueryResult<DeviceInfo>;
+
+    fn path(&self) -> String {
+        "/devices".into()
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DeleteDevice {
+    pub id: String,
+}
+
+impl Endpoint for DeleteDevice {
+    type Output = ();
+
+    fn path(&self) -> String {
+        "/devices".into()
+    }
+
+    fn method(&self) -> Method {
+        Method::DELETE
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DeleteUserDevices {
+    #[serde(rename = "userId")]
+    pub user_id: Uuid,
+}
+
+impl Endpoint for DeleteUserDevices {
+    type Output = ();
+
+    fn path(&self) -> String {
+        "/devices".into()
+    }
+
+    fn method(&self) -> Method {
+        Method::DELETE
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
+    }
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct GetActivityLog {
+    #[serde(rename = "startIndex")]
+    pub start_index: Option<i64>,
+    pub limit: Option<i64>,
+}
+
+impl Endpoint for GetActivityLog {
+    type Output = ActivityLogResult;
+
+    fn path(&self) -> String {
+        "/system/activitylog/entries".into()
     }
 
     fn query_params(&self) -> impl serde::Serialize + '_ {

@@ -1,9 +1,10 @@
 use crate::{components::*, pages::streams::StreamFilterEditor, state::AppState};
 use dioxus::prelude::*;
 use remux_sdks::remux::{
-    AddonDto, AdminSetPassword, CollectionFilter, CreateUser, DeleteUser, FilterGroup,
-    FilterMatchMode, GetUserAddons, GetUsers, ListAddons, SetUserAddons, StreamFilter,
-    StreamRule, UpdateUser, UpdateUserPolicy, UserDto,
+    AddonDto, AdminSetPassword, CollectionFilter, CreateUser, DeleteDevice, DeleteUser,
+    FilterGroup, FilterMatchMode, GetDevices, GetUserAddons, GetUsers, ListAddons,
+    QueryResult, SetUserAddons, StreamFilter, StreamRule, UpdateUser, UpdateUserPolicy,
+    UserDto,
 };
 use uuid::Uuid;
 
@@ -163,6 +164,7 @@ pub fn UserForm(
         UserFormMode::Edit(u) => Some(u.clone()),
         UserFormMode::Create => None,
     };
+    let app_state_devices = app_state.clone();
 
     let mut username = use_signal(|| {
         existing
@@ -724,6 +726,12 @@ pub fn UserForm(
                 }
             }
 
+            if is_edit {
+                if let Some(user_id) = edit_user_id {
+                    UserDevicesSection { user_id, app_state: app_state_devices.clone() }
+                }
+            }
+
             if let Some(e) = err.read().as_ref() {
                 ErrorAlert { message: e.clone() }
             }
@@ -741,6 +749,100 @@ pub fn UserForm(
                     disabled: *saving.read(),
                     if *saving.read() { "Saving…" } else { "Save" }
                 }
+            }
+        }
+    }
+}
+
+#[component]
+fn UserDevicesSection(user_id: uuid::Uuid, app_state: AppState) -> Element {
+    use remux_sdks::remux::DeviceInfo;
+
+    let mut devices: Signal<Vec<DeviceInfo>> = use_signal(Vec::new);
+    let mut loading = use_signal(|| true);
+    let refresh = use_signal(|| 0_u32);
+    let mut confirm_id: Signal<Option<String>> = use_signal(|| None);
+
+    let app_state_load = app_state.clone();
+    use_effect(move || {
+        let _r = *refresh.read();
+        loading.set(true);
+        let client = app_state_load.client.clone();
+        spawn(async move {
+            if let Ok(QueryResult { items, .. }) =
+                client.execute(GetDevices { user_id: Some(user_id) }).await
+            {
+                devices.set(items);
+            }
+            loading.set(false);
+        });
+    });
+
+    let app_state_revoke = app_state.clone();
+
+    rsx! {
+        div { style: "margin-top:18px;border-top:1px solid var(--border);padding-top:14px",
+            div { style: "font-size:.75rem;font-weight:600;color:var(--text-dim);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em",
+                "Active Sessions"
+            }
+            if *loading.read() {
+                LoadingText {}
+            } else if devices.read().is_empty() {
+                p { style: "font-size:.8rem;color:var(--text-dim)", "No active sessions." }
+            } else {
+                div { class: "row-list",
+                    for device in devices.read().clone() {
+                        {
+                            let did = device.id.clone().unwrap_or_default();
+                            let did_confirm = did.clone();
+                            rsx! {
+                                div {
+                                    class: "flex items-center gap-2 py-[6px] border-b border-[var(--border)] text-xs",
+                                    key: "{did}",
+                                    div { class: "flex-1 min-w-0",
+                                        span { style: "font-weight:500",
+                                            "{device.name.as_deref().unwrap_or(\"Unknown\")}"
+                                        }
+                                        if let Some(app) = &device.app_name {
+                                            span { style: "margin-left:6px;color:var(--text-dim)", "({app})" }
+                                        }
+                                    }
+                                    if let Some(t) = device.date_last_activity {
+                                        span { style: "color:var(--text-dim);font-family:monospace", "{crate::state::fmt_time(t)}" }
+                                    }
+                                    button {
+                                        class: "btn btn-ghost",
+                                        style: "height:24px;font-size:.6rem;padding:0 6px;color:var(--error);border-color:var(--error)",
+                                        onclick: move |_| confirm_id.set(Some(did_confirm.clone())),
+                                        "Revoke"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(did) = confirm_id.read().clone() {
+            ConfirmDialog {
+                message: "Revoke this session? The device will be signed out.",
+                on_confirm: {
+                    let client = app_state_revoke.client.clone();
+                    move |_| {
+                        let did = did.clone();
+                        let client = client.clone();
+                        let mut ci = confirm_id.clone();
+                        let mut ref_ = refresh.clone();
+                        spawn(async move {
+                            let _ = client.execute(DeleteDevice { id: did }).await;
+                            ci.set(None);
+                            let v = *ref_.peek() + 1;
+                            ref_.set(v);
+                        });
+                    }
+                },
+                on_cancel: move |_| confirm_id.set(None),
             }
         }
     }

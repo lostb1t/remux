@@ -50,6 +50,7 @@ pub struct Device {
     pub last_activity_at: Option<DateTime<Utc>>,
     pub capabilities: Option<sqlx::types::Json<crate::api::ClientCapabilitiesDto>>,
     pub remote_ip: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 impl Device {
@@ -190,6 +191,27 @@ impl Device {
             .execute(db)
             .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Delete all devices for a user, optionally skipping one token (e.g. the caller's own).
+    pub async fn delete_all_for_user(
+        db: &SqlitePool,
+        user_id: &Uuid,
+        except_token: Option<&str>,
+    ) -> Result<u64> {
+        let result = if let Some(token) = except_token {
+            sqlx::query("DELETE FROM devices WHERE user_id = ? AND access_token != ?")
+                .bind(user_id)
+                .bind(token)
+                .execute(db)
+                .await?
+        } else {
+            sqlx::query("DELETE FROM devices WHERE user_id = ?")
+                .bind(user_id)
+                .execute(db)
+                .await?
+        };
+        Ok(result.rows_affected())
     }
 
     fn merge_runtime_metadata_from_header(&mut self, header: &JellyfinAuthHeader) {
@@ -417,6 +439,7 @@ impl FromRequestParts<AppState> for AuthSession {
             last_activity_at: None,
             capabilities: None,
             remote_ip: None,
+            created_at: None,
         };
 
         tracing::Span::current().record(

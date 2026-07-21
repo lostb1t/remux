@@ -1,77 +1,215 @@
 use crate::{
-    components::{Card, EmptyState, LoadingText},
+    components::{Card, ConfirmDialog, EmptyState, ErrorAlert, LoadingText},
     state::{fmt_time, AppState},
 };
 use dioxus::prelude::*;
-use remux_sdks::remux::{GetSessions, SessionInfoDto};
+use remux_sdks::remux::{
+    ActivityLogEntry, DeleteDevice, DeleteUserDevices, DeviceInfo, GetActivityLog,
+    GetDevices, QueryResult,
+};
+use std::collections::HashMap;
 
 #[component]
 pub fn SessionsCard(app_state: AppState) -> Element {
-    let mut sessions: Signal<Vec<SessionInfoDto>> = use_signal(Vec::new);
+    let mut devices: Signal<Vec<DeviceInfo>> = use_signal(Vec::new);
     let mut loading = use_signal(|| true);
     let mut error = use_signal(|| Option::<String>::None);
+    let refresh = use_signal(|| 0_u32);
+    let mut confirm_revoke: Signal<Option<String>> = use_signal(|| None);
+    let mut confirm_revoke_user: Signal<Option<String>> = use_signal(|| None);
+    let mut activity_items: Signal<Vec<ActivityLogEntry>> = use_signal(Vec::new);
+    let mut activity_loading = use_signal(|| true);
 
+    let self_token = app_state.server.access_token.clone();
+
+    let app_state_devices = app_state.clone();
     use_effect(move || {
-        let client = app_state
-            .client
-            .clone();
+        let _r = *refresh.read();
+        loading.set(true);
+        let client = app_state_devices.client.clone();
         spawn(async move {
-            match client
-                .execute(GetSessions {
-                    active_within_seconds: Some(960),
-                })
-                .await
-            {
-                Ok(s) => {
-                    sessions.set(s);
+            match client.execute(GetDevices { user_id: None }).await {
+                Ok(QueryResult { items, .. }) => {
+                    devices.set(items);
                     error.set(None);
                 }
-                Err(e) => error.set(Some(format!("Failed to fetch sessions: {e}"))),
+                Err(e) => error.set(Some(format!("Failed to load devices: {e}"))),
             }
             loading.set(false);
         });
     });
 
+    let app_state_activity = app_state.clone();
+    use_effect(move || {
+        let _r = *refresh.read();
+        activity_loading.set(true);
+        let client = app_state_activity.client.clone();
+        spawn(async move {
+            if let Ok(result) = client
+                .execute(GetActivityLog {
+                    start_index: Some(0),
+                    limit: Some(50),
+                })
+                .await
+            {
+                activity_items.set(result.items);
+            }
+            activity_loading.set(false);
+        });
+    });
+
+    // Group devices by user_id for "Revoke All" per-user action.
+    let grouped: HashMap<String, Vec<DeviceInfo>> = {
+        let mut map: HashMap<String, Vec<DeviceInfo>> = HashMap::new();
+        for d in devices.read().iter() {
+            let uid = d
+                .user_id
+                .map(|u| u.to_string())
+                .unwrap_or_default();
+            map.entry(uid).or_default().push(d.clone());
+        }
+        map
+    };
+
+    let app_state_revoke = app_state.clone();
+    let app_state_revoke_all = app_state.clone();
+
     rsx! {
-        Card { title: "Active Devices", tight: true,
-            if *loading.read() {
-                LoadingText {}
-            } else if let Some(err) = error.read().as_ref() {
-                span { class: "loading-text", style: "color:var(--error)", "{err}" }
-            } else if sessions.read().is_empty() {
-                EmptyState { message: "No active devices in the last 16 minutes" }
-            } else {
-                div { class: "data-table-container",
-                    div { class: "row-list",
-                        for session in sessions.read().iter() {
-                            div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]",
-                                div { class: "flex-1 min-w-0 px-3 py-[10px]",
-                                    div { class: "session-name",
-                                        "{session.device_name.as_deref().unwrap_or(\"Unknown device\")}"
-                                    }
-                                    if let Some(item) = &session.now_playing_item {
-                                        div { class: "session-playing",
-                                            "▶ {item.name.as_deref().unwrap_or(\"Unknown\")}"
-                                        }
-                                    }
-                                }
-                                div { class: "shrink-0 px-3 py-[10px]",
-                                    div { class: "session-user",
-                                        "{session.user_name.as_deref().unwrap_or(\"Unknown\")}"
-                                    }
-                                }
-                                div { class: "shrink-0 px-3 py-[10px]",
-                                    if let Some(client_name) = &session.client {
-                                        div { class: "session-client-badge",
-                                            "{client_name}"
-                                            if let Some(v) = &session.application_version {
-                                                " {v}"
+        div { class: "flex flex-col gap-4",
+
+            Card { title: "All Devices",
+                if *loading.read() {
+                    LoadingText {}
+                } else if let Some(err) = error.read().as_ref() {
+                    ErrorAlert { message: err.clone() }
+                } else if devices.read().is_empty() {
+                    EmptyState { message: "No devices found" }
+                } else {
+                    div { class: "data-table-container",
+                        div { class: "row-list",
+                            for device in devices.read().clone() {
+                                {
+                                    let device_id = device.id.clone().unwrap_or_default();
+                                    let is_self = device
+                                        .access_token
+                                        .as_deref()
+                                        .zip(Some(self_token.as_str()))
+                                        .map(|(tok, me)| tok == me)
+                                        .unwrap_or(false);
+                                    let device_id_revoke = device_id.clone();
+                                    rsx! {
+                                        div {
+                                            class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]",
+                                            key: "{device_id}",
+                                            div { class: "flex-1 min-w-0 px-3 py-[10px]",
+                                                div { class: "session-name",
+                                                    "{device.name.as_deref().unwrap_or(\"Unknown device\")}"
+                                                    if is_self {
+                                                        span { class: "user-badge user-badge-self", style: "margin-left:6px", "This session" }
+                                                    }
+                                                }
+                                                div { class: "text-xs text-[var(--text-dim)] mt-0.5",
+                                                    if let Some(ip) = &device.remote_end_point {
+                                                        span { "{ip}" }
+                                                    }
+                                                    if let Some(created) = device.date_created {
+                                                        span { style: "margin-left:6px",
+                                                            "First seen: {fmt_time(created)}"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            div { class: "shrink-0 px-3 py-[10px]",
+                                                if let Some(user) = &device.last_user_name {
+                                                    div { class: "session-user", "{user}" }
+                                                }
+                                            }
+                                            div { class: "shrink-0 px-3 py-[10px]",
+                                                if let Some(app) = &device.app_name {
+                                                    div { class: "session-client-badge",
+                                                        "{app}"
+                                                        if let Some(v) = &device.app_version {
+                                                            " {v}"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            div { class: "shrink-0 px-3 py-[10px] text-right font-mono text-[var(--text-dim)] text-xs",
+                                                if let Some(t) = device.date_last_activity {
+                                                    "{fmt_time(t)}"
+                                                }
+                                            }
+                                            div { class: "shrink-0 px-3 py-[10px]",
+                                                button {
+                                                    class: "btn btn-ghost",
+                                                    style: "height:28px;font-size:.65rem;padding:0 8px;color:var(--error);border-color:var(--error)",
+                                                    disabled: is_self,
+                                                    onclick: move |_| confirm_revoke.set(Some(device_id_revoke.clone())),
+                                                    "Revoke"
+                                                }
                                             }
                                         }
                                     }
                                 }
-                                div { class: "shrink-0 px-3 py-[10px] text-right font-mono text-[var(--text-dim)] text-xs",
-                                    "{fmt_time(session.last_activity_date)}"
+                            }
+                        }
+
+                        // Per-user "Revoke All" buttons
+                        div { class: "flex flex-wrap gap-2 px-3 py-3 border-t border-[var(--border)]",
+                            for (uid, user_devices) in &grouped {
+                                {
+                                    let user_label = user_devices
+                                        .first()
+                                        .and_then(|d| d.last_user_name.clone())
+                                        .unwrap_or_else(|| uid.clone());
+                                    let uid_str = uid.clone();
+                                    rsx! {
+                                        button {
+                                            class: "btn btn-ghost",
+                                            style: "height:28px;font-size:.65rem;padding:0 8px;color:var(--error);border-color:var(--error)",
+                                            onclick: move |_| confirm_revoke_user.set(Some(uid_str.clone())),
+                                            "Revoke all for {user_label}"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Activity log
+            Card { title: "Admin Activity Log",
+                if *activity_loading.read() {
+                    LoadingText {}
+                } else if activity_items.read().is_empty() {
+                    EmptyState { message: "No admin actions recorded yet" }
+                } else {
+                    div { class: "data-table-container",
+                        div { class: "row-list",
+                            for entry in activity_items.read().iter() {
+                                div {
+                                    class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)]",
+                                    key: "{entry.id.as_deref().unwrap_or(\"\")}",
+                                    div { class: "shrink-0 px-3 py-[8px] font-mono text-xs text-[var(--text-dim)] w-40",
+                                        if let Some(ts) = entry.timestamp {
+                                            "{fmt_time(ts)}"
+                                        }
+                                    }
+                                    div { class: "shrink-0 px-3 py-[8px] text-xs text-[var(--text-dim)] w-32",
+                                        "{entry.user_name.as_deref().unwrap_or(\"\")}"
+                                    }
+                                    div { class: "shrink-0 px-3 py-[8px] text-xs font-medium w-40",
+                                        {action_label(entry.action.as_deref().unwrap_or(""))}
+                                    }
+                                    div { class: "flex-1 min-w-0 px-3 py-[8px] text-xs text-[var(--text-dim)]",
+                                        if let Some(target) = &entry.target_user_name {
+                                            "user: {target}"
+                                        }
+                                        if let Some(dev) = &entry.device_name {
+                                            span { style: "margin-left:8px", "device: {dev}" }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -79,5 +217,64 @@ pub fn SessionsCard(app_state: AppState) -> Element {
                 }
             }
         }
+
+        // Revoke single device confirmation
+        if let Some(did) = confirm_revoke.read().clone() {
+            ConfirmDialog {
+                message: "Revoke this device? It will be signed out immediately.",
+                on_confirm: {
+                    let client = app_state_revoke.client.clone();
+                    move |_| {
+                        let did = did.clone();
+                        let client = client.clone();
+                        let mut cr = confirm_revoke.clone();
+                        let mut ref_ = refresh.clone();
+                        spawn(async move {
+                            let _ = client.execute(DeleteDevice { id: did }).await;
+                            cr.set(None);
+                            let v = *ref_.peek() + 1;
+                            ref_.set(v);
+                        });
+                    }
+                },
+                on_cancel: move |_| confirm_revoke.set(None),
+            }
+        }
+
+        // Revoke all devices for a user confirmation
+        if let Some(uid) = confirm_revoke_user.read().clone() {
+            ConfirmDialog {
+                message: "Revoke ALL devices for this user? They will be signed out everywhere.",
+                on_confirm: {
+                    let client = app_state_revoke_all.client.clone();
+                    move |_| {
+                        let uid = uid.clone();
+                        let client = client.clone();
+                        let mut cru = confirm_revoke_user.clone();
+                        let mut ref_ = refresh.clone();
+                        spawn(async move {
+                            if let Ok(parsed) = uid.parse::<uuid::Uuid>() {
+                                let _ = client
+                                    .execute(DeleteUserDevices { user_id: parsed })
+                                    .await;
+                            }
+                            cru.set(None);
+                            let v = *ref_.peek() + 1;
+                            ref_.set(v);
+                        });
+                    }
+                },
+                on_cancel: move |_| confirm_revoke_user.set(None),
+            }
+        }
+    }
+}
+
+fn action_label(action: &str) -> &'static str {
+    match action {
+        "session_revoked" => "Session revoked",
+        "all_sessions_revoked" => "All sessions revoked",
+        "password_changed" => "Password changed",
+        _ => "Admin action",
     }
 }

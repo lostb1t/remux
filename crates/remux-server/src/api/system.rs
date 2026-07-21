@@ -594,16 +594,27 @@ pub async fn get_branding_css_dotcss(
     branding_css_response(&state).await
 }
 
+#[query]
+#[derive(Default)]
+struct ActivityLogQuery {
+    #[serde(rename = "startIndex", alias = "StartIndex")]
+    start_index: Option<i64>,
+    limit: Option<i64>,
+}
+
 /// Get activity log entries
 #[get("/system/activitylog/entries")]
 pub async fn system_activity_log(
     State(state): State<AppState>,
     _session: auth::AdminSession,
+    Query(q): Query<ActivityLogQuery>,
 ) -> Result<impl IntoResponse> {
-    // Return an empty activity log
+    let start_index = q.start_index.unwrap_or(0);
+    let limit = q.limit.unwrap_or(50).min(200);
+    let (items, total) = db::ActivityLog::list(&state.ctx.db, start_index, limit).await?;
     Ok(Json(json!({
-        "Items": [],
-        "TotalRecordCount": 0
+        "Items": items,
+        "TotalRecordCount": total
     })))
 }
 

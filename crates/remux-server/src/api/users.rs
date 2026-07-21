@@ -355,6 +355,7 @@ pub async fn authenticate_with_quickconnect(
         last_activity_at: None,
         capabilities: None,
         remote_ip: None,
+        created_at: None,
     };
     device
         .save(
@@ -685,10 +686,35 @@ pub async fn change_password(
             .db,
     )
     .await?;
+
+    // Revoke all other sessions for this user so stale tokens can't be reused.
+    let _ = db::auth::Device::delete_all_for_user(
+        &state.ctx.db,
+        &user_id,
+        Some(&session.device.access_token),
+    )
+    .await;
+    let _ = db::ActivityLog::insert(
+        &state.ctx.db,
+        &session.user.id,
+        &session.user.username,
+        "password_changed",
+        Some(&user_id),
+        Some(&user.username),
+        Some(&session.device.id),
+        Some(&session.device.name),
+        None,
+    )
+    .await;
+
     let _ = state
         .ctx
         .ws_tx
         .send(WsEvent::UserUpdated(user_id));
+    let _ = state
+        .ctx
+        .ws_tx
+        .send(WsEvent::SessionsChanged);
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
