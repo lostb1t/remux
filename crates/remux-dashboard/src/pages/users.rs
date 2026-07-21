@@ -3,7 +3,8 @@ use dioxus::prelude::*;
 use remux_sdks::remux::{
     AddonDto, AdminSetPassword, CollectionFilter, CreateUser, DeleteUser, FilterGroup,
     FilterMatchMode, GetUserAddons, GetUsers, ListAddons, SetUserAddons, StreamFilter,
-    StreamRule, UpdateUser, UpdateUserPolicy, UserDto,
+    StreamRule, SubtitleMode, UpdateUser, UpdateUserConfiguration, UpdateUserPolicy,
+    UserConfiguration, UserDto,
 };
 use uuid::Uuid;
 
@@ -269,6 +270,20 @@ pub fn UserForm(
             })
             .unwrap_or(true)
     });
+    let mut subtitle_mode = use_signal(|| {
+        existing
+            .as_ref()
+            .and_then(|u| u.configuration.as_ref())
+            .map(|c| c.subtitle_mode.clone())
+            .unwrap_or(SubtitleMode::Default)
+    });
+    let mut subtitle_language = use_signal(|| {
+        existing
+            .as_ref()
+            .and_then(|u| u.configuration.as_ref())
+            .and_then(|c| c.subtitle_language_preference.clone())
+            .unwrap_or_default()
+    });
 
     // Addon override state — edit only.
     // Each entry is (addon_id, enabled). Order is the user-defined priority.
@@ -378,6 +393,8 @@ pub fn UserForm(
         let addons_loaded = !all_addons
             .peek()
             .is_empty();
+        let subtitle_mode_snapshot = subtitle_mode.peek().clone();
+        let subtitle_language_snapshot = subtitle_language.peek().clone();
 
         saving.set(true);
         err.set(None);
@@ -459,6 +476,23 @@ pub fn UserForm(
                             })
                             .await?;
                     }
+                    // Update subtitle preferences
+                    let mut cfg = user
+                        .configuration
+                        .clone()
+                        .unwrap_or_default();
+                    cfg.subtitle_mode = subtitle_mode_snapshot;
+                    cfg.subtitle_language_preference = if subtitle_language_snapshot.is_empty() {
+                        None
+                    } else {
+                        Some(subtitle_language_snapshot)
+                    };
+                    client
+                        .execute(UpdateUserConfiguration {
+                            user_id: user.id,
+                            config: cfg,
+                        })
+                        .await?;
                 } else {
                     // Create user
                     let new_user = client
@@ -485,6 +519,24 @@ pub fn UserForm(
                             .execute(UpdateUserPolicy {
                                 user_id: new_user.id,
                                 policy,
+                            })
+                            .await?;
+                    }
+                    // Set subtitle preferences on new user
+                    let mut cfg = UserConfiguration::default();
+                    cfg.subtitle_mode = subtitle_mode_snapshot;
+                    cfg.subtitle_language_preference = if subtitle_language_snapshot.is_empty() {
+                        None
+                    } else {
+                        Some(subtitle_language_snapshot)
+                    };
+                    if cfg.subtitle_mode != SubtitleMode::Default
+                        || cfg.subtitle_language_preference.is_some()
+                    {
+                        client
+                            .execute(UpdateUserConfiguration {
+                                user_id: new_user.id,
+                                config: cfg,
                             })
                             .await?;
                     }
@@ -710,6 +762,52 @@ pub fn UserForm(
                         }
                     }
                 }
+            }
+
+            div { class: "field",
+                label { class: "field-label", r#for: "u-subtitle-mode", "Subtitle Mode" }
+                select {
+                    id: "u-subtitle-mode",
+                    class: "field-input",
+                    value: match *subtitle_mode.read() {
+                        SubtitleMode::Default => "Default",
+                        SubtitleMode::Always => "Always",
+                        SubtitleMode::Smart => "Smart",
+                        SubtitleMode::OnlyForced => "OnlyForced",
+                        SubtitleMode::None => "None",
+                    },
+                    onchange: move |e| {
+                        let v = match e.value().as_str() {
+                            "Always" => SubtitleMode::Always,
+                            "Smart" => SubtitleMode::Smart,
+                            "OnlyForced" => SubtitleMode::OnlyForced,
+                            "None" => SubtitleMode::None,
+                            _ => SubtitleMode::Default,
+                        };
+                        subtitle_mode.set(v);
+                    },
+                    option { value: "Default", "Default" }
+                    option { value: "Always", "Always" }
+                    option { value: "Smart", "Smart" }
+                    option { value: "OnlyForced", "Only Forced" }
+                    option { value: "None", "None" }
+                }
+                span { class: "field-hint",
+                    "Always: auto-enable subtitles. Smart: only when audio language differs."
+                }
+            }
+
+            div { class: "field",
+                label { class: "field-label", r#for: "u-subtitle-lang", "Subtitle Language" }
+                input {
+                    id: "u-subtitle-lang",
+                    r#type: "text",
+                    class: "field-input",
+                    placeholder: "e.g. eng",
+                    value: "{subtitle_language}",
+                    oninput: move |e| subtitle_language.set(e.value()),
+                }
+                span { class: "field-hint", "ISO 639-2 language code. Leave blank to use server default." }
             }
 
             FilterRuleEditor {

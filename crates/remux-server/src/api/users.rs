@@ -37,18 +37,15 @@ use super::{
 pub async fn user_configuration_update(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    Path(user_id): Path<Uuid>,
     Json(payload): Json<api::UserConfiguration>,
 ) -> Result<impl IntoResponse> {
-    db::User::save_configuration(
-        &state
-            .ctx
-            .db,
-        &session
-            .user
-            .id,
-        &payload,
-    )
-    .await?;
+    let target_id = if session.user.is_admin || session.user.id == user_id {
+        user_id
+    } else {
+        return Err(anyhow::anyhow!("forbidden").context_unauthorized("forbidden"));
+    };
+    db::User::save_configuration(&state.ctx.db, &target_id, &payload).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
