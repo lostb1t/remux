@@ -1,3 +1,5 @@
+use crate::{ClientError, Endpoint, RestClient};
+use http::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
@@ -159,7 +161,7 @@ impl MediaInfo {
 }
 
 /// Flat track returned by `GET /api/media/info`. The `kind` field discriminates video/audio/subtitle.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackDetail {
     pub kind: String,
     pub idx: i32,
@@ -212,7 +214,7 @@ pub struct TrackDetail {
 }
 
 /// One physical-file version returned by `GET /api/media/info`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaProbeVersion {
     pub torrent_info_hash: Option<String>,
     pub torrent_file_idx: Option<i32>,
@@ -222,6 +224,45 @@ pub struct MediaProbeVersion {
     pub bitrate: Option<i64>,
     pub container: Option<String>,
     pub tracks: Vec<TrackDetail>,
+}
+
+#[derive(Clone)]
+struct MediaInfoEndpoint {
+    imdb_id: String,
+    season: Option<i32>,
+    episode: Option<i32>,
+    token: Option<String>,
+    client_id: Option<String>,
+}
+
+impl Endpoint for MediaInfoEndpoint {
+    type Output = Vec<MediaProbeVersion>;
+
+    fn path(&self) -> String {
+        let mut path = format!("/api/media/info?imdb_id={}", self.imdb_id);
+        if let Some(s) = self.season {
+            path.push_str(&format!("&season={s}"));
+        }
+        if let Some(e) = self.episode {
+            path.push_str(&format!("&episode={e}"));
+        }
+        path
+    }
+
+    fn headers(&self) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        if let Some(t) = &self.token {
+            if let Ok(v) = HeaderValue::from_str(&format!("Bearer {t}")) {
+                map.insert(http::header::AUTHORIZATION, v);
+            }
+        }
+        if let Some(id) = &self.client_id {
+            if let Ok(v) = HeaderValue::from_str(id) {
+                map.insert("x-client-id", v);
+            }
+        }
+        map
+    }
 }
 
 /// Fetch probe versions for a media title from RemuxDB.
@@ -234,67 +275,31 @@ pub async fn fetch_probe(
     season: Option<i32>,
     episode: Option<i32>,
 ) -> Option<Vec<MediaProbeVersion>> {
-    let mut url = format!(
-        "{}/api/media/info?imdb_id={}",
-        base_url.trim_end_matches('/'),
-        imdb_id
-    );
-    if let Some(s) = season {
-        url.push_str(&format!("&season={s}"));
-    }
-    if let Some(e) = episode {
-        url.push_str(&format!("&episode={e}"));
-    }
-
-    let mut req = reqwest::Client::new().get(&url);
-    if let Some(t) = token {
-        req = req.bearer_auth(t);
-    }
-    if let Some(id) = client_id {
-        req = req.header("x-client-id", id);
-    }
-
-    match req
-        .send()
+    let client = match RestClient::new(base_url.trim_end_matches('/')) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = %e, "remuxdb: invalid base url");
+            return None;
+        }
+    };
+    let ep = MediaInfoEndpoint {
+        imdb_id: imdb_id.to_string(),
+        season,
+        episode,
+        token: token.map(|s| s.to_string()),
+        client_id: client_id.map(|s| s.to_string()),
+    };
+    match client
+        .execute(ep)
         .await
     {
-        Ok(resp)
-            if resp
-                .status()
-                .as_u16()
-                == 404 =>
-        {
-            None
+        Ok(versions) => {
+            debug!(count = versions.len(), "remuxdb: probe versions fetched");
+            Some(versions)
         }
-        Ok(resp)
-            if resp
-                .status()
-                .is_success() =>
-        {
-            match resp
-                .json::<Vec<MediaProbeVersion>>()
-                .await
-            {
-                Ok(versions) => {
-                    debug!(
-                        url,
-                        count = versions.len(),
-                        "remuxdb: probe versions fetched"
-                    );
-                    Some(versions)
-                }
-                Err(e) => {
-                    warn!(url, error = %e, "remuxdb: probe response parse error");
-                    None
-                }
-            }
-        }
-        Ok(resp) => {
-            warn!(url, status = %resp.status(), "remuxdb: probe fetch failed");
-            None
-        }
+        Err(ClientError::Http { status: 404, .. }) => None,
         Err(e) => {
-            warn!(url, error = %e, "remuxdb: probe fetch error");
+            warn!(error = %e, "remuxdb: probe fetch failed");
             None
         }
     }
