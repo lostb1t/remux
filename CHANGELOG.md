@@ -1,3 +1,20 @@
+# [0.16.0](https://github.com/lostb1t/remux/compare/v0.15.0...v0.16.0) (2026-07-21)
+
+
+### Bug Fixes
+
+* preserve recently aired episodes in release filter ([#121](https://github.com/lostb1t/remux/issues/121)) ([8aa96bb](https://github.com/lostb1t/remux/commit/8aa96bbbb853109ccdd17292113bd40950e657f6))
+* **users:** add ON DELETE CASCADE to jellyfin_display_prefs ([b656851](https://github.com/lostb1t/remux/commit/b656851b1a85c652f715d590aa7c4dbef4cc3392))
+* **users:** pre-delete display prefs and devices before user deletion ([1a55cbd](https://github.com/lostb1t/remux/commit/1a55cbd912ab659450a8abe90467841aaf5ee550))
+
+
+### Features
+
+* **addons:** per-user addon scoping with default list override (closes [#108](https://github.com/lostb1t/remux/issues/108)) ([#118](https://github.com/lostb1t/remux/issues/118)) ([93a4724](https://github.com/lostb1t/remux/commit/93a4724e010acd38329c22ed3c0ba1bdf5ad0a6c))
+* **dashboard:** add playlists as a collection media kind (closes [#115](https://github.com/lostb1t/remux/issues/115)) ([4279f33](https://github.com/lostb1t/remux/commit/4279f3313d7fd785dc25e89e8c014005420bf63d))
+* **dashboard:** simplify RemuxDB settings page, remove token field, add description ([18f9e52](https://github.com/lostb1t/remux/commit/18f9e523ef0a43e22a76c23b6a5a759adebf1c5b))
+* **tasks:** add purge category with per-type purge tasks (closes [#113](https://github.com/lostb1t/remux/issues/113)) ([b6e903d](https://github.com/lostb1t/remux/commit/b6e903dcb3045a428a37732908211116fc92f1bf))
+
 # [0.15.0](https://github.com/lostb1t/remux/compare/v0.14.0...v0.15.0) (2026-07-16)
 
 
