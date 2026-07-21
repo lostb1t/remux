@@ -183,6 +183,16 @@ pub struct StreamInfo {
     /// Usenet indexer name (e.g. "NZBgeek"). Used for RemuxDB matching.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usenet_indexer: Option<String>,
+    /// Raw NZB URL (from AIOStreams streamData). Used for RemuxDB matching via indexer_guid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nzb_url: Option<String>,
+    /// Torrent info-hash for the source release (from AIOStreams streamData).
+    /// Stored independently of the descriptor so debrid Http streams can match by hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torrent_info_hash: Option<String>,
+    /// File index within the torrent (from AIOStreams streamData).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torrent_file_idx: Option<i32>,
     /// Pre-probed codec/bitrate metadata from the addon.
     /// Extracted into `db::Media.probe_data` on conversion; not persisted here.
     #[serde(default, skip_serializing_if = "Option::is_none")]

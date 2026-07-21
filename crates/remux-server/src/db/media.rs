@@ -5167,6 +5167,9 @@ impl From<sdks::stremio::Stream> for Media {
             catchup_days: None,
             usenet_guid: None,
             usenet_indexer: None,
+            nzb_url: None,
+            torrent_info_hash: None,
+            torrent_file_idx: None,
         });
 
         // Merge name + description: AIOStreams puts the provider/addon name in `name`

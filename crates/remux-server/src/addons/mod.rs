@@ -2180,14 +2180,22 @@ fn match_probe_version<'a>(
         .stream_info
         .as_ref()?;
 
-    // Torrent: match by info_hash + file_idx against version sources
-    if let StreamDescriptor::Torrent {
-        ref info_hash,
-        file_idx,
-        ..
-    } = si.descriptor
-    {
-        return versions
+    // Torrent: match by info_hash + file_idx. Covers both raw Torrent descriptors and
+    // debrid Http streams where the hash comes from AIOStreams streamData.
+    let (hash, hash_file_idx) = match si.descriptor {
+        StreamDescriptor::Torrent {
+            ref info_hash,
+            file_idx,
+            ..
+        } => (Some(info_hash.as_str()), file_idx.map(|i| i as i32)),
+        _ => (
+            si.torrent_info_hash
+                .as_deref(),
+            si.torrent_file_idx,
+        ),
+    };
+    if let Some(hash) = hash {
+        if let Some(v) = versions
             .iter()
             .find(|v| {
                 v.sources
@@ -2195,10 +2203,13 @@ fn match_probe_version<'a>(
                     .any(|s| {
                         s.torrent_info_hash
                             .as_deref()
-                            == Some(info_hash.as_str())
-                            && s.torrent_file_idx == file_idx.map(|i| i as i32)
+                            == Some(hash)
+                            && s.torrent_file_idx == hash_file_idx
                     })
-            });
+            })
+        {
+            return Some(v);
+        }
     }
 
     // Usenet: match by indexer_guid (+ indexer name when available) against version sources

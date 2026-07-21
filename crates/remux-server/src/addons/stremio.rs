@@ -1326,8 +1326,7 @@ async fn stremio_streams(
             let descriptor = if s.is_torrent() {
                 crate::stream::StreamDescriptor::Torrent {
                     info_hash: s
-                        .info_hash
-                        .clone()?
+                        .info_hash()?
                         .to_ascii_lowercase(),
                     file_hint: s
                         .filename
@@ -1373,8 +1372,20 @@ async fn stremio_streams(
                 (None, Some(d)) => d.to_string(),
                 _ => "Stream".to_string(),
             };
-            let usenet_guid = s
-                .nzb_url
+            let sd = s
+                .stream_data
+                .as_ref();
+            // Prefer nzb_url from streamData (AIOStreams), fall back to top-level field
+            let nzb_url = sd
+                .and_then(|d| {
+                    d.nzb_url
+                        .clone()
+                })
+                .or_else(|| {
+                    s.nzb_url
+                        .clone()
+                });
+            let usenet_guid = nzb_url
                 .as_deref()
                 .and_then(|u| {
                     url::Url::parse(u)
@@ -1382,6 +1393,23 @@ async fn stremio_streams(
                         .query_pairs()
                         .find_map(|(k, v)| (k == "id").then(|| v.into_owned()))
                 });
+            let torrent_info_hash = sd
+                .and_then(|d| {
+                    d.torrent
+                        .as_ref()
+                })
+                .and_then(|t| {
+                    t.info_hash
+                        .as_deref()
+                })
+                .map(|h| h.to_ascii_lowercase());
+            let torrent_file_idx = sd
+                .and_then(|d| {
+                    d.torrent
+                        .as_ref()
+                })
+                .and_then(|t| t.file_idx)
+                .filter(|&i| i >= 0);
             Some(crate::stream::StreamInfo {
                 descriptor,
                 name: Some(label),
@@ -1396,19 +1424,36 @@ async fn stremio_streams(
                             .clone()
                     })
                     .or_else(|| {
+                        sd.and_then(|d| {
+                            d.filename
+                                .clone()
+                        })
+                    })
+                    .or_else(|| {
                         s.filename
                             .clone()
                     }),
                 seeders: s.seeders,
-                size: s.size,
+                size: sd
+                    .and_then(|d| d.size)
+                    .or(s.size),
                 duration: s.duration,
                 subtitles: s
                     .subtitles
                     .clone(),
                 usenet_guid,
-                usenet_indexer: s
-                    .indexer
-                    .clone(),
+                usenet_indexer: sd
+                    .and_then(|d| {
+                        d.indexer
+                            .clone()
+                    })
+                    .or_else(|| {
+                        s.indexer
+                            .clone()
+                    }),
+                nzb_url,
+                torrent_info_hash,
+                torrent_file_idx,
                 probe_data: None,
                 ..Default::default()
             })

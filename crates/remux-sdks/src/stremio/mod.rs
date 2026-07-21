@@ -769,6 +769,15 @@ impl Endpoint for StreamEndpoint {
     fn path(&self) -> String {
         format!("/stream/{}/{}.json", self.kind, self.id)
     }
+
+    fn headers(&self) -> http::HeaderMap {
+        let mut map = http::HeaderMap::new();
+        map.insert(
+            http::header::USER_AGENT,
+            http::HeaderValue::from_static("AIOStreams/1.0"),
+        );
+        map
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -822,6 +831,7 @@ pub struct Stream {
     pub name: Option<String>,
     pub description: Option<String>,
     pub behavior_hints: Option<BehaviorHints>,
+    pub stream_data: Option<StreamData>,
 }
 
 #[skip_serializing_none]
@@ -834,7 +844,48 @@ pub struct BehaviorHints {
     pub video_size: Option<i64>,
 }
 
+/// AIOStreams extension: torrent sub-object within `streamData`.
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamDataTorrent {
+    pub info_hash: Option<String>,
+    pub seeders: Option<i64>,
+    pub file_idx: Option<i32>,
+    pub private: Option<bool>,
+}
+
+/// AIOStreams extension: service sub-object within `streamData`.
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamDataService {
+    pub id: Option<String>,
+    pub cached: Option<bool>,
+}
+
+/// AIOStreams extension: rich source metadata returned when `User-Agent: AIOStreams/...` is sent.
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamData {
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+    pub indexer: Option<String>,
+    pub size: Option<i64>,
+    pub nzb_url: Option<String>,
+    pub torrent: Option<StreamDataTorrent>,
+    pub addon: Option<String>,
+    pub filename: Option<String>,
+    pub service: Option<StreamDataService>,
+}
+
 impl Stream {
+    pub fn info_hash(&self) -> Option<&str> {
+        self.info_hash
+            .as_deref()
+    }
+
     pub fn is_torrent(&self) -> bool {
         self.info_hash
             .is_some()
@@ -871,13 +922,13 @@ impl Stream {
     }
 
     pub fn id(&self) -> String {
-        self.info_hash
-            .clone()
+        self.info_hash()
             .unwrap()
+            .to_string()
     }
 
     pub fn get_guid(&self) -> Uuid {
-        let key = if let Some(hash) = &self.info_hash {
+        let key = if let Some(hash) = self.info_hash() {
             hash.to_string()
         } else if let Some(filename) = &self.filename {
             format!(
