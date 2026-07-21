@@ -14,7 +14,7 @@ pub use card::Card;
 pub use filters::{FilterRuleEditor, TagChipInput};
 pub use form::{FormActions, FormGroup, ToggleRow};
 pub use metrics::MetricsCard;
-pub use modal::Modal;
+pub use modal::{ConfirmDialog, Modal};
 pub use server_info::{MediaStatsCard, ServerInfoCard};
 pub use sessions::SessionsCard;
 pub use states::{EmptyState, ErrorAlert, LoadingText, SuccessAlert};
