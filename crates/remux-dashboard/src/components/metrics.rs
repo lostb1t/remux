@@ -66,8 +66,7 @@ pub fn MetricsCard(app_state: AppState) -> Element {
                         span { class: "kv-label", "Daily coverage" }
                         span {
                             class: "kv-value",
-                            style: if s.daily_days < s.daily_window { "color:var(--warning, #f5a623)" } else { "" },
-                            "{s.daily_days} / {s.daily_window} days"
+                            "{s.daily_days} days"
                         }
                     }
                     div { class: "kv-row",

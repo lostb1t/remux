@@ -548,7 +548,6 @@ async fn streams_metadata(state: &AppState, id: Uuid) -> AnyResult<StreamsRespon
 #[serde(rename_all = "PascalCase")]
 pub struct MetricsStatusResponse {
     pub daily_days: i64,
-    pub daily_window: i64,
     pub last_updated_days_ago: Option<i64>,
     pub item_count: i64,
 }
@@ -563,7 +562,7 @@ pub async fn remux_metrics_status(
                 CAST(julianday('now') - julianday(MAX(period_key)) AS INTEGER), \
                 COUNT(DISTINCT media_id) \
          FROM popularity_agg \
-         WHERE period = 'daily' AND period_key >= date('now', '-14 days')",
+         WHERE period = 'daily'",
     )
     .fetch_one(
         &state
@@ -574,7 +573,6 @@ pub async fn remux_metrics_status(
 
     Ok(Json(MetricsStatusResponse {
         daily_days: row.0,
-        daily_window: 14,
         last_updated_days_ago: row.1,
         item_count: row.2,
     }))

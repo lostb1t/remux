@@ -4878,7 +4878,6 @@ impl Endpoint for GetItemCounts {
 #[dto]
 pub struct MetricsStatus {
     pub daily_days: i64,
-    pub daily_window: i64,
     pub last_updated_days_ago: Option<i64>,
     pub item_count: i64,
 }
