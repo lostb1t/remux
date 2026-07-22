@@ -6,50 +6,41 @@ use crate::{
 };
 use http::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
+use serde_with::skip_serializing_none;
 use tracing::{debug, warn};
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, Serialize)]
 pub struct ExternalIds {
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub imdb_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tmdb_id: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tvdb_id: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub kitsu_id: Option<i64>,
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, Serialize)]
 pub struct NzbSubmission {
     pub indexer: String,
     pub indexer_guid: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, Serialize)]
 pub struct MediaInfoPayload {
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
     pub kind: String,
     pub filename: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub torrent_info_hash: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub torrent_file_idx: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub nzb: Option<NzbSubmission>,
     pub container: String,
     pub size: i64,
     pub duration: f64,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub bitrate: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub season: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub episode: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub external_ids: Option<ExternalIds>,
     pub tracks: Vec<TrackPayload>,
 }
@@ -62,130 +53,80 @@ pub enum TrackPayload {
     Subtitle(SubtitleTrackPayload),
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, Serialize)]
 pub struct VideoTrackPayload {
     pub idx: i32,
     pub codec: String,
     pub width: i32,
     pub height: i32,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub fps: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub avg_fps: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub bit_rate: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub bit_depth: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub pixel_format: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub codec_tag: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub color_primaries: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub color_range: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub color_space: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub color_transfer: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub aspect_ratio: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub rotation: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub is_default: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub is_forced: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub is_external: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub is_hearing_impaired: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub is_interlaced: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub is_anamorphic: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub hdr10_plus_present: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub dv_profile: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub dv_level: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub dv_version_major: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub dv_version_minor: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub dv_bl_signal_compat_id: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub dv_rpu_present: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub dv_bl_present: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub dv_el_present: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub level: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub ref_frames: Option<i32>,
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, Serialize)]
 pub struct AudioTrackPayload {
     pub idx: i32,
     pub codec: String,
     pub channels: i32,
     pub sample_rate: i32,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub bit_rate: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub bit_depth: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_layout: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub codec_tag: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub is_default: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub is_forced: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub is_external: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub is_hearing_impaired: Option<bool>,
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, Serialize)]
 pub struct SubtitleTrackPayload {
     pub idx: i32,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub codec: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub is_default: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub is_forced: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub is_external: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub is_hearing_impaired: Option<bool>,
 }
 
@@ -386,6 +327,178 @@ pub async fn fetch_probe(
         Err(e) => {
             warn!(error = %e, "remuxdb: probe fetch failed");
             None
+        }
+    }
+}
+
+impl TryFrom<&MediaStream> for TrackPayload {
+    type Error = ();
+
+    fn try_from(ms: &MediaStream) -> Result<Self, ()> {
+        match ms
+            .type_
+            .ok_or(())?
+        {
+            MediaStreamType::Video => Ok(TrackPayload::Video(VideoTrackPayload {
+                idx: ms.index as i32,
+                codec: ms
+                    .codec
+                    .clone()
+                    .unwrap_or_default(),
+                width: ms
+                    .width
+                    .unwrap_or(0) as i32,
+                height: ms
+                    .height
+                    .unwrap_or(0) as i32,
+                fps: ms
+                    .real_frame_rate
+                    .map(|f| f as f64),
+                avg_fps: ms
+                    .average_frame_rate
+                    .map(|f| f as f64),
+                bit_rate: ms.bit_rate,
+                bit_depth: ms
+                    .bit_depth
+                    .map(|d| d as i32),
+                pixel_format: ms
+                    .pixel_format
+                    .clone(),
+                profile: ms
+                    .profile
+                    .clone(),
+                codec_tag: ms
+                    .codec_tag
+                    .clone(),
+                comment: ms
+                    .comment
+                    .clone(),
+                title: ms
+                    .title
+                    .clone(),
+                language: ms
+                    .language
+                    .clone(),
+                color_primaries: ms
+                    .color_primaries
+                    .clone(),
+                color_range: ms
+                    .color_range
+                    .clone(),
+                color_space: ms
+                    .color_space
+                    .clone(),
+                color_transfer: ms
+                    .color_transfer
+                    .clone(),
+                aspect_ratio: ms
+                    .aspect_ratio
+                    .clone(),
+                rotation: ms
+                    .rotation
+                    .map(|r| r as i32),
+                is_default: ms.is_default,
+                is_forced: Some(ms.is_forced),
+                is_external: Some(ms.is_external),
+                is_hearing_impaired: Some(ms.is_hearing_impaired),
+                is_interlaced: Some(ms.is_interlaced),
+                is_anamorphic: ms.is_anamorphic,
+                hdr10_plus_present: Some(matches!(
+                    ms.video_range_type,
+                    Some(VideoRangeType::Hdr10Plus)
+                )),
+                dv_profile: ms
+                    .dv_profile
+                    .map(|v| v as i32),
+                dv_level: ms
+                    .dv_level
+                    .map(|v| v as i32),
+                dv_version_major: ms
+                    .dv_version_major
+                    .map(|v| v as i32),
+                dv_version_minor: ms
+                    .dv_version_minor
+                    .map(|v| v as i32),
+                dv_bl_signal_compat_id: ms
+                    .dv_bl_signal_compatibility_id
+                    .map(|v| v as i32),
+                dv_rpu_present: ms
+                    .rpu_present_flag
+                    .map(|v| v != 0),
+                dv_bl_present: ms
+                    .bl_present_flag
+                    .map(|v| v != 0),
+                dv_el_present: ms
+                    .el_present_flag
+                    .map(|v| v != 0),
+                level: ms
+                    .level
+                    .map(|v| v as i32),
+                ref_frames: ms
+                    .ref_frames
+                    .map(|v| v as i32),
+            })),
+            MediaStreamType::Audio => Ok(TrackPayload::Audio(AudioTrackPayload {
+                idx: ms.index as i32,
+                codec: ms
+                    .codec
+                    .clone()
+                    .unwrap_or_default(),
+                channels: ms
+                    .channels
+                    .unwrap_or(0) as i32,
+                sample_rate: ms
+                    .sample_rate
+                    .unwrap_or(0) as i32,
+                bit_rate: ms.bit_rate,
+                bit_depth: ms
+                    .bit_depth
+                    .map(|d| d as i32),
+                channel_layout: ms
+                    .channel_layout
+                    .clone(),
+                profile: ms
+                    .profile
+                    .clone(),
+                codec_tag: ms
+                    .codec_tag
+                    .clone(),
+                comment: ms
+                    .comment
+                    .clone(),
+                title: ms
+                    .title
+                    .clone(),
+                language: ms
+                    .language
+                    .clone(),
+                is_default: ms.is_default,
+                is_forced: Some(ms.is_forced),
+                is_external: Some(ms.is_external),
+                is_hearing_impaired: Some(ms.is_hearing_impaired),
+            })),
+            MediaStreamType::Subtitle => {
+                Ok(TrackPayload::Subtitle(SubtitleTrackPayload {
+                    idx: ms.index as i32,
+                    codec: ms
+                        .codec
+                        .clone(),
+                    title: ms
+                        .title
+                        .clone(),
+                    language: ms
+                        .language
+                        .clone(),
+                    comment: ms
+                        .comment
+                        .clone(),
+                    is_default: ms.is_default,
+                    is_forced: Some(ms.is_forced),
+                    is_external: Some(ms.is_external),
+                    is_hearing_impaired: Some(ms.is_hearing_impaired),
+                }))
+            }
+            _ => Err(()),
         }
     }
 }
