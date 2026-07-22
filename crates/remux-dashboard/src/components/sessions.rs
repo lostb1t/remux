@@ -1,16 +1,20 @@
 use crate::{
     components::{Card, ConfirmDialog, EmptyState, ErrorAlert, LoadingText},
-    state::{fmt_datetime, fmt_time, AppState},
+    state::{clear_credentials, fmt_datetime, fmt_time, AppState},
 };
 use dioxus::prelude::*;
-use remux_sdks::remux::{
-    ActivityLogEntry, DeleteDevice, DeleteUserDevices, DeviceInfo, GetActivityLog,
-    GetDevices, QueryResult,
+use remux_sdks::{
+    ClientError,
+    remux::{
+        ActivityLogEntry, DeleteDevice, DeleteUserDevices, DeviceInfo, GetActivityLog,
+        GetDevices, QueryResult,
+    },
 };
 use std::collections::HashMap;
 
 #[component]
 pub fn SessionsCard(app_state: AppState) -> Element {
+    let mut logged_in = use_context::<Signal<bool>>();
     let mut devices: Signal<Vec<DeviceInfo>> = use_signal(Vec::new);
     let mut loading = use_signal(|| true);
     let mut error = use_signal(|| Option::<String>::None);
@@ -30,6 +34,10 @@ pub fn SessionsCard(app_state: AppState) -> Element {
                 Ok(QueryResult { items, .. }) => {
                     devices.set(items);
                     error.set(None);
+                }
+                Err(ClientError::Unauthorized) => {
+                    clear_credentials();
+                    logged_in.set(false);
                 }
                 Err(e) => error.set(Some(format!("Failed to load devices: {e}"))),
             }
