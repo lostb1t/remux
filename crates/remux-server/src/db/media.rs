@@ -2510,17 +2510,11 @@ impl Media {
                 records_qb.push_bind(uid);
                 records_qb.push(" AND media.id = dp.media_id AND 1=1");
             } else if let Some(period) = pop_period {
-                // Drive from popularity_agg so SQLite walks idx_pop_agg_covering
-                // (period, latest, avg DESC, media_id) in ORDER BY order and stops
-                // at LIMIT without sorting the full candidate set. Items with no
-                // popularity score are excluded (INNER JOIN), which is correct for
-                // a popularity-sorted listing — they'd never appear in a small LIMIT
-                // result anyway.
                 pop_joined = true;
                 records_qb = sqlx::QueryBuilder::new(format!(
-                    "SELECT media.* FROM popularity_agg pop \
-                     JOIN media ON media.id = pop.media_id \
-                     WHERE pop.period = '{period}' AND pop.latest = 1 AND 1=1"
+                    "SELECT media.* FROM media \
+                     LEFT JOIN popularity_agg pop ON pop.media_id = media.id AND pop.period = '{period}' AND pop.latest = 1 \
+                     WHERE 1=1"
                 ));
             } else {
                 records_qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
