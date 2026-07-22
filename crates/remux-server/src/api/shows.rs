@@ -1,10 +1,6 @@
 use std::collections::HashMap;
 
-use axum::{
-    Json,
-    extract::{Path, State},
-    response::IntoResponse,
-};
+use axum::{Json, extract::State, response::IntoResponse};
 use axum_extra::extract::Query;
 use remux_macros::{get, query};
 use uuid::Uuid;
@@ -12,6 +8,7 @@ use uuid::Uuid;
 use crate::{
     AppState, OptionExt, api, db,
     db::{auth, media::push_release_date_filter},
+    services::resolve::ResolvedItem,
 };
 use axum_anyhow::ApiResult as Result;
 
@@ -37,10 +34,10 @@ pub fn livetv_view_item() -> api::BaseItemDto {
 pub async fn shows_seasons(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Path(id): Path<Uuid>,
+    ResolvedItem(item): ResolvedItem,
     Query(mut q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    q.parent_id = Some(id);
+    q.parent_id = Some(item.id);
     q.include_item_types = Some(vec![api::MediaType::Season]);
     if q.sort_by
         .is_none()
@@ -68,7 +65,7 @@ pub async fn shows_seasons(
 pub async fn shows_episodes(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Path(id): Path<Uuid>,
+    ResolvedItem(item): ResolvedItem,
     Query(mut q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
     // Some Jellyfin clients accidentally pass the season ID as the show ID in the path.
@@ -77,7 +74,7 @@ pub async fn shows_episodes(
     if q.season_id
         .is_none()
     {
-        q.series_id = Some(id);
+        q.series_id = Some(item.id);
     }
     q.include_item_types = Some(vec![api::MediaType::Episode]);
     if q.sort_by
