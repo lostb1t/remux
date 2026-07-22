@@ -63,6 +63,26 @@ pub async fn system_ping(State(state): State<AppState>) -> Result<impl IntoRespo
     Ok(Json(json!("Remux Server")))
 }
 
+#[get("/web/manifest.json")]
+pub async fn web_manifest() -> impl IntoResponse {
+    Json(json!({
+        "name": "Jellyfin",
+        "description": "The Free Software Media System",
+        "lang": "en-US",
+        "short_name": "Jellyfin",
+        "start_url": "index.html#/home",
+        "theme_color": "#101010",
+        "background_color": "#101010",
+        "display": "standalone",
+        "icons": [
+            { "sizes": "72x72",   "src": "favicons/touchicon72.png",  "type": "image/png" },
+            { "sizes": "114x114", "src": "favicons/touchicon114.png", "type": "image/png" },
+            { "sizes": "144x144", "src": "favicons/touchicon144.png", "type": "image/png" },
+            { "sizes": "512x512", "src": "favicons/touchicon512.png", "type": "image/png" }
+        ]
+    }))
+}
+
 /// Get storage information
 #[get("/system/info/storage")]
 pub async fn system_info_storage(
@@ -736,6 +756,24 @@ mod test {
     use axum_test::expect_json;
     use http::header::HeaderValue;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn web_manifest_test() {
+        let (server, _ctx) = new_test_server()
+            .await
+            .unwrap();
+
+        let resp = server
+            .get("/web/manifest.json")
+            .await;
+
+        resp.assert_status_ok();
+        resp.assert_json_contains(&json!({
+            "name": "Jellyfin",
+            "short_name": "Jellyfin",
+            "display": "standalone",
+        }));
+    }
 
     #[tokio::test]
     async fn test_system_info_public() {
