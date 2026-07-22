@@ -2313,11 +2313,22 @@ impl AddonService {
             else {
                 return None;
             };
-            let Some(imdb_id) = media
-                .external_ids
-                .imdb
-                .as_deref()
-            else {
+            let imdb_id = if media.kind == db::MediaKind::Episode {
+                media
+                    .external_ids
+                    .series_imdb
+                    .as_deref()
+                    .or(media
+                        .external_ids
+                        .imdb
+                        .as_deref())
+            } else {
+                media
+                    .external_ids
+                    .imdb
+                    .as_deref()
+            };
+            let Some(imdb_id) = imdb_id else {
                 return None;
             };
             let cfg = db::Settings::get_config_or_default(&ctx.db).await;
