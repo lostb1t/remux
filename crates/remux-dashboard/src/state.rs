@@ -7,7 +7,7 @@ use uuid::Uuid;
 pub const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 pub const THEME_CSS: Asset = asset!("/assets/theme.css");
 
-pub const CREDENTIALS_KEY: &str = "jellyfin_credentials";
+pub const CREDENTIALS_KEY: &str = "remux_credentials";
 pub const DEVICE_ID_KEY: &str = "remux_device_id";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
