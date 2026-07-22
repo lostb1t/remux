@@ -32,8 +32,11 @@ use libc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::{AppContext, api, common::ProgressReporter, db, sdks};
+use crate::{
+    AppContext, api, common::ProgressReporter, db, sdks, stream::StreamDescriptor,
+};
 pub use addon::{Addon, CatalogState, set_user_addon_override, user_addon_override};
+use remux_sdks::remuxdb;
 
 pub use remux_sdks::remux::AddonPresetRef;
 use remux_sdks::remux::{LyricDto, MediaSegments, RemoteLyricInfoDto};
@@ -2158,7 +2161,109 @@ impl AddonService {
             }
         }
     }
+}
 
+fn strip_video_ext(name: &str) -> &str {
+    if let Some((stem, ext)) = name.rsplit_once('.') {
+        if opendal::VIDEO_EXTENSIONS.contains(&ext) {
+            return stem;
+        }
+    }
+    name
+}
+
+fn match_probe_version<'a>(
+    versions: &'a [remuxdb::MediaInfo],
+    stream: &db::Media,
+) -> Option<&'a remuxdb::MediaInfo> {
+    let si = stream
+        .stream_info
+        .as_ref()?;
+
+    // Torrent: match by info_hash + file_idx. Covers both raw Torrent descriptors and
+    // debrid Http streams where the hash comes from AIOStreams streamData.
+    let (hash, hash_file_idx) = match si.descriptor {
+        StreamDescriptor::Torrent {
+            ref info_hash,
+            file_idx,
+            ..
+        } => (Some(info_hash.as_str()), file_idx.map(|i| i as i32)),
+        _ => (
+            si.torrent_info_hash
+                .as_deref(),
+            si.torrent_file_idx,
+        ),
+    };
+    if let Some(hash) = hash {
+        if let Some(v) = versions
+            .iter()
+            .find(|v| {
+                v.sources
+                    .iter()
+                    .any(|s| {
+                        s.torrent_info_hash
+                            .as_deref()
+                            == Some(hash)
+                            && s.torrent_file_idx == hash_file_idx
+                    })
+            })
+        {
+            return Some(v);
+        }
+    }
+
+    // Usenet: match by indexer_guid (+ indexer name when available) against version sources
+    if let Some(ref guid) = si.usenet_guid {
+        if let Some(v) = versions
+            .iter()
+            .find(|v| {
+                v.sources
+                    .iter()
+                    .any(|s| {
+                        s.indexer_guid
+                            .as_deref()
+                            == Some(guid.as_str())
+                            && (si
+                                .usenet_indexer
+                                .is_none()
+                                || s.indexer == si.usenet_indexer)
+                    })
+            })
+        {
+            return Some(v);
+        }
+    }
+
+    // HTTP: match by exact file size
+    if let Some(size) = si.size {
+        if let Some(v) = versions
+            .iter()
+            .find(|v| v.size == Some(size))
+        {
+            return Some(v);
+        }
+    }
+
+    // Fallback: match by filename (with and without video extension) against version sources
+    let filename = si
+        .filename
+        .as_deref()?;
+    let stem = strip_video_ext(filename);
+    versions
+        .iter()
+        .find(|v| {
+            v.sources
+                .iter()
+                .any(|s| {
+                    s.filename
+                        .as_deref()
+                        .map(|sf| sf == filename || strip_video_ext(sf) == stem)
+                        .unwrap_or(false)
+                })
+        })
+}
+
+impl AddonService {
     #[tracing::instrument(skip_all, fields(title = %media.title, kind = %media.kind))]
     pub async fn refresh_streams(
         &self,
@@ -2200,9 +2305,54 @@ impl AddonService {
         }
 
         let instant = Instant::now();
-        let raw = self
-            .get_streams(media, ctx, user_id)
-            .await?;
+        let probe_versions_fut = async {
+            let Some(url) = ctx
+                .config
+                .remuxdb_url
+                .clone()
+            else {
+                return None;
+            };
+            let Some(imdb_id) = media
+                .external_ids
+                .imdb
+                .as_deref()
+            else {
+                return None;
+            };
+            let cfg = db::Settings::get_config_or_default(&ctx.db).await;
+            if !cfg
+                .remuxdb_enabled
+                .unwrap_or(true)
+            {
+                return None;
+            }
+            let (season, episode) = if media.kind == db::MediaKind::Episode {
+                (
+                    media
+                        .parent_idx
+                        .map(|v| v as i32),
+                    media
+                        .idx
+                        .map(|v| v as i32),
+                )
+            } else {
+                (None, None)
+            };
+            remuxdb::fetch_probe(
+                &url,
+                cfg.remuxdb_token
+                    .as_deref(),
+                Some(crate::common::server_id().as_str()),
+                imdb_id,
+                season,
+                episode,
+            )
+            .await
+        };
+        let (raw, probe_versions) =
+            tokio::join!(self.get_streams(media, ctx, user_id), probe_versions_fut);
+        let raw = raw?;
         debug!(raw_count = raw.len(), "raw streams fetched");
 
         // Dedup by descriptor content; order preserves addon priority (DB load order).
@@ -2241,7 +2391,7 @@ impl AddonService {
             .execute(&ctx.db)
             .await?;
         media.streams_refreshed_at = Some(now);
-        let sources: Vec<db::Media> = deduped
+        let mut sources: Vec<db::Media> = deduped
             .into_iter()
             .enumerate()
             .map(|(idx, mut s)| {
@@ -2258,6 +2408,22 @@ impl AddonService {
                 s
             })
             .collect();
+
+        if let Some(ref versions) = probe_versions {
+            for source in &mut sources {
+                if source
+                    .probe_data
+                    .is_some()
+                {
+                    continue;
+                }
+                if let Some(version) = match_probe_version(versions, source) {
+                    source.probe_data = Some(version.into());
+                    debug!(id = %source.id, "remuxdb: probe data applied from version");
+                }
+            }
+        }
+
         db::Media::upsert(&ctx.db, &sources).await?;
 
         // delete stale items
