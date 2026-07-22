@@ -2509,13 +2509,18 @@ impl Media {
                 );
                 records_qb.push_bind(uid);
                 records_qb.push(" AND media.id = dp.media_id AND 1=1");
-            } else if let Some(period) = pop_period {
+            } else if pop_period.is_some() {
                 pop_joined = true;
-                records_qb = sqlx::QueryBuilder::new(format!(
-                    "SELECT media.* FROM media \
-                     LEFT JOIN popularity_agg pop ON pop.media_id = media.id AND pop.period = '{period}' AND pop.latest = 1 \
-                     WHERE 1=1"
-                ));
+                // Build a CTE over the media table so the WHERE conditions loop
+                // below can fill it once. After the loop we close the CTE and
+                // wrap it in a UNION ALL: arm 1 drives from idx_pop_agg_covering
+                // (scored items in avg-DESC order via the index walk), arm 2
+                // streams unscored items via NOT EXISTS. SQLite evaluates UNION ALL
+                // arms as coroutines — no global sort, LIMIT stops after arm 1 if
+                // there are enough scored items.
+                records_qb = sqlx::QueryBuilder::new(
+                    "WITH filtered AS (SELECT media.* FROM media WHERE 1=1",
+                );
             } else {
                 records_qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
             }
@@ -2990,6 +2995,32 @@ impl Media {
                 }
             }
         }
+
+        // Close the filtered CTE and build the UNION ALL structure.
+        // Arm 1 joins popularity_agg → filtered driving from idx_pop_agg_covering,
+        // producing scored items in avg-DESC order without a sort step.
+        // Arm 2 streams unscored items after arm 1 is exhausted.
+        if pop_joined {
+            let period = pop_period.unwrap();
+            // CROSS JOIN forces popularity_agg as the outer loop (SQLite docs:
+            // "CROSS JOIN prevents the optimizer from rearranging table order").
+            // This guarantees SQLite walks idx_pop_agg_covering in avg-DESC order
+            // and probes the filtered CTE by PK, producing scored items in score
+            // order without a sort step.
+            records_qb.push(format!(
+                ") SELECT m.* FROM (\
+                 SELECT f.* FROM popularity_agg pop CROSS JOIN filtered f \
+                 WHERE f.id = pop.media_id AND pop.period = '{period}' AND pop.latest = 1 \
+                 UNION ALL \
+                 SELECT f.* FROM filtered f \
+                 WHERE NOT EXISTS (\
+                     SELECT 1 FROM popularity_agg p \
+                     WHERE p.media_id = f.id AND p.period = '{period}' AND p.latest = 1\
+                 )\
+                ) m"
+            ));
+        }
+
         // Apply ORDER BY driven by the sort_by field, with per-kind fallbacks.
         let is_channel_query = filter
             .kind
@@ -3161,8 +3192,13 @@ impl Media {
                     col
                 })
                 .collect();
-            records_qb.push(" ORDER BY ");
-            records_qb.push(order_clauses.join(", "));
+            // When pop_joined, ordering is handled inside the UNION ALL arms —
+            // arm 1 walks idx_pop_agg_covering in avg-DESC order, arm 2 follows.
+            // Pushing ORDER BY here would force a global sort over the whole result.
+            if !pop_joined {
+                records_qb.push(" ORDER BY ");
+                records_qb.push(order_clauses.join(", "));
+            }
         } else if is_manual_collection {
             records_qb.push(" ORDER BY mr.weight ASC");
         } else if filter.sort_by_channel_order {
