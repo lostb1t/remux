@@ -663,15 +663,15 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                         }
 
                         div { class: "field",
-                            label { class: "field-label", "Audio Loudness Normalisation" }
-                            div { class: "field-hint", "Apply EBU R128 loudness normalisation (loudnorm=I=-14:TP=-1:LRA=11) when transcoding audio. Has no effect when audio is stream-copied." }
+                            label { class: "field-label", "Audio Loudness Normalization" }
+                            div { class: "field-hint", "Apply EBU R128 loudness normalization (loudnorm=I=-14:TP=-1:LRA=11) when transcoding audio. Has no effect when audio is stream-copied." }
                             label { style: "display:flex;align-items:center;gap:8px",
                                 input {
                                     r#type: "checkbox",
                                     checked: *normalize_audio_loudness.read(),
                                     onchange: move |e| normalize_audio_loudness.set(e.checked()),
                                 }
-                                "Normalise audio loudness to -14 LUFS"
+                                "Normalize audio loudness to -14 LUFS"
                             }
                         }
 
