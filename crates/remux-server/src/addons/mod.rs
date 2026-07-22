@@ -963,6 +963,46 @@ fn user_scoped(runtime: &AddonRuntime, override_ids: Option<&[Uuid]>) -> bool {
     }
 }
 
+/// Maps a manifest-declared Stremio type to the `MediaKind` it represents,
+/// returning `None` for custom types with no recognized equivalent (e.g.
+/// fankai's "anime") instead of silently collapsing them to `Movie`.
+///
+/// `sdks::remux::MediaKind`'s own `From<stremio::MediaType>` impl defaults
+/// unrecognized strings to `Movie` — fine for content-item conversion, but
+/// wrong here: it would make `supports_type` believe a series/anime-only addon
+/// serves only movies, excluding it from `addons_for::<dyn StreamAddon>` for
+/// every Series/Season/Episode lookup. Leaving the type out of
+/// `supported_types` instead makes `supports_type` skip the manifest-types
+/// gate entirely for that addon (see the `mt.is_empty()` check), which is the
+/// correct behavior when the addon's declared type can't be mapped.
+fn recognized_manifest_media_kind(
+    t: sdks::stremio::MediaType,
+) -> Option<sdks::remux::MediaKind> {
+    use sdks::remux::MediaKind as MK;
+    use sdks::stremio::MediaType as MT;
+    Some(match t {
+        MT::Movie => MK::Movie,
+        MT::Series => MK::Series,
+        MT::Tv | MT::Channel => MK::TvChannel,
+        MT::Album => MK::Album,
+        MT::Artist => MK::Artist,
+        MT::Track => MK::Track,
+        MT::Events => MK::TvProgram,
+        MT::Unknown(s) => match s.as_str() {
+            "episode" => MK::Episode,
+            "season" => MK::Season,
+            "person" => MK::Person,
+            "genre" => MK::Genre,
+            "studio" => MK::Studio,
+            "collection" => MK::Collection,
+            "folder" => MK::Folder,
+            "stream" => MK::Stream,
+            "playlist" => MK::Playlist,
+            _ => return None,
+        },
+    })
+}
+
 fn kind_in_type_list(kind: &db::MediaKind, list: &[db::MediaKind]) -> bool {
     list.contains(kind)
         || (matches!(kind, db::MediaKind::Episode | db::MediaKind::Season)
@@ -1221,7 +1261,7 @@ impl AddonService {
                                     caps.metadata
                                         .supported_types = raw_types
                                         .into_iter()
-                                        .map(Into::into)
+                                        .filter_map(recognized_manifest_media_kind)
                                         .collect();
                                 }
                             }
@@ -2928,5 +2968,31 @@ mod tests {
         };
         apply_title_format(&mut media);
         assert_eq!(media.title, "S3E4 - Tumbleton");
+    }
+
+    /// Regression test: an addon whose manifest declares only a custom type
+    /// (e.g. fankai's "anime") must not have that type collapse to `Movie` in
+    /// `supported_types` — doing so made `supports_type` believe the addon
+    /// only serves movies, excluding it from `addons_for::<dyn StreamAddon>`
+    /// for every Series/Season/Episode, so no stream addon was ever even
+    /// attempted for episodes (silent "no streams" with no error logged).
+    #[test]
+    fn recognized_manifest_media_kind_drops_unrecognized_custom_type() {
+        assert_eq!(
+            recognized_manifest_media_kind(sdks::stremio::MediaType::Unknown(
+                "anime".to_string()
+            )),
+            None
+        );
+        assert_eq!(
+            recognized_manifest_media_kind(sdks::stremio::MediaType::Series),
+            Some(sdks::remux::MediaKind::Series)
+        );
+        assert_eq!(
+            recognized_manifest_media_kind(sdks::stremio::MediaType::Unknown(
+                "episode".to_string()
+            )),
+            Some(sdks::remux::MediaKind::Episode)
+        );
     }
 }
