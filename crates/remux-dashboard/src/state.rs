@@ -156,6 +156,10 @@ pub fn get_stored_server() -> Option<StoredServer> {
         .next()
 }
 
+pub fn clear_credentials() {
+    LocalStorage::delete(CREDENTIALS_KEY);
+}
+
 pub fn store_credentials(server: StoredServer) {
     let _ = LocalStorage::set(
         CREDENTIALS_KEY,
