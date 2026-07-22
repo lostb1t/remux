@@ -602,6 +602,16 @@ struct ActivityLogQuery {
     limit: Option<i64>,
 }
 
+fn action_display_name(action: &str) -> String {
+    match action {
+        "session_revoked" => "Session revoked",
+        "all_sessions_revoked" => "All sessions revoked",
+        "password_changed" => "Password changed",
+        _ => action,
+    }
+    .to_string()
+}
+
 /// Get activity log entries
 #[get("/system/activitylog/entries")]
 pub async fn system_activity_log(
@@ -611,11 +621,29 @@ pub async fn system_activity_log(
 ) -> Result<impl IntoResponse> {
     let start_index = q.start_index.unwrap_or(0);
     let limit = q.limit.unwrap_or(50).min(200);
-    let (items, total) = db::ActivityLog::list(&state.ctx.db, start_index, limit).await?;
-    Ok(Json(json!({
-        "Items": items,
-        "TotalRecordCount": total
-    })))
+    use remux_sdks::remux::{ActivityLogEntry, ActivityLogEntryRemux, ActivityLogResult};
+    let (rows, total) = db::ActivityLog::list(&state.ctx.db, start_index, limit).await?;
+    let items: Vec<ActivityLogEntry> = rows
+        .into_iter()
+        .map(|r| ActivityLogEntry {
+            id: Some(r.id),
+            name: Some(action_display_name(&r.action)),
+            overview: r.details,
+            short_overview: None,
+            type_: Some(r.action),
+            date: Some(r.timestamp),
+            user_id: Some(r.user_id),
+            severity: Some("Information".to_string()),
+            remux: Some(ActivityLogEntryRemux {
+                user_name: Some(r.user_name),
+                target_user_id: r.target_user_id,
+                target_user_name: r.target_user_name,
+                device_id: r.device_id,
+                device_name: r.device_name,
+            }),
+        })
+        .collect();
+    Ok(Json(ActivityLogResult { items, total_record_count: total }))
 }
 
 /// Return the current UTC time (no auth required — Jellyfin calls this before login)

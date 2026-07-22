@@ -1091,22 +1091,37 @@ pub struct DeviceInfo {
     pub date_last_activity: Option<DateTime<Utc>>,
     pub icon_url: Option<String>,
     pub date_created: Option<DateTime<Utc>>,
+    pub remux: Option<DeviceInfoRemux>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeviceInfoRemux {
     pub remote_end_point: Option<String>,
     pub user_id: Option<Uuid>,
 }
 
+// Jellyfin-compatible activity log entry shape.
+// remux-specific fields (actor name, target, device) are nested under `remux`.
 #[dto]
 pub struct ActivityLogEntry {
     pub id: Option<String>,
-    pub timestamp: Option<DateTime<Utc>>,
+    pub name: Option<String>,
+    pub overview: Option<String>,
+    pub short_overview: Option<String>,
+    pub type_: Option<String>,
+    pub date: Option<DateTime<Utc>>,
     pub user_id: Option<String>,
+    pub severity: Option<String>,
+    pub remux: Option<ActivityLogEntryRemux>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ActivityLogEntryRemux {
     pub user_name: Option<String>,
-    pub action: Option<String>,
     pub target_user_id: Option<String>,
     pub target_user_name: Option<String>,
     pub device_id: Option<String>,
     pub device_name: Option<String>,
-    pub details: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -63,7 +63,9 @@ pub fn SessionsCard(app_state: AppState) -> Element {
         let mut map: HashMap<String, Vec<DeviceInfo>> = HashMap::new();
         for d in devices.read().iter() {
             let uid = d
-                .user_id
+                .remux
+                .as_ref()
+                .and_then(|r| r.user_id)
                 .map(|u| u.to_string())
                 .unwrap_or_default();
             map.entry(uid).or_default().push(d.clone());
@@ -97,6 +99,7 @@ pub fn SessionsCard(app_state: AppState) -> Element {
                                         .map(|(tok, me)| tok == me)
                                         .unwrap_or(false);
                                     let device_id_revoke = device_id.clone();
+                                    let remote_ip = device.remux.as_ref().and_then(|r| r.remote_end_point.clone());
                                     rsx! {
                                         div {
                                             class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]",
@@ -109,7 +112,7 @@ pub fn SessionsCard(app_state: AppState) -> Element {
                                                     }
                                                 }
                                                 div { class: "text-xs text-[var(--text-dim)] mt-0.5",
-                                                    if let Some(ip) = &device.remote_end_point {
+                                                    if let Some(ip) = &remote_ip {
                                                         span { "{ip}" }
                                                     }
                                                     if let Some(created) = device.date_created {
@@ -192,21 +195,21 @@ pub fn SessionsCard(app_state: AppState) -> Element {
                                     class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)]",
                                     key: "{entry.id.as_deref().unwrap_or(\"\")}",
                                     div { class: "shrink-0 px-3 py-[8px] font-mono text-xs text-[var(--text-dim)] w-40",
-                                        if let Some(ts) = entry.timestamp {
+                                        if let Some(ts) = entry.date {
                                             "{fmt_time(ts)}"
                                         }
                                     }
                                     div { class: "shrink-0 px-3 py-[8px] text-xs text-[var(--text-dim)] w-32",
-                                        "{entry.user_name.as_deref().unwrap_or(\"\")}"
+                                        "{entry.remux.as_ref().and_then(|r| r.user_name.as_deref()).unwrap_or(\"\")}"
                                     }
                                     div { class: "shrink-0 px-3 py-[8px] text-xs font-medium w-40",
-                                        {action_label(entry.action.as_deref().unwrap_or(""))}
+                                        "{entry.name.as_deref().unwrap_or(\"\")}"
                                     }
                                     div { class: "flex-1 min-w-0 px-3 py-[8px] text-xs text-[var(--text-dim)]",
-                                        if let Some(target) = &entry.target_user_name {
+                                        if let Some(target) = entry.remux.as_ref().and_then(|r| r.target_user_name.as_deref()) {
                                             "user: {target}"
                                         }
-                                        if let Some(dev) = &entry.device_name {
+                                        if let Some(dev) = entry.remux.as_ref().and_then(|r| r.device_name.as_deref()) {
                                             span { style: "margin-left:8px", "device: {dev}" }
                                         }
                                     }
@@ -270,11 +273,3 @@ pub fn SessionsCard(app_state: AppState) -> Element {
     }
 }
 
-fn action_label(action: &str) -> &'static str {
-    match action {
-        "session_revoked" => "Session revoked",
-        "all_sessions_revoked" => "All sessions revoked",
-        "password_changed" => "Password changed",
-        _ => "Admin action",
-    }
-}

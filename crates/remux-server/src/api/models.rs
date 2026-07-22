@@ -100,8 +100,10 @@ pub fn device_info_from(device: &db::auth::Device) -> DeviceInfo {
         date_last_activity: device.last_activity_at,
         icon_url: None,
         date_created: device.created_at,
-        remote_end_point: device.remote_ip.clone(),
-        user_id: Some(device.user_id),
+        remux: Some(DeviceInfoRemux {
+            remote_end_point: device.remote_ip.clone(),
+            user_id: Some(device.user_id),
+        }),
     }
 }
 

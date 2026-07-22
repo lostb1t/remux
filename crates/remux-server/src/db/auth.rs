@@ -623,3 +623,87 @@ impl FromRequestParts<AppState> for JellyfinAuthHeader {
         Ok(JellyfinAuthHeader::default())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn test_db() -> SqlitePool {
+        let db = crate::db::connect("sqlite::memory:", 10_000).await.unwrap();
+        crate::db::migrate(&db).await.unwrap();
+        db
+    }
+
+    async fn insert_device(db: &SqlitePool, user_id: Uuid, token: &str) {
+        Device {
+            id: Uuid::new_v4().to_string(),
+            access_token: token.to_string(),
+            user_id,
+            name: "Test Device".to_string(),
+            app_name: "Test".to_string(),
+            app_version: "1.0".to_string(),
+            ..Default::default()
+        }
+        .save(db)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_all_removes_every_device_for_user() {
+        let db = test_db().await;
+        let uid = Uuid::new_v4();
+
+        insert_device(&db, uid, "token-a").await;
+        insert_device(&db, uid, "token-b").await;
+
+        let deleted = Device::delete_all_for_user(&db, &uid, None).await.unwrap();
+        assert_eq!(deleted, 2);
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE user_id = ?")
+            .bind(uid)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn delete_all_except_current_token() {
+        let db = test_db().await;
+        let uid = Uuid::new_v4();
+
+        insert_device(&db, uid, "token-keep").await;
+        insert_device(&db, uid, "token-del-1").await;
+        insert_device(&db, uid, "token-del-2").await;
+
+        let deleted = Device::delete_all_for_user(&db, &uid, Some("token-keep")).await.unwrap();
+        assert_eq!(deleted, 2);
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE user_id = ?")
+            .bind(uid)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn delete_all_does_not_touch_other_users() {
+        let db = test_db().await;
+        let uid_a = Uuid::new_v4();
+        let uid_b = Uuid::new_v4();
+
+        insert_device(&db, uid_a, "token-a").await;
+        insert_device(&db, uid_b, "token-b").await;
+
+        Device::delete_all_for_user(&db, &uid_a, None).await.unwrap();
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE user_id = ?")
+            .bind(uid_b)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+}
