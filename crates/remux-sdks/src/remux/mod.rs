@@ -1098,6 +1098,7 @@ pub struct DeviceInfo {
 pub struct DeviceInfoRemux {
     pub remote_end_point: Option<String>,
     pub user_id: Option<Uuid>,
+    pub is_current_session: Option<bool>,
 }
 
 // Jellyfin-compatible activity log entry shape.

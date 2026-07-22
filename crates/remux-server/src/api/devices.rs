@@ -25,11 +25,10 @@ pub async fn delete_device(
 ) -> Result<StatusCode> {
     match (q.id.as_deref(), q.user_id) {
         (Some(id), _) => {
-            // Look up device before deleting so we can log it.
-            let device = auth::Device::get_by_id(&state.ctx.db, id).await?;
-            auth::Device::delete_by_id(&state.ctx.db, id).await?;
-            let _ = state.ctx.ws_tx.send(crate::ws::WsEvent::SessionsChanged);
-            if let Some(dev) = device {
+            // Look up device first to get user_id (needed for compound PK delete) and logging.
+            if let Some(dev) = auth::Device::get_by_id(&state.ctx.db, id).await? {
+                auth::Device::delete_by_id(&state.ctx.db, id, &dev.user_id).await?;
+                let _ = state.ctx.ws_tx.send(crate::ws::WsEvent::SessionsChanged);
                 let target_user =
                     db::User::get_by_id(&state.ctx.db, &dev.user_id).await?;
                 db::ActivityLog::insert(
@@ -86,23 +85,30 @@ pub struct GetDevicesQuery {
 #[get("/devices")]
 pub async fn get_devices(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    session: auth::AdminSession,
     Query(params): Query<GetDevicesQuery>,
 ) -> Result<impl IntoResponse> {
-    // Get all devices from the database
     let devices = if let Some(user_id) = params.user_id {
         auth::Device::get_by_user_id(&state.ctx.db, &user_id).await?
     } else {
         auth::Device::get_all(&state.ctx.db, None).await?
     };
 
-    // Convert to Jellyfin DeviceInfo format
+    // Batch-fetch usernames so we can populate last_user_name without N queries.
+    let user_ids: Vec<uuid::Uuid> = devices.iter().map(|d| d.user_id).collect();
+    let users = db::User::get_by_ids(&state.ctx.db, &user_ids).await?;
+    let username_map: std::collections::HashMap<uuid::Uuid, String> =
+        users.into_iter().map(|u| (u.id, u.username)).collect();
+
+    let caller_token = session.device.access_token.as_str();
     let device_infos: Vec<api::DeviceInfo> = devices
         .iter()
-        .map(|device| api::device_info_from(device))
+        .map(|device| {
+            let username = username_map.get(&device.user_id).map(String::as_str);
+            api::device_info_from(device, username, caller_token)
+        })
         .collect();
 
-    // Return as QueryResult format
     let result = api::QueryResult {
         items: device_infos.clone(),
         total_record_count: device_infos.len() as i64,

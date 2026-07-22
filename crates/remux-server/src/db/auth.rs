@@ -185,9 +185,10 @@ impl Device {
         Ok(result.rows_affected() > 0)
     }
 
-    pub async fn delete_by_id(db: &SqlitePool, device_id: &str) -> Result<bool> {
-        let result = sqlx::query("DELETE FROM devices WHERE id = ?")
+    pub async fn delete_by_id(db: &SqlitePool, device_id: &str, user_id: &Uuid) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM devices WHERE id = ? AND user_id = ?")
             .bind(device_id)
+            .bind(user_id)
             .execute(db)
             .await?;
         Ok(result.rows_affected() > 0)

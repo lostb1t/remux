@@ -1,6 +1,6 @@
 use crate::{
     components::{Card, ConfirmDialog, EmptyState, ErrorAlert, LoadingText},
-    state::{fmt_time, AppState},
+    state::{fmt_datetime, fmt_time, AppState},
 };
 use dioxus::prelude::*;
 use remux_sdks::remux::{
@@ -19,8 +19,6 @@ pub fn SessionsCard(app_state: AppState) -> Element {
     let mut confirm_revoke_user: Signal<Option<String>> = use_signal(|| None);
     let mut activity_items: Signal<Vec<ActivityLogEntry>> = use_signal(Vec::new);
     let mut activity_loading = use_signal(|| true);
-
-    let self_token = app_state.server.access_token.clone();
 
     let app_state_devices = app_state.clone();
     use_effect(move || {
@@ -93,10 +91,9 @@ pub fn SessionsCard(app_state: AppState) -> Element {
                                 {
                                     let device_id = device.id.clone().unwrap_or_default();
                                     let is_self = device
-                                        .access_token
-                                        .as_deref()
-                                        .zip(Some(self_token.as_str()))
-                                        .map(|(tok, me)| tok == me)
+                                        .remux
+                                        .as_ref()
+                                        .and_then(|r| r.is_current_session)
                                         .unwrap_or(false);
                                     let device_id_revoke = device_id.clone();
                                     let remote_ip = device.remux.as_ref().and_then(|r| r.remote_end_point.clone());
@@ -196,7 +193,7 @@ pub fn SessionsCard(app_state: AppState) -> Element {
                                     key: "{entry.id.as_deref().unwrap_or(\"\")}",
                                     div { class: "shrink-0 px-3 py-[8px] font-mono text-xs text-[var(--text-dim)] w-40",
                                         if let Some(ts) = entry.date {
-                                            "{fmt_time(ts)}"
+                                            "{fmt_datetime(ts)}"
                                         }
                                     }
                                     div { class: "shrink-0 px-3 py-[8px] text-xs text-[var(--text-dim)] w-32",
@@ -232,11 +229,19 @@ pub fn SessionsCard(app_state: AppState) -> Element {
                         let client = client.clone();
                         let mut cr = confirm_revoke.clone();
                         let mut ref_ = refresh.clone();
+                        let mut err = error.clone();
                         spawn(async move {
-                            let _ = client.execute(DeleteDevice { id: did }).await;
-                            cr.set(None);
-                            let v = *ref_.peek() + 1;
-                            ref_.set(v);
+                            match client.execute(DeleteDevice { id: did }).await {
+                                Ok(_) => {
+                                    cr.set(None);
+                                    let v = *ref_.peek() + 1;
+                                    ref_.set(v);
+                                }
+                                Err(e) => {
+                                    cr.set(None);
+                                    err.set(Some(format!("Failed to revoke session: {e}")));
+                                }
+                            }
                         });
                     }
                 },
@@ -255,15 +260,24 @@ pub fn SessionsCard(app_state: AppState) -> Element {
                         let client = client.clone();
                         let mut cru = confirm_revoke_user.clone();
                         let mut ref_ = refresh.clone();
+                        let mut err = error.clone();
                         spawn(async move {
                             if let Ok(parsed) = uid.parse::<uuid::Uuid>() {
-                                let _ = client
+                                match client
                                     .execute(DeleteUserDevices { user_id: parsed })
-                                    .await;
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        cru.set(None);
+                                        let v = *ref_.peek() + 1;
+                                        ref_.set(v);
+                                    }
+                                    Err(e) => {
+                                        cru.set(None);
+                                        err.set(Some(format!("Failed to revoke sessions: {e}")));
+                                    }
+                                }
                             }
-                            cru.set(None);
-                            let v = *ref_.peek() + 1;
-                            ref_.set(v);
                         });
                     }
                 },
