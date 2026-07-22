@@ -2855,4 +2855,146 @@ mod e2e_tests {
             "null-date episode must not be counted as unplayed when the release-date filter is active"
         );
     }
+
+    // Regression: PUT /Users/{userId}/Configuration was ignoring the path user_id and always
+    // writing to the session user's own config. An admin updating another user's subtitle
+    // preferences would silently overwrite their own instead.
+    #[tokio::test]
+    async fn user_configuration_admin_updates_other_user() {
+        let (server, _ctx, admin_token) = authenticated_server().await;
+        let admin_auth = auth_header_with_token(&admin_token);
+
+        // Create a second non-admin user.
+        let resp = server
+            .post("/users/new")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&admin_auth).unwrap(),
+            )
+            .json(&json!({ "Name": "subtitleuser", "Password": "pass1234" }))
+            .await;
+        resp.assert_status_ok();
+        let other: serde_json::Value = resp.json();
+        let other_id = other["Id"].as_str().unwrap();
+
+        // Admin updates the other user's subtitle preferences.
+        let resp = server
+            .post(&format!("/users/{}/configuration", other_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&admin_auth).unwrap(),
+            )
+            .json(&json!({
+                "PlayDefaultAudioTrack": true,
+                "SubtitleLanguagePreference": "fra",
+                "SubtitleMode": "Always",
+                "DisplayMissingEpisodes": false,
+                "EnableLocalPassword": false,
+                "HidePlayedInLatest": false,
+                "RememberAudioSelections": false,
+                "RememberSubtitleSelections": false,
+                "EnableNextEpisodeAutoPlay": false,
+                "DisplayCollectionsView": false
+            }))
+            .await;
+        resp.assert_status(StatusCode::NO_CONTENT);
+
+        // Authenticate as the other user and verify their config was updated.
+        let resp = server
+            .post("/users/authenticatebyname")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_static(AUTH_HEADER),
+            )
+            .json(&json!({ "Username": "subtitleuser", "Pw": "pass1234" }))
+            .await;
+        resp.assert_status_ok();
+        let other_token = resp.json::<serde_json::Value>()["AccessToken"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let other_auth = auth_header_with_token(&other_token);
+
+        let resp = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&other_auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["Configuration"]["SubtitleLanguagePreference"], "fra",
+            "admin update must write to target user, not to the admin's own config"
+        );
+        assert_eq!(body["Configuration"]["SubtitleMode"], "Always");
+    }
+
+    #[tokio::test]
+    async fn user_configuration_non_admin_cannot_update_other_user() {
+        let (server, _ctx, admin_token) = authenticated_server().await;
+        let admin_auth = auth_header_with_token(&admin_token);
+
+        // Get admin user ID.
+        let resp = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&admin_auth).unwrap(),
+            )
+            .await;
+        let admin_id = resp.json::<serde_json::Value>()["Id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Create a non-admin user.
+        let resp = server
+            .post("/users/new")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&admin_auth).unwrap(),
+            )
+            .json(&json!({ "Name": "regularuser", "Password": "pass1234" }))
+            .await;
+        resp.assert_status_ok();
+
+        let resp = server
+            .post("/users/authenticatebyname")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_static(AUTH_HEADER),
+            )
+            .json(&json!({ "Username": "regularuser", "Pw": "pass1234" }))
+            .await;
+        let regular_token = resp.json::<serde_json::Value>()["AccessToken"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let regular_auth = auth_header_with_token(&regular_token);
+
+        // Non-admin tries to update the admin's configuration — should be rejected.
+        let resp = server
+            .post(&format!("/users/{}/configuration", admin_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&regular_auth).unwrap(),
+            )
+            .json(&json!({
+                "PlayDefaultAudioTrack": true,
+                "SubtitleLanguagePreference": "deu",
+                "SubtitleMode": "Default",
+                "DisplayMissingEpisodes": false,
+                "EnableLocalPassword": false,
+                "HidePlayedInLatest": false,
+                "RememberAudioSelections": false,
+                "RememberSubtitleSelections": false,
+                "EnableNextEpisodeAutoPlay": false,
+                "DisplayCollectionsView": false
+            }))
+            .expect_failure()
+            .await;
+        resp.assert_status_unauthorized();
+    }
 }
