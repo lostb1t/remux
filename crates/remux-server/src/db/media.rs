@@ -2510,17 +2510,17 @@ impl Media {
                 records_qb.push_bind(uid);
                 records_qb.push(" AND media.id = dp.media_id AND 1=1");
             } else if let Some(period) = pop_period {
-                // Materialise the latest per-media popularity score once and JOIN it in
-                // so ORDER BY uses a plain column reference instead of N correlated
-                // subqueries — one per qualifying row before LIMIT is applied.
+                // Drive from popularity_agg so SQLite walks idx_pop_agg_covering
+                // (period, latest, avg DESC, media_id) in ORDER BY order and stops
+                // at LIMIT without sorting the full candidate set. Items with no
+                // popularity score are excluded (INNER JOIN), which is correct for
+                // a popularity-sorted listing — they'd never appear in a small LIMIT
+                // result anyway.
                 pop_joined = true;
                 records_qb = sqlx::QueryBuilder::new(format!(
-                    "SELECT media.* FROM media \
-                     LEFT JOIN popularity_agg pop \
-                       ON pop.media_id = media.id \
-                      AND pop.period = '{period}' \
-                      AND pop.latest = 1 \
-                     WHERE 1=1"
+                    "SELECT media.* FROM popularity_agg pop \
+                     JOIN media ON media.id = pop.media_id \
+                     WHERE pop.period = '{period}' AND pop.latest = 1 AND 1=1"
                 ));
             } else {
                 records_qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
@@ -5800,31 +5800,28 @@ pub fn stremio_meta_season_episodes(
     Ok(out)
 }
 
-/// Return the release-date WHERE fragment for use in raw `format!` SQL strings.
 /// Push the release-date WHERE condition onto a query builder, binding `threshold`.
 ///
 /// `alias` is the table alias for the media row (e.g. `"media"` for an unaliased
 /// table, `"e"` when episodes are selected as `media e`).
 ///
-/// Appends a WHERE condition that hides items whose resolved release date is after `threshold`.
-///
-/// Resolution priority (CASE expression):
+/// Hides items whose resolved release date is after `threshold`. Resolution priority:
 /// 1. `digital_released_at` — explicit digital/streaming date; used as-is.
-/// 2. Movies with `released_at` within the past year → NULL (hidden). A recent
-///    theatrical release with no digital date confirmed is still considered
-///    unreleased digitally. TV air dates remain valid release dates for episodes.
+/// 2. Movies with `released_at` within the past year and no digital date → hidden.
+///    A recent theatrical release with no confirmed digital date is still considered
+///    unreleased digitally. TV air dates remain valid for episodes.
 /// 3. ELSE — depends on `use_parent_fallback`:
-///    - `true`  (episodes, series, movies): fall back to the parent row's dates via a
-///      correlated subquery. This lets undated episodes of old series (e.g. a 1990s
-///      show imported from Jellyfin with no per-episode air dates) inherit the series
-///      premiere and be treated as released rather than silently disappearing.
-///    - `false` (seasons): no parent fallback. A season with no own dates returns NULL
-///      from the CASE, which fails `<= threshold` and is hidden. This is intentional:
-///      TVDB often lists upcoming seasons before scheduling them, and we must not let
-///      such a season inherit the series' past premiere date and slip through the filter.
+///    - `true`  (episodes): fall back to the parent row's dates via a correlated
+///      subquery so undated episodes of old series inherit the series premiere.
+///    - `false` (movies, series, seasons): use `released_at` directly. Movies and
+///      series have NULL parent_id so the subquery would always return NULL anyway;
+///      seasons must not inherit the series premiere (TVDB lists future seasons early).
 ///
-/// In all cases a NULL result from the CASE is falsy in SQLite (`NULL <= x` = NULL),
-/// so items that cannot resolve any date are excluded.
+/// Items with no resolvable date are always excluded (the OR condition is false for them).
+///
+/// The filter is expressed as OR branches rather than a CASE expression so that SQLite
+/// can use `idx_media_digital_released_at` for branch 1 and `idx_media_released_at`
+/// for branch 2, avoiding a full table scan.
 pub fn push_release_date_filter(
     qb: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
     alias: &str,
@@ -5832,24 +5829,44 @@ pub fn push_release_date_filter(
     use_parent_fallback: bool,
 ) {
     let a = format!("{alias}.");
-    let else_expr = if use_parent_fallback {
-        format!(
-            "COALESCE(\
-              {a}released_at, \
-              (SELECT COALESCE(p.digital_released_at, p.released_at) FROM media p WHERE p.id = {a}parent_id)\
-            )"
-        )
+    if use_parent_fallback {
+        // Episodes: branch 2 falls back to the parent row's date when released_at
+        // is NULL. The correlated subquery is cheap here because the episode set
+        // is already narrow (filtered by parent_id / season).
+        qb.push(format!(
+            " AND (({a}digital_released_at IS NOT NULL AND {a}digital_released_at <= "
+        ))
+        .push_bind(threshold)
+        .push(format!(
+            ") OR ({a}digital_released_at IS NULL \
+              AND NOT ({a}kind = 'movie' AND {a}released_at IS NOT NULL AND {a}released_at > date('now', '-1 year')) \
+              AND COALESCE({a}released_at, \
+                (SELECT COALESCE(p.digital_released_at, p.released_at) FROM media p WHERE p.id = {a}parent_id) \
+              ) IS NOT NULL \
+              AND COALESCE({a}released_at, \
+                (SELECT COALESCE(p.digital_released_at, p.released_at) FROM media p WHERE p.id = {a}parent_id) \
+              ) <= "
+        ))
+        .push_bind(threshold)
+        .push("))");
     } else {
-        format!("{a}released_at")
-    };
-    qb.push(format!(
-        " AND CASE \
-            WHEN {a}digital_released_at IS NOT NULL THEN {a}digital_released_at \
-            WHEN {a}kind = 'movie' AND {a}released_at IS NOT NULL AND datetime({a}released_at) > datetime('now', '-1 year') THEN NULL \
-            ELSE {else_expr} \
-          END <= "
-    ))
-    .push_bind(threshold);
+        // Movies / series / seasons: no parent fallback. Each branch is indexable.
+        // Branch 1 → idx_media_digital_released_at
+        // Branch 2 → idx_media_released_at
+        qb.push(format!(
+            " AND (({a}digital_released_at IS NOT NULL AND {a}digital_released_at <= "
+        ))
+        .push_bind(threshold)
+        .push(format!(
+            ") OR ({a}digital_released_at IS NULL \
+              AND {a}released_at IS NOT NULL \
+              AND {a}released_at <= "
+        ))
+        .push_bind(threshold)
+        .push(format!(
+            " AND NOT ({a}kind = 'movie' AND {a}released_at > date('now', '-1 year'))))"
+        ));
+    }
 }
 
 /// Append WHERE clauses for a set of `FilterRule`s onto a query builder.
