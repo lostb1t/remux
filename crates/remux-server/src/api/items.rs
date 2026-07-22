@@ -3548,4 +3548,95 @@ mod tests {
             "empty smart collection must not appear in /UserViews; got: {names:?}"
         );
     }
+
+    // Regression: GET /Items?parentId=<alias-uuid> used db::Media::get_by_id for the parent
+    // lookup, which does a straight WHERE id = $1 and cannot follow alias mappings in the
+    // in-memory store. Stremio addons expose series under a virtual alias UUID; children are
+    // stored under the canonical UUID, so browsing returned empty. This test would have
+    // returned TotalRecordCount=0 before the fix.
+    #[tokio::test]
+    async fn parent_id_alias_resolves_children() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(&server, &auth).await;
+        let now = Utc::now().naive_utc();
+
+        let series = insert_media(db, "Alias Show", db::MediaKind::Series, "tt9000001").await;
+        let series_imdb = series
+            .external_ids
+            .imdb
+            .clone()
+            .unwrap();
+
+        let season_ext = ExternalIds {
+            series_imdb: Some(series_imdb),
+            ..Default::default()
+        };
+        let season_id = Uuid::from(&MediaIdRaw {
+            kind: db::MediaKind::Season,
+            external_ids: season_ext.clone(),
+            season: Some(1),
+            episode: None,
+        });
+        let mut season = db::Media {
+            id: season_id,
+            title: "Season 1".to_string(),
+            kind: db::MediaKind::Season,
+            parent_id: Some(series.id),
+            grandparent_id: Some(series.id),
+            idx: Some(1),
+            external_ids: season_ext,
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        season
+            .save(db)
+            .await
+            .unwrap();
+
+        // Mimic a Stremio addon virtual alias: store alias_uuid -> canonical series.id.
+        let alias_uuid = Uuid::new_v4();
+        guard
+            .0
+            .store
+            .save(
+                alias_uuid.to_string(),
+                series.id,
+                std::time::Duration::from_secs(3600),
+            );
+
+        let resp = server
+            .get(&format!("/users/{}/items", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[("parentId", alias_uuid.to_string().as_str())])
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert!(
+            body["TotalRecordCount"]
+                .as_i64()
+                .unwrap_or(0)
+                > 0,
+            "browsing a series via its alias UUID must return children; got TotalRecordCount={}",
+            body["TotalRecordCount"]
+        );
+        assert!(
+            body["Items"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .any(|i| i["Name"] == "Season 1")
+                })
+                .unwrap_or(false),
+            "Season 1 must appear when browsing the series via its alias UUID"
+        );
+    }
 }
