@@ -2183,7 +2183,7 @@ impl Media {
         for gid in &genre_ids {
             sep.push_bind(*gid);
         }
-        count_qb.push(" GROUP BY mr.left_media_id) sub");
+        count_qb.push(") GROUP BY mr.left_media_id) sub");
         let total: i64 = count_qb
             .build_query_scalar()
             .fetch_one(db)
@@ -2199,7 +2199,7 @@ impl Media {
         for gid in &genre_ids {
             sep.push_bind(*gid);
         }
-        qb.push(" GROUP BY mr.left_media_id ORDER BY score DESC LIMIT ");
+        qb.push(") GROUP BY mr.left_media_id ORDER BY score DESC LIMIT ");
         qb.push_bind(limit as i64);
         qb.push(" OFFSET ");
         qb.push_bind(offset as i64);
