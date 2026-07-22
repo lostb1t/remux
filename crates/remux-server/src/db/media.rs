@@ -2163,28 +2163,27 @@ impl Media {
             return Ok((vec![], 0));
         }
 
-        // Build the similarity query using QueryBuilder throughout — never embed
-        // raw `?` placeholders in the initial string, as push_bind appends its
-        // own markers and the pre-baked ones would cause a syntax error.
-        let base = "SELECT m.id, COUNT(DISTINCT mr.right_media_id) as score \
-                    FROM media m \
-                    JOIN media_relations mr ON mr.left_media_id = m.id \
-                    JOIN media g ON g.id = mr.right_media_id \
-                    WHERE m.kind = ";
+        // Drive from media_relations using idx_media_relations_right_left so we
+        // only visit rows that share one of the target genres, then join to media
+        // by primary key to filter by kind. genre_ids are already filtered to
+        // genre/music_genre kinds by the query above, so no JOIN back to media g
+        // is needed.
+        let base = "SELECT mr.left_media_id as id, COUNT(DISTINCT mr.right_media_id) as score \
+                    FROM media_relations mr \
+                    JOIN media m ON m.id = mr.left_media_id AND m.kind = ";
 
         // Count total.
         let mut count_qb =
             sqlx::QueryBuilder::new(format!("SELECT COUNT(*) FROM ({} ", base));
         count_qb.push_bind(&kind_str);
-        count_qb
-            .push(" AND g.kind IN ('genre', 'music_genre') AND mr.right_media_id IN (");
+        count_qb.push(" AND m.id != ");
+        count_qb.push_bind(source_id);
+        count_qb.push(" WHERE mr.right_media_id IN (");
         let mut sep = count_qb.separated(", ");
         for gid in &genre_ids {
             sep.push_bind(*gid);
         }
-        count_qb.push(") AND m.id != ");
-        count_qb.push_bind(source_id);
-        count_qb.push(" GROUP BY m.id) sub");
+        count_qb.push(" GROUP BY mr.left_media_id) sub");
         let total: i64 = count_qb
             .build_query_scalar()
             .fetch_one(db)
@@ -2193,14 +2192,14 @@ impl Media {
         // Fetch scored page.
         let mut qb = sqlx::QueryBuilder::new(base);
         qb.push_bind(&kind_str);
-        qb.push(" AND g.kind IN ('genre', 'music_genre') AND mr.right_media_id IN (");
+        qb.push(" AND m.id != ");
+        qb.push_bind(source_id);
+        qb.push(" WHERE mr.right_media_id IN (");
         let mut sep = qb.separated(", ");
         for gid in &genre_ids {
             sep.push_bind(*gid);
         }
-        qb.push(") AND m.id != ");
-        qb.push_bind(source_id);
-        qb.push(" GROUP BY m.id ORDER BY score DESC LIMIT ");
+        qb.push(" GROUP BY mr.left_media_id ORDER BY score DESC LIMIT ");
         qb.push_bind(limit as i64);
         qb.push(" OFFSET ");
         qb.push_bind(offset as i64);
@@ -2945,16 +2944,26 @@ impl Media {
                 .as_ref()
             {
                 if resumable_ids.is_none() {
-                    let season_only = filter
+                    // Parent fallback (correlated subquery to parent row) is only
+                    // meaningful for episodes that have no own air date and must
+                    // inherit the series premiere. For Movie/Series/Track/etc.
+                    // parent_id is NULL so the subquery always returns NULL — it's
+                    // pure overhead. Enable only when the query may include episodes.
+                    let needs_parent_fallback = filter
                         .kind
                         .as_ref()
                         .map(|k| {
-                            !k.is_empty()
-                                && k.iter()
-                                    .all(|k| matches!(k, MediaKind::Season))
+                            k.is_empty()
+                                || k.iter()
+                                    .any(|k| matches!(k, MediaKind::Episode))
                         })
-                        .unwrap_or(false);
-                    push_release_date_filter(qb, "media", threshold, !season_only);
+                        .unwrap_or(true);
+                    push_release_date_filter(
+                        qb,
+                        "media",
+                        threshold,
+                        needs_parent_fallback,
+                    );
                 }
             }
 
