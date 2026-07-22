@@ -103,7 +103,18 @@ impl StreamService {
             )
             .await?;
         let raw = if db_streams.is_empty() {
-            vec![root]
+            // Root item can be the stream itself (e.g. locally-imported files)
+            // but only when it carries a URL. Addon content uses the root as a
+            // container — falling back to it when the addon returned no streams
+            // would queue a probe against an item with no stream_info.
+            if root
+                .stream_info
+                .is_some()
+            {
+                vec![root]
+            } else {
+                vec![]
+            }
         } else {
             db_streams
         };
@@ -146,7 +157,7 @@ impl StreamService {
 
         if streams.is_empty() {
             return Err(anyhow::anyhow!(
-                "no playable sources for {} (filtered out by grouping or stream policy)",
+                "no playable sources for {} (no streams from addon, or filtered out by grouping/stream policy)",
                 self.item_id
             ));
         }
