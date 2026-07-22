@@ -349,6 +349,7 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
     let mut allow_av1_encoding = use_signal(|| false);
     let mut h264_crf = use_signal(|| 23_u32);
     let mut h265_crf = use_signal(|| 28_u32);
+    let mut normalize_audio_loudness = use_signal(|| true);
     let mut enable_video_transcoding = use_signal(|| true);
     let mut subtitle_mode = use_signal(|| "Burn".to_string());
     let mut loading = use_signal(|| true);
@@ -426,6 +427,10 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                         opts.h265_crf
                             .unwrap_or(28),
                     );
+                    normalize_audio_loudness.set(
+                        opts.normalize_audio_loudness
+                            .unwrap_or(true),
+                    );
                     enable_video_transcoding.set(
                         opts.enable_video_transcoding
                             .unwrap_or(true),
@@ -483,7 +488,7 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
             h264_crf: Some(*h264_crf.peek()),
             h265_crf: Some(*h265_crf.peek()),
             enable_video_transcoding: Some(*enable_video_transcoding.peek()),
-            normalize_audio_loudness: None,
+            normalize_audio_loudness: Some(*normalize_audio_loudness.peek()),
             subtitle_mode: subtitle_mode
                 .peek()
                 .parse::<EmbeddedSubtitleHandling>()
@@ -654,6 +659,19 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                                         },
                                     }
                                 }
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", "Audio Loudness Normalisation" }
+                            div { class: "field-hint", "Apply EBU R128 loudness normalisation (loudnorm=I=-14:TP=-1:LRA=11) when transcoding audio. Has no effect when audio is stream-copied." }
+                            label { style: "display:flex;align-items:center;gap:8px",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *normalize_audio_loudness.read(),
+                                    onchange: move |e| normalize_audio_loudness.set(e.checked()),
+                                }
+                                "Normalise audio loudness to -14 LUFS"
                             }
                         }
 
