@@ -2646,6 +2646,8 @@ struct UpdateItemRequest {
     tags: Option<Vec<String>>,
     genres: Option<Vec<String>>,
     people: Option<Vec<UpdateItemPerson>>,
+    locked_fields: Option<Vec<db::MetadataField>>,
+    lock_data: Option<bool>,
 }
 
 #[post("/items/{id}")]
@@ -2680,6 +2682,12 @@ pub async fn update_item(
     merge_option(&mut media.certification, &payload.official_rating, true);
     merge_option(&mut media.rating_audience, &payload.community_rating, true);
     merge_option(&mut media.rating_critic, &payload.critic_rating, true);
+    if let Some(locked_fields) = payload.locked_fields {
+        media.locked_fields = locked_fields;
+    }
+    if let Some(lock_data) = payload.lock_data {
+        media.is_locked = lock_data;
+    }
     media
         .save(
             &state
