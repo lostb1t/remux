@@ -8,7 +8,7 @@ use std::{
     pin::Pin,
     time::{Duration, Instant},
 };
-use tracing::{debug, error};
+use tracing::debug;
 
 #[derive(Clone)]
 pub struct StremioService {
@@ -188,14 +188,14 @@ impl StremioService {
                                 .metas
                                 .is_empty()
                         })
-                        .unwrap_or(true),
+                        .unwrap_or(false),
                 )
             })
             .filter_map(|result| async move {
                 match result {
                     Ok(response) => Some(stream::iter(response.metas)),
                     Err(e) => {
-                        error!("Failed to fetch catalog page: {}", e);
+                        debug!("stopping catalog pagination: {}", e);
                         None
                     }
                 }
