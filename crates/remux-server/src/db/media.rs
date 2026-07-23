@@ -1913,7 +1913,7 @@ impl Media {
                 external_ids, external_ratings, created_at, updated_at, certification, certification_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, grandparent_id, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital,
                 collection_source, collection_default_sort, collection_default_sort_order,
-                original_language
+                original_language, is_locked, locked_fields
             )",
         );
             for item in chunk {
@@ -1968,7 +1968,9 @@ impl Media {
                     .push_bind(&item.collection_source)
                     .push_bind(sqlx::types::Json(&item.collection_default_sort))
                     .push_bind(sqlx::types::Json(&item.collection_default_sort_order))
-                    .push_bind(&item.original_language);
+                    .push_bind(&item.original_language)
+                    .push_bind(&item.is_locked)
+                    .push_bind(sqlx::types::Json(&item.locked_fields));
             });
 
             query_builder.push(" ON CONFLICT DO NOTHING");
