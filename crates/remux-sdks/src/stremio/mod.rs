@@ -633,11 +633,15 @@ where
             if t.is_empty() {
                 Ok(None)
             } else {
-                let std_duration = parse_duration_lossy(t).map_err(D::Error::custom)?;
-
-                Ok(Some(
-                    Duration::from_std(std_duration).map_err(D::Error::custom)?,
-                ))
+                match parse_duration_lossy(t) {
+                    Ok(std_duration) => Ok(Some(
+                        Duration::from_std(std_duration).map_err(D::Error::custom)?,
+                    )),
+                    // Some addons (e.g. fankai) put a status string like "En cours"
+                    // in the runtime field instead of a duration. Don't fail the
+                    // whole catalog over one unparseable runtime.
+                    Err(_) => Ok(None),
+                }
             }
         }
     }
@@ -1047,5 +1051,16 @@ mod tests {
         let meta: Meta = serde_json::from_str(json).unwrap();
         assert_eq!(meta.genre, Some(vec!["En cours".to_string()]));
         assert_eq!(meta.genres, Some(vec!["En cours".to_string()]));
+    }
+
+    #[test]
+    fn meta_runtime_ignores_unparseable_status_string() {
+        let json = r#"{
+            "id": "fankai:123",
+            "type": "series",
+            "runtime": "En cours"
+        }"#;
+        let meta: Meta = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.runtime, None);
     }
 }
