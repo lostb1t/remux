@@ -1315,15 +1315,6 @@ async fn stremio_streams(
 ) -> Result<Vec<crate::stream::StreamInfo>> {
     let (media_type, id, tmdb_fallback_id) = match media.kind {
         db::MediaKind::Episode => {
-            let series_id: String = media
-                .external_ids
-                .series_imdb
-                .as_deref()
-                .map(|s| s.to_string())
-                .or_else(|| media.external_ids.series_custom_stremio_id.clone())
-                .ok_or_else(|| {
-                    anyhow!("episode has no series_imdb or series_custom_stremio_id for stream lookup")
-                })?;
             let season = media
                 .parent_idx
                 .unwrap_or(1);
@@ -1334,11 +1325,33 @@ async fn stremio_streams(
                 .external_ids
                 .series_tmdb
                 .map(|tid| format!("tmdb:{}:{}:{}", tid, season, episode));
+            // Prefer the addon's own video id (captured from the series meta's
+            // `videos[].id`) over reconstructing "{series}:{season}:{episode}" —
+            // that composite form is only a convention for series-type addons,
+            // not guaranteed for custom types. Fall back to reconstruction for
+            // episodes stored before this field was captured.
+            let id = media
+                .external_ids
+                .custom_stremio_id
+                .clone()
+                .ok_or(())
+                .or_else(|_| {
+                    media
+                        .external_ids
+                        .series_imdb
+                        .as_deref()
+                        .map(|s| s.to_string())
+                        .or_else(|| media.external_ids.series_custom_stremio_id.clone())
+                        .map(|series_id| format!("{}:{}:{}", series_id, season, episode))
+                        .ok_or_else(|| {
+                            anyhow!("episode has no series_imdb or series_custom_stremio_id for stream lookup")
+                        })
+                })?;
             (
                 media
                     .external_ids
                     .stremio_media_type(&media.kind),
-                format!("{}:{}:{}", series_id, season, episode),
+                id,
                 tmdb_fb,
             )
         }
@@ -1591,8 +1604,8 @@ mod tests {
                 }));
         });
 
-        let svc = stremio_service::StremioService::from_url(&server.base_url())
-            .unwrap();
+        let svc =
+            stremio_service::StremioService::from_url(&server.base_url()).unwrap();
 
         // Confirm the generic type really does 404 first.
         let direct = svc
@@ -1629,8 +1642,8 @@ mod tests {
             then.status(404);
         });
 
-        let svc = stremio_service::StremioService::from_url(&server.base_url())
-            .unwrap();
+        let svc =
+            stremio_service::StremioService::from_url(&server.base_url()).unwrap();
         let meta = manifest_meta_type_fallback(
             &svc,
             &sdks::stremio::MediaType::Series,
@@ -1655,8 +1668,8 @@ mod tests {
                 }));
         });
 
-        let svc = stremio_service::StremioService::from_url(&server.base_url())
-            .unwrap();
+        let svc =
+            stremio_service::StremioService::from_url(&server.base_url()).unwrap();
         let meta = manifest_meta_type_fallback(
             &svc,
             &sdks::stremio::MediaType::Series,
@@ -1666,5 +1679,73 @@ mod tests {
 
         assert!(meta.is_none());
         anime_attempt.assert_hits(0);
+    }
+
+    fn episode_media(external_ids: db::ExternalIds) -> db::Media {
+        db::Media {
+            kind: db::MediaKind::Episode,
+            parent_idx: Some(1),
+            idx: Some(1),
+            external_ids,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn stremio_streams_prefers_captured_video_id_over_reconstruction() {
+        let server = httpmock::MockServer::start();
+        let reconstructed = server.mock(|when, then| {
+            when.path("/stream/anime/fk:27:1:1.json");
+            then.status(404);
+        });
+        let captured = server.mock(|when, then| {
+            when.path("/stream/anime/fk-ep-1.json");
+            then.status(200)
+                .json_body(serde_json::json!({"streams": [{"url": "https://example.com/1.mp4"}]}));
+        });
+
+        let svc =
+            stremio_service::StremioService::from_url(&server.base_url()).unwrap();
+        let manifest_url = StremioManifestUrl::try_new(server.base_url()).unwrap();
+        let media = episode_media(db::ExternalIds {
+            series_custom_stremio_id: Some("fk:27".to_string()),
+            custom_stremio_id: Some("fk-ep-1".to_string()),
+            custom_stremio_type: Some("anime".to_string()),
+            ..Default::default()
+        });
+
+        let streams = stremio_streams(&svc, &manifest_url, &media)
+            .await
+            .unwrap();
+
+        assert_eq!(streams.len(), 1);
+        captured.assert();
+        reconstructed.assert_hits(0);
+    }
+
+    #[tokio::test]
+    async fn stremio_streams_falls_back_to_reconstructed_id_when_uncaptured() {
+        let server = httpmock::MockServer::start();
+        let reconstructed = server.mock(|when, then| {
+            when.path("/stream/anime/fk:27:1:1.json");
+            then.status(200)
+                .json_body(serde_json::json!({"streams": [{"url": "https://example.com/1.mp4"}]}));
+        });
+
+        let svc =
+            stremio_service::StremioService::from_url(&server.base_url()).unwrap();
+        let manifest_url = StremioManifestUrl::try_new(server.base_url()).unwrap();
+        let media = episode_media(db::ExternalIds {
+            series_custom_stremio_id: Some("fk:27".to_string()),
+            custom_stremio_type: Some("anime".to_string()),
+            ..Default::default()
+        });
+
+        let streams = stremio_streams(&svc, &manifest_url, &media)
+            .await
+            .unwrap();
+
+        assert_eq!(streams.len(), 1);
+        reconstructed.assert();
     }
 }

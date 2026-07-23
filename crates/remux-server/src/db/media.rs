@@ -5599,6 +5599,10 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                                 .external_ids
                                 .custom_stremio_type
                                 .clone(),
+                            custom_stremio_id: Some(
+                                ep.id
+                                    .clone(),
+                            ),
                             ..Default::default()
                         };
                         episode.parent_id = Some(season_id);
@@ -5721,6 +5725,10 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                             .external_ids
                             .custom_stremio_type
                             .clone(),
+                        custom_stremio_id: Some(
+                            ep.id
+                                .clone(),
+                        ),
                         ..Default::default()
                     };
                     episode.grandparent_id = Some(media.id);
@@ -5900,6 +5908,14 @@ pub fn stremio_meta_season_episodes(
                 custom_stremio_type: series_external_ids
                     .custom_stremio_type
                     .clone(),
+                // The addon's own video id for this specific episode. Series-type
+                // addons conventionally set this to "{imdb}:{season}:{episode}",
+                // but that's a convention, not a guarantee — keep the literal
+                // value so stream lookups use exactly what the addon gave us.
+                custom_stremio_id: Some(
+                    ep.id
+                        .clone(),
+                ),
                 ..Default::default()
             };
         } else if let Some(ref cid) = custom_id {
@@ -5917,6 +5933,10 @@ pub fn stremio_meta_season_episodes(
                 custom_stremio_type: series_external_ids
                     .custom_stremio_type
                     .clone(),
+                custom_stremio_id: Some(
+                    ep.id
+                        .clone(),
+                ),
                 ..Default::default()
             };
         }
@@ -6524,6 +6544,31 @@ mod tests {
                 .external_ids
                 .custom_stremio_type,
             Some("anime".to_string())
+        );
+    }
+
+    #[test]
+    fn stremio_meta_to_medias_captures_episode_video_id() {
+        let json = r#"{
+            "id": "fk:27",
+            "type": "anime",
+            "name": "Bleach Yabai",
+            "videos": [
+                {"id": "fk:27:1:1", "season": 1, "episode": 1, "title": "Ep 1"}
+            ]
+        }"#;
+        let meta: sdks::stremio::Meta = serde_json::from_str(json).unwrap();
+        let medias = stremio_meta_to_medias(meta).unwrap();
+
+        let episode = medias
+            .iter()
+            .find(|m| m.kind == MediaKind::Episode)
+            .expect("episode media");
+        assert_eq!(
+            episode
+                .external_ids
+                .custom_stremio_id,
+            Some("fk:27:1:1".to_string())
         );
     }
 
