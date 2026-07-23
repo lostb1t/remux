@@ -300,6 +300,12 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
         play_access: Some("Full".to_string()),
         can_delete: Some(false),
         can_download: Some(false),
+        lock_data: Some(media.is_locked),
+        locked_fields: media
+            .locked_fields
+            .iter()
+            .map(|f| f.to_string())
+            .collect(),
         has_lyrics: (media.kind == db::MediaKind::Track).then_some(true),
         type_,
         parent_id: media

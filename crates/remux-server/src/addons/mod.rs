@@ -344,10 +344,11 @@ pub(crate) async fn bulk_insert_snapshots(
 pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: bool) {
     use remux_utils::merge_option;
 
-    if (replace
-        || target
-            .title
-            .is_empty())
+    if !target.is_field_locked(&db::MetadataField::Name)
+        && (replace
+            || target
+                .title
+                .is_empty())
         && !source
             .title
             .is_empty()
@@ -357,21 +358,29 @@ pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: b
             .clone();
     }
 
-    merge_option(&mut target.description, &source.description, replace);
+    if !target.is_field_locked(&db::MetadataField::Overview) {
+        merge_option(&mut target.description, &source.description, replace);
+    }
     merge_option(&mut target.released_at, &source.released_at, replace);
-    merge_option(&mut target.runtime, &source.runtime, replace);
+    if !target.is_field_locked(&db::MetadataField::Runtime) {
+        merge_option(&mut target.runtime, &source.runtime, replace);
+    }
     merge_option(
         &mut target.rating_audience,
         &source.rating_audience,
         replace,
     );
-    merge_option(&mut target.certification, &source.certification, replace);
-    merge_option(
-        &mut target.certification_age,
-        &source.certification_age,
-        replace,
-    );
-    merge_option(&mut target.country, &source.country, replace);
+    if !target.is_field_locked(&db::MetadataField::OfficialRating) {
+        merge_option(&mut target.certification, &source.certification, replace);
+        merge_option(
+            &mut target.certification_age,
+            &source.certification_age,
+            replace,
+        );
+    }
+    if !target.is_field_locked(&db::MetadataField::ProductionLocations) {
+        merge_option(&mut target.country, &source.country, replace);
+    }
     merge_option(
         &mut target.original_language,
         &source.original_language,
@@ -481,6 +490,7 @@ fn apply_meta(media: &mut db::Media, mut patch: db::Media, replace: bool) {
     if !patch
         .tags
         .is_empty()
+        && !media.is_field_locked(&db::MetadataField::Tags)
     {
         media
             .tags
@@ -507,10 +517,21 @@ fn apply_meta(media: &mut db::Media, mut patch: db::Media, replace: bool) {
         {
             let pending: Vec<(db::MediaRelation, db::Media)> = relations
                 .into_iter()
+                .filter(|(_, right_media)| match right_media.kind {
+                    db::MediaKind::Person => {
+                        !media.is_field_locked(&db::MetadataField::Cast)
+                    }
+                    db::MediaKind::Genre | db::MediaKind::MusicGenre => {
+                        !media.is_field_locked(&db::MetadataField::Genres)
+                    }
+                    _ => true,
+                })
                 .collect();
-            match &mut media.relations {
-                Some(existing) => existing.extend(pending),
-                None => media.relations = Some(pending),
+            if !pending.is_empty() {
+                match &mut media.relations {
+                    Some(existing) => existing.extend(pending),
+                    None => media.relations = Some(pending),
+                }
             }
         }
     }
@@ -2939,5 +2960,66 @@ mod tests {
         };
         apply_title_format(&mut media);
         assert_eq!(media.title, "S3E4 - Tumbleton");
+    }
+
+    #[test]
+    fn merge_media_respects_locked_name() {
+        let mut target = db::Media {
+            title: "User Title".to_string(),
+            locked_fields: vec![db::MetadataField::Name],
+            ..Default::default()
+        };
+        let source = db::Media {
+            title: "Provider Title".to_string(),
+            ..Default::default()
+        };
+        merge_media(&mut target, &source, true);
+        assert_eq!(
+            target.title, "User Title",
+            "locked Name must not be overwritten"
+        );
+    }
+
+    #[test]
+    fn merge_media_respects_is_locked() {
+        let mut target = db::Media {
+            title: "User Title".to_string(),
+            description: Some("User Overview".to_string()),
+            is_locked: true,
+            ..Default::default()
+        };
+        let source = db::Media {
+            title: "Provider Title".to_string(),
+            description: Some("Provider Overview".to_string()),
+            ..Default::default()
+        };
+        merge_media(&mut target, &source, true);
+        assert_eq!(target.title, "User Title");
+        assert_eq!(
+            target
+                .description
+                .as_deref(),
+            Some("User Overview")
+        );
+    }
+
+    #[test]
+    fn merge_media_unlocked_fields_still_update() {
+        let mut target = db::Media {
+            locked_fields: vec![db::MetadataField::Name],
+            ..Default::default()
+        };
+        let source = db::Media {
+            description: Some("Provider Overview".to_string()),
+            ..Default::default()
+        };
+        merge_media(&mut target, &source, true);
+        assert_eq!(
+            target
+                .description
+                .as_deref(),
+            Some("Provider Overview"),
+            "unlocked Overview must still be updated"
+        );
     }
 }

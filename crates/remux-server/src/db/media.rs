@@ -103,6 +103,28 @@ pub enum MediaStatus {
 }
 
 #[derive(
+    Default,
+    strum_macros::EnumString,
+    strum_macros::Display,
+    Debug,
+    Clone,
+    PartialEq,
+    Serialize,
+    Deserialize,
+)]
+pub enum MetadataField {
+    #[default]
+    Name,
+    Overview,
+    Runtime,
+    OfficialRating,
+    Genres,
+    Cast,
+    Tags,
+    ProductionLocations,
+}
+
+#[derive(
     strum_macros::EnumString,
     strum_macros::Display,
     Debug,
@@ -1294,9 +1316,25 @@ pub struct Media {
     /// User-defined name override; takes precedence over `title` for display.
     pub custom_name: Option<String>,
     pub program_kind: Option<ProgramKind>,
+
+    // --- field locking ---
+    /// When true, no metadata provider may overwrite any field on this item.
+    #[sqlx(default)]
+    pub is_locked: bool,
+    /// Per-field locks; a provider skip a field if it appears here.
+    #[sqlx(default)]
+    #[sqlx(json)]
+    pub locked_fields: Vec<MetadataField>,
 }
 
 impl Media {
+    pub fn is_field_locked(&self, field: &MetadataField) -> bool {
+        self.is_locked
+            || self
+                .locked_fields
+                .contains(field)
+    }
+
     /// Batch-load parent and grandparent `Media` records (with images) for tracks,
     /// albums, episodes, seasons, and TV programs, storing them as `self.parent` /
     /// `self.grandparent`. The API layer reads titles and image tags from those
@@ -1728,9 +1766,9 @@ impl Media {
             live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id,
             collection_smart_filter, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital,
             collection_source, collection_default_sort, collection_default_sort_order,
-            original_language
+            original_language, is_locked, locked_fields
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
@@ -1772,7 +1810,9 @@ impl Media {
             status = COALESCE(excluded.status, media.status),
             refreshed_at = COALESCE(excluded.refreshed_at, media.refreshed_at),
             program_kind = excluded.program_kind,
-            original_language = COALESCE(excluded.original_language, media.original_language)
+            original_language = COALESCE(excluded.original_language, media.original_language),
+            is_locked = excluded.is_locked,
+            locked_fields = excluded.locked_fields
         "#,
         )
         .bind(self.id)
@@ -1819,6 +1859,8 @@ impl Media {
         .bind(sqlx::types::Json(&self.collection_default_sort))
         .bind(sqlx::types::Json(&self.collection_default_sort_order))
         .bind(&self.original_language)
+        .bind(self.is_locked)
+        .bind(sqlx::types::Json(&self.locked_fields))
         .execute(db)
         .await?;
 
@@ -1983,7 +2025,7 @@ impl Media {
                 external_ids, external_ratings, created_at, updated_at, certification, certification_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital,
                 collection_source, collection_default_sort, collection_default_sort_order,
-                original_language
+                original_language, is_locked, locked_fields
             )",
         );
 
@@ -2037,7 +2079,9 @@ impl Media {
                     .push_bind(&item.collection_source)
                     .push_bind(sqlx::types::Json(&item.collection_default_sort))
                     .push_bind(sqlx::types::Json(&item.collection_default_sort_order))
-                    .push_bind(&item.original_language);
+                    .push_bind(&item.original_language)
+                    .push_bind(&item.is_locked)
+                    .push_bind(sqlx::types::Json(&item.locked_fields));
             });
 
             query_builder.push(
@@ -2075,7 +2119,10 @@ impl Media {
                 sort_order = CASE WHEN media.id IS NOT NULL THEN media.sort_order ELSE excluded.sort_order END,
                 custom_name = media.custom_name,
                 program_kind = excluded.program_kind,
-                original_language = COALESCE(excluded.original_language, media.original_language)",
+                original_language = COALESCE(excluded.original_language, media.original_language),
+                -- preserve user-set locks; never let a provider refresh overwrite them
+                is_locked = CASE WHEN media.id IS NOT NULL THEN media.is_locked ELSE excluded.is_locked END,
+                locked_fields = CASE WHEN media.id IS NOT NULL THEN media.locked_fields ELSE excluded.locked_fields END",
             );
 
             query_builder
