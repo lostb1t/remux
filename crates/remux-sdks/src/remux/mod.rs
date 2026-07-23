@@ -1220,28 +1220,38 @@ pub struct GetItemsQuery {
     #[serde(default, deserialize_with = "deserialize_next_up_date_cutoff")]
     pub next_up_date_cutoff: Option<String>,
     #[serde(
+        deserialize_with = "deserialize_years",
         serialize_with = "serialize_comma_opt",
-        skip_serializing_if = "Option::is_none"
+        skip_serializing_if = "Option::is_none",
+        default
     )]
     pub years: Option<Vec<i64>>,
     #[serde(
+        deserialize_with = "deserialize_genres",
         serialize_with = "serialize_comma_opt",
-        skip_serializing_if = "Option::is_none"
+        skip_serializing_if = "Option::is_none",
+        default
     )]
     pub genres: Option<Vec<String>>,
     #[serde(
+        deserialize_with = "deserialize_genre_ids",
         serialize_with = "serialize_comma_opt",
-        skip_serializing_if = "Option::is_none"
+        skip_serializing_if = "Option::is_none",
+        default
     )]
     pub genre_ids: Option<Vec<String>>,
     #[serde(
+        deserialize_with = "deserialize_official_ratings",
         serialize_with = "serialize_comma_opt",
-        skip_serializing_if = "Option::is_none"
+        skip_serializing_if = "Option::is_none",
+        default
     )]
     pub official_ratings: Option<Vec<String>>,
     #[serde(
+        deserialize_with = "deserialize_tags",
         serialize_with = "serialize_comma_opt",
-        skip_serializing_if = "Option::is_none"
+        skip_serializing_if = "Option::is_none",
+        default
     )]
     pub tags: Option<Vec<String>>,
     #[serde(
@@ -1501,6 +1511,80 @@ where
     deserialize_comma_str(d)
 }
 
+/// Deserialize `Years=2020,2021` into `Vec<i64>` (comma-separated, Jellyfin style).
+pub fn deserialize_years<'de, D>(d: D) -> Result<Option<Vec<i64>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_comma_str(d)
+}
+
+/// Deserialize string filters that Jellyfin clients send pipe-separated.
+/// Jellyfin uses `|` for multi-value genre/rating/tag filters (e.g.
+/// `Genres=Action|Comedy`, `OfficialRatings=PG|R`). We also accept commas so the
+/// field round-trips through our own `serialize_comma_opt` serializer.
+fn deserialize_pipe_comma_str<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Input {
+        Single(String),
+        Multiple(Vec<String>),
+    }
+
+    let input = Option::<Input>::deserialize(deserializer)?;
+    let split_one = |s: &str| {
+        s.split([',', '|'])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect::<Vec<String>>()
+    };
+    let values = match input {
+        Some(Input::Single(s)) => split_one(&s),
+        Some(Input::Multiple(ss)) => ss
+            .iter()
+            .flat_map(|s| split_one(s))
+            .collect(),
+        None => return Ok(None),
+    };
+    Ok(Some(values))
+}
+
+/// `Genres=Action|Comedy` → `vec!["Action", "Comedy"]`.
+pub fn deserialize_genres<'de, D>(d: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_pipe_comma_str(d)
+}
+
+/// `OfficialRatings=PG|R` → `vec!["PG", "R"]`.
+pub fn deserialize_official_ratings<'de, D>(d: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_pipe_comma_str(d)
+}
+
+/// `Tags=Christmas|Halloween` → `vec!["Christmas", "Halloween"]`.
+pub fn deserialize_tags<'de, D>(d: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_pipe_comma_str(d)
+}
+
+/// `GenreIds=id1,id2` → comma-separated string ids (UUIDs may be unresolved yet).
+pub fn deserialize_genre_ids<'de, D>(d: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_pipe_comma_str(d)
+}
+
 pub fn deserialize_uuids<'de, D>(d: D) -> Result<Option<Vec<Uuid>>, D::Error>
 where
     D: Deserializer<'de>,
@@ -1572,6 +1656,71 @@ mod tests {
                 .unwrap_or_default(),
             EmbeddedSubtitleHandling::Burn
         );
+    }
+
+    // --- Filter query deserialization ---
+
+    fn parse_query(q: &str) -> GetItemsQuery {
+        serde_urlencoded::from_str::<GetItemsQuery>(q).unwrap()
+    }
+
+    #[test]
+    fn years_filter_parses_comma_separated() {
+        let q = parse_query("Years=2020,2021&IncludeItemTypes=Movie");
+        assert_eq!(q.years, Some(vec![2020, 2021]));
+    }
+
+    #[test]
+    fn years_filter_single_value() {
+        let q = parse_query("Years=1999");
+        assert_eq!(q.years, Some(vec![1999]));
+    }
+
+    #[test]
+    fn years_filter_skips_garbage_values() {
+        // deserialize_comma_str logs and drops values it cannot parse rather
+        // than failing the whole request.
+        let q = parse_query("Years=2020,notayear,2021");
+        assert_eq!(q.years, Some(vec![2020, 2021]));
+    }
+
+    #[test]
+    fn genres_filter_parses_pipe_separated() {
+        let q = parse_query("Genres=Action|Comedy");
+        assert_eq!(q.genres, Some(vec!["Action".to_string(), "Comedy".to_string()]));
+    }
+
+    #[test]
+    fn genres_filter_also_accepts_comma_separated() {
+        let q = parse_query("Genres=Action,Comedy");
+        assert_eq!(q.genres, Some(vec!["Action".to_string(), "Comedy".to_string()]));
+    }
+
+    #[test]
+    fn official_ratings_filter_parses_pipe() {
+        let q = parse_query("OfficialRatings=PG|R");
+        assert_eq!(
+            q.official_ratings,
+            Some(vec!["PG".to_string(), "R".to_string()])
+        );
+    }
+
+    #[test]
+    fn tags_filter_parses_pipe() {
+        let q = parse_query("Tags=Christmas|Halloween");
+        assert_eq!(
+            q.tags,
+            Some(vec!["Christmas".to_string(), "Halloween".to_string()])
+        );
+    }
+
+    #[test]
+    fn filter_fields_default_to_none_when_absent() {
+        let q = parse_query("IncludeItemTypes=Movie");
+        assert!(q.years.is_none());
+        assert!(q.genres.is_none());
+        assert!(q.official_ratings.is_none());
+        assert!(q.tags.is_none());
     }
 }
 

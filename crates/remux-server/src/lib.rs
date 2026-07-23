@@ -541,16 +541,22 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
             || lower_path.starts_with("/mediasegments/")
             || lower_path.starts_with("/sessions/"));
 
-    // Smart-lowercase: only lowercase purely-alphabetic segments (route
-    // keywords like "Sessions", "Playing"). Path parameter values — UUIDs,
-    // base64 device IDs — contain digits and are preserved unchanged.
+    // Smart-lowercase: lowercase route-keyword segments (Sessions, Items, …) but
+    // leave path-parameter values (UUIDs, base64 device/session ids, …) untouched,
+    // since they are looked up case-sensitively. A segment is lowercased when it
+    // is purely alphabetic, or when it matches a known keyword that contains digits
+    // (Filters2, Hls1).
+    static DIGIT_KEYWORDS: &[&str] = &["filters2", "hls1"];
     let smart_lower_path: String = path
         .split('/')
         .map(|seg| {
-            if seg
+            let is_alpha = seg
                 .chars()
-                .all(|c| c.is_ascii_alphabetic())
-            {
+                .all(|c| c.is_ascii_alphabetic());
+            let is_known_digit_keyword = DIGIT_KEYWORDS
+                .iter()
+                .any(|kw| seg.eq_ignore_ascii_case(kw));
+            if is_alpha || is_known_digit_keyword {
                 seg.to_ascii_lowercase()
             } else {
                 seg.to_string()
@@ -660,3 +666,67 @@ async fn handle_static_404(req: Request<Body>) -> ApiResult<impl IntoResponse> {
 
 #[cfg(test)]
 pub mod integration_test;
+
+#[cfg(test)]
+mod rewrite_uri_tests {
+    use super::rewrite_request_uri;
+
+    fn rewrite(path: &str) -> String {
+        let req = http::Request::builder()
+            .method("GET")
+            .uri(path)
+            .body(())
+            .unwrap();
+        rewrite_request_uri(req)
+            .uri()
+            .path()
+            .to_string()
+    }
+
+    #[test]
+    fn lowercases_alpha_keyword_segments() {
+        assert_eq!(rewrite("/Items/Sessions"), "/items/sessions");
+        assert_eq!(rewrite("/Genres"), "/genres");
+    }
+
+    #[test]
+    fn lowercases_known_digit_keywords() {
+        assert_eq!(rewrite("/Items/Filters2"), "/items/filters2");
+        assert_eq!(rewrite("/Hls1"), "/hls1");
+    }
+
+    #[test]
+    fn preserves_uuid_param_values() {
+        assert_eq!(
+            rewrite("/Items/f27caa37-e514-2225-cced-ed48f6553502"),
+            "/items/f27caa37-e514-2225-cced-ed48f6553502"
+        );
+        assert_eq!(
+            rewrite("/Items/F27CAA37-E514-2225-CCED-ED48F6553502"),
+            "/items/F27CAA37-E514-2225-CCED-ED48F6553502"
+        );
+    }
+
+    #[test]
+    fn preserves_alphanumeric_session_ids() {
+        // Device/session ids in /Sessions/{sessionid} are case-sensitive and must
+        // not be lowercased, even though they may be purely alphanumeric.
+        let did = "TW96aWxsYS81LjAgV2luNjQ7eDY0O3J2OjE1Mi4wKUdlY2tvfDE3ODQ0MTE1NTc2MDMNdQ";
+        assert_eq!(
+            rewrite(&format!("/Sessions/{did}/Command")),
+            format!("/sessions/{did}/command")
+        );
+        assert_eq!(
+            rewrite("/Sessions/MyDevice123/Command"),
+            "/sessions/MyDevice123/command"
+        );
+    }
+
+    #[test]
+    fn leaves_base64_device_ids_with_special_chars_alone() {
+        let path = "/Sessions/Play/YWJjMTIz|abc";
+        let rewritten = rewrite(path);
+        assert!(rewritten.starts_with("/sessions/play/"));
+        assert!(rewritten.contains("YWJjMTIz|abc"));
+    }
+}
