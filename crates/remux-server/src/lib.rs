@@ -711,7 +711,8 @@ mod rewrite_uri_tests {
     fn preserves_alphanumeric_session_ids() {
         // Device/session ids in /Sessions/{sessionid} are case-sensitive and must
         // not be lowercased, even though they may be purely alphanumeric.
-        let did = "TW96aWxsYS81LjAgV2luNjQ7eDY0O3J2OjE1Mi4wKUdlY2tvfDE3ODQ0MTE1NTc2MDMNdQ";
+        let did =
+            "TW96aWxsYS81LjAgV2luNjQ7eDY0O3J2OjE1Mi4wKUdlY2tvfDE3ODQ0MTE1NTc2MDMNdQ";
         assert_eq!(
             rewrite(&format!("/Sessions/{did}/Command")),
             format!("/sessions/{did}/command")

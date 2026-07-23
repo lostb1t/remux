@@ -1523,7 +1523,9 @@ where
 /// Jellyfin uses `|` for multi-value genre/rating/tag filters (e.g.
 /// `Genres=Action|Comedy`, `OfficialRatings=PG|R`). We also accept commas so the
 /// field round-trips through our own `serialize_comma_opt` serializer.
-fn deserialize_pipe_comma_str<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+fn deserialize_pipe_comma_str<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -1562,7 +1564,9 @@ where
 }
 
 /// `OfficialRatings=PG|R` → `vec!["PG", "R"]`.
-pub fn deserialize_official_ratings<'de, D>(d: D) -> Result<Option<Vec<String>>, D::Error>
+pub fn deserialize_official_ratings<'de, D>(
+    d: D,
+) -> Result<Option<Vec<String>>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -1687,13 +1691,19 @@ mod tests {
     #[test]
     fn genres_filter_parses_pipe_separated() {
         let q = parse_query("Genres=Action|Comedy");
-        assert_eq!(q.genres, Some(vec!["Action".to_string(), "Comedy".to_string()]));
+        assert_eq!(
+            q.genres,
+            Some(vec!["Action".to_string(), "Comedy".to_string()])
+        );
     }
 
     #[test]
     fn genres_filter_also_accepts_comma_separated() {
         let q = parse_query("Genres=Action,Comedy");
-        assert_eq!(q.genres, Some(vec!["Action".to_string(), "Comedy".to_string()]));
+        assert_eq!(
+            q.genres,
+            Some(vec!["Action".to_string(), "Comedy".to_string()])
+        );
     }
 
     #[test]
@@ -1717,10 +1727,22 @@ mod tests {
     #[test]
     fn filter_fields_default_to_none_when_absent() {
         let q = parse_query("IncludeItemTypes=Movie");
-        assert!(q.years.is_none());
-        assert!(q.genres.is_none());
-        assert!(q.official_ratings.is_none());
-        assert!(q.tags.is_none());
+        assert!(
+            q.years
+                .is_none()
+        );
+        assert!(
+            q.genres
+                .is_none()
+        );
+        assert!(
+            q.official_ratings
+                .is_none()
+        );
+        assert!(
+            q.tags
+                .is_none()
+        );
     }
 }
 
