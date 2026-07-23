@@ -210,6 +210,21 @@ impl TryFrom<sdks::stremio::MediaType> for MediaKind {
     }
 }
 
+/// Extracts the addon's raw Stremio type string when it's a non-standard type
+/// (e.g. "anime") that `MediaKind` cannot represent and would otherwise collapse
+/// to a generic `Movie`/`Series`. Structural keywords (`episode`/`season`/`person`)
+/// are not content types and are excluded.
+fn custom_stremio_type(media_type: &sdks::stremio::MediaType) -> Option<String> {
+    match media_type {
+        sdks::stremio::MediaType::Unknown(s)
+            if !matches!(s.as_str(), "episode" | "season" | "person") =>
+        {
+            Some(s.clone())
+        }
+        _ => None,
+    }
+}
+
 impl From<&MediaKind> for sdks::stremio::MediaType {
     fn from(kind: &MediaKind) -> Self {
         match kind {
@@ -855,6 +870,10 @@ pub struct ExternalIds {
     /// For seasons/episodes of a custom-ID series: the parent series's `custom_stremio_id`.
     /// Analogous to `series_imdb` for the custom-ID path.
     pub series_custom_stremio_id: Option<String>,
+    /// The addon's own non-standard Stremio type string (e.g. "anime"). The
+    /// addon's `/meta/{type}/{id}.json` and `/stream/{type}/{id}.json` routes
+    /// require this exact string — losing it causes later lookups to 404.
+    pub custom_stremio_type: Option<String>,
 }
 
 impl ExternalIds {
@@ -1025,6 +1044,21 @@ impl ExternalIds {
             &source.series_custom_stremio_id,
             replace,
         );
+        merge_option(
+            &mut self.custom_stremio_type,
+            &source.custom_stremio_type,
+            replace,
+        );
+    }
+
+    /// The Stremio `MediaType` to use when querying the source addon: the
+    /// captured `custom_stremio_type` when present, otherwise the generic
+    /// type derived from `kind`.
+    pub fn stremio_media_type(&self, kind: &MediaKind) -> sdks::stremio::MediaType {
+        self.custom_stremio_type
+            .clone()
+            .map(sdks::stremio::MediaType::Unknown)
+            .unwrap_or_else(|| sdks::stremio::MediaType::from(kind))
     }
 }
 
@@ -5394,6 +5428,7 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                 if let Some(ref imdb) = meta.imdb_id {
                     ids.imdb = NonEmptyString::try_new(imdb.clone()).ok();
                 }
+                ids.custom_stremio_type = custom_stremio_type(&meta.media_type);
                 ids
             },
             status,
@@ -5521,6 +5556,10 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                         grandparent_id: Some(media.id),
                         external_ids: ExternalIds {
                             series_custom_stremio_id: Some(custom_id.clone()),
+                            custom_stremio_type: media
+                                .external_ids
+                                .custom_stremio_type
+                                .clone(),
                             ..Default::default()
                         },
                         released_at: episodes
@@ -5556,6 +5595,10 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                         episode.idx = ep.episode;
                         episode.external_ids = ExternalIds {
                             series_custom_stremio_id: Some(custom_id.clone()),
+                            custom_stremio_type: media
+                                .external_ids
+                                .custom_stremio_type
+                                .clone(),
                             ..Default::default()
                         };
                         episode.parent_id = Some(season_id);
@@ -5630,6 +5673,10 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                         series_tmdb: media
                             .external_ids
                             .tmdb,
+                        custom_stremio_type: media
+                            .external_ids
+                            .custom_stremio_type
+                            .clone(),
                         ..Default::default()
                     },
                     parent_id: Some(media.id),
@@ -5670,6 +5717,10 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                         series_tmdb: media
                             .external_ids
                             .tmdb,
+                        custom_stremio_type: media
+                            .external_ids
+                            .custom_stremio_type
+                            .clone(),
                         ..Default::default()
                     };
                     episode.grandparent_id = Some(media.id);
@@ -5746,6 +5797,9 @@ pub fn stremio_meta_seasons(
             let ext = ExternalIds {
                 series_imdb: Some(iid.clone()),
                 series_tmdb: series_external_ids.tmdb,
+                custom_stremio_type: series_external_ids
+                    .custom_stremio_type
+                    .clone(),
                 ..Default::default()
             };
             (id, ext)
@@ -5761,6 +5815,9 @@ pub fn stremio_meta_seasons(
             });
             let ext = ExternalIds {
                 series_custom_stremio_id: Some(cid.clone()),
+                custom_stremio_type: series_external_ids
+                    .custom_stremio_type
+                    .clone(),
                 ..Default::default()
             };
             (id, ext)
@@ -5840,6 +5897,9 @@ pub fn stremio_meta_season_episodes(
             episode.external_ids = ExternalIds {
                 series_imdb: Some(iid.clone()),
                 series_tmdb: series_external_ids.tmdb,
+                custom_stremio_type: series_external_ids
+                    .custom_stremio_type
+                    .clone(),
                 ..Default::default()
             };
         } else if let Some(ref cid) = custom_id {
@@ -5854,6 +5914,9 @@ pub fn stremio_meta_season_episodes(
             });
             episode.external_ids = ExternalIds {
                 series_custom_stremio_id: Some(cid.clone()),
+                custom_stremio_type: series_external_ids
+                    .custom_stremio_type
+                    .clone(),
                 ..Default::default()
             };
         }
@@ -6370,6 +6433,89 @@ pub(crate) fn build_genre_relations_from_names(
 mod tests {
     use super::*;
     use crate::db::MediaIdRaw;
+
+    #[test]
+    fn custom_stremio_type_extracts_non_standard_type() {
+        assert_eq!(
+            custom_stremio_type(&sdks::stremio::MediaType::Unknown(
+                "anime".to_string()
+            )),
+            Some("anime".to_string())
+        );
+        assert_eq!(custom_stremio_type(&sdks::stremio::MediaType::Series), None);
+        assert_eq!(
+            custom_stremio_type(&sdks::stremio::MediaType::Unknown(
+                "episode".to_string()
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn stremio_media_type_prefers_custom_type_over_kind() {
+        let anime_ids = ExternalIds {
+            custom_stremio_type: Some("anime".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            anime_ids.stremio_media_type(&MediaKind::Series),
+            sdks::stremio::MediaType::Unknown("anime".to_string())
+        );
+
+        let standard_ids = ExternalIds::default();
+        assert_eq!(
+            standard_ids.stremio_media_type(&MediaKind::Series),
+            sdks::stremio::MediaType::Series
+        );
+    }
+
+    #[test]
+    fn stremio_meta_to_medias_propagates_custom_type_to_episodes() {
+        let json = r#"{
+            "id": "fk:27",
+            "type": "anime",
+            "name": "Bleach Yabai",
+            "videos": [
+                {"id": "fk:27:1:1", "season": 1, "episode": 1, "title": "Ep 1"},
+                {"id": "fk:27:1:2", "season": 1, "episode": 2, "title": "Ep 2"}
+            ]
+        }"#;
+        let meta: sdks::stremio::Meta = serde_json::from_str(json).unwrap();
+        let medias = stremio_meta_to_medias(meta).unwrap();
+
+        let series = medias
+            .iter()
+            .find(|m| m.kind == MediaKind::Series)
+            .expect("series media");
+        assert_eq!(
+            series
+                .external_ids
+                .custom_stremio_type,
+            Some("anime".to_string())
+        );
+
+        let season = medias
+            .iter()
+            .find(|m| m.kind == MediaKind::Season)
+            .expect("season media");
+        assert_eq!(
+            season
+                .external_ids
+                .custom_stremio_type,
+            Some("anime".to_string())
+        );
+
+        let episode = medias
+            .iter()
+            .find(|m| m.kind == MediaKind::Episode)
+            .expect("episode media");
+        assert_eq!(
+            episode
+                .external_ids
+                .custom_stremio_type,
+            Some("anime".to_string())
+        );
+    }
 
     #[test]
     fn stale_episode_id_recomputes_to_canonical_and_validates() {
