@@ -308,6 +308,9 @@ pub struct TranscodeParams {
     pub h265_crf: u32,
     /// True for live TV / RTSP streams — disables seeking and enables auto-restart on exit.
     pub is_live: bool,
+    /// Apply `loudnorm=I=-14:TP=-1:LRA=11` when transcoding audio. Has no effect
+    /// when audio_codec is "copy". See EncodingOptions::normalize_audio_loudness.
+    pub normalize_audio_loudness: bool,
 }
 
 impl Default for TranscodeParams {
@@ -346,6 +349,7 @@ impl Default for TranscodeParams {
             h264_crf: 23,
             h265_crf: 28,
             is_live: false,
+            normalize_audio_loudness: true,
         }
     }
 }
@@ -917,6 +921,9 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         if let Some(ch) = params.audio_channels {
             args.extend(["-ac".into(), ch.to_string()]);
         }
+        if params.normalize_audio_loudness {
+            args.extend(["-af".into(), "loudnorm=I=-14:TP=-1:LRA=11".into()]);
+        }
     }
 
     // HLS output
@@ -1309,6 +1316,9 @@ pub struct ProgressiveTranscodeParams {
     pub allow_av1_encoding: bool,
     pub h264_crf: u32,
     pub h265_crf: u32,
+    /// Apply `loudnorm=I=-14:TP=-1:LRA=11` when transcoding audio. Has no effect
+    /// when audio_codec is "copy". See EncodingOptions::normalize_audio_loudness.
+    pub normalize_audio_loudness: bool,
 }
 
 /// Build the ffmpeg CLI args for a progressive transcode piped to stdout.
@@ -1664,6 +1674,9 @@ pub(crate) fn build_progressive_args(
         }
         if let Some(ch) = params.audio_channels {
             args.extend(["-ac".into(), ch.to_string()]);
+        }
+        if params.normalize_audio_loudness {
+            args.extend(["-af".into(), "loudnorm=I=-14:TP=-1:LRA=11".into()]);
         }
     }
 
@@ -2197,6 +2210,7 @@ mod tests {
             allow_av1_encoding: false,
             h264_crf: 23,
             h265_crf: 28,
+            normalize_audio_loudness: false,
         }
     }
 
@@ -2802,5 +2816,70 @@ mod tests {
         assert!(args_contains(&args, "-reconnect"));
         assert!(args_contains(&args, "-reconnect_at_eof"));
         assert!(args_contains(&args, "-reconnect_streamed"));
+    }
+
+    // ── Loudness normalisation tests ─────────────────────────────────────────
+
+    #[test]
+    fn hls_loudnorm_added_when_transcoding_audio() {
+        let dir = PathBuf::from("/tmp/test_session");
+        let args = build_hls_args(&TranscodeParams {
+            audio_codec: "aac".into(),
+            normalize_audio_loudness: true,
+            ..default_hls(dir)
+        });
+        assert!(args_contains(&args, "loudnorm=I=-14:TP=-1:LRA=11"));
+    }
+
+    #[test]
+    fn hls_loudnorm_absent_when_disabled() {
+        let dir = PathBuf::from("/tmp/test_session");
+        let args = build_hls_args(&TranscodeParams {
+            audio_codec: "aac".into(),
+            normalize_audio_loudness: false,
+            ..default_hls(dir)
+        });
+        assert!(!args_contains(&args, "loudnorm=I=-14:TP=-1:LRA=11"));
+    }
+
+    #[test]
+    fn hls_loudnorm_absent_when_audio_copy() {
+        let dir = PathBuf::from("/tmp/test_session");
+        let args = build_hls_args(&TranscodeParams {
+            audio_codec: "copy".into(),
+            normalize_audio_loudness: true,
+            ..default_hls(dir)
+        });
+        assert!(!args_contains(&args, "loudnorm=I=-14:TP=-1:LRA=11"));
+    }
+
+    #[test]
+    fn progressive_loudnorm_added_when_transcoding_audio() {
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
+            audio_codec: "aac".into(),
+            normalize_audio_loudness: true,
+            ..default_progressive()
+        });
+        assert!(args_contains(&args, "loudnorm=I=-14:TP=-1:LRA=11"));
+    }
+
+    #[test]
+    fn progressive_loudnorm_absent_when_disabled() {
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
+            audio_codec: "aac".into(),
+            normalize_audio_loudness: false,
+            ..default_progressive()
+        });
+        assert!(!args_contains(&args, "loudnorm=I=-14:TP=-1:LRA=11"));
+    }
+
+    #[test]
+    fn progressive_loudnorm_absent_when_audio_copy() {
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
+            audio_codec: "copy".into(),
+            normalize_audio_loudness: true,
+            ..default_progressive()
+        });
+        assert!(!args_contains(&args, "loudnorm=I=-14:TP=-1:LRA=11"));
     }
 }

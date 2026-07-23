@@ -480,6 +480,9 @@ async fn create_hls_session(
                 .h265_crf
                 .unwrap_or(28),
             is_live,
+            normalize_audio_loudness: encoding_opts
+                .normalize_audio_loudness
+                .unwrap_or(true),
         };
 
         // Spawn the transcode task with proper error handling
@@ -1116,6 +1119,9 @@ async fn hls_segment_inner(
                             .h265_crf
                             .unwrap_or(28),
                         is_live: false,
+                        normalize_audio_loudness: encoding_opts
+                            .normalize_audio_loudness
+                            .unwrap_or(true),
                     };
 
                     // Reinitialise the session's state for the new transcode run.
