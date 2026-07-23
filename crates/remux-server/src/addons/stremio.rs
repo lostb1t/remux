@@ -436,6 +436,10 @@ impl TreeAddon for StremioAddon {
                         .external_ids
                         .series_custom_stremio_id
                         .clone(),
+                    custom_stremio_type: root
+                        .external_ids
+                        .custom_stremio_type
+                        .clone(),
                     ..Default::default()
                 };
                 let series_id = root
@@ -648,6 +652,57 @@ fn is_404(e: &anyhow::Error) -> bool {
 // Meta helpers
 // ---------------------------------------------------------------------------
 
+/// Finds a working alternate Stremio type for `meta_id` by consulting the
+/// addon's own manifest, for the case where `tried_type` (derived generically
+/// from `MediaKind`) 404s. Only considers `meta` resources whose `idPrefixes`
+/// match `meta_id` (or which have no prefix restriction), and probes each
+/// candidate type with a real request — the manifest can list types that
+/// don't apply to this specific ID, so a match here isn't guaranteed either.
+/// Returns the successful fetch directly to avoid a redundant second request.
+async fn manifest_meta_type_fallback(
+    svc: &stremio_service::StremioService,
+    tried_type: &sdks::stremio::MediaType,
+    meta_id: &str,
+) -> Option<sdks::stremio::Meta> {
+    let manifest = svc
+        .get_manifest()
+        .await
+        .ok()?;
+    let tried = tried_type.to_string();
+    let candidates: Vec<String> = manifest
+        .resources
+        .into_iter()
+        .filter_map(|r| match r {
+            sdks::stremio::Resource::Detailed(r) if r.name == ResourceType::Meta => {
+                let prefix_ok = r
+                    .id_prefixes
+                    .as_ref()
+                    .map(|prefixes| {
+                        prefixes
+                            .iter()
+                            .any(|p| meta_id.starts_with(p.as_str()))
+                    })
+                    .unwrap_or(true);
+                prefix_ok.then_some(r.types)
+            }
+            _ => None,
+        })
+        .flatten()
+        .filter(|t| t != &tried)
+        .collect();
+
+    for candidate in candidates {
+        let alt_type = sdks::stremio::MediaType::Unknown(candidate);
+        if let Ok(meta) = svc
+            .get_meta(alt_type, meta_id.to_string())
+            .await
+        {
+            return Some(meta);
+        }
+    }
+    None
+}
+
 /// Fetch the raw Stremio `Meta` for `media`, storing it in `cache` keyed by
 /// the series-level lookup id. Returns the cached `Arc` immediately if present.
 async fn fetch_and_cache_meta(
@@ -680,7 +735,9 @@ async fn fetch_and_cache_meta(
             .external_ids
             .series_imdb
             .is_none();
-    let media_type = sdks::stremio::MediaType::from(&media.kind);
+    let media_type = media
+        .external_ids
+        .stremio_media_type(&media.kind);
     let meta = if let Some(stored) = ctx
         .store
         .get::<sdks::stremio::Meta>(
@@ -695,6 +752,25 @@ async fn fetch_and_cache_meta(
             .await
         {
             Ok(m) => m,
+            // Custom-ID items (no IMDB/TMDB) have no `MediaKind`-derived type that's
+            // guaranteed correct: a DB row imported before `custom_stremio_type` was
+            // tracked (or a season/episode that never inherited it) falls back to a
+            // generic type that may not match the addon's own non-standard one (e.g.
+            // "anime"). Ask the addon's manifest what type(s) it actually serves for
+            // this ID and retry, rather than failing permanently.
+            Err(e)
+                if is_404(&e)
+                    && is_custom
+                    && media
+                        .external_ids
+                        .custom_stremio_type
+                        .is_none() =>
+            {
+                match manifest_meta_type_fallback(svc, &media_type, &meta_id).await {
+                    Some(m) => m,
+                    None => return Err(e),
+                }
+            }
             Err(e) if is_404(&e) && !is_custom => {
                 let tmdb_id = media
                     .external_ids
@@ -792,6 +868,10 @@ async fn stremio_meta_fetch(
                     .external_ids
                     .series_custom_stremio_id
                     .clone(),
+                custom_stremio_type: media
+                    .external_ids
+                    .custom_stremio_type
+                    .clone(),
                 ..Default::default()
             };
             let seasons =
@@ -823,6 +903,10 @@ async fn stremio_meta_fetch(
                 custom_stremio_id: media
                     .external_ids
                     .series_custom_stremio_id
+                    .clone(),
+                custom_stremio_type: media
+                    .external_ids
+                    .custom_stremio_type
                     .clone(),
                 ..Default::default()
             };
@@ -1251,7 +1335,9 @@ async fn stremio_streams(
                 .series_tmdb
                 .map(|tid| format!("tmdb:{}:{}:{}", tid, season, episode));
             (
-                sdks::stremio::MediaType::Series,
+                media
+                    .external_ids
+                    .stremio_media_type(&media.kind),
                 format!("{}:{}:{}", series_id, season, episode),
                 tmdb_fb,
             )
@@ -1299,7 +1385,13 @@ async fn stremio_streams(
                 .external_ids
                 .tmdb
                 .map(|tid| format!("tmdb:{}", tid));
-            (sdks::stremio::MediaType::from(&media.kind), id, tmdb_fb)
+            (
+                media
+                    .external_ids
+                    .stremio_media_type(&media.kind),
+                id,
+                tmdb_fb,
+            )
         }
     };
 
@@ -1459,4 +1551,120 @@ async fn stremio_streams(
             })
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mock_manifest(server: &httpmock::MockServer) {
+        server.mock(|when, then| {
+            when.path("/manifest.json");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "id": "fankai-test",
+                    "name": "Fankai",
+                    "version": "1.0.0",
+                    "resources": [
+                        "catalog",
+                        {"name": "meta", "types": ["anime"], "idPrefixes": ["fk"]}
+                    ],
+                    "types": ["anime"],
+                    "catalogs": []
+                }));
+        });
+    }
+
+    #[tokio::test]
+    async fn manifest_meta_type_fallback_retries_with_addon_declared_type() {
+        let server = httpmock::MockServer::start();
+        mock_manifest(&server);
+        let series_attempt = server.mock(|when, then| {
+            when.path("/meta/series/fk:27.json");
+            then.status(404);
+        });
+        let anime_attempt = server.mock(|when, then| {
+            when.path("/meta/anime/fk:27.json");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "meta": {"id": "fk:27", "type": "anime", "name": "Bleach Yabai"}
+                }));
+        });
+
+        let svc = stremio_service::StremioService::from_url(&server.base_url())
+            .unwrap();
+
+        // Confirm the generic type really does 404 first.
+        let direct = svc
+            .get_meta(sdks::stremio::MediaType::Series, "fk:27".to_string())
+            .await;
+        assert!(direct.is_err());
+        series_attempt.assert();
+
+        let meta = manifest_meta_type_fallback(
+            &svc,
+            &sdks::stremio::MediaType::Series,
+            "fk:27",
+        )
+        .await;
+
+        assert!(
+            meta.is_some(),
+            "fallback must find the addon's declared \"anime\" type"
+        );
+        assert_eq!(
+            meta.unwrap()
+                .get_name(),
+            Some("Bleach Yabai".to_string())
+        );
+        anime_attempt.assert();
+    }
+
+    #[tokio::test]
+    async fn manifest_meta_type_fallback_none_when_no_type_works() {
+        let server = httpmock::MockServer::start();
+        mock_manifest(&server);
+        server.mock(|when, then| {
+            when.path("/meta/anime/fk:999.json");
+            then.status(404);
+        });
+
+        let svc = stremio_service::StremioService::from_url(&server.base_url())
+            .unwrap();
+        let meta = manifest_meta_type_fallback(
+            &svc,
+            &sdks::stremio::MediaType::Series,
+            "fk:999",
+        )
+        .await;
+
+        assert!(meta.is_none());
+    }
+
+    #[tokio::test]
+    async fn manifest_meta_type_fallback_skips_non_matching_prefix() {
+        let server = httpmock::MockServer::start();
+        mock_manifest(&server);
+        // "tt" is not covered by fankai's declared idPrefixes (["fk"]) — the
+        // fallback must not even attempt the "anime" type for it.
+        let anime_attempt = server.mock(|when, then| {
+            when.path("/meta/anime/tt1234567.json");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "meta": {"id": "tt1234567", "type": "anime", "name": "Should Not Match"}
+                }));
+        });
+
+        let svc = stremio_service::StremioService::from_url(&server.base_url())
+            .unwrap();
+        let meta = manifest_meta_type_fallback(
+            &svc,
+            &sdks::stremio::MediaType::Series,
+            "tt1234567",
+        )
+        .await;
+
+        assert!(meta.is_none());
+        anime_attempt.assert_hits(0);
+    }
 }
