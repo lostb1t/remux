@@ -408,6 +408,7 @@ pub struct Meta {
     )]
     pub writer: Option<Vec<String>>,
     pub description: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_option_string_or_array")]
     pub genre: Option<Vec<String>>,
     #[serde(
         default,
@@ -440,6 +441,7 @@ pub struct Meta {
     )]
     pub popularity: Option<f64>,
     pub id: String,
+    #[serde(default, deserialize_with = "deserialize_option_string_or_array")]
     pub genres: Option<Vec<String>>,
     // pub season_posters: Option<Vec<String>>,
     // this can be a range 2012-2015
@@ -986,7 +988,7 @@ pub fn client(base: &str) -> Result<RestClient, url::ParseError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MediaType, parse_duration_lossy};
+    use super::{MediaType, Meta, parse_duration_lossy};
     use std::time::Duration;
 
     #[test]
@@ -1032,5 +1034,18 @@ mod tests {
         let kind = MediaType::Unknown("my_custom_type".into());
         let path = format!("/meta/{}/some_id.json", kind);
         assert_eq!(path, "/meta/my_custom_type/some_id.json");
+    }
+
+    #[test]
+    fn meta_genre_and_genres_accept_bare_string() {
+        let json = r#"{
+            "id": "fankai:123",
+            "type": "series",
+            "genre": "En cours",
+            "genres": "En cours"
+        }"#;
+        let meta: Meta = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.genre, Some(vec!["En cours".to_string()]));
+        assert_eq!(meta.genres, Some(vec!["En cours".to_string()]));
     }
 }
