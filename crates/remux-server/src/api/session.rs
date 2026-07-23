@@ -1165,6 +1165,64 @@ pub async fn add_session_user(
 }
 
 /// Remove an additional user from a session.
+/// Send a DisplayMessage general command to a session via WebSocket.
+#[post("/sessions/{sessionid}/message")]
+pub async fn send_session_message(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path(session_id): Path<String>,
+    body: Option<Json<RemoteMessageBody>>,
+) -> Result<impl IntoResponse> {
+    let device = auth::Device::get_by_id(
+        &state
+            .ctx
+            .db,
+        &session_id,
+    )
+    .await?
+    .context_not_found("session not found")?;
+    if device.user_id
+        != session
+            .user
+            .id
+        && !session
+            .user
+            .can_remote_control_others()
+    {
+        return Err(anyhow::anyhow!("Forbidden")
+            .context_forbidden("cannot control other users' sessions"));
+    }
+    let body = body
+        .map(|Json(b)| b)
+        .unwrap_or_default();
+    let header = body
+        .header
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "Message from Server".to_string());
+    let mut arguments = serde_json::json!({
+        "Header": header,
+        "Text": body.text.unwrap_or_default(),
+    });
+    if let Some(ms) = body.timeout_ms {
+        arguments["TimeoutMs"] = serde_json::json!(ms.to_string());
+    }
+    let data = serde_json::json!({
+        "Name": "DisplayMessage",
+        "Arguments": arguments,
+    });
+    let result = state
+        .ctx
+        .ws_tx
+        .send(crate::ws::WsEvent::RemoteCommand {
+            device_id: device.id,
+            data,
+        });
+    if result.is_err() {
+        info!(device_id = %session_id, "no WS receivers for message command (target may not be connected)");
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[delete("/sessions/{sessionid}/user/{userid}")]
 pub async fn remove_session_user(
     State(_state): State<AppState>,
