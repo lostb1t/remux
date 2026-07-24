@@ -40,18 +40,8 @@ pub async fn user_configuration_update(
     Path(user_id): Path<Uuid>,
     Json(payload): Json<api::UserConfiguration>,
 ) -> Result<impl IntoResponse> {
-    let target_id = if session
-        .user
-        .is_admin
-        || session
-            .user
-            .id
-            == user_id
-    {
-        user_id
-    } else {
-        return Err(anyhow::anyhow!("forbidden").context_unauthorized("forbidden"));
-    };
+    require_self_or_admin(user_id, &session)?;
+    let target_id = user_id;
     db::User::save_configuration(
         &state
             .ctx
@@ -2954,6 +2944,7 @@ mod e2e_tests {
                 HeaderValue::from_str(&admin_auth).unwrap(),
             )
             .await;
+        resp.assert_status_ok();
         let admin_id = resp.json::<serde_json::Value>()["Id"]
             .as_str()
             .unwrap()
@@ -2978,6 +2969,7 @@ mod e2e_tests {
             )
             .json(&json!({ "Username": "regularuser", "Pw": "pass1234" }))
             .await;
+        resp.assert_status_ok();
         let regular_token = resp.json::<serde_json::Value>()["AccessToken"]
             .as_str()
             .unwrap()
