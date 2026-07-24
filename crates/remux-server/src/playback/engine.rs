@@ -349,7 +349,7 @@ impl Default for TranscodeParams {
             h264_crf: 23,
             h265_crf: 28,
             is_live: false,
-            normalize_audio_loudness: true,
+            normalize_audio_loudness: false,
         }
     }
 }

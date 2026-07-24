@@ -482,7 +482,7 @@ async fn create_hls_session(
             is_live,
             normalize_audio_loudness: encoding_opts
                 .normalize_audio_loudness
-                .unwrap_or(true),
+                .unwrap_or(false),
         };
 
         // Spawn the transcode task with proper error handling
@@ -1121,7 +1121,7 @@ async fn hls_segment_inner(
                         is_live: false,
                         normalize_audio_loudness: encoding_opts
                             .normalize_audio_loudness
-                            .unwrap_or(true),
+                            .unwrap_or(false),
                     };
 
                     // Reinitialise the session's state for the new transcode run.
