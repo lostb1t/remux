@@ -123,11 +123,13 @@ impl Device {
     }
 
     pub async fn get_by_id(db: &SqlitePool, device_id: &str) -> Result<Option<Self>> {
-        sqlx::query_as::<_, Self>("SELECT * FROM devices WHERE id = ?1 LIMIT 1")
-            .bind(device_id)
-            .fetch_optional(db)
-            .await
-            .map_err(Into::into)
+        sqlx::query_as::<_, Self>(
+            "SELECT * FROM devices WHERE lower(id) = lower(?1) LIMIT 1",
+        )
+        .bind(device_id)
+        .fetch_optional(db)
+        .await
+        .map_err(Into::into)
     }
 
     /// Get all devices, optionally filtering to those active since `since`.
@@ -257,7 +259,7 @@ impl Device {
         device_id: &str,
         caps: &crate::api::ClientCapabilitiesDto,
     ) -> Result<()> {
-        sqlx::query("UPDATE devices SET capabilities = ? WHERE id = ?")
+        sqlx::query("UPDATE devices SET capabilities = ? WHERE lower(id) = lower(?)")
             .bind(sqlx::types::Json(caps))
             .bind(device_id)
             .execute(db)

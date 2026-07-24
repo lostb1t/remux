@@ -541,15 +541,12 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
             || lower_path.starts_with("/mediasegments/")
             || lower_path.starts_with("/sessions/"));
 
-    // Smart-lowercase: only lowercase purely-alphabetic segments (route
-    // keywords like "Sessions", "Playing"). Path parameter values — UUIDs,
-    // base64 device IDs — contain digits and are preserved unchanged.
     let smart_lower_path: String = path
         .split('/')
         .map(|seg| {
             if seg
                 .chars()
-                .all(|c| c.is_ascii_alphabetic())
+                .all(|c| c.is_ascii_alphanumeric())
             {
                 seg.to_ascii_lowercase()
             } else {
@@ -660,3 +657,52 @@ async fn handle_static_404(req: Request<Body>) -> ApiResult<impl IntoResponse> {
 
 #[cfg(test)]
 pub mod integration_test;
+
+#[cfg(test)]
+mod rewrite_uri_tests {
+    use super::rewrite_request_uri;
+
+    fn rewrite(path: &str) -> String {
+        let req = http::Request::builder()
+            .method("GET")
+            .uri(path)
+            .body(())
+            .unwrap();
+        rewrite_request_uri(req)
+            .uri()
+            .path()
+            .to_string()
+    }
+
+    #[test]
+    fn lowercases_alpha_keyword_segments() {
+        assert_eq!(rewrite("/Items/Sessions"), "/items/sessions");
+        assert_eq!(rewrite("/Genres"), "/genres");
+    }
+
+    #[test]
+    fn lowercases_keyword_with_digits() {
+        assert_eq!(rewrite("/Items/Filters2"), "/items/filters2");
+        assert_eq!(rewrite("/Hls1"), "/hls1");
+    }
+
+    #[test]
+    fn preserves_uuid_param_values() {
+        assert_eq!(
+            rewrite("/Items/f27caa37-e514-2225-cced-ed48f6553502"),
+            "/items/f27caa37-e514-2225-cced-ed48f6553502"
+        );
+        assert_eq!(
+            rewrite("/Items/F27CAA37-E514-2225-CCED-ED48F6553502"),
+            "/items/F27CAA37-E514-2225-CCED-ED48F6553502"
+        );
+    }
+
+    #[test]
+    fn leaves_special_char_device_ids_alone() {
+        let path = "/Sessions/Play/YWJjMTIz%7Cabc";
+        let rewritten = rewrite(path);
+        assert!(rewritten.starts_with("/sessions/play/"));
+        assert!(rewritten.contains("YWJjMTIz%7Cabc"));
+    }
+}

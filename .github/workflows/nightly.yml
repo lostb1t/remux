@@ -46,14 +46,20 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Compute nightly version
         id: version
         run: |
           SHORT_SHA=$(git rev-parse --short HEAD)
+          LAST_STABLE=$(git tag --list 'v[0-9]*' --sort=-version:refname | head -1)
+          BASE_VERSION="${LAST_STABLE#v}"
+          BASE_VERSION="${BASE_VERSION:-0.0.1}"
           # Prefix with g to avoid semver rejecting purely-numeric shas
           # that have leading zeros (e.g. 0403527).
-          VERSION="0.0.1-nightly.$(date -u '+%Y%m%d').g${SHORT_SHA}"
+          VERSION="${BASE_VERSION}-nightly.$(date -u '+%Y%m%d').g${SHORT_SHA}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
   test:
