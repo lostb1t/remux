@@ -223,6 +223,7 @@ impl TorznabAddon {
                 Some(crate::stream::StreamInfo {
                     descriptor,
                     name: Some(item.label(&self.name)),
+                    size: item.size,
                     probe_data: Some(api::MediaSourceInfo {
                         media_streams: vec![api::MediaStream {
                             index: 0,
@@ -311,6 +312,7 @@ impl TorznabAddon {
                 Some(crate::stream::StreamInfo {
                     descriptor: magnet_to_descriptor(&item.url()?, None)?,
                     name: Some(item.label(&self.name)),
+                    size: item.size,
                     ..Default::default()
                 })
             })
@@ -384,6 +386,7 @@ impl TorznabAddon {
                 Some(crate::stream::StreamInfo {
                     descriptor: magnet_to_descriptor(&item.url()?, None)?,
                     name: Some(item.label(&self.name)),
+                    size: item.size,
                     ..Default::default()
                 })
             })
@@ -928,6 +931,7 @@ mod tests {
         assert_eq!(items[0].title, "Artist - Track [FLAC]");
         assert_eq!(items[0].seeders, 7);
         assert_eq!(items[0].peers, 9);
+        assert_eq!(items[0].size, Some(104857600));
         assert_eq!(
             items[0]
                 .category

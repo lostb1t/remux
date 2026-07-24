@@ -1,8 +1,8 @@
 use anyhow::Result;
 use chrono::Utc;
 use remux_sdks::remux::{
-    FilterMatchMode, SetOp, StreamCodec, StreamFilter, StreamQuality, StreamResolution,
-    StreamRule,
+    FilterMatchMode, NumericOp, SetOp, StreamCodec, StreamFilter, StreamQuality,
+    StreamResolution, StreamRule, format_size_rule,
 };
 use sqlx::SqlitePool;
 use std::collections::HashSet;
@@ -402,6 +402,17 @@ impl StreamGroup {
                 let hit = values.contains(&codec);
                 matches!(op, SetOp::In | SetOp::Is) == hit
             }
+            // Unknown size (None) passes so HTTP/debrid/IPTV sources are not
+            // silently dropped — the rule only filters when size is known.
+            StreamRule::Size { op, value } => match info.size {
+                None => true,
+                Some(s) => match op {
+                    NumericOp::Eq => s == *value,
+                    NumericOp::NotEq => s != *value,
+                    NumericOp::Gt => s > *value,
+                    NumericOp::Lt => s < *value,
+                },
+            },
         };
 
         match filter.match_mode {
@@ -512,19 +523,23 @@ fn auto_name(filter: &StreamFilter) -> String {
         .rules
         .iter()
         .filter_map(|r| {
-            let labels: Vec<&str> = match r {
+            let labels: Vec<String> = match r {
                 StreamRule::Resolution { values, .. } => values
                     .iter()
                     .map(|v| v.label())
+                    .map(str::to_owned)
                     .collect(),
                 StreamRule::Quality { values, .. } => values
                     .iter()
                     .map(|v| v.label())
+                    .map(str::to_owned)
                     .collect(),
                 StreamRule::Codec { values, .. } => values
                     .iter()
                     .map(|v| v.label())
+                    .map(str::to_owned)
                     .collect(),
+                StreamRule::Size { op, value } => vec![format_size_rule(*op, *value)],
             };
             if labels.is_empty() {
                 None
@@ -645,6 +660,112 @@ mod tests {
         let group = group_1080p_bluray();
         assert!(!group.matches(&info(
             "The Martian 2015 UHD BluRay 2160p HDR10 DoVi Atmos x265-GROUP.mkv"
+        )));
+    }
+
+    fn group_size(op: NumericOp, value: i64) -> StreamGroup {
+        StreamGroup {
+            id: Uuid::nil(),
+            name: "size".to_string(),
+            filter: StreamFilter {
+                match_mode: FilterMatchMode::All,
+                rules: vec![StreamRule::Size { op, value }],
+            },
+            priority: 0,
+            enabled: true,
+            hidden: false,
+            created_at: String::new(),
+        }
+    }
+
+    fn info_with_size(filename: &str, size: Option<i64>) -> StreamInfo {
+        StreamInfo {
+            descriptor: StreamDescriptor::default(),
+            filename: Some(filename.to_string()),
+            size,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn size_gt_matches_large_release() {
+        let group = group_size(NumericOp::Gt, 20_000_000_000);
+        assert!(group.matches(&info_with_size(
+            "Movie.2024.1080p.BluRay.mkv",
+            Some(35_000_000_000)
+        )));
+    }
+
+    #[test]
+    fn size_gt_rejects_small_release() {
+        let group = group_size(NumericOp::Gt, 20_000_000_000);
+        assert!(!group.matches(&info_with_size(
+            "Movie.2024.1080p.WEBRip.mkv",
+            Some(2_000_000_000)
+        )));
+    }
+
+    // Regression guard: HTTP/debrid/IPTV sources almost never report a size.
+    // An unknown size must NOT be filtered out — only known sizes are filtered.
+    #[test]
+    fn size_unknown_passes() {
+        let group = group_size(NumericOp::Gt, 20_000_000_000);
+        assert!(group.matches(&info_with_size("Movie.2024.1080p.mkv", None)));
+    }
+
+    #[test]
+    fn size_ops_eq_not_eq_lt() {
+        let v = 5_000_000_000;
+        assert!(
+            group_size(NumericOp::Eq, v).matches(&info_with_size("a.mkv", Some(v)))
+        );
+        assert!(
+            !group_size(NumericOp::Eq, v)
+                .matches(&info_with_size("a.mkv", Some(v + 1)))
+        );
+        assert!(
+            group_size(NumericOp::NotEq, v)
+                .matches(&info_with_size("a.mkv", Some(v + 1)))
+        );
+        assert!(
+            group_size(NumericOp::Lt, v).matches(&info_with_size("a.mkv", Some(v - 1)))
+        );
+    }
+
+    #[test]
+    fn size_combined_with_resolution_all() {
+        let group = StreamGroup {
+            id: Uuid::nil(),
+            name: "1080p · big".to_string(),
+            filter: StreamFilter {
+                match_mode: FilterMatchMode::All,
+                rules: vec![
+                    StreamRule::Resolution {
+                        op: SetOp::In,
+                        values: vec![StreamResolution::R1080p],
+                    },
+                    StreamRule::Size {
+                        op: NumericOp::Gt,
+                        value: 20_000_000_000,
+                    },
+                ],
+            },
+            priority: 0,
+            enabled: true,
+            hidden: false,
+            created_at: String::new(),
+        };
+        assert!(group.matches(&info_with_size(
+            "Movie.2024.1080p.BluRay.mkv",
+            Some(35_000_000_000)
+        )));
+        assert!(!group.matches(&info_with_size(
+            "Movie.2024.1080p.WEBRip.mkv",
+            Some(1_000_000_000)
+        )));
+        assert!(!group.matches(&info_with_size(
+            "Movie.2024.720p.BluRay.mkv",
+            Some(35_000_000_000)
         )));
     }
 }
