@@ -28,6 +28,10 @@ Exceptions: bootstrapping env vars that must be read before `Config` is loaded (
 
 If a field's default depends on another field (e.g. `database_url` derived from `data_dir`), use `Option<String>` for the derived field and implement `Config::resolve()` to fill it in post-deserialization. Call `.resolve()` in `main.rs` immediately after loading.
 
+## Git workflow
+
+Always run `cargo fmt` on every crate you touched before committing. CI enforces formatting and will fail the build if it's skipped.
+
 ## Coding conventions
 
 - Prefer `strum`-derived enums over raw strings for any value that has a fixed set of variants (media kinds, image types, codec names, etc.). Use `#[derive(EnumString, Display, ...)]` so the enum round-trips cleanly through serde and DB layers without stringly-typed branches.
