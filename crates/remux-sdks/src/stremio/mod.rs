@@ -842,6 +842,7 @@ pub struct BehaviorHints {
     pub binge_group: Option<String>,
     pub not_web_ready: Option<bool>,
     pub video_size: Option<i64>,
+    pub media_info: Option<crate::remuxdb::MediaInfo>,
 }
 
 /// AIOStreams extension: torrent sub-object within `streamData`.
