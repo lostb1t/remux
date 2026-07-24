@@ -40,12 +40,26 @@ pub async fn user_configuration_update(
     Path(user_id): Path<Uuid>,
     Json(payload): Json<api::UserConfiguration>,
 ) -> Result<impl IntoResponse> {
-    let target_id = if session.user.is_admin || session.user.id == user_id {
+    let target_id = if session
+        .user
+        .is_admin
+        || session
+            .user
+            .id
+            == user_id
+    {
         user_id
     } else {
         return Err(anyhow::anyhow!("forbidden").context_unauthorized("forbidden"));
     };
-    db::User::save_configuration(&state.ctx.db, &target_id, &payload).await?;
+    db::User::save_configuration(
+        &state
+            .ctx
+            .db,
+        &target_id,
+        &payload,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -2869,7 +2883,9 @@ mod e2e_tests {
             .await;
         resp.assert_status_ok();
         let other: serde_json::Value = resp.json();
-        let other_id = other["Id"].as_str().unwrap();
+        let other_id = other["Id"]
+            .as_str()
+            .unwrap();
 
         // Admin updates the other user's subtitle preferences.
         let resp = server
@@ -3008,7 +3024,9 @@ mod e2e_tests {
             .await;
         resp.assert_status_ok();
         let created: serde_json::Value = resp.json();
-        let self_id = created["Id"].as_str().unwrap();
+        let self_id = created["Id"]
+            .as_str()
+            .unwrap();
 
         // Authenticate as the non-admin user.
         let resp = server

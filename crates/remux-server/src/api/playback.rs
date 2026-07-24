@@ -433,6 +433,9 @@ async fn items_playbackinfo_inner(
         &mut media_sources,
         q.audio_stream_index,
         q.subtitle_stream_index,
+        probe_cfg
+            .preferred_metadata_language
+            .as_deref(),
     )
     .await;
 
@@ -2650,6 +2653,193 @@ mod tests {
             "Client's explicit AudioStreamIndex must prevent language preference from selecting Dutch (index 1)"
         );
     }
+
+    /// Build a Stream with French (index 2) and English (index 3) subtitle tracks.
+    async fn insert_subtitle_source(ctx: &crate::AppContext) -> crate::db::Media {
+        use crate::{
+            api::{MediaSourceInfo, MediaStream, MediaStreamType},
+            db,
+        };
+        let now = chrono::Utc::now().naive_utc();
+        let probe = MediaSourceInfo {
+            container: Some("mkv".to_string()),
+            bitrate: Some(8_000_000),
+            run_time_ticks: Some(100_000_000),
+            media_streams: vec![
+                MediaStream {
+                    codec: Some("h264".to_string()),
+                    type_: Some(MediaStreamType::Video),
+                    index: 0,
+                    width: Some(1920),
+                    height: Some(1080),
+                    ..Default::default()
+                },
+                MediaStream {
+                    codec: Some("aac".to_string()),
+                    type_: Some(MediaStreamType::Audio),
+                    index: 1,
+                    ..Default::default()
+                },
+                MediaStream {
+                    codec: Some("subrip".to_string()),
+                    type_: Some(MediaStreamType::Subtitle),
+                    index: 2,
+                    language: Some("fra".to_string()),
+                    is_text_subtitle_stream: true,
+                    ..Default::default()
+                },
+                MediaStream {
+                    codec: Some("subrip".to_string()),
+                    type_: Some(MediaStreamType::Subtitle),
+                    index: 3,
+                    language: Some("eng".to_string()),
+                    is_text_subtitle_stream: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let mut media = db::Media {
+            title: "Subtitle Fallback Test".to_string(),
+            kind: db::MediaKind::Stream,
+            stream_info: Some(crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::Local(
+                    "test-fixture-subs.mkv".into(),
+                ),
+                ..Default::default()
+            }),
+            probe_data: Some(probe),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        media
+            .save(&ctx.db)
+            .await
+            .expect("insert_subtitle_source failed");
+        media
+    }
+
+    /// When the user has no `SubtitleLanguagePreference`, the server's
+    /// `preferred_metadata_language` is used as a last fallback to auto-select a subtitle.
+    #[tokio::test]
+    async fn test_server_metadata_language_fallback_selects_subtitle() {
+        use crate::api::ServerConfiguration;
+        use crate::db::Settings;
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let ctx = &guard.0;
+        let media = insert_subtitle_source(ctx).await;
+
+        Settings::set_config(
+            &ctx.db,
+            &ServerConfiguration {
+                preferred_metadata_language: Some("fr".to_string()),
+                ..ServerConfiguration::default()
+            },
+        )
+        .await
+        .expect("set server config");
+
+        let me: serde_json::Value = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let user_id = me["Id"]
+            .as_str()
+            .unwrap();
+        server
+            .post(&format!("/users/{}/configuration", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&default_user_config())
+            .await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({}))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["MediaSources"][0]["DefaultSubtitleStreamIndex"].as_i64(),
+            Some(2),
+            "server preferred_metadata_language 'fr' should select the French subtitle (index 2)"
+        );
+    }
+
+    /// The user's own `SubtitleLanguagePreference` must win over the server fallback.
+    #[tokio::test]
+    async fn test_user_subtitle_pref_takes_priority_over_server_fallback() {
+        use crate::api::ServerConfiguration;
+        use crate::db::Settings;
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let ctx = &guard.0;
+        let media = insert_subtitle_source(ctx).await;
+
+        Settings::set_config(
+            &ctx.db,
+            &ServerConfiguration {
+                preferred_metadata_language: Some("fr".to_string()),
+                ..ServerConfiguration::default()
+            },
+        )
+        .await
+        .expect("set server config");
+
+        let me: serde_json::Value = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let user_id = me["Id"]
+            .as_str()
+            .unwrap();
+        server
+            .post(&format!("/users/{}/configuration", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&user_config_with(
+                json!({ "SubtitleLanguagePreference": "eng" }),
+            ))
+            .await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({}))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["MediaSources"][0]["DefaultSubtitleStreamIndex"].as_i64(),
+            Some(3),
+            "user SubtitleLanguagePreference 'eng' must take priority over server fallback 'fr'"
+        );
+    }
 }
 
 /// Returns additional parts for a multi-file video item.
@@ -2748,6 +2938,7 @@ async fn apply_user_playback_prefs(
     media_sources: &mut Vec<api::MediaSourceInfo>,
     client_audio_idx: Option<i64>,
     client_subtitle_idx: Option<i64>,
+    server_subtitle_lang_fallback: Option<&str>,
 ) {
     let cfg = user
         .configuration
@@ -2916,6 +3107,36 @@ async fn apply_user_playback_prefs(
                 .is_none()
         {
             if let Some(ref pref) = cfg.subtitle_language_preference {
+                let pref_two = lang_to_two_letter(pref);
+                if let Some(ref target) = pref_two {
+                    if let Some(stream) = source
+                        .media_streams
+                        .iter_mut()
+                        .find(|s| {
+                            matches!(s.type_, Some(api::MediaStreamType::Subtitle))
+                                && s.language
+                                    .as_deref()
+                                    .and_then(lang_to_two_letter)
+                                    .as_deref()
+                                    == Some(target.as_str())
+                        })
+                    {
+                        let idx = stream.index;
+                        stream.is_default = Some(true);
+                        source.default_subtitle_stream_index = Some(idx);
+                    }
+                }
+            }
+        }
+
+        // --- server preferred_metadata_language fallback ---
+        // Only act if no subtitle has been selected by any prior step.
+        if !client_wants_subtitle
+            && source
+                .default_subtitle_stream_index
+                .is_none()
+        {
+            if let Some(pref) = server_subtitle_lang_fallback {
                 let pref_two = lang_to_two_letter(pref);
                 if let Some(ref target) = pref_two {
                     if let Some(stream) = source
