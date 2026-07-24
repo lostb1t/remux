@@ -1,0 +1,12 @@
+{
+  "name": "web-patches-js-tests",
+  "private": true,
+  "type": "module",
+  "description": "jsdom tests for the JS injected by src/web_patches.rs into the served jellyfin-web client",
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1"
+  }
+}

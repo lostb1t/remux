@@ -22,3 +22,4 @@ transcode_sessions
 jellyfin-web/
 jellyfin-ffmpeg/
 .aider*
+node_modules/

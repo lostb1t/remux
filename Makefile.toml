@@ -21,9 +21,20 @@ args = ["sqlx", "prepare"]
 
 
 [tasks.test]
+description = "Rust tests"
 cwd = "crates/remux-server"
 command = "cargo"
 args = ["test", "--", "--nocapture"]
+
+[tasks.test-js-patches]
+description = "JS patches tests"
+cwd = "crates/remux-server/tests/web-patches-js"
+command = "npm"
+args = ["run", "test"]
+
+[tasks.tests]
+description = "Launch all tests commands"
+dependencies = ["test", "test-js-patches"]
 
 [tasks.jellyfin-web-ensure]
 description = "Ensure jellyfin-web is built"
