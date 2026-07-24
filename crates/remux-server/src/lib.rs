@@ -541,11 +541,9 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
             || lower_path.starts_with("/mediasegments/")
             || lower_path.starts_with("/sessions/"));
 
-    // Smart-lowercase: lowercase route-keyword segments (Sessions, Items, …) but
-    // leave path-parameter values (UUIDs, base64 device/session ids, …) untouched,
-    // since they are looked up case-sensitively. A segment is lowercased when it
-    // is purely alphabetic, or when it matches a known keyword that contains digits
-    // (Filters2, Hls1).
+    // Lowercase route keywords, but never case-sensitive path params (UUIDs,
+    // base64 device/session ids). Pure-alpha segments are keywords; a few carry
+    // digits (Filters2, Hls1) and are matched explicitly.
     static DIGIT_KEYWORDS: &[&str] = &["filters2", "hls1"];
     let smart_lower_path: String = path
         .split('/')
@@ -709,8 +707,6 @@ mod rewrite_uri_tests {
 
     #[test]
     fn preserves_alphanumeric_session_ids() {
-        // Device/session ids in /Sessions/{sessionid} are case-sensitive and must
-        // not be lowercased, even though they may be purely alphanumeric.
         let did =
             "TW96aWxsYS81LjAgV2luNjQ7eDY0O3J2OjE1Mi4wKUdlY2tvfDE3ODQ0MTE1NTc2MDMNdQ";
         assert_eq!(
@@ -725,9 +721,9 @@ mod rewrite_uri_tests {
 
     #[test]
     fn leaves_base64_device_ids_with_special_chars_alone() {
-        let path = "/Sessions/Play/YWJjMTIz|abc";
+        let path = "/Sessions/Play/YWJjMTIz%7Cabc";
         let rewritten = rewrite(path);
         assert!(rewritten.starts_with("/sessions/play/"));
-        assert!(rewritten.contains("YWJjMTIz|abc"));
+        assert!(rewritten.contains("YWJjMTIz%7Cabc"));
     }
 }

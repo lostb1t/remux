@@ -1156,21 +1156,21 @@ pub struct GetItemsQuery {
     // #[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, ItemFields>>")]
     //#[serde_as(as = "Option<StringWithSeparator<CommaSeparator, ItemFields>>")]
     #[serde(
-        deserialize_with = "deserialize_fields",
+        deserialize_with = "deserialize_separated_str",
         serialize_with = "serialize_comma_opt",
         skip_serializing_if = "Option::is_none",
         default
     )]
     pub fields: Option<Vec<ItemFields>>,
     #[serde(
-        deserialize_with = "deserialize_media_types",
+        deserialize_with = "deserialize_separated_str",
         serialize_with = "serialize_comma_opt",
         skip_serializing_if = "Option::is_none",
         default
     )]
     pub exclude_item_types: Option<Vec<MediaType>>,
     #[serde(
-        deserialize_with = "deserialize_media_types",
+        deserialize_with = "deserialize_separated_str",
         serialize_with = "serialize_comma_opt",
         skip_serializing_if = "Option::is_none",
         default
@@ -1192,14 +1192,14 @@ pub struct GetItemsQuery {
     //#[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, SortOrder>>")]
     //pub sort_order: Option<SortOrder>,
     #[serde(
-        deserialize_with = "deserialize_sort_by",
+        deserialize_with = "deserialize_separated_str",
         serialize_with = "serialize_comma_opt",
         skip_serializing_if = "Option::is_none",
         default
     )]
     pub sort_by: Option<Vec<ItemSortBy>>,
     #[serde(
-        deserialize_with = "deserialize_sort_order",
+        deserialize_with = "deserialize_separated_str",
         serialize_with = "serialize_comma_opt",
         skip_serializing_if = "Option::is_none",
         default
@@ -1220,42 +1220,42 @@ pub struct GetItemsQuery {
     #[serde(default, deserialize_with = "deserialize_next_up_date_cutoff")]
     pub next_up_date_cutoff: Option<String>,
     #[serde(
-        deserialize_with = "deserialize_years",
+        deserialize_with = "deserialize_separated_str",
         serialize_with = "serialize_comma_opt",
         skip_serializing_if = "Option::is_none",
         default
     )]
     pub years: Option<Vec<i64>>,
     #[serde(
-        deserialize_with = "deserialize_genres",
+        deserialize_with = "deserialize_separated_str",
         serialize_with = "serialize_comma_opt",
         skip_serializing_if = "Option::is_none",
         default
     )]
     pub genres: Option<Vec<String>>,
     #[serde(
-        deserialize_with = "deserialize_genre_ids",
+        deserialize_with = "deserialize_separated_str",
         serialize_with = "serialize_comma_opt",
         skip_serializing_if = "Option::is_none",
         default
     )]
     pub genre_ids: Option<Vec<String>>,
     #[serde(
-        deserialize_with = "deserialize_official_ratings",
+        deserialize_with = "deserialize_separated_str",
         serialize_with = "serialize_comma_opt",
         skip_serializing_if = "Option::is_none",
         default
     )]
     pub official_ratings: Option<Vec<String>>,
     #[serde(
-        deserialize_with = "deserialize_tags",
+        deserialize_with = "deserialize_separated_str",
         serialize_with = "serialize_comma_opt",
         skip_serializing_if = "Option::is_none",
         default
     )]
     pub tags: Option<Vec<String>>,
     #[serde(
-        deserialize_with = "deserialize_media_types",
+        deserialize_with = "deserialize_separated_str",
         serialize_with = "serialize_comma_opt",
         skip_serializing_if = "Option::is_none",
         default
@@ -1293,35 +1293,35 @@ pub struct GetItemsQuery {
     pub exclude_artist_ids: Option<Vec<String>>,
     #[serde(
         default,
-        deserialize_with = "deserialize_uuids",
+        deserialize_with = "deserialize_separated_str",
         serialize_with = "serialize_comma_opt",
         skip_serializing_if = "Option::is_none"
     )]
     pub artist_ids: Option<Vec<Uuid>>,
     #[serde(
         default,
-        deserialize_with = "deserialize_uuids",
+        deserialize_with = "deserialize_separated_str",
         serialize_with = "serialize_comma_opt",
         skip_serializing_if = "Option::is_none"
     )]
     pub contributing_artist_ids: Option<Vec<Uuid>>,
     #[serde(
         default,
-        deserialize_with = "deserialize_uuids",
+        deserialize_with = "deserialize_separated_str",
         serialize_with = "serialize_comma_opt",
         skip_serializing_if = "Option::is_none"
     )]
     pub album_artist_ids: Option<Vec<Uuid>>,
     #[serde(
         default,
-        deserialize_with = "deserialize_uuids",
+        deserialize_with = "deserialize_separated_str",
         serialize_with = "serialize_comma_opt",
         skip_serializing_if = "Option::is_none"
     )]
     pub album_ids: Option<Vec<Uuid>>,
     #[serde(
         default,
-        deserialize_with = "deserialize_uuids",
+        deserialize_with = "deserialize_separated_str",
         serialize_with = "serialize_comma_opt",
         skip_serializing_if = "Option::is_none"
     )]
@@ -1435,7 +1435,10 @@ where
 
 /// Generic helper: deserializes an optional comma-separated (or repeated) query-param
 /// value into `Option<Vec<T>>` for any `T: FromStr`.
-fn deserialize_comma_str<'de, D, T>(deserializer: D) -> Result<Option<Vec<T>>, D::Error>
+/// Deserialize a comma- or pipe-separated list into `Vec<T>`.
+pub fn deserialize_separated_str<'de, D, T>(
+    deserializer: D,
+) -> Result<Option<Vec<T>>, D::Error>
 where
     D: Deserializer<'de>,
     T: FromStr,
@@ -1450,99 +1453,18 @@ where
 
     let input = Option::<Input>::deserialize(deserializer)?;
     let type_name = std::any::type_name::<T>();
-
-    let values = match input {
-        Some(Input::Single(s)) => s
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .filter_map(|s| match s.parse::<T>() {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    tracing::warn!(value = %s, error = %e, type_name, "parse failed, ignoring value");
-                    None
-                }
-            })
-            .collect(),
-        Some(Input::Multiple(ss)) => ss
-            .iter()
-            .flat_map(|s| s.split(','))
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .filter_map(|s| match s.parse::<T>() {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    tracing::warn!(value = %s, error = %e, type_name, "parse failed, ignoring value");
-                    None
-                }
-            })
-            .collect(),
-        None => return Ok(None),
-    };
-
-    Ok(Some(values))
-}
-
-pub fn deserialize_fields<'de, D>(d: D) -> Result<Option<Vec<ItemFields>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_comma_str(d)
-}
-
-pub fn deserialize_media_types<'de, D>(d: D) -> Result<Option<Vec<MediaType>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_comma_str(d)
-}
-
-pub fn deserialize_sort_by<'de, D>(d: D) -> Result<Option<Vec<ItemSortBy>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_comma_str(d)
-}
-
-pub fn deserialize_sort_order<'de, D>(d: D) -> Result<Option<Vec<SortOrder>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_comma_str(d)
-}
-
-/// Deserialize `Years=2020,2021` into `Vec<i64>` (comma-separated, Jellyfin style).
-pub fn deserialize_years<'de, D>(d: D) -> Result<Option<Vec<i64>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_comma_str(d)
-}
-
-/// Deserialize string filters that Jellyfin clients send pipe-separated.
-/// Jellyfin uses `|` for multi-value genre/rating/tag filters (e.g.
-/// `Genres=Action|Comedy`, `OfficialRatings=PG|R`). We also accept commas so the
-/// field round-trips through our own `serialize_comma_opt` serializer.
-fn deserialize_pipe_comma_str<'de, D>(
-    deserializer: D,
-) -> Result<Option<Vec<String>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Input {
-        Single(String),
-        Multiple(Vec<String>),
-    }
-
-    let input = Option::<Input>::deserialize(deserializer)?;
     let split_one = |s: &str| {
         s.split([',', '|'])
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .collect::<Vec<String>>()
+            .filter_map(|s| match s.parse::<T>() {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(value = %s, error = %e, type_name, "parse failed, ignoring value");
+                    None
+                }
+            })
+            .collect::<Vec<T>>()
     };
     let values = match input {
         Some(Input::Single(s)) => split_one(&s),
@@ -1552,48 +1474,8 @@ where
             .collect(),
         None => return Ok(None),
     };
+
     Ok(Some(values))
-}
-
-/// `Genres=Action|Comedy` → `vec!["Action", "Comedy"]`.
-pub fn deserialize_genres<'de, D>(d: D) -> Result<Option<Vec<String>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_pipe_comma_str(d)
-}
-
-/// `OfficialRatings=PG|R` → `vec!["PG", "R"]`.
-pub fn deserialize_official_ratings<'de, D>(
-    d: D,
-) -> Result<Option<Vec<String>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_pipe_comma_str(d)
-}
-
-/// `Tags=Christmas|Halloween` → `vec!["Christmas", "Halloween"]`.
-pub fn deserialize_tags<'de, D>(d: D) -> Result<Option<Vec<String>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_pipe_comma_str(d)
-}
-
-/// `GenreIds=id1,id2` → comma-separated string ids (UUIDs may be unresolved yet).
-pub fn deserialize_genre_ids<'de, D>(d: D) -> Result<Option<Vec<String>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_pipe_comma_str(d)
-}
-
-pub fn deserialize_uuids<'de, D>(d: D) -> Result<Option<Vec<Uuid>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_comma_str(d)
 }
 
 #[cfg(test)]
@@ -1662,8 +1544,6 @@ mod tests {
         );
     }
 
-    // --- Filter query deserialization ---
-
     fn parse_query(q: &str) -> GetItemsQuery {
         serde_urlencoded::from_str::<GetItemsQuery>(q).unwrap()
     }
@@ -1682,8 +1562,6 @@ mod tests {
 
     #[test]
     fn years_filter_skips_garbage_values() {
-        // deserialize_comma_str logs and drops values it cannot parse rather
-        // than failing the whole request.
         let q = parse_query("Years=2020,notayear,2021");
         assert_eq!(q.years, Some(vec![2020, 2021]));
     }
@@ -4030,7 +3908,7 @@ pub struct SearchHintsQuery {
     pub start_index: Option<u32>,
     pub limit: Option<u32>,
     pub user_id: Option<Uuid>,
-    #[serde(deserialize_with = "deserialize_media_types", default)]
+    #[serde(deserialize_with = "deserialize_separated_str", default)]
     pub include_item_types: Option<Vec<MediaType>>,
 }
 
