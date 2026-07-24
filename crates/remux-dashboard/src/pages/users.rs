@@ -273,15 +273,27 @@ pub fn UserForm(
     let mut subtitle_mode = use_signal(|| {
         existing
             .as_ref()
-            .and_then(|u| u.configuration.as_ref())
-            .map(|c| c.subtitle_mode.clone())
+            .and_then(|u| {
+                u.configuration
+                    .as_ref()
+            })
+            .map(|c| {
+                c.subtitle_mode
+                    .clone()
+            })
             .unwrap_or(SubtitleMode::Default)
     });
     let mut subtitle_language = use_signal(|| {
         existing
             .as_ref()
-            .and_then(|u| u.configuration.as_ref())
-            .and_then(|c| c.subtitle_language_preference.clone())
+            .and_then(|u| {
+                u.configuration
+                    .as_ref()
+            })
+            .and_then(|c| {
+                c.subtitle_language_preference
+                    .clone()
+            })
             .unwrap_or_default()
     });
 
@@ -393,8 +405,12 @@ pub fn UserForm(
         let addons_loaded = !all_addons
             .peek()
             .is_empty();
-        let subtitle_mode_snapshot = subtitle_mode.peek().clone();
-        let subtitle_language_snapshot = subtitle_language.peek().clone();
+        let subtitle_mode_snapshot = subtitle_mode
+            .peek()
+            .clone();
+        let subtitle_language_snapshot = subtitle_language
+            .peek()
+            .clone();
 
         saving.set(true);
         err.set(None);
@@ -482,11 +498,12 @@ pub fn UserForm(
                         .clone()
                         .unwrap_or_default();
                     cfg.subtitle_mode = subtitle_mode_snapshot;
-                    cfg.subtitle_language_preference = if subtitle_language_snapshot.is_empty() {
-                        None
-                    } else {
-                        Some(subtitle_language_snapshot)
-                    };
+                    cfg.subtitle_language_preference =
+                        if subtitle_language_snapshot.is_empty() {
+                            None
+                        } else {
+                            Some(subtitle_language_snapshot)
+                        };
                     client
                         .execute(UpdateUserConfiguration {
                             user_id: user.id,
@@ -525,13 +542,16 @@ pub fn UserForm(
                     // Set subtitle preferences on new user
                     let mut cfg = UserConfiguration::default();
                     cfg.subtitle_mode = subtitle_mode_snapshot;
-                    cfg.subtitle_language_preference = if subtitle_language_snapshot.is_empty() {
-                        None
-                    } else {
-                        Some(subtitle_language_snapshot)
-                    };
+                    cfg.subtitle_language_preference =
+                        if subtitle_language_snapshot.is_empty() {
+                            None
+                        } else {
+                            Some(subtitle_language_snapshot)
+                        };
                     if cfg.subtitle_mode != SubtitleMode::Default
-                        || cfg.subtitle_language_preference.is_some()
+                        || cfg
+                            .subtitle_language_preference
+                            .is_some()
                     {
                         client
                             .execute(UpdateUserConfiguration {
