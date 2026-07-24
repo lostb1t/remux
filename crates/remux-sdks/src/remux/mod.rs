@@ -271,6 +271,13 @@ pub struct AddonCatalogDto {
     pub tags: Vec<String>,
     /// Deterministic UUID of the catalog collection item for this catalog.
     pub collection_id: Option<Uuid>,
+    /// The media kind this catalog carries (movie, series, mixed, etc.), when known.
+    /// Used by the dashboard to pick a sensible collection type when bulk-creating
+    /// collections from catalogs.
+    pub collection_media_kind: Option<MediaKind>,
+    /// Number of items currently indexed for this catalog (via its `catalog`
+    /// media_relations membership). `None` if not yet indexed.
+    pub item_count: Option<i64>,
 }
 
 /// Per-catalog settings update — one entry in `POST /addons/{id}/catalogs`.
@@ -1037,6 +1044,8 @@ pub struct PatchItemPayload {
     pub latest_sort_digital: Option<bool>,
     pub collection_default_sort: Option<Vec<ItemSortBy>>,
     pub collection_default_sort_order: Option<Vec<SortOrder>>,
+    /// For CollectionKind::Catalog: `"{addon_uuid}:{local_catalog_id}"` of the source catalog.
+    pub collection_source: Option<String>,
 }
 
 #[dto]

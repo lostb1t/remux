@@ -304,6 +304,16 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                 },
                                                 "Edit"
                                             }
+                                            if addon.resources.contains(&ResourceType::Catalog) {
+                                                button {
+                                                    class: "btn btn-ghost",
+                                                    style: "height:28px;font-size:.68rem;padding:0 10px",
+                                                    onclick: move |_| {
+                                                        navigator().push(crate::router::Route::AddonCatalogsRoute { addon_id: id });
+                                                    },
+                                                    "Catalogs"
+                                                }
+                                            }
                                             button {
                                                 class: "btn btn-ghost",
                                                 style: "height:28px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error)",
