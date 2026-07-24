@@ -614,17 +614,56 @@ pub async fn get_branding_css_dotcss(
     branding_css_response(&state).await
 }
 
+#[query]
+#[derive(Default)]
+struct ActivityLogQuery {
+    #[serde(rename = "startIndex", alias = "StartIndex")]
+    start_index: Option<i64>,
+    limit: Option<i64>,
+}
+
+fn action_display_name(action: &str) -> String {
+    match action {
+        "session_revoked" => "Session revoked",
+        "all_sessions_revoked" => "All sessions revoked",
+        "password_changed" => "Password changed",
+        _ => action,
+    }
+    .to_string()
+}
+
 /// Get activity log entries
 #[get("/system/activitylog/entries")]
 pub async fn system_activity_log(
     State(state): State<AppState>,
     _session: auth::AdminSession,
+    Query(q): Query<ActivityLogQuery>,
 ) -> Result<impl IntoResponse> {
-    // Return an empty activity log
-    Ok(Json(json!({
-        "Items": [],
-        "TotalRecordCount": 0
-    })))
+    let start_index = q.start_index.unwrap_or(0);
+    let limit = q.limit.unwrap_or(50).min(200);
+    use remux_sdks::remux::{ActivityLogEntry, ActivityLogEntryRemux, ActivityLogResult};
+    let (rows, total) = db::ActivityLog::list(&state.ctx.db, start_index, limit).await?;
+    let items: Vec<ActivityLogEntry> = rows
+        .into_iter()
+        .map(|r| ActivityLogEntry {
+            id: Some(r.id),
+            name: Some(action_display_name(&r.action)),
+            overview: r.details,
+            short_overview: None,
+            type_: Some(r.action),
+            date: Some(r.timestamp),
+            user_id: Some(r.user_id),
+            severity: Some("Information".to_string()),
+            remux: Some(ActivityLogEntryRemux {
+                user_name: Some(r.user_name),
+                target_user_id: r.target_user_id,
+                target_user_name: r.target_user_name,
+                device_id: r.device_id,
+                device_name: r.device_name,
+            }),
+        })
+        .collect();
+    Ok(Json(ActivityLogResult { items, total_record_count: total }))
 }
 
 /// Return the current UTC time (no auth required — Jellyfin calls this before login)

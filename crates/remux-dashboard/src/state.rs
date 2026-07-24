@@ -88,6 +88,26 @@ pub fn fmt_time(dt: impl std::fmt::Display) -> String {
         .collect()
 }
 
+/// Returns "DD Mon HH:MM" from a DateTime Display string — suitable for audit log entries.
+pub fn fmt_datetime(dt: impl std::fmt::Display) -> String {
+    let s = dt.to_string();
+    // s is "YYYY-MM-DD HH:MM:SS UTC"
+    let date = &s[..10]; // "YYYY-MM-DD"
+    let time = s.chars().skip(11).take(5).collect::<String>(); // "HH:MM"
+    let parts: Vec<&str> = date.split('-').collect();
+    if parts.len() == 3 {
+        let month = match parts[1] {
+            "01" => "Jan", "02" => "Feb", "03" => "Mar", "04" => "Apr",
+            "05" => "May", "06" => "Jun", "07" => "Jul", "08" => "Aug",
+            "09" => "Sep", "10" => "Oct", "11" => "Nov", "12" => "Dec",
+            _ => parts[1],
+        };
+        format!("{} {} {}", parts[2], month, time)
+    } else {
+        format!("{date} {time}")
+    }
+}
+
 pub fn get_origin() -> String {
     web_sys::window()
         .and_then(|w| {
@@ -134,6 +154,10 @@ pub fn get_stored_server() -> Option<StoredServer> {
         .servers
         .into_iter()
         .next()
+}
+
+pub fn clear_credentials() {
+    LocalStorage::delete(CREDENTIALS_KEY);
 }
 
 pub fn store_credentials(server: StoredServer) {

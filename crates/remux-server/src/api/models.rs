@@ -67,38 +67,28 @@ impl MediaSourceInfoExt for db::Media {
     }
 }
 
-pub fn device_info_from(device: &db::auth::Device) -> DeviceInfo {
+pub fn device_info_from(
+    device: &db::auth::Device,
+    username: Option<&str>,
+    caller_token: &str,
+) -> DeviceInfo {
     DeviceInfo {
-        name: Some(
-            device
-                .name
-                .clone(),
-        ),
+        name: Some(device.name.clone()),
         custom_name: None,
-        access_token: Some(
-            device
-                .access_token
-                .clone(),
-        ),
-        id: Some(
-            device
-                .id
-                .clone(),
-        ),
-        last_user_name: None,
-        app_name: Some(
-            device
-                .app_name
-                .clone(),
-        ),
-        app_version: Some(
-            device
-                .app_version
-                .clone(),
-        ),
+        access_token: None,
+        id: Some(device.id.clone()),
+        last_user_name: username.map(str::to_owned),
+        app_name: Some(device.app_name.clone()),
+        app_version: Some(device.app_version.clone()),
         last_user_id: Some(device.user_id),
         date_last_activity: device.last_activity_at,
         icon_url: None,
+        date_created: device.created_at,
+        remux: Some(DeviceInfoRemux {
+            remote_end_point: device.remote_ip.clone(),
+            user_id: Some(device.user_id),
+            is_current_session: Some(device.access_token == caller_token),
+        }),
     }
 }
 
