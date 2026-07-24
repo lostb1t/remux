@@ -42,7 +42,6 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
     let app_state_countries = app_state.clone();
     use_effect(move || {
         let client = app_state_countries
-            .client
             .clone();
         spawn(async move {
             if let Ok(cs) = client
@@ -80,7 +79,6 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
             .clone();
         loading.set(true);
         let client = app_state_effect
-            .client
             .clone();
         spawn(async move {
             let enabled = match ef.as_str() {
@@ -153,7 +151,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
                         style: "height:32px;font-size:.68rem",
                         disabled: *bulk_working.read() || total_v == 0,
                         onclick: {
-                            let client = app_state.client.clone();
+                            let client = app_state.clone();
                             move |_| {
                                 let search = search_committed.peek().clone();
                                 bulk_working.set(true);
@@ -191,7 +189,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
                         style: "height:32px;font-size:.68rem",
                         disabled: *bulk_working.read() || total_v == 0,
                         onclick: {
-                            let client = app_state.client.clone();
+                            let client = app_state.clone();
                             move |_| {
                                 let search = search_committed.peek().clone();
                                 bulk_working.set(true);
@@ -258,9 +256,9 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
                             for ch in channels.read().clone() {
                                 {
                                     let id = ch.id.clone();
-                                    let client1 = app_state.client.clone();
-                                    let client2 = app_state.client.clone();
-                                    let client3 = app_state.client.clone();
+                                    let client1 = app_state.clone();
+                                    let client2 = app_state.clone();
+                                    let client3 = app_state.clone();
                                     let sort_val = ch.sort_order.map(|n| n.to_string()).unwrap_or_default();
                                     let ch_placeholder = ch.channel_number.map(|n| n.to_string()).unwrap_or_else(|| "–".into());
                                     let name_val = ch.custom_name.clone().unwrap_or_default();

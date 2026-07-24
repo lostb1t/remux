@@ -3,6 +3,7 @@ pub mod api_keys;
 pub mod branding;
 pub mod collections;
 pub mod dashboard;
+pub mod devices;
 pub mod iptv;
 pub mod settings;
 pub mod streams;
@@ -18,5 +19,6 @@ pub use settings::{
     IntroSettingsCard, JellyfinImportCard, P2pSettingsCard, PlaybackSettingsCard,
     ProbeSettingsCard, RemuxdbSettingsCard, SearchSettingsCard, ServerSettingsCard,
 };
+pub use devices::DevicesPage;
 pub use streams::StreamGroupsCard;
 pub use users::UsersPage;

@@ -33,7 +33,6 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
     let app_state_load = app_state.clone();
     use_effect(move || {
         let client = app_state_load
-            .client
             .clone();
         spawn(async move {
             match client
@@ -96,7 +95,6 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
         let client = app_state
-            .client
             .clone();
         let name = server_name
             .peek()
@@ -360,7 +358,6 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
     let app_state_load = app_state.clone();
     use_effect(move || {
         let client = app_state_load
-            .client
             .clone();
         spawn(async move {
             match client
@@ -450,7 +447,6 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
         let client = app_state
-            .client
             .clone();
         let accel_type = match hw_accel
             .peek()
@@ -787,7 +783,6 @@ pub fn ProbeSettingsCard(app_state: AppState) -> Element {
     let app_state_load = app_state.clone();
     use_effect(move || {
         let client = app_state_load
-            .client
             .clone();
         spawn(async move {
             match client
@@ -822,7 +817,6 @@ pub fn ProbeSettingsCard(app_state: AppState) -> Element {
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
         let client = app_state
-            .client
             .clone();
         let Some(cfg) = base_cfg
             .peek()
@@ -970,7 +964,6 @@ pub fn SearchSettingsCard(app_state: AppState) -> Element {
     let app_state_load = app_state.clone();
     use_effect(move || {
         let client = app_state_load
-            .client
             .clone();
         spawn(async move {
             match client
@@ -999,7 +992,6 @@ pub fn SearchSettingsCard(app_state: AppState) -> Element {
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
         let client = app_state
-            .client
             .clone();
         let mut cfg = base_cfg
             .peek()
@@ -1116,7 +1108,6 @@ pub fn JellyfinImportCard(app_state: AppState) -> Element {
     let app_state_load = app_state.clone();
     use_effect(move || {
         let client = app_state_load
-            .client
             .clone();
         spawn(async move {
             match client
@@ -1146,7 +1137,6 @@ pub fn JellyfinImportCard(app_state: AppState) -> Element {
     let on_save = move |e: Event<FormData>| {
         e.prevent_default();
         let client = app_state_save
-            .client
             .clone();
         let url = jellyfin_url
             .peek()
@@ -1179,7 +1169,6 @@ pub fn JellyfinImportCard(app_state: AppState) -> Element {
 
     let on_import = move |_| {
         let client = app_state
-            .client
             .clone();
         importing.set(true);
         import_error.set(None);
@@ -1292,7 +1281,6 @@ pub fn P2pSettingsCard(app_state: AppState) -> Element {
     let app_state_load = app_state.clone();
     use_effect(move || {
         let client = app_state_load
-            .client
             .clone();
         spawn(async move {
             match client
@@ -1323,7 +1311,6 @@ pub fn P2pSettingsCard(app_state: AppState) -> Element {
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
         let client = app_state
-            .client
             .clone();
         let Some(cfg) = base_cfg
             .peek()
@@ -1438,7 +1425,6 @@ pub fn IntroSettingsCard(app_state: AppState) -> Element {
     let app_state_load = app_state.clone();
     use_effect(move || {
         let client = app_state_load
-            .client
             .clone();
         spawn(async move {
             match client
@@ -1479,7 +1465,6 @@ pub fn IntroSettingsCard(app_state: AppState) -> Element {
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
         let client = app_state
-            .client
             .clone();
         let dir_val = intro_dir
             .peek()
@@ -1628,7 +1613,6 @@ pub fn RemuxdbSettingsCard(app_state: AppState) -> Element {
     let app_state_load = app_state.clone();
     use_effect(move || {
         let client = app_state_load
-            .client
             .clone();
         spawn(async move {
             match client
@@ -1651,7 +1635,6 @@ pub fn RemuxdbSettingsCard(app_state: AppState) -> Element {
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
         let client = app_state
-            .client
             .clone();
         let Some(cfg) = base_cfg
             .peek()

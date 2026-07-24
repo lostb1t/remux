@@ -16,6 +16,6 @@ pub use form::{FormActions, FormGroup, ToggleRow};
 pub use metrics::MetricsCard;
 pub use modal::{ConfirmDialog, Modal};
 pub use server_info::{MediaStatsCard, ServerInfoCard};
-pub use sessions::SessionsCard;
+pub use sessions::{ActivityCard, SessionsCard};
 pub use states::{EmptyState, ErrorAlert, LoadingText, SuccessAlert};
 pub use tasks::TasksCard;

@@ -259,7 +259,7 @@ pub fn TaskTriggersModal(
                 variant: ButtonVariant::Primary,
                 disabled: *saving.read(),
                 onclick: move |_| {
-                    let client = app_state.client.clone();
+                    let client = app_state.clone();
                     let tid = task_id.clone();
                     let t = triggers.read().clone();
                     saving.set(true);
@@ -296,7 +296,6 @@ pub fn TasksCard(
         let _r = *refresh.read();
         loading.set(true);
         let client = app_state_effect
-            .client
             .clone();
         spawn(async move {
             match client
@@ -318,7 +317,6 @@ pub fn TasksCard(
     let app_state_poll = app_state.clone();
     use_effect(move || {
         let client = app_state_poll
-            .client
             .clone();
         spawn(async move {
             loop {
@@ -479,11 +477,9 @@ pub fn TaskPageRow(
         .id
         .clone();
     let c_start = app_state
-        .client
         .clone();
     let c_start_confirm = c_start.clone();
     let c_stop = app_state
-        .client
         .clone();
     let task_for_edit = task.clone();
 

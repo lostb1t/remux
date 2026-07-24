@@ -21,7 +21,6 @@ pub fn MetricsCard(app_state: AppState) -> Element {
 
     use_effect(move || {
         let client = app_state
-            .client
             .clone();
         spawn(async move {
             match client

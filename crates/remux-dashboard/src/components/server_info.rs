@@ -77,7 +77,6 @@ pub fn ServerInfoCard(app_state: AppState) -> Element {
 
     use_effect(move || {
         let client = app_state_for_effect
-            .client
             .clone();
         spawn(async move {
             match client
@@ -96,7 +95,6 @@ pub fn ServerInfoCard(app_state: AppState) -> Element {
 
     let on_restart = move |_| {
         let client = app_state_for_restart
-            .client
             .clone();
         restarting.set(true);
         spawn(async move {
@@ -158,7 +156,6 @@ pub fn MediaStatsCard(app_state: AppState) -> Element {
 
     use_effect(move || {
         let client = app_state
-            .client
             .clone();
         spawn(async move {
             match client

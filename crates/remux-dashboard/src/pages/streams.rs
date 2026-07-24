@@ -345,7 +345,6 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
         preview_data.set(None);
         preview_error.set(None);
         let client = app_state_preview
-            .client
             .clone();
         spawn(async move {
             match client
@@ -368,7 +367,6 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
         let _r = *refresh.read();
         loading.set(true);
         let client = app_state_effect
-            .client
             .clone();
         spawn(async move {
             let groups_res = client
@@ -420,7 +418,7 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                             checked: *show_ungrouped.read(),
                             disabled: *saving_setting.read(),
                             onchange: {
-                                let client = app_state.client.clone();
+                                let client = app_state.clone();
                                 move |e: Event<FormData>| {
                                     let checked = e.checked();
                                     show_ungrouped.set(checked);
@@ -655,7 +653,7 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                             class: "btn btn-primary",
                             disabled: *creating.read(),
                             onclick: {
-                                let client = app_state.client.clone();
+                                let client = app_state.clone();
                                 move |_| {
                                     let name = create_name.read().trim().to_string();
                                     creating.set(true);
@@ -756,7 +754,7 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                             class: "btn btn-primary",
                             disabled: *editing.read(),
                             onclick: {
-                                let client = app_state.client.clone();
+                                let client = app_state.clone();
                                 move |_| {
                                     let Some(id) = *id_to_edit.peek() else { return };
                                     let name = edit_name.read().trim().to_string();
@@ -825,7 +823,7 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                             style: "background:var(--error);border-color:var(--error)",
                             disabled: *deleting.read(),
                             onclick: {
-                                let client = app_state.client.clone();
+                                let client = app_state.clone();
                                 move |_| {
                                     let Some(id) = *id_to_delete.peek() else { return };
                                     deleting.set(true);

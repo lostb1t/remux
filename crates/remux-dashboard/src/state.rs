@@ -1,8 +1,15 @@
 use dioxus::prelude::*;
 use gloo_storage::{LocalStorage, Storage};
-use remux_sdks::{remux::JellyfinAuth, RestClient};
+use remux_sdks::{ClientError, Endpoint, remux::JellyfinAuth, RestClient};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+pub static LOGGED_IN: GlobalSignal<bool> = Signal::global(|| false);
+
+pub fn logout() {
+    clear_credentials();
+    *LOGGED_IN.write() = false;
+}
 
 pub const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 pub const THEME_CSS: Asset = asset!("/assets/theme.css");
@@ -64,6 +71,14 @@ impl AppState {
             .unwrap_or_else(|_| panic!("invalid server url: {}", server.manual_address))
             .with_auth(auth);
         Self { server, client }
+    }
+
+    pub async fn execute<EP: Endpoint + Clone>(&self, ep: EP) -> Result<EP::Output, ClientError> {
+        let r = self.client.execute(ep).await;
+        if matches!(&r, Err(ClientError::Unauthorized)) {
+            logout();
+        }
+        r
     }
 }
 

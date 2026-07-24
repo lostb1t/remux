@@ -118,3 +118,127 @@ pub async fn get_devices(
 
     Ok(Json(result))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::integration_test::{AUTH_HEADER, auth_header_with_token, authenticated_server};
+    use http::header::HeaderValue;
+    use serde_json::json;
+
+    const AUTH_HEADER_2: &str = "MediaBrowser Client=\"Test\", Device=\"Device2\", DeviceId=\"test-device-2\", Version=\"1.0.0\"";
+
+    #[tokio::test]
+    async fn delete_device_by_id_returns_204() {
+        let (server, _guard, token) = authenticated_server().await;
+
+        // Register a second device.
+        let resp = server
+            .post("/users/authenticatebyname")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_static(AUTH_HEADER_2),
+            )
+            .json(&json!({ "Username": "test", "Pw": "test" }))
+            .await;
+        assert!(resp.json::<serde_json::Value>()["AccessToken"].is_string());
+
+        // Two devices should now exist.
+        let list = server
+            .get("/devices")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+            .await;
+        let body: serde_json::Value = list.json();
+        assert_eq!(body["TotalRecordCount"], 2);
+
+        // Delete the second device.
+        let resp = server
+            .delete("/devices")
+            .add_query_param("id", "test-device-2")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+            .await;
+        resp.assert_status(StatusCode::NO_CONTENT);
+
+        // Only the original device should remain.
+        let list = server
+            .get("/devices")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+            .await;
+        let body: serde_json::Value = list.json();
+        assert_eq!(body["TotalRecordCount"], 1);
+    }
+
+    #[tokio::test]
+    async fn delete_device_by_user_id_returns_204() {
+        let (server, _guard, token) = authenticated_server().await;
+
+        // Register a second device for the same user.
+        server
+            .post("/users/authenticatebyname")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_static(AUTH_HEADER_2),
+            )
+            .json(&json!({ "Username": "test", "Pw": "test" }))
+            .await;
+
+        // Discover the user's id from /users/me.
+        let me = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+            .await;
+        let user_id = me.json::<serde_json::Value>()["Id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Bulk-revoke all devices for this user.
+        let resp = server
+            .delete("/devices")
+            .add_query_param("userId", &user_id)
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+            .await;
+        resp.assert_status(StatusCode::NO_CONTENT);
+
+        // The admin's own session token is preserved; only the second device is gone.
+        let list = server
+            .get("/devices")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+            .await;
+        let body: serde_json::Value = list.json();
+        assert_eq!(body["TotalRecordCount"], 1);
+    }
+
+    #[tokio::test]
+    async fn delete_device_no_params_returns_400() {
+        let (server, _guard, token) = authenticated_server().await;
+
+        let resp = server
+            .delete("/devices")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+            .expect_failure()
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+    }
+}

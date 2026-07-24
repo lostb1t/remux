@@ -4,10 +4,9 @@ use remux_sdks::{
     remux::{
         FilterGroup, FilterMatchMode, FilterRule, GetAddonCatalogs,
         GetCertificationSuggestions, GetCountrySuggestions, GetLanguageSuggestions,
-        GetLocalSuggestions, GetParentalRatings, GetTagSuggestions, JellyfinAuth,
+        GetLocalSuggestions, GetParentalRatings, GetTagSuggestions,
         ListAddons, NumericOp, ParentalRating, SetOp,
     },
-    RestClient,
 };
 use uuid::Uuid;
 
@@ -42,7 +41,7 @@ fn is_set_field(key: &str) -> bool {
 }
 
 async fn fetch_suggestions(
-    client: &RestClient<JellyfinAuth>,
+    client: &AppState,
     field: &str,
     query: &str,
 ) -> Vec<(String, String)> {
@@ -379,7 +378,6 @@ pub fn TagChipInput(tags: Signal<Vec<String>>) -> Element {
     let mut show_dropdown = use_signal(|| false);
 
     let client_fetch = app_state
-        .client
         .clone();
     use_effect(move || {
         let q = input_text
@@ -494,7 +492,6 @@ pub fn ChipInput(
 
     let fk_fetch = field_key.clone();
     let client_fetch = app_state
-        .client
         .clone();
     use_effect(move || {
         let q = input_text
@@ -648,10 +645,8 @@ pub fn FilterRuleRow(
 ) -> Element {
     let app_state = use_context::<AppState>();
     let client_for_ratings = app_state
-        .client
         .clone();
     let client_for_catalogs = app_state
-        .client
         .clone();
     let mut parental_ratings: Signal<Vec<ParentalRating>> = use_signal(Vec::new);
     use_effect(move || {

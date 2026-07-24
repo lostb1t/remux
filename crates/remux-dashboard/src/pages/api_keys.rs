@@ -29,7 +29,6 @@ pub fn ApiKeysPage(app_state: AppState) -> Element {
         let _r = *refresh.read();
         loading.set(true);
         let client = app_state_effect
-            .client
             .clone();
         spawn(async move {
             match client
@@ -137,7 +136,7 @@ pub fn ApiKeysPage(app_state: AppState) -> Element {
                             class: "btn btn-primary",
                             disabled: *creating.read() || app_name_input.read().trim().is_empty(),
                             onclick: {
-                                let client = app_state.client.clone();
+                                let client = app_state.clone();
                                 move |_| {
                                     let name = app_name_input.read().trim().to_string();
                                     if name.is_empty() { return; }
@@ -221,7 +220,7 @@ pub fn ApiKeysPage(app_state: AppState) -> Element {
 
         if let Some(token) = key_to_delete.read().clone() {
             {
-                let client = app_state.client.clone();
+                let client = app_state.clone();
                 rsx! {
                     div { class: "modal-backdrop",
                         div { class: "modal",
