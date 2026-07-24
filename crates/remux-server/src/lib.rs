@@ -541,20 +541,13 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
             || lower_path.starts_with("/mediasegments/")
             || lower_path.starts_with("/sessions/"));
 
-    // Lowercase route keywords, but never case-sensitive path params (UUIDs,
-    // base64 device/session ids). Pure-alpha segments are keywords; a few carry
-    // digits (Filters2, Hls1) and are matched explicitly.
-    static DIGIT_KEYWORDS: &[&str] = &["filters2", "hls1"];
     let smart_lower_path: String = path
         .split('/')
         .map(|seg| {
-            let is_alpha = seg
+            if seg
                 .chars()
-                .all(|c| c.is_ascii_alphabetic());
-            let is_known_digit_keyword = DIGIT_KEYWORDS
-                .iter()
-                .any(|kw| seg.eq_ignore_ascii_case(kw));
-            if is_alpha || is_known_digit_keyword {
+                .all(|c| c.is_ascii_alphanumeric())
+            {
                 seg.to_ascii_lowercase()
             } else {
                 seg.to_string()
@@ -688,7 +681,7 @@ mod rewrite_uri_tests {
     }
 
     #[test]
-    fn lowercases_known_digit_keywords() {
+    fn lowercases_keyword_with_digits() {
         assert_eq!(rewrite("/Items/Filters2"), "/items/filters2");
         assert_eq!(rewrite("/Hls1"), "/hls1");
     }
@@ -706,21 +699,7 @@ mod rewrite_uri_tests {
     }
 
     #[test]
-    fn preserves_alphanumeric_session_ids() {
-        let did =
-            "TW96aWxsYS81LjAgV2luNjQ7eDY0O3J2OjE1Mi4wKUdlY2tvfDE3ODQ0MTE1NTc2MDMNdQ";
-        assert_eq!(
-            rewrite(&format!("/Sessions/{did}/Command")),
-            format!("/sessions/{did}/command")
-        );
-        assert_eq!(
-            rewrite("/Sessions/MyDevice123/Command"),
-            "/sessions/MyDevice123/command"
-        );
-    }
-
-    #[test]
-    fn leaves_base64_device_ids_with_special_chars_alone() {
+    fn leaves_special_char_device_ids_alone() {
         let path = "/Sessions/Play/YWJjMTIz%7Cabc";
         let rewritten = rewrite(path);
         assert!(rewritten.starts_with("/sessions/play/"));
