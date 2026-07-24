@@ -212,6 +212,14 @@ impl StreamService {
             }
             db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track => {
                 let mut media = media;
+                // Some clients hit the stream endpoints directly, skipping
+                // PlaybackInfo. Resolve addon streams here so fresh tracks play
+                // without a prior PlaybackInfo call. Cheap when fresh (TTL).
+                ctx.addons
+                    .refresh_streams(&mut media, ctx, None)
+                    .await
+                    .inspect_err(|e| tracing::error!("refresh_streams failed: {e:#}"))
+                    .ok();
                 let sources = media
                     .streams(&ctx.db)
                     .await?;
