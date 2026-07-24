@@ -2720,8 +2720,8 @@ mod tests {
         media
     }
 
-    /// When the user has no `SubtitleLanguagePreference`, the server's
-    /// `preferred_metadata_language` is used as a last fallback to auto-select a subtitle.
+    /// When the user has no SubtitleLanguagePreference, the server's
+    /// preferred_metadata_language fires as a fallback.
     #[tokio::test]
     async fn test_server_metadata_language_fallback_selects_subtitle() {
         use crate::api::ServerConfiguration;
@@ -2776,13 +2776,14 @@ mod tests {
         assert_eq!(
             body["MediaSources"][0]["DefaultSubtitleStreamIndex"].as_i64(),
             Some(2),
-            "server preferred_metadata_language 'fr' should select the French subtitle (index 2)"
+            "server preferred_metadata_language 'fr' should select the French subtitle (index 2) when user has no preference"
         );
     }
 
-    /// The user's own `SubtitleLanguagePreference` must win over the server fallback.
+    /// When the user has a SubtitleLanguagePreference that matches nothing, the server
+    /// fallback must NOT fire — user preference wins even if it selects nothing.
     #[tokio::test]
-    async fn test_user_subtitle_pref_takes_priority_over_server_fallback() {
+    async fn test_server_fallback_does_not_fire_when_user_pref_set() {
         use crate::api::ServerConfiguration;
         use crate::db::Settings;
 
@@ -2812,6 +2813,7 @@ mod tests {
         let user_id = me["Id"]
             .as_str()
             .unwrap();
+        // User prefers Japanese — not available in the fixture
         server
             .post(&format!("/users/{}/configuration", user_id))
             .add_header(
@@ -2819,7 +2821,7 @@ mod tests {
                 HeaderValue::from_str(&auth).unwrap(),
             )
             .json(&user_config_with(
-                json!({ "SubtitleLanguagePreference": "eng" }),
+                json!({ "SubtitleLanguagePreference": "jpn" }),
             ))
             .await;
 
@@ -2836,8 +2838,8 @@ mod tests {
         let body: serde_json::Value = resp.json();
         assert_eq!(
             body["MediaSources"][0]["DefaultSubtitleStreamIndex"].as_i64(),
-            Some(3),
-            "user SubtitleLanguagePreference 'eng' must take priority over server fallback 'fr'"
+            None,
+            "server fallback must not fire when user has a preference set, even if it matches nothing"
         );
     }
 }
@@ -3130,10 +3132,13 @@ async fn apply_user_playback_prefs(
         }
 
         // --- server preferred_metadata_language fallback ---
-        // Only act if no subtitle has been selected by any prior step.
+        // Only fires when the user has no SubtitleLanguagePreference configured at all.
         if !client_wants_subtitle
             && source
                 .default_subtitle_stream_index
+                .is_none()
+            && cfg
+                .subtitle_language_preference
                 .is_none()
         {
             if let Some(pref) = server_subtitle_lang_fallback {

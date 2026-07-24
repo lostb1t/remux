@@ -2864,7 +2864,7 @@ mod e2e_tests {
         );
     }
 
-    // Regression: PUT /Users/{userId}/Configuration was ignoring the path user_id and always
+    // Regression: POST /Users/{userId}/Configuration was ignoring the path user_id and always
     // writing to the session user's own config. An admin updating another user's subtitle
     // preferences would silently overwrite their own instead.
     #[tokio::test]
