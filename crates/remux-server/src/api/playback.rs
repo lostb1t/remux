@@ -837,7 +837,7 @@ async fn videos_stream_inner(
             .unwrap_or(28),
         normalize_audio_loudness: encoding_opts
             .normalize_audio_loudness
-            .unwrap_or(true),
+            .unwrap_or(false),
     };
 
     let stream = crate::playback::engine::start_progressive_transcode(params)?;
