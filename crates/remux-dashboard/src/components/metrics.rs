@@ -20,8 +20,7 @@ pub fn MetricsCard(app_state: AppState) -> Element {
     let mut error = use_signal(|| Option::<String>::None);
 
     use_effect(move || {
-        let client = app_state
-            .clone();
+        let client = app_state.clone();
         spawn(async move {
             match client
                 .execute(GetMetricsStatus)

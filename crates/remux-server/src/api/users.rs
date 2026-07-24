@@ -686,20 +686,40 @@ pub async fn change_password(
 
     // Revoke all other sessions for this user so stale tokens can't be reused.
     let _ = db::auth::Device::delete_all_for_user(
-        &state.ctx.db,
+        &state
+            .ctx
+            .db,
         &user_id,
-        Some(&session.device.access_token),
+        Some(
+            &session
+                .device
+                .access_token,
+        ),
     )
     .await;
     let _ = db::ActivityLog::insert(
-        &state.ctx.db,
-        &session.user.id,
-        &session.user.username,
+        &state
+            .ctx
+            .db,
+        &session
+            .user
+            .id,
+        &session
+            .user
+            .username,
         "password_changed",
         Some(&user_id),
         Some(&user.username),
-        Some(&session.device.id),
-        Some(&session.device.name),
+        Some(
+            &session
+                .device
+                .id,
+        ),
+        Some(
+            &session
+                .device
+                .name,
+        ),
         None,
     )
     .await;

@@ -1,6 +1,6 @@
 use dioxus::prelude::*;
 use gloo_storage::{LocalStorage, Storage};
-use remux_sdks::{ClientError, Endpoint, remux::JellyfinAuth, RestClient};
+use remux_sdks::{remux::JellyfinAuth, ClientError, Endpoint, RestClient};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -73,8 +73,14 @@ impl AppState {
         Self { server, client }
     }
 
-    pub async fn execute<EP: Endpoint + Clone>(&self, ep: EP) -> Result<EP::Output, ClientError> {
-        let r = self.client.execute(ep).await;
+    pub async fn execute<EP: Endpoint + Clone>(
+        &self,
+        ep: EP,
+    ) -> Result<EP::Output, ClientError> {
+        let r = self
+            .client
+            .execute(ep)
+            .await;
         if matches!(&r, Err(ClientError::Unauthorized)) {
             logout();
         }
@@ -108,13 +114,28 @@ pub fn fmt_datetime(dt: impl std::fmt::Display) -> String {
     let s = dt.to_string();
     // s is "YYYY-MM-DD HH:MM:SS UTC"
     let date = &s[..10]; // "YYYY-MM-DD"
-    let time = s.chars().skip(11).take(5).collect::<String>(); // "HH:MM"
-    let parts: Vec<&str> = date.split('-').collect();
+    let time = s
+        .chars()
+        .skip(11)
+        .take(5)
+        .collect::<String>(); // "HH:MM"
+    let parts: Vec<&str> = date
+        .split('-')
+        .collect();
     if parts.len() == 3 {
         let month = match parts[1] {
-            "01" => "Jan", "02" => "Feb", "03" => "Mar", "04" => "Apr",
-            "05" => "May", "06" => "Jun", "07" => "Jul", "08" => "Aug",
-            "09" => "Sep", "10" => "Oct", "11" => "Nov", "12" => "Dec",
+            "01" => "Jan",
+            "02" => "Feb",
+            "03" => "Mar",
+            "04" => "Apr",
+            "05" => "May",
+            "06" => "Jun",
+            "07" => "Jul",
+            "08" => "Aug",
+            "09" => "Sep",
+            "10" => "Oct",
+            "11" => "Nov",
+            "12" => "Dec",
             _ => parts[1],
         };
         format!("{} {} {}", parts[2], month, time)

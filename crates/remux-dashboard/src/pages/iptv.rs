@@ -41,8 +41,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
     // Load distinct country codes and groups once on mount
     let app_state_countries = app_state.clone();
     use_effect(move || {
-        let client = app_state_countries
-            .clone();
+        let client = app_state_countries.clone();
         spawn(async move {
             if let Ok(cs) = client
                 .execute(GetIptvChannelCountries)
@@ -78,8 +77,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
             .read()
             .clone();
         loading.set(true);
-        let client = app_state_effect
-            .clone();
+        let client = app_state_effect.clone();
         spawn(async move {
             let enabled = match ef.as_str() {
                 "true" => Some(true),

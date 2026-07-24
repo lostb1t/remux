@@ -35,8 +35,7 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
     use_effect(move || {
         let _r = *refresh.read();
         loading.set(true);
-        let client = app_state_effect
-            .clone();
+        let client = app_state_effect.clone();
         spawn(async move {
             match client
                 .execute(GetItems(GetItemsQuery {
@@ -440,8 +439,7 @@ pub fn CollectionForm(
     let mut pending_image_bytes: Signal<Option<Vec<u8>>> = use_signal(|| None);
     let mut pending_image_preview: Signal<Option<String>> = use_signal(|| None);
     let mut has_image = use_signal(|| existing_image_tag.is_some());
-    let client_for_delete = app_state
-        .clone();
+    let client_for_delete = app_state.clone();
     let app_state_delete = app_state.clone();
     let delete_name = existing
         .as_ref()
@@ -453,8 +451,7 @@ pub fn CollectionForm(
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
-        let client = app_state
-            .clone();
+        let client = app_state.clone();
         let item_id = existing
             .as_ref()
             .map(|f| {

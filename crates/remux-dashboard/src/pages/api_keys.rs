@@ -28,8 +28,7 @@ pub fn ApiKeysPage(app_state: AppState) -> Element {
     use_effect(move || {
         let _r = *refresh.read();
         loading.set(true);
-        let client = app_state_effect
-            .clone();
+        let client = app_state_effect.clone();
         spawn(async move {
             match client
                 .execute(GetApiKeys)

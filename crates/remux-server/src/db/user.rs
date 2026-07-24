@@ -154,13 +154,18 @@ impl User {
         if ids.is_empty() {
             return Ok(vec![]);
         }
-        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders = ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
         let sql = format!("SELECT * FROM users WHERE id IN ({placeholders})");
         let mut q = sqlx::query_as::<_, Self>(&sql);
         for id in ids {
             q = q.bind(id);
         }
-        Ok(q.fetch_all(db).await?)
+        Ok(q.fetch_all(db)
+            .await?)
     }
 
     pub async fn get_by_username(

@@ -3,7 +3,9 @@ use crate::{
     state::{fmt_datetime, fmt_time, AppState},
 };
 use dioxus::prelude::*;
-use remux_sdks::remux::{ActivityLogEntry, GetActivityLog, GetSessions, SessionInfoDto};
+use remux_sdks::remux::{
+    ActivityLogEntry, GetActivityLog, GetSessions, SessionInfoDto,
+};
 
 #[component]
 pub fn SessionsCard(app_state: AppState) -> Element {

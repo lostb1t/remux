@@ -644,10 +644,24 @@ pub async fn system_activity_log(
     _session: auth::AdminSession,
     Query(q): Query<ActivityLogQuery>,
 ) -> Result<impl IntoResponse> {
-    let start_index = q.start_index.unwrap_or(0);
-    let limit = q.limit.unwrap_or(50).min(200);
-    use remux_sdks::remux::{ActivityLogEntry, ActivityLogEntryRemux, ActivityLogResult};
-    let (rows, total) = db::ActivityLog::list(&state.ctx.db, start_index, limit).await?;
+    let start_index = q
+        .start_index
+        .unwrap_or(0);
+    let limit = q
+        .limit
+        .unwrap_or(50)
+        .min(200);
+    use remux_sdks::remux::{
+        ActivityLogEntry, ActivityLogEntryRemux, ActivityLogResult,
+    };
+    let (rows, total) = db::ActivityLog::list(
+        &state
+            .ctx
+            .db,
+        start_index,
+        limit,
+    )
+    .await?;
     let items: Vec<ActivityLogEntry> = rows
         .into_iter()
         .map(|r| ActivityLogEntry {
@@ -668,7 +682,10 @@ pub async fn system_activity_log(
             }),
         })
         .collect();
-    Ok(Json(ActivityLogResult { items, total_record_count: total }))
+    Ok(Json(ActivityLogResult {
+        items,
+        total_record_count: total,
+    }))
 }
 
 /// Return the current UTC time (no auth required — Jellyfin calls this before login)

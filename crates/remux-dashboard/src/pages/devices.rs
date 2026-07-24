@@ -3,7 +3,9 @@ use crate::{
     state::{fmt_time, AppState},
 };
 use dioxus::prelude::*;
-use remux_sdks::remux::{DeleteDevice, DeleteUserDevices, DeviceInfo, GetDevices, QueryResult};
+use remux_sdks::remux::{
+    DeleteDevice, DeleteUserDevices, DeviceInfo, GetDevices, QueryResult,
+};
 use std::collections::HashMap;
 
 #[component]
@@ -21,7 +23,10 @@ pub fn DevicesPage(app_state: AppState) -> Element {
         loading.set(true);
         let client = app_state_devices.clone();
         spawn(async move {
-            match client.execute(GetDevices { user_id: None }).await {
+            match client
+                .execute(GetDevices { user_id: None })
+                .await
+            {
                 Ok(QueryResult { items, .. }) => {
                     devices.set(items);
                     error.set(None);
@@ -34,14 +39,19 @@ pub fn DevicesPage(app_state: AppState) -> Element {
 
     let grouped: HashMap<String, Vec<DeviceInfo>> = {
         let mut map: HashMap<String, Vec<DeviceInfo>> = HashMap::new();
-        for d in devices.read().iter() {
+        for d in devices
+            .read()
+            .iter()
+        {
             let uid = d
                 .remux
                 .as_ref()
                 .and_then(|r| r.user_id)
                 .map(|u| u.to_string())
                 .unwrap_or_default();
-            map.entry(uid).or_default().push(d.clone());
+            map.entry(uid)
+                .or_default()
+                .push(d.clone());
         }
         map
     };

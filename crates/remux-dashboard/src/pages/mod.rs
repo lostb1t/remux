@@ -14,11 +14,11 @@ pub use api_keys::ApiKeysPage;
 pub use branding::BrandingPage;
 pub use collections::CollectionsPage;
 pub use dashboard::DashboardPage;
+pub use devices::DevicesPage;
 pub use iptv::IptvPage;
 pub use settings::{
     IntroSettingsCard, JellyfinImportCard, P2pSettingsCard, PlaybackSettingsCard,
     ProbeSettingsCard, RemuxdbSettingsCard, SearchSettingsCard, ServerSettingsCard,
 };
-pub use devices::DevicesPage;
 pub use streams::StreamGroupsCard;
 pub use users::UsersPage;

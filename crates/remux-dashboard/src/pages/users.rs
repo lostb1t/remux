@@ -42,8 +42,7 @@ pub fn UsersPage(app_state: AppState) -> Element {
     use_effect(move || {
         let _r = *refresh.read();
         loading.set(true);
-        let client = app_state_effect
-            .clone();
+        let client = app_state_effect.clone();
         spawn(async move {
             match client
                 .execute(GetUsers)
@@ -163,7 +162,6 @@ pub fn UserForm(
         UserFormMode::Edit(u) => Some(u.clone()),
         UserFormMode::Create => None,
     };
-
 
     let mut username = use_signal(|| {
         existing
@@ -305,8 +303,7 @@ pub fn UserForm(
     let edit_user_id = existing
         .as_ref()
         .map(|u| u.id);
-    let addon_client = app_state
-        .clone();
+    let addon_client = app_state.clone();
     use_effect(move || {
         let Some(uid) = edit_user_id else {
             return;
@@ -373,8 +370,7 @@ pub fn UserForm(
             return;
         }
 
-        let client = app_state
-            .clone();
+        let client = app_state.clone();
         let name = username
             .peek()
             .clone();
@@ -861,4 +857,3 @@ pub fn UserForm(
         }
     }
 }
-

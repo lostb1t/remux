@@ -187,7 +187,11 @@ impl Device {
         Ok(result.rows_affected() > 0)
     }
 
-    pub async fn delete_by_id(db: &SqlitePool, device_id: &str, user_id: &Uuid) -> Result<bool> {
+    pub async fn delete_by_id(
+        db: &SqlitePool,
+        device_id: &str,
+        user_id: &Uuid,
+    ) -> Result<bool> {
         let result = sqlx::query("DELETE FROM devices WHERE id = ? AND user_id = ?")
             .bind(device_id)
             .bind(user_id)
@@ -690,8 +694,12 @@ mod tests {
     use super::*;
 
     async fn test_db() -> SqlitePool {
-        let db = crate::db::connect("sqlite::memory:", 10_000).await.unwrap();
-        crate::db::migrate(&db).await.unwrap();
+        let db = crate::db::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        crate::db::migrate(&db)
+            .await
+            .unwrap();
         db
     }
 
@@ -718,14 +726,17 @@ mod tests {
         insert_device(&db, uid, "token-a").await;
         insert_device(&db, uid, "token-b").await;
 
-        let deleted = Device::delete_all_for_user(&db, &uid, None).await.unwrap();
-        assert_eq!(deleted, 2);
-
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE user_id = ?")
-            .bind(uid)
-            .fetch_one(&db)
+        let deleted = Device::delete_all_for_user(&db, &uid, None)
             .await
             .unwrap();
+        assert_eq!(deleted, 2);
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE user_id = ?")
+                .bind(uid)
+                .fetch_one(&db)
+                .await
+                .unwrap();
         assert_eq!(count, 0);
     }
 
@@ -738,14 +749,17 @@ mod tests {
         insert_device(&db, uid, "token-del-1").await;
         insert_device(&db, uid, "token-del-2").await;
 
-        let deleted = Device::delete_all_for_user(&db, &uid, Some("token-keep")).await.unwrap();
-        assert_eq!(deleted, 2);
-
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE user_id = ?")
-            .bind(uid)
-            .fetch_one(&db)
+        let deleted = Device::delete_all_for_user(&db, &uid, Some("token-keep"))
             .await
             .unwrap();
+        assert_eq!(deleted, 2);
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE user_id = ?")
+                .bind(uid)
+                .fetch_one(&db)
+                .await
+                .unwrap();
         assert_eq!(count, 1);
     }
 
@@ -758,13 +772,16 @@ mod tests {
         insert_device(&db, uid_a, "token-a").await;
         insert_device(&db, uid_b, "token-b").await;
 
-        Device::delete_all_for_user(&db, &uid_a, None).await.unwrap();
-
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE user_id = ?")
-            .bind(uid_b)
-            .fetch_one(&db)
+        Device::delete_all_for_user(&db, &uid_a, None)
             .await
             .unwrap();
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE user_id = ?")
+                .bind(uid_b)
+                .fetch_one(&db)
+                .await
+                .unwrap();
         assert_eq!(count, 1);
     }
 }
