@@ -2,13 +2,14 @@ use anyhow::Result;
 use chrono::Utc;
 use remux_sdks::remux::{
     FilterMatchMode, SetOp, StreamCodec, StreamFilter, StreamQuality, StreamResolution,
-    StreamRule,
+    StreamRule, language_label,
 };
 use sqlx::SqlitePool;
 use std::collections::HashSet;
 use uuid::Uuid;
 
 use crate::{
+    api::MediaStreamType,
     db::{Media, Settings, StreamGroupData},
     stream::StreamInfo,
 };
@@ -249,7 +250,13 @@ impl StreamGroup {
                 .filter(|s| {
                     s.stream_info
                         .as_ref()
-                        .map_or(false, |info| group.matches(info))
+                        .map_or(false, |info| {
+                            group.matches(
+                                info,
+                                s.probe_data
+                                    .as_ref(),
+                            )
+                        })
                 })
                 .collect();
 
@@ -308,15 +315,27 @@ pub fn apply_stream_filter(filter: &StreamFilter, sources: Vec<Media>) -> Vec<Me
         .filter(|s| {
             s.stream_info
                 .as_ref()
-                .map_or(true, |info| temp.matches(info))
+                .map_or(true, |info| {
+                    temp.matches(
+                        info,
+                        s.probe_data
+                            .as_ref(),
+                    )
+                })
         })
         .collect()
 }
 
 impl StreamGroup {
-    /// Returns true if the given StreamInfo matches this group's filter.
-    /// An empty filter (no rules) matches everything.
-    pub fn matches(&self, info: &StreamInfo) -> bool {
+    /// Returns true if the given source matches this group's filter.
+    /// `info` carries filename/resolution inputs; `probe_data` (from the parent
+    /// `Media`, NOT `StreamInfo.probe_data`, which is usually empty) supplies
+    /// audio-language data. An empty filter matches everything.
+    pub fn matches(
+        &self,
+        info: &StreamInfo,
+        probe_data: Option<&crate::api::MediaSourceInfo>,
+    ) -> bool {
         let filter = &self.filter;
         if filter
             .rules
@@ -402,6 +421,34 @@ impl StreamGroup {
                 let hit = values.contains(&codec);
                 matches!(op, SetOp::In | SetOp::Is) == hit
             }
+            // No probe data → no match. Unprobed sources must NOT be absorbed
+            // by the group (which only shows one representative); they fall
+            // through to the ungrouped list so they remain visible.
+            StreamRule::AudioLanguage { op, values } => match probe_data {
+                None => false,
+                Some(pd) => {
+                    let wanted: Vec<String> = values
+                        .iter()
+                        .map(|v| v.to_ascii_lowercase())
+                        .collect();
+                    let hit = pd
+                        .media_streams
+                        .iter()
+                        .any(|s| {
+                            s.type_ == Some(MediaStreamType::Audio)
+                                && s.language
+                                    .as_deref()
+                                    .map_or(false, |l| {
+                                        let l = l.to_ascii_lowercase();
+                                        !matches!(
+                                            l.as_str(),
+                                            "und" | "mis" | "zxx" | "mul"
+                                        ) && wanted.contains(&l)
+                                    })
+                        });
+                    matches!(op, SetOp::In | SetOp::Is) == hit
+                }
+            },
         };
 
         match filter.match_mode {
@@ -422,7 +469,13 @@ impl StreamGroup {
             .filter(|s| {
                 s.stream_info
                     .as_ref()
-                    .map_or(false, |info| group.matches(info))
+                    .map_or(false, |info| {
+                        group.matches(
+                            info,
+                            s.probe_data
+                                .as_ref(),
+                        )
+                    })
             })
             .cloned()
             .collect();
@@ -512,18 +565,25 @@ fn auto_name(filter: &StreamFilter) -> String {
         .rules
         .iter()
         .filter_map(|r| {
-            let labels: Vec<&str> = match r {
+            let labels: Vec<String> = match r {
                 StreamRule::Resolution { values, .. } => values
                     .iter()
                     .map(|v| v.label())
+                    .map(str::to_owned)
                     .collect(),
                 StreamRule::Quality { values, .. } => values
                     .iter()
                     .map(|v| v.label())
+                    .map(str::to_owned)
                     .collect(),
                 StreamRule::Codec { values, .. } => values
                     .iter()
                     .map(|v| v.label())
+                    .map(str::to_owned)
+                    .collect(),
+                StreamRule::AudioLanguage { values, .. } => values
+                    .iter()
+                    .map(|c| language_label(c))
                     .collect(),
             };
             if labels.is_empty() {
@@ -629,22 +689,144 @@ mod tests {
     #[test]
     fn uhd_bluray_source_with_explicit_1080p_matches_1080p_group() {
         let group = group_1080p_bluray();
-        assert!(group.matches(&info(
-            "The Martian 2015 Extended Cut UHD BluRay 1080p DD Atmos 5 1 DoVi HDR10 x265-SM737.mkv"
-        )));
-        assert!(group.matches(&info(
-            "The.Housemaid.2025.UHD.BluRay.1080p.DD+Atmos.5.1.DoVi.HDR10+.x265-SM737.mkv"
-        )));
-        assert!(group.matches(&info(
-            "The Housemaid 2025 REPACK UHD BluRay 1080p DD Atmos 5 1 DoVi HDR10 x265-SM737.mkv"
-        )));
+        assert!(group.matches(
+            &info(
+                "The Martian 2015 Extended Cut UHD BluRay 1080p DD Atmos 5 1 DoVi HDR10 x265-SM737.mkv"
+            ),
+            None
+        ));
+        assert!(group.matches(
+            &info(
+                "The.Housemaid.2025.UHD.BluRay.1080p.DD+Atmos.5.1.DoVi.HDR10+.x265-SM737.mkv"
+            ),
+            None
+        ));
+        assert!(group.matches(
+            &info(
+                "The Housemaid 2025 REPACK UHD BluRay 1080p DD Atmos 5 1 DoVi HDR10 x265-SM737.mkv"
+            ),
+            None
+        ));
     }
 
     #[test]
     fn genuine_2160p_release_does_not_match_1080p_group() {
         let group = group_1080p_bluray();
-        assert!(!group.matches(&info(
-            "The Martian 2015 UHD BluRay 2160p HDR10 DoVi Atmos x265-GROUP.mkv"
-        )));
+        assert!(!group.matches(
+            &info("The Martian 2015 UHD BluRay 2160p HDR10 DoVi Atmos x265-GROUP.mkv"),
+            None
+        ));
+    }
+
+    fn group_audio_lang(op: SetOp, values: &[&str]) -> StreamGroup {
+        StreamGroup {
+            id: Uuid::nil(),
+            name: "audio".to_string(),
+            filter: StreamFilter {
+                match_mode: FilterMatchMode::All,
+                rules: vec![StreamRule::AudioLanguage {
+                    op,
+                    values: values
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
+                }],
+            },
+            priority: 0,
+            enabled: true,
+            hidden: false,
+            created_at: String::new(),
+        }
+    }
+
+    fn probe_with_langs(langs: &[&str]) -> crate::api::MediaSourceInfo {
+        use crate::api::MediaStream;
+        let media_streams = langs
+            .iter()
+            .map(|l| MediaStream {
+                type_: Some(MediaStreamType::Audio),
+                language: Some(l.to_string()),
+                ..Default::default()
+            })
+            .collect();
+        crate::api::MediaSourceInfo {
+            media_streams,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn audio_lang_matches_when_listed() {
+        let group = group_audio_lang(SetOp::Is, &["rus"]);
+        let probe = probe_with_langs(&["rus"]);
+        assert!(group.matches(&info("a.mkv"), Some(&probe)));
+    }
+
+    #[test]
+    fn audio_lang_rejects_when_language_differs() {
+        let group = group_audio_lang(SetOp::Is, &["rus"]);
+        let probe = probe_with_langs(&["eng"]);
+        assert!(!group.matches(&info("a.mkv"), Some(&probe)));
+    }
+
+    // An unprobed source (no probe_data) must NOT match the group: the group
+    // only shows one representative, so absorbing an unmatched source would
+    // hide it. It falls through to the ungrouped list instead.
+    #[test]
+    fn audio_lang_unprobed_does_not_match() {
+        let group = group_audio_lang(SetOp::Is, &["rus"]);
+        assert!(!group.matches(&info("a.mkv"), None));
+    }
+
+    #[test]
+    fn audio_lang_case_insensitive_and_any_track() {
+        let group = group_audio_lang(SetOp::In, &["rus"]);
+        assert!(group.matches(&info("a.mkv"), Some(&probe_with_langs(&["RUS"]))));
+        assert!(
+            group.matches(&info("a.mkv"), Some(&probe_with_langs(&["eng", "rus"])))
+        );
+    }
+
+    #[test]
+    fn audio_lang_isnot_inverts() {
+        let group = group_audio_lang(SetOp::NotIn, &["rus"]);
+        assert!(!group.matches(&info("a.mkv"), Some(&probe_with_langs(&["rus"]))));
+        assert!(group.matches(&info("a.mkv"), Some(&probe_with_langs(&["eng"]))));
+    }
+
+    // Special "no-linguistic-content" codes are treated as no language.
+    #[test]
+    fn audio_lang_ignores_special_codes() {
+        let group = group_audio_lang(SetOp::Is, &["rus"]);
+        assert!(!group.matches(&info("a.mkv"), Some(&probe_with_langs(&["und"]))));
+        assert!(!group.matches(&info("a.mkv"), Some(&probe_with_langs(&["mul"]))));
+    }
+
+    // A Resolution rule is inferred via hunch from the filename, so a source
+    // without a filename cannot match a Resolution-only group.
+    #[test]
+    fn resolution_group_rejects_source_without_filename() {
+        let group = StreamGroup {
+            id: Uuid::nil(),
+            name: "1080p".to_string(),
+            filter: StreamFilter {
+                match_mode: FilterMatchMode::All,
+                rules: vec![StreamRule::Resolution {
+                    op: SetOp::In,
+                    values: vec![StreamResolution::R1080p],
+                }],
+            },
+            priority: 0,
+            enabled: true,
+            hidden: false,
+            created_at: String::new(),
+        };
+        let si = StreamInfo {
+            descriptor: StreamDescriptor::default(),
+            filename: None,
+            name: None,
+            ..Default::default()
+        };
+        assert!(!group.matches(&si, None));
     }
 }

@@ -215,7 +215,13 @@ pub async fn stream_group_preview(
             .filter(|s| {
                 s.stream_info
                     .as_ref()
-                    .map_or(false, |info| group.matches(info))
+                    .map_or(false, |info| {
+                        group.matches(
+                            info,
+                            s.probe_data
+                                .as_ref(),
+                        )
+                    })
             })
             .collect();
 

@@ -477,7 +477,13 @@ async fn streams_metadata(state: &AppState, id: Uuid) -> AnyResult<StreamsRespon
             .filter(|s| {
                 s.stream_info
                     .as_ref()
-                    .map_or(false, |info| group.matches(info))
+                    .map_or(false, |info| {
+                        group.matches(
+                            info,
+                            s.probe_data
+                                .as_ref(),
+                        )
+                    })
             })
             .collect();
 
@@ -491,7 +497,7 @@ async fn streams_metadata(state: &AppState, id: Uuid) -> AnyResult<StreamsRespon
 
         let best = matching[0];
         let description = {
-            use remux_sdks::remux::StreamRule;
+            use remux_sdks::remux::{StreamRule, language_label};
             let parts: Vec<String> = group
                 .filter
                 .rules
@@ -510,6 +516,11 @@ async fn streams_metadata(state: &AppState, id: Uuid) -> AnyResult<StreamsRespon
                     StreamRule::Codec { values, .. } => values
                         .iter()
                         .map(|v| v.label())
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                    StreamRule::AudioLanguage { values, .. } => values
+                        .iter()
+                        .map(|c| language_label(c))
                         .collect::<Vec<_>>()
                         .join("/"),
                 })
