@@ -505,6 +505,7 @@ async fn items_playbackinfo_inner(
 pub async fn items_file(
     headers: headers::HeaderMap,
     State(state): State<AppState>,
+    session: auth::AuthSession,
     Path(id): Path<Uuid>,
     Query(mut q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
@@ -527,7 +528,7 @@ pub async fn items_file(
     let safe = filename
         .replace('"', "")
         .replace('\\', "");
-    let mut response = videos_stream_inner(headers, state, id, q)
+    let mut response = videos_stream_inner(headers, state, session, id, q)
         .await?
         .into_response();
     if let Ok(val) =
@@ -548,16 +549,18 @@ pub async fn items_file(
 pub async fn audio_stream(
     headers: headers::HeaderMap,
     State(state): State<AppState>,
+    session: auth::AuthSession,
     Path(id): Path<Uuid>,
     Query(q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
-    videos_stream_inner(headers, state, id, q).await
+    videos_stream_inner(headers, state, session, id, q).await
 }
 
 #[get("/audio/{id}/stream.{container}")]
 pub async fn audio_stream_by_container(
     headers: headers::HeaderMap,
     State(state): State<AppState>,
+    session: auth::AuthSession,
     Path((id, container)): Path<(Uuid, String)>,
     Query(mut q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
@@ -566,23 +569,25 @@ pub async fn audio_stream_by_container(
     {
         q.container = Some(container);
     }
-    videos_stream_inner(headers, state, id, q).await
+    videos_stream_inner(headers, state, session, id, q).await
 }
 
 #[get("/videos/{id}/stream")]
 pub async fn videos_stream(
     headers: headers::HeaderMap,
     State(state): State<AppState>,
+    session: auth::AuthSession,
     Path(id): Path<Uuid>,
     Query(q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
-    videos_stream_inner(headers, state, id, q).await
+    videos_stream_inner(headers, state, session, id, q).await
 }
 
 #[get("/videos/{id}/stream.{container}")]
 pub async fn videos_stream_by_container(
     headers: headers::HeaderMap,
     State(state): State<AppState>,
+    session: auth::AuthSession,
     Path((id, container)): Path<(Uuid, String)>,
     Query(mut q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
@@ -591,7 +596,7 @@ pub async fn videos_stream_by_container(
     {
         q.container = Some(container);
     }
-    videos_stream_inner(headers, state, id, q).await
+    videos_stream_inner(headers, state, session, id, q).await
 }
 
 fn ext_from_descriptor(descriptor: &crate::stream::StreamDescriptor) -> String {
@@ -627,9 +632,42 @@ fn ext_from_descriptor(descriptor: &crate::stream::StreamDescriptor) -> String {
 async fn videos_stream_inner(
     headers: headers::HeaderMap,
     state: AppState,
+    session: auth::AuthSession,
     id: Uuid,
     q: api::VideoStreamQuery,
 ) -> Result<impl IntoResponse> {
+    // Some clients hit the stream endpoints directly, skipping PlaybackInfo.
+    // Resolve addon streams here so fresh tracks play without a prior
+    // PlaybackInfo call. Cheap when fresh via the TTL fast-path.
+    if let Ok(Some(mut media)) = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &id,
+    )
+    .await
+    {
+        if matches!(
+            media.kind,
+            db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track
+        ) {
+            let _ = state
+                .ctx
+                .addons
+                .refresh_streams(
+                    &mut media,
+                    &state.ctx,
+                    Some(
+                        session
+                            .user
+                            .id,
+                    ),
+                )
+                .await
+                .inspect_err(|e| error!("refresh_streams failed: {e:#}"));
+        }
+    }
+
     let media = StreamService::lookup(
         &state.ctx,
         id,
