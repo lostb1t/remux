@@ -5333,6 +5333,18 @@ impl TryFrom<sdks::stremio::Meta> for Media {
             media_kind = MediaKind::Series;
         }
 
+        // No IMDB ID means we can't resolve release dates against an external
+        // provider (TMDB) either. If the addon reports no date at all for it,
+        // treat it as available now rather than leaving digital_released_at
+        // unset — an unset date means "unreleased" to push_release_date_filter,
+        // which would hide the item forever for addons that never report dates.
+        let has_no_imdb_id = meta
+            .imdb_id
+            .is_none()
+            && ExternalIds::from_stremio_id(&meta.id)
+                .imdb
+                .is_none();
+
         let digital_released_at = meta
             .app_extras
             .as_ref()
@@ -5365,6 +5377,17 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                 ) {
                     meta.released
                         .map(|x| x.naive_utc())
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                if has_no_imdb_id
+                    && meta
+                        .released
+                        .is_none()
+                {
+                    Some(Utc::now().naive_utc())
                 } else {
                     None
                 }
@@ -5979,12 +6002,7 @@ pub fn stremio_meta_season_episodes(
 ///      series have NULL parent_id so the subquery would always return NULL anyway;
 ///      seasons must not inherit the series premiere (TVDB lists future seasons early).
 ///
-/// Items with no resolvable date at all are excluded (the OR condition is false
-/// for them) — EXCEPT top-level movies/series, where an unknown date is not
-/// evidence of a future release (some Stremio addon catalogs never report one)
-/// and hiding them outright would make their entire catalog unbrowsable. Seasons
-/// and episodes keep the strict behavior: a season/episode with no date at all
-/// (not even inherited from its parent) is presumed not yet aired.
+/// Items with no resolvable date are always excluded (the OR condition is false for them).
 ///
 /// The filter is expressed as OR branches rather than a CASE expression so that SQLite
 /// can use `idx_media_digital_released_at` for branch 1 and `idx_media_released_at`
@@ -6020,9 +6038,6 @@ pub fn push_release_date_filter(
         // Movies / series / seasons: no parent fallback. Each branch is indexable.
         // Branch 1 → idx_media_digital_released_at
         // Branch 2 → idx_media_released_at
-        // Branch 3 → top-level movies/series with no resolvable date at all pass
-        // through (see doc comment above); seasons are excluded from this branch
-        // so an undated season of an otherwise-dated series stays hidden.
         qb.push(format!(
             " AND (({a}digital_released_at IS NOT NULL AND {a}digital_released_at <= "
         ))
@@ -6034,9 +6049,7 @@ pub fn push_release_date_filter(
         ))
         .push_bind(threshold)
         .push(format!(
-            " AND NOT ({a}kind = 'movie' AND {a}released_at > date('now', '-1 year'))) \
-              OR ({a}digital_released_at IS NULL AND {a}released_at IS NULL \
-                  AND {a}kind IN ('movie', 'series')))"
+            " AND NOT ({a}kind = 'movie' AND {a}released_at > date('now', '-1 year'))))"
         ));
     }
 }
@@ -6573,6 +6586,53 @@ mod tests {
     }
 
     #[test]
+    fn custom_id_meta_with_no_dates_stamps_digital_released_at_now() {
+        let json = r#"{
+            "id": "fk:27",
+            "type": "anime",
+            "name": "Bleach Yabai"
+        }"#;
+        let meta: sdks::stremio::Meta = serde_json::from_str(json).unwrap();
+        let before = chrono::Utc::now().naive_utc();
+        let media: Media = meta
+            .try_into()
+            .unwrap();
+        let after = chrono::Utc::now().naive_utc();
+
+        let stamped = media
+            .digital_released_at
+            .expect(
+                "no-IMDB item with no dates must get a stamped digital_released_at",
+            );
+        assert!(
+            stamped >= before && stamped <= after,
+            "expected digital_released_at to be stamped to now; got {:?} (window {:?}..{:?})",
+            stamped,
+            before,
+            after
+        );
+    }
+
+    #[test]
+    fn imdb_meta_with_no_dates_leaves_digital_released_at_unset() {
+        let json = r#"{
+            "id": "tt9990010",
+            "type": "movie",
+            "name": "Some Movie"
+        }"#;
+        let meta: sdks::stremio::Meta = serde_json::from_str(json).unwrap();
+        let media: Media = meta
+            .try_into()
+            .unwrap();
+
+        assert_eq!(
+            media.digital_released_at, None,
+            "items with a resolvable IMDB ID must not get a stamped date — \
+             their date can still be resolved externally (e.g. via TMDB)"
+        );
+    }
+
+    #[test]
     fn stale_episode_id_recomputes_to_canonical_and_validates() {
         let series_imdb = NonEmptyString::try_new("tt1844624".to_string()).unwrap();
         let mut ep = Media {
@@ -6776,9 +6836,7 @@ mod tests {
 
     /// Verifies push_release_date_filter hides movies with a recent theatrical date
     /// but no digital release date, while still showing movies with an old theatrical
-    /// date (>1 year), an explicit digital release date, or no known date at all
-    /// (some addon catalogs never report one; unknown is not evidence of a future
-    /// release).
+    /// date (>1 year) or an explicit digital release date.
     #[tokio::test]
     async fn release_date_filter_hides_recent_theatrical_only_movies() {
         let (_server, guard) = crate::integration_test::new_test_server()
@@ -6806,7 +6864,6 @@ mod tests {
         let (id_recent, ext_recent) = make_movie_ids("tt9990001");
         let (id_old, ext_old) = make_movie_ids("tt9990002");
         let (id_digital, ext_digital) = make_movie_ids("tt9990003");
-        let (id_no_date, ext_no_date) = make_movie_ids("tt9990004");
 
         // Theatrical only, released 2 months ago — no digital date → must be hidden.
         let mut recent_theatrical = Media {
@@ -6853,21 +6910,6 @@ mod tests {
             .await
             .unwrap();
 
-        // No known release date at all (e.g. addon never reports one) → must be shown.
-        let mut no_date = Media {
-            id: id_no_date,
-            title: "No Known Release Date".to_string(),
-            kind: MediaKind::Movie,
-            external_ids: ext_no_date,
-            released_at: None,
-            digital_released_at: None,
-            ..Default::default()
-        };
-        no_date
-            .save(db)
-            .await
-            .unwrap();
-
         let result = Media::get_by_filter(
             db,
             &MediaFilter {
@@ -6901,70 +6943,6 @@ mod tests {
         assert!(
             titles.contains(&"Has Digital Release"),
             "movie with digital release date must be shown; got: {:?}",
-            titles
-        );
-        assert!(
-            titles.contains(&"No Known Release Date"),
-            "movie with no known release date must be shown; got: {:?}",
-            titles
-        );
-    }
-
-    #[tokio::test]
-    async fn release_date_filter_shows_series_with_no_known_date() {
-        let (_server, guard) = crate::integration_test::new_test_server()
-            .await
-            .unwrap();
-        let db = &guard
-            .0
-            .db;
-        let now = chrono::Utc::now().naive_utc();
-
-        let ext = ExternalIds {
-            imdb: Some(NonEmptyString::try_new("tt9990005".to_string()).unwrap()),
-            ..Default::default()
-        };
-        let mut series = Media {
-            id: uuid::Uuid::from(&MediaIdRaw {
-                kind: MediaKind::Series,
-                external_ids: ext.clone(),
-                season: None,
-                episode: None,
-            }),
-            title: "No Known Date Series".to_string(),
-            kind: MediaKind::Series,
-            external_ids: ext,
-            released_at: None,
-            digital_released_at: None,
-            ..Default::default()
-        };
-        series
-            .save(db)
-            .await
-            .unwrap();
-
-        let result = Media::get_by_filter(
-            db,
-            &MediaFilter {
-                kind: Some(vec![MediaKind::Series]),
-                digital_released_before: Some(now),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-
-        let titles: Vec<&str> = result
-            .records
-            .iter()
-            .map(|m| {
-                m.title
-                    .as_str()
-            })
-            .collect();
-        assert!(
-            titles.contains(&"No Known Date Series"),
-            "series with no known release date must be shown; got: {:?}",
             titles
         );
     }
