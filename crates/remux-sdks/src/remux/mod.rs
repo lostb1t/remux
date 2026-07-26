@@ -5157,6 +5157,101 @@ impl Endpoint for PatchItem {
     }
 }
 
+/// GET /collections/{id}/items — fetch items in a manual collection.
+/// Each item's `playlist_item_id` is the relation_id used for removal.
+#[derive(Debug, Clone)]
+pub struct GetCollectionItems {
+    pub collection_id: String,
+    pub start_index: Option<u32>,
+    pub limit: Option<u32>,
+}
+
+impl Endpoint for GetCollectionItems {
+    type Output = BaseItemDtoQueryResult;
+
+    fn path(&self) -> String {
+        format!("/collections/{}/items", self.collection_id)
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        #[derive(Serialize)]
+        struct Q {
+            #[serde(rename = "startIndex", skip_serializing_if = "Option::is_none")]
+            start_index: Option<u32>,
+            #[serde(rename = "limit", skip_serializing_if = "Option::is_none")]
+            limit: Option<u32>,
+        }
+        Q {
+            start_index: self.start_index,
+            limit: self.limit,
+        }
+    }
+}
+
+/// POST /collections/{id}/items?ids=uuid,uuid — add items to a manual collection.
+#[derive(Debug, Clone)]
+pub struct AddCollectionItems {
+    pub collection_id: String,
+    pub ids: Vec<String>,
+}
+
+impl Endpoint for AddCollectionItems {
+    type Output = ();
+
+    fn path(&self) -> String {
+        format!("/collections/{}/items", self.collection_id)
+    }
+
+    fn method(&self) -> Method {
+        Method::POST
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        #[derive(Serialize)]
+        struct Q {
+            ids: String,
+        }
+        Q {
+            ids: self
+                .ids
+                .join(","),
+        }
+    }
+}
+
+/// DELETE /collections/{id}/items?ids=relation_id,... — remove items by relation ID.
+/// Use the `playlist_item_id` from GetCollectionItems as the relation ID, not the media ID.
+#[derive(Debug, Clone)]
+pub struct RemoveCollectionItems {
+    pub collection_id: String,
+    /// Relation IDs (from `playlist_item_id`), NOT media IDs.
+    pub relation_ids: Vec<String>,
+}
+
+impl Endpoint for RemoveCollectionItems {
+    type Output = ();
+
+    fn path(&self) -> String {
+        format!("/collections/{}/items", self.collection_id)
+    }
+
+    fn method(&self) -> Method {
+        Method::DELETE
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        #[derive(Serialize)]
+        struct Q {
+            ids: String,
+        }
+        Q {
+            ids: self
+                .relation_ids
+                .join(","),
+        }
+    }
+}
+
 /// Upload an image for a library item (POST /Items/{id}/Images/{type}).
 /// Bytes are sent as-is with the given content-type header.
 #[derive(Debug, Clone)]

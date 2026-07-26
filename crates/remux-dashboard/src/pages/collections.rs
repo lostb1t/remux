@@ -1,9 +1,11 @@
 use crate::{components::*, state::AppState};
 use dioxus::prelude::*;
 use remux_sdks::remux::{
-    BaseItemDto, CollectionFilter, CreateVirtualFolder, CreateVirtualFolderPayload,
-    DeleteVirtualFolder, FilterGroup, FilterMatchMode, GetItems, GetItemsQuery,
-    ItemSortBy, MediaType, PatchItem, PatchItemPayload, SortOrder,
+    AddCollectionItems, BaseItemDto, CollectionFilter, CollectionType,
+    CreateVirtualFolder, CreateVirtualFolderPayload, DeleteVirtualFolder, FilterGroup,
+    FilterMatchMode, GetCollectionItems, GetItems, GetItemsQuery, ItemSortBy,
+    MediaType, PatchItem, PatchItemPayload, RemoveCollectionItems, RemuxCollectionKind,
+    SortOrder,
 };
 
 /// Which collection is currently being edited (None = creating new).
@@ -116,6 +118,12 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                                     }
                                                     if col.remux.as_ref().and_then(|r| r.promoted).unwrap_or(false) {
                                                         span { class: "task-badge task-badge-running", "Library" }
+                                                    }
+                                                    if col.collection_type.as_ref() == Some(&remux_sdks::remux::CollectionType::Boxsets)
+                                                        && col.remux.as_ref().and_then(|r| r.collection_kind.as_ref()) == Some(&remux_sdks::remux::RemuxCollectionKind::Manual)
+                                                        && !col.remux.as_ref().and_then(|r| r.promoted).unwrap_or(false)
+                                                    {
+                                                        span { class: "task-badge task-badge-idle", "Group" }
                                                     }
                                                 }
                                             }
@@ -301,6 +309,23 @@ pub fn CollectionForm(
             .unwrap_or_else(|| "movies".to_string())
     });
     let mut col_kind = use_signal(|| {
+        // Group containers must always use Manual kind — force it regardless of
+        // what was stored (guards against pre-validation collections that saved "smart").
+        let is_group_container = existing
+            .as_ref()
+            .and_then(|f| {
+                f.remux
+                    .as_ref()
+            })
+            .and_then(|r| {
+                r.collection_media_kind
+                    .as_ref()
+            })
+            .map(|mk| matches!(mk, remux_sdks::remux::MediaKind::Collection))
+            .unwrap_or(false);
+        if is_group_container {
+            return "manual".to_string();
+        }
         existing
             .as_ref()
             .and_then(|f| {
@@ -439,6 +464,8 @@ pub fn CollectionForm(
     let mut pending_image_bytes: Signal<Option<Vec<u8>>> = use_signal(|| None);
     let mut pending_image_preview: Signal<Option<String>> = use_signal(|| None);
     let mut has_image = use_signal(|| existing_image_tag.is_some());
+    let app_state_for_children = app_state.clone();
+    let existing_for_children = existing.clone();
     let client_for_delete = app_state.clone();
     let app_state_delete = app_state.clone();
     let delete_name = existing
@@ -638,7 +665,15 @@ pub fn CollectionForm(
                     id: "col-type",
                     class: "select-input",
                     value: "{col_type}",
-                    onchange: move |e| col_type.set(e.value()),
+                    onchange: move |e| {
+                        let v = e.value();
+                        // Default group containers to manual — only manual collections
+                        // can have explicit child membership via media_relations.
+                        if v == "collections" {
+                            col_kind.set("manual".to_string());
+                        }
+                        col_type.set(v);
+                    },
                     option { value: "movies",      "Movies"      }
                     option { value: "tvshows",     "TV Shows"    }
                     option { value: "mixed",       "Mixed (Movies & Shows)" }
@@ -755,16 +790,18 @@ pub fn CollectionForm(
                 on_change: move |v| promoted.set(v),
             }
 
-            ToggleRow {
-                label: "Latest: Unplayed Only",
-                checked: *latest_auto_unplayed.read(),
-                on_change: move |v| latest_auto_unplayed.set(v),
-            }
+            if col_type.read().as_str() != "collections" {
+                ToggleRow {
+                    label: "Latest: Unplayed Only",
+                    checked: *latest_auto_unplayed.read(),
+                    on_change: move |v| latest_auto_unplayed.set(v),
+                }
 
-            ToggleRow {
-                label: "Latest: Sort by Digital Release",
-                checked: *latest_sort_digital.read(),
-                on_change: move |v| latest_sort_digital.set(v),
+                ToggleRow {
+                    label: "Latest: Sort by Digital Release",
+                    checked: *latest_sort_digital.read(),
+                    on_change: move |v| latest_sort_digital.set(v),
+                }
             }
 
             if (col_kind.read().as_str() == "smart" || col_kind.read().as_str() == "catalog") && col_type.read().as_str() != "collections" {
@@ -810,6 +847,15 @@ pub fn CollectionForm(
                 }
             }
 
+            if is_edit && col_type.read().as_str() == "collections" {
+                if let Some(ref e) = existing_for_children {
+                    CollectionGroupChildren {
+                        app_state: app_state_for_children.clone(),
+                        collection_id: e.id.to_string(),
+                    }
+                }
+            }
+
             if let Some(e) = err.read().as_ref() {
                 ErrorAlert { message: e.clone() }
             }
@@ -846,6 +892,156 @@ pub fn CollectionForm(
                     class: "btn btn-primary",
                     disabled: *saving.read(),
                     if *saving.read() { "Saving…" } else { "Save" }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Child collection management for group containers
+// ---------------------------------------------------------------------------
+
+#[component]
+fn CollectionGroupChildren(app_state: AppState, collection_id: String) -> Element {
+    // All non-promoted, non-group collections available to add as children.
+    let mut all_collections: Signal<Vec<BaseItemDto>> = use_signal(Vec::new);
+    // Currently-assigned children: maps media_id → relation_id (playlist_item_id).
+    let mut current_children: Signal<Vec<(String, String)>> = use_signal(Vec::new);
+    let mut loading = use_signal(|| true);
+
+    let col_id = collection_id.clone();
+    let client = app_state
+        .client
+        .clone();
+    use_effect(move || {
+        let col_id = col_id.clone();
+        let client = client.clone();
+        spawn(async move {
+            // Fetch current children (returns playlist_item_id as relation id)
+            let children = client
+                .execute(GetCollectionItems {
+                    collection_id: col_id.clone(),
+                    start_index: None,
+                    limit: None,
+                })
+                .await
+                .ok()
+                .map(|r| {
+                    r.items
+                        .into_iter()
+                        .filter_map(|item| {
+                            let media_id = item
+                                .id
+                                .to_string();
+                            let relation_id = item.playlist_item_id?;
+                            Some((media_id, relation_id))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            current_children.set(children);
+
+            // Fetch all available collections (exclude group containers themselves)
+            let all = client
+                .execute(GetItems(GetItemsQuery {
+                    include_item_types: Some(vec![MediaType::BoxSet]),
+                    include_childless: Some(true),
+                    sort_by: Some(vec![ItemSortBy::SortName]),
+                    sort_order: Some(vec![SortOrder::Ascending]),
+                    ..Default::default()
+                }))
+                .await
+                .ok()
+                .map(|r| {
+                    r.items
+                        .into_iter()
+                        .filter(|item| {
+                            // Exclude this group itself
+                            item.id.to_string() != col_id
+                            // Exclude other group containers (Manual + Boxsets)
+                            && !(
+                                item.collection_type.as_ref() == Some(&CollectionType::Boxsets)
+                                && item.remux.as_ref().and_then(|r| r.collection_kind.as_ref())
+                                    == Some(&RemuxCollectionKind::Manual)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            all_collections.set(all);
+            loading.set(false);
+        });
+    });
+
+    rsx! {
+        div { class: "field",
+            label { class: "field-label", "Child Collections" }
+            p { class: "field-hint", "Select which collections appear inside this group." }
+
+            if *loading.read() {
+                LoadingText {}
+            } else {
+                div { style: "display:flex;flex-direction:column;gap:4px;max-height:240px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:8px",
+                    for item in all_collections.read().clone() {
+                        {
+                            let item_id = item.id.to_string();
+                            let item_name = item.name.clone().unwrap_or_default();
+                            let children_snapshot = current_children.read().clone();
+                            let is_checked = children_snapshot.iter().any(|(mid, _)| mid == &item_id);
+                            let client_toggle = app_state.client.clone();
+                            let col_id_toggle = collection_id.clone();
+                            let relation_id = children_snapshot
+                                .iter()
+                                .find(|(mid, _)| mid == &item_id)
+                                .map(|(_, rid)| rid.clone());
+                            rsx! {
+                                label {
+                                    style: "display:flex;align-items:center;gap:8px;cursor:pointer;padding:4px 0",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: is_checked,
+                                        onchange: move |e| {
+                                            let checked = e.checked();
+                                            let client = client_toggle.clone();
+                                            let col_id = col_id_toggle.clone();
+                                            let media_id = item_id.clone();
+                                            let rel_id = relation_id.clone();
+                                            spawn(async move {
+                                                if checked {
+                                                    let _ = client.execute(AddCollectionItems {
+                                                        collection_id: col_id.clone(),
+                                                        ids: vec![media_id.clone()],
+                                                    }).await;
+                                                    // Refresh children to get the new relation_id
+                                                    if let Ok(r) = client.execute(GetCollectionItems {
+                                                        collection_id: col_id,
+                                                        start_index: None,
+                                                        limit: None,
+                                                    }).await {
+                                                        let updated = r.items.into_iter().filter_map(|i| {
+                                                            Some((i.id.to_string(), i.playlist_item_id?))
+                                                        }).collect();
+                                                        current_children.set(updated);
+                                                    }
+                                                } else if let Some(rid) = rel_id {
+                                                    let _ = client.execute(RemoveCollectionItems {
+                                                        collection_id: col_id.clone(),
+                                                        relation_ids: vec![rid],
+                                                    }).await;
+                                                    current_children.write().retain(|(mid, _)| mid != &media_id);
+                                                }
+                                            });
+                                        },
+                                    }
+                                    span { "{item_name}" }
+                                }
+                            }
+                        }
+                    }
+                    if all_collections.read().is_empty() {
+                        span { class: "loading-text", "No other collections available." }
+                    }
                 }
             }
         }

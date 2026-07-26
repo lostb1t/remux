@@ -497,8 +497,51 @@ pub async fn get_items(
 
         // collection browse
         if parent.kind == db::MediaKind::Collection {
+            // Group container: a Manual collection whose media kind is Collection.
+            // Browse returns only this group's children via media_relations JOIN,
+            // rather than the global flat list returned by the Collections index.
+            //
+            // Promoted Manual+Collection containers need an extra check: the root "Collections"
+            // index library also has these flags but has no explicit children.  Only take
+            // the group-container path when the parent has at least one child in media_relations.
+            if parent.collection_media_kind == Some(db::CollectionMediaKind::Collection)
+                && parent.collection_kind == Some(db::CollectionKind::Manual)
+                && (!parent.promoted
+                    || {
+                        sqlx::query_scalar::<_, i64>(
+                        "SELECT COUNT(*) FROM media_relations WHERE left_media_id = ? AND role = 'collection'",
+                    )
+                    .bind(&parent.id)
+                    .fetch_one(&state.ctx.db)
+                    .await? > 0
+                    })
+            {
+                q.user_id = Some(
+                    session
+                        .user
+                        .id,
+                );
+                let result = db::Media::get_by_jellyfin_filter(
+                    &state
+                        .ctx
+                        .db,
+                    &q,
+                    true,
+                    Some(&session.user),
+                    Some(&server_config),
+                    None,
+                    Some(&parent),
+                )
+                .await?;
+                return Ok(ItemsQueryResultBuilder::with_items(
+                    session,
+                    result.records,
+                    result.total_count as i64,
+                ));
+            }
+
             // "Collections index": any collection with collection_media_kind='collection'
-            // shows non-promoted collections regardless of collection_kind (manual/smart).
+            // shows non-promoted collections (excluding those grouped under a group container).
             if parent.collection_media_kind == Some(db::CollectionMediaKind::Collection)
             {
                 let result = db::Media::get_by_filter(
@@ -535,6 +578,7 @@ pub async fn get_items(
                         exclude_childless: !q
                             .include_childless
                             .unwrap_or(false),
+                        exclude_grouped: true,
                         policy_filter: session
                             .user
                             .policy
@@ -2128,6 +2172,15 @@ pub async fn create_virtual_folder(
         .and_then(|s| db::CollectionKind::try_from(s).ok())
         .unwrap_or(db::CollectionKind::Smart);
 
+    if collection_media_kind == Some(db::CollectionMediaKind::Collection)
+        && collection_kind != db::CollectionKind::Manual
+    {
+        return Err(anyhow::anyhow!(
+            "collection_kind must be Manual when collection_type is collections"
+        ))
+        .context_bad_request("Group containers must use Manual collection kind");
+    }
+
     let promoted = payload
         .promoted
         .unwrap_or(false);
@@ -2194,6 +2247,17 @@ pub async fn update_virtual_folder(
         .collection_kind
         .as_deref()
         .and_then(|s| db::CollectionKind::try_from(s).ok());
+
+    if collection_media_kind == Some(db::CollectionMediaKind::Collection)
+        && collection_kind
+            .as_ref()
+            .is_some_and(|k| *k != db::CollectionKind::Manual)
+    {
+        return Err(anyhow::anyhow!(
+            "collection_kind must be Manual when collection_type is collections"
+        ))
+        .context_bad_request("Group containers must use Manual collection kind");
+    }
 
     let promoted = payload
         .promoted
@@ -3042,6 +3106,31 @@ pub async fn patch_item(
     Path(id): Path<Uuid>,
     Json(payload): Json<PatchItemRequest>,
 ) -> Result<StatusCode> {
+    if payload.latest_auto_unplayed == Some(true)
+        || payload.latest_sort_digital == Some(true)
+    {
+        let effective_kind = if let Some(ct) = &payload.collection_type {
+            parse_collection_type(ct)
+        } else {
+            let item = db::Media::get_by_id(
+                &state
+                    .ctx
+                    .db,
+                &id,
+            )
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("item not found"))
+            .context_not_found("Item not found")?;
+            item.collection_media_kind
+        };
+        if effective_kind == Some(db::CollectionMediaKind::Collection) {
+            return Err(anyhow::anyhow!(
+                "latest_auto_unplayed and latest_sort_digital are not valid for group containers"
+            ))
+            .context_bad_request("Latest settings cannot be applied to group containers");
+        }
+    }
+
     let updated_at = Utc::now().naive_utc();
     let mut qb = sqlx::QueryBuilder::new("UPDATE media SET updated_at = ");
     qb.push_bind(updated_at);
@@ -3052,6 +3141,18 @@ pub async fn patch_item(
     }
     if let Some(ct) = &payload.collection_type {
         let media_kind = parse_collection_type(ct);
+        if media_kind == Some(db::CollectionMediaKind::Collection) {
+            if let Some(ck) = &payload.collection_kind {
+                if db::CollectionKind::try_from(ck.as_str()).ok()
+                    != Some(db::CollectionKind::Manual)
+                {
+                    return Err(anyhow::anyhow!(
+                        "collection_kind must be Manual when collection_type is collections"
+                    ))
+                    .context_bad_request("Group containers must use Manual collection kind");
+                }
+            }
+        }
         qb.push(", collection_media_kind = ")
             .push_bind(
                 media_kind
