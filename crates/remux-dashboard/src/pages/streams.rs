@@ -121,26 +121,28 @@ pub(crate) fn StreamRuleRow(
                         }
                     }
                 } else if field_val == "audio_language" {
-                    for (code, name) in common_audio_languages() {
-                        {
-                            let code = code.to_string();
-                            let checked = match &rule {
-                                StreamRule::AudioLanguage { values, .. } => values.contains(&code),
-                                _ => false,
-                            };
-                            rsx! {
-                                label { style: "display:flex;align-items:center;gap:3px;font-size:.82rem;cursor:pointer",
-                                    input {
-                                        r#type: "checkbox",
-                                        checked,
-                                        onchange: move |e| {
-                                            if let Some(StreamRule::AudioLanguage { values, .. }) = rules.write().get_mut(idx) {
-                                                if e.checked() { if !values.contains(&code) { values.push(code.clone()); } }
-                                                else { values.retain(|c| c != &code); }
-                                            }
-                                        },
+                    div { style: "display:grid;grid-template-columns:1fr 1fr;gap:6px;width:100%",
+                        for (code, name) in common_audio_languages() {
+                            {
+                                let code = code.to_string();
+                                let checked = match &rule {
+                                    StreamRule::AudioLanguage { values, .. } => values.contains(&code),
+                                    _ => false,
+                                };
+                                rsx! {
+                                    label { style: "display:flex;align-items:center;gap:3px;font-size:.82rem;cursor:pointer",
+                                        input {
+                                            r#type: "checkbox",
+                                            checked,
+                                            onchange: move |e| {
+                                                if let Some(StreamRule::AudioLanguage { values, .. }) = rules.write().get_mut(idx) {
+                                                    if e.checked() { if !values.contains(&code) { values.push(code.clone()); } }
+                                                    else { values.retain(|c| c != &code); }
+                                                }
+                                            },
+                                        }
+                                        "{name}"
                                     }
-                                    "{name}"
                                 }
                             }
                         }

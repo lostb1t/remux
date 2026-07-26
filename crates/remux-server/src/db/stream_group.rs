@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::Utc;
 use remux_sdks::remux::{
     FilterMatchMode, SetOp, StreamCodec, StreamFilter, StreamQuality, StreamResolution,
-    StreamRule, language_label,
+    StreamRule, language_label, normalize_lang_code,
 };
 use sqlx::SqlitePool;
 use std::collections::HashSet;
@@ -429,7 +429,7 @@ impl StreamGroup {
                 Some(pd) => {
                     let wanted: Vec<String> = values
                         .iter()
-                        .map(|v| v.to_ascii_lowercase())
+                        .map(|v| normalize_lang_code(v))
                         .collect();
                     let hit = pd
                         .media_streams
@@ -439,7 +439,7 @@ impl StreamGroup {
                                 && s.language
                                     .as_deref()
                                     .map_or(false, |l| {
-                                        let l = l.to_ascii_lowercase();
+                                        let l = normalize_lang_code(l);
                                         !matches!(
                                             l.as_str(),
                                             "und" | "mis" | "zxx" | "mul"

@@ -1643,8 +1643,15 @@ mod tests {
         assert_eq!(language_label("rus"), "Russian");
         assert_eq!(language_label("ENG"), "English");
         assert_eq!(language_label("fra"), "French");
-        // Unknown code falls back to the raw string.
+        assert_eq!(language_label("deu"), "German");
         assert_eq!(language_label("xxx"), "xxx");
+    }
+
+    #[test]
+    fn normalize_lang_code_maps_terminologic_to_bibliographic() {
+        assert_eq!(normalize_lang_code("fra"), "fre");
+        assert_eq!(normalize_lang_code("DEU"), "ger");
+        assert_eq!(normalize_lang_code("rus"), "rus");
     }
 
     #[test]
@@ -1655,6 +1662,8 @@ mod tests {
             .collect();
         assert!(codes.contains(&"rus"));
         assert!(codes.contains(&"eng"));
+        assert!(!codes.contains(&"fra"));
+        assert!(!codes.contains(&"deu"));
     }
 }
 
@@ -5652,34 +5661,46 @@ impl StreamCodec {
 
 /// Common audio languages for the stream-group UI, alphabetical by display name.
 /// Key = ISO 639-2/B code (`MediaStream.language`), value = display name.
-/// `fre`/`fra` and `ger`/`deu` are both listed because ffprobe may emit either.
 pub fn common_audio_languages() -> &'static [(&'static str, &'static str)] {
     &[
         ("ara", "Arabic"),
         ("chi", "Chinese"),
         ("eng", "English"),
         ("fre", "French"),
-        ("fra", "French"),
         ("ger", "German"),
-        ("deu", "German"),
+        ("heb", "Hebrew"),
         ("hin", "Hindi"),
         ("ita", "Italian"),
         ("jpn", "Japanese"),
         ("kor", "Korean"),
         ("pol", "Polish"),
         ("por", "Portuguese"),
+        ("ron", "Romanian"),
         ("rus", "Russian"),
         ("spa", "Spanish"),
         ("tur", "Turkish"),
         ("ukr", "Ukrainian"),
+        ("vie", "Vietnamese"),
     ]
+}
+
+pub fn normalize_lang_code(code: &str) -> String {
+    match code
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "fra" => "fre".to_string(),
+        "deu" => "ger".to_string(),
+        other => other.to_string(),
+    }
 }
 
 /// Display name for an ISO 639-2/B code, falling back to the raw code.
 pub fn language_label(code: &str) -> String {
+    let canon = normalize_lang_code(code);
     common_audio_languages()
         .iter()
-        .find(|(c, _)| c.eq_ignore_ascii_case(code))
+        .find(|(c, _)| c.eq_ignore_ascii_case(&canon))
         .map(|(_, name)| (*name).to_string())
         .unwrap_or_else(|| code.to_string())
 }
