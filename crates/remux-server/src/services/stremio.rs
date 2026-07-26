@@ -191,30 +191,34 @@ impl StremioService {
 
         let pages = first
             .chain(rest)
+            // `take_while` drops the first item it rejects rather than passing it
+            // downstream, so the 404-vs-error distinction has to happen here — by
+            // the time a later `filter_map`/`map` would see the `Err`, take_while
+            // has already stopped the stream without it.
             .take_while(|result| {
                 future::ready(match result {
                     Ok(response) => !response
                         .metas
                         .is_empty(),
-                    Err(_) => false,
-                })
-            })
-            .filter_map(|result| async move {
-                match result {
-                    Ok(response) => Some(stream::iter(response.metas)),
-                    Err(e) if is_404(&e) => {
+                    Err(e) if is_404(e) => {
                         debug!(
                             "stopping catalog pagination: reached end of catalog (404)"
                         );
-                        None
+                        false
                     }
                     Err(e) => {
                         error!(
                             "stopping catalog pagination due to unexpected error: {}",
                             e
                         );
-                        None
+                        false
                     }
+                })
+            })
+            .filter_map(|result| async move {
+                match result {
+                    Ok(response) => Some(stream::iter(response.metas)),
+                    Err(_) => None,
                 }
             })
             .flatten();
@@ -244,5 +248,67 @@ mod tests {
         assert!(!is_404(&ClientError::RateLimited {
             retry_after_secs: 30
         }));
+    }
+
+    fn mock_page(server: &httpmock::MockServer, path: &str, names: &[&str]) {
+        let metas: Vec<_> = names
+            .iter()
+            .map(|n| serde_json::json!({"id": n, "type": "movie", "name": n}))
+            .collect();
+        server.mock(|when, then| {
+            when.path(path);
+            then.status(200)
+                .json_body(serde_json::json!({"metas": metas}));
+        });
+    }
+
+    /// Regression test for the take_while/filter_map bug: take_while drops the
+    /// first item it rejects instead of passing it downstream, so a 404 on page
+    /// 2 must still yield page 1's items and stop cleanly there.
+    #[tokio::test]
+    async fn get_catalog_stream_stops_cleanly_on_404() {
+        let server = httpmock::MockServer::start();
+        mock_page(&server, "/catalog/movie/test.json", &["a", "b"]);
+        server.mock(|when, then| {
+            when.path("/catalog/movie/test/skip=2.json");
+            then.status(404);
+        });
+
+        let svc = StremioService::from_url(&server.base_url()).unwrap();
+        let stream = svc
+            .get_catalog_stream("movie".to_string(), "test".to_string(), true)
+            .await
+            .unwrap();
+        let names: Vec<String> = stream
+            .map(|m| m.id)
+            .collect()
+            .await;
+
+        assert_eq!(names, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    /// Same as above but for a non-404 error (5xx) — must still stop cleanly
+    /// rather than hang or panic, even though it's not the expected
+    /// end-of-catalog signal.
+    #[tokio::test]
+    async fn get_catalog_stream_stops_cleanly_on_non_404_error() {
+        let server = httpmock::MockServer::start();
+        mock_page(&server, "/catalog/movie/test.json", &["a", "b"]);
+        server.mock(|when, then| {
+            when.path("/catalog/movie/test/skip=2.json");
+            then.status(500);
+        });
+
+        let svc = StremioService::from_url(&server.base_url()).unwrap();
+        let stream = svc
+            .get_catalog_stream("movie".to_string(), "test".to_string(), true)
+            .await
+            .unwrap();
+        let names: Vec<String> = stream
+            .map(|m| m.id)
+            .collect()
+            .await;
+
+        assert_eq!(names, vec!["a".to_string(), "b".to_string()]);
     }
 }
