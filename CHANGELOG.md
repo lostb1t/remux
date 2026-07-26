@@ -1,3 +1,32 @@
+# [0.17.0](https://github.com/lostb1t/remux/compare/v0.16.0...v0.17.0) (2026-07-25)
+
+
+### Bug Fixes
+
+* close IN() paren before GROUP BY in get_similar_by_genres ([c257871](https://github.com/lostb1t/remux/commit/c257871dbffcc18cf4f68751099f778b7f97577d))
+* **items:** resolve parent_id aliases before child query ([#123](https://github.com/lostb1t/remux/issues/123)) ([4d7e1fc](https://github.com/lostb1t/remux/commit/4d7e1fc8c1e596de93e3df0e71f31d0a36b1e98e))
+* Jellyfin API compat — Filters2 endpoint and list filter params ([#136](https://github.com/lostb1t/remux/issues/136)) ([177d13b](https://github.com/lostb1t/remux/commit/177d13b62f395896784ef144bc44ca35a676b16a))
+* **loudness:** default normalize_audio_loudness to false ([#139](https://github.com/lostb1t/remux/issues/139)) ([31dbf81](https://github.com/lostb1t/remux/commit/31dbf8146c83719e4997cf8e9e5a13163d101e82))
+* resolve parent_id aliases in items_flat; add persist_from_store test ([1048e72](https://github.com/lostb1t/remux/commit/1048e729d11e2e48ff6b6c99b167cf7cc859c3f7))
+* resolve temp search IDs in shows seasons and episodes endpoints ([c48a346](https://github.com/lostb1t/remux/commit/c48a346fcfae8da1997d4076d982ebcf2cac19c4))
+* use series_imdb for remuxdb episode probe lookup ([f1bf79c](https://github.com/lostb1t/remux/commit/f1bf79c0a1de6506cd9581bbc404f48a75ba59fd))
+
+
+### Features
+
+* **addons:** load and merge RemuxDB probe data during stream refresh ([#122](https://github.com/lostb1t/remux/issues/122)) ([81b3a5c](https://github.com/lostb1t/remux/commit/81b3a5ca3eacdfba9df9ef26c5638cb2fc383867))
+* **engine:** add configurable loudness normalization ([#125](https://github.com/lostb1t/remux/issues/125)) ([0a2794e](https://github.com/lostb1t/remux/commit/0a2794e7a8dab434407d9a70456c0668861f643f))
+* implement field locking to prevent metadata provider overwrites ([#135](https://github.com/lostb1t/remux/issues/135)) ([ed19f0a](https://github.com/lostb1t/remux/commit/ed19f0a892250cdb07fbced134ec7bc4b43393d7))
+* implement SendMessageCommand via WebSocket GeneralCommand ([5a5028a](https://github.com/lostb1t/remux/commit/5a5028a8e05a3edbd95eb76817c6be5bac2d04f3))
+* parse mediaInfo from stream behaviorHints into probe_data ([eeccb3a](https://github.com/lostb1t/remux/commit/eeccb3a76d752afb447a8ddbeca951d76467e417))
+* serve /web/manifest.json for webos client compat (closes [#117](https://github.com/lostb1t/remux/issues/117)) ([3cc0f86](https://github.com/lostb1t/remux/commit/3cc0f86b88393b238056d5c2b90bdd8511b0d809))
+* **users:** per-user subtitle mode and language preference ([#124](https://github.com/lostb1t/remux/issues/124)) ([85b40c0](https://github.com/lostb1t/remux/commit/85b40c0ec20c2721a09341899f963b7520722d1b))
+
+
+### Performance Improvements
+
+* popularity sort via CTE + UNION ALL coroutine (no global sort, all items included) ([#130](https://github.com/lostb1t/remux/issues/130)) ([7ec439c](https://github.com/lostb1t/remux/commit/7ec439c032c7765cb21d9589ab9503fbff9cc3d1))
+
 # [0.16.0](https://github.com/lostb1t/remux/compare/v0.15.0...v0.16.0) (2026-07-21)
 
 

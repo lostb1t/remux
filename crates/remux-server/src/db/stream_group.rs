@@ -1,8 +1,9 @@
 use anyhow::Result;
 use chrono::Utc;
 use remux_sdks::remux::{
-    FilterMatchMode, SetOp, StreamCodec, StreamFilter, StreamQuality, StreamResolution,
-    StreamRule, language_label, normalize_lang_code,
+    FilterMatchMode, NumericOp, SetOp, StreamCodec, StreamFilter, StreamQuality,
+    StreamResolution, StreamRule, format_size_rule, language_label,
+    normalize_lang_code,
 };
 use sqlx::SqlitePool;
 use std::collections::HashSet;
@@ -456,6 +457,17 @@ impl StreamGroup {
                         bool_to_outcome(matches!(op, SetOp::In | SetOp::Is) == hit)
                     }
                 },
+                // Unknown size (None) passes through, consistent with Size's
+                // original semantics and the AudioLanguage behavior above.
+                StreamRule::Size { op, value } => match info.size {
+                    None => MatchOutcome::PassThrough,
+                    Some(s) => bool_to_outcome(match op {
+                        NumericOp::Eq => s == *value,
+                        NumericOp::NotEq => s != *value,
+                        NumericOp::Gt => s > *value,
+                        NumericOp::Lt => s < *value,
+                    }),
+                },
             }
         };
 
@@ -615,6 +627,7 @@ fn auto_name(filter: &StreamFilter) -> String {
                     .iter()
                     .map(|c| language_label(c))
                     .collect(),
+                StreamRule::Size { op, value } => vec![format_size_rule(*op, *value)],
             };
             if labels.is_empty() {
                 None
@@ -959,6 +972,136 @@ mod tests {
         // WEBRip → Quality NoMatch, AudioLanguage PassThrough (no probe) → NoMatch.
         assert_eq!(
             group.match_outcome(&info("Movie.2024.1080p.WEBRip.mkv"), None),
+            MatchOutcome::NoMatch
+        );
+    }
+
+    fn group_size(op: NumericOp, value: i64) -> StreamGroup {
+        StreamGroup {
+            id: Uuid::nil(),
+            name: "size".to_string(),
+            filter: StreamFilter {
+                match_mode: FilterMatchMode::All,
+                rules: vec![StreamRule::Size { op, value }],
+            },
+            priority: 0,
+            enabled: true,
+            hidden: false,
+            created_at: String::new(),
+        }
+    }
+
+    fn info_with_size(filename: &str, size: Option<i64>) -> StreamInfo {
+        StreamInfo {
+            descriptor: StreamDescriptor::default(),
+            filename: Some(filename.to_string()),
+            size,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn size_gt_matches_large_release() {
+        let group = group_size(NumericOp::Gt, 20_000_000_000);
+        assert_eq!(
+            group.match_outcome(
+                &info_with_size("Movie.2024.1080p.BluRay.mkv", Some(35_000_000_000)),
+                None
+            ),
+            MatchOutcome::Match
+        );
+    }
+
+    #[test]
+    fn size_gt_rejects_small_release() {
+        let group = group_size(NumericOp::Gt, 20_000_000_000);
+        assert_eq!(
+            group.match_outcome(
+                &info_with_size("Movie.2024.1080p.WEBRip.mkv", Some(2_000_000_000)),
+                None
+            ),
+            MatchOutcome::NoMatch
+        );
+    }
+
+    // HTTP/debrid/IPTV sources almost never report a size. Unknown size passes
+    // through (PassThrough) so they stay visible via the ungrouped list.
+    #[test]
+    fn size_unknown_is_passthrough() {
+        let group = group_size(NumericOp::Gt, 20_000_000_000);
+        assert_eq!(
+            group.match_outcome(&info_with_size("Movie.2024.1080p.mkv", None), None),
+            MatchOutcome::PassThrough
+        );
+    }
+
+    #[test]
+    fn size_ops_eq_not_eq_lt() {
+        let v = 5_000_000_000;
+        assert_eq!(
+            group_size(NumericOp::Eq, v)
+                .match_outcome(&info_with_size("a.mkv", Some(v)), None),
+            MatchOutcome::Match
+        );
+        assert_eq!(
+            group_size(NumericOp::Eq, v)
+                .match_outcome(&info_with_size("a.mkv", Some(v + 1)), None),
+            MatchOutcome::NoMatch
+        );
+        assert_eq!(
+            group_size(NumericOp::NotEq, v)
+                .match_outcome(&info_with_size("a.mkv", Some(v + 1)), None),
+            MatchOutcome::Match
+        );
+        assert_eq!(
+            group_size(NumericOp::Lt, v)
+                .match_outcome(&info_with_size("a.mkv", Some(v - 1)), None),
+            MatchOutcome::Match
+        );
+    }
+
+    #[test]
+    fn size_combined_with_resolution_all() {
+        let group = StreamGroup {
+            id: Uuid::nil(),
+            name: "1080p · big".to_string(),
+            filter: StreamFilter {
+                match_mode: FilterMatchMode::All,
+                rules: vec![
+                    StreamRule::Resolution {
+                        op: SetOp::In,
+                        values: vec![StreamResolution::R1080p],
+                    },
+                    StreamRule::Size {
+                        op: NumericOp::Gt,
+                        value: 20_000_000_000,
+                    },
+                ],
+            },
+            priority: 0,
+            enabled: true,
+            hidden: false,
+            created_at: String::new(),
+        };
+        assert_eq!(
+            group.match_outcome(
+                &info_with_size("Movie.2024.1080p.BluRay.mkv", Some(35_000_000_000)),
+                None
+            ),
+            MatchOutcome::Match
+        );
+        assert_eq!(
+            group.match_outcome(
+                &info_with_size("Movie.2024.1080p.WEBRip.mkv", Some(1_000_000_000)),
+                None
+            ),
+            MatchOutcome::NoMatch
+        );
+        assert_eq!(
+            group.match_outcome(
+                &info_with_size("Movie.2024.720p.BluRay.mkv", Some(35_000_000_000)),
+                None
+            ),
             MatchOutcome::NoMatch
         );
     }

@@ -1639,6 +1639,18 @@ mod tests {
     }
 
     #[test]
+    fn stream_rule_size_round_trips() {
+        let rule = StreamRule::Size {
+            op: NumericOp::Gt,
+            value: 20_000_000_000,
+        };
+        let json = serde_json::to_string(&rule).unwrap();
+        assert_eq!(json, r#"{"field":"size","op":"gt","value":20000000000}"#);
+        let back: StreamRule = serde_json::from_str(&json).unwrap();
+        assert_eq!(rule, back);
+    }
+
+    #[test]
     fn language_label_maps_known_codes_and_falls_back() {
         assert_eq!(language_label("rus"), "Russian");
         assert_eq!(language_label("ENG"), "English");
@@ -1664,6 +1676,21 @@ mod tests {
         assert!(codes.contains(&"eng"));
         assert!(!codes.contains(&"fra"));
         assert!(!codes.contains(&"deu"));
+    }
+
+    #[test]
+    fn format_size_rule_picks_gib_for_large_values() {
+        let v = 20 * 1024 * 1024 * 1024;
+        assert_eq!(format_size_rule(NumericOp::Gt, v), "> 20.00 GiB");
+        assert_eq!(format_size_rule(NumericOp::Lt, v), "< 20.00 GiB");
+        assert_eq!(format_size_rule(NumericOp::Eq, v), "= 20.00 GiB");
+        assert_eq!(format_size_rule(NumericOp::NotEq, v), "≠ 20.00 GiB");
+    }
+
+    #[test]
+    fn format_size_rule_falls_back_to_mib() {
+        let v = 500 * 1024 * 1024;
+        assert_eq!(format_size_rule(NumericOp::Gt, v), "> 500.00 MiB");
     }
 }
 
@@ -2809,8 +2836,8 @@ impl From<stremio::MediaType> for MediaKind {
     }
 }
 
-/// Operators for numeric fields (Year, Rating).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Operators for numeric fields (Year, Rating, Size).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NumericOp {
     Eq,
@@ -5705,6 +5732,24 @@ pub fn language_label(code: &str) -> String {
         .unwrap_or_else(|| code.to_string())
 }
 
+/// Human-readable label for a [`StreamRule::Size`] condition, e.g. `"> 18.63 GiB"`.
+pub fn format_size_rule(op: NumericOp, value: i64) -> String {
+    let sym = match op {
+        NumericOp::Eq => "=",
+        NumericOp::NotEq => "≠",
+        NumericOp::Gt => ">",
+        NumericOp::Lt => "<",
+    };
+    const GIB: u64 = 1024 * 1024 * 1024;
+    const MIB: u64 = 1024 * 1024;
+    let (n, unit) = if value.unsigned_abs() >= GIB {
+        (value as f64 / GIB as f64, "GiB")
+    } else {
+        (value as f64 / MIB as f64, "MiB")
+    };
+    format!("{sym} {n:.2} {unit}")
+}
+
 /// One condition in a stream group filter. Mirrors `FilterRule` but for stream attributes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "field", rename_all = "snake_case")]
@@ -5720,6 +5765,12 @@ pub enum StreamRule {
     Codec {
         op: SetOp,
         values: Vec<StreamCodec>,
+    },
+    /// Minimum/maximum file size in bytes. A stream with unknown size (`None`)
+    /// passes the rule so HTTP/debrid/IPTV sources are not silently dropped.
+    Size {
+        op: NumericOp,
+        value: i64,
     },
     /// Audio track language (ISO 639-2/B code, e.g. "rus", "eng"). Matches if any
     /// audio stream in `probe_data` has a listed language. A stream with no probe
