@@ -223,7 +223,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                                 },
                             }
                             p { class: "field-hint",
-                                "Maximum number of items imported per collection."
+                                "Maximum number of items imported per catalog."
                             }
                         }
 

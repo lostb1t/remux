@@ -248,7 +248,9 @@ pub struct MediaInfo {
     pub virtual_chapters: bool,
     #[serde(default)]
     pub chapters: Vec<ChapterDetail>,
+    #[serde(default)]
     pub sources: Vec<ProbeSource>,
+    #[serde(default)]
     pub tracks: Vec<TrackDetail>,
 }
 
