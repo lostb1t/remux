@@ -3486,8 +3486,10 @@ impl Media {
                 qb.push(
                     " AND NOT EXISTS (\
                         SELECT 1 FROM media_relations mr \
+                        JOIN media grp ON grp.id = mr.left_media_id \
                         WHERE mr.right_media_id = media.id \
-                        AND mr.role = 'collection'\
+                        AND mr.role = 'collection' \
+                        AND grp.collection_media_kind = 'collection'\
                     )",
                 );
             }

@@ -578,7 +578,7 @@ pub async fn get_items(
                         exclude_childless: !q
                             .include_childless
                             .unwrap_or(false),
-                        exclude_grouped: true,
+                        exclude_grouped: false,
                         policy_filter: session
                             .user
                             .policy
