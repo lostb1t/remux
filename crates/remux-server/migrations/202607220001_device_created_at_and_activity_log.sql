@@ -1,4 +1,4 @@
-ALTER TABLE devices ADD COLUMN created_at TEXT;
+ALTER TABLE devices ADD COLUMN created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
 
 CREATE TABLE IF NOT EXISTS activity_log (
     id          TEXT    PRIMARY KEY,

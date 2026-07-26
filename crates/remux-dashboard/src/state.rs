@@ -112,8 +112,9 @@ pub fn fmt_time(dt: impl std::fmt::Display) -> String {
 /// Returns "DD Mon HH:MM" from a DateTime Display string — suitable for audit log entries.
 pub fn fmt_datetime(dt: impl std::fmt::Display) -> String {
     let s = dt.to_string();
-    // s is "YYYY-MM-DD HH:MM:SS UTC"
-    let date = &s[..10]; // "YYYY-MM-DD"
+    let date = s
+        .get(..10)
+        .unwrap_or(&s);
     let time = s
         .chars()
         .skip(11)

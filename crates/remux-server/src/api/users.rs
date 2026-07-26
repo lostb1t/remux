@@ -684,8 +684,7 @@ pub async fn change_password(
     )
     .await?;
 
-    // Revoke all other sessions for this user so stale tokens can't be reused.
-    let _ = db::auth::Device::delete_all_for_user(
+    db::auth::Device::delete_all_for_user(
         &state
             .ctx
             .db,
@@ -696,8 +695,8 @@ pub async fn change_password(
                 .access_token,
         ),
     )
-    .await;
-    let _ = db::ActivityLog::insert(
+    .await?;
+    if let Err(e) = db::ActivityLog::insert(
         &state
             .ctx
             .db,
@@ -722,7 +721,10 @@ pub async fn change_password(
         ),
         None,
     )
-    .await;
+    .await
+    {
+        tracing::warn!("failed to log password_changed activity: {e}");
+    }
 
     let _ = state
         .ctx

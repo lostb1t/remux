@@ -89,19 +89,24 @@ pub fn SessionsCard(app_state: AppState) -> Element {
 pub fn ActivityCard(app_state: AppState) -> Element {
     let mut activity_items: Signal<Vec<ActivityLogEntry>> = use_signal(Vec::new);
     let mut loading = use_signal(|| true);
+    let mut error = use_signal(|| Option::<String>::None);
 
     use_effect(move || {
         loading.set(true);
         let client = app_state.clone();
         spawn(async move {
-            if let Ok(result) = client
+            match client
                 .execute(GetActivityLog {
                     start_index: Some(0),
                     limit: Some(50),
                 })
                 .await
             {
-                activity_items.set(result.items);
+                Ok(result) => {
+                    activity_items.set(result.items);
+                    error.set(None);
+                }
+                Err(e) => error.set(Some(format!("Failed to load activity log: {e}"))),
             }
             loading.set(false);
         });
@@ -111,6 +116,8 @@ pub fn ActivityCard(app_state: AppState) -> Element {
         Card { title: "Admin Activity Log",
             if *loading.read() {
                 LoadingText {}
+            } else if let Some(err) = error.read().as_ref() {
+                ErrorAlert { message: err.clone() }
             } else if activity_items.read().is_empty() {
                 EmptyState { message: "No admin actions recorded yet" }
             } else {
