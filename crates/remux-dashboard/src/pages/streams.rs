@@ -116,7 +116,8 @@ pub(crate) fn StreamRuleRow(
                                     value: "{gib_str}",
                                     onchange: move |e| {
                                         let bytes = (e.value().parse::<f64>().unwrap_or(0.0)
-                                            * 1024.0 * 1024.0 * 1024.0) as i64;
+                                            * 1024.0 * 1024.0 * 1024.0)
+                                            .round() as i64;
                                         if let Some(r) = rules.write().get_mut(idx) {
                                             if let StreamRule::Size { op, .. } = r.clone() {
                                                 *r = StreamRule::Size { op, value: bytes };
