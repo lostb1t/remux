@@ -1,4 +1,4 @@
-use crate::{sdks, sdks::CachedEndpoint};
+use crate::{sdks, sdks::CachedEndpoint, sdks::ClientError};
 use anyhow::{Result, anyhow};
 use futures::{
     future,
@@ -8,7 +8,19 @@ use std::{
     pin::Pin,
     time::{Duration, Instant},
 };
-use tracing::debug;
+use tracing::{debug, error};
+
+/// A 404 on a paginated catalog page is the addon's normal "no more pages"
+/// signal, not an error — some addons (e.g. fankai) 404 past the last page
+/// instead of returning an empty array. Any other error (5xx, rate limit,
+/// network blip) is a real problem and must not be conflated with reaching
+/// the end of the catalog.
+fn is_404(e: &ClientError) -> bool {
+    matches!(
+        e,
+        ClientError::Http { status: 404, .. } | ClientError::Json { status: 404, .. }
+    )
+}
 
 #[derive(Clone)]
 pub struct StremioService {
@@ -180,22 +192,27 @@ impl StremioService {
         let pages = first
             .chain(rest)
             .take_while(|result| {
-                future::ready(
-                    result
-                        .as_ref()
-                        .map(|response| {
-                            !response
-                                .metas
-                                .is_empty()
-                        })
-                        .unwrap_or(false),
-                )
+                future::ready(match result {
+                    Ok(response) => !response
+                        .metas
+                        .is_empty(),
+                    Err(_) => false,
+                })
             })
             .filter_map(|result| async move {
                 match result {
                     Ok(response) => Some(stream::iter(response.metas)),
+                    Err(e) if is_404(&e) => {
+                        debug!(
+                            "stopping catalog pagination: reached end of catalog (404)"
+                        );
+                        None
+                    }
                     Err(e) => {
-                        debug!("stopping catalog pagination: {}", e);
+                        error!(
+                            "stopping catalog pagination due to unexpected error: {}",
+                            e
+                        );
                         None
                     }
                 }
@@ -203,5 +220,29 @@ impl StremioService {
             .flatten();
 
         Ok(Box::pin(pages))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_404_matches_only_404_status() {
+        assert!(is_404(&ClientError::Http {
+            status: 404,
+            message: "not found".to_string(),
+            endpoint: None,
+            body: None,
+        }));
+        assert!(!is_404(&ClientError::Http {
+            status: 500,
+            message: "server error".to_string(),
+            endpoint: None,
+            body: None,
+        }));
+        assert!(!is_404(&ClientError::RateLimited {
+            retry_after_secs: 30
+        }));
     }
 }
