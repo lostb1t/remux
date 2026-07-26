@@ -499,13 +499,9 @@ pub async fn get_items(
 
         // collection browse
         if parent.kind == db::MediaKind::Collection {
-            // Group container: a Manual collection whose media kind is Collection.
-            // Browse returns only this group's children via media_relations JOIN,
-            // rather than the global flat list returned by the Collections index.
-            //
-            // The root "Collections" library (COLLECTIONS_ROOT_ID) is exempt — it always
-            // falls through to Path A (the index) even when it has explicit children,
-            // so that ungrouped collections remain visible alongside pinned ones.
+            // Group container browse: returns only explicit children via
+            // media_relations JOIN. Root Collections is exempt — always uses
+            // Path A so ungrouped collections stay visible.
             if parent.collection_media_kind == Some(db::CollectionMediaKind::Collection)
                 && parent.collection_kind == Some(db::CollectionKind::Manual)
                 && parent.id != COLLECTIONS_ROOT_ID
@@ -534,8 +530,7 @@ pub async fn get_items(
                 ));
             }
 
-            // "Collections index": any collection with collection_media_kind='collection'
-            // shows non-promoted collections (excluding those grouped under a group container).
+            // Path A: Collections index.
             if parent.collection_media_kind == Some(db::CollectionMediaKind::Collection)
             {
                 let result = db::Media::get_by_filter(

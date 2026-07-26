@@ -309,8 +309,7 @@ pub fn CollectionForm(
             .unwrap_or_else(|| "movies".to_string())
     });
     let mut col_kind = use_signal(|| {
-        // Group containers must always use Manual kind — force it regardless of
-        // what was stored (guards against pre-validation collections that saved "smart").
+        // Force manual for group containers (guards against pre-validation data).
         let is_group_container = existing
             .as_ref()
             .and_then(|f| {
@@ -667,8 +666,6 @@ pub fn CollectionForm(
                     value: "{col_type}",
                     onchange: move |e| {
                         let v = e.value();
-                        // Default group containers to manual — only manual collections
-                        // can have explicit child membership via media_relations.
                         if v == "collections" {
                             col_kind.set("manual".to_string());
                         }
@@ -898,15 +895,9 @@ pub fn CollectionForm(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Child collection management for group containers
-// ---------------------------------------------------------------------------
-
 #[component]
 fn CollectionGroupChildren(app_state: AppState, collection_id: String) -> Element {
-    // All non-promoted, non-group collections available to add as children.
     let mut all_collections: Signal<Vec<BaseItemDto>> = use_signal(Vec::new);
-    // Currently-assigned children: maps media_id → relation_id (playlist_item_id).
     let mut current_children: Signal<Vec<(String, String)>> = use_signal(Vec::new);
     let mut loading = use_signal(|| true);
 
@@ -918,7 +909,6 @@ fn CollectionGroupChildren(app_state: AppState, collection_id: String) -> Elemen
         let col_id = col_id.clone();
         let client = client.clone();
         spawn(async move {
-            // Fetch current children (returns playlist_item_id as relation id)
             let children = client
                 .execute(GetCollectionItems {
                     collection_id: col_id.clone(),
@@ -942,7 +932,6 @@ fn CollectionGroupChildren(app_state: AppState, collection_id: String) -> Elemen
                 .unwrap_or_default();
             current_children.set(children);
 
-            // Fetch all available collections (exclude group containers themselves)
             let all = client
                 .execute(GetItems(GetItemsQuery {
                     include_item_types: Some(vec![MediaType::BoxSet]),
@@ -957,16 +946,26 @@ fn CollectionGroupChildren(app_state: AppState, collection_id: String) -> Elemen
                     r.items
                         .into_iter()
                         .filter(|item| {
-                            // Exclude this group itself
-                            item.id.to_string() != col_id
-                            // Exclude other group containers (Manual + Boxsets)
-                            && !(
-                                item.collection_type.as_ref() == Some(&CollectionType::Boxsets)
-                                && item.remux.as_ref().and_then(|r| r.collection_kind.as_ref())
-                                    == Some(&RemuxCollectionKind::Manual)
-                            )
-                            // Exclude promoted libraries
-                            && !item.remux.as_ref().and_then(|r| r.promoted).unwrap_or(false)
+                            item.id
+                                .to_string()
+                                != col_id
+                                && !(item
+                                    .collection_type
+                                    .as_ref()
+                                    == Some(&CollectionType::Boxsets)
+                                    && item
+                                        .remux
+                                        .as_ref()
+                                        .and_then(|r| {
+                                            r.collection_kind
+                                                .as_ref()
+                                        })
+                                        == Some(&RemuxCollectionKind::Manual))
+                                && !item
+                                    .remux
+                                    .as_ref()
+                                    .and_then(|r| r.promoted)
+                                    .unwrap_or(false)
                         })
                         .collect::<Vec<_>>()
                 })
@@ -1015,7 +1014,7 @@ fn CollectionGroupChildren(app_state: AppState, collection_id: String) -> Elemen
                                                         collection_id: col_id.clone(),
                                                         ids: vec![media_id.clone()],
                                                     }).await;
-                                                    // Refresh children to get the new relation_id
+                                                    // Refresh to get the new relation_id
                                                     if let Ok(r) = client.execute(GetCollectionItems {
                                                         collection_id: col_id,
                                                         start_index: None,
