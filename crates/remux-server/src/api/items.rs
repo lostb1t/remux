@@ -506,6 +506,9 @@ pub async fn get_items(
                 && parent.collection_kind == Some(db::CollectionKind::Manual)
                 && parent.id != COLLECTIONS_ROOT_ID
             {
+                // Children are always Collections — clear client's IncludeItemTypes
+                // (e.g. Streamyfin hardcodes Movie/Series/Season) so they aren't excluded.
+                q.include_item_types = None;
                 q.user_id = Some(
                     session
                         .user
