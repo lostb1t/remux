@@ -1301,10 +1301,11 @@ pub struct MediaFilter {
     /// container kinds — including smart and catalog collections — are dropped
     /// when empty.
     pub exclude_childless: bool,
-    /// When true, exclude items that are children of a manual collection group
-    /// (i.e. they appear as right_media_id in media_relations with role='collection').
-    /// Used to hide grouped collections from the top-level collections index.
+    /// When true, exclude items that are children of a group container
+    /// (collection_media_kind='collection'), unless they are also explicit children
+    /// of the container specified by `exclude_grouped_except`.
     pub exclude_grouped: bool,
+    pub exclude_grouped_except: Option<Uuid>,
 }
 
 /// Normalise any country string to an ISO 3166-1 alpha-2 code (e.g. "US").
@@ -3483,15 +3484,32 @@ impl Media {
                 apply_filter_rules(qb, f);
             }
             if filter.exclude_grouped {
-                qb.push(
-                    " AND NOT EXISTS (\
+                if let Some(except_id) = &filter.exclude_grouped_except {
+                    qb.push(
+                        " AND (NOT EXISTS (\
+                        SELECT 1 FROM media_relations mr \
+                        JOIN media grp ON grp.id = mr.left_media_id \
+                        WHERE mr.right_media_id = media.id \
+                        AND mr.role = 'collection' \
+                        AND grp.collection_media_kind = 'collection'\
+                    ) OR EXISTS (\
+                        SELECT 1 FROM media_relations mr2 \
+                        WHERE mr2.right_media_id = media.id \
+                        AND mr2.left_media_id = ",
+                    );
+                    qb.push_bind(*except_id);
+                    qb.push(" AND mr2.role = 'collection'))");
+                } else {
+                    qb.push(
+                        " AND NOT EXISTS (\
                         SELECT 1 FROM media_relations mr \
                         JOIN media grp ON grp.id = mr.left_media_id \
                         WHERE mr.right_media_id = media.id \
                         AND mr.role = 'collection' \
                         AND grp.collection_media_kind = 'collection'\
                     )",
-                );
+                    );
+                }
             }
 
             // CLAUDE.md: content policy must not filter container rows themselves.

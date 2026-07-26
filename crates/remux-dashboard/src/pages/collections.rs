@@ -965,6 +965,8 @@ fn CollectionGroupChildren(app_state: AppState, collection_id: String) -> Elemen
                                 && item.remux.as_ref().and_then(|r| r.collection_kind.as_ref())
                                     == Some(&RemuxCollectionKind::Manual)
                             )
+                            // Exclude promoted libraries
+                            && !item.remux.as_ref().and_then(|r| r.promoted).unwrap_or(false)
                         })
                         .collect::<Vec<_>>()
                 })

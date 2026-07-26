@@ -28,6 +28,8 @@ use sqlx::SqlitePool;
 
 use super::{mock_items, stub_json};
 
+const COLLECTIONS_ROOT_ID: Uuid = uuid!("f47ac10b-58cc-4372-a567-0e02b2c3d479");
+
 pub struct ItemsQueryResult {
     pub items: Vec<api::BaseItemDto>,
     pub total_count: i64,
@@ -501,20 +503,12 @@ pub async fn get_items(
             // Browse returns only this group's children via media_relations JOIN,
             // rather than the global flat list returned by the Collections index.
             //
-            // Promoted Manual+Collection containers need an extra check: the root "Collections"
-            // index library also has these flags but has no explicit children.  Only take
-            // the group-container path when the parent has at least one child in media_relations.
+            // The root "Collections" library (COLLECTIONS_ROOT_ID) is exempt — it always
+            // falls through to Path A (the index) even when it has explicit children,
+            // so that ungrouped collections remain visible alongside pinned ones.
             if parent.collection_media_kind == Some(db::CollectionMediaKind::Collection)
                 && parent.collection_kind == Some(db::CollectionKind::Manual)
-                && (!parent.promoted
-                    || {
-                        sqlx::query_scalar::<_, i64>(
-                        "SELECT COUNT(*) FROM media_relations WHERE left_media_id = ? AND role = 'collection'",
-                    )
-                    .bind(&parent.id)
-                    .fetch_one(&state.ctx.db)
-                    .await? > 0
-                    })
+                && parent.id != COLLECTIONS_ROOT_ID
             {
                 q.user_id = Some(
                     session
@@ -578,7 +572,8 @@ pub async fn get_items(
                         exclude_childless: !q
                             .include_childless
                             .unwrap_or(false),
-                        exclude_grouped: false,
+                        exclude_grouped: true,
+                        exclude_grouped_except: Some(parent.id),
                         policy_filter: session
                             .user
                             .policy
@@ -940,7 +935,7 @@ pub async fn items_root(
     _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     Ok(Json(api::BaseItemDto {
-        id: uuid!("f47ac10b-58cc-4372-a567-0e02b2c3d479"),
+        id: COLLECTIONS_ROOT_ID,
         name: Some("Media Library".to_string()),
         type_: api::MediaType::CollectionFolder,
         is_folder: true,
@@ -3339,7 +3334,7 @@ mod tests {
     use remux_sdks::remux::{
         CollectionFilter, FilterGroup, FilterMatchMode, FilterRule, SetOp,
     };
-    use uuid::Uuid;
+    use uuid::{Uuid, uuid};
 
     use crate::{
         db,
@@ -4173,6 +4168,277 @@ mod tests {
             body["MediaSources"][0]["DefaultSubtitleStreamIndex"].as_i64(),
             Some(2),
             "detail page should fall back to server preferred_metadata_language 'fr' (French subtitle, index 2) when the user has no subtitle language preference"
+        );
+    }
+
+    async fn insert_group_container(
+        db: &sqlx::SqlitePool,
+        title: &str,
+        promoted: bool,
+    ) -> db::Media {
+        let now = Utc::now().naive_utc();
+        let mut c = db::Media {
+            title: title.to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Manual),
+            collection_media_kind: Some(db::CollectionMediaKind::Collection),
+            promoted,
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        c.save(db)
+            .await
+            .expect("insert_group_container failed");
+        c
+    }
+
+    #[tokio::test]
+    async fn group_container_returns_only_explicit_children() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(&server, &auth).await;
+
+        let group = insert_group_container(db, "TV Groups", false).await;
+        let child_a =
+            insert_smart_collection(db, "Netflix", db::CollectionMediaKind::Series)
+                .await;
+        let child_b =
+            insert_smart_collection(db, "HBO", db::CollectionMediaKind::Series).await;
+        let _unrelated =
+            insert_smart_collection(db, "Disney", db::CollectionMediaKind::Movie).await;
+
+        db::MediaRelation::add_collection_items(
+            db,
+            &group.id,
+            &[child_a.id, child_b.id],
+        )
+        .await
+        .unwrap();
+
+        let body: serde_json::Value = server
+            .get(&format!("/users/{user_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[(
+                "parentId",
+                group
+                    .id
+                    .to_string()
+                    .as_str(),
+            )])
+            .await
+            .json();
+
+        let empty = vec![];
+        let names: Vec<&str> = body["Items"]
+            .as_array()
+            .unwrap_or(&empty)
+            .iter()
+            .filter_map(|i| i["Name"].as_str())
+            .collect();
+
+        assert!(
+            names.contains(&"Netflix"),
+            "child Netflix must appear; got: {names:?}"
+        );
+        assert!(
+            names.contains(&"HBO"),
+            "child HBO must appear; got: {names:?}"
+        );
+        assert!(
+            !names.contains(&"Disney"),
+            "unrelated Disney must not appear; got: {names:?}"
+        );
+        assert_eq!(
+            names.len(),
+            2,
+            "only explicit children should appear; got: {names:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn collections_index_excludes_grouped_children() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(&server, &auth).await;
+
+        let group = insert_group_container(db, "Films Group", false).await;
+        let grouped =
+            insert_smart_collection(db, "Grouped Col", db::CollectionMediaKind::Movie)
+                .await;
+        let ungrouped = insert_smart_collection(
+            db,
+            "Ungrouped Col",
+            db::CollectionMediaKind::Movie,
+        )
+        .await;
+
+        // Insert a movie into each so they're not excluded by exclude_childless
+        let m1 = insert_media(db, "Movie A", db::MediaKind::Movie, "tt8000001").await;
+        let m2 = insert_media(db, "Movie B", db::MediaKind::Movie, "tt8000002").await;
+        db::MediaRelation::add_collection_items(db, &grouped.id, &[m1.id])
+            .await
+            .unwrap();
+        db::MediaRelation::add_collection_items(db, &ungrouped.id, &[m2.id])
+            .await
+            .unwrap();
+
+        db::MediaRelation::add_collection_items(db, &group.id, &[grouped.id])
+            .await
+            .unwrap();
+
+        let body: serde_json::Value = server
+            .get(&format!("/users/{user_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[("parentId", COLLECTIONS_PARENT_ID)])
+            .await
+            .json();
+
+        let empty = vec![];
+        let names: Vec<&str> = body["Items"]
+            .as_array()
+            .unwrap_or(&empty)
+            .iter()
+            .filter_map(|i| i["Name"].as_str())
+            .collect();
+
+        assert!(
+            !names.contains(&"Grouped Col"),
+            "grouped collection must not appear in Collections index; got: {names:?}"
+        );
+        assert!(
+            names.contains(&"Ungrouped Col"),
+            "ungrouped collection must appear in Collections index; got: {names:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn collections_index_includes_pinned_override() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(&server, &auth).await;
+
+        let group = insert_group_container(db, "TV Group", false).await;
+        let child =
+            insert_smart_collection(db, "Pinned Col", db::CollectionMediaKind::Series)
+                .await;
+
+        let m = insert_media(db, "Show A", db::MediaKind::Series, "tt8000003").await;
+        db::MediaRelation::add_collection_items(db, &child.id, &[m.id])
+            .await
+            .unwrap();
+
+        // Assign to group (grouped)
+        db::MediaRelation::add_collection_items(db, &group.id, &[child.id])
+            .await
+            .unwrap();
+        // Also pin to root Collections (override)
+        let root_id = uuid!("f47ac10b-58cc-4372-a567-0e02b2c3d479");
+        db::MediaRelation::add_collection_items(db, &root_id, &[child.id])
+            .await
+            .unwrap();
+
+        let body: serde_json::Value = server
+            .get(&format!("/users/{user_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[("parentId", COLLECTIONS_PARENT_ID)])
+            .await
+            .json();
+
+        let empty = vec![];
+        let names: Vec<&str> = body["Items"]
+            .as_array()
+            .unwrap_or(&empty)
+            .iter()
+            .filter_map(|i| i["Name"].as_str())
+            .collect();
+
+        assert!(
+            names.contains(&"Pinned Col"),
+            "collection pinned to root Collections must appear despite being grouped; got: {names:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn root_collections_uses_index_not_group_browse() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(&server, &auth).await;
+
+        let pinned = insert_smart_collection(
+            db,
+            "Explicitly Pinned",
+            db::CollectionMediaKind::Movie,
+        )
+        .await;
+        let ungrouped = insert_smart_collection(
+            db,
+            "Free Collection",
+            db::CollectionMediaKind::Movie,
+        )
+        .await;
+
+        let m1 = insert_media(db, "Film X", db::MediaKind::Movie, "tt8000004").await;
+        let m2 = insert_media(db, "Film Y", db::MediaKind::Movie, "tt8000005").await;
+        db::MediaRelation::add_collection_items(db, &pinned.id, &[m1.id])
+            .await
+            .unwrap();
+        db::MediaRelation::add_collection_items(db, &ungrouped.id, &[m2.id])
+            .await
+            .unwrap();
+
+        // Pin one collection to root Collections — root must still show ungrouped ones too
+        let root_id = uuid!("f47ac10b-58cc-4372-a567-0e02b2c3d479");
+        db::MediaRelation::add_collection_items(db, &root_id, &[pinned.id])
+            .await
+            .unwrap();
+
+        let body: serde_json::Value = server
+            .get(&format!("/users/{user_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[("parentId", COLLECTIONS_PARENT_ID)])
+            .await
+            .json();
+
+        let empty = vec![];
+        let names: Vec<&str> = body["Items"]
+            .as_array()
+            .unwrap_or(&empty)
+            .iter()
+            .filter_map(|i| i["Name"].as_str())
+            .collect();
+
+        assert!(
+            names.contains(&"Explicitly Pinned"),
+            "pinned collection must appear; got: {names:?}"
+        );
+        assert!(
+            names.contains(&"Free Collection"),
+            "root Collections must still show ungrouped collections (not switch to Path B); got: {names:?}"
         );
     }
 }
