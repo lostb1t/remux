@@ -59,7 +59,7 @@ impl ActivityLog {
             .await?;
 
         let rows = sqlx::query_as::<_, Self>(
-            "SELECT * FROM activity_log ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+            "SELECT * FROM activity_log ORDER BY timestamp DESC, id LIMIT ? OFFSET ?",
         )
         .bind(limit)
         .bind(start_index)
