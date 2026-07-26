@@ -165,10 +165,15 @@ pub async fn get_devices(
     };
 
     // Batch-fetch usernames so we can populate last_user_name without N queries.
-    let user_ids: Vec<uuid::Uuid> = devices
-        .iter()
-        .map(|d| d.user_id)
-        .collect();
+    let user_ids: Vec<uuid::Uuid> = {
+        let mut ids: Vec<uuid::Uuid> = devices
+            .iter()
+            .map(|d| d.user_id)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    };
     let users = db::User::get_by_ids(
         &state
             .ctx

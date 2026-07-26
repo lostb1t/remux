@@ -624,6 +624,7 @@ pub async fn get_branding_css_dotcss(
 struct ActivityLogQuery {
     #[serde(rename = "startIndex", alias = "StartIndex")]
     start_index: Option<i64>,
+    #[serde(alias = "Limit")]
     limit: Option<i64>,
 }
 
@@ -646,11 +647,12 @@ pub async fn system_activity_log(
 ) -> Result<impl IntoResponse> {
     let start_index = q
         .start_index
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .max(0);
     let limit = q
         .limit
         .unwrap_or(50)
-        .min(200);
+        .clamp(0, 200);
     use remux_sdks::remux::{
         ActivityLogEntry, ActivityLogEntryRemux, ActivityLogResult,
     };
