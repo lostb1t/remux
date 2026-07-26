@@ -491,7 +491,7 @@ async fn streams_metadata(state: &AppState, id: Uuid) -> AnyResult<StreamsRespon
 
         let best = matching[0];
         let description = {
-            use remux_sdks::remux::StreamRule;
+            use remux_sdks::remux::{StreamRule, format_size_rule};
             let parts: Vec<String> = group
                 .filter
                 .rules
@@ -512,6 +512,7 @@ async fn streams_metadata(state: &AppState, id: Uuid) -> AnyResult<StreamsRespon
                         .map(|v| v.label())
                         .collect::<Vec<_>>()
                         .join("/"),
+                    StreamRule::Size { op, value } => format_size_rule(*op, *value),
                 })
                 .filter(|s| !s.is_empty())
                 .collect();
