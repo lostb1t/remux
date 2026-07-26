@@ -12,7 +12,9 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
-    db::{ExternalIds, Media, MediaKind, NonEmptyString, StreamGroup, auth},
+    db::{
+        ExternalIds, MatchOutcome, Media, MediaKind, NonEmptyString, StreamGroup, auth,
+    },
 };
 use axum_anyhow::ApiResult as Result;
 
@@ -216,11 +218,11 @@ pub async fn stream_group_preview(
                 s.stream_info
                     .as_ref()
                     .map_or(false, |info| {
-                        group.matches(
+                        group.match_outcome(
                             info,
                             s.probe_data
                                 .as_ref(),
-                        )
+                        ) == MatchOutcome::Match
                     })
             })
             .collect();

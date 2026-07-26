@@ -27,6 +27,21 @@ pub struct StreamGroup {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchOutcome {
+    Match,
+    PassThrough,
+    NoMatch,
+}
+
+fn bool_to_outcome(hit: bool) -> MatchOutcome {
+    if hit {
+        MatchOutcome::Match
+    } else {
+        MatchOutcome::NoMatch
+    }
+}
+
 impl StreamGroup {
     pub fn display_name(&self) -> String {
         if !self
@@ -251,11 +266,11 @@ impl StreamGroup {
                     s.stream_info
                         .as_ref()
                         .map_or(false, |info| {
-                            group.matches(
+                            group.match_outcome(
                                 info,
                                 s.probe_data
                                     .as_ref(),
-                            )
+                            ) == MatchOutcome::Match
                         })
                 })
                 .collect();
@@ -316,32 +331,28 @@ pub fn apply_stream_filter(filter: &StreamFilter, sources: Vec<Media>) -> Vec<Me
             s.stream_info
                 .as_ref()
                 .map_or(true, |info| {
-                    temp.matches(
+                    temp.match_outcome(
                         info,
                         s.probe_data
                             .as_ref(),
-                    )
+                    ) != MatchOutcome::NoMatch
                 })
         })
         .collect()
 }
 
 impl StreamGroup {
-    /// Returns true if the given source matches this group's filter.
-    /// `info` carries filename/resolution inputs; `probe_data` (from the parent
-    /// `Media`, NOT `StreamInfo.probe_data`, which is usually empty) supplies
-    /// audio-language data. An empty filter matches everything.
-    pub fn matches(
+    pub fn match_outcome(
         &self,
         info: &StreamInfo,
         probe_data: Option<&crate::api::MediaSourceInfo>,
-    ) -> bool {
+    ) -> MatchOutcome {
         let filter = &self.filter;
         if filter
             .rules
             .is_empty()
         {
-            return true;
+            return MatchOutcome::Match;
         }
 
         let raw = match info
@@ -352,13 +363,9 @@ impl StreamGroup {
                 .as_deref())
         {
             Some(s) => s,
-            None => return false,
+            None => return MatchOutcome::NoMatch,
         };
 
-        // Stremio/addon sources often use a multi-line name where the first
-        // line is a provider prefix and later lines contain the actual filename.
-        // Parse each non-empty line with hunch and use the one that yields the
-        // richest result (has at least a resolution or source hit).
         let candidates: Vec<&str> = if raw.contains('\n') {
             raw.lines()
                 .filter(|l| {
@@ -382,7 +389,7 @@ impl StreamGroup {
 
         let parsed = match best {
             Some(p) => p,
-            None => return false,
+            None => return MatchOutcome::NoMatch,
         };
 
         let resolution = min_screen_size(&parsed)
@@ -401,65 +408,88 @@ impl StreamGroup {
             .and_then(StreamCodec::from_hunch)
             .unwrap_or(StreamCodec::Unknown);
 
-        let eval = |rule: &StreamRule| match rule {
-            StreamRule::Resolution { op, values } => {
-                // When resolution is unknown and the rule doesn't explicitly target Unknown,
-                // let the stream through so source/codec rules can still match.
-                if resolution == StreamResolution::Unknown
-                    && !values.contains(&StreamResolution::Unknown)
-                {
-                    return true;
+        let eval = |rule: &StreamRule| -> MatchOutcome {
+            match rule {
+                StreamRule::Resolution { op, values } => {
+                    if resolution == StreamResolution::Unknown
+                        && !values.contains(&StreamResolution::Unknown)
+                    {
+                        return MatchOutcome::PassThrough;
+                    }
+                    let hit = values.contains(&resolution);
+                    bool_to_outcome(matches!(op, SetOp::In | SetOp::Is) == hit)
                 }
-                let hit = values.contains(&resolution);
-                matches!(op, SetOp::In | SetOp::Is) == hit
-            }
-            StreamRule::Quality { op, values } => {
-                let hit = values.contains(&source);
-                matches!(op, SetOp::In | SetOp::Is) == hit
-            }
-            StreamRule::Codec { op, values } => {
-                let hit = values.contains(&codec);
-                matches!(op, SetOp::In | SetOp::Is) == hit
-            }
-            // No probe data → no match. Unprobed sources must NOT be absorbed
-            // by the group (which only shows one representative); they fall
-            // through to the ungrouped list so they remain visible.
-            StreamRule::AudioLanguage { op, values } => match probe_data {
-                None => false,
-                Some(pd) => {
-                    let wanted: Vec<String> = values
-                        .iter()
-                        .map(|v| normalize_lang_code(v))
-                        .collect();
-                    let hit = pd
-                        .media_streams
-                        .iter()
-                        .any(|s| {
-                            s.type_ == Some(MediaStreamType::Audio)
-                                && s.language
-                                    .as_deref()
-                                    .map_or(false, |l| {
-                                        let l = normalize_lang_code(l);
-                                        !matches!(
-                                            l.as_str(),
-                                            "und" | "mis" | "zxx" | "mul"
-                                        ) && wanted.contains(&l)
-                                    })
-                        });
-                    matches!(op, SetOp::In | SetOp::Is) == hit
+                StreamRule::Quality { op, values } => {
+                    let hit = values.contains(&source);
+                    bool_to_outcome(matches!(op, SetOp::In | SetOp::Is) == hit)
                 }
-            },
+                StreamRule::Codec { op, values } => {
+                    let hit = values.contains(&codec);
+                    bool_to_outcome(matches!(op, SetOp::In | SetOp::Is) == hit)
+                }
+                // No probe data → PassThrough: we can't confirm or deny the
+                // language, so the source must not be absorbed by the group
+                // (which shows only one representative) but also must not be
+                // hidden — it stays visible via the ungrouped list.
+                StreamRule::AudioLanguage { op, values } => match probe_data {
+                    None => MatchOutcome::PassThrough,
+                    Some(pd) => {
+                        let wanted: Vec<String> = values
+                            .iter()
+                            .map(|v| normalize_lang_code(v))
+                            .collect();
+                        let hit = pd
+                            .media_streams
+                            .iter()
+                            .any(|s| {
+                                s.type_ == Some(MediaStreamType::Audio)
+                                    && s.language
+                                        .as_deref()
+                                        .map_or(false, |l| {
+                                            let l = normalize_lang_code(l);
+                                            !matches!(
+                                                l.as_str(),
+                                                "und" | "mis" | "zxx" | "mul"
+                                            ) && wanted.contains(&l)
+                                        })
+                            });
+                        bool_to_outcome(matches!(op, SetOp::In | SetOp::Is) == hit)
+                    }
+                },
+            }
         };
 
+        let outcomes: Vec<MatchOutcome> = filter
+            .rules
+            .iter()
+            .map(eval)
+            .collect();
         match filter.match_mode {
-            FilterMatchMode::All => filter
-                .rules
-                .iter()
-                .all(eval),
-            FilterMatchMode::Any => filter
-                .rules
-                .iter()
-                .any(eval),
+            FilterMatchMode::All => {
+                if outcomes
+                    .iter()
+                    .any(|o| matches!(o, MatchOutcome::NoMatch))
+                {
+                    MatchOutcome::NoMatch
+                } else if outcomes
+                    .iter()
+                    .any(|o| matches!(o, MatchOutcome::PassThrough))
+                {
+                    MatchOutcome::PassThrough
+                } else {
+                    MatchOutcome::Match
+                }
+            }
+            FilterMatchMode::Any => {
+                if outcomes
+                    .iter()
+                    .any(|o| matches!(o, MatchOutcome::Match))
+                {
+                    MatchOutcome::Match
+                } else {
+                    MatchOutcome::NoMatch
+                }
+            }
         }
     }
 
@@ -470,11 +500,11 @@ impl StreamGroup {
                 s.stream_info
                     .as_ref()
                     .map_or(false, |info| {
-                        group.matches(
+                        group.match_outcome(
                             info,
                             s.probe_data
                                 .as_ref(),
-                        )
+                        ) == MatchOutcome::Match
                     })
             })
             .cloned()
@@ -689,33 +719,47 @@ mod tests {
     #[test]
     fn uhd_bluray_source_with_explicit_1080p_matches_1080p_group() {
         let group = group_1080p_bluray();
-        assert!(group.matches(
-            &info(
-                "The Martian 2015 Extended Cut UHD BluRay 1080p DD Atmos 5 1 DoVi HDR10 x265-SM737.mkv"
+        assert_eq!(
+            group.match_outcome(
+                &info(
+                    "The Martian 2015 Extended Cut UHD BluRay 1080p DD Atmos 5 1 DoVi HDR10 x265-SM737.mkv"
+                ),
+                None
             ),
-            None
-        ));
-        assert!(group.matches(
-            &info(
-                "The.Housemaid.2025.UHD.BluRay.1080p.DD+Atmos.5.1.DoVi.HDR10+.x265-SM737.mkv"
+            MatchOutcome::Match
+        );
+        assert_eq!(
+            group.match_outcome(
+                &info(
+                    "The.Housemaid.2025.UHD.BluRay.1080p.DD+Atmos.5.1.DoVi.HDR10+.x265-SM737.mkv"
+                ),
+                None
             ),
-            None
-        ));
-        assert!(group.matches(
-            &info(
-                "The Housemaid 2025 REPACK UHD BluRay 1080p DD Atmos 5 1 DoVi HDR10 x265-SM737.mkv"
+            MatchOutcome::Match
+        );
+        assert_eq!(
+            group.match_outcome(
+                &info(
+                    "The Housemaid 2025 REPACK UHD BluRay 1080p DD Atmos 5 1 DoVi HDR10 x265-SM737.mkv"
+                ),
+                None
             ),
-            None
-        ));
+            MatchOutcome::Match
+        );
     }
 
     #[test]
     fn genuine_2160p_release_does_not_match_1080p_group() {
         let group = group_1080p_bluray();
-        assert!(!group.matches(
-            &info("The Martian 2015 UHD BluRay 2160p HDR10 DoVi Atmos x265-GROUP.mkv"),
-            None
-        ));
+        assert_eq!(
+            group.match_outcome(
+                &info(
+                    "The Martian 2015 UHD BluRay 2160p HDR10 DoVi Atmos x265-GROUP.mkv"
+                ),
+                None
+            ),
+            MatchOutcome::NoMatch
+        );
     }
 
     fn group_audio_lang(op: SetOp, values: &[&str]) -> StreamGroup {
@@ -759,51 +803,76 @@ mod tests {
     fn audio_lang_matches_when_listed() {
         let group = group_audio_lang(SetOp::Is, &["rus"]);
         let probe = probe_with_langs(&["rus"]);
-        assert!(group.matches(&info("a.mkv"), Some(&probe)));
+        assert_eq!(
+            group.match_outcome(&info("a.mkv"), Some(&probe)),
+            MatchOutcome::Match
+        );
     }
 
     #[test]
     fn audio_lang_rejects_when_language_differs() {
         let group = group_audio_lang(SetOp::Is, &["rus"]);
         let probe = probe_with_langs(&["eng"]);
-        assert!(!group.matches(&info("a.mkv"), Some(&probe)));
+        assert_eq!(
+            group.match_outcome(&info("a.mkv"), Some(&probe)),
+            MatchOutcome::NoMatch
+        );
     }
 
-    // An unprobed source (no probe_data) must NOT match the group: the group
-    // only shows one representative, so absorbing an unmatched source would
-    // hide it. It falls through to the ungrouped list instead.
+    // An unprobed source passes through (not absorbed by the group, but stays
+    // visible via ungrouped). This matches the Size rule's None behavior.
     #[test]
-    fn audio_lang_unprobed_does_not_match() {
+    fn audio_lang_unprobed_is_passthrough() {
         let group = group_audio_lang(SetOp::Is, &["rus"]);
-        assert!(!group.matches(&info("a.mkv"), None));
+        assert_eq!(
+            group.match_outcome(&info("a.mkv"), None),
+            MatchOutcome::PassThrough
+        );
     }
 
     #[test]
     fn audio_lang_case_insensitive_and_any_track() {
         let group = group_audio_lang(SetOp::In, &["rus"]);
-        assert!(group.matches(&info("a.mkv"), Some(&probe_with_langs(&["RUS"]))));
-        assert!(
-            group.matches(&info("a.mkv"), Some(&probe_with_langs(&["eng", "rus"])))
+        assert_eq!(
+            group.match_outcome(&info("a.mkv"), Some(&probe_with_langs(&["RUS"]))),
+            MatchOutcome::Match
+        );
+        assert_eq!(
+            group.match_outcome(
+                &info("a.mkv"),
+                Some(&probe_with_langs(&["eng", "rus"]))
+            ),
+            MatchOutcome::Match
         );
     }
 
     #[test]
     fn audio_lang_isnot_inverts() {
         let group = group_audio_lang(SetOp::NotIn, &["rus"]);
-        assert!(!group.matches(&info("a.mkv"), Some(&probe_with_langs(&["rus"]))));
-        assert!(group.matches(&info("a.mkv"), Some(&probe_with_langs(&["eng"]))));
+        assert_eq!(
+            group.match_outcome(&info("a.mkv"), Some(&probe_with_langs(&["rus"]))),
+            MatchOutcome::NoMatch
+        );
+        assert_eq!(
+            group.match_outcome(&info("a.mkv"), Some(&probe_with_langs(&["eng"]))),
+            MatchOutcome::Match
+        );
     }
 
     // Special "no-linguistic-content" codes are treated as no language.
     #[test]
     fn audio_lang_ignores_special_codes() {
         let group = group_audio_lang(SetOp::Is, &["rus"]);
-        assert!(!group.matches(&info("a.mkv"), Some(&probe_with_langs(&["und"]))));
-        assert!(!group.matches(&info("a.mkv"), Some(&probe_with_langs(&["mul"]))));
+        assert_eq!(
+            group.match_outcome(&info("a.mkv"), Some(&probe_with_langs(&["und"]))),
+            MatchOutcome::NoMatch
+        );
+        assert_eq!(
+            group.match_outcome(&info("a.mkv"), Some(&probe_with_langs(&["mul"]))),
+            MatchOutcome::NoMatch
+        );
     }
 
-    // A Resolution rule is inferred via hunch from the filename, so a source
-    // without a filename cannot match a Resolution-only group.
     #[test]
     fn resolution_group_rejects_source_without_filename() {
         let group = StreamGroup {
@@ -827,6 +896,70 @@ mod tests {
             name: None,
             ..Default::default()
         };
-        assert!(!group.matches(&si, None));
+        assert_eq!(group.match_outcome(&si, None), MatchOutcome::NoMatch);
+    }
+
+    // Mixed filter (All): Resolution Match + AudioLanguage PassThrough → PassThrough.
+    // The source is not confidently Russian, so it must NOT be shown as the group
+    // representative, but it must also stay visible via ungrouped.
+    #[test]
+    fn audio_lang_combined_with_resolution_passes_through_in_all_mode() {
+        let group = StreamGroup {
+            id: Uuid::nil(),
+            name: "1080p · rus".to_string(),
+            filter: StreamFilter {
+                match_mode: FilterMatchMode::All,
+                rules: vec![
+                    StreamRule::Resolution {
+                        op: SetOp::In,
+                        values: vec![StreamResolution::R1080p],
+                    },
+                    StreamRule::AudioLanguage {
+                        op: SetOp::Is,
+                        values: vec!["rus".to_string()],
+                    },
+                ],
+            },
+            priority: 0,
+            enabled: true,
+            hidden: false,
+            created_at: String::new(),
+        };
+        assert_eq!(
+            group.match_outcome(&info("Movie.2024.1080p.BluRay.mkv"), None),
+            MatchOutcome::PassThrough
+        );
+    }
+
+    // Any mode: PassThrough is NOT a success. AudioLanguage PassThrough OR
+    // Quality NoMatch → NoMatch (no confident match on any rule).
+    #[test]
+    fn audio_lang_passthrough_is_not_a_success_in_any_mode() {
+        let group = StreamGroup {
+            id: Uuid::nil(),
+            name: "rus or bluray".to_string(),
+            filter: StreamFilter {
+                match_mode: FilterMatchMode::Any,
+                rules: vec![
+                    StreamRule::AudioLanguage {
+                        op: SetOp::Is,
+                        values: vec!["rus".to_string()],
+                    },
+                    StreamRule::Quality {
+                        op: SetOp::In,
+                        values: vec![StreamQuality::BluRay],
+                    },
+                ],
+            },
+            priority: 0,
+            enabled: true,
+            hidden: false,
+            created_at: String::new(),
+        };
+        // WEBRip → Quality NoMatch, AudioLanguage PassThrough (no probe) → NoMatch.
+        assert_eq!(
+            group.match_outcome(&info("Movie.2024.1080p.WEBRip.mkv"), None),
+            MatchOutcome::NoMatch
+        );
     }
 }
