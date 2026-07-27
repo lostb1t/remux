@@ -344,8 +344,11 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             .parent_id
             .clone()
             .or_else(|| {
-                matches!(media.kind, db::MediaKind::Collection | db::MediaKind::Folder)
-                    .then_some(COLLECTIONS_ROOT_ID)
+                matches!(
+                    media.kind,
+                    db::MediaKind::Collection | db::MediaKind::Folder
+                )
+                .then_some(COLLECTIONS_ROOT_ID)
             }),
         remote_trailers: media
             .trailers

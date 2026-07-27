@@ -28,7 +28,8 @@ use sqlx::SqlitePool;
 
 use super::{mock_items, stub_json};
 
-pub(crate) const COLLECTIONS_ROOT_ID: Uuid = uuid!("f47ac10b-58cc-4372-a567-0e02b2c3d479");
+pub(crate) const COLLECTIONS_ROOT_ID: Uuid =
+    uuid!("f47ac10b-58cc-4372-a567-0e02b2c3d479");
 
 pub struct ItemsQueryResult {
     pub items: Vec<api::BaseItemDto>,
@@ -3141,7 +3142,9 @@ pub async fn patch_item(
                 return Err(anyhow::anyhow!(
                     "collection_kind must be Manual when collection_type is collections"
                 ))
-                .context_bad_request("Group containers must use Manual collection kind");
+                .context_bad_request(
+                    "Group containers must use Manual collection kind",
+                );
             }
         }
         qb.push(", collection_media_kind = ")
