@@ -2125,12 +2125,14 @@ impl AddonService {
             .into_iter()
             .map(|r| async move {
                 let name = &r.row.name;
+                let t = std::time::Instant::now();
                 match r.stream.as_ref().unwrap().get_streams(media, ctx).await {
                     Ok(mut streams) => {
+                        let elapsed = t.elapsed();
                         if streams.is_empty() {
-                            debug!(addon = %name, "addon: no streams");
+                            debug!(addon = %name, ?elapsed, "addon: no streams");
                         } else {
-                            debug!(addon = %name, count = streams.len(), "addon: streams found");
+                            debug!(addon = %name, count = streams.len(), ?elapsed, "addon: streams found");
                             let addon_id = r.row.id;
                             for s in &mut streams {
                                 s.source = Some(name.clone());
@@ -2140,7 +2142,7 @@ impl AddonService {
                         streams
                     }
                     Err(e) => {
-                        warn!(addon = %name, error = %e, "stream addon failed");
+                        warn!(addon = %name, error = %e, elapsed = ?t.elapsed(), "stream addon failed");
                         vec![]
                     }
                 }
@@ -2382,10 +2384,27 @@ impl AddonService {
             )
             .await
         };
-        let (raw, probe_versions) =
-            tokio::join!(self.get_streams(media, ctx, user_id), probe_versions_fut);
+        let probe_t = std::time::Instant::now();
+        let (raw, probe_versions) = tokio::join!(
+            self.get_streams(media, ctx, user_id),
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                probe_versions_fut,
+            )
+        );
         let raw = raw?;
-        debug!(raw_count = raw.len(), "raw streams fetched");
+        let probe_versions = match probe_versions {
+            Ok(v) => v,
+            Err(_) => {
+                debug!(remuxdb_elapsed = ?probe_t.elapsed(), "remuxdb probe timed out");
+                None
+            }
+        };
+        debug!(
+            raw_count = raw.len(),
+            remuxdb_elapsed = ?probe_t.elapsed(),
+            "raw streams fetched"
+        );
 
         // Dedup by descriptor content; order preserves addon priority (DB load order).
         // First occurrence wins, so higher-priority addons' streams survive.
