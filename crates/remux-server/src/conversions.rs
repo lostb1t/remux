@@ -199,6 +199,14 @@ impl From<db::Media> for api::MediaSourceInfo {
             .runtime
             .and_then(|r| r.to_ticks(common::TickUnit::Seconds));
         let run_time_ticks = probe_ticks.or(meta_ticks);
+        let probe_bitrate = source
+            .probe_data
+            .as_ref()
+            .and_then(|p| p.bitrate);
+        let probe_size = source
+            .probe_data
+            .as_ref()
+            .and_then(|p| p.size);
         let (
             mut media_streams,
             default_audio_stream_index,
@@ -290,6 +298,8 @@ impl From<db::Media> for api::MediaSourceInfo {
             formats: Some(vec![]),
             required_http_headers: Some(HashMap::new()),
             run_time_ticks,
+            bitrate: probe_bitrate,
+            size: probe_size,
             media_streams,
             default_audio_stream_index,
             default_subtitle_stream_index,
