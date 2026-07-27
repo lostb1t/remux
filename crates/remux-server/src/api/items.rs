@@ -28,7 +28,7 @@ use sqlx::SqlitePool;
 
 use super::{mock_items, stub_json};
 
-const COLLECTIONS_ROOT_ID: Uuid = uuid!("f47ac10b-58cc-4372-a567-0e02b2c3d479");
+pub(crate) const COLLECTIONS_ROOT_ID: Uuid = uuid!("f47ac10b-58cc-4372-a567-0e02b2c3d479");
 
 pub struct ItemsQueryResult {
     pub items: Vec<api::BaseItemDto>,
@@ -2242,9 +2242,7 @@ pub async fn update_virtual_folder(
         .and_then(|s| db::CollectionKind::try_from(s).ok());
 
     if collection_media_kind == Some(db::CollectionMediaKind::Collection)
-        && collection_kind
-            .as_ref()
-            .is_some_and(|k| *k != db::CollectionKind::Manual)
+        && collection_kind != Some(db::CollectionKind::Manual)
     {
         return Err(anyhow::anyhow!(
             "collection_kind must be Manual when collection_type is collections"
@@ -3135,15 +3133,15 @@ pub async fn patch_item(
     if let Some(ct) = &payload.collection_type {
         let media_kind = parse_collection_type(ct);
         if media_kind == Some(db::CollectionMediaKind::Collection) {
-            if let Some(ck) = &payload.collection_kind {
-                if db::CollectionKind::try_from(ck.as_str()).ok()
-                    != Some(db::CollectionKind::Manual)
-                {
-                    return Err(anyhow::anyhow!(
-                        "collection_kind must be Manual when collection_type is collections"
-                    ))
-                    .context_bad_request("Group containers must use Manual collection kind");
-                }
+            let kind = payload
+                .collection_kind
+                .as_deref()
+                .and_then(|s| db::CollectionKind::try_from(s).ok());
+            if kind != Some(db::CollectionKind::Manual) {
+                return Err(anyhow::anyhow!(
+                    "collection_kind must be Manual when collection_type is collections"
+                ))
+                .context_bad_request("Group containers must use Manual collection kind");
             }
         }
         qb.push(", collection_media_kind = ")

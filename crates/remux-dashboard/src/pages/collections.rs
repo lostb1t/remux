@@ -489,6 +489,7 @@ pub fn CollectionForm(
         let ct = col_type
             .peek()
             .clone();
+        let is_group = ct == "collections";
         let ck = col_kind
             .peek()
             .clone();
@@ -553,8 +554,8 @@ pub fn CollectionForm(
                             promoted: Some(prm),
                             tags: Some(current_tags),
                             sort_order: None,
-                            latest_auto_unplayed: Some(auto_unplayed),
-                            latest_sort_digital: Some(sort_digital),
+                            latest_auto_unplayed: Some(if is_group { false } else { auto_unplayed }),
+                            latest_sort_digital: Some(if is_group { false } else { sort_digital }),
                             collection_default_sort: default_sort_payload,
                             collection_default_sort_order: default_sort_order_payload,
                         },
@@ -605,8 +606,8 @@ pub fn CollectionForm(
                             promoted: None,
                             tags: Some(current_tags),
                             sort_order: None,
-                            latest_auto_unplayed: Some(auto_unplayed),
-                            latest_sort_digital: Some(sort_digital),
+                            latest_auto_unplayed: Some(if is_group { false } else { auto_unplayed }),
+                            latest_sort_digital: Some(if is_group { false } else { sort_digital }),
                             collection_default_sort: default_sort_payload,
                             collection_default_sort_order: default_sort_order_payload,
                         },
