@@ -6,6 +6,14 @@
 * **container:** normalize ffprobe format_name and propagate probe container through cache-hit path ([ee4b3a6](https://github.com/lostb1t/remux/commit/ee4b3a6bbb9508042f314f341aa5da5345a19dee))
 * propagate bitrate and size from probe_data in From<db::Media> ([5ec8977](https://github.com/lostb1t/remux/commit/5ec8977d75bd59944c5f63a728529882f40f5b44))
 
+## [0.18.1](https://github.com/lostb1t/remux/compare/v0.18.0...v0.18.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* **container:** normalize ffprobe format_name and propagate probe container through cache-hit path ([ee4b3a6](https://github.com/lostb1t/remux/commit/ee4b3a6bbb9508042f314f341aa5da5345a19dee))
+* propagate bitrate and size from probe_data in From<db::Media> ([5ec8977](https://github.com/lostb1t/remux/commit/5ec8977d75bd59944c5f63a728529882f40f5b44))
+
 # [0.18.0](https://github.com/lostb1t/remux/compare/v0.17.0...v0.18.0) (2026-07-27)
 
 
