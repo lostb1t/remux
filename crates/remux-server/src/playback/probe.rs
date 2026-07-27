@@ -442,18 +442,7 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
         .format
         .format_name
         .as_deref()
-        .map(|f| {
-            let base = f
-                .split(',')
-                .next()
-                .unwrap_or(f);
-            match base {
-                "matroska" => "mkv".to_string(),
-                "mov" => "mp4".to_string(),
-                "mpegts" => "ts".to_string(),
-                other => other.to_string(),
-            }
-        });
+        .map(remux_utils::normalize_container);
 
     let overall_bitrate = probe
         .format
@@ -844,7 +833,7 @@ pub(crate) async fn probe_stream(
             .is_some()
         {
             debug!(id = %stream.id, "probe cache hit");
-            return Ok((cached.clone(), stream.clone()));
+            return Ok((api::MediaSourceInfo::from(stream.clone()), stream.clone()));
         }
         debug!(id = %stream.id, "probe cache stale (no video stream), re-probing");
     }

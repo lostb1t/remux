@@ -27,3 +27,18 @@ pub fn merge_vec<T>(dst: &mut Vec<T>, src: Vec<T>, replace: bool) {
         *dst = src;
     }
 }
+
+/// Normalizes an ffprobe `format_name` string (which may be comma-separated) to a
+/// canonical container extension.
+pub fn normalize_container(raw: &str) -> String {
+    let base = raw
+        .split(',')
+        .next()
+        .unwrap_or(raw);
+    match base {
+        "matroska" => "mkv".to_string(),
+        "mov" => "mp4".to_string(),
+        "mpegts" => "ts".to_string(),
+        other => other.to_string(),
+    }
+}

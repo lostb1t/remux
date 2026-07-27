@@ -147,9 +147,18 @@ impl From<db::Media> for api::MediaSourceInfo {
         let is_stub = descriptor
             .and_then(|d| d.as_http_url())
             .is_none();
-        let container = descriptor
-            .and_then(|d| d.as_http_url())
-            .and_then(infer_container_from_url);
+        let container = source
+            .probe_data
+            .as_ref()
+            .and_then(|p| {
+                p.container
+                    .clone()
+            })
+            .or_else(|| {
+                descriptor
+                    .and_then(|d| d.as_http_url())
+                    .and_then(infer_container_from_url)
+            });
 
         let remux = Some(api::MediaSourceRemuxInfo {
             provider_info: source

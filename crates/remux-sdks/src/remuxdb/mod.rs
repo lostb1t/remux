@@ -622,7 +622,8 @@ impl From<&MediaInfo> for MediaSourceInfo {
         MediaSourceInfo {
             container: version
                 .container
-                .clone(),
+                .as_deref()
+                .map(remux_utils::normalize_container),
             size: version.size,
             run_time_ticks: version
                 .duration
