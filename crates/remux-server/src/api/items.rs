@@ -3333,7 +3333,7 @@ mod tests {
     use remux_sdks::remux::{
         CollectionFilter, FilterGroup, FilterMatchMode, FilterRule, SetOp,
     };
-    use uuid::{Uuid, uuid};
+    use uuid::Uuid;
 
     use crate::{
         api::items::COLLECTIONS_ROOT_ID,
