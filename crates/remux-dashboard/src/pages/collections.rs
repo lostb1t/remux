@@ -8,6 +8,27 @@ use remux_sdks::remux::{
     SortOrder,
 };
 
+fn is_group_container(item: &BaseItemDto) -> bool {
+    item.collection_type
+        .as_ref()
+        == Some(&CollectionType::Boxsets)
+        && item
+            .remux
+            .as_ref()
+            .and_then(|r| {
+                r.collection_kind
+                    .as_ref()
+            })
+            == Some(&RemuxCollectionKind::Manual)
+}
+
+fn is_promoted(item: &BaseItemDto) -> bool {
+    item.remux
+        .as_ref()
+        .and_then(|r| r.promoted)
+        .unwrap_or(false)
+}
+
 /// Which collection is currently being edited (None = creating new).
 #[derive(Clone, Debug)]
 pub enum FormMode {
@@ -116,13 +137,10 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                                     if !col_kind_label.is_empty() {
                                                         span { class: "session-client-badge", "{col_kind_label}" }
                                                     }
-                                                    if col.remux.as_ref().and_then(|r| r.promoted).unwrap_or(false) {
+                                                    if is_promoted(&col) {
                                                         span { class: "task-badge task-badge-running", "Library" }
                                                     }
-                                                    if col.collection_type.as_ref() == Some(&remux_sdks::remux::CollectionType::Boxsets)
-                                                        && col.remux.as_ref().and_then(|r| r.collection_kind.as_ref()) == Some(&remux_sdks::remux::RemuxCollectionKind::Manual)
-                                                        && !col.remux.as_ref().and_then(|r| r.promoted).unwrap_or(false)
-                                                    {
+                                                    if is_group_container(&col) && !is_promoted(&col) {
                                                         span { class: "task-badge task-badge-idle", "Group" }
                                                     }
                                                 }
@@ -966,23 +984,8 @@ fn CollectionGroupChildren(app_state: AppState, collection_id: String) -> Elemen
                             item.id
                                 .to_string()
                                 != col_id
-                                && !(item
-                                    .collection_type
-                                    .as_ref()
-                                    == Some(&CollectionType::Boxsets)
-                                    && item
-                                        .remux
-                                        .as_ref()
-                                        .and_then(|r| {
-                                            r.collection_kind
-                                                .as_ref()
-                                        })
-                                        == Some(&RemuxCollectionKind::Manual))
-                                && !item
-                                    .remux
-                                    .as_ref()
-                                    .and_then(|r| r.promoted)
-                                    .unwrap_or(false)
+                                && !is_group_container(item)
+                                && !is_promoted(item)
                         })
                         .collect::<Vec<_>>()
                 })

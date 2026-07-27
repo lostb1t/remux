@@ -3491,7 +3491,8 @@ impl Media {
                         JOIN media grp ON grp.id = mr.left_media_id \
                         WHERE mr.right_media_id = media.id \
                         AND mr.role = 'collection' \
-                        AND grp.collection_media_kind = 'collection'\
+                        AND grp.collection_media_kind = 'collection' \
+                        AND grp.collection_kind = 'manual'\
                     ) OR EXISTS (\
                         SELECT 1 FROM media_relations mr2 \
                         WHERE mr2.right_media_id = media.id \
@@ -3506,7 +3507,8 @@ impl Media {
                         JOIN media grp ON grp.id = mr.left_media_id \
                         WHERE mr.right_media_id = media.id \
                         AND mr.role = 'collection' \
-                        AND grp.collection_media_kind = 'collection'\
+                        AND grp.collection_media_kind = 'collection' \
+                        AND grp.collection_kind = 'manual'\
                     )",
                     );
                 }

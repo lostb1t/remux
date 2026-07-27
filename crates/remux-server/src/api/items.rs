@@ -2169,14 +2169,10 @@ pub async fn create_virtual_folder(
         .and_then(|s| db::CollectionKind::try_from(s).ok())
         .unwrap_or(db::CollectionKind::Smart);
 
-    if collection_media_kind == Some(db::CollectionMediaKind::Collection)
-        && collection_kind != db::CollectionKind::Manual
-    {
-        return Err(anyhow::anyhow!(
-            "collection_kind must be Manual when collection_type is collections"
-        ))
-        .context_bad_request("Group containers must use Manual collection kind");
-    }
+    require_manual_kind_for_group(
+        collection_media_kind.as_ref(),
+        Some(&collection_kind),
+    )?;
 
     let promoted = payload
         .promoted
@@ -2245,14 +2241,10 @@ pub async fn update_virtual_folder(
         .as_deref()
         .and_then(|s| db::CollectionKind::try_from(s).ok());
 
-    if collection_media_kind == Some(db::CollectionMediaKind::Collection)
-        && collection_kind != Some(db::CollectionKind::Manual)
-    {
-        return Err(anyhow::anyhow!(
-            "collection_kind must be Manual when collection_type is collections"
-        ))
-        .context_bad_request("Group containers must use Manual collection kind");
-    }
+    require_manual_kind_for_group(
+        collection_media_kind.as_ref(),
+        collection_kind.as_ref(),
+    )?;
 
     let promoted = payload
         .promoted
@@ -2327,6 +2319,21 @@ pub async fn delete_virtual_folder(
     .await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn require_manual_kind_for_group(
+    media_kind: Option<&db::CollectionMediaKind>,
+    collection_kind: Option<&db::CollectionKind>,
+) -> Result<()> {
+    if media_kind == Some(&db::CollectionMediaKind::Collection)
+        && collection_kind != Some(&db::CollectionKind::Manual)
+    {
+        return Err(anyhow::anyhow!(
+            "collection_kind must be Manual when collection_type is collections"
+        ))
+        .context_bad_request("Group containers must use Manual collection kind");
+    }
+    Ok(())
 }
 
 fn parse_collection_type(s: &str) -> Option<db::CollectionMediaKind> {
@@ -3136,19 +3143,12 @@ pub async fn patch_item(
     }
     if let Some(ct) = &payload.collection_type {
         let media_kind = parse_collection_type(ct);
-        if media_kind == Some(db::CollectionMediaKind::Collection) {
-            let kind = payload
+        {
+            let parsed_kind = payload
                 .collection_kind
                 .as_deref()
                 .and_then(|s| db::CollectionKind::try_from(s).ok());
-            if kind != Some(db::CollectionKind::Manual) {
-                return Err(anyhow::anyhow!(
-                    "collection_kind must be Manual when collection_type is collections"
-                ))
-                .context_bad_request(
-                    "Group containers must use Manual collection kind",
-                );
-            }
+            require_manual_kind_for_group(media_kind.as_ref(), parsed_kind.as_ref())?;
         }
         qb.push(", collection_media_kind = ")
             .push_bind(
