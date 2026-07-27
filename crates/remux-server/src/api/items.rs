@@ -3336,13 +3336,11 @@ mod tests {
     use uuid::{Uuid, uuid};
 
     use crate::{
+        api::items::COLLECTIONS_ROOT_ID,
         db,
         db::{ExternalIds, MediaIdRaw, NonEmptyString},
         integration_test::{auth_header_with_token, authenticated_server},
     };
-
-    // The "Collections" container from seed data — shows non-promoted collections.
-    const COLLECTIONS_PARENT_ID: &str = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
 
     async fn get_user_id(server: &axum_test::TestServer, auth: &str) -> String {
         let resp: serde_json::Value = server
@@ -3644,7 +3642,12 @@ mod tests {
                 http::header::AUTHORIZATION,
                 HeaderValue::from_str(&auth).unwrap(),
             )
-            .add_query_params(&[("parentId", COLLECTIONS_PARENT_ID)])
+            .add_query_params(&[(
+                "parentId",
+                COLLECTIONS_ROOT_ID
+                    .to_string()
+                    .as_str(),
+            )])
             .await
             .json();
 
@@ -3697,7 +3700,12 @@ mod tests {
                 http::header::AUTHORIZATION,
                 HeaderValue::from_str(&auth).unwrap(),
             )
-            .add_query_params(&[("parentId", COLLECTIONS_PARENT_ID)])
+            .add_query_params(&[(
+                "parentId",
+                COLLECTIONS_ROOT_ID
+                    .to_string()
+                    .as_str(),
+            )])
             .await
             .json();
 
@@ -4301,7 +4309,12 @@ mod tests {
                 http::header::AUTHORIZATION,
                 HeaderValue::from_str(&auth).unwrap(),
             )
-            .add_query_params(&[("parentId", COLLECTIONS_PARENT_ID)])
+            .add_query_params(&[(
+                "parentId",
+                COLLECTIONS_ROOT_ID
+                    .to_string()
+                    .as_str(),
+            )])
             .await
             .json();
 
@@ -4347,7 +4360,7 @@ mod tests {
             .await
             .unwrap();
         // Also pin to root Collections (override)
-        let root_id = uuid!("f47ac10b-58cc-4372-a567-0e02b2c3d479");
+        let root_id = COLLECTIONS_ROOT_ID;
         db::MediaRelation::add_collection_items(db, &root_id, &[child.id])
             .await
             .unwrap();
@@ -4358,7 +4371,12 @@ mod tests {
                 http::header::AUTHORIZATION,
                 HeaderValue::from_str(&auth).unwrap(),
             )
-            .add_query_params(&[("parentId", COLLECTIONS_PARENT_ID)])
+            .add_query_params(&[(
+                "parentId",
+                COLLECTIONS_ROOT_ID
+                    .to_string()
+                    .as_str(),
+            )])
             .await
             .json();
 
@@ -4408,7 +4426,7 @@ mod tests {
             .unwrap();
 
         // Pin one collection to root Collections — root must still show ungrouped ones too
-        let root_id = uuid!("f47ac10b-58cc-4372-a567-0e02b2c3d479");
+        let root_id = COLLECTIONS_ROOT_ID;
         db::MediaRelation::add_collection_items(db, &root_id, &[pinned.id])
             .await
             .unwrap();
@@ -4419,7 +4437,12 @@ mod tests {
                 http::header::AUTHORIZATION,
                 HeaderValue::from_str(&auth).unwrap(),
             )
-            .add_query_params(&[("parentId", COLLECTIONS_PARENT_ID)])
+            .add_query_params(&[(
+                "parentId",
+                COLLECTIONS_ROOT_ID
+                    .to_string()
+                    .as_str(),
+            )])
             .await
             .json();
 
@@ -4590,7 +4613,11 @@ mod tests {
 
         assert_eq!(
             body["ParentId"].as_str(),
-            Some(COLLECTIONS_PARENT_ID),
+            Some(
+                COLLECTIONS_ROOT_ID
+                    .to_string()
+                    .as_str()
+            ),
             "top-level Collection must report ParentId=COLLECTIONS_ROOT_ID; got: {}",
             json!(body["ParentId"])
         );
