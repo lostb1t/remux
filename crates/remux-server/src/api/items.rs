@@ -500,7 +500,7 @@ pub async fn get_items(
 
         // collection browse
         if parent.kind == db::MediaKind::Collection {
-            // Group container browse (Root Collections exempt — uses Path A).
+            // Group container browse (Root Collections exempt — uses index below).
             if parent.collection_media_kind == Some(db::CollectionMediaKind::Collection)
                 && parent.collection_kind == Some(db::CollectionKind::Manual)
                 && parent.id != COLLECTIONS_ROOT_ID
