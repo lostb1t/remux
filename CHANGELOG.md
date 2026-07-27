@@ -1,3 +1,17 @@
+# [0.18.0](https://github.com/lostb1t/remux/compare/v0.17.0...v0.18.0) (2026-07-27)
+
+
+### Bug Fixes
+
+* **addons:** add per-addon stream elapsed logging and cap remuxdb probe at 10s ([9e5ae3f](https://github.com/lostb1t/remux/commit/9e5ae3f9a4603f5a72ed2dfab593cea485fa6795))
+* **auth:** deserialize AuthenticateUserByName fields case-insensitively ([25a78e3](https://github.com/lostb1t/remux/commit/25a78e3460a74cd87b237f38b1d77494cc102f47))
+
+
+### Features
+
+* **stream-groups:** add AudioLanguage rule from probe_data ([#145](https://github.com/lostb1t/remux/issues/145)) ([9a8ef11](https://github.com/lostb1t/remux/commit/9a8ef1140adcef7309fea8a50bd594daf4a7b692))
+* **stream-groups:** add Size rule and propagate torznab size ([#144](https://github.com/lostb1t/remux/issues/144)) ([2534c95](https://github.com/lostb1t/remux/commit/2534c9590296a9a513ad26184abbe13ed6fefb1a))
+
 # [0.17.0](https://github.com/lostb1t/remux/compare/v0.16.0...v0.17.0) (2026-07-25)
 
 
