@@ -507,9 +507,12 @@ pub async fn get_items(
                 && parent.collection_kind == Some(db::CollectionKind::Manual)
                 && parent.id != COLLECTIONS_ROOT_ID
             {
-                // Children are always Collections — clear client's IncludeItemTypes
-                // (e.g. Streamyfin hardcodes Movie/Series/Season) so they aren't excluded.
-                q.include_item_types = None;
+                // Children are always Collections — override client's IncludeItemTypes
+                // (e.g. Streamyfin hardcodes Movie/Series/Season) to enforce the invariant.
+                // Also force include_childless so group container children are shown regardless
+                // of whether they have content (targeting_containers would otherwise hide them).
+                q.include_item_types = Some(vec![api::MediaType::BoxSet]);
+                q.include_childless = Some(true);
                 q.user_id = Some(
                     session
                         .user
