@@ -836,23 +836,40 @@ pub struct AuthenticateUserByName {
 
 impl<'de> serde::Deserialize<'de> for AuthenticateUserByName {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        // Jellyfin clients send both `Pw` and `Password` in the same request.
-        // Using `alias` causes serde to error on duplicate keys, so we
-        // deserialize into a flat helper and merge the two fields.
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "PascalCase")]
-        struct Raw {
-            pw: Option<String>,
-            password: Option<String>,
-            username: Option<String>,
+        use serde::de::{IgnoredAny, MapAccess, Visitor};
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = AuthenticateUserByName;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("AuthenticateUserByName object")
+            }
+            fn visit_map<A: MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut pw: Option<String> = None;
+                let mut password: Option<String> = None;
+                let mut username: Option<String> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key
+                        .to_ascii_lowercase()
+                        .as_str()
+                    {
+                        "pw" => pw = map.next_value()?,
+                        "password" => password = map.next_value()?,
+                        "username" => username = map.next_value()?,
+                        _ => {
+                            let _ = map.next_value::<IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(AuthenticateUserByName {
+                    pw: pw.or(password),
+                    username,
+                })
+            }
         }
-        let raw = Raw::deserialize(d)?;
-        Ok(Self {
-            pw: raw
-                .pw
-                .or(raw.password),
-            username: raw.username,
-        })
+        d.deserialize_map(V)
     }
 }
 

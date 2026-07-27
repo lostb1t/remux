@@ -2727,8 +2727,7 @@ mod tests {
     /// preferred_metadata_language fires as a fallback.
     #[tokio::test]
     async fn test_server_metadata_language_fallback_selects_subtitle() {
-        use crate::api::ServerConfiguration;
-        use crate::db::Settings;
+        use crate::{api::ServerConfiguration, db::Settings};
 
         let (server, guard, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
@@ -2787,8 +2786,7 @@ mod tests {
     /// fallback must NOT fire — user preference wins even if it selects nothing.
     #[tokio::test]
     async fn test_server_fallback_does_not_fire_when_user_pref_set() {
-        use crate::api::ServerConfiguration;
-        use crate::db::Settings;
+        use crate::{api::ServerConfiguration, db::Settings};
 
         let (server, guard, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
