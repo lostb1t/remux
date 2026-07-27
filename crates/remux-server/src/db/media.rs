@@ -1303,9 +1303,9 @@ pub struct MediaFilter {
     pub exclude_childless: bool,
     /// When true, exclude items that are children of a group container
     /// (collection_media_kind='collection'), unless they are also explicit children
-    /// of the container specified by `exclude_grouped_except`.
-    pub exclude_grouped: bool,
-    pub exclude_grouped_except: Option<Uuid>,
+    /// of the container specified by `exclude_collection_groups_except`.
+    pub exclude_collection_groups: bool,
+    pub exclude_collection_groups_except: Option<Uuid>,
 }
 
 /// Normalise any country string to an ISO 3166-1 alpha-2 code (e.g. "US").
@@ -3483,8 +3483,8 @@ impl Media {
             if let Some(ref f) = filter.filter_rules {
                 apply_filter_rules(qb, f);
             }
-            if filter.exclude_grouped {
-                if let Some(except_id) = &filter.exclude_grouped_except {
+            if filter.exclude_collection_groups {
+                if let Some(except_id) = &filter.exclude_collection_groups_except {
                     qb.push(
                         " AND (NOT EXISTS (\
                         SELECT 1 FROM media_relations mr \

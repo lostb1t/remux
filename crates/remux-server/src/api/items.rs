@@ -570,8 +570,8 @@ pub async fn get_items(
                         exclude_childless: !q
                             .include_childless
                             .unwrap_or(false),
-                        exclude_grouped: true,
-                        exclude_grouped_except: Some(parent.id),
+                        exclude_collection_groups: true,
+                        exclude_collection_groups_except: Some(parent.id),
                         policy_filter: session
                             .user
                             .policy
