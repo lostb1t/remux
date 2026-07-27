@@ -4440,4 +4440,159 @@ mod tests {
             "root Collections must still show ungrouped collections (not switch to Path B); got: {names:?}"
         );
     }
+
+    // patch_item must reject collection_type=collections when collection_kind is absent or non-manual.
+    #[tokio::test]
+    async fn patch_item_rejects_group_container_without_manual_kind() {
+        use serde_json::json;
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let now = Utc::now().naive_utc();
+
+        let mut col = db::Media {
+            title: "Test Col".to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Smart),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        col.save(db)
+            .await
+            .unwrap();
+
+        // No collection_kind → must 400
+        server
+            .patch(&format!("/items/{}", col.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({ "CollectionType": "collections" }))
+            .expect_failure()
+            .await
+            .assert_status(http::StatusCode::BAD_REQUEST);
+
+        // collection_kind=smart → must 400
+        server
+            .patch(&format!("/items/{}", col.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(
+                &json!({ "CollectionType": "collections", "CollectionKind": "smart" }),
+            )
+            .expect_failure()
+            .await
+            .assert_status(http::StatusCode::BAD_REQUEST);
+
+        // collection_kind=manual → must succeed
+        server
+            .patch(&format!("/items/{}", col.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(
+                &json!({ "CollectionType": "collections", "CollectionKind": "manual" }),
+            )
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+    }
+
+    // update_virtual_folder must reject collection_type=collections when collection_kind is absent or non-manual.
+    #[tokio::test]
+    async fn update_virtual_folder_rejects_group_container_without_manual_kind() {
+        use serde_json::json;
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let now = Utc::now().naive_utc();
+
+        let mut col = db::Media {
+            title: "VF Test".to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Smart),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        col.save(db)
+            .await
+            .unwrap();
+
+        // No collection_kind → must 400 (was silently accepted before fix)
+        server
+            .post("/library/virtualfolders/LibraryOptions")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({ "Id": col.id, "Name": "VF Test", "CollectionType": "collections" }))
+            .expect_failure()
+            .await
+            .assert_status(http::StatusCode::BAD_REQUEST);
+
+        // collection_kind=manual → must succeed
+        server
+            .post("/library/virtualfolders/LibraryOptions")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({ "Id": col.id, "Name": "VF Test", "CollectionType": "collections", "CollectionKind": "manual" }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+    }
+
+    // Top-level Collection and Folder items must expose ParentId=COLLECTIONS_ROOT_ID,
+    // matching the Jellyfin API contract (ParentId is never null).
+    #[tokio::test]
+    async fn collection_item_has_collections_root_parent_id() {
+        use serde_json::json;
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let now = Utc::now().naive_utc();
+
+        // A collection with no explicit parent_id in the DB.
+        let mut col = db::Media {
+            title: "Orphan Collection".to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Manual),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        col.save(db)
+            .await
+            .unwrap();
+
+        let body: serde_json::Value = server
+            .get(&format!("/items/{}", col.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+
+        assert_eq!(
+            body["ParentId"].as_str(),
+            Some(COLLECTIONS_PARENT_ID),
+            "top-level Collection must report ParentId=COLLECTIONS_ROOT_ID; got: {}",
+            json!(body["ParentId"])
+        );
+    }
 }
