@@ -210,6 +210,21 @@ impl TryFrom<sdks::stremio::MediaType> for MediaKind {
     }
 }
 
+/// Extracts the addon's raw Stremio type string when it's a non-standard type
+/// (e.g. "anime") that `MediaKind` cannot represent and would otherwise collapse
+/// to a generic `Movie`/`Series`. Structural keywords (`episode`/`season`/`person`)
+/// are not content types and are excluded.
+fn custom_stremio_type(media_type: &sdks::stremio::MediaType) -> Option<String> {
+    match media_type {
+        sdks::stremio::MediaType::Unknown(s)
+            if !matches!(s.as_str(), "episode" | "season" | "person") =>
+        {
+            Some(s.clone())
+        }
+        _ => None,
+    }
+}
+
 impl From<&MediaKind> for sdks::stremio::MediaType {
     fn from(kind: &MediaKind) -> Self {
         match kind {
@@ -855,6 +870,10 @@ pub struct ExternalIds {
     /// For seasons/episodes of a custom-ID series: the parent series's `custom_stremio_id`.
     /// Analogous to `series_imdb` for the custom-ID path.
     pub series_custom_stremio_id: Option<String>,
+    /// The addon's own non-standard Stremio type string (e.g. "anime"). The
+    /// addon's `/meta/{type}/{id}.json` and `/stream/{type}/{id}.json` routes
+    /// require this exact string — losing it causes later lookups to 404.
+    pub custom_stremio_type: Option<String>,
 }
 
 impl ExternalIds {
@@ -1025,6 +1044,21 @@ impl ExternalIds {
             &source.series_custom_stremio_id,
             replace,
         );
+        merge_option(
+            &mut self.custom_stremio_type,
+            &source.custom_stremio_type,
+            replace,
+        );
+    }
+
+    /// The Stremio `MediaType` to use when querying the source addon: the
+    /// captured `custom_stremio_type` when present, otherwise the generic
+    /// type derived from `kind`.
+    pub fn stremio_media_type(&self, kind: &MediaKind) -> sdks::stremio::MediaType {
+        self.custom_stremio_type
+            .clone()
+            .map(sdks::stremio::MediaType::Unknown)
+            .unwrap_or_else(|| sdks::stremio::MediaType::from(kind))
     }
 }
 
@@ -5299,6 +5333,18 @@ impl TryFrom<sdks::stremio::Meta> for Media {
             media_kind = MediaKind::Series;
         }
 
+        // No IMDB ID means we can't resolve release dates against an external
+        // provider (TMDB) either. If the addon reports no date at all for it,
+        // treat it as available now rather than leaving digital_released_at
+        // unset — an unset date means "unreleased" to push_release_date_filter,
+        // which would hide the item forever for addons that never report dates.
+        let has_no_imdb_id = meta
+            .imdb_id
+            .is_none()
+            && ExternalIds::from_stremio_id(&meta.id)
+                .imdb
+                .is_none();
+
         let digital_released_at = meta
             .app_extras
             .as_ref()
@@ -5331,6 +5377,17 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                 ) {
                     meta.released
                         .map(|x| x.naive_utc())
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                if has_no_imdb_id
+                    && meta
+                        .released
+                        .is_none()
+                {
+                    Some(Utc::now().naive_utc())
                 } else {
                     None
                 }
@@ -5394,6 +5451,7 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                 if let Some(ref imdb) = meta.imdb_id {
                     ids.imdb = NonEmptyString::try_new(imdb.clone()).ok();
                 }
+                ids.custom_stremio_type = custom_stremio_type(&meta.media_type);
                 ids
             },
             status,
@@ -5521,6 +5579,10 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                         grandparent_id: Some(media.id),
                         external_ids: ExternalIds {
                             series_custom_stremio_id: Some(custom_id.clone()),
+                            custom_stremio_type: media
+                                .external_ids
+                                .custom_stremio_type
+                                .clone(),
                             ..Default::default()
                         },
                         released_at: episodes
@@ -5556,6 +5618,14 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                         episode.idx = ep.episode;
                         episode.external_ids = ExternalIds {
                             series_custom_stremio_id: Some(custom_id.clone()),
+                            custom_stremio_type: media
+                                .external_ids
+                                .custom_stremio_type
+                                .clone(),
+                            custom_stremio_id: Some(
+                                ep.id
+                                    .clone(),
+                            ),
                             ..Default::default()
                         };
                         episode.parent_id = Some(season_id);
@@ -5630,6 +5700,10 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                         series_tmdb: media
                             .external_ids
                             .tmdb,
+                        custom_stremio_type: media
+                            .external_ids
+                            .custom_stremio_type
+                            .clone(),
                         ..Default::default()
                     },
                     parent_id: Some(media.id),
@@ -5670,6 +5744,14 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                         series_tmdb: media
                             .external_ids
                             .tmdb,
+                        custom_stremio_type: media
+                            .external_ids
+                            .custom_stremio_type
+                            .clone(),
+                        custom_stremio_id: Some(
+                            ep.id
+                                .clone(),
+                        ),
                         ..Default::default()
                     };
                     episode.grandparent_id = Some(media.id);
@@ -5746,6 +5828,9 @@ pub fn stremio_meta_seasons(
             let ext = ExternalIds {
                 series_imdb: Some(iid.clone()),
                 series_tmdb: series_external_ids.tmdb,
+                custom_stremio_type: series_external_ids
+                    .custom_stremio_type
+                    .clone(),
                 ..Default::default()
             };
             (id, ext)
@@ -5761,6 +5846,9 @@ pub fn stremio_meta_seasons(
             });
             let ext = ExternalIds {
                 series_custom_stremio_id: Some(cid.clone()),
+                custom_stremio_type: series_external_ids
+                    .custom_stremio_type
+                    .clone(),
                 ..Default::default()
             };
             (id, ext)
@@ -5840,6 +5928,17 @@ pub fn stremio_meta_season_episodes(
             episode.external_ids = ExternalIds {
                 series_imdb: Some(iid.clone()),
                 series_tmdb: series_external_ids.tmdb,
+                custom_stremio_type: series_external_ids
+                    .custom_stremio_type
+                    .clone(),
+                // The addon's own video id for this specific episode. Series-type
+                // addons conventionally set this to "{imdb}:{season}:{episode}",
+                // but that's a convention, not a guarantee — keep the literal
+                // value so stream lookups use exactly what the addon gave us.
+                custom_stremio_id: Some(
+                    ep.id
+                        .clone(),
+                ),
                 ..Default::default()
             };
         } else if let Some(ref cid) = custom_id {
@@ -5854,6 +5953,13 @@ pub fn stremio_meta_season_episodes(
             });
             episode.external_ids = ExternalIds {
                 series_custom_stremio_id: Some(cid.clone()),
+                custom_stremio_type: series_external_ids
+                    .custom_stremio_type
+                    .clone(),
+                custom_stremio_id: Some(
+                    ep.id
+                        .clone(),
+                ),
                 ..Default::default()
             };
         }
@@ -6370,6 +6476,161 @@ pub(crate) fn build_genre_relations_from_names(
 mod tests {
     use super::*;
     use crate::db::MediaIdRaw;
+
+    #[test]
+    fn custom_stremio_type_extracts_non_standard_type() {
+        assert_eq!(
+            custom_stremio_type(&sdks::stremio::MediaType::Unknown(
+                "anime".to_string()
+            )),
+            Some("anime".to_string())
+        );
+        assert_eq!(custom_stremio_type(&sdks::stremio::MediaType::Series), None);
+        assert_eq!(
+            custom_stremio_type(&sdks::stremio::MediaType::Unknown(
+                "episode".to_string()
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn stremio_media_type_prefers_custom_type_over_kind() {
+        let anime_ids = ExternalIds {
+            custom_stremio_type: Some("anime".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            anime_ids.stremio_media_type(&MediaKind::Series),
+            sdks::stremio::MediaType::Unknown("anime".to_string())
+        );
+
+        let standard_ids = ExternalIds::default();
+        assert_eq!(
+            standard_ids.stremio_media_type(&MediaKind::Series),
+            sdks::stremio::MediaType::Series
+        );
+    }
+
+    #[test]
+    fn stremio_meta_to_medias_propagates_custom_type_to_episodes() {
+        let json = r#"{
+            "id": "fk:27",
+            "type": "anime",
+            "name": "Bleach Yabai",
+            "videos": [
+                {"id": "fk:27:1:1", "season": 1, "episode": 1, "title": "Ep 1"},
+                {"id": "fk:27:1:2", "season": 1, "episode": 2, "title": "Ep 2"}
+            ]
+        }"#;
+        let meta: sdks::stremio::Meta = serde_json::from_str(json).unwrap();
+        let medias = stremio_meta_to_medias(meta).unwrap();
+
+        let series = medias
+            .iter()
+            .find(|m| m.kind == MediaKind::Series)
+            .expect("series media");
+        assert_eq!(
+            series
+                .external_ids
+                .custom_stremio_type,
+            Some("anime".to_string())
+        );
+
+        let season = medias
+            .iter()
+            .find(|m| m.kind == MediaKind::Season)
+            .expect("season media");
+        assert_eq!(
+            season
+                .external_ids
+                .custom_stremio_type,
+            Some("anime".to_string())
+        );
+
+        let episode = medias
+            .iter()
+            .find(|m| m.kind == MediaKind::Episode)
+            .expect("episode media");
+        assert_eq!(
+            episode
+                .external_ids
+                .custom_stremio_type,
+            Some("anime".to_string())
+        );
+    }
+
+    #[test]
+    fn stremio_meta_to_medias_captures_episode_video_id() {
+        let json = r#"{
+            "id": "fk:27",
+            "type": "anime",
+            "name": "Bleach Yabai",
+            "videos": [
+                {"id": "fk:27:1:1", "season": 1, "episode": 1, "title": "Ep 1"}
+            ]
+        }"#;
+        let meta: sdks::stremio::Meta = serde_json::from_str(json).unwrap();
+        let medias = stremio_meta_to_medias(meta).unwrap();
+
+        let episode = medias
+            .iter()
+            .find(|m| m.kind == MediaKind::Episode)
+            .expect("episode media");
+        assert_eq!(
+            episode
+                .external_ids
+                .custom_stremio_id,
+            Some("fk:27:1:1".to_string())
+        );
+    }
+
+    #[test]
+    fn custom_id_meta_with_no_dates_stamps_digital_released_at_now() {
+        let json = r#"{
+            "id": "fk:27",
+            "type": "anime",
+            "name": "Bleach Yabai"
+        }"#;
+        let meta: sdks::stremio::Meta = serde_json::from_str(json).unwrap();
+        let before = chrono::Utc::now().naive_utc();
+        let media: Media = meta
+            .try_into()
+            .unwrap();
+        let after = chrono::Utc::now().naive_utc();
+
+        let stamped = media
+            .digital_released_at
+            .expect(
+                "no-IMDB item with no dates must get a stamped digital_released_at",
+            );
+        assert!(
+            stamped >= before && stamped <= after,
+            "expected digital_released_at to be stamped to now; got {:?} (window {:?}..{:?})",
+            stamped,
+            before,
+            after
+        );
+    }
+
+    #[test]
+    fn imdb_meta_with_no_dates_leaves_digital_released_at_unset() {
+        let json = r#"{
+            "id": "tt9990010",
+            "type": "movie",
+            "name": "Some Movie"
+        }"#;
+        let meta: sdks::stremio::Meta = serde_json::from_str(json).unwrap();
+        let media: Media = meta
+            .try_into()
+            .unwrap();
+
+        assert_eq!(
+            media.digital_released_at, None,
+            "items with a resolvable IMDB ID must not get a stamped date — \
+             their date can still be resolved externally (e.g. via TMDB)"
+        );
+    }
 
     #[test]
     fn stale_episode_id_recomputes_to_canonical_and_validates() {
