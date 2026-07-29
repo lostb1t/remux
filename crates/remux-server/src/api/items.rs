@@ -1,4 +1,4 @@
-use crate::services::{MediaResolveService, image::ImageService};
+use crate::services::{MediaResolveService, StreamService, image::ImageService};
 use anyhow::Context;
 use axum::{
     Json,
@@ -1543,13 +1543,18 @@ pub async fn item(
         .unwrap_or(true);
     let resolved_id = match MediaResolveService::resolve_item(id, &state.ctx).await? {
         Some(m) if m.kind == db::MediaKind::StreamGroup => {
-            // A StreamGroup UUID is a client-facing source ID, not a browsable item.
-            // Redirect to the parent movie/episode so clients like Android TV land on
-            // the actual content item instead of a bare StreamGroup record.
-            match m.parent_id {
-                Some(pid) => pid,
-                None => return Ok(None),
-            }
+            // Stream groups have no parent_id on the row (they're global). Look up the
+            // group→item mapping written by the items pipeline and PlaybackInfo.
+            StreamService::get_group_item(
+                &state
+                    .ctx
+                    .store,
+                session
+                    .user
+                    .id,
+                m.id,
+            )
+            .context_not_found("stream group not yet associated with an item")?
         }
         Some(m) => m.id,
         None => return Ok(None),
@@ -1640,6 +1645,20 @@ pub async fn item(
         } else {
             grouped
         };
+        for source in &filtered {
+            if let Some(gid) = source.group_id {
+                StreamService::save_group_item(
+                    &state
+                        .ctx
+                        .store,
+                    session
+                        .user
+                        .id,
+                    gid,
+                    media.id,
+                );
+            }
+        }
         media.sources = Some(filtered);
         media
             .user_state(
@@ -1670,6 +1689,20 @@ pub async fn item(
         } else {
             grouped
         };
+        for source in &filtered {
+            if let Some(gid) = source.group_id {
+                StreamService::save_group_item(
+                    &state
+                        .ctx
+                        .store,
+                    session
+                        .user
+                        .id,
+                    gid,
+                    media.id,
+                );
+            }
+        }
         media.sources = Some(filtered);
         media
             .user_state(
@@ -1845,7 +1878,8 @@ pub async fn items_get(
             q.fields
                 .as_deref(),
         )
-        .await?,
+        .await?
+        .context_not_found("item not found")?,
     )
     .into_response());
 }

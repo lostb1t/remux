@@ -993,8 +993,7 @@ fn user_scoped(runtime: &AddonRuntime, override_ids: Option<&[Uuid]>) -> bool {
 fn recognized_manifest_media_kind(
     t: sdks::stremio::MediaType,
 ) -> Option<sdks::remux::MediaKind> {
-    use sdks::remux::MediaKind as MK;
-    use sdks::stremio::MediaType as MT;
+    use sdks::{remux::MediaKind as MK, stremio::MediaType as MT};
     Some(match t {
         MT::Movie => MK::Movie,
         MT::Series => MK::Series,

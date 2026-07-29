@@ -75,6 +75,20 @@ impl StreamService {
     /// before any of the selection or ID-mapping methods.
     pub async fn load(&mut self, media: db::Media) -> anyhow::Result<()> {
         if media.kind == db::MediaKind::StreamGroup {
+            if let Ok(Some(mut parent)) = db::Media::get_by_id(
+                &self
+                    .ctx
+                    .db,
+                &self.item_id,
+            )
+            .await
+            {
+                self.ctx
+                    .addons
+                    .refresh_streams(&mut parent, &self.ctx, self.user_id)
+                    .await
+                    .inspect_err(|e| tracing::error!("refresh_streams failed: {e:#}"));
+            }
             self.resolve_stream_group(media)
                 .await?;
             return Ok(());
@@ -564,14 +578,13 @@ impl StreamService {
     }
 
     /// Persist the resolved stream UUID in the device-preference store (24 h TTL).
+    /// Also records the group→item association so /Items/{group_uuid} can redirect
+    /// to the correct content item without a DB scan.
     /// No-op when this was not a group request.
     pub fn save_preference(&self, device_key: &str) {
-        if self
-            .group
-            .is_none()
-        {
+        let Some((gid, _, _)) = &self.group else {
             return;
-        }
+        };
         self.ctx
             .store
             .save(
@@ -580,6 +593,46 @@ impl StreamService {
                     .id,
                 std::time::Duration::from_secs(24 * 3600),
             );
+        if let Some(uid) = self.user_id {
+            Self::save_group_item(
+                &self
+                    .ctx
+                    .store,
+                uid,
+                *gid,
+                self.item_id,
+            );
+        }
+    }
+
+    /// Record that `group_id` (a stream group UUID) belongs to `item_id` for the given user.
+    ///
+    /// Keyed per-user to avoid collisions when the same global group appears across multiple
+    /// media items. Used by `/Items/{group_uuid}` to redirect back to the owning content item.
+    /// TTL is 7 days — long enough to survive normal browsing sessions.
+    pub fn save_group_item(
+        store: &remux_utils::Store,
+        user_id: Uuid,
+        group_id: Uuid,
+        item_id: Uuid,
+    ) {
+        store.save(
+            format!("gitem:{}:{}", user_id, group_id),
+            item_id,
+            std::time::Duration::from_secs(7 * 24 * 3600),
+        );
+    }
+
+    /// Look up the content item that owns `group_id` for `user_id`.
+    ///
+    /// Returns `None` when the user has not yet browsed an item that carries this stream group,
+    /// or the mapping has expired. Callers should surface a 404 in that case.
+    pub fn get_group_item(
+        store: &remux_utils::Store,
+        user_id: Uuid,
+        group_id: Uuid,
+    ) -> Option<Uuid> {
+        store.get::<Uuid>(format!("gitem:{}:{}", user_id, group_id))
     }
 }
 

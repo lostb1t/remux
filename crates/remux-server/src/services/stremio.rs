@@ -1,4 +1,7 @@
-use crate::{sdks, sdks::CachedEndpoint, sdks::ClientError};
+use crate::{
+    sdks,
+    sdks::{CachedEndpoint, ClientError},
+};
 use anyhow::{Result, anyhow};
 use futures::{
     future,

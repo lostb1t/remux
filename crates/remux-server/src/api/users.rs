@@ -821,7 +821,8 @@ pub async fn users_items_get(
             q.fields
                 .as_deref(),
         )
-        .await?,
+        .await?
+        .context_not_found("item not found")?,
     )
     .into_response());
 }
