@@ -736,11 +736,37 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
                 )
             } else {
                 // CPU overlay path: non-QSV hardware or QSV+HDR (SW decode, CPU frames).
-                let main_scale_part = build_scale_filter(params)
-                    .map(|s| format!("{s}"))
-                    .unwrap_or_default();
                 let overlay = "overlay=eof_action=pass:repeatlast=0";
-                if main_scale_part.is_empty() {
+                let scale_part = build_scale_filter(params).unwrap_or_default();
+
+                // Apply the same HDR treatment as the non-burn_subtitle vf path so the
+                // encoded stream doesn't carry HDR colour metadata on SDR-range pixels.
+                let main_video_filters = if hdr && ffmpeg_video_codec != "copy" {
+                    if do_sw_tonemap {
+                        let algo = &params.tonemapping_algorithm;
+                        let desat = params.tonemapping_desat;
+                        let peak = params.tonemapping_peak;
+                        let tonemapx = format!(
+                            "tonemapx=tonemap={algo}:desat={desat:.1}:peak={peak:.1}:t=bt709:m=bt709:p=bt709:format=yuv420p"
+                        );
+                        if scale_part.is_empty() {
+                            tonemapx
+                        } else {
+                            format!("{scale_part},{tonemapx}")
+                        }
+                    } else {
+                        let setparams = "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,format=yuv420p";
+                        if scale_part.is_empty() {
+                            setparams.to_string()
+                        } else {
+                            format!("{scale_part},{setparams}")
+                        }
+                    }
+                } else {
+                    scale_part
+                };
+
+                if main_video_filters.is_empty() {
                     match &hw_suffix {
                         Some(suf) => format!(
                             "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0][sub]{overlay}[vraw];[vraw]{suf}[v]"
@@ -752,10 +778,10 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
                 } else {
                     match &hw_suffix {
                         Some(suf) => format!(
-                            "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0]{main_scale_part}[main];[main][sub]{overlay}[vraw];[vraw]{suf}[v]"
+                            "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0]{main_video_filters}[main];[main][sub]{overlay}[vraw];[vraw]{suf}[v]"
                         ),
                         None => format!(
-                            "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0]{main_scale_part}[main];[main][sub]{overlay}[v]"
+                            "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0]{main_video_filters}[main];[main][sub]{overlay}[v]"
                         ),
                     }
                 }
@@ -1548,20 +1574,54 @@ pub(crate) fn build_progressive_args(
             } else {
                 // CPU overlay path: non-QSV or QSV+HDR (SW decode → CPU frames).
                 let overlay = "overlay=eof_action=pass:repeatlast=0";
-                match (&scale_filter, &hw_suffix) {
-                    (Some(main_scale), Some(suf)) => format!(
-                        "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0]{main_scale}[main];[main][sub]{overlay}[vraw];[vraw]{suf}[v]"
-                    ),
-                    (Some(main_scale), None) => format!(
-                        "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0]{main_scale}[main];[main][sub]{overlay}[v]"
-                    ),
-                    (None, Some(suf)) => format!(
-                        "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0][sub]{overlay}[vraw];[vraw]{suf}[v]"
-                    ),
-                    (None, None) => {
-                        format!(
+                let base_scale = scale_filter
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_string();
+
+                // Apply the same HDR treatment as the non-burn_subtitle vf path.
+                let main_video_filters = if hdr && ffmpeg_video_codec != "copy" {
+                    if do_sw_tonemap {
+                        let algo = &params.tonemapping_algorithm;
+                        let desat = params.tonemapping_desat;
+                        let peak = params.tonemapping_peak;
+                        let tonemapx = format!(
+                            "tonemapx=tonemap={algo}:desat={desat:.1}:peak={peak:.1}:t=bt709:m=bt709:p=bt709:format=yuv420p"
+                        );
+                        if base_scale.is_empty() {
+                            tonemapx
+                        } else {
+                            format!("{base_scale},{tonemapx}")
+                        }
+                    } else {
+                        let setparams = "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,format=yuv420p";
+                        if base_scale.is_empty() {
+                            setparams.to_string()
+                        } else {
+                            format!("{base_scale},{setparams}")
+                        }
+                    }
+                } else {
+                    base_scale
+                };
+
+                if main_video_filters.is_empty() {
+                    match &hw_suffix {
+                        Some(suf) => format!(
+                            "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0][sub]{overlay}[vraw];[vraw]{suf}[v]"
+                        ),
+                        None => format!(
                             "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0][sub]{overlay}[v]"
-                        )
+                        ),
+                    }
+                } else {
+                    match &hw_suffix {
+                        Some(suf) => format!(
+                            "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0]{main_video_filters}[main];[main][sub]{overlay}[vraw];[vraw]{suf}[v]"
+                        ),
+                        None => format!(
+                            "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0]{main_video_filters}[main];[main][sub]{overlay}[v]"
+                        ),
                     }
                 }
             };
