@@ -361,13 +361,20 @@ impl PlaybackSessionManager {
         });
 
         // Update transcode buffer monitor with actual playback position.
+        // Take the max so a late-arriving or stale progress report never regresses
+        // a position already advanced by segment download tracking.
         if let Some(position_ticks) = data.position_ticks {
             if let Some(ref ts_lock) = ps.transcode {
                 if let Ok(ts) = ts_lock.try_read() {
                     let position_secs = (position_ticks / 10_000_000) as u32;
                     let offset = position_secs.saturating_sub(ts.start_time_secs);
-                    ts.playback_offset_secs
-                        .store(offset, std::sync::atomic::Ordering::Relaxed);
+                    let current = ts
+                        .playback_offset_secs
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    if offset > current {
+                        ts.playback_offset_secs
+                            .store(offset, std::sync::atomic::Ordering::Relaxed);
+                    }
                 }
             }
         }
