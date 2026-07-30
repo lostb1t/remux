@@ -1228,8 +1228,24 @@ pub async fn start_transcode(
                                 stderr = %stderr_str,
                                 "live stream ffmpeg exited unexpectedly, restarting"
                             );
+                            // Re-arm kill_tx with a sleep-abort channel so kill_transcode
+                            // can interrupt the delay and the task doesn't become orphaned.
+                            let (sleep_kill_tx, sleep_kill_rx) =
+                                tokio::sync::oneshot::channel::<()>();
+                            s.kill_tx = Some(sleep_kill_tx);
                             drop(s);
-                            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                            let killed = tokio::select! {
+                                _ = sleep_kill_rx => true,
+                                _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => false,
+                            };
+                            if killed {
+                                session_clone
+                                    .write()
+                                    .await
+                                    .wait_done
+                                    .notify_one();
+                                break;
+                            }
                             continue;
                         } else {
                             let err_msg = format!(

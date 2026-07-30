@@ -761,11 +761,16 @@ impl PlaybackSessionManager {
     }
 
     /// Spawn a background task that reaps sessions idle longer than `max_age`.
+    ///
+    /// Paused sessions use the full `max_age` — the user may come back.
+    /// Unpaused sessions that go silent for 60 s are treated as dead: an active
+    /// client pings the server on every segment fetch, so silence means gone.
     pub fn spawn_cleanup_task(
         self,
         interval: Duration,
         max_age: Duration,
     ) -> JoinHandle<()> {
+        const UNPAUSED_MAX_AGE: Duration = Duration::from_secs(60);
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             loop {
@@ -774,13 +779,16 @@ impl PlaybackSessionManager {
                     .await;
                 let cutoff = Utc::now()
                     - chrono::Duration::from_std(max_age).unwrap_or_default();
+                let unpaused_cutoff = Utc::now()
+                    - chrono::Duration::from_std(UNPAUSED_MAX_AGE).unwrap_or_default();
                 let stale: Vec<String> = self
                     .sessions
                     .iter()
                     .filter(|e| {
-                        e.value()
-                            .last_activity
-                            < cutoff
+                        let s = e.value();
+                        let threshold =
+                            if s.is_paused { cutoff } else { unpaused_cutoff };
+                        s.last_activity < threshold
                     })
                     .map(|e| {
                         e.key()
