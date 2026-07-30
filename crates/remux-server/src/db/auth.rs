@@ -58,9 +58,9 @@ impl Device {
         sqlx::query(
             r#"
             INSERT INTO devices
-                (user_id, access_token, id, name, app_name, app_version)
+                (user_id, access_token, id, name, app_name, app_version, created_at)
             VALUES
-                (?, ?, ?, ?, ?, ?)
+                (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id, user_id) DO UPDATE SET
                 name = excluded.name,
                 access_token = excluded.access_token,
@@ -74,6 +74,7 @@ impl Device {
         .bind(&self.name)
         .bind(&self.app_name)
         .bind(&self.app_version)
+        .bind(Utc::now())
         .execute(db)
         .await?;
 
