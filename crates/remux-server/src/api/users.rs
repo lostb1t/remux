@@ -1636,6 +1636,68 @@ mod e2e_tests {
         );
     }
 
+    /// A previously fully-watched item (play_count > 0) that is being re-watched
+    /// mid-stream must appear in Continue Watching.
+    #[tokio::test]
+    async fn resume_includes_rewatched_items() {
+        let (server, ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        let media = insert_test_source(&ctx.0).await;
+
+        let user = db::User::get_by_username(
+            &ctx.0
+                .db,
+            "test",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        // Simulate a re-watch: play_count=1 (fully watched before),
+        // playback_position=120 (stopped mid-stream this time).
+        sqlx::query(
+            "INSERT INTO user_media_state \
+             (user_id, media_id, play_count, playback_position, last_played_at) \
+             VALUES (?, ?, 1, 120, '2026-01-01T12:00:00Z')",
+        )
+        .bind(user.id)
+        .bind(media.id)
+        .execute(
+            &ctx.0
+                .db,
+        )
+        .await
+        .unwrap();
+
+        let resp = server
+            .get("/users/me/items/resume")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let items = body["Items"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            items.len(),
+            1,
+            "re-watched item with playback_position > 0 must appear in Continue Watching"
+        );
+        assert_eq!(
+            items[0]["Id"]
+                .as_str()
+                .unwrap(),
+            media
+                .id
+                .to_string(),
+        );
+    }
+
     /// Marking a season as played must not mark unreleased episodes when the
     /// release-date filter is enabled.
     #[tokio::test]

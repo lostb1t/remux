@@ -2626,7 +2626,7 @@ impl Media {
                          WHERE user_id = ",
                         );
                         pre_qb.push_bind(user_id);
-                        pre_qb.push(" AND playback_position > 0 AND play_count = 0");
+                        pre_qb.push(" AND playback_position > 0");
                         let needs_media_filter = filter
                             .kind
                             .as_ref()
