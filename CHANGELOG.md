@@ -1,3 +1,23 @@
+# [0.19.0](https://github.com/lostb1t/remux/compare/v0.18.1...v0.19.0) (2026-07-31)
+
+
+### Bug Fixes
+
+* **addons:** surface clear errors when addon manifest is unreachable or 404 ([8328499](https://github.com/lostb1t/remux/commit/8328499c0c1e4393aad6d70e2f351fd191d33de7))
+* **quickconnect:** respect userId param in authorize endpoint ([d8ea13b](https://github.com/lostb1t/remux/commit/d8ea13b1969a24fd0b7fb5ae0cb554dba31aeac7))
+* **resume:** re-watched items missing from continue watching, closes [#150](https://github.com/lostb1t/remux/issues/150) ([c1260c4](https://github.com/lostb1t/remux/commit/c1260c45cedbcf1d20e6f559eb0a4262f454dbe8))
+* **stream_groups:** resolve group UUIDs to items via per-user store mapping ([29340d6](https://github.com/lostb1t/remux/commit/29340d6bbcafc76846a856980bbacb07b78e4817))
+* stremio custom type anime catalogs ([#137](https://github.com/lostb1t/remux/issues/137)) ([7b77b55](https://github.com/lostb1t/remux/commit/7b77b55df782b5fbd74c875a97870d2ddd1e6f0e))
+* **tests:** add missing TranscodeSession fields in engine test fixture ([77cb477](https://github.com/lostb1t/remux/commit/77cb4773e52d748c46e929f2f142413c09144b6d))
+* **transcode:** apply HDR colour treatment in CPU overlay subtitle filter_complex ([4014f6e](https://github.com/lostb1t/remux/commit/4014f6e65b968ccd515509c9e70b00c799ed70c5))
+* **transcode:** use overlay_qsv for QSV subtitle burn-in instead of SW decode ([691a2cc](https://github.com/lostb1t/remux/commit/691a2cc2e82c200c38c6092a4d58f9b4f88cb5fe))
+
+
+### Features
+
+* **admin:** restrict dashboard access to admin users only, closes [#152](https://github.com/lostb1t/remux/issues/152) ([9eb06f3](https://github.com/lostb1t/remux/commit/9eb06f350b4fa73479123f1a4f2d4f84f18529ee))
+* **sessions:** expose bitrate, framerate, and hw accel in TranscodingInfo, closes [#153](https://github.com/lostb1t/remux/issues/153) ([e2cbd44](https://github.com/lostb1t/remux/commit/e2cbd4414a3bfee8c62bf0da02acf3d2af9e618f))
+
 ## [0.18.1](https://github.com/lostb1t/remux/compare/v0.18.0...v0.18.1) (2026-07-27)
 
 
