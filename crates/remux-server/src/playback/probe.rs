@@ -986,10 +986,10 @@ where
 
         match probe_result {
             Ok(Ok(Ok((mut probed, segments)))) => {
-                // Reject streams whose probed duration is suspiciously short
-                // relative to the known metadata runtime (or absolutely < 3 min
-                // when unknown) — these are typically error/copyright-strike
-                // placeholder videos, not real content.
+                // When probed duration is suspiciously short relative to the
+                // known metadata runtime, ffprobe likely didn't read enough of
+                // the container (common with MKV over HTTP). If we have a known
+                // runtime, override with that; otherwise reject.
                 if let Some(probed_ticks) = probed.run_time_ticks {
                     let max_threshold = 5_i64
                         .to_ticks(TickUnit::Minutes)
@@ -1004,15 +1004,27 @@ where
                             .unwrap_or(0),
                     };
                     if probed_ticks < threshold_ticks {
-                        warn!(
-                            id = %stream.id,
-                            url = %url,
-                            probed_ticks,
-                            threshold_ticks,
-                            known_runtime_secs = ?stream.runtime,
-                            "stream is suspiciously short, treating as probe failure"
-                        );
-                        continue;
+                        if let Some(known_ticks) = stream
+                            .runtime
+                            .and_then(|s| s.to_ticks(TickUnit::Seconds))
+                        {
+                            warn!(
+                                id = %stream.id,
+                                probed_ticks,
+                                known_runtime_secs = ?stream.runtime,
+                                "probed duration too short, using known runtime"
+                            );
+                            probed.run_time_ticks = Some(known_ticks);
+                        } else {
+                            warn!(
+                                id = %stream.id,
+                                url = %url,
+                                probed_ticks,
+                                threshold_ticks,
+                                "stream is suspiciously short, treating as probe failure"
+                            );
+                            continue;
+                        }
                     }
                 }
 
