@@ -2564,6 +2564,8 @@ mod tests {
             source_video_width: None,
             source_video_height: None,
             source_frame_rate: None,
+            video_bitrate: None,
+            hardware_acceleration_type: None,
         };
 
         let playlist = generate_variant_playlist(&session, "");
