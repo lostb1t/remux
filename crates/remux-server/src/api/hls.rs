@@ -13,6 +13,8 @@ use tokio_util::io::ReaderStream;
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
+use remux_sdks::remux::HardwareAccelerationType;
+
 use crate::{
     AppState, IntoApiError, OptionExt, ResultExt, api, common,
     common::{TickUnit, ToRunTimeTicks},
@@ -347,6 +349,32 @@ async fn create_hls_session(
         });
         let burn_subtitle =
             q.subtitle_method == Some(api::SubtitleDeliveryMethod::Encode);
+        let session_video_bitrate = if video_codec == "copy" {
+            None
+        } else {
+            source_video_stream
+                .as_ref()
+                .and_then(|s| s.bit_rate)
+                .map(|b| {
+                    let source = b as u32;
+                    let target = q
+                        .video_bit_rate
+                        .map_or(source, |v| source.min(v as u32));
+                    q.max_streaming_bitrate
+                        .map_or(target, |c| target.min(c as u32))
+                })
+        };
+        let session_hw_accel = if video_codec == "copy" {
+            None
+        } else {
+            match encoding_opts_hls
+                .hardware_acceleration_type
+                .unwrap_or_default()
+            {
+                HardwareAccelerationType::None => None,
+                hw => Some(hw.to_string()),
+            }
+        };
         let session = TranscodeSession::new(
             play_session_id.clone(),
             id,
@@ -377,6 +405,8 @@ async fn create_hls_session(
             source_video_width,
             source_video_height,
             source_frame_rate,
+            session_video_bitrate,
+            session_hw_accel,
         );
 
         state

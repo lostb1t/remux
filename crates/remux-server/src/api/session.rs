@@ -537,17 +537,29 @@ pub(crate) async fn build_session_list(
                         .clone()
                 };
 
+                let is_video_direct = ts.video_codec == "copy";
+                let container = if ts.use_fmp4() { "fmp4" } else { "ts" };
+                let bitrate = if is_video_direct {
+                    probe_data.and_then(|p| p.bitrate)
+                } else {
+                    ts.video_bitrate
+                        .map(|b| b as i64)
+                };
                 api::TranscodingInfo {
                     audio_codec: Some(audio_codec_name),
                     video_codec: Some(video_codec_name),
-                    container: Some("ts".to_string()),
-                    is_video_direct: ts.video_codec == "copy",
+                    container: Some(container.to_string()),
+                    is_video_direct,
                     is_audio_direct: ts.audio_codec == "copy",
-                    bitrate: probe_data.and_then(|p| p.bitrate),
+                    bitrate,
+                    framerate: ts.source_frame_rate,
                     width,
                     height,
                     audio_channels,
                     completion_percentage,
+                    hardware_acceleration_type: ts
+                        .hardware_acceleration_type
+                        .clone(),
                     transcode_reasons: ts
                         .transcode_reasons
                         .clone(),

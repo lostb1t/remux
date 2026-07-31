@@ -989,6 +989,11 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                     .as_deref()
             })
             .map(|p| format!("{}.strm", p));
+        item.bitrate = item
+            .media_sources
+            .as_ref()
+            .and_then(|s| s.first())
+            .and_then(|s| s.bitrate);
         if media.kind != db::MediaKind::Track {
             item.video_type = Some(VideoType::VideoFile);
         }

@@ -63,6 +63,10 @@ pub struct TranscodeSession {
     pub source_video_height: Option<i64>,
     /// Source video frame rate (fps), used for FRAME-RATE in master playlist.
     pub source_frame_rate: Option<f32>,
+    /// Target output video bitrate in bps (None for direct-copy or unknown).
+    pub video_bitrate: Option<u32>,
+    /// Hardware acceleration type used for this transcode, e.g. "VAAPI", "QSV".
+    pub hardware_acceleration_type: Option<String>,
 }
 
 impl TranscodeSession {
@@ -89,6 +93,8 @@ impl TranscodeSession {
         source_video_width: Option<i64>,
         source_video_height: Option<i64>,
         source_frame_rate: Option<f32>,
+        video_bitrate: Option<u32>,
+        hardware_acceleration_type: Option<String>,
     ) -> Arc<tokio::sync::RwLock<Self>> {
         let _ = std::fs::create_dir_all(&output_dir);
         let (state_tx, _) = watch::channel(TranscodeState::Starting);
@@ -123,6 +129,8 @@ impl TranscodeSession {
             source_video_width,
             source_video_height,
             source_frame_rate,
+            video_bitrate,
+            hardware_acceleration_type,
         }))
     }
 

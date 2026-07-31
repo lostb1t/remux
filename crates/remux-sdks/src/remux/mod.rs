@@ -495,18 +495,37 @@ pub struct ServerConfiguration {
     pub remuxdb_token: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    Default,
+    strum_macros::Display,
+    strum_macros::EnumString,
+)]
 #[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
 pub enum HardwareAccelerationType {
     /// Software encoding only.
     #[default]
     None,
+    #[strum(to_string = "VAAPI")]
     Vaapi,
+    #[strum(to_string = "NVENC")]
     Nvenc,
+    #[strum(to_string = "QSV")]
     Qsv,
+    #[strum(to_string = "AMF")]
     Amf,
+    #[strum(to_string = "VideoToolbox")]
     VideoToolbox,
+    #[strum(to_string = "V4L2M2M")]
     V4l2m2m,
+    #[strum(to_string = "RKMPP")]
     Rkmpp,
 }
 
@@ -3039,6 +3058,7 @@ pub struct BaseItemDto {
     pub preferred_metadata_country_code: Option<String>,
     pub supports_sync: Option<bool>,
     pub container: Option<String>,
+    pub bitrate: Option<i64>,
     pub sort_name: Option<String>,
     pub forced_sort_name: Option<String>,
     pub video_3d_format: Option<String>,
