@@ -18,6 +18,8 @@ pub struct StoredServer {
     pub manual_address: String,
     pub access_token: String,
     pub user_id: String,
+    #[serde(default)]
+    pub is_admin: bool,
     pub date_last_accessed: f64,
 }
 

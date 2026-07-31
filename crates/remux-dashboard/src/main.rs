@@ -168,6 +168,14 @@ fn Login(on_login: EventHandler) -> Element {
                     if let (Some(token), Some(user)) =
                         (result.access_token, result.user)
                     {
+                        if !user
+                            .policy
+                            .is_administrator
+                        {
+                            error.set(Some("Admin access required.".into()));
+                            loading.set(false);
+                            return;
+                        }
                         store_credentials(StoredServer {
                             id: result.server_id,
                             name: "Remux".to_string(),
@@ -176,6 +184,7 @@ fn Login(on_login: EventHandler) -> Element {
                             user_id: user
                                 .id
                                 .to_string(),
+                            is_admin: true,
                             date_last_accessed: 0.0,
                         });
                         on_login.call(());
