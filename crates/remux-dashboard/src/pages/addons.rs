@@ -497,17 +497,6 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                         oninput: move |e| edit_name_input.set(e.value()),
                                     }
                                 }
-                                div { class: "form-group",
-                                    label { class: "check-row",
-                                        input {
-                                            r#type: "checkbox",
-                                            checked: *edit_is_default.read(),
-                                            onchange: move |e| edit_is_default.set(e.checked()),
-                                        }
-                                        "Default"
-                                    }
-                                    span { class: "field-hint", "Included in the default set for users without a per-user override." }
-                                }
                                 if let Some(meta) = &edit_kind_meta {
                                     for opt in meta.options.iter().cloned() {
                                         AddonOptionField {

@@ -260,14 +260,13 @@ pub async fn create_addon(
         .as_deref();
 
     let metadata = preset.metadata();
-    let avail_info =
-        if let Some(k) = kind_ref {
-            k.available_info().await.context_bad_request(
-            "Could not fetch addon capabilities — is the manifest URL reachable?",
-        )?
-        } else {
-            None
-        };
+    let avail_info = if let Some(k) = kind_ref {
+        k.available_info()
+            .await
+            .context_not_reachable()?
+    } else {
+        None
+    };
 
     let resources: Vec<remux_sdks::stremio::ResourceType> = if payload
         .resources
@@ -572,7 +571,7 @@ pub async fn get_addon_catalogs(
     let resolved = runtime
         .resolve_catalogs(&state.ctx)
         .await
-        .context_internal("Failed to list addon catalogs")?;
+        .context_not_reachable()?;
 
     let result = resolved
         .into_iter()
