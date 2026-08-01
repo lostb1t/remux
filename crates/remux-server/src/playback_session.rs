@@ -407,7 +407,7 @@ impl PlaybackSessionManager {
                 position_ticks,
                 audio_idx,
                 subtitle_idx,
-                None, // no watched-threshold check on progress
+                media.runtime,
             )
             .await?;
         }

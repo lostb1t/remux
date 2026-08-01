@@ -597,7 +597,6 @@ impl UserMediaState {
                 media
                     .mark_played(db, user, true, server_config.release_date_threshold())
                     .await?;
-                // Reset playback position now that the item is fully watched.
                 sqlx::query(
                     "UPDATE user_media_state SET playback_position = 0 \
                      WHERE user_id = ? AND media_id = ?",
