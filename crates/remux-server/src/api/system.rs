@@ -63,6 +63,12 @@ pub async fn system_ping(State(state): State<AppState>) -> Result<impl IntoRespo
     Ok(Json(json!("Remux Server")))
 }
 
+/// Healthcheck endpoint for orchestrators (e.g. docker compose)
+#[get("/health")]
+pub async fn health() -> &'static str {
+    "ok"
+}
+
 #[get("/web/manifest.json")]
 pub async fn web_manifest() -> impl IntoResponse {
     Json(json!({
