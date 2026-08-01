@@ -191,12 +191,14 @@ impl StreamService {
         item_id: Uuid,
         requested_id: Option<Uuid>,
         device_key: Option<&str>,
+        user_id: Option<Uuid>,
     ) -> anyhow::Result<db::Media> {
         let lookup_id = requested_id.unwrap_or(item_id);
         let media = db::Media::get_by_id(&ctx.db, &lookup_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("stream not found: {}", lookup_id))?;
-        Self::dispatch_lookup(ctx, item_id, requested_id, device_key, media).await
+        Self::dispatch_lookup(ctx, item_id, requested_id, device_key, user_id, media)
+            .await
     }
 
     async fn dispatch_lookup(
@@ -204,6 +206,7 @@ impl StreamService {
         item_id: Uuid,
         requested_id: Option<Uuid>,
         device_key: Option<&str>,
+        user_id: Option<Uuid>,
         media: db::Media,
     ) -> anyhow::Result<db::Media> {
         match media.kind {
@@ -226,6 +229,11 @@ impl StreamService {
             }
             db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track => {
                 let mut media = media;
+                let _ = ctx
+                    .addons
+                    .refresh_streams(&mut media, ctx, user_id)
+                    .await
+                    .inspect_err(|e| tracing::error!("refresh_streams failed: {e:#}"));
                 let sources = media
                     .streams(&ctx.db)
                     .await?;

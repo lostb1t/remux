@@ -263,6 +263,11 @@ pub async fn subtitles_stream(
             item_id,
             Some(media_source_id),
             None,
+            Some(
+                session
+                    .user
+                    .id,
+            ),
         )
         .await
         .ok();
@@ -384,6 +389,11 @@ pub async fn subtitles_stream(
         item_id,
         Some(media_source_id),
         None,
+        Some(
+            session
+                .user
+                .id,
+        ),
     )
     .await?;
 
