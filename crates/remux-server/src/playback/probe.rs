@@ -759,6 +759,41 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
         }
     }
 
+    // If the single video stream has no per-stream bitrate but all audio streams do,
+    // estimate video bitrate as container total minus summed audio bitrates (mirrors Jellyfin).
+    if let Some(total) = overall_bitrate {
+        let video_indices: Vec<usize> = streams
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                matches!(s.type_, Some(api::MediaStreamType::Video))
+                    && s.bit_rate
+                        .is_none()
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if video_indices.len() == 1 {
+            let audio_bitrates: Vec<Option<i64>> = streams
+                .iter()
+                .filter(|s| matches!(s.type_, Some(api::MediaStreamType::Audio)))
+                .map(|s| s.bit_rate)
+                .collect();
+            if audio_bitrates
+                .iter()
+                .all(|b| b.is_some())
+            {
+                let audio_sum: i64 = audio_bitrates
+                    .into_iter()
+                    .flatten()
+                    .sum();
+                let estimated = total - audio_sum;
+                if estimated > 0 {
+                    streams[video_indices[0]].bit_rate = Some(estimated);
+                }
+            }
+        }
+    }
+
     let default_audio_stream_index = streams
         .iter()
         .find(|s| matches!(s.type_, Some(api::MediaStreamType::Audio)))
