@@ -43,8 +43,12 @@ pub async fn connect(url: &str, slow_query_threshold_ms: u64) -> Result<SqlitePo
             log::LevelFilter::Warn,
             Duration::from_millis(slow_query_threshold_ms),
         );
+    // In-memory SQLite databases are per-connection; a pool with >1 connection
+    // gives each connection its own independent database, making inserts on one
+    // connection invisible to queries on another. Cap to 1 for :memory: URLs.
+    let max_conns = if url.contains(":memory:") { 1 } else { 5 };
     Ok(SqlitePoolOptions::new()
-        .max_connections(5)
+        .max_connections(max_conns)
         .connect_with(opts)
         .await?)
 }
