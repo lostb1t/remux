@@ -316,8 +316,9 @@ async fn shows_nextup_all(
         .next_up_date_cutoff
         .clone()
         .unwrap_or_else(|| "1970-01-01 00:00:00".to_string());
-    let active_series: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT m.grandparent_id \
+    let active_series: Vec<(Uuid, Option<chrono::NaiveDateTime>)> = sqlx::query_as(
+        "SELECT m.grandparent_id, \
+                MAX(COALESCE(active.last_played_at, active.played_at, '1970-01-01 00:00:00')) AS last_activity \
          FROM ( \
            SELECT media_id, last_played_at, played_at \
            FROM user_media_state WHERE user_id = ? AND play_count > 0 \
@@ -329,8 +330,8 @@ async fn shows_nextup_all(
          WHERE m.kind = 'episode' \
          AND m.grandparent_id IS NOT NULL \
          GROUP BY m.grandparent_id \
-         HAVING MAX(COALESCE(active.last_played_at, active.played_at, '1970-01-01 00:00:00')) >= ? \
-         ORDER BY MAX(COALESCE(active.last_played_at, active.played_at, '1970-01-01 00:00:00')) DESC \
+         HAVING last_activity >= ? \
+         ORDER BY last_activity DESC \
          LIMIT ?",
     )
     .bind(user_id)
@@ -344,10 +345,15 @@ async fn shows_nextup_all(
         return Ok(Json(api::BaseItemDtoQueryResult::default()).into_response());
     }
 
-    let series_ids: Vec<Uuid> = active_series
-        .into_iter()
-        .map(|(id,)| id)
-        .collect();
+    let mut series_ids: Vec<Uuid> = Vec::with_capacity(active_series.len());
+    let mut series_last_activity: HashMap<Uuid, chrono::NaiveDateTime> =
+        HashMap::with_capacity(active_series.len());
+    for (id, last_activity) in active_series {
+        series_ids.push(id);
+        if let Some(ts) = last_activity {
+            series_last_activity.insert(id, ts);
+        }
+    }
 
     let mut ep_qb =
         sqlx::QueryBuilder::new("SELECT * FROM media WHERE grandparent_id IN (");
@@ -445,6 +451,32 @@ async fn shows_nextup_all(
             next_eps.push(ep.clone());
         }
     }
+
+    // Re-sort: if next ep released more recently than the user's last watch,
+    // use the release date as the effective key so fresh episodes surface first.
+    let epoch = chrono::NaiveDateTime::parse_from_str(
+        "1970-01-01 00:00:00",
+        "%Y-%m-%d %H:%M:%S",
+    )
+    .unwrap();
+    next_eps.sort_by(|a, b| {
+        let key = |ep: &db::Media| {
+            let release = ep
+                .digital_released_at
+                .or(ep.released_at)
+                .unwrap_or(epoch);
+            let activity = ep
+                .grandparent_id
+                .and_then(|gid| {
+                    series_last_activity
+                        .get(&gid)
+                        .copied()
+                })
+                .unwrap_or(epoch);
+            release.max(activity)
+        };
+        key(b).cmp(&key(a))
+    });
 
     if next_eps.is_empty() {
         return Ok(Json(api::BaseItemDtoQueryResult::default()).into_response());
@@ -955,6 +987,122 @@ mod test {
         assert_eq!(
             active_series_ids(&db, user.id, Some("2026-06-18")).await,
             vec![legacy_series.id],
+        );
+    }
+
+    #[tokio::test]
+    async fn shows_nextup_new_episode_bubbles_to_top() {
+        // Series A: user watched finale 3 months ago; next ep released yesterday → should surface first.
+        // Series B: user watched last week; next ep has no release date → stays in normal position.
+        use crate::integration_test::{auth_header_with_token, authenticated_server};
+        use chrono::{Duration, Utc};
+        use http::header::HeaderValue;
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let now = Utc::now().naive_utc();
+
+        // Series A — finished 3 months ago, new ep released yesterday
+        let (series_a, mut eps_a) =
+            insert_series_with_episodes(db, "Series A Bubble", &["A Ep 1", "A Ep 2"])
+                .await;
+
+        // Series B — watched last week, no release date on next ep
+        let (series_b, eps_b) =
+            insert_series_with_episodes(db, "Series B Bubble", &["B Ep 1", "B Ep 2"])
+                .await;
+
+        let user: db::User = sqlx::query_as("SELECT * FROM users LIMIT 1")
+            .fetch_one(db)
+            .await
+            .unwrap();
+
+        // Mark A E1 played 3 months ago
+        insert_state(
+            db,
+            user.id,
+            eps_a[0].id,
+            1,
+            0,
+            Some(now - Duration::days(90)),
+            Some(now - Duration::days(90)),
+        )
+        .await;
+        // Set A E2 (next ep) digital_released_at to yesterday
+        eps_a[1].digital_released_at = Some(now - Duration::days(1));
+        eps_a[1]
+            .save(db)
+            .await
+            .unwrap();
+
+        // Mark B E1 played last week
+        insert_state(
+            db,
+            user.id,
+            eps_b[0].id,
+            1,
+            0,
+            Some(now - Duration::days(7)),
+            Some(now - Duration::days(7)),
+        )
+        .await;
+        // Clear release date on B E2 so effective key falls back to last_activity
+        let mut ep_b2 = eps_b[1].clone();
+        ep_b2.digital_released_at = None;
+        ep_b2.released_at = None;
+        ep_b2
+            .save(db)
+            .await
+            .unwrap();
+
+        let resp = server
+            .get("/shows/nextup")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let items = body["Items"]
+            .as_array()
+            .unwrap();
+
+        let id_strs: Vec<&str> = items
+            .iter()
+            .map(|i| {
+                i["Id"]
+                    .as_str()
+                    .unwrap()
+            })
+            .collect();
+
+        let ep_a2_str = eps_a[1]
+            .id
+            .to_string();
+        let ep_b2_str = ep_b2
+            .id
+            .to_string();
+
+        let pos_a = id_strs
+            .iter()
+            .position(|&s| s == ep_a2_str);
+        let pos_b = id_strs
+            .iter()
+            .position(|&s| s == ep_b2_str);
+
+        assert!(pos_a.is_some(), "Series A next ep missing from NextUp");
+        assert!(pos_b.is_some(), "Series B next ep missing from NextUp");
+        assert!(
+            pos_a < pos_b,
+            "Series A (new ep released yesterday) should appear before Series B (watched last week), \
+             got pos_a={pos_a:?} pos_b={pos_b:?}. series_a={}, series_b={}",
+            series_a.id,
+            series_b.id,
         );
     }
 
