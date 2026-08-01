@@ -989,8 +989,13 @@ where
                 // Reject streams whose probed duration is suspiciously short
                 // relative to the known metadata runtime (or absolutely < 3 min
                 // when unknown) — these are typically error/copyright-strike
-                // placeholder videos, not real content.
-                if let Some(probed_ticks) = probed.run_time_ticks {
+                // placeholder videos, not real content. Skip for audio-only
+                // streams since short songs are legitimate.
+                if probed
+                    .video_stream()
+                    .is_some()
+                    && let Some(probed_ticks) = probed.run_time_ticks
+                {
                     let max_threshold = 5_i64
                         .to_ticks(TickUnit::Minutes)
                         .unwrap_or(0);

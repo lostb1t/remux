@@ -548,10 +548,17 @@ impl StreamService {
             let remuxdb_enabled = probe_cfg
                 .remuxdb_enabled
                 .unwrap_or(true);
+            let is_remuxdb_kind = item
+                .as_ref()
+                .map_or(false, |it| {
+                    matches!(it.kind, db::MediaKind::Movie | db::MediaKind::Episode)
+                });
             if was_cached {
                 debug!(id = %effective_stream.id, "remuxdb: skipping (probe cache hit)");
             } else if !remuxdb_enabled {
                 debug!(id = %effective_stream.id, "remuxdb: skipping (disabled)");
+            } else if !is_remuxdb_kind {
+                debug!(id = %effective_stream.id, kind = ?item.as_ref().map(|it| &it.kind), "remuxdb: skipping (not movie/episode)");
             } else if let Some(url) = self
                 .ctx
                 .config
