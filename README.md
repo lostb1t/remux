@@ -12,13 +12,7 @@
 
 ---
 
-Stream content from Stremio add-ons, local files, or WebDAV sources all through your existing Jellyfin clients.
-
-Movies and shows come from Stremio add-ons or your own files. Music is handled separately through its own streaming pipeline.
-
-Use your existing Jellyfin clients as-is: browse, search, and play.
-
-Built in Rust for performance and low resource usage.
+Remux is a Jellyfin-compatible media server that brings Stremio add-ons, local files, and WebDAV sources together under one roof. Music streams from its own dedicated pipeline with support for remote sources. Use any Jellyfin client to browse, search, and play without any client changes. Written in Rust for low memory and fast startup.
 
 ---
 
@@ -27,22 +21,14 @@ Built in Rust for performance and low resource usage.
 - **Online sources or local files**  
   Stream from Stremio add-ons, a local path, or a WebDAV server
 
-- **Stremio-powered video**  
-  Movies and shows come from Stremio add-ons
-
 - **Independent music pipeline**  
   Music is not tied to Stremio and is streamed from separate sources
 
-- **IPTV Support**  
-
 - **Probe data for streams**  
-  Audio and subtitle track selection works out of the box for streamed content — no local file required. Track metadata is sourced from RemuxDB so clients see the same experience as local files.
+  Audio and subtitle track selection works out of the box for streamed content. Track metadata is sourced from [RemuxDB](https://remuxdb.1632022.xyz) so clients see the same experience as local files.
 
 - **Powerful library filtering**  
   Build libraries dynamically: filter by tags, catalogs, popularity, release year, and more. Exclude content per-user or scope libraries to specific audiences without duplicating sources.
-
-- **Dynamic libraries**  
-  Build collections based on filters instead of folders or scans
 
 - **User management**  
   Including user data import from jellyfin servers to get you started
@@ -55,6 +41,8 @@ Built in Rust for performance and low resource usage.
 
 - **No backend plugins**  
   Simpler architecture (Jellyfin web UI theming still works)
+
+- **IPTV Support**
 
 - **Local & WebDAV files**  
   Index and stream video, audio, or `.strm` files from a local path or WebDAV server
