@@ -54,10 +54,17 @@ Built in Rust for performance and low resource usage.
   Index and stream video, audio, or `.strm` files from a local path or WebDAV server
 
 
-## ⚠️ Status
+## Quick Start
 
-Remux is still in an early stage. Expect rough edges, missing features, and breaking changes.
-Run the image as follows
+### Desktop
+
+Download the latest release for your platform:
+
+- [macOS (Apple Silicon)](https://github.com/lostb1t/remux/releases/latest/download/remux-desktop-macos-aarch64.dmg)
+- [Linux (x86_64)](https://github.com/lostb1t/remux/releases/latest/download/remux-desktop-linux-x86_64.deb)
+- [Windows (x86_64)](https://github.com/lostb1t/remux/releases/latest/download/remux-desktop-windows-x86_64.zip)
+
+### Docker
 
 ```yml
 version: "3"
