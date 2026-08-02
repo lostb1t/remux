@@ -66,7 +66,7 @@ pub async fn system_ping(State(state): State<AppState>) -> Result<impl IntoRespo
 /// Healthcheck endpoint for orchestrators (e.g. docker compose)
 #[get("/health")]
 pub async fn health() -> &'static str {
-    "ok"
+    "Healthy"
 }
 
 #[get("/web/manifest.json")]

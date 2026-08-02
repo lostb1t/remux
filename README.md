@@ -70,16 +70,6 @@ services:
       /remux/data:/data
 ```
 
-A `/health` endpoint is available on port 3000 and returns `ok`, useful for a docker compose healthcheck:
-
-```yml
-healthcheck:
-  test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-  interval: 30s
-  timeout: 5s
-  retries: 3
-```
-
 ### Development
 
 Install cargo make
