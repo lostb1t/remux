@@ -117,9 +117,6 @@ jobs:
           cp artifacts/amd64/remux-server "remux-${VERSION}-linux-amd64"
           cp artifacts/arm64/remux-server "remux-${VERSION}-linux-arm64"
           chmod +x "remux-${VERSION}-linux-amd64" "remux-${VERSION}-linux-arm64"
-          mv remux-desktop-linux-x86_64.deb   "remux-desktop-${VERSION}-linux-x86_64.deb"
-          mv remux-desktop-macos-aarch64.dmg  "remux-desktop-${VERSION}-macos-aarch64.dmg"
-          mv remux-desktop-windows-x86_64.zip "remux-desktop-${VERSION}-windows-x86_64.zip"
 
       - name: Extract changelog for this release
         run: |
@@ -142,6 +139,6 @@ jobs:
             --notes-file release-notes.md \
             "remux-${VERSION}-linux-amd64" \
             "remux-${VERSION}-linux-arm64" \
-            "remux-desktop-${VERSION}-linux-x86_64.deb" \
-            "remux-desktop-${VERSION}-macos-aarch64.dmg" \
-            "remux-desktop-${VERSION}-windows-x86_64.zip"
+            "remux-desktop-linux-x86_64.deb" \
+            "remux-desktop-macos-aarch64.dmg" \
+            "remux-desktop-windows-x86_64.zip"
