@@ -1,3 +1,18 @@
+# [0.20.0](https://github.com/lostb1t/remux/compare/v0.19.0...v0.20.0) (2026-08-02)
+
+
+### Bug Fixes
+
+* **iptv:** filter resolved catalogs by media_kind in catalogs_for_kinds ([6bd41da](https://github.com/lostb1t/remux/commit/6bd41daac68fa27205dc656fffdb12ab7648c24a))
+* **probe:** skip short-duration check for audio-only streams; skip remuxdb for non-movie/episode kinds ([546c268](https://github.com/lostb1t/remux/commit/546c26836faa393bfc303173ea9af6fdb4ec1816))
+* **streams:** resolve addon streams on demand in stream/HLS path ([9fdbb03](https://github.com/lostb1t/remux/commit/9fdbb038e3d39669289a6407c42256bf2f433e56))
+
+
+### Features
+
+* add remux-desktop system tray app with cross-platform builds and runtime ffmpeg download ([#160](https://github.com/lostb1t/remux/issues/160)) ([8afeb6c](https://github.com/lostb1t/remux/commit/8afeb6c645796ad53431acbcc127957dbe901a5f))
+* re-sort Next Up by effective key to surface newly released episodes ([#134](https://github.com/lostb1t/remux/issues/134)) ([85b3491](https://github.com/lostb1t/remux/commit/85b3491459b28b3b4c9114dbec6045bbdc437520))
+
 # [0.19.0](https://github.com/lostb1t/remux/compare/v0.18.1...v0.19.0) (2026-07-31)
 
 
