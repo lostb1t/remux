@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::path::PathBuf;
+use tao::event_loop::{ControlFlow, EventLoop};
 use tray_icon::{
     TrayIconBuilder,
     menu::{Menu, MenuEvent, MenuItem},
@@ -61,7 +62,21 @@ fn main() -> Result<()> {
         });
     });
 
-    let open_item = MenuItem::new("Open Remux", true, None);
+    // Build event loop. On macOS set Accessory policy so the app has no Dock icon
+    // and doesn't appear in the Cmd+Tab switcher.
+    let event_loop = {
+        #[cfg(target_os = "macos")]
+        {
+            use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
+            let mut el = EventLoop::new();
+            el.set_activation_policy(ActivationPolicy::Accessory);
+            el
+        }
+        #[cfg(not(target_os = "macos"))]
+        EventLoop::new()
+    };
+
+    let open_item = MenuItem::new("Open", true, None);
     let quit_item = MenuItem::new("Quit", true, None);
     let open_id = open_item
         .id()
@@ -74,30 +89,30 @@ fn main() -> Result<()> {
     menu.append(&open_item)?;
     menu.append(&quit_item)?;
 
-    let icon = load_icon();
-
     let _tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("Remux")
-        .with_icon(icon)
+        .with_icon(load_icon())
         .build()?;
 
     tracing::info!("remux desktop started — tray icon active");
 
     let menu_channel = MenuEvent::receiver();
-    loop {
-        if let Ok(event) = menu_channel.try_recv() {
-            if event.id == open_id {
-                let url = server_url();
+    let url = server_url();
+
+    event_loop.run(move |_event, _, control_flow| {
+        *control_flow = ControlFlow::Wait;
+
+        if let Ok(ev) = menu_channel.try_recv() {
+            if ev.id == open_id {
                 tracing::info!("opening {url}");
                 let _ = open::that(&url);
-            } else if event.id == quit_id {
-                tracing::info!("quit requested");
-                std::process::exit(0);
+            } else if ev.id == quit_id {
+                tracing::info!("quit");
+                *control_flow = ControlFlow::Exit;
             }
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+    });
 }
 
 async fn serve(config: remux_server::Config) -> anyhow::Result<()> {
@@ -128,7 +143,13 @@ async fn serve(config: remux_server::Config) -> anyhow::Result<()> {
 }
 
 fn load_icon() -> tray_icon::Icon {
-    tray_icon::Icon::from_rgba(vec![0u8, 0, 0, 0], 1, 1).expect("valid icon")
+    let bytes = include_bytes!("../../../logo.png");
+    let img = image::load_from_memory(bytes)
+        .expect("valid icon")
+        .resize(32, 32, image::imageops::FilterType::Lanczos3)
+        .into_rgba8();
+    let (w, h) = img.dimensions();
+    tray_icon::Icon::from_rgba(img.into_raw(), w, h).expect("valid icon")
 }
 
 /// Detect jellyfin-ffmpeg binaries bundled next to the executable and set
