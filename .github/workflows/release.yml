@@ -15,12 +15,50 @@ jobs:
     name: Test
     uses: ./.github/workflows/test.yml
 
-  semantic-release:
-    name: Semantic Release
+  preview:
+    name: Preview release version
     needs: test
     runs-on: ubuntu-latest
     outputs:
       new_release_published: ${{ steps.release.outputs.new_release_published }}
+      new_release_version: ${{ steps.release.outputs.new_release_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Semantic Release (dry run)
+        id: release
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          dry_run: true
+          extra_plugins: |
+            semantic-release-cargo
+            @semantic-release/changelog
+            @semantic-release/git
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: "not-publishing-to-crates-io"
+
+  build:
+    name: Build
+    needs: preview
+    if: needs.preview.outputs.new_release_published == 'true'
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ needs.preview.outputs.new_release_version }}
+      cargo_version: ${{ needs.preview.outputs.new_release_version }}
+      docker_tags: >-
+        -t ghcr.io/lostb1t/remux:${{ needs.preview.outputs.new_release_version }}
+        -t ghcr.io/lostb1t/remux:latest
+    secrets: inherit
+
+  semantic-release:
+    name: Semantic Release
+    needs: [preview, build]
+    if: needs.preview.outputs.new_release_published == 'true'
+    runs-on: ubuntu-latest
+    outputs:
       new_release_version: ${{ steps.release.outputs.new_release_version }}
       new_release_git_tag: ${{ steps.release.outputs.new_release_git_tag }}
     steps:
@@ -43,24 +81,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: "not-publishing-to-crates-io"
 
-  build:
-    name: Build
-    needs: [semantic-release, test]
-    if: needs.semantic-release.outputs.new_release_published == 'true'
-    uses: ./.github/workflows/build.yml
-    with:
-      version: ${{ needs.semantic-release.outputs.new_release_version }}
-      cargo_version: ${{ needs.semantic-release.outputs.new_release_version }}
-      docker_tags: >-
-        -t ghcr.io/lostb1t/remux:${{ needs.semantic-release.outputs.new_release_version }}
-        -t ghcr.io/lostb1t/remux:latest
-      ref: ${{ needs.semantic-release.outputs.new_release_git_tag }}
-    secrets: inherit
-
   publish-release:
     name: Publish release
-    needs: [semantic-release, build]
-    if: needs.semantic-release.outputs.new_release_published == 'true'
+    needs: [preview, semantic-release]
+    if: needs.preview.outputs.new_release_published == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Download server binary (amd64)
@@ -75,6 +99,12 @@ jobs:
           name: server-linux-arm64
           path: artifacts/arm64/
 
+      - name: Download desktop artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: remux-desktop-*
+          merge-multiple: true
+
       - name: Checkout source
         uses: actions/checkout@v4
         with:
@@ -83,15 +113,17 @@ jobs:
 
       - name: Prepare release assets
         run: |
-          VERSION="${{ needs.semantic-release.outputs.new_release_version }}"
+          VERSION="${{ needs.preview.outputs.new_release_version }}"
           cp artifacts/amd64/remux-server "remux-${VERSION}-linux-amd64"
           cp artifacts/arm64/remux-server "remux-${VERSION}-linux-arm64"
           chmod +x "remux-${VERSION}-linux-amd64" "remux-${VERSION}-linux-arm64"
+          mv remux-desktop-linux-x86_64.deb   "remux-desktop-${VERSION}-linux-x86_64.deb"
+          mv remux-desktop-macos-aarch64.dmg  "remux-desktop-${VERSION}-macos-aarch64.dmg"
+          mv remux-desktop-windows-x86_64.zip "remux-desktop-${VERSION}-windows-x86_64.zip"
 
       - name: Extract changelog for this release
         run: |
-          VERSION="${{ needs.semantic-release.outputs.new_release_version }}"
-          # Extract the section between the first and second version headings
+          VERSION="${{ needs.preview.outputs.new_release_version }}"
           awk "/^#+ \[?${VERSION}\]?/{found=1; next} found && /^#+ \[/{exit} found{print}" \
             source/CHANGELOG.md > release-notes.md
           if [ ! -s release-notes.md ]; then
@@ -102,11 +134,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${{ needs.semantic-release.outputs.new_release_version }}"
+          VERSION="${{ needs.preview.outputs.new_release_version }}"
           TAG="${{ needs.semantic-release.outputs.new_release_git_tag }}"
           gh release create "${TAG}" \
             --repo "${{ github.repository }}" \
             --title "${TAG}" \
             --notes-file release-notes.md \
             "remux-${VERSION}-linux-amd64" \
-            "remux-${VERSION}-linux-arm64"
+            "remux-${VERSION}-linux-arm64" \
+            "remux-desktop-${VERSION}-linux-x86_64.deb" \
+            "remux-desktop-${VERSION}-macos-aarch64.dmg" \
+            "remux-desktop-${VERSION}-windows-x86_64.zip"

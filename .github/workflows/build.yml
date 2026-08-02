@@ -184,9 +184,11 @@ jobs:
 
   build-desktop:
     name: Build desktop (${{ matrix.target }})
-    if: false
-    needs: build-dashboard
+    needs: [build-dashboard, build-jellyfin-web]
     runs-on: ${{ matrix.os }}
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     strategy:
       fail-fast: false
       matrix:
@@ -197,9 +199,6 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact: remux-desktop-macos-aarch64
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            artifact: remux-desktop-macos-x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: remux-desktop-windows-x86_64
@@ -213,6 +212,9 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
@@ -220,6 +222,15 @@ jobs:
 
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@main
+
+      - name: Set workspace version
+        if: inputs.cargo_version != ''
+        run: |
+          cargo binstall cargo-edit@0.11.11 --no-confirm --locked
+          cargo set-version "${{ inputs.cargo_version }}"
+
+      - name: Install cargo-bundle
+        run: cargo binstall cargo-bundle --no-confirm --force
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
@@ -229,13 +240,28 @@ jobs:
             libgtk-3-dev \
             libayatana-appindicator3-dev \
             libssl-dev \
-            pkg-config
+            pkg-config \
+            libxdo-dev
 
       - name: Download dashboard artifact
         uses: actions/download-artifact@v4
         with:
           name: dashboard-dist
           path: target/dx/remux-dashboard/release/web/public/
+
+      - name: Restore jellyfin-web from cache
+        if: needs.build-jellyfin-web.outputs.cache-hit == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: jellyfin-web/
+          key: jellyfin-web-v10.11.9
+
+      - name: Download jellyfin-web artifact
+        if: needs.build-jellyfin-web.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: jellyfin-web-dist
+          path: jellyfin-web/
 
       - name: Bundle remux-desktop (Linux / macOS)
         if: runner.os != 'Windows'
@@ -249,11 +275,9 @@ jobs:
           SQLX_OFFLINE: "true"
         run: cargo build --release --target ${{ matrix.target }} -p remux-desktop
 
-      - name: Package bundle (macOS)
+      - name: Package bundle (macOS .dmg)
         if: runner.os == 'macOS'
-        run: |
-          cd target/${{ matrix.target }}/release/bundle/osx
-          zip -r ${{ github.workspace }}/${{ matrix.artifact }}.zip Remux.app
+        run: cp target/${{ matrix.target }}/release/bundle/dmg/*.dmg ${{ matrix.artifact }}.dmg
 
       - name: Package bundle (Linux .deb)
         if: runner.os == 'Linux'
@@ -266,12 +290,12 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/remux-desktop.exe" .
           Compress-Archive -Path "remux-desktop.exe" -DestinationPath "${{ matrix.artifact }}.zip"
 
-      - name: Upload artifact (macOS / Windows)
-        if: runner.os != 'Linux'
+      - name: Upload artifact (macOS)
+        if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}.zip
+          path: ${{ matrix.artifact }}.dmg
 
       - name: Upload artifact (Linux)
         if: runner.os == 'Linux'
@@ -279,6 +303,13 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}.deb
+
+      - name: Upload artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.zip
 
   build-docker:
     name: Build Docker (${{ matrix.platform }})

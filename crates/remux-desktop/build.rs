@@ -12,6 +12,7 @@ fn main() {
 
     let dashboard_dir =
         workspace_root.join("target/dx/remux-dashboard/release/web/public");
+    println!("cargo:rerun-if-changed={}", dashboard_dir.display());
     if dashboard_dir.exists() {
         let path = dashboard_dir
             .canonicalize()
@@ -32,7 +33,16 @@ fn main() {
         );
     }
 
-    let jellyfin_web_dir = workspace_root.join("jellyfin-web/dist");
+    // Accept either jellyfin-web/dist (local npm build) or jellyfin-web/ (CI artifact layout).
+    let jellyfin_web_dir = ["jellyfin-web/dist", "jellyfin-web"]
+        .iter()
+        .map(|p| workspace_root.join(p))
+        .find(|p| {
+            p.join("index.html")
+                .exists()
+        })
+        .unwrap_or_else(|| workspace_root.join("jellyfin-web/dist"));
+    println!("cargo:rerun-if-changed={}", jellyfin_web_dir.display());
     if jellyfin_web_dir.exists() {
         let path = jellyfin_web_dir
             .canonicalize()

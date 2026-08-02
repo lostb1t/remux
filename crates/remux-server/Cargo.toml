@@ -33,6 +33,7 @@ serde = "1.0"
 serde_json = "^1.0"
 tokio = { version = "^1.0", features = ["full", "io-util", "time"] }
 axum = { version = "^0.8", features = ["ws"] }
+tracing-appender = "0.2"
 tracing-subscriber = { version = "^0.3", features = [
     "fmt",
     "env-filter",
@@ -103,6 +104,7 @@ moka = { version = "0.12.12", features = ["sync"] }
 #reqwest-tracing = "0.5.8"
 serde_urlencoded = "0.7.1"
 config = "0.15.19"
+clap = { version = "4", features = ["derive"] }
 serde-aux = "4.7.0"
 sqlx = { version = "0.8", features = [ "runtime-tokio", "sqlite", "uuid", "chrono", "json" ] }
 argon2 = { version = "0.5.3", default-features = true}
