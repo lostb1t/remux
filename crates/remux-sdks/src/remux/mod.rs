@@ -1374,8 +1374,14 @@ pub struct GetItemsQuery {
 
 impl GetItemsQuery {
     pub fn get_requested_item_types(&self) -> Vec<MediaType> {
-        let mut requested: Vec<MediaType> =
-            vec![MediaType::Movie, MediaType::Series, MediaType::Episode];
+        let mut requested: Vec<MediaType> = vec![
+            MediaType::Movie,
+            MediaType::Series,
+            MediaType::Episode,
+            MediaType::Audio,
+            MediaType::MusicAlbum,
+            MediaType::MusicArtist,
+        ];
 
         if let Some(include_types) = &self.include_item_types {
             requested = include_types
@@ -1386,6 +1392,9 @@ impl GetItemsQuery {
                         MediaType::Movie
                             | MediaType::Series
                             | MediaType::Episode
+                            | MediaType::Audio
+                            | MediaType::MusicAlbum
+                            | MediaType::MusicArtist
                             | MediaType::TvChannel
                             | MediaType::LiveTvChannel
                             | MediaType::TvProgram
