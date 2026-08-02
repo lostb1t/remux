@@ -1,6 +1,6 @@
 use super::{FilterResult, QueryBuilderExt, Settings};
 use crate::{
-    OptionExt, ResultExt,
+    IntoApiError, OptionExt, ResultExt,
     api::{ScrollDirection, SortOrder},
     common::get_uuid,
     sdks,
@@ -869,5 +869,72 @@ impl JellyfinDisplayPrefs {
             records: records?,
             total_count: if filter.total_count { count? } else { 0 },
         })
+    }
+}
+
+/// Resolves the target user from `user_id` path param or `userId` query param.
+/// Falls back to the session user when neither is present.
+/// Admins may target any user; non-admins may only target themselves.
+impl FromRequestParts<crate::AppState> for User {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &crate::AppState,
+    ) -> Result<Self, Self::Rejection> {
+        use crate::db::auth::AuthSession;
+        use axum::extract::Path;
+
+        let session = AuthSession::from_request_parts(parts, state).await?;
+
+        let user_id = Path::<HashMap<String, String>>::from_request_parts(parts, state)
+            .await
+            .ok()
+            .and_then(|Path(p)| {
+                p.get("user_id")
+                    .and_then(|s| Uuid::parse_str(s).ok())
+            })
+            .or_else(|| {
+                parts
+                    .uri
+                    .query()
+                    .and_then(|q| {
+                        serde_urlencoded::from_str::<HashMap<String, String>>(q).ok()
+                    })
+                    .and_then(|m| {
+                        m.get("userId")
+                            .and_then(|s| Uuid::parse_str(s).ok())
+                    })
+            })
+            .unwrap_or(
+                session
+                    .user
+                    .id,
+            );
+
+        if user_id
+            == session
+                .user
+                .id
+        {
+            return Ok(session.user);
+        }
+
+        if !session
+            .user
+            .is_admin
+        {
+            return Err(anyhow!("Forbidden").context_forbidden("Forbidden"));
+        }
+
+        User::get_by_id(
+            &state
+                .ctx
+                .db,
+            &user_id,
+        )
+        .await
+        .map_err(|e| anyhow!(e).context_internal("db error"))?
+        .context_not_found("user not found")
     }
 }

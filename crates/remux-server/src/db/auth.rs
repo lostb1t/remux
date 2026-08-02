@@ -433,6 +433,64 @@ impl FromRequestParts<AppState> for AuthSession {
     }
 }
 
+/// Extractor that resolves a target `db::User` from the `user_id` path param
+/// or `userId`/`UserId` query param. Falls back to the session user when absent.
+/// Non-admins may only target themselves.
+pub struct TargetUser(pub super::User);
+
+impl FromRequestParts<AppState> for TargetUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let session = AuthSession::from_request_parts(parts, state).await?;
+
+        let user_id = axum::extract::Path::<std::collections::HashMap<String, String>>::from_request_parts(parts, state)
+            .await
+            .ok()
+            .and_then(|axum::extract::Path(p)| p.get("user_id").and_then(|s| s.parse::<Uuid>().ok()))
+            .or_else(|| {
+                parts.uri.query()
+                    .and_then(|q| serde_urlencoded::from_str::<std::collections::HashMap<String, String>>(q).ok())
+                    .and_then(|m| {
+                        m.get("userId")
+                            .or_else(|| m.get("UserId"))
+                            .and_then(|s| s.parse::<Uuid>().ok())
+                    })
+            })
+            .unwrap_or(session.user.id);
+
+        if user_id
+            == session
+                .user
+                .id
+        {
+            return Ok(TargetUser(session.user));
+        }
+
+        if !session
+            .user
+            .is_admin
+        {
+            return Err(anyhow!("Forbidden").context_forbidden("Forbidden"));
+        }
+
+        let user = super::User::get_by_id(
+            &state
+                .ctx
+                .db,
+            &user_id,
+        )
+        .await
+        .map_err(|e| anyhow!(e).context_internal("db error"))?
+        .context_not_found("user not found")?;
+
+        Ok(TargetUser(user))
+    }
+}
+
 /// Extractor that only succeeds for admin users. Derefs to AuthSession.
 pub struct AdminSession(pub AuthSession);
 

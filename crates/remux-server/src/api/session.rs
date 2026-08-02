@@ -761,6 +761,7 @@ pub async fn get_sessions(
 pub async fn user_mark_played(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     let media = MediaResolveService::resolve_item(id, &state.ctx)
@@ -777,7 +778,7 @@ pub async fn user_mark_played(
             &state
                 .ctx
                 .db,
-            &session.user,
+            &user,
             true,
             server_config.release_date_threshold(),
         )
@@ -789,6 +790,7 @@ pub async fn user_mark_played(
 pub async fn user_unmark_played(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     let media = MediaResolveService::resolve_item(id, &state.ctx)
@@ -799,7 +801,7 @@ pub async fn user_unmark_played(
             &state
                 .ctx
                 .db,
-            &session.user,
+            &user,
             true,
         )
         .await?;

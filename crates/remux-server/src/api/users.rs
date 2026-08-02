@@ -511,11 +511,12 @@ pub async fn unmark_favorite_modern(
 pub async fn mark_played(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Path((user_id, id)): Path<(Uuid, Uuid)>,
+    auth::TargetUser(user): auth::TargetUser,
+    Path((_, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
     let media = MediaResolveService::resolve_item(id, &state.ctx)
         .await?
-        .context("not found")?;
+        .context_not_found("not found")?;
     let server_config = db::Settings::get_config_or_default(
         &state
             .ctx
@@ -527,7 +528,7 @@ pub async fn mark_played(
             &state
                 .ctx
                 .db,
-            &session.user,
+            &user,
             true,
             server_config.release_date_threshold(),
         )
@@ -539,17 +540,18 @@ pub async fn mark_played(
 pub async fn unmark_played(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Path((user_id, id)): Path<(Uuid, Uuid)>,
+    auth::TargetUser(user): auth::TargetUser,
+    Path((_, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
     let media = MediaResolveService::resolve_item(id, &state.ctx)
         .await?
-        .context("not found")?;
+        .context_not_found("not found")?;
     let ms = media
         .mark_unplayed(
             &state
                 .ctx
                 .db,
-            &session.user,
+            &user,
             true,
         )
         .await?;

@@ -444,9 +444,6 @@ pub struct QuickConnectSecretQuery {
 #[query]
 pub struct QuickConnectCodeQuery {
     pub code: String,
-    /// Optional: if provided, authorizes for this user instead of the caller.
-    /// Non-admin callers may only provide their own user ID.
-    pub user_id: Option<Uuid>,
 }
 
 #[get("/quickconnect/connect")]
@@ -488,38 +485,10 @@ pub async fn quickconnect_connect(
 pub async fn quickconnect_authorize(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    auth::TargetUser(target): auth::TargetUser,
     Query(q): Query<QuickConnectCodeQuery>,
 ) -> Result<impl IntoResponse> {
-    // Resolve which user this approval is for, mirroring Jellyfin's GetUserId logic:
-    // - No userId provided → use the caller's own session user.
-    // - userId provided and matches caller → use it (non-admin self-approval).
-    // - userId provided and differs from caller → requires admin.
-    let approved_user_id = match q.user_id {
-        None => {
-            session
-                .user
-                .id
-        }
-        Some(uid)
-            if uid
-                == session
-                    .user
-                    .id =>
-        {
-            uid
-        }
-        Some(uid) => {
-            if !session
-                .user
-                .is_admin
-            {
-                return Err(anyhow::anyhow!("forbidden")).context_forbidden(
-                    "Only administrators can authorize Quick Connect for another user",
-                );
-            }
-            uid
-        }
-    };
+    let approved_user_id = target.id;
 
     let secret = state
         .ctx
