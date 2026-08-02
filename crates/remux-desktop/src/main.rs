@@ -1,5 +1,8 @@
 use anyhow::Result;
-use std::path::PathBuf;
+use std::{
+    path::{Path, PathBuf},
+    time::{Duration, SystemTime},
+};
 use tao::event_loop::{ControlFlow, EventLoop};
 use tray_icon::{
     TrayIconBuilder,
@@ -16,6 +19,10 @@ fn data_dir() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("remux")
+}
+
+fn log_dir() -> PathBuf {
+    data_dir().join("logs")
 }
 
 fn build_config() -> remux_server::Config {
@@ -42,8 +49,37 @@ fn ensure_data_dirs(config: &remux_server::Config) -> Result<()> {
     Ok(())
 }
 
+fn cleanup_old_logs(dir: &Path) {
+    let cutoff = SystemTime::now()
+        .checked_sub(Duration::from_secs(5 * 24 * 3600))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("remux.log")
+        {
+            if let Ok(meta) = entry.metadata() {
+                if meta
+                    .modified()
+                    .map(|t| t < cutoff)
+                    .unwrap_or(false)
+                {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+}
+
 fn main() -> Result<()> {
-    remux_server::setup_logging();
+    let log_dir = log_dir();
+    std::fs::create_dir_all(&log_dir)?;
+    cleanup_old_logs(&log_dir);
+    remux_server::setup_logging(Some(&log_dir));
 
     // Point server at bundled jellyfin-ffmpeg binaries placed next to the exe.
     set_ffmpeg_paths();
@@ -77,8 +113,12 @@ fn main() -> Result<()> {
     };
 
     let open_item = MenuItem::new("Open", true, None);
+    let logs_item = MenuItem::new("Logs", true, None);
     let quit_item = MenuItem::new("Quit", true, None);
     let open_id = open_item
+        .id()
+        .clone();
+    let logs_id = logs_item
         .id()
         .clone();
     let quit_id = quit_item
@@ -87,6 +127,7 @@ fn main() -> Result<()> {
 
     let menu = Menu::new();
     menu.append(&open_item)?;
+    menu.append(&logs_item)?;
     menu.append(&quit_item)?;
 
     let _tray = TrayIconBuilder::new()
@@ -107,6 +148,8 @@ fn main() -> Result<()> {
             if ev.id == open_id {
                 tracing::info!("opening {url}");
                 let _ = open::that(&url);
+            } else if ev.id == logs_id {
+                let _ = open::that(&log_dir);
             } else if ev.id == quit_id {
                 tracing::info!("quit");
                 *control_flow = ControlFlow::Exit;

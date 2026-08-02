@@ -33,6 +33,7 @@ serde = "1.0"
 serde_json = "^1.0"
 tokio = { version = "^1.0", features = ["full", "io-util", "time"] }
 axum = { version = "^0.8", features = ["ws"] }
+tracing-appender = "0.2"
 tracing-subscriber = { version = "^0.3", features = [
     "fmt",
     "env-filter",

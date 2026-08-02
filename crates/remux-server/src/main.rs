@@ -28,7 +28,7 @@ fn load_cli_config(
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
-    setup_logging();
+    setup_logging(None);
     let cfg = std::env::var("CONFIG").unwrap_or_else(|_| "/data/config".to_string());
     let cli_config = load_cli_config(&cfg, config::Environment::default())?;
     serve(
