@@ -192,10 +192,28 @@ async fn serve(config: remux_server::Config) -> anyhow::Result<()> {
 
 fn load_icon() -> tray_icon::Icon {
     let bytes = include_bytes!("../../../logo.png");
-    let img = image::load_from_memory(bytes)
-        .expect("valid icon")
-        .resize(32, 32, image::imageops::FilterType::Lanczos3)
+    let img = image::load_from_memory(bytes).expect("valid icon");
+
+    // Crop bottom 25% to remove the "REMUX" wordmark, keeping only the R mark.
+    let (fw, fh) = (img.width(), img.height());
+    let icon_only = img.crop_imm(0, 0, fw, fh * 3 / 4);
+
+    let resized = icon_only
+        .resize(22, 22, image::imageops::FilterType::Lanczos3)
         .into_rgba8();
-    let (w, h) = img.dimensions();
-    tray_icon::Icon::from_rgba(img.into_raw(), w, h).expect("valid icon")
+
+    // Convert to black-on-transparent template image for macOS menu bar:
+    // bright (golden) pixels → black opaque; dark (background) pixels → transparent.
+    let (w, h) = resized.dimensions();
+    let mut out = image::RgbaImage::new(w, h);
+    for (x, y, pixel) in resized.enumerate_pixels() {
+        let [r, g, b, _] = pixel.0;
+        // Rough luma — golden icon pixels are bright (~180), dark green bg is dark (~45).
+        let luma = (r as u16 * 3 + g as u16 * 3 + b as u16) / 7;
+        // Ramp alpha between thresholds so anti-aliased edges look smooth.
+        let alpha = ((luma.saturating_sub(60)) * 4).min(255) as u8;
+        out.put_pixel(x, y, image::Rgba([0, 0, 0, alpha]));
+    }
+
+    tray_icon::Icon::from_rgba(out.into_raw(), w, h).expect("valid icon")
 }
