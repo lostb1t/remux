@@ -275,9 +275,12 @@ jobs:
           SQLX_OFFLINE: "true"
         run: cargo build --release --target ${{ matrix.target }} -p remux-desktop
 
-      - name: Package bundle (macOS .dmg)
+      - name: Sign and package bundle (macOS .dmg)
         if: runner.os == 'macOS'
-        run: cp target/${{ matrix.target }}/release/bundle/dmg/*.dmg ${{ matrix.artifact }}.dmg
+        run: |
+          APP=$(ls -d target/${{ matrix.target }}/release/bundle/osx/*.app | head -1)
+          codesign --deep --force --sign - "$APP"
+          hdiutil create -volname "Remux" -srcfolder "$APP" -ov -format UDZO ${{ matrix.artifact }}.dmg
 
       - name: Package bundle (Linux .deb)
         if: runner.os == 'Linux'
