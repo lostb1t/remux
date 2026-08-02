@@ -1,3 +1,10 @@
+## [0.20.2](https://github.com/lostb1t/remux/compare/v0.20.1...v0.20.2) (2026-08-02)
+
+
+### Bug Fixes
+
+* restore WEB_PATH and DASHBOARD_PATH env var support for filesystem paths ([fa04cb6](https://github.com/lostb1t/remux/commit/fa04cb6f9ac2b6d01241da4cffe52ac3a9d99f0e))
+
 ## [0.20.1](https://github.com/lostb1t/remux/compare/v0.20.0...v0.20.1) (2026-08-02)
 
 
