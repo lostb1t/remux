@@ -198,22 +198,39 @@ fn load_icon() -> tray_icon::Icon {
     let (fw, fh) = (img.width(), img.height());
     let icon_only = img.crop_imm(0, 0, fw, fh * 3 / 4);
 
-    let resized = icon_only
-        .resize(22, 22, image::imageops::FilterType::Lanczos3)
-        .into_rgba8();
-
-    // Convert to black-on-transparent template image for macOS menu bar:
-    // bright (golden) pixels → black opaque; dark (background) pixels → transparent.
-    let (w, h) = resized.dimensions();
-    let mut out = image::RgbaImage::new(w, h);
-    for (x, y, pixel) in resized.enumerate_pixels() {
-        let [r, g, b, _] = pixel.0;
-        // Rough luma — golden icon pixels are bright (~180), dark green bg is dark (~45).
-        let luma = (r as u16 * 3 + g as u16 * 3 + b as u16) / 7;
-        // Ramp alpha between thresholds so anti-aliased edges look smooth.
-        let alpha = ((luma.saturating_sub(60)) * 4).min(255) as u8;
-        out.put_pixel(x, y, image::Rgba([0, 0, 0, alpha]));
+    #[cfg(target_os = "macos")]
+    {
+        // macOS menu bar requires black-on-transparent template image.
+        // The OS then renders it white (dark mode) or black (light mode) automatically.
+        let resized = icon_only
+            .resize(22, 22, image::imageops::FilterType::Lanczos3)
+            .into_rgba8();
+        let (w, h) = resized.dimensions();
+        let mut out = image::RgbaImage::new(w, h);
+        for (x, y, pixel) in resized.enumerate_pixels() {
+            let [r, g, b, _] = pixel.0;
+            let luma = (r as u16 * 3 + g as u16 * 3 + b as u16) / 7;
+            let alpha = ((luma.saturating_sub(60)) * 4).min(255) as u8;
+            out.put_pixel(x, y, image::Rgba([0, 0, 0, alpha]));
+        }
+        return tray_icon::Icon::from_rgba(out.into_raw(), w, h).expect("valid icon");
     }
 
-    tray_icon::Icon::from_rgba(out.into_raw(), w, h).expect("valid icon")
+    // Windows / Linux: keep the original golden color, just strip the dark green background.
+    #[allow(unreachable_code)]
+    {
+        let resized = icon_only
+            .resize(32, 32, image::imageops::FilterType::Lanczos3)
+            .into_rgba8();
+        let (w, h) = resized.dimensions();
+        let mut out = image::RgbaImage::new(w, h);
+        for (x, y, pixel) in resized.enumerate_pixels() {
+            let [r, g, b, _] = pixel.0;
+            let luma = (r as u16 + g as u16 + b as u16) / 3;
+            // Ramp alpha: dark (background) → transparent, bright (golden R) → opaque.
+            let alpha = ((luma.saturating_sub(60)) * 4).min(255) as u8;
+            out.put_pixel(x, y, image::Rgba([r, g, b, alpha]));
+        }
+        tray_icon::Icon::from_rgba(out.into_raw(), w, h).expect("valid icon")
+    }
 }
