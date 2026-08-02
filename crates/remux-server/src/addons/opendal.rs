@@ -381,10 +381,16 @@ impl CatalogAddon for OpendalAddon {
                     .as_str()
                     .into(),
             ),
-            media_kind: self
+            media_kind: match self
                 .media_kind
-                .parse()
-                .ok(),
+                .as_str()
+            {
+                // episode files are grouped into Series catalog items
+                "episode" => Some(db::MediaKind::Series),
+                other => other
+                    .parse()
+                    .ok(),
+            },
         }])
     }
 

@@ -1,5 +1,11 @@
+mod ffmpeg;
+
 use anyhow::Result;
-use std::path::PathBuf;
+use std::{
+    path::{Path, PathBuf},
+    time::{Duration, SystemTime},
+};
+use tao::event_loop::{ControlFlow, EventLoop};
 use tray_icon::{
     TrayIconBuilder,
     menu::{Menu, MenuEvent, MenuItem},
@@ -15,6 +21,10 @@ fn data_dir() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("remux")
+}
+
+fn log_dir() -> PathBuf {
+    data_dir().join("logs")
 }
 
 fn build_config() -> remux_server::Config {
@@ -41,11 +51,37 @@ fn ensure_data_dirs(config: &remux_server::Config) -> Result<()> {
     Ok(())
 }
 
-fn main() -> Result<()> {
-    remux_server::setup_logging();
+fn cleanup_old_logs(dir: &Path) {
+    let cutoff = SystemTime::now()
+        .checked_sub(Duration::from_secs(5 * 24 * 3600))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry
+            .file_name()
+            .to_string_lossy()
+            .into_owned();
+        if name.starts_with("remux-") && name.ends_with(".log") {
+            if let Ok(meta) = entry.metadata() {
+                if meta
+                    .modified()
+                    .map(|t| t < cutoff)
+                    .unwrap_or(false)
+                {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+}
 
-    // Point server at bundled jellyfin-ffmpeg binaries placed next to the exe.
-    set_ffmpeg_paths();
+fn main() -> Result<()> {
+    let log_dir = log_dir();
+    std::fs::create_dir_all(&log_dir)?;
+    cleanup_old_logs(&log_dir);
+    remux_server::setup_logging(Some(&log_dir));
 
     let config = build_config();
     ensure_data_dirs(&config)?;
@@ -53,17 +89,41 @@ fn main() -> Result<()> {
     // Start the remux server in a background tokio thread with embedded assets.
     let rt = tokio::runtime::Runtime::new()?;
     let server_config = config.clone();
+    let data_dir_for_ffmpeg = config
+        .data_dir
+        .clone();
     std::thread::spawn(move || {
         rt.block_on(async move {
+            if let Err(e) = ffmpeg::ensure_ffmpeg(&data_dir_for_ffmpeg).await {
+                tracing::warn!("ffmpeg setup failed: {e:#}");
+            }
             if let Err(e) = serve(server_config).await {
                 tracing::error!("server error: {e:#}");
             }
         });
     });
 
-    let open_item = MenuItem::new("Open Remux", true, None);
+    // Build event loop. On macOS set Accessory policy so the app has no Dock icon
+    // and doesn't appear in the Cmd+Tab switcher.
+    let event_loop = {
+        #[cfg(target_os = "macos")]
+        {
+            use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
+            let mut el = EventLoop::new();
+            el.set_activation_policy(ActivationPolicy::Accessory);
+            el
+        }
+        #[cfg(not(target_os = "macos"))]
+        EventLoop::new()
+    };
+
+    let open_item = MenuItem::new("Open", true, None);
+    let logs_item = MenuItem::new("Logs", true, None);
     let quit_item = MenuItem::new("Quit", true, None);
     let open_id = open_item
+        .id()
+        .clone();
+    let logs_id = logs_item
         .id()
         .clone();
     let quit_id = quit_item
@@ -72,32 +132,36 @@ fn main() -> Result<()> {
 
     let menu = Menu::new();
     menu.append(&open_item)?;
+    menu.append(&logs_item)?;
     menu.append(&quit_item)?;
-
-    let icon = load_icon();
 
     let _tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("Remux")
-        .with_icon(icon)
+        .with_icon(load_icon())
+        .with_icon_as_template(true)
         .build()?;
 
     tracing::info!("remux desktop started — tray icon active");
 
     let menu_channel = MenuEvent::receiver();
-    loop {
-        if let Ok(event) = menu_channel.try_recv() {
-            if event.id == open_id {
-                let url = server_url();
+    let url = server_url();
+
+    event_loop.run(move |_event, _, control_flow| {
+        *control_flow = ControlFlow::Wait;
+
+        if let Ok(ev) = menu_channel.try_recv() {
+            if ev.id == open_id {
                 tracing::info!("opening {url}");
                 let _ = open::that(&url);
-            } else if event.id == quit_id {
-                tracing::info!("quit requested");
-                std::process::exit(0);
+            } else if ev.id == logs_id {
+                let _ = open::that(&log_dir);
+            } else if ev.id == quit_id {
+                tracing::info!("quit");
+                *control_flow = ControlFlow::Exit;
             }
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+    });
 }
 
 async fn serve(config: remux_server::Config) -> anyhow::Result<()> {
@@ -128,29 +192,34 @@ async fn serve(config: remux_server::Config) -> anyhow::Result<()> {
 }
 
 fn load_icon() -> tray_icon::Icon {
-    tray_icon::Icon::from_rgba(vec![0u8, 0, 0, 0], 1, 1).expect("valid icon")
-}
+    let bytes = include_bytes!("../../../logo.png");
+    let img = image::load_from_memory(bytes).expect("valid icon");
 
-/// Detect jellyfin-ffmpeg binaries bundled next to the executable and set
-/// FFMPEG_PATH / FFPROBE_PATH so the server uses them instead of system ffmpeg.
-fn set_ffmpeg_paths() {
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-    let Some(dir) = exe.parent() else { return };
+    // Crop bottom 25% to remove the "REMUX" wordmark, keeping only the R mark.
+    let (fw, fh) = (img.width(), img.height());
+    let icon_only = img
+        .crop_imm(0, 0, fw, fh * 3 / 4)
+        .into_rgba8();
 
-    #[cfg(target_os = "windows")]
-    let (ffmpeg, ffprobe) = ("ffmpeg.exe", "ffprobe.exe");
-    #[cfg(not(target_os = "windows"))]
-    let (ffmpeg, ffprobe) = ("ffmpeg", "ffprobe");
+    // Strip the background at full resolution so edges are clean before downscaling.
+    // Dark green background → transparent; golden R → opaque.
+    let (fw, fh) = icon_only.dimensions();
+    let mut full = image::RgbaImage::new(fw, fh);
+    for (x, y, pixel) in icon_only.enumerate_pixels() {
+        let [r, g, b, _] = pixel.0;
+        let luma = (r as u16 + g as u16 + b as u16) / 3;
+        let alpha = ((luma.saturating_sub(60)) * 4).min(255) as u8;
 
-    let ffmpeg_path = dir.join(ffmpeg);
-    let ffprobe_path = dir.join(ffprobe);
-
-    if ffmpeg_path.exists() {
-        unsafe { std::env::set_var("FFMPEG_PATH", &ffmpeg_path) };
+        #[cfg(target_os = "macos")]
+        full.put_pixel(x, y, image::Rgba([0, 0, 0, alpha]));
+        #[cfg(not(target_os = "macos"))]
+        full.put_pixel(x, y, image::Rgba([r, g, b, alpha]));
     }
-    if ffprobe_path.exists() {
-        unsafe { std::env::set_var("FFPROBE_PATH", &ffprobe_path) };
-    }
+
+    // Downscale after background removal so Lanczos3 anti-aliases clean edges.
+    // 64px renders as 32pt on Retina (@2x) for a sharp menu bar icon.
+    let out =
+        image::imageops::resize(&full, 64, 64, image::imageops::FilterType::Lanczos3);
+    let (w, h) = out.dimensions();
+    tray_icon::Icon::from_rgba(out.into_raw(), w, h).expect("valid icon")
 }

@@ -508,6 +508,7 @@ async fn items_playbackinfo_inner(
 pub async fn items_file(
     headers: headers::HeaderMap,
     State(state): State<AppState>,
+    session: auth::AuthSession,
     Path(id): Path<Uuid>,
     Query(mut q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
@@ -530,9 +531,19 @@ pub async fn items_file(
     let safe = filename
         .replace('"', "")
         .replace('\\', "");
-    let mut response = videos_stream_inner(headers, state, id, q)
-        .await?
-        .into_response();
+    let mut response = videos_stream_inner(
+        headers,
+        state,
+        Some(
+            session
+                .user
+                .id,
+        ),
+        id,
+        q,
+    )
+    .await?
+    .into_response();
     if let Ok(val) =
         http::HeaderValue::from_str(&format!("attachment; filename=\"{}\"", safe))
     {
@@ -554,7 +565,7 @@ pub async fn audio_stream(
     Path(id): Path<Uuid>,
     Query(q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
-    videos_stream_inner(headers, state, id, q).await
+    videos_stream_inner(headers, state, None, id, q).await
 }
 
 #[get("/audio/{id}/stream.{container}")]
@@ -569,7 +580,7 @@ pub async fn audio_stream_by_container(
     {
         q.container = Some(container);
     }
-    videos_stream_inner(headers, state, id, q).await
+    videos_stream_inner(headers, state, None, id, q).await
 }
 
 #[get("/videos/{id}/stream")]
@@ -579,7 +590,7 @@ pub async fn videos_stream(
     Path(id): Path<Uuid>,
     Query(q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
-    videos_stream_inner(headers, state, id, q).await
+    videos_stream_inner(headers, state, None, id, q).await
 }
 
 #[get("/videos/{id}/stream.{container}")]
@@ -594,7 +605,7 @@ pub async fn videos_stream_by_container(
     {
         q.container = Some(container);
     }
-    videos_stream_inner(headers, state, id, q).await
+    videos_stream_inner(headers, state, None, id, q).await
 }
 
 fn ext_from_descriptor(descriptor: &crate::stream::StreamDescriptor) -> String {
@@ -630,6 +641,7 @@ fn ext_from_descriptor(descriptor: &crate::stream::StreamDescriptor) -> String {
 async fn videos_stream_inner(
     headers: headers::HeaderMap,
     state: AppState,
+    user_id: Option<Uuid>,
     id: Uuid,
     q: api::VideoStreamQuery,
 ) -> Result<impl IntoResponse> {
@@ -639,6 +651,7 @@ async fn videos_stream_inner(
         q.media_source_id,
         q.device_id
             .as_deref(),
+        user_id,
     )
     .await?;
 

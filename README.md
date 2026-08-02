@@ -12,52 +12,56 @@
 
 ---
 
-Stream content from Stremio add-ons, local files, or WebDAV sources all through your existing Jellyfin clients.
-
-Movies and shows come from Stremio add-ons or your own files. Music is handled separately through its own streaming pipeline.
-
-Use your existing Jellyfin clients as-is: browse, search, and play.
-
-Built in Rust for performance and low resource usage.
+Remux is a Jellyfin-compatible media server that brings Stremio add-ons, local files, and WebDAV sources together under one roof. Music streams from its own dedicated pipeline with support for remote sources. Use any Jellyfin client to browse, search, and play without any client changes. Written in Rust.
 
 ---
 
-## What makes it different from Jellyfin?
+## Features
 
-- **Online sources or local files**  
-  Stream from Stremio add-ons, a local path, or a WebDAV server
+- **Works with your Jellyfin clients**  
+  Infuse, Swiftfin, Jellyfin for Android, and any other Jellyfin-compatible client works without changes.
 
-- **Stremio-powered video**  
-  Movies and shows come from Stremio add-ons
+- **Multiple content sources**  
+  Stream from Stremio add-ons, local files, WebDAV servers, or torrents. Mix and match across a single library.
+
+- **Built-in torrent streaming**  
+  Stream directly from torrents without a separate client. No downloads required.
 
 - **Independent music pipeline**  
-  Music is not tied to Stremio and is streamed from separate sources
+  Music is not tied to Stremio and streams from its own sources, including remote ones.
 
-- **IPTV Support**  
-  
-- **Dynamic libraries**  
-  Build collections based on filters instead of folders or scans
+- **Probe data for streams**  
+  Audio and subtitle track selection works out of the box for streamed content. Track metadata is sourced from [RemuxDB](https://remuxdb.1632022.xyz) so clients see the same experience as local files.
 
-- **User management**
-  Including user data import from jellyfin servers to get you started
-  
-- **Lightweight & fast**  
-  Written in Rust with a focus on efficiency
+- **Powerful library filtering**  
+  Build libraries dynamically: filter by tags, catalogs, popularity, release year, and more. Exclude content per-user or scope libraries to specific audiences without duplicating sources.
 
-- **New dashboard**  
-  A custom-built admin interface tailored for this workflow
+- **Playback tracking**  
+  Progress syncs across clients with continue watching support.
 
-- **No backend plugins**  
-  Simpler architecture (Jellyfin web UI theming still works)
+- **User management**  
+  Import users and data from an existing Jellyfin server to get started quickly.
 
-- **Local & WebDAV files**  
-  Index and stream video, audio, or `.strm` files from a local path or WebDAV server
+- **Desktop app**  
+  Single install, no Docker or terminal required. The server runs in the background as a tray app.
+
+- **Custom dashboard**  
+  A built-in admin interface designed for this workflow.
+
+- **IPTV Support**
 
 
-## ⚠️ Status
+## Quick Start
 
-Remux is still in an early stage. Expect rough edges, missing features, and breaking changes.
-Run the image as follows
+### Desktop
+
+Download the latest release for your platform:
+
+- [macOS (Apple Silicon)](https://github.com/lostb1t/remux/releases/latest/download/remux-desktop-macos-aarch64.dmg)
+- [Linux (x86_64)](https://github.com/lostb1t/remux/releases/latest/download/remux-desktop-linux-x86_64.deb)
+- [Windows (x86_64)](https://github.com/lostb1t/remux/releases/latest/download/remux-desktop-windows-x86_64.zip)
+
+### Docker
 
 ```yml
 version: "3"

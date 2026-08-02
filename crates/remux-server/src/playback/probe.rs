@@ -396,6 +396,56 @@ fn chapters_to_segments(chapters: &[FfprobeChapter]) -> MediaSegments {
     segs
 }
 
+/// When a single video stream has no per-stream bitrate but all audio streams do,
+/// estimate it as container total minus summed audio bitrates (mirrors Jellyfin).
+fn apply_video_bitrate_fallback(
+    streams: &mut Vec<api::MediaStream>,
+    total_bitrate: Option<i64>,
+) {
+    let Some(total) = total_bitrate else { return };
+    let video_indices: Vec<usize> = streams
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| {
+            matches!(s.type_, Some(api::MediaStreamType::Video))
+                && s.bit_rate
+                    .is_none()
+        })
+        .map(|(i, _)| i)
+        .collect();
+    if video_indices.len() != 1 {
+        return;
+    }
+    // Mirror Jellyfin: subtract all non-video, non-external streams (not just audio).
+    // audioBitratesKnown check: all audio streams must have a known bitrate.
+    let non_video: Vec<&api::MediaStream> = streams
+        .iter()
+        .filter(|s| {
+            !matches!(s.type_, Some(api::MediaStreamType::Video)) && !s.is_external
+        })
+        .collect();
+    let audio_all_known = non_video
+        .iter()
+        .filter(|s| matches!(s.type_, Some(api::MediaStreamType::Audio)))
+        .all(|s| {
+            s.bit_rate
+                .is_some()
+        });
+    if audio_all_known {
+        let other_sum: i64 = non_video
+            .iter()
+            .map(|s| {
+                s.bit_rate
+                    .unwrap_or(0)
+            })
+            .sum();
+        let estimated = total - other_sum;
+        if estimated > 0 {
+            streams[video_indices[0]].bit_rate = Some(estimated);
+        }
+    }
+}
+
 /// Probe a media URL with ffprobe and return a Jellyfin `MediaSourceInfo`
 /// alongside any chapter-derived `MediaSegments`.
 pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
@@ -759,6 +809,8 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
         }
     }
 
+    apply_video_bitrate_fallback(&mut streams, overall_bitrate);
+
     let default_audio_stream_index = streams
         .iter()
         .find(|s| matches!(s.type_, Some(api::MediaStreamType::Audio)))
@@ -833,7 +885,9 @@ pub(crate) async fn probe_stream(
             .is_some()
         {
             debug!(id = %stream.id, "probe cache hit");
-            return Ok((api::MediaSourceInfo::from(stream.clone()), stream.clone()));
+            let mut info = api::MediaSourceInfo::from(stream.clone());
+            apply_video_bitrate_fallback(&mut info.media_streams, info.bitrate);
+            return Ok((info, stream.clone()));
         }
         debug!(id = %stream.id, "probe cache stale (no video stream), re-probing");
     }
@@ -989,8 +1043,13 @@ where
                 // Reject streams whose probed duration is suspiciously short
                 // relative to the known metadata runtime (or absolutely < 3 min
                 // when unknown) — these are typically error/copyright-strike
-                // placeholder videos, not real content.
-                if let Some(probed_ticks) = probed.run_time_ticks {
+                // placeholder videos, not real content. Skip for audio-only
+                // streams since short songs are legitimate.
+                if probed
+                    .video_stream()
+                    .is_some()
+                    && let Some(probed_ticks) = probed.run_time_ticks
+                {
                     let max_threshold = 5_i64
                         .to_ticks(TickUnit::Minutes)
                         .unwrap_or(0);

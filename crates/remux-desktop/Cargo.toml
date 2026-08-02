@@ -19,16 +19,20 @@ short_description = "Remux media server"
 long_description = "Self-hosted media server with streaming and transcoding support."
 
 [dependencies]
-remux-server = { path = "../remux-server", features = ["desktop"] }
+remux-server = { path = "../remux-server", default-features = false, features = ["desktop"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 tracing = "0.1"
 dirs = "5"
 open = "5"
 tray-icon = "0.19"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-
+tao = "0.36"
+image = { version = "0.25", default-features = false, features = ["png"] }
 include_dir = "0.7"
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls"] }
+serde_json = "1"
+flate2 = "1"
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [build-dependencies]

@@ -584,7 +584,7 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
     req
 }
 
-pub fn setup_logging() {
+pub fn setup_logging(log_dir: Option<&std::path::Path>) {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("warn,remux=info"));
 
@@ -595,9 +595,27 @@ pub fn setup_logging() {
         .with_file(false)
         .compact();
 
+    let file_layer = log_dir.map(|dir| {
+        let appender = tracing_appender::rolling::Builder::new()
+            .rotation(tracing_appender::rolling::Rotation::DAILY)
+            .filename_prefix("remux-")
+            .filename_suffix(".log")
+            .build(dir)
+            .expect("failed to create log appender");
+        fmt::layer()
+            .with_ansi(false)
+            .with_timer(fmt::time::ChronoLocal::new("%H:%M:%S".to_string()))
+            .with_target(true)
+            .with_line_number(true)
+            .with_file(false)
+            .compact()
+            .with_writer(appender)
+    });
+
     tracing_subscriber::registry()
         .with(filter)
         .with(fmt_layer)
+        .with(file_layer)
         .try_init()
         .ok(); // try_init + ok() so tests don't panic on repeated calls
 }
