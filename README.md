@@ -22,7 +22,7 @@ Built in Rust for performance and low resource usage.
 
 ---
 
-## What makes it different from Jellyfin?
+## Features
 
 - **Online sources or local files**  
   Stream from Stremio add-ons, a local path, or a WebDAV server
@@ -34,13 +34,19 @@ Built in Rust for performance and low resource usage.
   Music is not tied to Stremio and is streamed from separate sources
 
 - **IPTV Support**  
-  
+
+- **Probe data for streams**  
+  Audio and subtitle track selection works out of the box for streamed content — no local file required. Track metadata is sourced from RemuxDB so clients see the same experience as local files.
+
+- **Powerful library filtering**  
+  Build libraries dynamically: filter by tags, catalogs, popularity, release year, and more. Exclude content per-user or scope libraries to specific audiences without duplicating sources.
+
 - **Dynamic libraries**  
   Build collections based on filters instead of folders or scans
 
-- **User management**
+- **User management**  
   Including user data import from jellyfin servers to get you started
-  
+
 - **Lightweight & fast**  
   Written in Rust with a focus on efficiency
 
