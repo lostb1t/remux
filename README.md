@@ -39,8 +39,6 @@ Remux is a Jellyfin-compatible media server that brings Stremio add-ons, local f
 - **New dashboard**  
   A custom-built admin interface tailored for this workflow
 
-- **No backend plugins**  
-  Simpler architecture (Jellyfin web UI theming still works)
 
 - **IPTV Support**
 
