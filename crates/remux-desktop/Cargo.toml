@@ -19,7 +19,7 @@ short_description = "Remux media server"
 long_description = "Self-hosted media server with streaming and transcoding support."
 
 [dependencies]
-remux-server = { path = "../remux-server", features = ["desktop"] }
+remux-server = { path = "../remux-server", default-features = false, features = ["desktop"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 tracing = "0.1"
