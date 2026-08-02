@@ -224,7 +224,7 @@ jobs:
         uses: cargo-bins/cargo-binstall@main
 
       - name: Install cargo-bundle
-        run: cargo binstall cargo-bundle --no-confirm
+        run: cargo binstall cargo-bundle --no-confirm --force
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'

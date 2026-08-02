@@ -29,5 +29,10 @@ tray-icon = "0.19"
 tao = "0.36"
 image = { version = "0.25", default-features = false, features = ["png"] }
 include_dir = "0.7"
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls"] }
+serde_json = "1"
+flate2 = "1"
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [build-dependencies]

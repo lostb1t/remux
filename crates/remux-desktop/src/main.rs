@@ -1,3 +1,5 @@
+mod ffmpeg;
+
 use anyhow::Result;
 use std::{
     path::{Path, PathBuf},
@@ -81,17 +83,20 @@ fn main() -> Result<()> {
     cleanup_old_logs(&log_dir);
     remux_server::setup_logging(Some(&log_dir));
 
-    // Point server at bundled jellyfin-ffmpeg binaries placed next to the exe.
-    set_ffmpeg_paths();
-
     let config = build_config();
     ensure_data_dirs(&config)?;
 
     // Start the remux server in a background tokio thread with embedded assets.
     let rt = tokio::runtime::Runtime::new()?;
     let server_config = config.clone();
+    let data_dir_for_ffmpeg = config
+        .data_dir
+        .clone();
     std::thread::spawn(move || {
         rt.block_on(async move {
+            if let Err(e) = ffmpeg::ensure_ffmpeg(&data_dir_for_ffmpeg).await {
+                tracing::warn!("ffmpeg setup failed: {e:#}");
+            }
             if let Err(e) = serve(server_config).await {
                 tracing::error!("server error: {e:#}");
             }
@@ -193,28 +198,4 @@ fn load_icon() -> tray_icon::Icon {
         .into_rgba8();
     let (w, h) = img.dimensions();
     tray_icon::Icon::from_rgba(img.into_raw(), w, h).expect("valid icon")
-}
-
-/// Detect jellyfin-ffmpeg binaries bundled next to the executable and set
-/// FFMPEG_PATH / FFPROBE_PATH so the server uses them instead of system ffmpeg.
-fn set_ffmpeg_paths() {
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-    let Some(dir) = exe.parent() else { return };
-
-    #[cfg(target_os = "windows")]
-    let (ffmpeg, ffprobe) = ("ffmpeg.exe", "ffprobe.exe");
-    #[cfg(not(target_os = "windows"))]
-    let (ffmpeg, ffprobe) = ("ffmpeg", "ffprobe");
-
-    let ffmpeg_path = dir.join(ffmpeg);
-    let ffprobe_path = dir.join(ffprobe);
-
-    if ffmpeg_path.exists() {
-        unsafe { std::env::set_var("FFMPEG_PATH", &ffmpeg_path) };
-    }
-    if ffprobe_path.exists() {
-        unsafe { std::env::set_var("FFPROBE_PATH", &ffprobe_path) };
-    }
 }
