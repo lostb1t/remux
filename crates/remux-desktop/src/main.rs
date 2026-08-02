@@ -197,28 +197,29 @@ fn load_icon() -> tray_icon::Icon {
 
     // Crop bottom 25% to remove the "REMUX" wordmark, keeping only the R mark.
     let (fw, fh) = (img.width(), img.height());
-    let icon_only = img.crop_imm(0, 0, fw, fh * 3 / 4);
-
-    let resized = icon_only
-        .resize(32, 32, image::imageops::FilterType::Lanczos3)
+    let icon_only = img
+        .crop_imm(0, 0, fw, fh * 3 / 4)
         .into_rgba8();
 
-    let (w, h) = resized.dimensions();
-    let mut out = image::RgbaImage::new(w, h);
-
-    for (x, y, pixel) in resized.enumerate_pixels() {
+    // Strip the background at full resolution so edges are clean before downscaling.
+    // Dark green background → transparent; golden R → opaque.
+    let (fw, fh) = icon_only.dimensions();
+    let mut full = image::RgbaImage::new(fw, fh);
+    for (x, y, pixel) in icon_only.enumerate_pixels() {
         let [r, g, b, _] = pixel.0;
         let luma = (r as u16 + g as u16 + b as u16) / 3;
-        // Ramp alpha: dark green background → transparent, bright golden R → opaque.
         let alpha = ((luma.saturating_sub(60)) * 4).min(255) as u8;
 
         #[cfg(target_os = "macos")]
-        // Template image: black-on-transparent; macOS colorizes it for dark/light mode.
-        out.put_pixel(x, y, image::Rgba([0, 0, 0, alpha]));
-
+        full.put_pixel(x, y, image::Rgba([0, 0, 0, alpha]));
         #[cfg(not(target_os = "macos"))]
-        out.put_pixel(x, y, image::Rgba([r, g, b, alpha]));
+        full.put_pixel(x, y, image::Rgba([r, g, b, alpha]));
     }
 
+    // Downscale after background removal so Lanczos3 anti-aliases clean edges.
+    // 64px renders as 32pt on Retina (@2x) for a sharp menu bar icon.
+    let out =
+        image::imageops::resize(&full, 64, 64, image::imageops::FilterType::Lanczos3);
+    let (w, h) = out.dimensions();
     tray_icon::Icon::from_rgba(out.into_raw(), w, h).expect("valid icon")
 }
