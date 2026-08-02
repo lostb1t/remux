@@ -139,6 +139,7 @@ fn main() -> Result<()> {
         .with_menu(Box::new(menu))
         .with_tooltip("Remux")
         .with_icon(load_icon())
+        .with_icon_as_template(true)
         .build()?;
 
     tracing::info!("remux desktop started — tray icon active");
@@ -198,39 +199,26 @@ fn load_icon() -> tray_icon::Icon {
     let (fw, fh) = (img.width(), img.height());
     let icon_only = img.crop_imm(0, 0, fw, fh * 3 / 4);
 
-    #[cfg(target_os = "macos")]
-    {
-        // macOS menu bar requires black-on-transparent template image.
-        // The OS then renders it white (dark mode) or black (light mode) automatically.
-        let resized = icon_only
-            .resize(22, 22, image::imageops::FilterType::Lanczos3)
-            .into_rgba8();
-        let (w, h) = resized.dimensions();
-        let mut out = image::RgbaImage::new(w, h);
-        for (x, y, pixel) in resized.enumerate_pixels() {
-            let [r, g, b, _] = pixel.0;
-            let luma = (r as u16 * 3 + g as u16 * 3 + b as u16) / 7;
-            let alpha = ((luma.saturating_sub(60)) * 4).min(255) as u8;
-            out.put_pixel(x, y, image::Rgba([0, 0, 0, alpha]));
-        }
-        return tray_icon::Icon::from_rgba(out.into_raw(), w, h).expect("valid icon");
+    let resized = icon_only
+        .resize(32, 32, image::imageops::FilterType::Lanczos3)
+        .into_rgba8();
+
+    let (w, h) = resized.dimensions();
+    let mut out = image::RgbaImage::new(w, h);
+
+    for (x, y, pixel) in resized.enumerate_pixels() {
+        let [r, g, b, _] = pixel.0;
+        let luma = (r as u16 + g as u16 + b as u16) / 3;
+        // Ramp alpha: dark green background → transparent, bright golden R → opaque.
+        let alpha = ((luma.saturating_sub(60)) * 4).min(255) as u8;
+
+        #[cfg(target_os = "macos")]
+        // Template image: black-on-transparent; macOS colorizes it for dark/light mode.
+        out.put_pixel(x, y, image::Rgba([0, 0, 0, alpha]));
+
+        #[cfg(not(target_os = "macos"))]
+        out.put_pixel(x, y, image::Rgba([r, g, b, alpha]));
     }
 
-    // Windows / Linux: keep the original golden color, just strip the dark green background.
-    #[allow(unreachable_code)]
-    {
-        let resized = icon_only
-            .resize(32, 32, image::imageops::FilterType::Lanczos3)
-            .into_rgba8();
-        let (w, h) = resized.dimensions();
-        let mut out = image::RgbaImage::new(w, h);
-        for (x, y, pixel) in resized.enumerate_pixels() {
-            let [r, g, b, _] = pixel.0;
-            let luma = (r as u16 + g as u16 + b as u16) / 3;
-            // Ramp alpha: dark (background) → transparent, bright (golden R) → opaque.
-            let alpha = ((luma.saturating_sub(60)) * 4).min(255) as u8;
-            out.put_pixel(x, y, image::Rgba([r, g, b, alpha]));
-        }
-        tray_icon::Icon::from_rgba(out.into_raw(), w, h).expect("valid icon")
-    }
+    tray_icon::Icon::from_rgba(out.into_raw(), w, h).expect("valid icon")
 }
