@@ -94,7 +94,10 @@ async fn download(bin_dir: &Path) -> Result<()> {
         .find(|a| {
             a["name"]
                 .as_str()
-                .map(|n| n.contains(suffix) && n.contains("portable"))
+                .map(|n| {
+                    n.contains(suffix)
+                        && (n.ends_with(".tar.gz") || n.ends_with(".zip"))
+                })
                 .unwrap_or(false)
         })
         .ok_or_else(|| {
