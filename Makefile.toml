@@ -1,6 +1,5 @@
 [config]
 default_to_workspace = false
-dotenv_path = ".env"
 
 [env]
 CONFIG = "./config"
