@@ -1,3 +1,10 @@
+## [0.20.1](https://github.com/lostb1t/remux/compare/v0.20.0...v0.20.1) (2026-08-02)
+
+
+### Bug Fixes
+
+* upload desktop artifacts with stable names for latest/download links ([a940bad](https://github.com/lostb1t/remux/commit/a940badcbe5b7954c83b7c81f21cd60167a783f3))
+
 # [0.20.0](https://github.com/lostb1t/remux/compare/v0.19.0...v0.20.0) (2026-08-02)
 
 
