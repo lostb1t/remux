@@ -89,32 +89,6 @@ pub fn DashboardLayout() -> Element {
         None => return rsx! { div { "Not logged in" } },
     };
 
-    if !server.is_admin {
-        let mut logged_in = use_context::<Signal<bool>>();
-        return rsx! {
-            div { class: "login-page",
-                div { class: "login-card",
-                    div { class: "login-header",
-                        span { class: "login-brand-label", "Remux" }
-                        h1 { class: "login-title", "Admin Dashboard" }
-                    }
-                    div { class: "login-body",
-                        div { class: "alert-error", "Admin access required." }
-                        button {
-                            class: "btn btn-primary login-btn",
-                            style: "margin-top:16px",
-                            onclick: move |_| {
-                                LocalStorage::delete(CREDENTIALS_KEY);
-                                logged_in.set(false);
-                            },
-                            "Sign Out"
-                        }
-                    }
-                }
-            }
-        };
-    }
-
     let app_state = AppState::new(server);
     use_context_provider(|| app_state.clone());
 
