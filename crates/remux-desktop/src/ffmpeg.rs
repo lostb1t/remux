@@ -46,10 +46,14 @@ pub async fn ensure_ffmpeg(data_dir: &Path) -> Result<()> {
     std::fs::create_dir_all(&bin_dir)?;
     download(&bin_dir).await?;
 
-    if ffmpeg.exists() && ffprobe.exists() {
-        set_paths(&ffmpeg, &ffprobe);
+    if !ffmpeg.exists() || !ffprobe.exists() {
+        anyhow::bail!(
+            "download succeeded but ffmpeg/ffprobe not found in {}",
+            bin_dir.display()
+        );
     }
 
+    set_paths(&ffmpeg, &ffprobe);
     Ok(())
 }
 
@@ -77,6 +81,7 @@ async fn download(bin_dir: &Path) -> Result<()> {
         .get("https://api.github.com/repos/jellyfin/jellyfin-ffmpeg/releases/latest")
         .send()
         .await?
+        .error_for_status()?
         .json()
         .await?;
 
@@ -108,6 +113,7 @@ async fn download(bin_dir: &Path) -> Result<()> {
         .get(url)
         .send()
         .await?
+        .error_for_status()?
         .bytes()
         .await?;
 
