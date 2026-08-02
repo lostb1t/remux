@@ -1,3 +1,15 @@
+# [0.21.0](https://github.com/lostb1t/remux/compare/v0.20.2...v0.21.0) (2026-08-02)
+
+
+### Bug Fixes
+
+* ad-hoc codesign macOS app bundle before DMG packaging ([579270f](https://github.com/lostb1t/remux/commit/579270ffa2cfe0022d7eb4e014723f1c8f3eb0c3))
+
+
+### Features
+
+* add healthcheck endpoint ([#155](https://github.com/lostb1t/remux/issues/155)) ([e960772](https://github.com/lostb1t/remux/commit/e960772e4193e575d3dcc99262253577974a2a1e))
+
 ## [0.20.2](https://github.com/lostb1t/remux/compare/v0.20.1...v0.20.2) (2026-08-02)
 
 
