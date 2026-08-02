@@ -18,11 +18,17 @@ Remux is a Jellyfin-compatible media server that brings Stremio add-ons, local f
 
 ## Features
 
-- **Online sources or local files**  
-  Stream from Stremio add-ons, a local path, or a WebDAV server
+- **Works with your Jellyfin clients**  
+  Infuse, Swiftfin, Jellyfin for Android, and any other Jellyfin-compatible client works without changes.
+
+- **Multiple content sources**  
+  Stream from Stremio add-ons, local files, WebDAV servers, or torrents. Mix and match across a single library.
+
+- **Built-in torrent streaming**  
+  Stream directly from torrents without a separate client. No downloads required.
 
 - **Independent music pipeline**  
-  Music is not tied to Stremio and is streamed from separate sources
+  Music is not tied to Stremio and streams from its own sources, including remote ones.
 
 - **Probe data for streams**  
   Audio and subtitle track selection works out of the box for streamed content. Track metadata is sourced from [RemuxDB](https://remuxdb.1632022.xyz) so clients see the same experience as local files.
@@ -30,20 +36,19 @@ Remux is a Jellyfin-compatible media server that brings Stremio add-ons, local f
 - **Powerful library filtering**  
   Build libraries dynamically: filter by tags, catalogs, popularity, release year, and more. Exclude content per-user or scope libraries to specific audiences without duplicating sources.
 
+- **Playback tracking**  
+  Progress syncs across clients with continue watching support.
+
 - **User management**  
-  Including user data import from jellyfin servers to get you started
+  Import users and data from an existing Jellyfin server to get started quickly.
 
-- **Lightweight & fast**  
-  Written in Rust with a focus on efficiency
+- **Desktop app**  
+  Single install, no Docker or terminal required. The server runs in the background as a tray app.
 
-- **New dashboard**  
-  A custom-built admin interface tailored for this workflow
-
+- **Custom dashboard**  
+  A built-in admin interface designed for this workflow.
 
 - **IPTV Support**
-
-- **Local & WebDAV files**  
-  Index and stream video, audio, or `.strm` files from a local path or WebDAV server
 
 
 ## Quick Start
