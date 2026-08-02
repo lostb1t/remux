@@ -596,7 +596,12 @@ pub fn setup_logging(log_dir: Option<&std::path::Path>) {
         .compact();
 
     let file_layer = log_dir.map(|dir| {
-        let appender = tracing_appender::rolling::daily(dir, "remux.log");
+        let appender = tracing_appender::rolling::Builder::new()
+            .rotation(tracing_appender::rolling::Rotation::DAILY)
+            .filename_prefix("remux-")
+            .filename_suffix("log")
+            .build(dir)
+            .expect("failed to create log appender");
         fmt::layer()
             .with_ansi(false)
             .with_timer(fmt::time::ChronoLocal::new("%H:%M:%S".to_string()))

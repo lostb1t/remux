@@ -59,11 +59,11 @@ fn cleanup_old_logs(dir: &Path) {
         return;
     };
     for entry in entries.flatten() {
-        if entry
+        let name = entry
             .file_name()
             .to_string_lossy()
-            .starts_with("remux.log")
-        {
+            .into_owned();
+        if name.starts_with("remux-") && name.ends_with(".log") {
             if let Ok(meta) = entry.metadata() {
                 if meta
                     .modified()
