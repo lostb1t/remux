@@ -622,7 +622,11 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             accel,
             HardwareAccelerationType::Vaapi | HardwareAccelerationType::Qsv
         );
-    let do_sw_tonemap = hdr && params.enable_tonemapping && !do_vpp_tonemap;
+    // VideoToolbox has no HW tone mapping — always use CPU tonemapx for HDR.
+    let do_sw_tonemap = hdr
+        && (params.enable_tonemapping
+            || matches!(accel, HardwareAccelerationType::VideoToolbox))
+        && !do_vpp_tonemap;
 
     let ffmpeg_video_codec = {
         let base = match params
@@ -689,11 +693,14 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     // For QSV+HDR without VPP tonemapping: SW-decode so CPU filters can run.
     // For QSV+HDR with VPP tonemapping: keep VAAPI hw-decode (tonemap_vaapi needs GPU frames).
     // QSV+burn_subtitle (non-HDR) keeps VAAPI hw-decode — overlay_qsv handles compositing on-GPU.
+    // VideoToolbox+HDR: SW-decode so tonemapx can run on CPU (VT encoder accepts yuv420p).
     if matches!(accel, HardwareAccelerationType::Qsv) && hdr && !do_vpp_tonemap {
         args.extend(qsv_init_only_args(
             &params.vaapi_device,
             &params.vaapi_driver,
         ));
+    } else if matches!(accel, HardwareAccelerationType::VideoToolbox) && hdr {
+        // No hw input args — SW decode so tonemapx filter has CPU frames to work with.
     } else {
         args.extend(hw_input_args(
             accel,
@@ -1432,7 +1439,11 @@ pub(crate) fn build_progressive_args(
             accel,
             HardwareAccelerationType::Vaapi | HardwareAccelerationType::Qsv
         );
-    let do_sw_tonemap = hdr && params.enable_tonemapping && !do_vpp_tonemap;
+    // VideoToolbox has no HW tone mapping — always use CPU tonemapx for HDR.
+    let do_sw_tonemap = hdr
+        && (params.enable_tonemapping
+            || matches!(accel, HardwareAccelerationType::VideoToolbox))
+        && !do_vpp_tonemap;
 
     let ffmpeg_video_codec = {
         let base = match params
@@ -1512,11 +1523,14 @@ pub(crate) fn build_progressive_args(
     // Hardware acceleration input flags (before -ss and -i).
     // QSV+HDR without VPP: SW-decode so CPU filters can run.
     // QSV+burn_subtitle (non-HDR): keeps VAAPI hw-decode — overlay_qsv handles on-GPU.
+    // VideoToolbox+HDR: SW-decode so tonemapx can run on CPU (VT encoder accepts yuv420p).
     if matches!(accel, HardwareAccelerationType::Qsv) && hdr && !do_vpp_tonemap {
         args.extend(qsv_init_only_args(
             &params.vaapi_device,
             &params.vaapi_driver,
         ));
+    } else if matches!(accel, HardwareAccelerationType::VideoToolbox) && hdr {
+        // No hw input args — SW decode so tonemapx filter has CPU frames to work with.
     } else {
         args.extend(hw_input_args(
             accel,
