@@ -314,6 +314,42 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}.zip
 
+  smoke-test-windows:
+    name: Smoke test (Windows)
+    needs: build-desktop
+    runs-on: windows-latest
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: remux-desktop-windows-x86_64
+
+      - name: Extract
+        shell: pwsh
+        run: Expand-Archive -Path remux-desktop-windows-x86_64.zip -DestinationPath .
+
+      - name: Start and probe
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath "remux-desktop.exe" -PassThru
+
+          $deadline = (Get-Date).AddSeconds(30)
+          $up = $false
+          do {
+            Start-Sleep -Seconds 2
+            try {
+              $r = Invoke-WebRequest -Uri "http://localhost:3000/health" -UseBasicParsing -ErrorAction Stop
+              if ($r.StatusCode -eq 200) { $up = $true; break }
+            } catch {}
+          } until ((Get-Date) -gt $deadline)
+
+          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+
+          if (-not $up) {
+            Write-Error "remux-desktop did not respond on /health within 30s"
+            exit 1
+          }
+
   build-docker:
     name: Build Docker (${{ matrix.platform }})
     needs: [build-dashboard, build-server, build-jellyfin-web]
