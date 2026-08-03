@@ -2950,9 +2950,67 @@ pub struct BitrateTestQuery {
     pub size: Option<u64>,
 }
 
-/// If `media.url` is a magnet URI, resolve it via the torrent manager to a local
-/// HTTP URL and return a clone with the resolved URL.  For all other URLs this is
-/// a no-op that returns the original `media` unchanged.
+/// Applies `audio_language_preference` and `subtitle_language_preference` from the
+/// user configuration to each source's default stream indexes, when not already set.
+/// Called from both the Items endpoint (detail page) and PlaybackInfo.
+pub(crate) fn apply_language_defaults(
+    sources: &mut Vec<api::MediaSourceInfo>,
+    cfg: &api::UserConfiguration,
+) {
+    for source in sources.iter_mut() {
+        if let Some(ref pref) = cfg.audio_language_preference {
+            if source
+                .default_audio_stream_index
+                .is_none()
+            {
+                let pref_two = lang_to_two_letter(pref);
+                if let Some(ref target) = pref_two {
+                    if let Some(stream) = source
+                        .media_streams
+                        .iter()
+                        .find(|s| {
+                            matches!(s.type_, Some(api::MediaStreamType::Audio))
+                                && s.language
+                                    .as_deref()
+                                    .and_then(lang_to_two_letter)
+                                    .as_deref()
+                                    == Some(target.as_str())
+                        })
+                    {
+                        source.default_audio_stream_index = Some(stream.index);
+                    }
+                }
+            }
+        }
+
+        if let Some(ref pref) = cfg.subtitle_language_preference {
+            if source
+                .default_subtitle_stream_index
+                .is_none()
+            {
+                let pref_two = lang_to_two_letter(pref);
+                if let Some(ref target) = pref_two {
+                    if let Some(stream) = source
+                        .media_streams
+                        .iter_mut()
+                        .find(|s| {
+                            matches!(s.type_, Some(api::MediaStreamType::Subtitle))
+                                && s.language
+                                    .as_deref()
+                                    .and_then(lang_to_two_letter)
+                                    .as_deref()
+                                    == Some(target.as_str())
+                        })
+                    {
+                        let idx = stream.index;
+                        stream.is_default = Some(true);
+                        source.default_subtitle_stream_index = Some(idx);
+                    }
+                }
+            }
+        }
+    }
+}
 
 async fn apply_user_playback_prefs(
     db: &sqlx::SqlitePool,

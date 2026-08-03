@@ -1873,6 +1873,17 @@ async fn item_for_user(
         base_item.can_download = Some(false);
     }
 
+    if let Some(cfg) = session
+        .user
+        .configuration
+        .as_ref()
+        .map(|c| &c.0)
+    {
+        if let Some(ref mut sources) = base_item.media_sources {
+            crate::api::playback::apply_language_defaults(sources, cfg);
+        }
+    }
+
     apply_permissions(&mut base_item, &session.user);
     Ok(Some(base_item))
 }
