@@ -1843,6 +1843,7 @@ impl AddonService {
         media: Vec<db::Media>,
         ctx: &AppContext,
         force_refresh: bool,
+        on_item_done: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Result<()> {
         use futures::StreamExt;
 
@@ -1864,7 +1865,12 @@ impl AddonService {
                 }
             })
             .buffer_unordered(concurrency)
-            .for_each(|_| async {})
+            .for_each(move |_| {
+                if let Some(ref f) = on_item_done {
+                    f();
+                }
+                async {}
+            })
             .await;
 
         Ok(())

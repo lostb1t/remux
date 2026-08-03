@@ -4443,7 +4443,7 @@ impl Media {
     pub async fn get_refreshable(
         db: &SqlitePool,
         limit: u32,
-        offset: u32,
+        after_id: Option<Uuid>,
         total_count: bool,
     ) -> Result<(Vec<Self>, Option<u32>)> {
         const WHERE: &str = r#"
@@ -4466,15 +4466,28 @@ impl Media {
             None
         };
 
-        let rows = sqlx::query_as::<_, Self>(&format!(
-            "SELECT * FROM media {WHERE} ORDER BY id LIMIT ? OFFSET ?"
-        ))
-        .bind(MediaKind::Movie)
-        .bind(MediaKind::Series)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(db)
-        .await?;
+        // Cursor-based pagination: WHERE id > after_id avoids the OFFSET bug where
+        // processed items shift out of the ORDER BY position causing skips/re-reads.
+        let rows = if let Some(cursor) = after_id {
+            sqlx::query_as::<_, Self>(&format!(
+                "SELECT * FROM media {WHERE} AND id > ? ORDER BY id LIMIT ?"
+            ))
+            .bind(MediaKind::Movie)
+            .bind(MediaKind::Series)
+            .bind(cursor)
+            .bind(limit)
+            .fetch_all(db)
+            .await?
+        } else {
+            sqlx::query_as::<_, Self>(&format!(
+                "SELECT * FROM media {WHERE} ORDER BY id LIMIT ?"
+            ))
+            .bind(MediaKind::Movie)
+            .bind(MediaKind::Series)
+            .bind(limit)
+            .fetch_all(db)
+            .await?
+        };
 
         Ok((rows, total))
     }

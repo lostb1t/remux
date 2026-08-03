@@ -1,6 +1,9 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use super::{ProgressReporter, Task, TaskCategory, TaskService};
 use crate::{AppContext, db};
@@ -43,34 +46,55 @@ impl Task for RefreshAllMetaTask {
                 .await?;
         let total = total as usize;
 
-        let mut processed = 0usize;
-        let mut offset = 0u32;
+        // Shared counter incremented per item inside process_meta_batch so progress
+        // updates as each concurrent item finishes, not once per full 100-item batch.
+        let processed = Arc::new(AtomicUsize::new(0));
+        let on_item_done: Arc<dyn Fn() + Send + Sync> = {
+            let processed = Arc::clone(&processed);
+            let progress = progress.clone();
+            let total = total.max(1);
+            Arc::new(move || {
+                let n = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                progress.report(n, total);
+            })
+        };
+
+        // Cursor-based pagination: WHERE id > last_id guarantees forward progress even
+        // when refresh fails and refreshed_at is not updated for an item.
+        let mut last_id: Option<uuid::Uuid> = None;
         loop {
-            let batch = sqlx::query_as::<_, db::Media>(
-                "SELECT * FROM media WHERE kind IN (?, ?, ?, ?) ORDER BY refreshed_at ASC NULLS FIRST, id LIMIT ? OFFSET ?",
-            )
-            .bind(db::MediaKind::Movie)
-            .bind(db::MediaKind::Series)
-            .bind(db::MediaKind::Artist)
-            .bind(db::MediaKind::Album)
-            .bind(CHUNK_SIZE)
-            .bind(offset)
-            .fetch_all(&ctx.db)
-            .await?;
+            let batch = if let Some(cursor) = last_id {
+                sqlx::query_as::<_, db::Media>(
+                    "SELECT * FROM media WHERE kind IN (?, ?, ?, ?) AND id > ? ORDER BY id LIMIT ?",
+                )
+                .bind(db::MediaKind::Movie)
+                .bind(db::MediaKind::Series)
+                .bind(db::MediaKind::Artist)
+                .bind(db::MediaKind::Album)
+                .bind(cursor)
+                .bind(CHUNK_SIZE)
+                .fetch_all(&ctx.db)
+                .await?
+            } else {
+                sqlx::query_as::<_, db::Media>(
+                    "SELECT * FROM media WHERE kind IN (?, ?, ?, ?) ORDER BY id LIMIT ?",
+                )
+                .bind(db::MediaKind::Movie)
+                .bind(db::MediaKind::Series)
+                .bind(db::MediaKind::Artist)
+                .bind(db::MediaKind::Album)
+                .bind(CHUNK_SIZE)
+                .fetch_all(&ctx.db)
+                .await?
+            };
 
             if batch.is_empty() {
                 break;
             }
-            let fetched = batch.len();
+            last_id = batch.last().map(|m| m.id);
             ctx.addons
-                .process_meta_batch(batch, &ctx, true)
+                .process_meta_batch(batch, &ctx, true, Some(Arc::clone(&on_item_done)))
                 .await?;
-            processed += fetched;
-            progress.report(processed, total.max(1));
-            if fetched < CHUNK_SIZE as usize {
-                break;
-            }
-            offset += CHUNK_SIZE;
         }
         Ok(())
     }

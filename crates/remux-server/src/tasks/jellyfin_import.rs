@@ -397,7 +397,7 @@ impl Task for JellyfinImportTask {
                     "seeding missing media stubs from Jellyfin"
                 );
                 ctx.addons
-                    .process_meta_batch(stubs, &ctx, false)
+                    .process_meta_batch(stubs, &ctx, false, None)
                     .await?;
             }
         }
