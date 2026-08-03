@@ -396,6 +396,13 @@ async fn items_playbackinfo_inner(
 
         source.transcoding_reasons = transcode_reasons;
 
+        // Recompute from codec — never trust the stored DB value (may be stale).
+        for s in &mut source.media_streams {
+            if matches!(s.type_, Some(api::MediaStreamType::Subtitle)) {
+                s.is_text_subtitle_stream = s.is_text_subtitle_stream();
+            }
+        }
+
         media_sources.push(source);
     }
 

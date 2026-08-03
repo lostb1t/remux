@@ -1759,8 +1759,15 @@ async fn item_for_user(
                     .as_ref()
             })
             .map(|p| {
-                p.media_streams
-                    .clone()
+                let mut streams = p
+                    .media_streams
+                    .clone();
+                for s in &mut streams {
+                    if matches!(s.type_, Some(api::MediaStreamType::Subtitle)) {
+                        s.is_text_subtitle_stream = s.is_text_subtitle_stream();
+                    }
+                }
+                streams
             })
             .unwrap_or_else(|| {
                 vec![api::MediaStream {

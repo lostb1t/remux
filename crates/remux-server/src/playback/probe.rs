@@ -739,10 +739,6 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     .as_ref()
                     .map(|c| c.to_string())
                     .unwrap_or(raw_codec);
-                let is_text = parsed_codec
-                    .as_ref()
-                    .map(SubtitleCodec::is_text)
-                    .unwrap_or(false);
                 let is_image = parsed_codec
                     .as_ref()
                     .map(SubtitleCodec::is_image)
@@ -778,7 +774,7 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     title: None, // don't use raw stream title; build purely from attributes
                 };
 
-                streams.push(api::MediaStream {
+                let mut stream = api::MediaStream {
                     type_: Some(api::MediaStreamType::Subtitle),
                     index: s.index,
                     codec: Some(codec.clone()),
@@ -798,11 +794,12 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     display_title: display_title_subtitle(&meta),
                     language: language.map(str::to_string),
                     title,
-                    is_text_subtitle_stream: is_text,
                     supports_external_stream: true,
                     delivery_method,
                     ..Default::default()
-                });
+                };
+                stream.is_text_subtitle_stream = stream.is_text_subtitle_stream();
+                streams.push(stream);
                 sub_idx += 1;
             }
             _ => {}

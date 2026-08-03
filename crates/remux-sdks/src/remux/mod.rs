@@ -1,3 +1,6 @@
+pub mod codecs;
+pub use codecs::{AudioCodec, SubtitleCodec, VideoCodec};
+
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use http::{HeaderValue, Method};
 use nutype::nutype;
@@ -2726,7 +2729,7 @@ pub struct MediaStream {
     pub is_hearing_impaired: bool,
     #[serde(default)]
     pub is_interlaced: bool,
-    #[serde(default)]
+    #[serde(default, skip_deserializing)]
     pub is_text_subtitle_stream: bool,
     pub language: Option<String>,
     pub level: Option<f64>,
@@ -2755,6 +2758,36 @@ pub struct MediaStream {
     pub video_range: Option<VideoRange>,
     pub video_range_type: Option<VideoRangeType>,
     pub width: Option<i64>,
+}
+
+impl MediaStream {
+    pub fn subtitle_codec(&self) -> Option<SubtitleCodec> {
+        self.codec
+            .as_deref()?
+            .parse()
+            .ok()
+    }
+
+    pub fn video_codec(&self) -> Option<VideoCodec> {
+        self.codec
+            .as_deref()?
+            .parse()
+            .ok()
+    }
+
+    pub fn audio_codec(&self) -> Option<AudioCodec> {
+        self.codec
+            .as_deref()?
+            .parse()
+            .ok()
+    }
+
+    pub fn is_text_subtitle_stream(&self) -> bool {
+        // Unknown codec → assume text (image codecs are a known closed set).
+        self.subtitle_codec()
+            .map(|c| c.is_text())
+            .unwrap_or(true)
+    }
 }
 
 #[dto]

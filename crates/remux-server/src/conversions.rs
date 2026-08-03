@@ -213,7 +213,12 @@ impl From<db::Media> for api::MediaSourceInfo {
             default_subtitle_stream_index,
         ) = source
             .probe_data
-            .map(|p| {
+            .map(|mut p| {
+                for s in &mut p.media_streams {
+                    if matches!(s.type_, Some(api::MediaStreamType::Subtitle)) {
+                        s.is_text_subtitle_stream = s.is_text_subtitle_stream();
+                    }
+                }
                 (
                     p.media_streams,
                     p.default_audio_stream_index,
