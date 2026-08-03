@@ -874,6 +874,10 @@ pub struct ExternalIds {
     /// addon's `/meta/{type}/{id}.json` and `/stream/{type}/{id}.json` routes
     /// require this exact string — losing it causes later lookups to 404.
     pub custom_stremio_type: Option<String>,
+    /// Flat album name for tracks that have no parent row (e.g. playlist imports).
+    pub album_title: Option<String>,
+    /// Flat artist name for tracks that have no grandparent row (e.g. playlist imports).
+    pub artist_name: Option<String>,
 }
 
 impl ExternalIds {

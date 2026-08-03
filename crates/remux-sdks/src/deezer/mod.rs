@@ -185,6 +185,7 @@ pub struct PlaylistTrack {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PlaylistTrackAlbum {
     pub id: u64,
+    pub title: String,
     pub cover_xl: Option<String>,
     pub release_date: Option<String>,
 }
