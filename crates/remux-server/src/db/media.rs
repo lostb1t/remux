@@ -2357,6 +2357,145 @@ impl Media {
         Ok(())
     }
 
+    /// Look up an existing DB row that shares any external ID with `self`.
+    /// Returns the existing row's UUID so the caller can adopt it before upserting,
+    /// preventing duplicate rows when the same content arrives with different canonical IDs.
+    ///
+    /// Only called for root-level items (Movie, Series, Artist, Album, Track).
+    /// Season / Episode deduplication uses `(parent_id, kind, idx)` instead.
+    pub async fn find_existing_id_by_ext(db: &SqlitePool, item: &Self) -> Option<Uuid> {
+        match &item.kind {
+            MediaKind::Movie | MediaKind::Series => {
+                let imdb = item
+                    .external_ids
+                    .imdb
+                    .as_deref();
+                let tmdb = item
+                    .external_ids
+                    .tmdb;
+                let tvdb = item
+                    .external_ids
+                    .tvdb;
+                let kitsu = item
+                    .external_ids
+                    .kitsu;
+                let custom = item
+                    .external_ids
+                    .custom_stremio_id
+                    .as_deref();
+
+                if imdb.is_none()
+                    && tmdb.is_none()
+                    && tvdb.is_none()
+                    && kitsu.is_none()
+                    && custom.is_none()
+                {
+                    return None;
+                }
+
+                sqlx::query_scalar::<_, Uuid>(
+                    "SELECT id FROM media
+                     WHERE kind = ?
+                       AND (
+                         (? IS NOT NULL AND json_extract(external_ids, '$.imdb') = ?)
+                         OR
+                         (? IS NOT NULL AND CAST(json_extract(external_ids, '$.tmdb') AS INTEGER) = ?)
+                         OR
+                         (? IS NOT NULL AND CAST(json_extract(external_ids, '$.tvdb') AS INTEGER) = ?)
+                         OR
+                         (? IS NOT NULL AND CAST(json_extract(external_ids, '$.kitsu') AS INTEGER) = ?)
+                         OR
+                         (? IS NOT NULL AND json_extract(external_ids, '$.custom_stremio_id') = ?)
+                       )
+                       AND id != ?
+                     LIMIT 1",
+                )
+                .bind(&item.kind)
+                .bind(imdb).bind(imdb)
+                .bind(tmdb).bind(tmdb)
+                .bind(tvdb).bind(tvdb)
+                .bind(kitsu).bind(kitsu)
+                .bind(custom).bind(custom)
+                .bind(item.id)
+                .fetch_optional(db)
+                .await
+                .ok()
+                .flatten()
+            }
+            MediaKind::Artist => {
+                let id = item
+                    .external_ids
+                    .deezer_artist?;
+                sqlx::query_scalar::<_, Uuid>(
+                    "SELECT id FROM media WHERE kind = 'Artist'
+                     AND CAST(json_extract(external_ids, '$.deezer_artist') AS INTEGER) = ?
+                     AND id != ? LIMIT 1",
+                )
+                .bind(id).bind(item.id)
+                .fetch_optional(db).await.ok().flatten()
+            }
+            MediaKind::Album => {
+                let id = item
+                    .external_ids
+                    .deezer_album?;
+                sqlx::query_scalar::<_, Uuid>(
+                    "SELECT id FROM media WHERE kind = 'Album'
+                     AND CAST(json_extract(external_ids, '$.deezer_album') AS INTEGER) = ?
+                     AND id != ? LIMIT 1",
+                )
+                .bind(id).bind(item.id)
+                .fetch_optional(db).await.ok().flatten()
+            }
+            MediaKind::Track => {
+                let id = item
+                    .external_ids
+                    .deezer_track?;
+                sqlx::query_scalar::<_, Uuid>(
+                    "SELECT id FROM media WHERE kind = 'Track'
+                     AND CAST(json_extract(external_ids, '$.deezer_track') AS INTEGER) = ?
+                     AND id != ? LIMIT 1",
+                )
+                .bind(id).bind(item.id)
+                .fetch_optional(db).await.ok().flatten()
+            }
+            _ => None,
+        }
+    }
+
+    /// Update all `parent_id` / `grandparent_id` references from `old_id` to `new_id`
+    /// and migrate any `user_media_state` rows. Used when a root UUID is adopted from DB.
+    pub async fn cascade_update_parent_refs(
+        db: &SqlitePool,
+        old_id: Uuid,
+        new_id: Uuid,
+    ) -> Result<()> {
+        let _permit = DB_WRITE_SEMAPHORE
+            .acquire()
+            .await
+            .unwrap();
+        let mut tx = db
+            .begin()
+            .await?;
+        sqlx::query("UPDATE media SET parent_id = ? WHERE parent_id = ?")
+            .bind(new_id)
+            .bind(old_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE media SET grandparent_id = ? WHERE grandparent_id = ?")
+            .bind(new_id)
+            .bind(old_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE user_media_state SET media_id = ? WHERE media_id = ?")
+            .bind(new_id)
+            .bind(old_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit()
+            .await?;
+        Ok(())
+    }
+
     /// Return items of the same kind that share genres with `source_id`, scored by
     /// genre overlap count (descending).  Both `genre` and `music_genre` kinds are
     /// included.  Returns empty for episodes and items with no genres (matching

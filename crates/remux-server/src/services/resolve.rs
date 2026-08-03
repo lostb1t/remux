@@ -256,20 +256,13 @@ impl MediaResolveService {
         let config = std::sync::Arc::new(
             crate::db::Settings::get_config_or_default(&ctx.db).await,
         );
-        let processed: Vec<db::Media> = {
-            use futures::StreamExt;
-            ctx.addons
-                .process_meta_item(root, ctx.clone(), false, config)
-                .collect()
-                .await
-        };
-        if !processed.is_empty() {
-            db::Media::upsert(&ctx.db, &processed)
-                .await
-                .ok();
-            crate::addons::save_pending_relations(ctx, &processed).await;
-        }
-        Ok(db::Media::get_by_id(&ctx.db, &resolved_id).await?)
+        // process_meta_item now owns all upserts internally and returns the actual UUID
+        // (which may differ from resolved_id if an existing DB row was adopted).
+        let actual_id = ctx
+            .addons
+            .process_meta_item(root, ctx.clone(), false, config)
+            .await;
+        Ok(db::Media::get_by_id(&ctx.db, &actual_id).await?)
     }
 
     /// For each candidate ID: if not in DB, acquire its persist lock and persist if still missing;
