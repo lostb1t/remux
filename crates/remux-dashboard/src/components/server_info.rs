@@ -39,7 +39,7 @@ fn parse_rfc3339(s: &str) -> Option<u64> {
     };
     // Days since 1970-01-01
     let days =
-        y * 365 + y / 4 - y / 100 + y / 400 + (153 * m + 3) / 5 + day as i64 - 719469;
+        y * 365 + y / 4 - y / 100 + y / 400 + (153 * m + 3) / 5 + day as i64 - 719561;
     Some((days * 86400 + hour as i64 * 3600 + min as i64 * 60 + sec as i64) as u64)
 }
 
