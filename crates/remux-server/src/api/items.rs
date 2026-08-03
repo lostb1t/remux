@@ -1529,6 +1529,16 @@ pub async fn item(
     id: Uuid,
     fields: Option<&[api::ItemFields]>,
 ) -> Result<Option<api::BaseItemDto>> {
+    item_for_user(state, session, id, fields, None).await
+}
+
+async fn item_for_user(
+    state: AppState,
+    session: auth::AuthSession,
+    id: Uuid,
+    fields: Option<&[api::ItemFields]>,
+    target_user_id: Option<Uuid>,
+) -> Result<Option<api::BaseItemDto>> {
     let want_streams = fields
         .map(|f| f.contains(&api::ItemFields::MediaSources))
         .unwrap_or(true);
@@ -1549,9 +1559,11 @@ pub async fn item(
                 &state
                     .ctx
                     .store,
-                session
-                    .user
-                    .id,
+                target_user_id.unwrap_or(
+                    session
+                        .user
+                        .id,
+                ),
                 m.id,
             )
             .context_not_found("stream group not yet associated with an item")?
@@ -1568,9 +1580,11 @@ pub async fn item(
             include_user_state: true,
             include_child_count: true,
             user_id: Some(
-                session
-                    .user
-                    .id,
+                target_user_id.unwrap_or(
+                    session
+                        .user
+                        .id,
+                ),
             ),
             ..Default::default()
         },
@@ -1867,16 +1881,18 @@ pub async fn items_livetv(_session: auth::AuthSession) -> Result<impl IntoRespon
 pub async fn items_get(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    auth::TargetUser(target): auth::TargetUser,
     Path(id): Path<Uuid>,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
     return Ok(Json(
-        item(
+        item_for_user(
             state,
             session,
             id,
             q.fields
                 .as_deref(),
+            Some(target.id),
         )
         .await?
         .context_not_found("item not found")?,
