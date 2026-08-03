@@ -1962,7 +1962,7 @@ pub fn generate_variant_playlist(
     let remaining_ticks = runtime_ticks % seg_length_ticks;
     let total_segments = whole_segments + if remaining_ticks > 0 { 1 } else { 0 };
 
-    let target_duration = segment_length; // always an integer ceiling
+    let target_duration = segment_length + 1; // +1 to cover keyframe-boundary drift (HLS spec: must be >= any segment duration)
 
     let mut buf = String::with_capacity(total_segments as usize * 120);
     buf.push_str("#EXTM3U\n");

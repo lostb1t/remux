@@ -648,10 +648,10 @@ fn resolve_live_audio_codec(is_live: bool, requested: &str) -> String {
 
 fn should_serve_ffmpeg_variant_playlist(
     is_live: bool,
-    use_fmp4: bool,
-    start_time_secs: u32,
+    _use_fmp4: bool,
+    _start_time_secs: u32,
 ) -> bool {
-    is_live || use_fmp4
+    is_live
 }
 
 async fn variant_hls_video_inner(
@@ -794,7 +794,8 @@ mod tests {
         assert!(!super::should_serve_ffmpeg_variant_playlist(
             false, false, 1
         ));
-        assert!(super::should_serve_ffmpeg_variant_playlist(false, true, 0));
+        // fMP4 now also uses synthetic VOD playlist — full seek bar from the start.
+        assert!(!super::should_serve_ffmpeg_variant_playlist(false, true, 0));
         assert!(super::should_serve_ffmpeg_variant_playlist(true, false, 0));
     }
 }
