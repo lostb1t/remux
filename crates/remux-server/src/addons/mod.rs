@@ -1981,6 +1981,7 @@ impl AddonService {
         // Cascades stale parent_id / grandparent_id references in existing children
         // before adopting, so those rows stay attached to the correct parent UUID.
         let computed_id = media.id;
+        let mut root_was_remapped = false;
         if let Some(existing_id) =
             db::Media::find_existing_id_by_ext(&ctx.db, &media).await
         {
@@ -1996,6 +1997,7 @@ impl AddonService {
                         "cascade_update_parent_refs failed");
                 }
                 media.id = existing_id;
+                root_was_remapped = true;
             }
         }
         let actual_root_id = media.id;
@@ -2044,10 +2046,36 @@ impl AddonService {
             return actual_root_id;
         }
 
-        // Load existing child UUIDs keyed by (kind, idx) so we can adopt them.
-        let existing_l1 = self
-            .child_uuid_map(&ctx.db, actual_root_id)
-            .await;
+        // UUID maps are only needed when the root was remapped — meaning a previous
+        // import used a different UUID for the same content. In that case existing
+        // children may be stored under mismatched UUIDs that need adopting.
+        // For fresh imports and stable re-syncs these maps are always empty, so we
+        // skip the DB queries entirely to avoid saturating the connection pool.
+        let existing_l1 = if root_was_remapped {
+            self.child_uuid_map(&ctx.db, actual_root_id)
+                .await
+        } else {
+            Default::default()
+        };
+
+        // Load ALL grandchild UUIDs in one query keyed by (parent_id, kind, idx).
+        // Avoids one query per season (O(n_seasons) → O(1) queries).
+        let existing_l2: std::collections::HashMap<(Uuid, String, i64), Uuid> =
+            if root_was_remapped {
+                sqlx::query_as::<_, (Uuid, String, Option<i64>, Uuid)>(
+                    "SELECT parent_id, CAST(kind AS TEXT), idx, id
+                     FROM media WHERE grandparent_id = ? AND idx IS NOT NULL",
+                )
+                .bind(actual_root_id)
+                .fetch_all(&ctx.db)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|(pid, k, idx, id)| idx.map(|i| ((pid, k, i), id)))
+                .collect()
+            } else {
+                Default::default()
+            };
 
         let mut level1: Vec<db::Media> = Vec::with_capacity(raw_level1.len());
         for mut child in raw_level1 {
@@ -2055,29 +2083,29 @@ impl AddonService {
             child.grandparent_id = Some(actual_root_id);
             child.grandparent = Some(Box::new(gp_stub.clone()));
 
-            // Adopt existing UUID for this (kind, idx) if one exists in DB.
-            if let Some(idx) = child.idx {
-                let key = (
-                    child
-                        .kind
-                        .to_string(),
-                    idx,
-                );
-                if let Some(&existing_id) = existing_l1.get(&key) {
-                    if existing_id != child.id {
-                        // Cascade parent refs in DB children of this child (e.g. existing
-                        // episodes whose parent_id pointed to the old season UUID).
-                        if let Err(e) = db::Media::cascade_update_parent_refs(
-                            &ctx.db,
-                            child.id,
-                            existing_id,
-                        )
-                        .await
-                        {
-                            warn!(old = %child.id, new = %existing_id, error = %e,
-                                "cascade for level-1 child failed");
+            // Adopt existing UUID for this (kind, idx) if root was remapped.
+            if root_was_remapped {
+                if let Some(idx) = child.idx {
+                    let key = (
+                        child
+                            .kind
+                            .to_string(),
+                        idx,
+                    );
+                    if let Some(&existing_id) = existing_l1.get(&key) {
+                        if existing_id != child.id {
+                            if let Err(e) = db::Media::cascade_update_parent_refs(
+                                &ctx.db,
+                                child.id,
+                                existing_id,
+                            )
+                            .await
+                            {
+                                warn!(old = %child.id, new = %existing_id, error = %e,
+                                    "cascade for level-1 child failed");
+                            }
+                            child.id = existing_id;
                         }
-                        child.id = existing_id;
                     }
                 }
             }
@@ -2118,26 +2146,24 @@ impl AddonService {
                 continue;
             }
 
-            // Load existing grandchild UUIDs for this parent.
-            let existing_l2 = self
-                .child_uuid_map(&ctx.db, actual_child_id)
-                .await;
-
             let mut level2: Vec<db::Media> = Vec::with_capacity(raw_level2.len());
             for mut gc in raw_level2 {
                 gc.parent_id = Some(actual_child_id);
                 gc.grandparent_id = Some(actual_root_id);
                 gc.grandparent = Some(Box::new(gp_stub.clone()));
 
-                // Adopt existing UUID. Grandchildren are leaves — no cascade needed.
-                if let Some(idx) = gc.idx {
-                    let key = (
-                        gc.kind
-                            .to_string(),
-                        idx,
-                    );
-                    if let Some(&existing_id) = existing_l2.get(&key) {
-                        gc.id = existing_id;
+                // Adopt existing UUID from the single pre-loaded grandchild map.
+                if root_was_remapped {
+                    if let Some(idx) = gc.idx {
+                        let key = (
+                            actual_child_id,
+                            gc.kind
+                                .to_string(),
+                            idx,
+                        );
+                        if let Some(&existing_id) = existing_l2.get(&key) {
+                            gc.id = existing_id;
+                        }
                     }
                 }
 
