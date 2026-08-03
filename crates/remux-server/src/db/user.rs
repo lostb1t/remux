@@ -334,6 +334,21 @@ impl MediaIdRaw {
                     self.external_ids
                         .custom_stremio_id
                         .clone()
+                })
+                .or_else(|| {
+                    self.external_ids
+                        .tmdb
+                        .map(|id| format!("tmdb:{id}"))
+                })
+                .or_else(|| {
+                    self.external_ids
+                        .tvdb
+                        .map(|id| format!("tvdb:{id}"))
+                })
+                .or_else(|| {
+                    self.external_ids
+                        .kitsu
+                        .map(|id| format!("kitsu:{id}"))
                 }),
             MediaKind::Season => {
                 let anchor = self

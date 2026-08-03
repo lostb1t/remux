@@ -1719,7 +1719,22 @@ impl AddonService {
         // Calling it inside apply_meta would re-apply the prefix on every patch.
         apply_title_format(media);
 
-        // Recompute stable UUID for Person once TMDB ID is resolved.
+        // Recompute stable UUID once external IDs are resolved by meta enrichment.
+        if matches!(
+            media.kind,
+            db::MediaKind::Movie
+                | db::MediaKind::Series
+                | db::MediaKind::Season
+                | db::MediaKind::Episode
+        ) {
+            let raw = media.media_id_raw();
+            if raw
+                .canonical()
+                .is_some()
+            {
+                media.id = uuid::Uuid::from(&raw);
+            }
+        }
         if media.kind == db::MediaKind::Person {
             if let Some(tmdb_id) = media
                 .external_ids

@@ -182,6 +182,13 @@ impl MediaResolveService {
                 }
                 warn!(%id, kind = ?media.kind, "persist_from_store: IMDB resolution failed, saving without IMDB ID");
             }
+            let raw = media.media_id_raw();
+            if raw
+                .canonical()
+                .is_some()
+            {
+                media.id = uuid::Uuid::from(&raw);
+            }
         }
 
         if matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album) {
