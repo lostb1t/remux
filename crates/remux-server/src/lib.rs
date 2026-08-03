@@ -314,14 +314,14 @@ pub async fn init_app(
         .layer(on_error(log_api_error))
         .layer(
             tower_http::trace::TraceLayer::new_for_http()
-                .make_span_with(|request: &axum::http::Request<axum::body::Body>| {
-                    let uri = request.uri();
-                    let path = uri.path();
-                    let uri_str = match uri.query() {
-                        Some(q) => format!("{path}?{q}"),
-                        None => path.to_string(),
-                    };
-                    tracing::info_span!("request", user = tracing::field::Empty, uri = %uri_str)
+                .make_span_with(|_request: &axum::http::Request<axum::body::Body>| {
+                    // let uri = _request.uri();
+                    // let path = uri.path();
+                    // let uri_str = match uri.query() {
+                    //     Some(q) => format!("{path}?{q}"),
+                    //     None => path.to_string(),
+                    // };
+                    tracing::info_span!("request", user = tracing::field::Empty)
                 })
                 .on_request(|request: &axum::http::Request<axum::body::Body>, _span: &tracing::Span| {
                     debug!(target: "remux_server::request", method = %request.method(), "→");

@@ -352,9 +352,10 @@ async fn create_hls_session(
         let session_video_bitrate = if video_codec == "copy" {
             None
         } else {
-            source_video_stream
+            resolved_media
+                .probe_data
                 .as_ref()
-                .and_then(|s| s.bit_rate)
+                .and_then(|p| p.video_bitrate())
                 .map(|b| {
                     let source = b as u32;
                     let target = q
@@ -434,8 +435,10 @@ async fn create_hls_session(
             max_height: q
                 .max_height
                 .map(|v| v as u32),
-            video_bitrate: source_video_stream
-                .and_then(|s| s.bit_rate)
+            video_bitrate: resolved_media
+                .probe_data
+                .as_ref()
+                .and_then(|p| p.video_bitrate())
                 .map(|b| {
                     let source = b as u32;
                     let target = q

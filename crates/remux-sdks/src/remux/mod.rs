@@ -2247,6 +2247,45 @@ impl MediaSourceInfo {
             .iter()
             .find(|s| matches!(s.type_, Some(MediaStreamType::Subtitle)))
     }
+
+    /// Returns the video stream's bitrate, falling back to container total minus
+    /// summed non-video bitrates when the stream-level value is absent (mirrors
+    /// Jellyfin's bitrate estimation — requires all audio bitrates to be known).
+    pub fn video_bitrate(&self) -> Option<i64> {
+        if let Some(br) = self
+            .video_stream()
+            .and_then(|s| s.bit_rate)
+        {
+            return Some(br);
+        }
+        let total = self.bitrate?;
+        let non_video: Vec<&MediaStream> = self
+            .media_streams
+            .iter()
+            .filter(|s| {
+                !matches!(s.type_, Some(MediaStreamType::Video)) && !s.is_external
+            })
+            .collect();
+        let all_audio_known = non_video
+            .iter()
+            .filter(|s| matches!(s.type_, Some(MediaStreamType::Audio)))
+            .all(|s| {
+                s.bit_rate
+                    .is_some()
+            });
+        if !all_audio_known {
+            return Some(total);
+        }
+        let other_sum: i64 = non_video
+            .iter()
+            .map(|s| {
+                s.bit_rate
+                    .unwrap_or(0)
+            })
+            .sum();
+        let estimated = total - other_sum;
+        Some(if estimated > 0 { estimated } else { total })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
