@@ -236,7 +236,9 @@ impl Task for JellyfinImportTask {
         // Collect unique top-level items (Movie or Series) across all users, then
         // run process_meta_batch so they get full metadata + child tree immediately.
         {
-            let mut stubs: HashMap<uuid::Uuid, db::Media> = HashMap::new();
+            let mut stubs: Vec<db::Media> = Vec::new();
+            let mut seen_stubs: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
             for (_, _, _, items) in &user_items {
                 for item in items {
                     let provider_ids = item
@@ -314,13 +316,16 @@ impl Task for JellyfinImportTask {
                         tvdb: top_tvdb,
                         ..Default::default()
                     };
-                    let raw = db::MediaIdRaw {
-                        kind: top_kind.clone(),
-                        external_ids: ext.clone(),
-                        season: None,
-                        episode: None,
-                    };
-                    let uuid = uuid::Uuid::from(&raw);
+
+                    // Build a stable dedup key from external IDs so the same media
+                    // is not queued twice even though stubs now use random UUIDs.
+                    let dedup_key = format!(
+                        "{:?}:imdb={:?}:tmdb={:?}:tvdb={:?}",
+                        top_kind,
+                        top_imdb.as_deref(),
+                        top_tmdb,
+                        top_tvdb
+                    );
 
                     // Already in local DB or already queued → skip
                     if resolve_from_index(
@@ -330,7 +335,7 @@ impl Task for JellyfinImportTask {
                         top_tvdb,
                     )
                     .is_some()
-                        || stubs.contains_key(&uuid)
+                        || seen_stubs.contains(&dedup_key)
                     {
                         continue;
                     }
@@ -361,8 +366,8 @@ impl Task for JellyfinImportTask {
                         .run_time_ticks
                         .map(|t| t / 10_000_000);
 
-                    let mut stub = db::Media {
-                        id: uuid,
+                    let stub = db::Media {
+                        id: uuid::Uuid::new_v4(),
                         kind: top_kind,
                         title,
                         external_ids: ext,
@@ -373,25 +378,12 @@ impl Task for JellyfinImportTask {
                         runtime,
                         ..Default::default()
                     };
-                    // Ensure the computed UUID matches what the DB would derive
-                    stub.id = uuid::Uuid::from(&db::MediaIdRaw {
-                        kind: stub
-                            .kind
-                            .clone(),
-                        external_ids: stub
-                            .external_ids
-                            .clone(),
-                        season: None,
-                        episode: None,
-                    });
-                    stubs.insert(stub.id, stub);
+                    seen_stubs.insert(dedup_key);
+                    stubs.push(stub);
                 }
             }
 
             if !stubs.is_empty() {
-                let stubs: Vec<db::Media> = stubs
-                    .into_values()
-                    .collect();
                 debug!(
                     count = stubs.len(),
                     "seeding missing media stubs from Jellyfin"
@@ -537,10 +529,10 @@ impl Task for JellyfinImportTask {
                 }
 
                 // Use the local DB UUID when the item is already imported; otherwise
-                // compute the stable UUID from external IDs so the state is ready
-                // when the item gets imported later.
+                // use a random placeholder — the state will be migrated to the real UUID
+                // via media_raw content-based matching when the item is imported later.
                 let media_uuid = resolve_from_index(&index, imdb, tmdb, tvdb)
-                    .unwrap_or_else(|| uuid::Uuid::from(&raw));
+                    .unwrap_or_else(uuid::Uuid::new_v4);
 
                 let state = db::UserMediaState {
                     user_id: local_user.id,

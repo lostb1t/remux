@@ -165,9 +165,8 @@ impl MediaResolveService {
         if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
             if !Self::resolve_media_imdb(&mut media, ctx).await {
                 // If the item arrived with a resolvable external ID (TMDB or TVDB), we
-                // expected to derive an IMDB ID from it. Persisting without one produces
-                // a UUID mismatch in validate() and the item gets dropped anyway — bail
-                // early so the caller sees a clean failure instead of a silent crash.
+                // expected to derive an IMDB ID from it. Bail early so the caller sees
+                // a clean failure instead of a silent crash.
                 if media
                     .external_ids
                     .tmdb
@@ -182,15 +181,6 @@ impl MediaResolveService {
                     return Ok(None);
                 }
                 warn!(%id, kind = ?media.kind, "persist_from_store: IMDB resolution failed, saving without IMDB ID");
-            }
-            // Recompute the stable UUID now that we have the IMDB ID. Use the authoritative
-            // path (media_id_raw → From<MediaIdRaw>) which correctly handles all kinds.
-            if media
-                .external_ids
-                .imdb
-                .is_some()
-            {
-                media.id = uuid::Uuid::from(&media.media_id_raw());
             }
         }
 
@@ -234,7 +224,6 @@ impl MediaResolveService {
             media
         };
 
-        // Save the (possibly recomputed stable) ID before root is consumed by process_meta_item.
         let resolved_id = root.id;
 
         // If the caller's fake UUID differs from the resolved real UUID, keep an alias so
