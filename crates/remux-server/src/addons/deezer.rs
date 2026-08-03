@@ -1328,6 +1328,18 @@ fn playlist_track_to_media(track: &dz::PlaylistTrack) -> db::Media {
                     .artist
                     .id as i64,
             ),
+            album_title: Some(
+                track
+                    .album
+                    .title
+                    .clone(),
+            ),
+            artist_name: Some(
+                track
+                    .artist
+                    .name
+                    .clone(),
+            ),
             ..Default::default()
         },
         ..Default::default()
@@ -1472,6 +1484,7 @@ mod tests {
                         },
                         album: dz::PlaylistTrackAlbum {
                             id: 100,
+                            title: "Album A".into(),
                             cover_xl: Some("https://e.deezer.com/a.jpg".into()),
                             release_date: Some("2021-05-01".into()),
                         },

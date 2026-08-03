@@ -655,6 +655,12 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                         p.title
                             .clone()
                     })
+                    .or_else(|| {
+                        media
+                            .external_ids
+                            .album_title
+                            .clone()
+                    })
             })
             .flatten(),
         album_id: (media.kind == db::MediaKind::Track)
@@ -683,6 +689,12 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                         gp.title
                             .clone()
                     })
+                    .or_else(|| {
+                        media
+                            .external_ids
+                            .artist_name
+                            .clone()
+                    })
             })
             .flatten(),
         album_artists: if matches!(
@@ -701,6 +713,18 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                         }),
                 )
                 .map(|(id, name)| vec![NameIdPair { id, name }])
+                .or_else(|| {
+                    media
+                        .external_ids
+                        .artist_name
+                        .as_ref()
+                        .map(|name| {
+                            vec![NameIdPair {
+                                id: uuid::Uuid::nil(),
+                                name: name.clone(),
+                            }]
+                        })
+                })
                 .unwrap_or_default()
         } else {
             vec![]
@@ -714,6 +738,13 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                         gp.title
                             .clone(),
                     ]
+                })
+                .or_else(|| {
+                    media
+                        .external_ids
+                        .artist_name
+                        .as_ref()
+                        .map(|n| vec![n.clone()])
                 })
                 .unwrap_or_default()
         } else {
@@ -735,6 +766,18 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                         }),
                 )
                 .map(|(id, name)| vec![NameIdPair { id, name }])
+                .or_else(|| {
+                    media
+                        .external_ids
+                        .artist_name
+                        .as_ref()
+                        .map(|name| {
+                            vec![NameIdPair {
+                                id: uuid::Uuid::nil(),
+                                name: name.clone(),
+                            }]
+                        })
+                })
                 .unwrap_or_default()
         } else {
             vec![]
