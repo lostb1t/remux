@@ -543,7 +543,21 @@ impl UserMediaState {
             _ => None,
         };
 
-        if let Some(row) = fallback {
+        if let Some(mut row) = fallback {
+            // Migrate legacy state to the current media_id so batch loads and
+            // SQL filters (which do direct media_id lookups) find it going forward.
+            if row.media_id != media.id {
+                sqlx::query(
+                    "UPDATE user_media_state SET media_id = ? WHERE user_id = ? AND media_id = ?",
+                )
+                .bind(media.id)
+                .bind(user.id)
+                .bind(row.media_id)
+                .execute(db)
+                .await
+                .ok();
+                row.media_id = media.id;
+            }
             return Ok(row);
         }
 
