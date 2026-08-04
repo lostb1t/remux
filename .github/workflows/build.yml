@@ -26,6 +26,13 @@ on:
         type: string
         required: false
         default: ""
+      desktop:
+        description: >-
+          Build the desktop bundles (Linux/macOS/Windows). Set to false for
+          PR docker-only builds.
+        type: boolean
+        required: false
+        default: true
 
 env:
   REGISTRY_IMAGE: ghcr.io/lostb1t/remux
@@ -183,6 +190,7 @@ jobs:
           retention-days: 1
 
   build-desktop:
+    if: inputs.desktop
     name: Build desktop (${{ matrix.target }})
     needs: [build-dashboard, build-jellyfin-web]
     runs-on: ${{ matrix.os }}
@@ -315,6 +323,7 @@ jobs:
           path: ${{ matrix.artifact }}.zip
 
   smoke-test-windows:
+    if: inputs.desktop
     name: Smoke test (Windows)
     needs: build-desktop
     runs-on: windows-latest

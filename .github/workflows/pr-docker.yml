@@ -17,6 +17,7 @@ jobs:
       version: pr-${{ github.event.pull_request.number }}
       docker_tags: "-t ghcr.io/lostb1t/remux:pr-${{ github.event.pull_request.number }}"
       ref: ${{ github.event.pull_request.head.sha }}
+      desktop: false
     secrets: inherit
 
   comment:
