@@ -167,22 +167,22 @@ fn main() -> Result<()> {
 }
 
 async fn serve(config: remux_server::Config) -> anyhow::Result<()> {
-    #[cfg(all(dashboard_built, jellyfin_web_built))]
+    #[cfg(dashboard_built)]
     let admin = remux_server::embedded_static::EmbeddedDir {
         dir: &DASHBOARD,
         spa_fallback: true,
     }
     .into_admin_service();
 
-    #[cfg(not(all(dashboard_built, jellyfin_web_built)))]
+    #[cfg(not(dashboard_built))]
     let admin = remux_server::admin_from_filesystem(
         &remux_server::FilesystemPaths::default().dashboard_path,
     );
 
-    #[cfg(all(dashboard_built, jellyfin_web_built))]
+    #[cfg(jellyfin_web_built)]
     let web_client = remux_server::WebClientService::from_embedded(&JELLYFIN_WEB);
 
-    #[cfg(not(all(dashboard_built, jellyfin_web_built)))]
+    #[cfg(not(jellyfin_web_built))]
     let web_client = {
         let paths = remux_server::FilesystemPaths::default();
         remux_server::WebClientService::from_filesystem(&paths.web_path)

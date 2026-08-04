@@ -46,7 +46,6 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
 
       - uses: actions/upload-artifact@v4
-        if: steps.cache.outputs.cache-hit != 'true'
         with:
           name: jellyfin-web-dist
           path: jellyfin-web/
@@ -95,15 +94,7 @@ jobs:
         with:
           key: desktop-windows-debug
 
-      - name: Restore jellyfin-web from cache
-        if: needs.build-jellyfin-web.outputs.cache-hit == 'true'
-        uses: actions/cache/restore@v4
-        with:
-          path: jellyfin-web/
-          key: jellyfin-web-v10.11.9
-
       - name: Download jellyfin-web artifact
-        if: needs.build-jellyfin-web.outputs.cache-hit != 'true'
         uses: actions/download-artifact@v4
         with:
           name: jellyfin-web-dist
