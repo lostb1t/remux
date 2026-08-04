@@ -7,7 +7,7 @@ use remux_sdks::remux::{
     ActivityLogEntry, GetActivityLog, GetSessions, SessionInfoDto,
 };
 
-const ACTIVITY_PAGE_SIZE: i64 = 25;
+const DEFAULT_ACTIVITY_PAGE_SIZE: i64 = 25;
 
 #[component]
 pub fn SessionsCard(app_state: AppState) -> Element {
@@ -96,16 +96,18 @@ pub fn ActivityCard(app_state: AppState) -> Element {
     let mut start_index: Signal<i64> = use_signal(|| 0);
     let mut loading = use_signal(|| true);
     let mut error = use_signal(|| Option::<String>::None);
+    let mut page_size: Signal<i64> = use_signal(|| DEFAULT_ACTIVITY_PAGE_SIZE);
 
     use_effect(move || {
         let offset = *start_index.read();
+        let limit = *page_size.read();
         loading.set(true);
         let client = app_state.clone();
         spawn(async move {
             match client
                 .execute(GetActivityLog {
                     start_index: Some(offset),
-                    limit: Some(ACTIVITY_PAGE_SIZE),
+                    limit: Some(limit),
                 })
                 .await
             {
@@ -122,8 +124,9 @@ pub fn ActivityCard(app_state: AppState) -> Element {
 
     let total = *total_count.read();
     let offset = *start_index.read();
+    let ps = *page_size.read();
     let has_prev = offset > 0;
-    let has_next = offset + ACTIVITY_PAGE_SIZE < total;
+    let has_next = offset + ps < total;
 
     rsx! {
         Card { title: "Admin Activity Log", tight: true,
@@ -177,26 +180,38 @@ pub fn ActivityCard(app_state: AppState) -> Element {
                         }
                     }
 
-                    if has_prev || has_next {
-                        div { class: "flex items-center justify-between px-3 py-2 border-t border-[var(--border)]",
-                            span { class: "text-xs text-[var(--text-dim)]",
-                                "{offset + 1}–{(offset + ACTIVITY_PAGE_SIZE).min(total)} of {total}"
+                    div { class: "flex items-center justify-between px-3 py-2 border-t border-[var(--border)]",
+                        span { class: "text-xs text-[var(--text-dim)]",
+                            "{offset + 1}–{(offset + ps).min(total)} of {total}"
+                        }
+                        div { class: "flex items-center gap-2",
+                            select {
+                                class: "select-input",
+                                style: "height:28px;font-size:.72rem;width:auto;padding:0 8px",
+                                value: "{ps}",
+                                onchange: move |evt| {
+                                    if let Ok(v) = evt.value().parse::<i64>() {
+                                        page_size.set(v);
+                                        start_index.set(0);
+                                    }
+                                },
+                                option { value: "25", selected: ps == 25, "25" }
+                                option { value: "50", selected: ps == 50, "50" }
+                                option { value: "100", selected: ps == 100, "100" }
                             }
-                            div { class: "flex gap-2",
-                                button {
-                                    class: "btn btn-ghost",
-                                    style: "height:28px;font-size:.72rem;padding:0 10px",
-                                    disabled: !has_prev,
-                                    onclick: move |_| start_index.set((offset - ACTIVITY_PAGE_SIZE).max(0)),
-                                    "← Prev"
-                                }
-                                button {
-                                    class: "btn btn-ghost",
-                                    style: "height:28px;font-size:.72rem;padding:0 10px",
-                                    disabled: !has_next,
-                                    onclick: move |_| start_index.set(offset + ACTIVITY_PAGE_SIZE),
-                                    "Next →"
-                                }
+                            button {
+                                class: "btn btn-ghost",
+                                style: "height:28px;font-size:.72rem;padding:0 10px",
+                                disabled: !has_prev,
+                                onclick: move |_| start_index.set((offset - ps).max(0)),
+                                "← Prev"
+                            }
+                            button {
+                                class: "btn btn-ghost",
+                                style: "height:28px;font-size:.72rem;padding:0 10px",
+                                disabled: !has_next,
+                                onclick: move |_| start_index.set(offset + ps),
+                                "Next →"
                             }
                         }
                     }

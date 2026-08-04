@@ -130,6 +130,17 @@ pub async fn delete_device(
             return Ok(StatusCode::BAD_REQUEST);
         }
     }
+    db::ActivityLog::rotate(
+        &state
+            .ctx
+            .db,
+        state
+            .ctx
+            .config
+            .activity_log_retention_days,
+    )
+    .await
+    .ok();
     Ok(StatusCode::NO_CONTENT)
 }
 

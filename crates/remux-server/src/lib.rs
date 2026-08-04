@@ -437,10 +437,16 @@ pub struct Config {
     /// Base URL for remuxdb. When set, probe results are submitted after each live probe.
     #[serde(default = "default_remuxdb_url")]
     pub remuxdb_url: Option<String>,
+    #[serde(default = "default_activity_log_retention_days")]
+    pub activity_log_retention_days: u32,
 }
 
 fn default_remuxdb_url() -> Option<String> {
     Some("https://remuxdb.1632022.xyz".to_string())
+}
+
+fn default_activity_log_retention_days() -> u32 {
+    90
 }
 
 fn default_tmdb_base_url() -> String {
@@ -511,6 +517,7 @@ impl Default for Config {
             tmdb_base_url: default_tmdb_base_url(),
             trakt_base_url: default_trakt_base_url(),
             remuxdb_url: Some("https://remuxdb.1632022.xyz".to_string()),
+            activity_log_retention_days: default_activity_log_retention_days(),
         }
         .resolve()
     }

@@ -49,6 +49,16 @@ impl ActivityLog {
         Ok(())
     }
 
+    pub async fn rotate(db: &SqlitePool, retention_days: u32) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM activity_log WHERE timestamp < datetime('now', '-' || ? || ' days')",
+        )
+        .bind(retention_days)
+        .execute(db)
+        .await?;
+        Ok(())
+    }
+
     pub async fn list(
         db: &SqlitePool,
         start_index: i64,
