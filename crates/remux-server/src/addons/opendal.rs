@@ -8,7 +8,7 @@ use std::{pin::Pin, sync::Arc, time::Duration};
 use uuid::Uuid;
 
 use futures::Stream;
-use remux_sdks::stremio::MediaType as StremioMediaType;
+use remux_sdks::{RestClient, deezer as dz, stremio::MediaType as StremioMediaType};
 use tracing::{debug, info, warn};
 
 use super::{
@@ -433,9 +433,12 @@ impl CatalogAddon for OpendalAddon {
                     track_number: Option<i64>,
                     artist: Option<String>,
                     album: Option<String>,
+                    deezer_track: Option<i64>,
+                    deezer_album: Option<i64>,
+                    deezer_artist: Option<i64>,
                 }
                 let files: Vec<FileRow> = sqlx::query_as(
-                    "SELECT path, title, track_number, artist, album FROM opendal_files \
+                    "SELECT path, title, track_number, artist, album, deezer_track, deezer_album, deezer_artist FROM opendal_files \
                      WHERE addon_id = ? AND media_kind = 'track' ORDER BY artist, album, track_number",
                 )
                 .bind(self.addon_id)
@@ -460,7 +463,7 @@ impl CatalogAddon for OpendalAddon {
                                 title: artist.clone(),
                                 kind: db::MediaKind::Artist,
                                 external_ids: db::ExternalIds {
-                                    custom_stremio_id: Some(artist_key),
+                                    deezer_artist: f.deezer_artist,
                                     ..Default::default()
                                 },
                                 ..Default::default()
@@ -491,7 +494,8 @@ impl CatalogAddon for OpendalAddon {
                                 parent_id: artist_id,
                                 grandparent_id: artist_id,
                                 external_ids: db::ExternalIds {
-                                    custom_stremio_id: Some(album_key),
+                                    deezer_album: f.deezer_album,
+                                    deezer_artist: f.deezer_artist,
                                     ..Default::default()
                                 },
                                 ..Default::default()
@@ -544,7 +548,9 @@ impl CatalogAddon for OpendalAddon {
                             ..Default::default()
                         }),
                         external_ids: db::ExternalIds {
-                            custom_stremio_id: Some(track_key),
+                            deezer_track: f.deezer_track,
+                            deezer_album: f.deezer_album,
+                            deezer_artist: f.deezer_artist,
                             ..Default::default()
                         },
                         ..Default::default()
@@ -593,7 +599,8 @@ impl IndexAddon for OpendalAddon {
                 .tmdb_base_url,
         )
         .await;
-        scan_addon(ctx, &tmdb, addon).await?;
+        let deezer = RestClient::new("https://api.deezer.com/").ok();
+        scan_addon(ctx, &tmdb, &deezer, addon).await?;
         progress.set(100.0);
         Ok(())
     }
@@ -1173,6 +1180,7 @@ fn split_subtitle_stem(stem: &str) -> (String, Option<String>, bool, bool) {
 async fn scan_addon(
     ctx: &AppContext,
     tmdb: &Option<sdks::RestClient<sdks::BearerAuth>>,
+    deezer: &Option<RestClient>,
     addon: &Addon,
 ) -> Result<()> {
     let cfg = &addon
@@ -1222,20 +1230,21 @@ async fn scan_addon(
     let mut upserted = 0usize;
 
     // Tracks already scanned with folder-derived metadata get probed once for
-    // embedded tags (the most accurate source); skip re-probing afterwards.
+    // embedded tags (the most accurate source) and their Deezer ids resolved
+    // once; skip re-probing/re-resolving afterwards.
     let existing_track_meta: std::collections::HashMap<
         String,
-        (Option<String>, Option<String>),
+        (Option<String>, Option<String>, Option<i64>),
     > = if media_kind == "track" {
-        sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
-            "SELECT path, artist, album FROM opendal_files \
+        sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<i64>)>(
+            "SELECT path, artist, album, deezer_track FROM opendal_files \
                  WHERE addon_id = ? AND media_kind = 'track'",
         )
         .bind(addon.id)
         .fetch_all(&ctx.db)
         .await?
         .into_iter()
-        .map(|(p, a, b)| (p, (a, b)))
+        .map(|(p, a, b, d)| (p, (a, b, d)))
         .collect()
     } else {
         Default::default()
@@ -1699,10 +1708,13 @@ async fn scan_addon(
             // carry probed artist/album are skipped.
             let (mut title, mut track_number, mut year) = (title, track_number, year);
             let (mut artist, mut album) = (artist, album);
+            let mut deezer_track: Option<i64> = None;
+            let mut deezer_album: Option<i64> = None;
+            let mut deezer_artist: Option<i64> = None;
             if media_kind == "track" && is_local {
-                let already_probed = existing_track_meta
-                    .get(&stored_path)
-                    .map(|(a, b)| a.is_some() || b.is_some())
+                let existing = existing_track_meta.get(&stored_path);
+                let already_probed = existing
+                    .map(|(a, b, _)| a.is_some() || b.is_some())
                     .unwrap_or(false);
                 if !already_probed {
                     if let Some(tags) = crate::playback::probe::probe_audio_tags(&path)
@@ -1724,6 +1736,20 @@ async fn scan_addon(
                             .or(year);
                     }
                 }
+                // Deezer ID resolution mirrors imdb (`resolve_imdb` for movies):
+                // search by artist + track once per file, cache the ids.
+                let already_resolved = existing
+                    .map(|(_, _, d)| d.is_some())
+                    .unwrap_or(false);
+                if !already_resolved {
+                    if let Some((dt, da, dar)) =
+                        resolve_track_deezer(deezer, &artist, &title).await
+                    {
+                        deezer_track = Some(dt);
+                        deezer_album = Some(da);
+                        deezer_artist = Some(dar);
+                    }
+                }
             }
 
             let size = Some(
@@ -1737,8 +1763,8 @@ async fn scan_addon(
 
             sqlx::query(
                 "INSERT INTO opendal_files \
-                 (id, addon_id, media_kind, path, name, title, imdb_id, season, episode, track_number, year, size, scanned_at, artist, album) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 (id, addon_id, media_kind, path, name, title, imdb_id, season, episode, track_number, year, size, scanned_at, artist, album, deezer_track, deezer_album, deezer_artist) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
                  ON CONFLICT(id) DO UPDATE SET \
                    path = excluded.path, \
                    name = excluded.name, media_kind = excluded.media_kind, \
@@ -1747,7 +1773,10 @@ async fn scan_addon(
                    season = excluded.season, episode = excluded.episode, \
                    track_number = excluded.track_number, \
                    year = excluded.year, size = excluded.size, scanned_at = excluded.scanned_at, \
-                   artist = excluded.artist, album = excluded.album",
+                   artist = excluded.artist, album = excluded.album, \
+                   deezer_track = COALESCE(opendal_files.deezer_track, excluded.deezer_track), \
+                   deezer_album = COALESCE(opendal_files.deezer_album, excluded.deezer_album), \
+                   deezer_artist = COALESCE(opendal_files.deezer_artist, excluded.deezer_artist)",
             )
             .bind(row_id)
             .bind(addon.id)
@@ -1764,6 +1793,9 @@ async fn scan_addon(
             .bind(&now)
             .bind(artist.as_deref())
             .bind(album.as_deref())
+            .bind(deezer_track)
+            .bind(deezer_album)
+            .bind(deezer_artist)
             .execute(&ctx.db)
             .await?;
 
@@ -1781,6 +1813,59 @@ async fn scan_addon(
     );
 
     Ok(())
+}
+
+/// Search Deezer for a local track by artist + title, returning
+/// `(deezer_track, deezer_album, deezer_artist)` on a match — mirrors
+/// `resolve_imdb` for movies. Returns `None` when nothing matches.
+async fn resolve_track_deezer(
+    client: &Option<RestClient>,
+    artist: &Option<String>,
+    title: &Option<String>,
+) -> Option<(i64, i64, i64)> {
+    let Some(title) = title
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    else {
+        return None;
+    };
+    let Some(client) = client else {
+        return None;
+    };
+    let clean = |s: &str| s.replace('"', "");
+    let q = match artist
+        .as_deref()
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+    {
+        Some(a) => format!("artist:\"{}\" track:\"{}\"", clean(a), clean(title)),
+        None => format!("track:\"{}\"", clean(title)),
+    };
+    let hit = match client
+        .execute(dz::SearchTracksEndpoint { q, limit: 1 })
+        .await
+    {
+        Ok(dz::DeezerResult::Ok(list)) => list
+            .data
+            .into_iter()
+            .next(),
+        Ok(dz::DeezerResult::Err { error }) => {
+            warn!(%title, %error, "opendal: Deezer track search error");
+            None
+        }
+        Err(e) => {
+            warn!(%title, error = %e, "opendal: Deezer track search HTTP error");
+            None
+        }
+    }?;
+    Some((
+        hit.id as i64,
+        hit.album
+            .id as i64,
+        hit.artist
+            .id as i64,
+    ))
 }
 
 fn build_webdav_operator(cfg: &serde_json::Value) -> Result<opendal::Operator> {
@@ -4052,8 +4137,8 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
         let (addon, db_addon) = make_local_addon(ctx, dir, "track").await;
-        addon
-            .refresh_index(ctx, &db_addon, noop_progress())
+        // No tmdb/deezer clients: folder parsing only, no network in tests.
+        scan_addon(ctx, &None, &None, &db_addon)
             .await
             .unwrap();
         (addon, db_addon)

@@ -1998,15 +1998,11 @@ impl Media {
                 .grandparent_id
                 .is_none()
                 .then_some("grandparent_id"),
-            MediaKind::Artist => (self
+            MediaKind::Artist => self
                 .external_ids
                 .deezer_artist
                 .is_none()
-                && self
-                    .external_ids
-                    .custom_stremio_id
-                    .is_none())
-            .then_some("deezer_artist"),
+                .then_some("deezer_artist"),
             MediaKind::Album => (self
                 .external_ids
                 .deezer_album
@@ -2014,10 +2010,6 @@ impl Media {
                 && self
                     .external_ids
                     .youtube_id
-                    .is_none()
-                && self
-                    .external_ids
-                    .custom_stremio_id
                     .is_none())
             .then_some("deezer_album or youtube_id"),
             MediaKind::Track => (self
@@ -2027,10 +2019,6 @@ impl Media {
                 && self
                     .external_ids
                     .youtube_id
-                    .is_none()
-                && self
-                    .external_ids
-                    .custom_stremio_id
                     .is_none())
             .then_some("deezer_track or youtube_id"),
             _ => None,
@@ -7056,6 +7044,50 @@ mod tests {
                     .custom_stremio_id
             );
         }
+    }
+
+    #[test]
+    fn music_items_require_provider_id() {
+        let track = Media {
+            kind: MediaKind::Track,
+            title: "X".to_string(),
+            ..Default::default()
+        };
+        assert!(
+            track
+                .validate()
+                .is_err(),
+            "track without deezer/youtube id must be rejected"
+        );
+        let mut with_id = track.clone();
+        with_id
+            .external_ids
+            .deezer_track = Some(1);
+        assert!(
+            with_id
+                .validate()
+                .is_ok()
+        );
+
+        let album = Media {
+            kind: MediaKind::Album,
+            title: "X".to_string(),
+            ..Default::default()
+        };
+        assert!(
+            album
+                .validate()
+                .is_err()
+        );
+        let mut album_ok = album.clone();
+        album_ok
+            .external_ids
+            .deezer_album = Some(1);
+        assert!(
+            album_ok
+                .validate()
+                .is_ok()
+        );
     }
 
     #[test]
