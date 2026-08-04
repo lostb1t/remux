@@ -207,8 +207,7 @@ pub fn DevicesPage(app_state: AppState) -> Element {
                                                         }
                                                         div { class: "device-col-action",
                                                             button {
-                                                                class: "btn btn-ghost",
-                                                                style: "height:28px;font-size:.65rem;padding:0 8px;color:var(--error);border-color:var(--error)",
+                                                                class: "btn-device-revoke",
                                                                 disabled: is_self,
                                                                 onclick: move |_| {
                                                                     confirm_revoke.set(Some(device_id_revoke.clone()))

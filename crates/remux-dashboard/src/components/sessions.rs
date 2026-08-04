@@ -138,6 +138,14 @@ pub fn ActivityCard(app_state: AppState) -> Element {
                     div { style: "overflow-x:auto;-webkit-overflow-scrolling:touch",
                         div { class: "row-list", style: "min-width:520px",
                             for entry in activity_items.read().iter() {
+                                {
+                                    let action = entry.name.as_deref().unwrap_or("");
+                                    let action_color = if action.to_lowercase().contains("revoke") {
+                                        "color:var(--error)"
+                                    } else {
+                                        ""
+                                    };
+                                    rsx! {
                                 div {
                                     class: "flex items-center border-b border-[var(--border)] hover:bg-[var(--hover-overlay)]",
                                     key: "{entry.id.as_deref().unwrap_or(\"\")}",
@@ -149,8 +157,10 @@ pub fn ActivityCard(app_state: AppState) -> Element {
                                     div { class: "shrink-0 px-3 py-[8px] font-mono text-xs text-[var(--text-dim)] w-32",
                                         "{entry.remux.as_ref().and_then(|r| r.user_name.as_deref()).unwrap_or(\"\")}"
                                     }
-                                    div { class: "shrink-0 px-3 py-[8px] text-xs font-semibold w-40",
-                                        "{entry.name.as_deref().unwrap_or(\"\")}"
+                                    div {
+                                        class: "shrink-0 px-3 py-[8px] text-xs font-semibold w-40",
+                                        style: "{action_color}",
+                                        "{action}"
                                     }
                                     div { class: "flex-1 min-w-0 flex items-center gap-2 px-3 py-[8px]",
                                         if let Some(target) = entry.remux.as_ref().and_then(|r| r.target_user_name.as_deref()) {
@@ -159,6 +169,8 @@ pub fn ActivityCard(app_state: AppState) -> Element {
                                         if let Some(dev) = entry.remux.as_ref().and_then(|r| r.device_name.as_deref()) {
                                             span { class: "session-client-badge", "{dev}" }
                                         }
+                                    }
+                                }
                                     }
                                 }
                             }

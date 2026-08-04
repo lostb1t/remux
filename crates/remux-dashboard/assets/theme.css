@@ -353,6 +353,27 @@ html, body {
 }
 .btn-section-revoke:hover { color: var(--error); }
 
+.btn-device-revoke {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--error);
+  border-radius: var(--radius-sm);
+  background: none;
+  font-family: var(--font-mono);
+  font-size: .65rem;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--error);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+  white-space: nowrap;
+}
+.btn-device-revoke:hover:not(:disabled) { background: var(--error); color: #fff; }
+.btn-device-revoke:disabled { opacity: .35; cursor: not-allowed; }
 
 /* ── Device rows (responsive) ────────────────────────────────────── */
 .device-row {
@@ -364,10 +385,10 @@ html, body {
 .device-row:last-child { border-bottom: none; }
 .device-row:hover      { background: var(--hover-overlay); }
 
-.device-col-name   { flex: 1 1 0; min-width: 0; padding: 8px 12px; }
+.device-col-name   { flex: 1 1 0; min-width: 0; padding: 8px 12px 8px 20px; }
 .device-col-app    { flex: 0 0 auto; padding: 8px 12px; max-width: 180px; min-width: 0; }
 .device-col-time   { flex: 0 0 auto; padding: 8px 12px; text-align: right; font-family: var(--font-mono); font-size: .7rem; color: var(--text-dim); white-space: nowrap; }
-.device-col-action { flex: 0 0 auto; padding: 8px 12px; }
+.device-col-action { flex: 0 0 auto; padding: 8px 20px 8px 12px; }
 
 /* Truncate long app version strings (e.g. git-hash builds) */
 .device-col-app .session-client-badge {
@@ -387,8 +408,8 @@ html, body {
       "app    time";
     align-items: center;
   }
-  .device-col-name   { grid-area: name;   padding: 8px 12px 2px; }
-  .device-col-action { grid-area: action; padding: 8px 12px 2px; align-self: center; }
+  .device-col-name   { grid-area: name;   padding: 8px 12px 2px 20px; }
+  .device-col-action { grid-area: action; padding: 8px 20px 2px 12px; align-self: center; }
   .device-col-app    { grid-area: app;    padding: 2px 12px 8px; }
   .device-col-app .session-client-badge { display: inline-block; }
   .device-col-time   { grid-area: time;   padding: 2px 12px 8px; text-align: right; white-space: nowrap; }
