@@ -133,6 +133,7 @@ pub async fn delete_device(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Query parameters for devices endpoint
 #[query]
 pub struct GetDevicesQuery {
     pub user_id: Option<uuid::Uuid>,
@@ -142,6 +143,7 @@ pub struct GetDevicesQuery {
     pub search_term: Option<String>,
 }
 
+/// Get all devices
 #[get("/devices")]
 pub async fn get_devices(
     State(state): State<AppState>,

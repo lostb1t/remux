@@ -379,6 +379,7 @@ pub struct AuthSession {
     pub user: db::User,
 }
 
+//#[async_trait]
 impl FromRequestParts<AppState> for AuthSession {
     type Rejection = ApiError;
 
@@ -398,6 +399,7 @@ impl FromRequestParts<AppState> for AuthSession {
             .device_id
             .as_deref();
 
+        // Capture client IP from proxy headers or peer address.
         let remote_ip = parts
             .headers
             .get("X-Forwarded-For")
@@ -592,6 +594,7 @@ impl std::ops::Deref for AdminSession {
     }
 }
 
+// todo theres also an old emby airh header. Should we support this?
 #[derive(Debug, Clone, Default)]
 pub struct JellyfinAuthHeader {
     pub client: Option<String>,
