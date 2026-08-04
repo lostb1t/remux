@@ -81,7 +81,7 @@ jobs:
           path: target/dx/remux-dashboard/release/web/public/
           retention-days: 1
 
-  probe:
+  build-desktop:
     runs-on: windows-latest
     needs: [build-jellyfin-web, build-dashboard]
     steps:
@@ -120,12 +120,27 @@ jobs:
           SQLX_OFFLINE: "true"
         run: cargo build --release --target x86_64-pc-windows-msvc -p remux-desktop
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: remux-desktop-debug-exe
+          path: target/x86_64-pc-windows-msvc/release/remux-desktop.exe
+          retention-days: 3
+
+  probe:
+    runs-on: windows-latest
+    needs: build-desktop
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: remux-desktop-debug-exe
+          path: .
+
       - name: Start remux-desktop and probe web endpoints
         shell: pwsh
         env:
           RUST_LOG: "remux=debug"
         run: |
-          $exe = "target/x86_64-pc-windows-msvc/release/remux-desktop.exe"
+          $exe = "remux-desktop.exe"
           $stdout = "exe-stdout.log"
           $stderr = "exe-stderr.log"
           $proc = Start-Process -FilePath $exe -PassThru `
