@@ -1,3 +1,27 @@
+# [0.22.0](https://github.com/lostb1t/remux/compare/v0.21.0...v0.22.0) (2026-08-04)
+
+
+### Bug Fixes
+
+* correct gregorian day constant in dashboard uptime parser ([#168](https://github.com/lostb1t/remux/issues/168)) ([87d8305](https://github.com/lostb1t/remux/commit/87d8305e224e1159f8542cf22f85db24d1524217))
+* fall back to container bitrate for video_bitrate when stream level is absent, hide uri from log spans ([eee8558](https://github.com/lostb1t/remux/commit/eee8558f1f8b2eb235a4ed0d2fac4d4148bd2f4e))
+* include Audio, MusicAlbum and MusicArtist in default search types ([9bccaf7](https://github.com/lostb1t/remux/commit/9bccaf7d7c83a28920b9da23d95d1b0f0dafe7e8)), closes [#157](https://github.com/lostb1t/remux/issues/157)
+* match jellyfin-ffmpeg assets by platform suffix and extension only ([62541fb](https://github.com/lostb1t/remux/commit/62541fbef6102e12d2d26f85d4529d91d8efbf5d))
+* move codec enums to remux-sdks, add typed accessors, fix IsTextSubtitleStream for text subtitle streams ([937b5bd](https://github.com/lostb1t/remux/commit/937b5bd996818c4950bf12909786b5bc73032fd4))
+* re-key legacy user_media_state to current media UUID on IMDB content fallback ([607a338](https://github.com/lostb1t/remux/commit/607a338443c015ce10f10524ee0f373214d3afe4))
+* serve synthetic VOD playlist for fMP4 sessions to enable full seek bar, bump TARGETDURATION ceiling ([b13cff5](https://github.com/lostb1t/remux/commit/b13cff5d51bf21a29e24f27fb7174a923ab0609d))
+* server-side admin gate for dashboard ([#162](https://github.com/lostb1t/remux/issues/162)) ([0c00338](https://github.com/lostb1t/remux/commit/0c00338b2293145baa4db09680c3f3bec2093eba))
+* show artist and album name for deezer playlist tracks ([#163](https://github.com/lostb1t/remux/issues/163)) ([#164](https://github.com/lostb1t/remux/issues/164)) ([7425e8d](https://github.com/lostb1t/remux/commit/7425e8d875a1309ca6dfcfaa4c919ce837119cd3))
+* strip Windows UNC prefix from embedded asset paths in build.rs ([1f4346e](https://github.com/lostb1t/remux/commit/1f4346ee03bbeffc34470c02d0aa88152ad45258))
+* suppress console window on Windows ([f17b6a5](https://github.com/lostb1t/remux/commit/f17b6a521b3815bdc0b24f2c35630bcfed2b9424))
+* SW decode + tonemapx for VideoToolbox HDR transcodes ([574952a](https://github.com/lostb1t/remux/commit/574952a487eb570d01d573e1352c0cbde25673e3))
+* use TargetUser for GET /items/{id}, omit zero PlayedPercentage, fix Key field ([3af3bf0](https://github.com/lostb1t/remux/commit/3af3bf0dcb60a60cd2a84b267785b75abfcc107f))
+
+
+### Features
+
+* apply subtitle/audio language preference defaults in Items endpoint ([692ead7](https://github.com/lostb1t/remux/commit/692ead76f0c04c6cf3c877f89f79a83a7d500aea))
+
 # [0.21.0](https://github.com/lostb1t/remux/compare/v0.20.2...v0.21.0) (2026-08-02)
 
 
