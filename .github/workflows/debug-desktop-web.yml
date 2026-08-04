@@ -69,7 +69,7 @@ jobs:
         uses: cargo-bins/cargo-binstall@main
 
       - name: Install dioxus-cli
-        run: cargo binstall dioxus-cli@0.7.3 --no-confirm --force
+        run: cargo binstall dioxus-cli@0.7.9 --no-confirm --force
 
       - name: Build dashboard
         run: ~/.cargo/bin/dx build --release
