@@ -21,6 +21,54 @@ fn ffmpeg_bin() -> String {
     std::env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".into())
 }
 
+/// The cache storage codec for a requested text subtitle format: ASS/SSA requests
+/// get a native ASS cache (styled dialogue preserved), everything else the SRT
+/// cache that VTT/JSON conversions are built on.
+fn subtitle_cache_codec(output_format: &str) -> api::SubtitleCodec {
+    if matches!(
+        output_format.parse::<api::SubtitleCodec>(),
+        Ok(api::SubtitleCodec::Ass)
+    ) {
+        api::SubtitleCodec::Ass
+    } else {
+        api::SubtitleCodec::Srt
+    }
+}
+
+/// ffmpeg `-c:s` for the cache: stream-copy native ASS/SSA when the cache wants
+/// ASS, otherwise re-encode to the cache codec.
+fn subtitle_cache_ffmpeg_codec(
+    cache_codec: &api::SubtitleCodec,
+    source_codec: Option<&str>,
+) -> String {
+    if *cache_codec == api::SubtitleCodec::Ass
+        && matches!(
+            source_codec.and_then(|c| c
+                .parse::<api::SubtitleCodec>()
+                .ok()),
+            Some(api::SubtitleCodec::Ass)
+        )
+    {
+        "copy".to_string()
+    } else {
+        cache_codec.to_string()
+    }
+}
+
+fn subtitle_cache_path(
+    data_dir: &std::path::Path,
+    item_id: Uuid,
+    stream_index: i64,
+    cache_codec: &api::SubtitleCodec,
+) -> std::path::PathBuf {
+    data_dir
+        .join("subtitle-cache")
+        .join(format!(
+            "{item_id}_{stream_index}.{}",
+            cache_codec.to_string()
+        ))
+}
+
 /// Tracks in-progress batch subtitle extractions. Subtitle endpoint waits on these
 /// instead of launching a competing on-demand FFmpeg process.
 static BATCH_EXTRACTING: OnceLock<Mutex<HashMap<Uuid, watch::Receiver<bool>>>> =
@@ -30,21 +78,23 @@ fn batch_extraction_map() -> &'static Mutex<HashMap<Uuid, watch::Receiver<bool>>
     BATCH_EXTRACTING.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Extract an embedded subtitle stream to the SRT cache and return the cache path.
-/// The cache key is `{data_dir}/subtitle-cache/{item_id}_{stream_index}.srt`.
+/// Extract an embedded text subtitle stream to the requested cache format.
+/// The cache key is `{data_dir}/subtitle-cache/{item_id}_{stream_index}.{format}`.
 /// Returns immediately if the cache already exists and is non-empty.
-pub(crate) async fn extract_subtitle_to_cache(
+async fn extract_subtitle_to_cache(
     data_dir: &std::path::Path,
     input_url: &str,
     map_spec: &str,
     item_id: uuid::Uuid,
     stream_index: i64,
+    cache_codec: api::SubtitleCodec,
+    source_codec: Option<&str>,
 ) -> anyhow::Result<std::path::PathBuf> {
     let cache_dir = data_dir.join("subtitle-cache");
     tokio::fs::create_dir_all(&cache_dir)
         .await
         .map_err(|e| anyhow!("failed to create subtitle cache dir: {e}"))?;
-    let cache_path = cache_dir.join(format!("{item_id}_{stream_index}.srt"));
+    let cache_path = subtitle_cache_path(data_dir, item_id, stream_index, &cache_codec);
 
     // Return cached copy if it exists and is non-empty.
     if cache_path.exists() {
@@ -60,6 +110,8 @@ pub(crate) async fn extract_subtitle_to_cache(
         }
     }
 
+    let ffmpeg_codec = subtitle_cache_ffmpeg_codec(&cache_codec, source_codec);
+    let ffmpeg_format = cache_codec.to_string();
     let mut cmd = tokio::process::Command::new(ffmpeg_bin());
     cmd.kill_on_drop(true);
     cmd.args([
@@ -73,9 +125,9 @@ pub(crate) async fn extract_subtitle_to_cache(
         "-an",
         "-vn",
         "-c:s",
-        "srt",
+        &ffmpeg_codec,
         "-f",
-        "srt",
+        &ffmpeg_format,
         cache_path
             .to_str()
             .ok_or_else(|| anyhow!("invalid cache path"))?,
@@ -485,8 +537,24 @@ async fn subtitles_stream_inner(
         })
         .context_not_found("subtitle stream not found")?;
 
-    let is_passthrough =
-        matches!(output_format.as_str(), "ass" | "ssa" | "sup" | "pgssub");
+    let source_codec = media
+        .probe_data
+        .as_ref()
+        .and_then(|probe| {
+            probe
+                .media_streams
+                .iter()
+                .find(|stream| {
+                    stream.index == stream_index
+                        && matches!(stream.type_, Some(api::MediaStreamType::Subtitle))
+                })
+        })
+        .and_then(|stream| {
+            stream
+                .codec
+                .as_deref()
+        });
+
     let is_binary = matches!(output_format.as_str(), "sup" | "pgssub");
 
     // Binary formats (PGS/SUP): extract on-the-fly as raw bytes.
@@ -530,14 +598,19 @@ async fn subtitles_stream_inner(
             .unwrap());
     }
 
-    // Text formats: serve from SRT cache (populated by pre_extract_all_subtitles_to_cache
-    // at PlaybackInfo time). Falls back to on-demand extraction on cache miss.
-    let cache_file = state
-        .ctx
-        .config
-        .data_dir
-        .join("subtitle-cache")
-        .join(format!("{item_id}_{stream_index}.srt"));
+    // VTT/SRT/JSON requests use the SRT cache populated at PlaybackInfo time.
+    // ASS/SSA requests use a separate native ASS cache so styled subtitle data is
+    // never replaced by SRT bytes under an .ass URL.
+    let cache_codec = subtitle_cache_codec(&output_format);
+    let cache_file = subtitle_cache_path(
+        &state
+            .ctx
+            .config
+            .data_dir,
+        item_id,
+        stream_index,
+        &cache_codec,
+    );
     let is_cached = |path: &std::path::Path| -> bool {
         path.exists()
             && std::fs::read(path)
@@ -553,21 +626,23 @@ async fn subtitles_stream_inner(
     if is_cached(&cache_file) {
         debug!(%item_id, stream_index, "subtitle cache hit");
     } else {
-        // Check if a batch extraction is in progress for this item.
-        // If so, wait for it to finish rather than launching a competing FFmpeg process.
-        let in_progress_rx = batch_extraction_map()
-            .lock()
-            .unwrap()
-            .get(&item_id)
-            .cloned();
-        if let Some(mut rx) = in_progress_rx {
-            if !*rx.borrow() {
-                info!(%item_id, stream_index, "batch extraction in progress — waiting for it to finish");
-                let _ = tokio::time::timeout(
-                    std::time::Duration::from_secs(120),
-                    rx.changed(),
-                )
-                .await;
+        // Only the SRT cache is populated by the background batch extraction;
+        // ASS requests skip the wait and extract on demand.
+        if cache_codec == api::SubtitleCodec::Srt {
+            let in_progress_rx = batch_extraction_map()
+                .lock()
+                .unwrap()
+                .get(&item_id)
+                .cloned();
+            if let Some(mut rx) = in_progress_rx {
+                if !*rx.borrow() {
+                    info!(%item_id, stream_index, "batch extraction in progress — waiting for it to finish");
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(120),
+                        rx.changed(),
+                    )
+                    .await;
+                }
             }
         }
 
@@ -586,6 +661,8 @@ async fn subtitles_stream_inner(
         &map_spec,
         item_id,
         stream_index,
+        cache_codec,
+        source_codec,
     )
     .await
     {
@@ -606,9 +683,7 @@ async fn subtitles_stream_inner(
     )
     .into_owned();
 
-    let body = if is_passthrough {
-        cached
-    } else if is_json {
+    let body = if is_json {
         crate::conversions::srt_to_jellyfin_json(&cached)
     } else if ffmpeg_format == "webvtt" {
         crate::conversions::srt_to_vtt(&cached)
@@ -805,6 +880,7 @@ pub(crate) async fn inject_external_subtitles(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use http::header::HeaderValue;
 
     use crate::integration_test::{auth_header_with_token, authenticated_server};
@@ -848,5 +924,46 @@ mod tests {
                 .is_empty(),
             "tickless route must dispatch to the subtitle handler, not a bare route-miss 404"
         );
+    }
+
+    #[test]
+    fn ass_requests_use_a_native_cache_separate_from_srt() {
+        let data_dir = std::path::Path::new("/data");
+        let item_id = Uuid::nil();
+
+        let srt = subtitle_cache_path(data_dir, item_id, 2, &api::SubtitleCodec::Srt);
+        let ass = subtitle_cache_path(data_dir, item_id, 2, &api::SubtitleCodec::Ass);
+
+        assert_eq!(
+            srt,
+            data_dir
+                .join("subtitle-cache")
+                .join(format!("{item_id}_2.srt"))
+        );
+        assert_eq!(
+            ass,
+            data_dir
+                .join("subtitle-cache")
+                .join(format!("{item_id}_2.ass"))
+        );
+        assert_ne!(srt, ass);
+    }
+
+    #[test]
+    fn native_ass_extraction_preserves_the_original_stream() {
+        let cache = subtitle_cache_codec("ass");
+
+        assert_eq!(cache, api::SubtitleCodec::Ass);
+        assert_eq!(subtitle_cache_ffmpeg_codec(&cache, Some("ass")), "copy");
+        assert_eq!(subtitle_cache_ffmpeg_codec(&cache, Some("SSA")), "copy");
+        assert_eq!(cache.to_string(), "ass");
+    }
+
+    #[test]
+    fn non_ass_source_is_converted_when_ass_is_requested() {
+        let cache = subtitle_cache_codec("ssa");
+
+        assert_eq!(cache, api::SubtitleCodec::Ass);
+        assert_eq!(subtitle_cache_ffmpeg_codec(&cache, Some("subrip")), "ass");
     }
 }
