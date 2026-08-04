@@ -361,7 +361,7 @@ jobs:
                   exit 1
                 }
               } catch {
-                Write-Error "web UI not served at $path: $_"
+                Write-Error "web UI not served at ${path}: $_"
                 exit 1
               }
             }
