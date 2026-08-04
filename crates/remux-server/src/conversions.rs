@@ -207,11 +207,7 @@ impl From<db::Media> for api::MediaSourceInfo {
             .probe_data
             .as_ref()
             .and_then(|p| p.size);
-        let (
-            mut media_streams,
-            default_audio_stream_index,
-            default_subtitle_stream_index,
-        ) = source
+        let mut media_streams = source
             .probe_data
             .map(|mut p| {
                 for s in &mut p.media_streams {
@@ -219,11 +215,7 @@ impl From<db::Media> for api::MediaSourceInfo {
                         s.is_text_subtitle_stream = s.is_text_subtitle_stream();
                     }
                 }
-                (
-                    p.media_streams,
-                    p.default_audio_stream_index,
-                    p.default_subtitle_stream_index,
-                )
+                p.media_streams
             })
             .unwrap_or_default();
 
@@ -306,8 +298,9 @@ impl From<db::Media> for api::MediaSourceInfo {
             bitrate: probe_bitrate,
             size: probe_size,
             media_streams,
-            default_audio_stream_index,
-            default_subtitle_stream_index,
+            // `default_audio_stream_index` / `default_subtitle_stream_index` are
+            // derived per request via `MediaSourceInfo::resolve_default_streams`;
+            // stored probe data never carries them.
             ..Default::default()
         }
     }

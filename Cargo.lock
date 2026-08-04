@@ -6609,6 +6609,7 @@ dependencies = [
  "default2",
  "duration-str",
  "http 1.4.0",
+ "isolang",
  "itertools 0.14.0",
  "md5",
  "merge",

@@ -521,33 +521,6 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
     let mut audio_idx: i64 = 0;
     let mut sub_idx: i64 = 0;
 
-    // Whether any stream of a given type carries the container's `default`
-    // disposition flag. When none does, the first stream of that type is the
-    // de-facto default (ffprobe reports `disposition.default` only when the
-    // muxer recorded it; unflagged audio/subtitle tracks default to first-in-list).
-    let audio_has_disposition_default = probe
-        .streams
-        .iter()
-        .any(|s| {
-            s.codec_type
-                .as_deref()
-                == Some("audio")
-                && s.disposition
-                    .default
-                    != 0
-        });
-    let subtitle_has_disposition_default = probe
-        .streams
-        .iter()
-        .any(|s| {
-            s.codec_type
-                .as_deref()
-                == Some("subtitle")
-                && s.disposition
-                    .default
-                    != 0
-        });
-
     for s in &probe.streams {
         let codec_type = s
             .codec_type
@@ -703,11 +676,12 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     .parse::<AudioCodec>()
                     .unwrap()
                     .to_string();
+                // Only the container's real disposition flag counts as a default;
+                // no first-of-type synthesis (an unflagged track has no default).
                 let is_default = s
                     .disposition
                     .default
-                    != 0
-                    || (audio_idx == 0 && !audio_has_disposition_default);
+                    != 0;
                 let is_forced = s
                     .disposition
                     .forced
@@ -779,11 +753,12 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                 } else {
                     None
                 };
+                // Only the container's real disposition flag counts as a default;
+                // no first-of-type synthesis (an unflagged track has no default).
                 let is_default = s
                     .disposition
                     .default
-                    != 0
-                    || (sub_idx == 0 && !subtitle_has_disposition_default);
+                    != 0;
                 let is_forced = s
                     .disposition
                     .forced
@@ -843,23 +818,11 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
 
     apply_video_bitrate_fallback(&mut streams, overall_bitrate);
 
-    // The default stream of each type is the one flagged `default` in the
-    // container; fall back to first-of-type when nothing is flagged (the
-    // per-stream `is_default` flags above already encode this).
-    let default_audio_stream_index = streams
-        .iter()
-        .find(|s| {
-            matches!(s.type_, Some(api::MediaStreamType::Audio))
-                && s.is_default == Some(true)
-        })
-        .map(|s| s.index);
-    let default_subtitle_stream_index = streams
-        .iter()
-        .find(|s| {
-            matches!(s.type_, Some(api::MediaStreamType::Subtitle))
-                && s.is_default == Some(true)
-        })
-        .map(|s| s.index);
+    // NOTE: `default_audio_stream_index` / `default_subtitle_stream_index` are
+    // deliberately NOT computed here. They are derived, per-request API values
+    // (see `MediaSourceInfo::resolve_default_streams`) and must not be persisted
+    // in probe data. The per-stream `is_default` flags above are the container
+    // facts that derivation builds on.
 
     let segments = chapters_to_segments(&probe.chapters);
 
@@ -870,8 +833,6 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
             run_time_ticks,
             bitrate: overall_bitrate,
             size: file_size,
-            default_audio_stream_index,
-            default_subtitle_stream_index,
             ..Default::default()
         },
         segments,

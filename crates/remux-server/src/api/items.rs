@@ -1886,13 +1886,20 @@ async fn item_for_user(
             })
             .unwrap_or_default();
         if let Some(ref mut sources) = base_item.media_sources {
-            crate::api::playback::apply_language_defaults(
-                sources,
-                &cfg,
-                server_config
-                    .preferred_metadata_language
-                    .as_deref(),
-            );
+            // Default audio/subtitle stream indexes are per-request API values
+            // (never persisted) — derive them here for the detail page.
+            for source in sources.iter_mut() {
+                source.resolve_default_streams(
+                    &cfg,
+                    server_config
+                        .preferred_metadata_language
+                        .as_deref(),
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+            }
         }
     }
 

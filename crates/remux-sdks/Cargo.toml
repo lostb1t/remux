@@ -28,6 +28,7 @@ merge = "0.2"
 default2 = "1"
 duration-str = "0.18"
 serde_derive = "1"
+isolang = { version = "2.4.0", features = ["list_languages"] }
 nutype = { version = "0.6", features = ["serde", "regex"] }
 regex = "1"
 
