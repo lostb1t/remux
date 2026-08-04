@@ -224,6 +224,18 @@ pub trait StreamSource: Send + Sync {
     async fn serve(&self, state: &AppState, headers: &HeaderMap) -> Result<Response>;
 }
 
+static STREAM_PROXY_CLIENT: std::sync::LazyLock<reqwest::Client> =
+    std::sync::LazyLock::new(|| {
+        reqwest::Client::builder()
+            .user_agent("remux-server/1.0")
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .pool_max_idle_per_host(20)
+            .pool_idle_timeout(std::time::Duration::from_secs(90))
+            .tcp_keepalive(std::time::Duration::from_secs(60))
+            .build()
+            .expect("failed to build stream proxy client")
+    });
+
 pub struct HttpSource {
     pub url: String,
     pub request_headers: std::collections::HashMap<String, String>,
@@ -279,7 +291,7 @@ impl TorrentSource {
 #[async_trait]
 impl StreamSource for HttpSource {
     async fn serve(&self, _state: &AppState, headers: &HeaderMap) -> Result<Response> {
-        let mut req = reqwest::Client::new().get(&self.url);
+        let mut req = STREAM_PROXY_CLIENT.clone().get(&self.url);
         if let Some(v) = headers.get(http::header::RANGE) {
             req = req.header(http::header::RANGE, v.clone());
         }
@@ -470,4 +482,48 @@ fn extract_query_param(url: &str, param: &str) -> Option<String> {
         .query_pairs()
         .find(|(k, _)| k == param)
         .map(|(_, v)| v.into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::STREAM_PROXY_CLIENT;
+
+    #[test]
+    fn stream_proxy_client_builds_without_panic() {
+        let _ = &*STREAM_PROXY_CLIENT;
+    }
+
+    #[tokio::test]
+    async fn stream_proxy_client_forwards_range_and_returns_206() {
+        let server = httpmock::MockServer::start();
+
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/file.mkv")
+                .header("Range", "bytes=0-1023");
+            then.status(206)
+                .header("Content-Range", "bytes 0-1023/1048576")
+                .header("Accept-Ranges", "bytes")
+                .body(b"payload".to_vec());
+        });
+
+        let resp = STREAM_PROXY_CLIENT
+            .clone()
+            .get(format!("{}/file.mkv", server.base_url()))
+            .header("Range", "bytes=0-1023")
+            .send()
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(resp.status().as_u16(), 206);
+        assert_eq!(
+            resp.headers()
+                .get("content-range")
+                .unwrap(),
+            "bytes 0-1023/1048576"
+        );
+        resp.text()
+            .await
+            .expect("body should drain");
+    }
 }
