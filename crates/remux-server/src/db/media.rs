@@ -4616,15 +4616,11 @@ impl Media {
                 .as_ref()
         });
 
-        // Music smart collection Albums view: hide singles/EPs. Only applies when
-        // the parent is a Music collection AND the query asks for Albums (artist
-        // pages and track listings keep singles).
-        let album_kinds = parent
-            .as_ref()
-            .is_some_and(|p| {
-                p.collection_media_kind == Some(CollectionMediaKind::Music)
-                    && kinds.contains(&MediaKind::Album)
-            })
+        // Album queries never want singles/EPs (Jellyfin MusicAlbum type): whenever
+        // the request asks for Album rows, restrict to real albums. Untyped albums
+        // (NULL album_kind) still show.
+        let album_kinds = kinds
+            .contains(&MediaKind::Album)
             .then(|| vec![AlbumKind::Album]);
 
         let mut result = Self::get_by_filter(
