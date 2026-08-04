@@ -1170,9 +1170,10 @@ pub struct MediaFilter {
     pub sort_order: Vec<api::SortOrder>,
     /// For TvProgram queries: order by the parent channel's sort_order / channel_number.
     pub sort_by_channel_order: bool,
-    /// Music Albums view: hide albums whose Deezer `album_kind` is "single" or
-    /// "ep" (kept under Tracks). Albums without a stored type are shown.
-    pub exclude_album_singles: bool,
+    /// Restrict Album rows to these release kinds (e.g. only real albums for the
+    /// Albums view). `None` = no restriction; albums without a stored kind are
+    /// always included.
+    pub album_kinds: Option<Vec<AlbumKind>>,
     /// Structured filter from a smart collection (groups of rules).
     pub filter_rules: Option<remux_sdks::remux::CollectionFilter>,
     /// Structured filter from user policy (applied separately, never on containers).
@@ -2914,12 +2915,17 @@ impl Media {
                     qb.push_in("kind", &kind);
                 }
             }
-            if filter.exclude_album_singles {
-                // Music Albums view: singles/EPs (Deezer album_kind) stay under
-                // Tracks; albums without a stored type are shown.
-                qb.push(
-                    " AND (kind != 'album' OR COALESCE(album_kind, 'album') NOT IN ('single', 'ep'))",
-                );
+            if let Some(kinds) = &filter.album_kinds {
+                if !kinds.is_empty() {
+                    // Only the requested release kinds; albums without a stored
+                    // kind (NULL) are treated as albums and always included.
+                    qb.push(" AND (album_kind IS NULL OR album_kind IN (");
+                    let mut sep = qb.separated(", ");
+                    for k in kinds {
+                        sep.push_bind(k);
+                    }
+                    qb.push("))");
+                }
             }
             if let Some(id) = &filter.id {
                 qb.push_in("id", &id);
@@ -4613,18 +4619,19 @@ impl Media {
         // Music smart collection Albums view: hide singles/EPs. Only applies when
         // the parent is a Music collection AND the query asks for Albums (artist
         // pages and track listings keep singles).
-        let exclude_album_singles = parent
+        let album_kinds = parent
             .as_ref()
             .is_some_and(|p| {
                 p.collection_media_kind == Some(CollectionMediaKind::Music)
                     && kinds.contains(&MediaKind::Album)
-            });
+            })
+            .then(|| vec![AlbumKind::Album]);
 
         let mut result = Self::get_by_filter(
             db,
             &MediaFilter {
                 kind: Some(kinds),
-                exclude_album_singles,
+                album_kinds,
                 enabled: has_tv_channel.then_some(true),
                 promoted: filter.promoted,
                 limit: filter
@@ -7996,7 +8003,7 @@ mod tests {
     /// The Albums view excludes Deezer singles/EPs but keeps albums (including
     /// albums without a stored type).
     #[tokio::test]
-    async fn exclude_album_singles_filters_album_kind() {
+    async fn album_kinds_filters_release_kinds() {
         let (_server, guard) = crate::integration_test::new_test_server()
             .await
             .unwrap();
@@ -8047,12 +8054,12 @@ mod tests {
             .await
             .unwrap();
 
-        let fetch_titles = |exclude: bool| async move {
+        let fetch_titles = |album_kinds: Option<Vec<AlbumKind>>| async move {
             let result = Media::get_by_filter(
                 db,
                 &MediaFilter {
                     kind: Some(vec![MediaKind::Album]),
-                    exclude_album_singles: exclude,
+                    album_kinds,
                     sort_by: vec![api::ItemSortBy::SortName],
                     ..Default::default()
                 },
@@ -8066,14 +8073,14 @@ mod tests {
                 .collect::<Vec<_>>()
         };
 
-        let all = fetch_titles(false).await;
+        let all = fetch_titles(None).await;
         assert_eq!(
             all.len(),
             4,
             "without the filter every album is returned; got {all:?}"
         );
 
-        let filtered = fetch_titles(true).await;
+        let filtered = fetch_titles(Some(vec![AlbumKind::Album])).await;
         assert_eq!(filtered, vec!["No Type", "Real Album"]);
     }
 }
