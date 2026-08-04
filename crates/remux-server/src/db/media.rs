@@ -1414,6 +1414,17 @@ impl Media {
         )
     }
 
+    /// Whether this is an Album row that is really a single or EP (Deezer
+    /// `album_kind`). Such rows are kept under Tracks, not shown in the Albums
+    /// view or album search results.
+    pub fn is_single_or_ep_album(&self) -> bool {
+        matches!(self.kind, MediaKind::Album)
+            && matches!(
+                self.album_kind,
+                Some(AlbumKind::Single) | Some(AlbumKind::Ep)
+            )
+    }
+
     /// Best-effort album name for a music item: the loaded parent row
     /// (`self.parent`, set by [`Self::preload_parents`]), then the flat
     /// `external_ids.album_title` (playlist imports have no album row).

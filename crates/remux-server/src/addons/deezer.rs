@@ -896,11 +896,14 @@ impl DeezerAddon {
         let t = std::time::Instant::now();
         debug!(query, limit, "Deezer album search starting");
 
+        // Fetch a larger slice than the caller wants: singles/EPs are filtered
+        // out below, so only a fraction of the response survives.
+        let fetch = (limit * 3).min(100);
         let data = match self
             .client
             .execute(dz::SearchAlbumsEndpoint {
                 q: query.to_string(),
-                limit: limit.min(25) as u32,
+                limit: fetch as u32,
             })
             .await
         {
@@ -918,6 +921,9 @@ impl DeezerAddon {
         let results: Vec<_> = data
             .into_iter()
             .map(album_to_result)
+            // Singles/EPs belong under Tracks, not Albums.
+            .filter(|m| !m.is_single_or_ep_album())
+            .take(limit)
             .collect();
         debug!(
             query,
