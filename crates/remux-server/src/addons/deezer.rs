@@ -370,6 +370,13 @@ impl DeezerAddon {
             kind: db::MediaKind::Album,
             released_at,
             description: Some(desc_parts.join(" · ")),
+            album_kind: a
+                .record_type
+                .as_deref()
+                .and_then(|r| {
+                    r.parse()
+                        .ok()
+                }),
             external_ids: db::ExternalIds {
                 deezer_album: Some(a.id as i64),
                 deezer_artist: a
@@ -585,6 +592,13 @@ impl DeezerAddon {
                     kind: db::MediaKind::Album,
                     parent_id: Some(root.id),
                     grandparent_id: Some(root.id),
+                    album_kind: album
+                        .record_type
+                        .as_deref()
+                        .and_then(|r| {
+                            r.parse()
+                                .ok()
+                        }),
                     external_ids: db::ExternalIds {
                         deezer_album: Some(album.id as i64),
                         deezer_artist: Some(artist_id_raw),
@@ -889,11 +903,14 @@ impl DeezerAddon {
         let t = std::time::Instant::now();
         debug!(query, limit, "Deezer album search starting");
 
+        // Fetch a larger slice than the caller wants: singles/EPs are filtered
+        // out below, so only a fraction of the response survives.
+        let fetch = (limit * 3).min(100);
         let data = match self
             .client
             .execute(dz::SearchAlbumsEndpoint {
                 q: query.to_string(),
-                limit: limit.min(25) as u32,
+                limit: fetch as u32,
             })
             .await
         {
@@ -911,6 +928,9 @@ impl DeezerAddon {
         let results: Vec<_> = data
             .into_iter()
             .map(album_to_result)
+            // Singles/EPs belong under Tracks, not Albums.
+            .filter(|m| !m.is_single_or_ep_album())
+            .take(limit)
             .collect();
         debug!(
             query,
@@ -1439,6 +1459,13 @@ fn album_to_result(a: dz::SearchAlbum) -> db::Media {
             a.artist
                 .name
         )),
+        album_kind: a
+            .record_type
+            .as_deref()
+            .and_then(|r| {
+                r.parse()
+                    .ok()
+            }),
         grandparent_id: Some(artist_id),
         external_ids: db::ExternalIds {
             deezer_album: Some(a.id as i64),
