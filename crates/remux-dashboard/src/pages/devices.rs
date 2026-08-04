@@ -144,7 +144,6 @@ pub fn DevicesPage(app_state: AppState) -> Element {
                             let label_for_btn = user_label.clone();
                             rsx! {
                                 div { class: "device-user-section", key: "{uid}",
-                                    // Section header: username + revoke-all button
                                     div { class: "device-user-header",
                                         span { class: "device-user-label", "{user_label}" }
                                         button {
@@ -153,7 +152,6 @@ pub fn DevicesPage(app_state: AppState) -> Element {
                                             "Revoke all sessions"
                                         }
                                     }
-                                    // Device rows for this user
                                     div { class: "row-list",
                                         for device in user_devices {
                                             {

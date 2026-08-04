@@ -293,7 +293,7 @@ html, body {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
+  padding: 6px 20px;
   border-bottom: 1px solid var(--border);
 }
 .device-search .input {
@@ -337,7 +337,7 @@ html, body {
   min-width: 0;
 }
 
-/* Section-level revoke — ghost text, only visible on hover of header */
+/* Section-level revoke — subdued at rest, full error color on hover */
 .btn-section-revoke {
   flex-shrink: 0;
   background: none;
@@ -346,13 +346,12 @@ html, body {
   font-size: .65rem;
   font-family: var(--font-mono);
   letter-spacing: .04em;
-  color: var(--error);
-  opacity: .45;
+  color: var(--text-dim);
   cursor: pointer;
-  transition: opacity var(--transition);
+  transition: color var(--transition);
   text-transform: uppercase;
 }
-.btn-section-revoke:hover { opacity: 1; }
+.btn-section-revoke:hover { color: var(--error); }
 
 
 /* ── Device rows (responsive) ────────────────────────────────────── */
