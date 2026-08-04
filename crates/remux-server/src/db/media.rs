@@ -3157,6 +3157,56 @@ impl Media {
                         api::ItemSortBy::CommunityRating => {
                             format!("COALESCE(rating_audience, rating_critic) {}", dir)
                         }
+                        api::ItemSortBy::CriticRating => {
+                            format!("COALESCE(rating_critic, 0) {}", dir)
+                        }
+                        api::ItemSortBy::AiredEpisodeOrder => {
+                            format!(
+                                "COALESCE(parent_idx, 999999) {dir}, COALESCE(idx, 999999) {dir}"
+                            )
+                        }
+                        api::ItemSortBy::OfficialRating => {
+                            format!("COALESCE(certification_age, 999999) {}", dir)
+                        }
+                        api::ItemSortBy::VideoBitRate => {
+                            format!(
+                                "COALESCE(json_extract(probe_data, '$.Bitrate'), 0) {}",
+                                dir
+                            )
+                        }
+                        api::ItemSortBy::Artist => {
+                            // Artist name: grandparent row for tracks, parent row for
+                            // albums, own title for artist rows.
+                            format!(
+                                "CASE WHEN kind = 'track' THEN \
+                                   COALESCE((SELECT g.title FROM media g WHERE g.id = media.grandparent_id), '') \
+                                 WHEN kind = 'album' THEN \
+                                   COALESCE((SELECT p.title FROM media p WHERE p.id = media.parent_id), '') \
+                                 ELSE COALESCE(title, '') END COLLATE NOCASE {}",
+                                dir
+                            )
+                        }
+                        api::ItemSortBy::AlbumArtist => {
+                            // Album artist: the artist of the album (parent row for
+                            // albums, grandparent for tracks).
+                            format!(
+                                "CASE WHEN kind = 'track' THEN \
+                                   COALESCE((SELECT g.title FROM media g WHERE g.id = media.grandparent_id), '') \
+                                 WHEN kind = 'album' THEN \
+                                   COALESCE((SELECT p.title FROM media p WHERE p.id = media.parent_id), '') \
+                                 ELSE COALESCE(title, '') END COLLATE NOCASE {}",
+                                dir
+                            )
+                        }
+                        api::ItemSortBy::Album => {
+                            // Album title: parent row for tracks, own title for albums.
+                            format!(
+                                "CASE WHEN kind = 'track' THEN \
+                                   COALESCE((SELECT p.title FROM media p WHERE p.id = media.parent_id), '') \
+                                 ELSE COALESCE(title, '') END COLLATE NOCASE {}",
+                                dir
+                            )
+                        }
                         api::ItemSortBy::IndexNumber => {
                             format!("COALESCE(idx, 999999) {}", dir)
                         }
@@ -7026,5 +7076,303 @@ mod tests {
             "future episode must remain hidden; got: {:?}",
             titles
         );
+    }
+
+    // ── Sort arms ────────────────────────────────────────────────────────────
+
+    async fn sort_titles(
+        db: &sqlx::SqlitePool,
+        kind: MediaKind,
+        sort_by: api::ItemSortBy,
+        order: api::SortOrder,
+    ) -> Vec<String> {
+        let result = Media::get_by_filter(
+            db,
+            &MediaFilter {
+                kind: Some(vec![kind]),
+                sort_by: vec![sort_by],
+                sort_order: vec![order],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        result
+            .records
+            .into_iter()
+            .map(|m| m.title)
+            .collect()
+    }
+
+    fn media_row(kind: MediaKind, title: &str, imdb: &str) -> Media {
+        let ext = ExternalIds {
+            imdb: Some(NonEmptyString::try_new(imdb.to_string()).unwrap()),
+            ..Default::default()
+        };
+        let id = uuid::Uuid::from(&MediaIdRaw {
+            kind: kind.clone(),
+            external_ids: ext.clone(),
+            season: None,
+            episode: None,
+        });
+        Media {
+            id,
+            title: title.to_string(),
+            kind,
+            external_ids: ext,
+            ..Default::default()
+        }
+    }
+
+    /// CriticRating sorts by rating_critic (descending).
+    #[tokio::test]
+    async fn sort_by_critic_rating() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let mut low = media_row(MediaKind::Movie, "Low", "tt1001");
+        low.rating_critic = Some(10.0);
+        let mut mid = media_row(MediaKind::Movie, "Mid", "tt1002");
+        mid.rating_critic = Some(50.0);
+        let mut high = media_row(MediaKind::Movie, "High", "tt1003");
+        high.rating_critic = Some(90.0);
+        low.save(db)
+            .await
+            .unwrap();
+        mid.save(db)
+            .await
+            .unwrap();
+        high.save(db)
+            .await
+            .unwrap();
+
+        let titles = sort_titles(
+            db,
+            MediaKind::Movie,
+            api::ItemSortBy::CriticRating,
+            api::SortOrder::Descending,
+        )
+        .await;
+        assert_eq!(titles, vec!["High", "Mid", "Low"]);
+    }
+
+    /// OfficialRating sorts by certification_age (descending).
+    #[tokio::test]
+    async fn sort_by_official_rating() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let mut low = media_row(MediaKind::Movie, "PG13", "tt2001");
+        low.certification_age = Some(13);
+        let mut mid = media_row(MediaKind::Movie, "PG16", "tt2002");
+        mid.certification_age = Some(16);
+        let mut high = media_row(MediaKind::Movie, "R18", "tt2003");
+        high.certification_age = Some(18);
+        low.save(db)
+            .await
+            .unwrap();
+        mid.save(db)
+            .await
+            .unwrap();
+        high.save(db)
+            .await
+            .unwrap();
+
+        let titles = sort_titles(
+            db,
+            MediaKind::Movie,
+            api::ItemSortBy::OfficialRating,
+            api::SortOrder::Descending,
+        )
+        .await;
+        assert_eq!(titles, vec!["R18", "PG16", "PG13"]);
+    }
+
+    /// AiredEpisodeOrder sorts by season, then episode number.
+    #[tokio::test]
+    async fn sort_by_aired_episode_order() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        for (t, s, e) in [
+            ("S1E2", 1, 2),
+            ("S1E1", 1, 1),
+            ("S2E1", 2, 1),
+            ("S0E5", 0, 5),
+        ] {
+            // series_imdb must be set before the stable UUID is derived so each
+            // episode gets a distinct id (canonical() uses series_imdb + numbers).
+            let mut ext = ExternalIds {
+                series_imdb: Some(
+                    NonEmptyString::try_new("tt3999".to_string()).unwrap(),
+                ),
+                ..Default::default()
+            };
+            let id = uuid::Uuid::from(&MediaIdRaw {
+                kind: MediaKind::Episode,
+                external_ids: ext.clone(),
+                season: Some(s),
+                episode: Some(e),
+            });
+            let mut ep = Media {
+                id,
+                title: t.to_string(),
+                kind: MediaKind::Episode,
+                external_ids: ext,
+                ..Default::default()
+            };
+            ep.parent_idx = Some(s);
+            ep.idx = Some(e);
+            ep.save(db)
+                .await
+                .unwrap();
+        }
+
+        let titles = sort_titles(
+            db,
+            MediaKind::Episode,
+            api::ItemSortBy::AiredEpisodeOrder,
+            api::SortOrder::Ascending,
+        )
+        .await;
+        assert_eq!(titles, vec!["S0E5", "S1E1", "S1E2", "S2E1"]);
+    }
+
+    /// Artist sorts by the grandparent (artist) row title; Album by the parent
+    /// (album) row title.
+    #[tokio::test]
+    async fn sort_by_artist_and_album() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+
+        // Build with the deezer ids set BEFORE deriving the stable UUID, so each
+        // row gets a distinct id (canonical() for music uses only the deezer id).
+        let music = |kind: MediaKind, title: &str, imdb: &str, deezer: i64| {
+            let mut ext = ExternalIds {
+                imdb: Some(NonEmptyString::try_new(imdb.to_string()).unwrap()),
+                ..Default::default()
+            };
+            match kind {
+                MediaKind::Artist => ext.deezer_artist = Some(deezer),
+                MediaKind::Album => ext.deezer_album = Some(deezer),
+                MediaKind::Track => ext.deezer_track = Some(deezer),
+                _ => {}
+            }
+            let id = uuid::Uuid::from(&MediaIdRaw {
+                kind: kind.clone(),
+                external_ids: ext.clone(),
+                season: None,
+                episode: None,
+            });
+            Media {
+                id,
+                title: title.to_string(),
+                kind,
+                external_ids: ext,
+                ..Default::default()
+            }
+        };
+
+        let mut artist_a = music(MediaKind::Artist, "Adele", "tt4001", 1);
+        artist_a
+            .save(db)
+            .await
+            .unwrap();
+        let mut artist_z = music(MediaKind::Artist, "Zed", "tt4002", 2);
+        artist_z
+            .save(db)
+            .await
+            .unwrap();
+
+        let mut album_21 = music(MediaKind::Album, "21", "tt4003", 3);
+        album_21.parent_id = Some(artist_a.id);
+        album_21
+            .save(db)
+            .await
+            .unwrap();
+        let mut album_z = music(MediaKind::Album, "AlbumZ", "tt4004", 4);
+        album_z.parent_id = Some(artist_z.id);
+        album_z
+            .save(db)
+            .await
+            .unwrap();
+
+        let mut t1 = music(MediaKind::Track, "Hello", "tt4005", 5);
+        t1.parent_id = Some(album_21.id);
+        t1.grandparent_id = Some(artist_a.id);
+        t1.save(db)
+            .await
+            .unwrap();
+        let mut t2 = music(MediaKind::Track, "Zed Song", "tt4006", 6);
+        t2.parent_id = Some(album_z.id);
+        t2.grandparent_id = Some(artist_z.id);
+        t2.save(db)
+            .await
+            .unwrap();
+
+        let by_artist = sort_titles(
+            db,
+            MediaKind::Track,
+            api::ItemSortBy::Artist,
+            api::SortOrder::Ascending,
+        )
+        .await;
+        assert_eq!(by_artist, vec!["Hello", "Zed Song"]);
+
+        let by_album = sort_titles(
+            db,
+            MediaKind::Track,
+            api::ItemSortBy::Album,
+            api::SortOrder::Ascending,
+        )
+        .await;
+        assert_eq!(by_album, vec!["Hello", "Zed Song"]);
+    }
+
+    /// VideoBitRate sorts by the probed container bitrate (descending).
+    #[tokio::test]
+    async fn sort_by_video_bitrate() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        for (t, bps) in [
+            ("Small", 1_000_000),
+            ("Big", 20_000_000),
+            ("Mid", 5_000_000),
+        ] {
+            let mut m = media_row(MediaKind::Movie, t, &format!("tt5{t}"));
+            m.probe_data = Some(api::MediaSourceInfo {
+                bitrate: Some(bps),
+                ..Default::default()
+            });
+            m.save(db)
+                .await
+                .unwrap();
+        }
+
+        let titles = sort_titles(
+            db,
+            MediaKind::Movie,
+            api::ItemSortBy::VideoBitRate,
+            api::SortOrder::Descending,
+        )
+        .await;
+        assert_eq!(titles, vec!["Big", "Mid", "Small"]);
     }
 }
