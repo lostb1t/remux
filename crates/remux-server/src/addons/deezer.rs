@@ -1446,6 +1446,13 @@ fn album_to_result(a: dz::SearchAlbum) -> db::Media {
             a.artist
                 .name
         )),
+        album_kind: a
+            .record_type
+            .as_deref()
+            .and_then(|r| {
+                r.parse()
+                    .ok()
+            }),
         grandparent_id: Some(artist_id),
         external_ids: db::ExternalIds {
             deezer_album: Some(a.id as i64),

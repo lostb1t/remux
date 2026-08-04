@@ -148,6 +148,8 @@ pub struct SearchAlbum {
     pub id: u64,
     pub title: String,
     pub cover_medium: Option<String>,
+    /// "album" | "single" | "ep" — keeps singles/EPs out of album search results.
+    pub record_type: Option<String>,
     pub artist: ArtistRef,
 }
 
@@ -340,5 +342,17 @@ mod tests {
         let json = r#"{"id": 1, "title": "Hello"}"#;
         let album: Album = serde_json::from_str(json).unwrap();
         assert_eq!(album.record_type, None);
+    }
+
+    #[test]
+    fn search_album_parses_record_type() {
+        let json = r#"{"id": 1, "title": "APT.", "record_type": "single", "artist": {"id": 2, "name": "Bruno Mars"}}"#;
+        let album: SearchAlbum = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            album
+                .record_type
+                .as_deref(),
+            Some("single")
+        );
     }
 }

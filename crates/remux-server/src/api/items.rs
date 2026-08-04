@@ -167,6 +167,16 @@ pub async fn get_danmu_raw(
     StatusCode::NOT_FOUND
 }
 
+/// Search results: singles/EPs belong under Tracks, not surfaced as Albums
+/// (Deezer `album_kind`). Applies to both live addon results and library hits.
+fn keep_non_single_album(m: &db::Media) -> bool {
+    !matches!(m.kind, db::MediaKind::Album)
+        || !matches!(
+            m.album_kind,
+            Some(db::AlbumKind::Single) | Some(db::AlbumKind::Ep)
+        )
+}
+
 pub async fn get_items(
     state: AppState,
     session: auth::AuthSession,
@@ -358,6 +368,7 @@ pub async fn get_items(
                     Ok(results) => {
                         let items: Vec<_> = results
                             .into_iter()
+                            .filter(keep_non_single_album)
                             .map(|m| api::db_media_to_item(m, hide_sources))
                             .filter(|item| {
                                 q.media_types
@@ -412,6 +423,7 @@ pub async fn get_items(
                         all_items.extend(
                             r.records
                                 .into_iter()
+                                .filter(keep_non_single_album)
                                 .map(|m| api::db_media_to_item(m, hide_sources)),
                         );
                     }
