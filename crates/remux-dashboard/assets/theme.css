@@ -312,15 +312,14 @@ html, body {
 .device-search .input:focus { border-color: var(--primary); }
 
 /* ── Device user sections ─────────────────────────────────────────── */
-.device-user-section { border-bottom: 1px solid var(--border); }
-.device-user-section:last-child { border-bottom: none; }
+.device-user-section + .device-user-section { margin-top: 2px; }
 
 .device-user-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 20px 6px 20px;
-  border-bottom: 1px solid var(--border);
+  padding: 6px 20px;
+  background: var(--hover-overlay);
   gap: 8px;
 }
 
@@ -379,11 +378,9 @@ html, body {
 .device-row {
   display: flex;
   align-items: center;
-  border-bottom: 1px solid var(--border);
   transition: background var(--transition);
 }
-.device-row:last-child { border-bottom: none; }
-.device-row:hover      { background: var(--hover-overlay); }
+.device-row:hover { background: var(--hover-overlay); }
 
 .device-col-name   { flex: 1 1 0; min-width: 0; padding: 8px 12px 8px 20px; }
 .device-col-app    { flex: 0 0 auto; padding: 8px 12px; max-width: 180px; min-width: 0; }
