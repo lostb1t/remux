@@ -1221,6 +1221,26 @@ async fn scan_addon(
     let mut seen_ids: Vec<Uuid> = Vec::new();
     let mut upserted = 0usize;
 
+    // Tracks already scanned with folder-derived metadata get probed once for
+    // embedded tags (the most accurate source); skip re-probing afterwards.
+    let existing_track_meta: std::collections::HashMap<
+        String,
+        (Option<String>, Option<String>),
+    > = if media_kind == "track" {
+        sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+            "SELECT path, artist, album FROM opendal_files \
+                 WHERE addon_id = ? AND media_kind = 'track'",
+        )
+        .bind(addon.id)
+        .fetch_all(&ctx.db)
+        .await?
+        .into_iter()
+        .map(|(p, a, b)| (p, (a, b)))
+        .collect()
+    } else {
+        Default::default()
+    };
+
     for (operator, list_from, path_prefix) in scan_roots {
         let mut lister = operator
             .lister_with(&list_from)
@@ -1672,6 +1692,39 @@ async fn scan_addon(
             } else {
                 (None, None)
             };
+
+            // Embedded tags (ffprobe) are the most accurate metadata source
+            // (Jellyfin's priority); they win over folder/filename parsing.
+            // Probing is a one-time cost per file — existing rows that already
+            // carry probed artist/album are skipped.
+            let (mut title, mut track_number, mut year) = (title, track_number, year);
+            let (mut artist, mut album) = (artist, album);
+            if media_kind == "track" && is_local {
+                let already_probed = existing_track_meta
+                    .get(&stored_path)
+                    .map(|(a, b)| a.is_some() || b.is_some())
+                    .unwrap_or(false);
+                if !already_probed {
+                    if let Some(tags) = crate::playback::probe::probe_audio_tags(&path)
+                    {
+                        artist = tags
+                            .artist
+                            .or(artist);
+                        album = tags
+                            .album
+                            .or(album);
+                        title = tags
+                            .title
+                            .or(title);
+                        track_number = tags
+                            .track_number
+                            .or(track_number);
+                        year = tags
+                            .year
+                            .or(year);
+                    }
+                }
+            }
 
             let size = Some(
                 entry
