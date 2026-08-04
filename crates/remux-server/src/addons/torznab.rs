@@ -154,12 +154,7 @@ impl TorznabAddon {
                 .unwrap_or_default(),
         };
 
-        let query = match artist.as_deref() {
-            Some(a) => format!("{} {}", a, media.title),
-            None => media
-                .title
-                .clone(),
-        };
+        let query = media.track_search_query();
 
         debug!(query, title = %media.title, "torznab track stream lookup");
 

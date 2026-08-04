@@ -12,23 +12,6 @@ use crate::{AppContext, AppState, db, keyed_lock::KeyedLock};
 
 pub struct MediaResolveService;
 
-/// Deezer search query that pins the artist when known, so a title-only match
-/// can't resolve to the wrong artist's track/album.
-fn deezer_search_q(media: &db::Media, kind: &str) -> String {
-    match media.artist_name() {
-        Some(artist) => format!(
-            "artist:\"{}\" {kind}:\"{}\"",
-            artist.replace('"', ""),
-            media
-                .title
-                .replace('"', "")
-        ),
-        None => media
-            .title
-            .clone(),
-    }
-}
-
 impl MediaResolveService {
     async fn resolve_media_imdb(media: &mut db::Media, ctx: &AppContext) -> bool {
         if media
@@ -76,7 +59,7 @@ impl MediaResolveService {
                 let Ok(client) = RestClient::new("https://api.deezer.com/") else {
                     return false;
                 };
-                let q = deezer_search_q(media, "track");
+                let q = media.deezer_search_query("track");
                 let hit = match client
                     .execute(dz::SearchTracksEndpoint { q, limit: 1 })
                     .await
@@ -125,7 +108,7 @@ impl MediaResolveService {
                 let Ok(client) = RestClient::new("https://api.deezer.com/") else {
                     return false;
                 };
-                let q = deezer_search_q(media, "album");
+                let q = media.deezer_search_query("album");
                 let hit = match client
                     .execute(dz::SearchAlbumsEndpoint { q, limit: 1 })
                     .await
@@ -429,7 +412,6 @@ impl FromRequestParts<AppState> for ResolvedItem {
 
 #[cfg(test)]
 mod tests {
-    use super::deezer_search_q;
     use crate::db;
     use uuid::Uuid;
 
@@ -480,7 +462,7 @@ mod tests {
     fn deezer_query_pins_artist_when_known() {
         let media = track(None, Some("Adele"), None, "Hello");
         assert_eq!(
-            deezer_search_q(&media, "track"),
+            media.deezer_search_query("track"),
             "artist:\"Adele\" track:\"Hello\""
         );
     }
@@ -496,7 +478,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            deezer_search_q(&media, "album"),
+            media.deezer_search_query("album"),
             "artist:\"AB\" album:\"So Special\""
         );
     }
@@ -504,6 +486,6 @@ mod tests {
     #[test]
     fn deezer_query_title_only_without_artist() {
         let media = track(None, None, None, "Hello");
-        assert_eq!(deezer_search_q(&media, "track"), "Hello");
+        assert_eq!(media.deezer_search_query("track"), "Hello");
     }
 }

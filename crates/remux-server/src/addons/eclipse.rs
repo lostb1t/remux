@@ -250,16 +250,7 @@ async fn eclipse_streams(
             .map(|m| m.title),
         None => None,
     };
-    let artist_name = media
-        .artist_name_from(gp_title.as_deref())
-        .map(str::to_owned);
-
-    let query = match artist_name {
-        Some(ref artist) => format!("{} {}", artist, media.title),
-        None => media
-            .title
-            .clone(),
-    };
+    let query = media.track_search_query_from(gp_title.as_deref());
 
     let search_url = format!("{}/search?q={}", base_url, urlencoding::encode(&query));
     let resp = client

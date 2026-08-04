@@ -104,21 +104,6 @@ fn mime_to_container(mime: &str) -> Option<String> {
     }
 }
 
-fn build_query(media: &db::Media) -> String {
-    // Prefer the artist row / flat artist name (playlist imports have no artist
-    // row); falls back to the legacy "by {artist}" description convention.
-    let artist = media
-        .artist_name()
-        .unwrap_or_default();
-    if artist.is_empty() {
-        media
-            .title
-            .clone()
-    } else {
-        format!("{} {}", media.title, artist)
-    }
-}
-
 async fn try_instance(
     client: &reqwest::Client,
     base: &str,
@@ -336,7 +321,7 @@ impl StreamAddon for SquidAddon {
         media: &db::Media,
         _ctx: &AppContext,
     ) -> Result<Vec<crate::stream::StreamInfo>> {
-        let query = build_query(media);
+        let query = media.track_search_query();
         debug!(query, title = %media.title, "squid stream lookup");
 
         let (tx, mut rx) =
@@ -388,7 +373,6 @@ impl StreamAddon for SquidAddon {
 
 #[cfg(test)]
 mod tests {
-    use super::build_query;
     use crate::db;
 
     fn track(artist_name: Option<&str>, description: Option<&str>) -> db::Media {
@@ -407,19 +391,19 @@ mod tests {
     fn prefers_flat_artist_name() {
         // Playlist import: no artist row, but artist_name is set on the track.
         let media = track(Some("Adele"), None);
-        assert_eq!(build_query(&media), "Hello Adele");
+        assert_eq!(media.track_search_query(), "Adele Hello");
     }
 
     #[test]
     fn falls_back_to_description_prefix() {
         // Legacy convention: description is "by {artist}".
         let media = track(None, Some("by Adele"));
-        assert_eq!(build_query(&media), "Hello Adele");
+        assert_eq!(media.track_search_query(), "Adele Hello");
     }
 
     #[test]
     fn no_artist_uses_title_only() {
         let media = track(None, None);
-        assert_eq!(build_query(&media), "Hello");
+        assert_eq!(media.track_search_query(), "Hello");
     }
 }

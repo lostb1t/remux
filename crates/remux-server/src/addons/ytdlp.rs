@@ -440,14 +440,7 @@ impl YtDlpAddon {
                 return Ok(format!("https://www.youtube.com/watch?v={}", id));
             }
         }
-        let artist_part = media
-            .artist_name()
-            .unwrap_or_default();
-        let query = if artist_part.is_empty() {
-            format!("ytsearch1:{}", media.title)
-        } else {
-            format!("ytsearch1:{} {}", media.title, artist_part)
-        };
+        let query = format!("ytsearch1:{}", media.track_search_query());
         debug!(?query, "searching YouTube for track");
         let video = self
             .dump_json(&query)
