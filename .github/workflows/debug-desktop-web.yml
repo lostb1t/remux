@@ -72,6 +72,7 @@ jobs:
         run: cargo binstall dioxus-cli@0.7.9 --no-confirm --force
 
       - name: Build dashboard
+        working-directory: crates/remux-dashboard
         run: ~/.cargo/bin/dx build --release
 
       - uses: actions/upload-artifact@v4
