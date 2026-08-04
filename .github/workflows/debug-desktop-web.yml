@@ -1,0 +1,185 @@
+# TEMPORARY debug workflow — reproduce the Windows desktop web-UI 404.
+# Builds the real remux-desktop exe on Windows, runs it, and probes /admin.
+# Remove this file once the issue is fixed.
+name: Debug Desktop Web (temporary)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/remux-desktop/**
+      - crates/remux-server/src/embedded_static.rs
+      - crates/remux-server/src/web_client.rs
+      - .github/workflows/debug-desktop-web.yml
+
+jobs:
+  build-jellyfin-web:
+    runs-on: ubuntu-latest
+    outputs:
+      cache-hit: ${{ steps.cache.outputs.cache-hit }}
+    steps:
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: jellyfin-web/
+          key: jellyfin-web-v10.11.9
+
+      - uses: actions/checkout@v4
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          repository: jellyfin/jellyfin-web
+          ref: v10.11.9
+
+      - uses: actions/setup-node@v4
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          node-version: "20"
+
+      - run: npm ci
+        if: steps.cache.outputs.cache-hit != 'true'
+
+      - run: npm run build:production
+        if: steps.cache.outputs.cache-hit != 'true'
+
+      - run: mv dist jellyfin-web
+        if: steps.cache.outputs.cache-hit != 'true'
+
+      - uses: actions/upload-artifact@v4
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          name: jellyfin-web-dist
+          path: jellyfin-web/
+          retention-days: 1
+
+  build-dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: dashboard
+
+      - name: Install dioxus-cli
+        run: cargo binstall dioxus-cli@0.7.3 --no-confirm --force
+
+      - name: Build dashboard
+        run: ~/.cargo/bin/dx build --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-dist
+          path: target/dx/remux-dashboard/release/web/public/
+          retention-days: 1
+
+  probe:
+    runs-on: windows-latest
+    needs: [build-jellyfin-web, build-dashboard]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-windows-debug
+
+      - name: Restore jellyfin-web from cache
+        if: needs.build-jellyfin-web.outputs.cache-hit == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: jellyfin-web/
+          key: jellyfin-web-v10.11.9
+
+      - name: Download jellyfin-web artifact
+        if: needs.build-jellyfin-web.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: jellyfin-web-dist
+          path: jellyfin-web/
+
+      - name: Download dashboard artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dashboard-dist
+          path: target/dx/remux-dashboard/release/web/public/
+
+      - name: Build remux-desktop (Windows)
+        env:
+          SQLX_OFFLINE: "true"
+        run: cargo build --release --target x86_64-pc-windows-msvc -p remux-desktop
+
+      - name: Start remux-desktop and probe web endpoints
+        shell: pwsh
+        env:
+          RUST_LOG: "remux=debug"
+        run: |
+          $exe = "target/x86_64-pc-windows-msvc/release/remux-desktop.exe"
+          $stdout = "exe-stdout.log"
+          $stderr = "exe-stderr.log"
+          $proc = Start-Process -FilePath $exe -PassThru `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          try {
+            $deadline = (Get-Date).AddMinutes(4)
+            $up = $false
+            do {
+              Start-Sleep -Seconds 2
+              try {
+                $r = Invoke-WebRequest -Uri "http://localhost:3000/System/Info/Public" -UseBasicParsing -ErrorAction Stop
+                if ($r.StatusCode -eq 200) { $up = $true; break }
+              } catch {}
+            } until ((Get-Date) -gt $deadline)
+            if (-not $up) {
+              Write-Error "server did not come up on :3000"
+              exit 1
+            }
+            Write-Host "server up"
+
+            foreach ($path in @("/admin", "/admin/", "/")) {
+              try {
+                $resp = Invoke-WebRequest -Uri "http://localhost:3000$path" -UseBasicParsing -ErrorAction Stop
+                $body = $resp.Content
+                $preview = if ($body) { $body.Substring(0, [Math]::Min(120, $body.Length)) } else { "" }
+                Write-Host "=== $path -> $($resp.StatusCode) | $preview"
+              } catch {
+                $status = $_.Exception.Response.StatusCode.value__
+                Write-Host "=== $path -> ERROR $status"
+              }
+            }
+
+            # The bug: /admin must be served (200 + HTML). Fail the job otherwise.
+            $admin = $null
+            try {
+              $admin = Invoke-WebRequest -Uri "http://localhost:3000/admin" -UseBasicParsing -ErrorAction Stop
+            } catch {
+              Write-Error "BUG REPRODUCED: /admin not served: $_"
+              exit 1
+            }
+            if ($admin.StatusCode -ne 200 -or $admin.Content -notmatch '<!DOCTYPE|<html') {
+              Write-Error "BUG REPRODUCED: /admin returned $($admin.StatusCode) without HTML"
+              exit 1
+            }
+            Write-Host "ADMIN OK — dashboard served"
+          } finally {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Print captured logs
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "=== stderr (RUST_LOG=remux=debug) ==="
+          if (Test-Path exe-stderr.log) { Get-Content exe-stderr.log -Tail 200 }
+          Write-Host "=== desktop log file ==="
+          $log = "$env:APPDATA\remux\logs"
+          if (Test-Path $log) {
+            Get-ChildItem $log -Filter "*.log" | Sort-Object LastWriteTime -Descending |
+              Select-Object -First 1 | ForEach-Object { Get-Content $_.FullName -Tail 200 }
+          }
