@@ -291,7 +291,9 @@ impl TorrentSource {
 #[async_trait]
 impl StreamSource for HttpSource {
     async fn serve(&self, _state: &AppState, headers: &HeaderMap) -> Result<Response> {
-        let mut req = STREAM_PROXY_CLIENT.clone().get(&self.url);
+        let mut req = STREAM_PROXY_CLIENT
+            .clone()
+            .get(&self.url);
         if let Some(v) = headers.get(http::header::RANGE) {
             req = req.header(http::header::RANGE, v.clone());
         }
@@ -515,7 +517,11 @@ mod tests {
             .await
             .expect("request should succeed");
 
-        assert_eq!(resp.status().as_u16(), 206);
+        assert_eq!(
+            resp.status()
+                .as_u16(),
+            206
+        );
         assert_eq!(
             resp.headers()
                 .get("content-range")
