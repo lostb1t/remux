@@ -2863,6 +2863,143 @@ mod tests {
             "server fallback must not fire when user has a preference set, even if it matches nothing"
         );
     }
+
+    /// Jellyfin web/SDK send `"SubtitleLanguagePreference": ""` (empty string, not
+    /// null) when the user has not configured a subtitle language. The server
+    /// metadata-language fallback must still fire in that case.
+    #[tokio::test]
+    async fn test_server_fallback_fires_when_user_pref_is_empty_string() {
+        use crate::{api::ServerConfiguration, db::Settings};
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let ctx = &guard.0;
+        let media = insert_subtitle_source(ctx).await;
+
+        Settings::set_config(
+            &ctx.db,
+            &ServerConfiguration {
+                preferred_metadata_language: Some("fr".to_string()),
+                ..ServerConfiguration::default()
+            },
+        )
+        .await
+        .expect("set server config");
+
+        let me: serde_json::Value = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let user_id = me["Id"]
+            .as_str()
+            .unwrap();
+        // Jellyfin sends an empty string when no subtitle language is configured
+        server
+            .post(&format!("/users/{}/configuration", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&user_config_with(
+                json!({ "SubtitleLanguagePreference": "" }),
+            ))
+            .await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({}))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["MediaSources"][0]["DefaultSubtitleStreamIndex"].as_i64(),
+            Some(2),
+            "empty-string SubtitleLanguagePreference should be treated as unset, so the server fallback (fr) selects French subtitle (index 2)"
+        );
+    }
+    /// probe.rs sets `default_subtitle_stream_index` to the first subtitle stream
+    /// unconditionally (ignoring the container's disposition flags). Because
+    /// `apply_user_playback_prefs` only runs its preference/fallback blocks when
+    /// `default_subtitle_stream_index.is_none()`, the server metadata-language
+    /// fallback never fires for real probed media. This test reproduces that.
+    #[tokio::test]
+    async fn test_server_fallback_ignored_when_probe_pre_set_default() {
+        use crate::{api::ServerConfiguration, db::Settings};
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let ctx = &guard.0;
+
+        // Mimic probe_media(): default subtitle index pre-set to the first subtitle
+        // (eng, index 3) regardless of what the server fallback would pick.
+        let mut media = insert_subtitle_source(ctx).await;
+        if let Some(pd) = media
+            .probe_data
+            .as_mut()
+        {
+            pd.default_subtitle_stream_index = Some(3);
+        }
+        media
+            .save(&ctx.db)
+            .await
+            .expect("re-save media");
+
+        Settings::set_config(
+            &ctx.db,
+            &ServerConfiguration {
+                preferred_metadata_language: Some("fr".to_string()),
+                ..ServerConfiguration::default()
+            },
+        )
+        .await
+        .expect("set server config");
+
+        let me: serde_json::Value = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let user_id = me["Id"]
+            .as_str()
+            .unwrap();
+        server
+            .post(&format!("/users/{}/configuration", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&default_user_config())
+            .await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({}))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["MediaSources"][0]["DefaultSubtitleStreamIndex"].as_i64(),
+            Some(2),
+            "server metadata-language fallback (fr) should override the probe's container default (eng, index 3)"
+        );
+    }
 }
 
 /// Returns additional parts for a multi-file video item.
@@ -2953,16 +3090,48 @@ pub struct BitrateTestQuery {
 /// Applies `audio_language_preference` and `subtitle_language_preference` from the
 /// user configuration to each source's default stream indexes, when not already set.
 /// Called from both the Items endpoint (detail page) and PlaybackInfo.
+/// A language preference counts as "set" only when it holds a non-empty value.
+/// Jellyfin clients serialize unset preferences as `""` (empty string), which must
+/// be treated the same as `null` here: the preference is unset, so the server's
+/// global metadata-language fallback may fire.
+fn lang_pref_set(pref: &Option<String>) -> bool {
+    pref.as_deref()
+        .is_some_and(|s| {
+            !s.trim()
+                .is_empty()
+        })
+}
+
+/// Clear the `is_default` flag on every subtitle stream in a source.
+fn clear_subtitle_defaults(source: &mut api::MediaSourceInfo) {
+    for s in source
+        .media_streams
+        .iter_mut()
+    {
+        if matches!(s.type_, Some(api::MediaStreamType::Subtitle)) {
+            s.is_default = Some(false);
+        }
+    }
+}
+
+/// Applies `audio_language_preference` and `subtitle_language_preference` from the
+/// user configuration to each source's default stream indexes, when not already set.
+/// Called from both the Items endpoint (detail page) and PlaybackInfo.
+///
+/// When the user has no subtitle language preference, the server's global
+/// `preferred_metadata_language` acts as a fallback for subtitle selection — the
+/// same semantics PlaybackInfo applies. A matching preference overrides the
+/// container's default subtitle stream.
 pub(crate) fn apply_language_defaults(
     sources: &mut Vec<api::MediaSourceInfo>,
     cfg: &api::UserConfiguration,
+    server_preferred_metadata_language: Option<&str>,
 ) {
     for source in sources.iter_mut() {
-        if let Some(ref pref) = cfg.audio_language_preference {
-            if source
-                .default_audio_stream_index
-                .is_none()
-            {
+        if !cfg.play_default_audio_track
+            && lang_pref_set(&cfg.audio_language_preference)
+        {
+            if let Some(ref pref) = cfg.audio_language_preference {
                 let pref_two = lang_to_two_letter(pref);
                 if let Some(ref target) = pref_two {
                     if let Some(stream) = source
@@ -2983,11 +3152,8 @@ pub(crate) fn apply_language_defaults(
             }
         }
 
-        if let Some(ref pref) = cfg.subtitle_language_preference {
-            if source
-                .default_subtitle_stream_index
-                .is_none()
-            {
+        if lang_pref_set(&cfg.subtitle_language_preference) {
+            if let Some(ref pref) = cfg.subtitle_language_preference {
                 let pref_two = lang_to_two_letter(pref);
                 if let Some(ref target) = pref_two {
                     if let Some(stream) = source
@@ -3003,8 +3169,42 @@ pub(crate) fn apply_language_defaults(
                         })
                     {
                         let idx = stream.index;
-                        stream.is_default = Some(true);
+                        clear_subtitle_defaults(source);
                         source.default_subtitle_stream_index = Some(idx);
+                        if let Some(s) = source
+                            .media_streams
+                            .iter_mut()
+                            .find(|s| s.index == idx)
+                        {
+                            s.is_default = Some(true);
+                        }
+                    }
+                }
+            }
+        } else if let Some(pref) = server_preferred_metadata_language {
+            let pref_two = lang_to_two_letter(pref);
+            if let Some(ref target) = pref_two {
+                if let Some(stream) = source
+                    .media_streams
+                    .iter_mut()
+                    .find(|s| {
+                        matches!(s.type_, Some(api::MediaStreamType::Subtitle))
+                            && s.language
+                                .as_deref()
+                                .and_then(lang_to_two_letter)
+                                .as_deref()
+                                == Some(target.as_str())
+                    })
+                {
+                    let idx = stream.index;
+                    clear_subtitle_defaults(source);
+                    source.default_subtitle_stream_index = Some(idx);
+                    if let Some(s) = source
+                        .media_streams
+                        .iter_mut()
+                        .find(|s| s.index == idx)
+                    {
+                        s.is_default = Some(true);
                     }
                 }
             }
@@ -3070,6 +3270,12 @@ async fn apply_user_playback_prefs(
         .unwrap_or(false);
 
     for source in media_sources.iter_mut() {
+        // Track which layers have already pinned a stream. The container default
+        // (set by the probe) does NOT count: language preferences and the server
+        // metadata-language fallback override it, matching Jellyfin's behaviour.
+        let mut audio_decided = false;
+        let mut subtitle_decided = false;
+
         // --- client explicit selection wins ---
         if client_wants_audio {
             if let Some(idx) = client_audio_idx {
@@ -3082,6 +3288,7 @@ async fn apply_user_playback_prefs(
                     });
                 if exists {
                     source.default_audio_stream_index = Some(idx);
+                    audio_decided = true;
                 }
             }
         }
@@ -3096,6 +3303,7 @@ async fn apply_user_playback_prefs(
                     });
                 if exists {
                     source.default_subtitle_stream_index = Some(idx);
+                    subtitle_decided = true;
                 }
             }
         }
@@ -3112,6 +3320,7 @@ async fn apply_user_playback_prefs(
                     });
                 if exists {
                     source.default_audio_stream_index = Some(idx);
+                    audio_decided = true;
                 }
             }
         }
@@ -3128,14 +3337,7 @@ async fn apply_user_playback_prefs(
                     });
                 if exists {
                     // Clear any previous default flag, set the recalled one
-                    for s in source
-                        .media_streams
-                        .iter_mut()
-                    {
-                        if matches!(s.type_, Some(api::MediaStreamType::Subtitle)) {
-                            s.is_default = Some(false);
-                        }
-                    }
+                    clear_subtitle_defaults(source);
                     source.default_subtitle_stream_index = Some(idx);
                     if let Some(s) = source
                         .media_streams
@@ -3144,20 +3346,18 @@ async fn apply_user_playback_prefs(
                     {
                         s.is_default = Some(true);
                     }
+                    subtitle_decided = true;
                 }
             }
         }
 
         // --- audio_language_preference ---
         // Only act when play_default_audio_track is false (the user wants their language
-        // preference honoured over the container default), the client didn't specify a
-        // track explicitly, and no default has already been chosen (e.g. remembered
-        // selection above takes precedence).
+        // preference honoured over the container default) and no higher-priority layer
+        // (client or remembered selection) has already pinned a track.
         if !cfg.play_default_audio_track
-            && !client_wants_audio
-            && source
-                .default_audio_stream_index
-                .is_none()
+            && !audio_decided
+            && lang_pref_set(&cfg.audio_language_preference)
         {
             if let Some(ref pref) = cfg.audio_language_preference {
                 let pref_two = lang_to_two_letter(pref);
@@ -3175,18 +3375,16 @@ async fn apply_user_playback_prefs(
                         })
                     {
                         source.default_audio_stream_index = Some(stream.index);
+                        audio_decided = true;
                     }
                 }
             }
         }
 
         // --- subtitle_language_preference ---
-        // Only act if the client didn't specify a track and no subtitle default is already set.
-        if !client_wants_subtitle
-            && source
-                .default_subtitle_stream_index
-                .is_none()
-        {
+        // Overrides the container default when it matches; the server fallback below
+        // only fires when the user has no preference at all.
+        if !subtitle_decided && lang_pref_set(&cfg.subtitle_language_preference) {
             if let Some(ref pref) = cfg.subtitle_language_preference {
                 let pref_two = lang_to_two_letter(pref);
                 if let Some(ref target) = pref_two {
@@ -3203,23 +3401,25 @@ async fn apply_user_playback_prefs(
                         })
                     {
                         let idx = stream.index;
-                        stream.is_default = Some(true);
+                        clear_subtitle_defaults(source);
                         source.default_subtitle_stream_index = Some(idx);
+                        if let Some(s) = source
+                            .media_streams
+                            .iter_mut()
+                            .find(|s| s.index == idx)
+                        {
+                            s.is_default = Some(true);
+                        }
+                        subtitle_decided = true;
                     }
                 }
             }
         }
 
         // --- server preferred_metadata_language fallback ---
-        // Only fires when the user has no SubtitleLanguagePreference configured at all.
-        if !client_wants_subtitle
-            && source
-                .default_subtitle_stream_index
-                .is_none()
-            && cfg
-                .subtitle_language_preference
-                .is_none()
-        {
+        // Only fires when the user has no SubtitleLanguagePreference configured at all
+        // (empty string counts as unset — Jellyfin clients send "" when unset).
+        if !subtitle_decided && !lang_pref_set(&cfg.subtitle_language_preference) {
             if let Some(pref) = server_subtitle_lang_fallback {
                 let pref_two = lang_to_two_letter(pref);
                 if let Some(ref target) = pref_two {
@@ -3236,8 +3436,16 @@ async fn apply_user_playback_prefs(
                         })
                     {
                         let idx = stream.index;
-                        stream.is_default = Some(true);
+                        clear_subtitle_defaults(source);
                         source.default_subtitle_stream_index = Some(idx);
+                        if let Some(s) = source
+                            .media_streams
+                            .iter_mut()
+                            .find(|s| s.index == idx)
+                        {
+                            s.is_default = Some(true);
+                        }
+                        subtitle_decided = true;
                     }
                 }
             }
