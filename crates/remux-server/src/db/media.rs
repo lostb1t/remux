@@ -3168,12 +3168,6 @@ impl Media {
                         api::ItemSortBy::OfficialRating => {
                             format!("COALESCE(certification_age, 999999) {}", dir)
                         }
-                        api::ItemSortBy::VideoBitRate => {
-                            format!(
-                                "COALESCE(json_extract(probe_data, '$.Bitrate'), 0) {}",
-                                dir
-                            )
-                        }
                         api::ItemSortBy::Artist => {
                             // Artist name: grandparent row for tracks, parent row for
                             // albums, own title for artist rows.
@@ -7340,39 +7334,5 @@ mod tests {
         )
         .await;
         assert_eq!(by_album, vec!["Hello", "Zed Song"]);
-    }
-
-    /// VideoBitRate sorts by the probed container bitrate (descending).
-    #[tokio::test]
-    async fn sort_by_video_bitrate() {
-        let (_server, guard) = crate::integration_test::new_test_server()
-            .await
-            .unwrap();
-        let db = &guard
-            .0
-            .db;
-        for (t, bps) in [
-            ("Small", 1_000_000),
-            ("Big", 20_000_000),
-            ("Mid", 5_000_000),
-        ] {
-            let mut m = media_row(MediaKind::Movie, t, &format!("tt5{t}"));
-            m.probe_data = Some(api::MediaSourceInfo {
-                bitrate: Some(bps),
-                ..Default::default()
-            });
-            m.save(db)
-                .await
-                .unwrap();
-        }
-
-        let titles = sort_titles(
-            db,
-            MediaKind::Movie,
-            api::ItemSortBy::VideoBitRate,
-            api::SortOrder::Descending,
-        )
-        .await;
-        assert_eq!(titles, vec!["Big", "Mid", "Small"]);
     }
 }
