@@ -65,6 +65,9 @@ jobs:
         with:
           key: dashboard
 
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
       - name: Install dioxus-cli
         run: cargo binstall dioxus-cli@0.7.3 --no-confirm --force
 
