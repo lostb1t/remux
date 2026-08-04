@@ -592,6 +592,13 @@ impl DeezerAddon {
                     kind: db::MediaKind::Album,
                     parent_id: Some(root.id),
                     grandparent_id: Some(root.id),
+                    album_kind: album
+                        .record_type
+                        .as_deref()
+                        .and_then(|r| {
+                            r.parse()
+                                .ok()
+                        }),
                     external_ids: db::ExternalIds {
                         deezer_album: Some(album.id as i64),
                         deezer_artist: Some(artist_id_raw),
