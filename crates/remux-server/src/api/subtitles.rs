@@ -581,22 +581,7 @@ pub async fn subtitles_stream(
         .unwrap())
 }
 
-pub(crate) fn lang_to_two_letter(lang: &str) -> Option<String> {
-    use std::str::FromStr;
-    let lang = lang
-        .trim()
-        .to_lowercase();
-    if lang.is_empty() {
-        return None;
-    }
-    if lang.len() == 2 {
-        return Some(lang);
-    }
-    isolang::Language::from_639_3(&lang)
-        .or_else(|| isolang::Language::from_str(&lang).ok())
-        .and_then(|l| l.to_639_1())
-        .map(|s| s.to_string())
-}
+pub(crate) use remux_sdks::remux::lang_to_two_letter;
 
 pub(crate) fn subtitle_path_hint(sub: &crate::addons::SubtitleInfo) -> &str {
     match &sub.url {
