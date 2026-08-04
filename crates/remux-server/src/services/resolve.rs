@@ -12,6 +12,50 @@ use crate::{AppContext, AppState, db, keyed_lock::KeyedLock};
 
 pub struct MediaResolveService;
 
+/// Best-effort artist name for a music item: loaded grandparent stub, the flat
+/// `external_ids.artist_name` (playlist imports have no artist row), or the
+/// legacy "by {artist}" description convention.
+fn music_artist_name(media: &db::Media) -> Option<&str> {
+    media
+        .grandparent
+        .as_deref()
+        .map(|g| {
+            g.title
+                .as_str()
+        })
+        .filter(|t| !t.is_empty())
+        .or_else(|| {
+            media
+                .external_ids
+                .artist_name
+                .as_deref()
+        })
+        .or_else(|| {
+            media
+                .description
+                .as_deref()
+                .and_then(|d| d.strip_prefix("by "))
+        })
+        .filter(|t| !t.is_empty())
+}
+
+/// Deezer search query that pins the artist when known, so a title-only match
+/// can't resolve to the wrong artist's track/album.
+fn deezer_search_q(media: &db::Media, kind: &str) -> String {
+    match music_artist_name(media) {
+        Some(artist) => format!(
+            "artist:\"{}\" {kind}:\"{}\"",
+            artist.replace('"', ""),
+            media
+                .title
+                .replace('"', "")
+        ),
+        None => media
+            .title
+            .clone(),
+    }
+}
+
 impl MediaResolveService {
     async fn resolve_media_imdb(media: &mut db::Media, ctx: &AppContext) -> bool {
         if media
@@ -59,13 +103,9 @@ impl MediaResolveService {
                 let Ok(client) = RestClient::new("https://api.deezer.com/") else {
                     return false;
                 };
+                let q = deezer_search_q(media, "track");
                 let hit = match client
-                    .execute(dz::SearchTracksEndpoint {
-                        q: media
-                            .title
-                            .clone(),
-                        limit: 1,
-                    })
+                    .execute(dz::SearchTracksEndpoint { q, limit: 1 })
                     .await
                 {
                     Ok(dz::DeezerResult::Ok(list)) => list
@@ -112,13 +152,9 @@ impl MediaResolveService {
                 let Ok(client) = RestClient::new("https://api.deezer.com/") else {
                     return false;
                 };
+                let q = deezer_search_q(media, "album");
                 let hit = match client
-                    .execute(dz::SearchAlbumsEndpoint {
-                        q: media
-                            .title
-                            .clone(),
-                        limit: 1,
-                    })
+                    .execute(dz::SearchAlbumsEndpoint { q, limit: 1 })
                     .await
                 {
                     Ok(dz::DeezerResult::Ok(list)) => list
@@ -415,5 +451,86 @@ impl FromRequestParts<AppState> for ResolvedItem {
             })?;
 
         Ok(ResolvedItem(media))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{deezer_search_q, music_artist_name};
+    use crate::db;
+    use uuid::Uuid;
+
+    fn track(
+        grandparent_title: Option<&str>,
+        artist_name: Option<&str>,
+        description: Option<&str>,
+        title: &str,
+    ) -> db::Media {
+        db::Media {
+            title: title.to_string(),
+            description: description.map(String::from),
+            grandparent: grandparent_title.map(|t| db::Media::stub(Uuid::new_v4(), t)),
+            external_ids: db::ExternalIds {
+                artist_name: artist_name.map(String::from),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn artist_from_grandparent_stub_wins() {
+        let media = track(Some("Adele"), Some("Wrong"), None, "Hello");
+        assert_eq!(music_artist_name(&media), Some("Adele"));
+    }
+
+    #[test]
+    fn artist_from_flat_name_for_playlist_imports() {
+        // Playlist import: no grandparent stub, flat artist_name is the source.
+        let media = track(None, Some("Adele"), None, "Hello");
+        assert_eq!(music_artist_name(&media), Some("Adele"));
+    }
+
+    #[test]
+    fn artist_from_description_prefix() {
+        let media = track(None, None, Some("by Adele"), "Hello");
+        assert_eq!(music_artist_name(&media), Some("Adele"));
+    }
+
+    #[test]
+    fn empty_names_are_ignored() {
+        let media = track(None, Some(""), Some("by "), "Hello");
+        assert_eq!(music_artist_name(&media), None);
+    }
+
+    #[test]
+    fn deezer_query_pins_artist_when_known() {
+        let media = track(None, Some("Adele"), None, "Hello");
+        assert_eq!(
+            deezer_search_q(&media, "track"),
+            "artist:\"Adele\" track:\"Hello\""
+        );
+    }
+
+    #[test]
+    fn deezer_query_strips_quotes_from_values() {
+        let media = db::Media {
+            title: "So \"Special\"".to_string(),
+            external_ids: db::ExternalIds {
+                artist_name: Some("A\"B".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            deezer_search_q(&media, "album"),
+            "artist:\"AB\" album:\"So Special\""
+        );
+    }
+
+    #[test]
+    fn deezer_query_title_only_without_artist() {
+        let media = track(None, None, None, "Hello");
+        assert_eq!(deezer_search_q(&media, "track"), "Hello");
     }
 }

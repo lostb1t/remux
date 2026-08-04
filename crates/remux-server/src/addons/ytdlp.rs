@@ -372,6 +372,24 @@ fn normalize_codec(codec: &str) -> &str {
     }
 }
 
+/// Artist name used to disambiguate a YouTube Music search. Prefers the flat
+/// `external_ids.artist_name` (playlist imports have no artist row), falling
+/// back to the legacy "by {artist}" description convention.
+fn search_artist_part(media: &db::Media) -> String {
+    media
+        .external_ids
+        .artist_name
+        .clone()
+        .or_else(|| {
+            media
+                .description
+                .as_deref()
+                .and_then(|d| d.strip_prefix("by "))
+                .map(str::to_owned)
+        })
+        .unwrap_or_default()
+}
+
 // ---------------------------------------------------------------------------
 // YtDlpAddon methods
 // ---------------------------------------------------------------------------
@@ -440,11 +458,7 @@ impl YtDlpAddon {
                 return Ok(format!("https://www.youtube.com/watch?v={}", id));
             }
         }
-        let artist_part = media
-            .description
-            .as_deref()
-            .and_then(|d| d.strip_prefix("by "))
-            .unwrap_or("");
+        let artist_part = search_artist_part(media);
         let query = if artist_part.is_empty() {
             format!("ytsearch1:{}", media.title)
         } else {
@@ -968,5 +982,48 @@ impl StreamAddon for YtDlpAddon {
     ) -> Result<Vec<crate::stream::StreamInfo>> {
         self.get_streams_for(media)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::search_artist_part;
+    use crate::db;
+
+    fn track(artist_name: Option<&str>, description: Option<&str>) -> db::Media {
+        db::Media {
+            title: "Hello".to_string(),
+            description: description.map(String::from),
+            external_ids: db::ExternalIds {
+                artist_name: artist_name.map(String::from),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn prefers_flat_artist_name() {
+        // Playlist import: no artist row, but artist_name is set on the track.
+        let media = track(Some("Adele"), None);
+        assert_eq!(search_artist_part(&media), "Adele");
+    }
+
+    #[test]
+    fn falls_back_to_description_prefix() {
+        let media = track(None, Some("by Adele"));
+        assert_eq!(search_artist_part(&media), "Adele");
+    }
+
+    #[test]
+    fn flat_artist_name_wins_over_description() {
+        let media = track(Some("Adele"), Some("by Someone Else"));
+        assert_eq!(search_artist_part(&media), "Adele");
+    }
+
+    #[test]
+    fn no_artist_is_empty() {
+        let media = track(None, None);
+        assert_eq!(search_artist_part(&media), "");
     }
 }

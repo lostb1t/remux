@@ -239,15 +239,26 @@ async fn eclipse_streams(
     media: &db::Media,
     ctx: &AppContext,
 ) -> Result<Vec<StreamInfo>> {
-    // Build query: include artist name when available (grandparent for tracks).
+    // Build query: include artist name when available. Prefer the artist row
+    // (grandparent for tracks); playlist imports have no artist row, so fall
+    // back to the flat artist name stored on the track itself.
     let artist_name: Option<String> = if let Some(gp_id) = media.grandparent_id {
         db::Media::get_by_id(&ctx.db, &gp_id)
             .await
             .ok()
             .flatten()
             .map(|m| m.title)
+            .or_else(|| {
+                media
+                    .external_ids
+                    .artist_name
+                    .clone()
+            })
     } else {
-        None
+        media
+            .external_ids
+            .artist_name
+            .clone()
     };
 
     let query = match artist_name {
