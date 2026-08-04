@@ -3240,6 +3240,12 @@ impl Media {
                         api::SortOrder::Ascending => "ASC",
                         api::SortOrder::Descending => "DESC",
                     };
+                    // BLOB literal for correlated user_media_state lookups in
+                    // ORDER BY (user-data sorts: PlayCount, IsPlayed, ...).
+                    let user_hex = filter
+                        .user_id
+                        .as_ref()
+                        .map(|u| format!("X'{}'", u.simple()));
                     let col = match sort {
                         api::ItemSortBy::SortName | api::ItemSortBy::Name => {
                             format!("title COLLATE NOCASE {}", dir)
@@ -3260,6 +3266,72 @@ impl Media {
                         api::ItemSortBy::CommunityRating => {
                             format!("COALESCE(rating_audience, rating_critic) {}", dir)
                         }
+                        api::ItemSortBy::CriticRating => {
+                            format!("COALESCE(rating_critic, 0) {}", dir)
+                        }
+                        api::ItemSortBy::AiredEpisodeOrder => {
+                            format!(
+                                "COALESCE(parent_idx, 999999) {dir}, COALESCE(idx, 999999) {dir}"
+                            )
+                        }
+                        api::ItemSortBy::OfficialRating => {
+                            format!("COALESCE(certification_age, 999999) {}", dir)
+                        }
+                        api::ItemSortBy::Artist => {
+                            // Artist name: grandparent row for tracks, parent row for
+                            // albums, own title for artist rows.
+                            format!(
+                                "CASE WHEN kind = 'track' THEN \
+                                   COALESCE((SELECT g.title FROM media g WHERE g.id = media.grandparent_id), '') \
+                                 WHEN kind = 'album' THEN \
+                                   COALESCE((SELECT p.title FROM media p WHERE p.id = media.parent_id), '') \
+                                 ELSE COALESCE(title, '') END COLLATE NOCASE {}",
+                                dir
+                            )
+                        }
+                        api::ItemSortBy::AlbumArtist => {
+                            // Album artist: the artist of the album (parent row for
+                            // albums, grandparent for tracks).
+                            format!(
+                                "CASE WHEN kind = 'track' THEN \
+                                   COALESCE((SELECT g.title FROM media g WHERE g.id = media.grandparent_id), '') \
+                                 WHEN kind = 'album' THEN \
+                                   COALESCE((SELECT p.title FROM media p WHERE p.id = media.parent_id), '') \
+                                 ELSE COALESCE(title, '') END COLLATE NOCASE {}",
+                                dir
+                            )
+                        }
+                        api::ItemSortBy::Album => {
+                            // Album title: parent row for tracks, own title for albums.
+                            format!(
+                                "CASE WHEN kind = 'track' THEN \
+                                   COALESCE((SELECT p.title FROM media p WHERE p.id = media.parent_id), '') \
+                                 ELSE COALESCE(title, '') END COLLATE NOCASE {}",
+                                dir
+                            )
+                        }
+                        api::ItemSortBy::SeriesSortName => {
+                            // Series name: grandparent row for episodes, parent row
+                            // for seasons, own title for everything else.
+                            format!(
+                                "CASE WHEN kind = 'episode' THEN \
+                                   COALESCE((SELECT g.title FROM media g WHERE g.id = media.grandparent_id), '') \
+                                 WHEN kind = 'season' THEN \
+                                   COALESCE((SELECT p.title FROM media p WHERE p.id = media.parent_id), '') \
+                                 ELSE COALESCE(title, '') END COLLATE NOCASE {}",
+                                dir
+                            )
+                        }
+                        api::ItemSortBy::DateLastContentAdded => {
+                            // For series/seasons: the most recent season/episode
+                            // creation date; for other items, their own date.
+                            format!(
+                                "COALESCE((SELECT MAX(c.created_at) FROM media c \
+                                   WHERE (c.parent_id = media.id OR c.grandparent_id = media.id) \
+                                   AND c.kind IN ('season','episode')), media.created_at) {}",
+                                dir
+                            )
+                        }
                         api::ItemSortBy::IndexNumber => {
                             format!("COALESCE(idx, 999999) {}", dir)
                         }
@@ -3273,6 +3345,54 @@ impl Media {
                             if filter.user_id.is_some() {
                                 // dp alias from the UMS-driven records_qb above.
                                 format!("dp.last_played_at {}", dir)
+                            } else {
+                                format!("title COLLATE NOCASE {}", dir)
+                            }
+                        }
+                        api::ItemSortBy::PlayCount => {
+                            if let Some(uid) = &user_hex {
+                                format!(
+                                    "COALESCE((SELECT ums.play_count FROM user_media_state ums \
+                                     WHERE ums.user_id = {uid} AND ums.media_id = media.id), 0) {}",
+                                    dir
+                                )
+                            } else {
+                                format!("title COLLATE NOCASE {}", dir)
+                            }
+                        }
+                        api::ItemSortBy::IsPlayed => {
+                            if let Some(uid) = &user_hex {
+                                // Played items first (ASC); NULL play state counts as unplayed.
+                                format!(
+                                    "CASE WHEN COALESCE((SELECT ums.play_count FROM user_media_state ums \
+                                     WHERE ums.user_id = {uid} AND ums.media_id = media.id), 0) > 0 \
+                                     THEN 0 ELSE 1 END {}",
+                                    dir
+                                )
+                            } else {
+                                format!("title COLLATE NOCASE {}", dir)
+                            }
+                        }
+                        api::ItemSortBy::IsUnplayed => {
+                            if let Some(uid) = &user_hex {
+                                // Unplayed items first (ASC).
+                                format!(
+                                    "CASE WHEN COALESCE((SELECT ums.play_count FROM user_media_state ums \
+                                     WHERE ums.user_id = {uid} AND ums.media_id = media.id), 0) > 0 \
+                                     THEN 1 ELSE 0 END {}",
+                                    dir
+                                )
+                            } else {
+                                format!("title COLLATE NOCASE {}", dir)
+                            }
+                        }
+                        api::ItemSortBy::IsFavoriteOrLiked => {
+                            if let Some(uid) = &user_hex {
+                                format!(
+                                    "COALESCE((SELECT ums.favorite FROM user_media_state ums \
+                                     WHERE ums.user_id = {uid} AND ums.media_id = media.id), 0) {}",
+                                    dir
+                                )
                             } else {
                                 format!("title COLLATE NOCASE {}", dir)
                             }
@@ -7260,5 +7380,556 @@ mod tests {
             "future episode must remain hidden; got: {:?}",
             titles
         );
+    }
+
+    // ── Sort arms ────────────────────────────────────────────────────────────
+
+    async fn sort_titles(
+        db: &sqlx::SqlitePool,
+        kind: MediaKind,
+        sort_by: api::ItemSortBy,
+        order: api::SortOrder,
+    ) -> Vec<String> {
+        let result = Media::get_by_filter(
+            db,
+            &MediaFilter {
+                kind: Some(vec![kind]),
+                sort_by: vec![sort_by],
+                sort_order: vec![order],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        result
+            .records
+            .into_iter()
+            .map(|m| m.title)
+            .collect()
+    }
+
+    /// Same as `sort_titles` but with a user id so user-data sort arms fire.
+    async fn sort_titles_for_user(
+        db: &sqlx::SqlitePool,
+        kind: MediaKind,
+        sort_by: api::ItemSortBy,
+        order: api::SortOrder,
+        user_id: uuid::Uuid,
+    ) -> Vec<String> {
+        let result = Media::get_by_filter(
+            db,
+            &MediaFilter {
+                kind: Some(vec![kind]),
+                sort_by: vec![sort_by],
+                sort_order: vec![order],
+                user_id: Some(user_id),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        result
+            .records
+            .into_iter()
+            .map(|m| m.title)
+            .collect()
+    }
+
+    async fn insert_user_state(
+        db: &sqlx::SqlitePool,
+        user_id: uuid::Uuid,
+        media_id: uuid::Uuid,
+        play_count: i64,
+        favorite: bool,
+    ) {
+        sqlx::query(
+            "INSERT INTO user_media_state \
+             (user_id, media_id, favorite, play_count, played_at, playback_position) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+        )
+        .bind(user_id)
+        .bind(media_id)
+        .bind(favorite)
+        .bind(play_count)
+        .bind(
+            play_count
+                .gt(&0)
+                .then(|| chrono::Utc::now().naive_utc()),
+        )
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    fn media_row(kind: MediaKind, title: &str, imdb: &str) -> Media {
+        let ext = ExternalIds {
+            imdb: Some(NonEmptyString::try_new(imdb.to_string()).unwrap()),
+            ..Default::default()
+        };
+        let id = uuid::Uuid::from(&MediaIdRaw {
+            kind: kind.clone(),
+            external_ids: ext.clone(),
+            season: None,
+            episode: None,
+        });
+        Media {
+            id,
+            title: title.to_string(),
+            kind,
+            external_ids: ext,
+            ..Default::default()
+        }
+    }
+
+    /// CriticRating sorts by rating_critic (descending).
+    #[tokio::test]
+    async fn sort_by_critic_rating() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let mut low = media_row(MediaKind::Movie, "Low", "tt1001");
+        low.rating_critic = Some(10.0);
+        let mut mid = media_row(MediaKind::Movie, "Mid", "tt1002");
+        mid.rating_critic = Some(50.0);
+        let mut high = media_row(MediaKind::Movie, "High", "tt1003");
+        high.rating_critic = Some(90.0);
+        low.save(db)
+            .await
+            .unwrap();
+        mid.save(db)
+            .await
+            .unwrap();
+        high.save(db)
+            .await
+            .unwrap();
+
+        let titles = sort_titles(
+            db,
+            MediaKind::Movie,
+            api::ItemSortBy::CriticRating,
+            api::SortOrder::Descending,
+        )
+        .await;
+        assert_eq!(titles, vec!["High", "Mid", "Low"]);
+    }
+
+    /// OfficialRating sorts by certification_age (descending).
+    #[tokio::test]
+    async fn sort_by_official_rating() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let mut low = media_row(MediaKind::Movie, "PG13", "tt2001");
+        low.certification_age = Some(13);
+        let mut mid = media_row(MediaKind::Movie, "PG16", "tt2002");
+        mid.certification_age = Some(16);
+        let mut high = media_row(MediaKind::Movie, "R18", "tt2003");
+        high.certification_age = Some(18);
+        low.save(db)
+            .await
+            .unwrap();
+        mid.save(db)
+            .await
+            .unwrap();
+        high.save(db)
+            .await
+            .unwrap();
+
+        let titles = sort_titles(
+            db,
+            MediaKind::Movie,
+            api::ItemSortBy::OfficialRating,
+            api::SortOrder::Descending,
+        )
+        .await;
+        assert_eq!(titles, vec!["R18", "PG16", "PG13"]);
+    }
+
+    /// AiredEpisodeOrder sorts by season, then episode number.
+    #[tokio::test]
+    async fn sort_by_aired_episode_order() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        for (t, s, e) in [
+            ("S1E2", 1, 2),
+            ("S1E1", 1, 1),
+            ("S2E1", 2, 1),
+            ("S0E5", 0, 5),
+        ] {
+            // series_imdb must be set before the stable UUID is derived so each
+            // episode gets a distinct id (canonical() uses series_imdb + numbers).
+            let mut ext = ExternalIds {
+                series_imdb: Some(
+                    NonEmptyString::try_new("tt3999".to_string()).unwrap(),
+                ),
+                ..Default::default()
+            };
+            let id = uuid::Uuid::from(&MediaIdRaw {
+                kind: MediaKind::Episode,
+                external_ids: ext.clone(),
+                season: Some(s),
+                episode: Some(e),
+            });
+            let mut ep = Media {
+                id,
+                title: t.to_string(),
+                kind: MediaKind::Episode,
+                external_ids: ext,
+                ..Default::default()
+            };
+            ep.parent_idx = Some(s);
+            ep.idx = Some(e);
+            ep.save(db)
+                .await
+                .unwrap();
+        }
+
+        let titles = sort_titles(
+            db,
+            MediaKind::Episode,
+            api::ItemSortBy::AiredEpisodeOrder,
+            api::SortOrder::Ascending,
+        )
+        .await;
+        assert_eq!(titles, vec!["S0E5", "S1E1", "S1E2", "S2E1"]);
+    }
+
+    /// Artist sorts by the grandparent (artist) row title; Album by the parent
+    /// (album) row title.
+    #[tokio::test]
+    async fn sort_by_artist_and_album() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+
+        // Build with the deezer ids set BEFORE deriving the stable UUID, so each
+        // row gets a distinct id (canonical() for music uses only the deezer id).
+        let music = |kind: MediaKind, title: &str, imdb: &str, deezer: i64| {
+            let mut ext = ExternalIds {
+                imdb: Some(NonEmptyString::try_new(imdb.to_string()).unwrap()),
+                ..Default::default()
+            };
+            match kind {
+                MediaKind::Artist => ext.deezer_artist = Some(deezer),
+                MediaKind::Album => ext.deezer_album = Some(deezer),
+                MediaKind::Track => ext.deezer_track = Some(deezer),
+                _ => {}
+            }
+            let id = uuid::Uuid::from(&MediaIdRaw {
+                kind: kind.clone(),
+                external_ids: ext.clone(),
+                season: None,
+                episode: None,
+            });
+            Media {
+                id,
+                title: title.to_string(),
+                kind,
+                external_ids: ext,
+                ..Default::default()
+            }
+        };
+
+        let mut artist_a = music(MediaKind::Artist, "Adele", "tt4001", 1);
+        artist_a
+            .save(db)
+            .await
+            .unwrap();
+        let mut artist_z = music(MediaKind::Artist, "Zed", "tt4002", 2);
+        artist_z
+            .save(db)
+            .await
+            .unwrap();
+
+        let mut album_21 = music(MediaKind::Album, "21", "tt4003", 3);
+        album_21.parent_id = Some(artist_a.id);
+        album_21
+            .save(db)
+            .await
+            .unwrap();
+        let mut album_z = music(MediaKind::Album, "AlbumZ", "tt4004", 4);
+        album_z.parent_id = Some(artist_z.id);
+        album_z
+            .save(db)
+            .await
+            .unwrap();
+
+        let mut t1 = music(MediaKind::Track, "Hello", "tt4005", 5);
+        t1.parent_id = Some(album_21.id);
+        t1.grandparent_id = Some(artist_a.id);
+        t1.save(db)
+            .await
+            .unwrap();
+        let mut t2 = music(MediaKind::Track, "Zed Song", "tt4006", 6);
+        t2.parent_id = Some(album_z.id);
+        t2.grandparent_id = Some(artist_z.id);
+        t2.save(db)
+            .await
+            .unwrap();
+
+        let by_artist = sort_titles(
+            db,
+            MediaKind::Track,
+            api::ItemSortBy::Artist,
+            api::SortOrder::Ascending,
+        )
+        .await;
+        assert_eq!(by_artist, vec!["Hello", "Zed Song"]);
+
+        let by_album = sort_titles(
+            db,
+            MediaKind::Track,
+            api::ItemSortBy::Album,
+            api::SortOrder::Ascending,
+        )
+        .await;
+        assert_eq!(by_album, vec!["Hello", "Zed Song"]);
+    }
+
+    /// PlayCount / IsPlayed / IsUnplayed / IsFavoriteOrLiked sort via correlated
+    /// user_media_state lookups and never exclude unplayed items.
+    #[tokio::test]
+    async fn sort_by_user_data_state() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let uid = uuid::Uuid::new_v4();
+
+        let mut played = media_row(MediaKind::Movie, "Played", "tt6001");
+        played
+            .save(db)
+            .await
+            .unwrap();
+        let mut unplayed = media_row(MediaKind::Movie, "Unplayed", "tt6002");
+        unplayed
+            .save(db)
+            .await
+            .unwrap();
+        let mut favorite = media_row(MediaKind::Movie, "Favorite", "tt6003");
+        favorite
+            .save(db)
+            .await
+            .unwrap();
+
+        insert_user_state(db, uid, played.id, 3, false).await;
+        insert_user_state(db, uid, favorite.id, 0, true).await;
+        // unplayed has NO state row — must still appear.
+
+        let by_count = sort_titles_for_user(
+            db,
+            MediaKind::Movie,
+            api::ItemSortBy::PlayCount,
+            api::SortOrder::Descending,
+            uid,
+        )
+        .await;
+        assert_eq!(by_count[0], "Played");
+        assert_eq!(by_count.len(), 3);
+
+        let played_first = sort_titles_for_user(
+            db,
+            MediaKind::Movie,
+            api::ItemSortBy::IsPlayed,
+            api::SortOrder::Ascending,
+            uid,
+        )
+        .await;
+        assert_eq!(played_first[0], "Played");
+        assert!(
+            played_first
+                .iter()
+                .any(|t| t == "Unplayed")
+        );
+
+        let unplayed_first = sort_titles_for_user(
+            db,
+            MediaKind::Movie,
+            api::ItemSortBy::IsUnplayed,
+            api::SortOrder::Ascending,
+            uid,
+        )
+        .await;
+        assert_eq!(unplayed_first[0], "Unplayed");
+        assert!(
+            unplayed_first
+                .iter()
+                .any(|t| t == "Played")
+        );
+
+        let favs = sort_titles_for_user(
+            db,
+            MediaKind::Movie,
+            api::ItemSortBy::IsFavoriteOrLiked,
+            api::SortOrder::Descending,
+            uid,
+        )
+        .await;
+        assert_eq!(favs[0], "Favorite");
+    }
+
+    /// SeriesSortName sorts episodes by their series (grandparent) title.
+    #[tokio::test]
+    async fn sort_by_series_sort_name() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+
+        let mut series_a = media_row(MediaKind::Series, "Alpha Show", "tt7001");
+        series_a
+            .save(db)
+            .await
+            .unwrap();
+        let mut series_z = media_row(MediaKind::Series, "Zulu Show", "tt7002");
+        series_z
+            .save(db)
+            .await
+            .unwrap();
+
+        let mk_episode =
+            |title: &str, imdb: &str, series_imdb: &str, gp: uuid::Uuid| {
+                let mut ext = ExternalIds {
+                    series_imdb: Some(
+                        NonEmptyString::try_new(series_imdb.to_string()).unwrap(),
+                    ),
+                    ..Default::default()
+                };
+                let id = uuid::Uuid::from(&MediaIdRaw {
+                    kind: MediaKind::Episode,
+                    external_ids: ext.clone(),
+                    season: Some(1),
+                    episode: Some(1),
+                });
+                let mut ep = Media {
+                    id,
+                    title: title.to_string(),
+                    kind: MediaKind::Episode,
+                    external_ids: ext,
+                    ..Default::default()
+                };
+                ep.grandparent_id = Some(gp);
+                ep.parent_idx = Some(1);
+                ep.idx = Some(1);
+                ep
+            };
+        let mut ep_a = mk_episode("Alpha Ep", "tt7003", "tt7001", series_a.id);
+        ep_a.save(db)
+            .await
+            .unwrap();
+        let mut ep_z = mk_episode("Zulu Ep", "tt7004", "tt7002", series_z.id);
+        ep_z.save(db)
+            .await
+            .unwrap();
+
+        let titles = sort_titles(
+            db,
+            MediaKind::Episode,
+            api::ItemSortBy::SeriesSortName,
+            api::SortOrder::Ascending,
+        )
+        .await;
+        assert_eq!(titles, vec!["Alpha Ep", "Zulu Ep"]);
+    }
+
+    /// DateLastContentAdded sorts series by their most recently added episode.
+    #[tokio::test]
+    async fn sort_by_date_last_content_added() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let now = chrono::Utc::now().naive_utc();
+
+        let mut series_old = media_row(MediaKind::Series, "Old Series", "tt8001");
+        series_old.created_at = now - chrono::Duration::days(100);
+        series_old
+            .save(db)
+            .await
+            .unwrap();
+        let mut series_new = media_row(MediaKind::Series, "New Series", "tt8002");
+        series_new.created_at = now - chrono::Duration::days(100);
+        series_new
+            .save(db)
+            .await
+            .unwrap();
+
+        let mk_episode = |title: &str,
+                          series_imdb: &str,
+                          gp: uuid::Uuid,
+                          created: chrono::NaiveDateTime| {
+            let mut ext = ExternalIds {
+                series_imdb: Some(
+                    NonEmptyString::try_new(series_imdb.to_string()).unwrap(),
+                ),
+                ..Default::default()
+            };
+            let id = uuid::Uuid::from(&MediaIdRaw {
+                kind: MediaKind::Episode,
+                external_ids: ext.clone(),
+                season: Some(1),
+                episode: Some(1),
+            });
+            let mut ep = Media {
+                id,
+                title: title.to_string(),
+                kind: MediaKind::Episode,
+                external_ids: ext,
+                created_at: created,
+                ..Default::default()
+            };
+            ep.grandparent_id = Some(gp);
+            ep.parent_idx = Some(1);
+            ep.idx = Some(1);
+            ep
+        };
+        let mut ep_old = mk_episode(
+            "Old Ep",
+            "tt8001",
+            series_old.id,
+            now - chrono::Duration::days(50),
+        );
+        ep_old
+            .save(db)
+            .await
+            .unwrap();
+        let mut ep_new = mk_episode(
+            "New Ep",
+            "tt8002",
+            series_new.id,
+            now - chrono::Duration::days(1),
+        );
+        ep_new
+            .save(db)
+            .await
+            .unwrap();
+
+        let titles = sort_titles(
+            db,
+            MediaKind::Series,
+            api::ItemSortBy::DateLastContentAdded,
+            api::SortOrder::Descending,
+        )
+        .await;
+        assert_eq!(titles, vec!["New Series", "Old Series"]);
     }
 }
