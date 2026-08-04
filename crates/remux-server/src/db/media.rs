@@ -102,6 +102,28 @@ pub enum MediaStatus {
     Unknown,
 }
 
+/// Deezer record type: what kind of release an Album row is. `NULL` = unknown
+/// (e.g. albums imported from sources without a record type). Stored in the
+/// `media.album_kind` column; the Albums view filters out Single/Ep.
+#[derive(
+    strum_macros::EnumString,
+    strum_macros::Display,
+    Debug,
+    Clone,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    sqlx::Type,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+#[sqlx(type_name = "TEXT", rename_all = "snake_case")]
+pub enum AlbumKind {
+    Album,
+    Single,
+    Ep,
+}
+
 #[derive(
     Default,
     strum_macros::EnumString,
@@ -878,9 +900,6 @@ pub struct ExternalIds {
     pub album_title: Option<String>,
     /// Flat artist name for tracks that have no grandparent row (e.g. playlist imports).
     pub artist_name: Option<String>,
-    /// Deezer album type: "album" | "single" | "ep". Used to keep singles/EPs
-    /// out of the Albums section.
-    pub album_type: Option<String>,
 }
 
 impl ExternalIds {
@@ -1056,7 +1075,6 @@ impl ExternalIds {
             &source.custom_stremio_type,
             replace,
         );
-        merge_option(&mut self.album_type, &source.album_type, replace);
     }
 
     /// The Stremio `MediaType` to use when querying the source addon: the
@@ -1152,7 +1170,7 @@ pub struct MediaFilter {
     pub sort_order: Vec<api::SortOrder>,
     /// For TvProgram queries: order by the parent channel's sort_order / channel_number.
     pub sort_by_channel_order: bool,
-    /// Music Albums view: hide albums whose Deezer `album_type` is "single" or
+    /// Music Albums view: hide albums whose Deezer `album_kind` is "single" or
     /// "ep" (kept under Tracks). Albums without a stored type are shown.
     pub exclude_album_singles: bool,
     /// Structured filter from a smart collection (groups of rules).
@@ -1266,6 +1284,7 @@ pub struct Media {
     #[sqlx(skip)]
     pub images: MediaImages,
     pub status: Option<MediaStatus>,
+    pub album_kind: Option<AlbumKind>,
     pub idx: Option<i64>,
     pub parent_idx: Option<i64>,
     pub parent_id: Option<Uuid>,
@@ -1914,9 +1933,9 @@ impl Media {
             live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id,
             collection_smart_filter, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital,
             collection_source, collection_default_sort, collection_default_sort_order,
-            original_language, is_locked, locked_fields
+            original_language, is_locked, locked_fields, album_kind
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
@@ -1960,7 +1979,8 @@ impl Media {
             program_kind = excluded.program_kind,
             original_language = COALESCE(excluded.original_language, media.original_language),
             is_locked = excluded.is_locked,
-            locked_fields = excluded.locked_fields
+            locked_fields = excluded.locked_fields,
+            album_kind = COALESCE(excluded.album_kind, media.album_kind)
         "#,
         )
         .bind(self.id)
@@ -2009,6 +2029,7 @@ impl Media {
         .bind(&self.original_language)
         .bind(self.is_locked)
         .bind(sqlx::types::Json(&self.locked_fields))
+        .bind(&self.album_kind)
         .execute(db)
         .await?;
 
@@ -2061,7 +2082,7 @@ impl Media {
                 external_ids, external_ratings, created_at, updated_at, certification, certification_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, grandparent_id, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital,
                 collection_source, collection_default_sort, collection_default_sort_order,
-                original_language, is_locked, locked_fields
+                original_language, is_locked, locked_fields, album_kind
             )",
         );
             for item in chunk {
@@ -2118,7 +2139,8 @@ impl Media {
                     .push_bind(sqlx::types::Json(&item.collection_default_sort_order))
                     .push_bind(&item.original_language)
                     .push_bind(&item.is_locked)
-                    .push_bind(sqlx::types::Json(&item.locked_fields));
+                    .push_bind(sqlx::types::Json(&item.locked_fields))
+                    .push_bind(&item.album_kind);
             });
 
             query_builder.push(" ON CONFLICT DO NOTHING");
@@ -2175,7 +2197,7 @@ impl Media {
                 external_ids, external_ratings, created_at, updated_at, certification, certification_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital,
                 collection_source, collection_default_sort, collection_default_sort_order,
-                original_language, is_locked, locked_fields
+                original_language, is_locked, locked_fields, album_kind
             )",
         );
 
@@ -2231,7 +2253,8 @@ impl Media {
                     .push_bind(sqlx::types::Json(&item.collection_default_sort_order))
                     .push_bind(&item.original_language)
                     .push_bind(&item.is_locked)
-                    .push_bind(sqlx::types::Json(&item.locked_fields));
+                    .push_bind(sqlx::types::Json(&item.locked_fields))
+                    .push_bind(&item.album_kind);
             });
 
             query_builder.push(
@@ -2272,7 +2295,8 @@ impl Media {
                 original_language = COALESCE(excluded.original_language, media.original_language),
                 -- preserve user-set locks; never let a provider refresh overwrite them
                 is_locked = CASE WHEN media.id IS NOT NULL THEN media.is_locked ELSE excluded.is_locked END,
-                locked_fields = CASE WHEN media.id IS NOT NULL THEN media.locked_fields ELSE excluded.locked_fields END",
+                locked_fields = CASE WHEN media.id IS NOT NULL THEN media.locked_fields ELSE excluded.locked_fields END,
+                album_kind = COALESCE(excluded.album_kind, media.album_kind)",
             );
 
             query_builder
@@ -2880,10 +2904,10 @@ impl Media {
                 }
             }
             if filter.exclude_album_singles {
-                // Music Albums view: singles/EPs (Deezer album_type) stay under
+                // Music Albums view: singles/EPs (Deezer album_kind) stay under
                 // Tracks; albums without a stored type are shown.
                 qb.push(
-                    " AND (kind != 'album' OR COALESCE(json_extract(external_ids, '$.album_type'), 'album') NOT IN ('single', 'ep'))",
+                    " AND (kind != 'album' OR COALESCE(album_kind, 'album') NOT IN ('single', 'ep'))",
                 );
             }
             if let Some(id) = &filter.id {
@@ -7961,7 +7985,7 @@ mod tests {
     /// The Albums view excludes Deezer singles/EPs but keeps albums (including
     /// albums without a stored type).
     #[tokio::test]
-    async fn exclude_album_singles_filters_album_type() {
+    async fn exclude_album_singles_filters_album_kind() {
         let (_server, guard) = crate::integration_test::new_test_server()
             .await
             .unwrap();
@@ -7970,11 +7994,10 @@ mod tests {
             .db;
 
         let album_row =
-            |title: &str, imdb: &str, deezer: i64, album_type: Option<&str>| {
+            |title: &str, imdb: &str, deezer: i64, kind: Option<AlbumKind>| {
                 let mut ext = ExternalIds {
                     imdb: Some(NonEmptyString::try_new(imdb.to_string()).unwrap()),
                     deezer_album: Some(deezer),
-                    album_type: album_type.map(String::from),
                     ..Default::default()
                 };
                 let id = uuid::Uuid::from(&MediaIdRaw {
@@ -7987,22 +8010,23 @@ mod tests {
                     id,
                     title: title.to_string(),
                     kind: MediaKind::Album,
+                    album_kind: kind,
                     external_ids: ext,
                     ..Default::default()
                 }
             };
 
-        let mut album = album_row("Real Album", "tt9001", 1, Some("album"));
+        let mut album = album_row("Real Album", "tt9001", 1, Some(AlbumKind::Album));
         album
             .save(db)
             .await
             .unwrap();
-        let mut single = album_row("Single", "tt9002", 2, Some("single"));
+        let mut single = album_row("Single", "tt9002", 2, Some(AlbumKind::Single));
         single
             .save(db)
             .await
             .unwrap();
-        let mut ep = album_row("EP", "tt9003", 3, Some("ep"));
+        let mut ep = album_row("EP", "tt9003", 3, Some(AlbumKind::Ep));
         ep.save(db)
             .await
             .unwrap();

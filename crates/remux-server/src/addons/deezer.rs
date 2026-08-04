@@ -370,13 +370,19 @@ impl DeezerAddon {
             kind: db::MediaKind::Album,
             released_at,
             description: Some(desc_parts.join(" · ")),
+            album_kind: a
+                .record_type
+                .as_deref()
+                .and_then(|r| {
+                    r.parse()
+                        .ok()
+                }),
             external_ids: db::ExternalIds {
                 deezer_album: Some(a.id as i64),
                 deezer_artist: a
                     .artist
                     .as_ref()
                     .map(|ar| ar.id as i64),
-                album_type: a.record_type,
                 ..Default::default()
             },
             ..Default::default()
