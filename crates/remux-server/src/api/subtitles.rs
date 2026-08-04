@@ -246,6 +246,50 @@ pub async fn subtitles_stream(
         String,
     )>,
 ) -> Result<impl IntoResponse> {
+    subtitles_stream_inner(
+        state,
+        session,
+        item_id,
+        media_source_id,
+        stream_index,
+        format,
+    )
+    .await
+}
+
+/// Jellyfin also accepts the tickless subtitle route (defaults the start-position
+/// ticks segment to 0) — Moonfin for webOS uses it.
+/// https://github.com/jellyfin/jellyfin/blob/master/Jellyfin.Api/Controllers/SubtitleController.cs
+#[get("/videos/{item_id}/{media_source_id}/subtitles/{stream_index}/stream.{format}")]
+pub async fn subtitles_stream_tickless(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path((item_id, media_source_id, stream_index, format)): Path<(
+        Uuid,
+        Uuid,
+        i64,
+        String,
+    )>,
+) -> Result<impl IntoResponse> {
+    subtitles_stream_inner(
+        state,
+        session,
+        item_id,
+        media_source_id,
+        stream_index,
+        format,
+    )
+    .await
+}
+
+async fn subtitles_stream_inner(
+    state: AppState,
+    session: auth::AuthSession,
+    item_id: Uuid,
+    media_source_id: Uuid,
+    stream_index: i64,
+    format: String,
+) -> Result<impl IntoResponse> {
     // Try to resolve as an external subtitle injected during PlaybackInfo.
     // fetch_subtitles is cached (24h Stremio / SQLite Opendal) so this is cheap.
     if let Some(item_media) = db::Media::get_by_id(
@@ -756,5 +800,53 @@ pub(crate) async fn inject_external_subtitles(
                 .media_streams
                 .push(stream);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use http::header::HeaderValue;
+
+    use crate::integration_test::{auth_header_with_token, authenticated_server};
+
+    /// Jellyfin's tickless subtitle route (`.../Subtitles/{index}/Stream.{format}`,
+    /// no start-position-ticks segment) must dispatch to the same handler as the
+    /// canonical route. With a non-existent item both produce the identical
+    /// handler response — an unregistered route would yield axum's bare 404.
+    #[tokio::test]
+    async fn tickless_subtitle_route_dispatches_to_handler() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let bogus = "00000000-0000-0000-0000-000000000000";
+        let _ = &guard;
+
+        let canonical = server
+            .get(&format!("/videos/{bogus}/{bogus}/subtitles/2/0/stream.ass"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .expect_failure()
+            .await;
+        let tickless = server
+            .get(&format!("/videos/{bogus}/{bogus}/subtitles/2/stream.ass"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .expect_failure()
+            .await;
+
+        assert_eq!(
+            canonical.status_code(),
+            tickless.status_code(),
+            "both subtitle route forms must reach the same handler"
+        );
+        assert!(
+            !tickless
+                .text()
+                .is_empty(),
+            "tickless route must dispatch to the subtitle handler, not a bare route-miss 404"
+        );
     }
 }
