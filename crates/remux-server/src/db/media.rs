@@ -878,6 +878,9 @@ pub struct ExternalIds {
     pub album_title: Option<String>,
     /// Flat artist name for tracks that have no grandparent row (e.g. playlist imports).
     pub artist_name: Option<String>,
+    /// Deezer album type: "album" | "single" | "ep". Used to keep singles/EPs
+    /// out of the Albums section.
+    pub album_type: Option<String>,
 }
 
 impl ExternalIds {
@@ -1053,6 +1056,7 @@ impl ExternalIds {
             &source.custom_stremio_type,
             replace,
         );
+        merge_option(&mut self.album_type, &source.album_type, replace);
     }
 
     /// The Stremio `MediaType` to use when querying the source addon: the
@@ -1148,6 +1152,9 @@ pub struct MediaFilter {
     pub sort_order: Vec<api::SortOrder>,
     /// For TvProgram queries: order by the parent channel's sort_order / channel_number.
     pub sort_by_channel_order: bool,
+    /// Music Albums view: hide albums whose Deezer `album_type` is "single" or
+    /// "ep" (kept under Tracks). Albums without a stored type are shown.
+    pub exclude_album_singles: bool,
     /// Structured filter from a smart collection (groups of rules).
     pub filter_rules: Option<remux_sdks::remux::CollectionFilter>,
     /// Structured filter from user policy (applied separately, never on containers).
@@ -2872,6 +2879,13 @@ impl Media {
                     qb.push_in("kind", &kind);
                 }
             }
+            if filter.exclude_album_singles {
+                // Music Albums view: singles/EPs (Deezer album_type) stay under
+                // Tracks; albums without a stored type are shown.
+                qb.push(
+                    " AND (kind != 'album' OR COALESCE(json_extract(external_ids, '$.album_type'), 'album') NOT IN ('single', 'ep'))",
+                );
+            }
             if let Some(id) = &filter.id {
                 qb.push_in("id", &id);
             }
@@ -4561,10 +4575,21 @@ impl Media {
                 .as_ref()
         });
 
+        // Music smart collection Albums view: hide singles/EPs. Only applies when
+        // the parent is a Music collection AND the query asks for Albums (artist
+        // pages and track listings keep singles).
+        let exclude_album_singles = parent
+            .as_ref()
+            .is_some_and(|p| {
+                p.collection_media_kind == Some(CollectionMediaKind::Music)
+                    && kinds.contains(&MediaKind::Album)
+            });
+
         let mut result = Self::get_by_filter(
             db,
             &MediaFilter {
                 kind: Some(kinds),
+                exclude_album_singles,
                 enabled: has_tv_channel.then_some(true),
                 promoted: filter.promoted,
                 limit: filter
@@ -7931,5 +7956,89 @@ mod tests {
         )
         .await;
         assert_eq!(titles, vec!["New Series", "Old Series"]);
+    }
+
+    /// The Albums view excludes Deezer singles/EPs but keeps albums (including
+    /// albums without a stored type).
+    #[tokio::test]
+    async fn exclude_album_singles_filters_album_type() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+
+        let album_row =
+            |title: &str, imdb: &str, deezer: i64, album_type: Option<&str>| {
+                let mut ext = ExternalIds {
+                    imdb: Some(NonEmptyString::try_new(imdb.to_string()).unwrap()),
+                    deezer_album: Some(deezer),
+                    album_type: album_type.map(String::from),
+                    ..Default::default()
+                };
+                let id = uuid::Uuid::from(&MediaIdRaw {
+                    kind: MediaKind::Album,
+                    external_ids: ext.clone(),
+                    season: None,
+                    episode: None,
+                });
+                Media {
+                    id,
+                    title: title.to_string(),
+                    kind: MediaKind::Album,
+                    external_ids: ext,
+                    ..Default::default()
+                }
+            };
+
+        let mut album = album_row("Real Album", "tt9001", 1, Some("album"));
+        album
+            .save(db)
+            .await
+            .unwrap();
+        let mut single = album_row("Single", "tt9002", 2, Some("single"));
+        single
+            .save(db)
+            .await
+            .unwrap();
+        let mut ep = album_row("EP", "tt9003", 3, Some("ep"));
+        ep.save(db)
+            .await
+            .unwrap();
+        let mut no_type = album_row("No Type", "tt9004", 4, None);
+        no_type
+            .save(db)
+            .await
+            .unwrap();
+
+        let fetch_titles = |exclude: bool| async move {
+            let result = Media::get_by_filter(
+                db,
+                &MediaFilter {
+                    kind: Some(vec![MediaKind::Album]),
+                    exclude_album_singles: exclude,
+                    sort_by: vec![api::ItemSortBy::SortName],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            result
+                .records
+                .into_iter()
+                .map(|m| m.title)
+                .collect::<Vec<_>>()
+        };
+
+        let all = fetch_titles(false).await;
+        assert_eq!(
+            all.len(),
+            4,
+            "without the filter every album is returned; got {all:?}"
+        );
+
+        let filtered = fetch_titles(true).await;
+        assert_eq!(filtered, vec!["No Type", "Real Album"]);
     }
 }

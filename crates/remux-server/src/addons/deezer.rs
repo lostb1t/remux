@@ -376,6 +376,7 @@ impl DeezerAddon {
                     .artist
                     .as_ref()
                     .map(|ar| ar.id as i64),
+                album_type: a.record_type,
                 ..Default::default()
             },
             ..Default::default()

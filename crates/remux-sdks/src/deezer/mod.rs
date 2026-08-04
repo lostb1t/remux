@@ -64,6 +64,8 @@ pub struct Album {
     pub release_date: Option<String>,
     pub label: Option<String>,
     pub nb_tracks: Option<u32>,
+    /// "album" | "single" | "ep" — keeps singles/EPs out of the Albums section.
+    pub record_type: Option<String>,
     pub genres: Option<DeezerList<Genre>>,
     pub artist: Option<ArtistRef>,
     #[serde(default)]
@@ -313,4 +315,30 @@ impl Endpoint for PlaylistEndpoint {
 
 pub fn client() -> RestClient<NoAuth> {
     RestClient::new("https://api.deezer.com/").expect("Deezer base URL is valid")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn album_parses_record_type() {
+        let json =
+            r#"{"id": 1, "title": "Hello", "record_type": "single", "nb_tracks": 2}"#;
+        let album: Album = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            album
+                .record_type
+                .as_deref(),
+            Some("single")
+        );
+        assert_eq!(album.nb_tracks, Some(2));
+    }
+
+    #[test]
+    fn album_record_type_optional() {
+        let json = r#"{"id": 1, "title": "Hello"}"#;
+        let album: Album = serde_json::from_str(json).unwrap();
+        assert_eq!(album.record_type, None);
+    }
 }
