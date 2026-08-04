@@ -776,30 +776,6 @@ async fn variant_hls_video_inner(
         .unwrap())
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn live_channel_forces_aac_over_copy() {
-        assert_eq!(super::resolve_live_audio_codec(true, "copy"), "aac");
-        assert_eq!(super::resolve_live_audio_codec(false, "copy"), "copy");
-        assert_eq!(super::resolve_live_audio_codec(true, "aac"), "aac");
-        assert_eq!(super::resolve_live_audio_codec(true, "ac3"), "ac3");
-    }
-
-    #[test]
-    fn resumed_ts_hls_uses_ffmpeg_variant_playlist() {
-        assert!(!super::should_serve_ffmpeg_variant_playlist(
-            false, false, 0
-        ));
-        assert!(!super::should_serve_ffmpeg_variant_playlist(
-            false, false, 1
-        ));
-        // fMP4 now also uses synthetic VOD playlist — full seek bar from the start.
-        assert!(!super::should_serve_ffmpeg_variant_playlist(false, true, 0));
-        assert!(super::should_serve_ffmpeg_variant_playlist(true, false, 0));
-    }
-}
-
 /// Serves individual HLS segment files.
 /// Captures the full segment filename (e.g. "segment_00001.ts") and strips the extension.
 #[get("/videos/{id}/main/{segment_file}")]
@@ -1241,4 +1217,28 @@ async fn hls_segment_inner(
         .header("Cache-Control", "public, max-age=86400")
         .body(body)
         .unwrap())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn live_channel_forces_aac_over_copy() {
+        assert_eq!(super::resolve_live_audio_codec(true, "copy"), "aac");
+        assert_eq!(super::resolve_live_audio_codec(false, "copy"), "copy");
+        assert_eq!(super::resolve_live_audio_codec(true, "aac"), "aac");
+        assert_eq!(super::resolve_live_audio_codec(true, "ac3"), "ac3");
+    }
+
+    #[test]
+    fn resumed_ts_hls_uses_ffmpeg_variant_playlist() {
+        assert!(!super::should_serve_ffmpeg_variant_playlist(
+            false, false, 0
+        ));
+        assert!(!super::should_serve_ffmpeg_variant_playlist(
+            false, false, 1
+        ));
+        // fMP4 now also uses synthetic VOD playlist — full seek bar from the start.
+        assert!(!super::should_serve_ffmpeg_variant_playlist(false, true, 0));
+        assert!(super::should_serve_ffmpeg_variant_playlist(true, false, 0));
+    }
 }

@@ -1526,222 +1526,6 @@ where
     Ok(Some(values))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn next_up_cutoff_accepts_rfc3339() {
-        assert_eq!(
-            normalize_next_up_date_cutoff("2026-06-17T23:00:00Z").unwrap(),
-            "2026-06-17 23:00:00"
-        );
-    }
-
-    #[test]
-    fn next_up_cutoff_rejects_invalid_input() {
-        assert_eq!(
-            normalize_next_up_date_cutoff("not-a-date").unwrap_err(),
-            "nextUpDateCutoff must be RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS"
-        );
-    }
-
-    #[test]
-    fn embedded_subtitle_handling_default_is_burn() {
-        assert_eq!(
-            EmbeddedSubtitleHandling::default(),
-            EmbeddedSubtitleHandling::Burn
-        );
-    }
-
-    #[test]
-    fn embedded_subtitle_handling_display_round_trips() {
-        for (variant, expected) in [
-            (EmbeddedSubtitleHandling::Burn, "Burn"),
-            (EmbeddedSubtitleHandling::Extract, "Extract"),
-            (EmbeddedSubtitleHandling::Strip, "Strip"),
-        ] {
-            assert_eq!(variant.to_string(), expected);
-            let parsed: EmbeddedSubtitleHandling = expected
-                .parse()
-                .unwrap();
-            assert_eq!(parsed, variant);
-        }
-    }
-
-    #[test]
-    fn embedded_subtitle_handling_serde_round_trips() {
-        for variant in [
-            EmbeddedSubtitleHandling::Burn,
-            EmbeddedSubtitleHandling::Extract,
-            EmbeddedSubtitleHandling::Strip,
-        ] {
-            let json = serde_json::to_string(&variant).unwrap();
-            let back: EmbeddedSubtitleHandling = serde_json::from_str(&json).unwrap();
-            assert_eq!(back, variant);
-        }
-    }
-
-    #[test]
-    fn encoding_options_subtitle_mode_defaults_to_burn() {
-        let opts = EncodingOptions::default();
-        assert_eq!(
-            opts.subtitle_mode
-                .unwrap_or_default(),
-            EmbeddedSubtitleHandling::Burn
-        );
-    }
-
-    fn parse_query(q: &str) -> GetItemsQuery {
-        serde_urlencoded::from_str::<GetItemsQuery>(q).unwrap()
-    }
-
-    #[test]
-    fn years_filter_parses_comma_separated() {
-        let q = parse_query("Years=2020,2021&IncludeItemTypes=Movie");
-        assert_eq!(q.years, Some(vec![2020, 2021]));
-    }
-
-    #[test]
-    fn years_filter_single_value() {
-        let q = parse_query("Years=1999");
-        assert_eq!(q.years, Some(vec![1999]));
-    }
-
-    #[test]
-    fn years_filter_skips_garbage_values() {
-        let q = parse_query("Years=2020,notayear,2021");
-        assert_eq!(q.years, Some(vec![2020, 2021]));
-    }
-
-    #[test]
-    fn genres_filter_parses_pipe_separated() {
-        let q = parse_query("Genres=Action|Comedy");
-        assert_eq!(
-            q.genres,
-            Some(vec!["Action".to_string(), "Comedy".to_string()])
-        );
-    }
-
-    #[test]
-    fn genres_filter_also_accepts_comma_separated() {
-        let q = parse_query("Genres=Action,Comedy");
-        assert_eq!(
-            q.genres,
-            Some(vec!["Action".to_string(), "Comedy".to_string()])
-        );
-    }
-
-    #[test]
-    fn official_ratings_filter_parses_pipe() {
-        let q = parse_query("OfficialRatings=PG|R");
-        assert_eq!(
-            q.official_ratings,
-            Some(vec!["PG".to_string(), "R".to_string()])
-        );
-    }
-
-    #[test]
-    fn tags_filter_parses_pipe() {
-        let q = parse_query("Tags=Christmas|Halloween");
-        assert_eq!(
-            q.tags,
-            Some(vec!["Christmas".to_string(), "Halloween".to_string()])
-        );
-    }
-
-    #[test]
-    fn filter_fields_default_to_none_when_absent() {
-        let q = parse_query("IncludeItemTypes=Movie");
-        assert!(
-            q.years
-                .is_none()
-        );
-        assert!(
-            q.genres
-                .is_none()
-        );
-        assert!(
-            q.official_ratings
-                .is_none()
-        );
-        assert!(
-            q.tags
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn stream_rule_audio_language_round_trips() {
-        let rule = StreamRule::AudioLanguage {
-            op: SetOp::Is,
-            values: vec!["rus".to_string()],
-        };
-        let json = serde_json::to_string(&rule).unwrap();
-        assert_eq!(
-            json,
-            r#"{"field":"audio_language","op":"is","values":["rus"]}"#
-        );
-        let back: StreamRule = serde_json::from_str(&json).unwrap();
-        assert_eq!(rule, back);
-    }
-
-    #[test]
-    fn stream_rule_size_round_trips() {
-        let rule = StreamRule::Size {
-            op: NumericOp::Gt,
-            value: 20_000_000_000,
-        };
-        let json = serde_json::to_string(&rule).unwrap();
-        assert_eq!(json, r#"{"field":"size","op":"gt","value":20000000000}"#);
-        let back: StreamRule = serde_json::from_str(&json).unwrap();
-        assert_eq!(rule, back);
-    }
-
-    #[test]
-    fn language_label_maps_known_codes_and_falls_back() {
-        assert_eq!(language_label("rus"), "Russian");
-        assert_eq!(language_label("ENG"), "English");
-        assert_eq!(language_label("fra"), "French");
-        assert_eq!(language_label("deu"), "German");
-        assert_eq!(language_label("xxx"), "xxx");
-    }
-
-    #[test]
-    fn normalize_lang_code_maps_terminologic_to_bibliographic() {
-        assert_eq!(normalize_lang_code("fra"), "fre");
-        assert_eq!(normalize_lang_code("DEU"), "ger");
-        assert_eq!(normalize_lang_code("rus"), "rus");
-    }
-
-    #[test]
-    fn common_audio_languages_includes_russian_and_english() {
-        let codes: Vec<&str> = common_audio_languages()
-            .iter()
-            .map(|(c, _)| *c)
-            .collect();
-        assert!(codes.contains(&"rus"));
-        assert!(codes.contains(&"eng"));
-        assert!(!codes.contains(&"fra"));
-        assert!(!codes.contains(&"deu"));
-    }
-
-    #[test]
-    fn format_size_rule_picks_gib_for_large_values() {
-        let v = 20 * 1024 * 1024 * 1024;
-        assert_eq!(format_size_rule(NumericOp::Gt, v), "> 20.00 GiB");
-        assert_eq!(format_size_rule(NumericOp::Lt, v), "< 20.00 GiB");
-        assert_eq!(format_size_rule(NumericOp::Eq, v), "= 20.00 GiB");
-        assert_eq!(format_size_rule(NumericOp::NotEq, v), "≠ 20.00 GiB");
-    }
-
-    #[test]
-    fn format_size_rule_falls_back_to_mib() {
-        let v = 500 * 1024 * 1024;
-        assert_eq!(format_size_rule(NumericOp::Gt, v), "> 500.00 MiB");
-    }
-}
-
 #[derive(Default, Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct VideoStreamQuery {
@@ -6077,4 +5861,220 @@ pub struct RefreshItemQuery {
     pub recursive: bool,
     #[serde(default)]
     pub regenerate_trickplay: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn next_up_cutoff_accepts_rfc3339() {
+        assert_eq!(
+            normalize_next_up_date_cutoff("2026-06-17T23:00:00Z").unwrap(),
+            "2026-06-17 23:00:00"
+        );
+    }
+
+    #[test]
+    fn next_up_cutoff_rejects_invalid_input() {
+        assert_eq!(
+            normalize_next_up_date_cutoff("not-a-date").unwrap_err(),
+            "nextUpDateCutoff must be RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS"
+        );
+    }
+
+    #[test]
+    fn embedded_subtitle_handling_default_is_burn() {
+        assert_eq!(
+            EmbeddedSubtitleHandling::default(),
+            EmbeddedSubtitleHandling::Burn
+        );
+    }
+
+    #[test]
+    fn embedded_subtitle_handling_display_round_trips() {
+        for (variant, expected) in [
+            (EmbeddedSubtitleHandling::Burn, "Burn"),
+            (EmbeddedSubtitleHandling::Extract, "Extract"),
+            (EmbeddedSubtitleHandling::Strip, "Strip"),
+        ] {
+            assert_eq!(variant.to_string(), expected);
+            let parsed: EmbeddedSubtitleHandling = expected
+                .parse()
+                .unwrap();
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[test]
+    fn embedded_subtitle_handling_serde_round_trips() {
+        for variant in [
+            EmbeddedSubtitleHandling::Burn,
+            EmbeddedSubtitleHandling::Extract,
+            EmbeddedSubtitleHandling::Strip,
+        ] {
+            let json = serde_json::to_string(&variant).unwrap();
+            let back: EmbeddedSubtitleHandling = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, variant);
+        }
+    }
+
+    #[test]
+    fn encoding_options_subtitle_mode_defaults_to_burn() {
+        let opts = EncodingOptions::default();
+        assert_eq!(
+            opts.subtitle_mode
+                .unwrap_or_default(),
+            EmbeddedSubtitleHandling::Burn
+        );
+    }
+
+    fn parse_query(q: &str) -> GetItemsQuery {
+        serde_urlencoded::from_str::<GetItemsQuery>(q).unwrap()
+    }
+
+    #[test]
+    fn years_filter_parses_comma_separated() {
+        let q = parse_query("Years=2020,2021&IncludeItemTypes=Movie");
+        assert_eq!(q.years, Some(vec![2020, 2021]));
+    }
+
+    #[test]
+    fn years_filter_single_value() {
+        let q = parse_query("Years=1999");
+        assert_eq!(q.years, Some(vec![1999]));
+    }
+
+    #[test]
+    fn years_filter_skips_garbage_values() {
+        let q = parse_query("Years=2020,notayear,2021");
+        assert_eq!(q.years, Some(vec![2020, 2021]));
+    }
+
+    #[test]
+    fn genres_filter_parses_pipe_separated() {
+        let q = parse_query("Genres=Action|Comedy");
+        assert_eq!(
+            q.genres,
+            Some(vec!["Action".to_string(), "Comedy".to_string()])
+        );
+    }
+
+    #[test]
+    fn genres_filter_also_accepts_comma_separated() {
+        let q = parse_query("Genres=Action,Comedy");
+        assert_eq!(
+            q.genres,
+            Some(vec!["Action".to_string(), "Comedy".to_string()])
+        );
+    }
+
+    #[test]
+    fn official_ratings_filter_parses_pipe() {
+        let q = parse_query("OfficialRatings=PG|R");
+        assert_eq!(
+            q.official_ratings,
+            Some(vec!["PG".to_string(), "R".to_string()])
+        );
+    }
+
+    #[test]
+    fn tags_filter_parses_pipe() {
+        let q = parse_query("Tags=Christmas|Halloween");
+        assert_eq!(
+            q.tags,
+            Some(vec!["Christmas".to_string(), "Halloween".to_string()])
+        );
+    }
+
+    #[test]
+    fn filter_fields_default_to_none_when_absent() {
+        let q = parse_query("IncludeItemTypes=Movie");
+        assert!(
+            q.years
+                .is_none()
+        );
+        assert!(
+            q.genres
+                .is_none()
+        );
+        assert!(
+            q.official_ratings
+                .is_none()
+        );
+        assert!(
+            q.tags
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn stream_rule_audio_language_round_trips() {
+        let rule = StreamRule::AudioLanguage {
+            op: SetOp::Is,
+            values: vec!["rus".to_string()],
+        };
+        let json = serde_json::to_string(&rule).unwrap();
+        assert_eq!(
+            json,
+            r#"{"field":"audio_language","op":"is","values":["rus"]}"#
+        );
+        let back: StreamRule = serde_json::from_str(&json).unwrap();
+        assert_eq!(rule, back);
+    }
+
+    #[test]
+    fn stream_rule_size_round_trips() {
+        let rule = StreamRule::Size {
+            op: NumericOp::Gt,
+            value: 20_000_000_000,
+        };
+        let json = serde_json::to_string(&rule).unwrap();
+        assert_eq!(json, r#"{"field":"size","op":"gt","value":20000000000}"#);
+        let back: StreamRule = serde_json::from_str(&json).unwrap();
+        assert_eq!(rule, back);
+    }
+
+    #[test]
+    fn language_label_maps_known_codes_and_falls_back() {
+        assert_eq!(language_label("rus"), "Russian");
+        assert_eq!(language_label("ENG"), "English");
+        assert_eq!(language_label("fra"), "French");
+        assert_eq!(language_label("deu"), "German");
+        assert_eq!(language_label("xxx"), "xxx");
+    }
+
+    #[test]
+    fn normalize_lang_code_maps_terminologic_to_bibliographic() {
+        assert_eq!(normalize_lang_code("fra"), "fre");
+        assert_eq!(normalize_lang_code("DEU"), "ger");
+        assert_eq!(normalize_lang_code("rus"), "rus");
+    }
+
+    #[test]
+    fn common_audio_languages_includes_russian_and_english() {
+        let codes: Vec<&str> = common_audio_languages()
+            .iter()
+            .map(|(c, _)| *c)
+            .collect();
+        assert!(codes.contains(&"rus"));
+        assert!(codes.contains(&"eng"));
+        assert!(!codes.contains(&"fra"));
+        assert!(!codes.contains(&"deu"));
+    }
+
+    #[test]
+    fn format_size_rule_picks_gib_for_large_values() {
+        let v = 20 * 1024 * 1024 * 1024;
+        assert_eq!(format_size_rule(NumericOp::Gt, v), "> 20.00 GiB");
+        assert_eq!(format_size_rule(NumericOp::Lt, v), "< 20.00 GiB");
+        assert_eq!(format_size_rule(NumericOp::Eq, v), "= 20.00 GiB");
+        assert_eq!(format_size_rule(NumericOp::NotEq, v), "≠ 20.00 GiB");
+    }
+
+    #[test]
+    fn format_size_rule_falls_back_to_mib() {
+        let v = 500 * 1024 * 1024;
+        assert_eq!(format_size_rule(NumericOp::Gt, v), "> 500.00 MiB");
+    }
 }
