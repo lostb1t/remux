@@ -8,26 +8,84 @@ use remux_sdks::remux::{
 };
 use std::collections::HashMap;
 
+const PAGE_SIZE: i64 = 25;
+
+/// Groups devices from the current page by user, preserving server order.
+/// Returns (uid, display_name, devices).
+fn group_by_user(devices: &[DeviceInfo]) -> Vec<(String, String, Vec<DeviceInfo>)> {
+    let mut order: Vec<String> = Vec::new();
+    let mut map: HashMap<String, (String, Vec<DeviceInfo>)> = HashMap::new();
+    for d in devices {
+        let uid = d
+            .remux
+            .as_ref()
+            .and_then(|r| r.user_id)
+            .map(|u| u.to_string())
+            .unwrap_or_default();
+        let label = d
+            .last_user_name
+            .clone()
+            .unwrap_or_else(|| uid.clone());
+        if !map.contains_key(&uid) {
+            order.push(uid.clone());
+            map.insert(uid.clone(), (label, vec![d.clone()]));
+        } else if let Some(entry) = map.get_mut(&uid) {
+            entry
+                .1
+                .push(d.clone());
+        }
+    }
+    order
+        .into_iter()
+        .filter_map(|uid| {
+            map.remove(&uid)
+                .map(|(name, devs)| (uid, name, devs))
+        })
+        .collect()
+}
+
 #[component]
 pub fn DevicesPage(app_state: AppState) -> Element {
     let mut devices: Signal<Vec<DeviceInfo>> = use_signal(Vec::new);
+    let mut total_count: Signal<i64> = use_signal(|| 0);
+    let mut start_index: Signal<i64> = use_signal(|| 0);
     let mut loading = use_signal(|| true);
     let mut error = use_signal(|| Option::<String>::None);
     let refresh = use_signal(|| 0_u32);
     let mut confirm_revoke: Signal<Option<String>> = use_signal(|| None);
-    let mut confirm_revoke_user: Signal<Option<String>> = use_signal(|| None);
+    let mut confirm_revoke_user: Signal<Option<(String, String)>> = use_signal(|| None);
+    let mut search_input: Signal<String> = use_signal(String::new);
 
-    let app_state_devices = app_state.clone();
+    let app_state_effect = app_state.clone();
     use_effect(move || {
         let _r = *refresh.read();
+        let offset = *start_index.read();
+        let search = search_input
+            .read()
+            .clone();
         loading.set(true);
-        let client = app_state_devices.clone();
+        let client = app_state_effect.clone();
         spawn(async move {
+            let search_term = if search.is_empty() {
+                None
+            } else {
+                Some(search)
+            };
             match client
-                .execute(GetDevices { user_id: None })
+                .execute(GetDevices {
+                    user_id: None,
+                    start_index: Some(offset),
+                    limit: Some(PAGE_SIZE),
+                    search_term,
+                })
                 .await
             {
-                Ok(QueryResult { items, .. }) => {
+                Ok(QueryResult {
+                    items,
+                    total_record_count,
+                    ..
+                }) => {
+                    total_count.set(total_record_count);
                     devices.set(items);
                     error.set(None);
                 }
@@ -37,30 +95,41 @@ pub fn DevicesPage(app_state: AppState) -> Element {
         });
     });
 
-    let grouped: HashMap<String, Vec<DeviceInfo>> = {
-        let mut map: HashMap<String, Vec<DeviceInfo>> = HashMap::new();
-        for d in devices
-            .read()
-            .iter()
-        {
-            let uid = d
-                .remux
-                .as_ref()
-                .and_then(|r| r.user_id)
-                .map(|u| u.to_string())
-                .unwrap_or_default();
-            map.entry(uid)
-                .or_default()
-                .push(d.clone());
-        }
-        map
-    };
-
     let app_state_revoke = app_state.clone();
     let app_state_revoke_all = app_state.clone();
 
+    let total = *total_count.read();
+    let offset = *start_index.read();
+    let has_prev = offset > 0;
+    let has_next = offset + PAGE_SIZE < total;
+
+    let sections = group_by_user(&devices.read());
+
     rsx! {
-        Card { title: "All Devices",
+        Card { title: "All Devices", tight: true,
+            div { class: "device-search",
+                input {
+                    r#type: "text",
+                    class: "input",
+                    placeholder: "Filter by username…",
+                    value: "{search_input.read()}",
+                    oninput: move |evt| {
+                        search_input.set(evt.value());
+                        start_index.set(0);
+                    },
+                }
+                if !search_input.read().is_empty() {
+                    button {
+                        class: "btn btn-ghost",
+                        style: "height:32px;padding:0 8px;font-size:.75rem",
+                        onclick: move |_| {
+                            search_input.set(String::new());
+                            start_index.set(0);
+                        },
+                        "×"
+                    }
+                }
+            }
             if *loading.read() {
                 LoadingText {}
             } else if let Some(err) = error.read().as_ref() {
@@ -69,66 +138,88 @@ pub fn DevicesPage(app_state: AppState) -> Element {
                 EmptyState { message: "No devices found" }
             } else {
                 div { class: "data-table-container",
-                    div { class: "row-list",
-                        for device in devices.read().clone() {
-                            {
-                                let device_id = device.id.clone().unwrap_or_default();
-                                let is_self = device
-                                    .remux
-                                    .as_ref()
-                                    .and_then(|r| r.is_current_session)
-                                    .unwrap_or(false);
-                                let device_id_revoke = device_id.clone();
-                                let remote_ip = device.remux.as_ref().and_then(|r| r.remote_end_point.clone());
-                                rsx! {
-                                    div {
-                                        class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]",
-                                        key: "{device_id}",
-                                        div { class: "flex-1 min-w-0 px-3 py-[10px]",
-                                            div { class: "session-name",
-                                                "{device.name.as_deref().unwrap_or(\"Unknown device\")}"
-                                                if is_self {
-                                                    span { class: "user-badge user-badge-self", style: "margin-left:6px", "This session" }
-                                                }
-                                            }
-                                            div { class: "text-xs text-[var(--text-dim)] mt-0.5",
-                                                if let Some(ip) = &remote_ip {
-                                                    span { "{ip}" }
-                                                }
-                                                if let Some(created) = device.date_created {
-                                                    span { style: "margin-left:6px",
-                                                        "First seen: {fmt_time(created)}"
+                    for (uid, user_label, user_devices) in sections {
+                        {
+                            let uid_for_btn = uid.clone();
+                            let label_for_btn = user_label.clone();
+                            rsx! {
+                                div { class: "device-user-section", key: "{uid}",
+                                    // Section header: username + revoke-all button
+                                    div { class: "device-user-header",
+                                        span { class: "device-user-label", "{user_label}" }
+                                        button {
+                                            class: "btn-section-revoke",
+                                            onclick: move |_| confirm_revoke_user.set(Some((uid_for_btn.clone(), label_for_btn.clone()))),
+                                            "Revoke all sessions"
+                                        }
+                                    }
+                                    // Device rows for this user
+                                    div { class: "row-list",
+                                        for device in user_devices {
+                                            {
+                                                let device_id = device.id.clone().unwrap_or_default();
+                                                let is_self = device
+                                                    .remux
+                                                    .as_ref()
+                                                    .and_then(|r| r.is_current_session)
+                                                    .unwrap_or(false);
+                                                let device_id_revoke = device_id.clone();
+                                                let remote_ip = device
+                                                    .remux
+                                                    .as_ref()
+                                                    .and_then(|r| r.remote_end_point.clone());
+                                                rsx! {
+                                                    div { class: "device-row", key: "{device_id}",
+                                                        div { class: "device-col-name",
+                                                            div { class: "session-name",
+                                                                "{device.name.as_deref().unwrap_or(\"Unknown device\")}"
+                                                                if is_self {
+                                                                    span {
+                                                                        class: "user-badge user-badge-self",
+                                                                        style: "margin-left:6px",
+                                                                        "This session"
+                                                                    }
+                                                                }
+                                                            }
+                                                            div { style: "font-size:.7rem;color:var(--text-dim);margin-top:2px",
+                                                                if let Some(ip) = &remote_ip {
+                                                                    span { "{ip}" }
+                                                                }
+                                                                if let Some(created) = device.date_created {
+                                                                    span { style: "margin-left:6px",
+                                                                        "First seen: {fmt_time(created)}"
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        div { class: "device-col-app",
+                                                            if let Some(app) = &device.app_name {
+                                                                span { class: "session-client-badge",
+                                                                    "{app}"
+                                                                    if let Some(v) = &device.app_version {
+                                                                        " {v}"
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        div { class: "device-col-time",
+                                                            if let Some(t) = device.date_last_activity {
+                                                                "{fmt_time(t)}"
+                                                            }
+                                                        }
+                                                        div { class: "device-col-action",
+                                                            button {
+                                                                class: "btn btn-ghost",
+                                                                style: "height:28px;font-size:.65rem;padding:0 8px;color:var(--error);border-color:var(--error)",
+                                                                disabled: is_self,
+                                                                onclick: move |_| {
+                                                                    confirm_revoke.set(Some(device_id_revoke.clone()))
+                                                                },
+                                                                "Revoke"
+                                                            }
+                                                        }
                                                     }
                                                 }
-                                            }
-                                        }
-                                        div { class: "shrink-0 px-3 py-[10px]",
-                                            if let Some(user) = &device.last_user_name {
-                                                div { class: "session-user", "{user}" }
-                                            }
-                                        }
-                                        div { class: "shrink-0 px-3 py-[10px]",
-                                            if let Some(app) = &device.app_name {
-                                                div { class: "session-client-badge",
-                                                    "{app}"
-                                                    if let Some(v) = &device.app_version {
-                                                        " {v}"
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        div { class: "shrink-0 px-3 py-[10px] text-right font-mono text-[var(--text-dim)] text-xs",
-                                            if let Some(t) = device.date_last_activity {
-                                                "{fmt_time(t)}"
-                                            }
-                                        }
-                                        div { class: "shrink-0 px-3 py-[10px]",
-                                            button {
-                                                class: "btn btn-ghost",
-                                                style: "height:28px;font-size:.65rem;padding:0 8px;color:var(--error);border-color:var(--error)",
-                                                disabled: is_self,
-                                                onclick: move |_| confirm_revoke.set(Some(device_id_revoke.clone())),
-                                                "Revoke"
                                             }
                                         }
                                     }
@@ -137,21 +228,25 @@ pub fn DevicesPage(app_state: AppState) -> Element {
                         }
                     }
 
-                    div { class: "flex flex-wrap gap-2 px-3 py-3 border-t border-[var(--border)]",
-                        for (uid, user_devices) in &grouped {
-                            {
-                                let user_label = user_devices
-                                    .first()
-                                    .and_then(|d| d.last_user_name.clone())
-                                    .unwrap_or_else(|| uid.clone());
-                                let uid_str = uid.clone();
-                                rsx! {
-                                    button {
-                                        class: "btn btn-ghost",
-                                        style: "height:28px;font-size:.65rem;padding:0 8px;color:var(--error);border-color:var(--error)",
-                                        onclick: move |_| confirm_revoke_user.set(Some(uid_str.clone())),
-                                        "Revoke all for {user_label}"
-                                    }
+                    if has_prev || has_next {
+                        div { class: "flex items-center justify-between px-3 py-2 border-t border-[var(--border)]",
+                            span { class: "text-xs text-[var(--text-dim)]",
+                                "{offset + 1}–{(offset + PAGE_SIZE).min(total)} of {total}"
+                            }
+                            div { class: "flex gap-2",
+                                button {
+                                    class: "btn btn-ghost",
+                                    style: "height:28px;font-size:.72rem;padding:0 10px",
+                                    disabled: !has_prev,
+                                    onclick: move |_| start_index.set((offset - PAGE_SIZE).max(0)),
+                                    "← Prev"
+                                }
+                                button {
+                                    class: "btn btn-ghost",
+                                    style: "height:28px;font-size:.72rem;padding:0 10px",
+                                    disabled: !has_next,
+                                    onclick: move |_| start_index.set(offset + PAGE_SIZE),
+                                    "Next →"
                                 }
                             }
                         }
@@ -190,9 +285,9 @@ pub fn DevicesPage(app_state: AppState) -> Element {
             }
         }
 
-        if let Some(uid) = confirm_revoke_user.read().clone() {
+        if let Some((uid, user_label)) = confirm_revoke_user.read().clone() {
             ConfirmDialog {
-                message: "Revoke ALL devices for this user? They will be signed out everywhere.",
+                message: "Revoke ALL sessions for {user_label}? They will be signed out everywhere.",
                 on_confirm: {
                     let client = app_state_revoke_all.clone();
                     move |_| {

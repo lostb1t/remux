@@ -1232,8 +1232,6 @@ pub struct GetItemsQuery {
     /// Internal server-side constraint. This is not a Jellyfin query parameter.
     #[serde(skip)]
     pub promoted: Option<bool>,
-    // #[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, ItemFields>>")]
-    //#[serde_as(as = "Option<StringWithSeparator<CommaSeparator, ItemFields>>")]
     #[serde(
         deserialize_with = "deserialize_separated_str",
         serialize_with = "serialize_comma_opt",
@@ -1266,10 +1264,6 @@ pub struct GetItemsQuery {
     pub name_starts_with_or_greater: Option<String>,
     pub name_starts_with: Option<String>,
     pub name_less_than: Option<String>,
-    //#[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, ItemSortBy>>")]
-    //pub sort_by: Option<Vec<ItemSortBy>>,
-    //#[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, SortOrder>>")]
-    //pub sort_order: Option<SortOrder>,
     #[serde(
         deserialize_with = "deserialize_separated_str",
         serialize_with = "serialize_comma_opt",
@@ -1452,12 +1446,6 @@ impl GetItemsQuery {
         if let Some(exclude_types) = &self.exclude_item_types {
             requested.retain(|t| !exclude_types.contains(t));
         }
-
-        //if let Some(media_types) = &self.media_types {
-        //    if media_types.iter().any(|mt| mt == "Video") {
-        //        requested.retain(|t| t != &MediaType::Series);
-        //    }
-        //}
 
         requested
     }
@@ -4540,6 +4528,11 @@ impl Endpoint for GetSessions {
 pub struct GetDevices {
     #[serde(rename = "userId")]
     pub user_id: Option<Uuid>,
+    #[serde(rename = "startIndex")]
+    pub start_index: Option<i64>,
+    pub limit: Option<i64>,
+    #[serde(rename = "searchTerm")]
+    pub search_term: Option<String>,
 }
 
 impl Endpoint for GetDevices {

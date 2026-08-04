@@ -180,6 +180,52 @@ impl Device {
         Ok(devices)
     }
 
+    /// Get devices with pagination; returns (items, total_count).
+    /// When `username_filter` is provided, only devices belonging to users whose
+    /// username contains the filter (case-insensitive) are returned.
+    pub async fn get_paged(
+        db: &SqlitePool,
+        offset: i64,
+        limit: i64,
+        username_filter: Option<&str>,
+    ) -> Result<(Vec<Self>, i64)> {
+        let (total, items) = if let Some(pattern) = username_filter {
+            let total: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM devices d JOIN users u ON d.user_id = u.id WHERE lower(u.username) LIKE ?",
+            )
+            .bind(pattern)
+            .fetch_one(db)
+            .await?;
+
+            let items = sqlx::query_as::<_, Self>(
+                "SELECT d.* FROM devices d JOIN users u ON d.user_id = u.id WHERE lower(u.username) LIKE ? ORDER BY d.name LIMIT ? OFFSET ?",
+            )
+            .bind(pattern)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(db)
+            .await?;
+
+            (total, items)
+        } else {
+            let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM devices")
+                .fetch_one(db)
+                .await?;
+
+            let items = sqlx::query_as::<_, Self>(
+                "SELECT * FROM devices ORDER BY name LIMIT ? OFFSET ?",
+            )
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(db)
+            .await?;
+
+            (total, items)
+        };
+
+        Ok((items, total))
+    }
+
     pub async fn delete_by_access_token(db: &SqlitePool, token: &str) -> Result<bool> {
         let result = sqlx::query("DELETE FROM devices WHERE access_token = ?")
             .bind(token)
@@ -333,7 +379,6 @@ pub struct AuthSession {
     pub user: db::User,
 }
 
-//#[async_trait]
 impl FromRequestParts<AppState> for AuthSession {
     type Rejection = ApiError;
 
@@ -353,7 +398,6 @@ impl FromRequestParts<AppState> for AuthSession {
             .device_id
             .as_deref();
 
-        // Capture client IP from proxy headers or peer address.
         let remote_ip = parts
             .headers
             .get("X-Forwarded-For")
@@ -548,7 +592,6 @@ impl std::ops::Deref for AdminSession {
     }
 }
 
-// todo theres also an old emby airh header. Should we support this?
 #[derive(Debug, Clone, Default)]
 pub struct JellyfinAuthHeader {
     pub client: Option<String>,

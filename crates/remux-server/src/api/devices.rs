@@ -133,36 +133,45 @@ pub async fn delete_device(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Query parameters for devices endpoint
 #[query]
 pub struct GetDevicesQuery {
     pub user_id: Option<uuid::Uuid>,
+    pub start_index: Option<i64>,
+    pub limit: Option<i64>,
+    #[serde(rename = "searchTerm", alias = "search_term")]
+    pub search_term: Option<String>,
 }
 
-/// Get all devices
 #[get("/devices")]
 pub async fn get_devices(
     State(state): State<AppState>,
     session: auth::AdminSession,
     Query(params): Query<GetDevicesQuery>,
 ) -> Result<impl IntoResponse> {
-    let devices = if let Some(user_id) = params.user_id {
-        auth::Device::get_by_user_id(
-            &state
-                .ctx
-                .db,
-            &user_id,
-        )
-        .await?
-    } else {
-        auth::Device::get_all(
-            &state
-                .ctx
-                .db,
-            None,
-        )
-        .await?
-    };
+    let db = &state
+        .ctx
+        .db;
+
+    let (devices, total_record_count, start_index) =
+        if let Some(user_id) = params.user_id {
+            let devices = auth::Device::get_by_user_id(db, &user_id).await?;
+            let count = devices.len() as i64;
+            (devices, count, 0i32)
+        } else {
+            let offset = params
+                .start_index
+                .unwrap_or(0);
+            let limit = params
+                .limit
+                .unwrap_or(i64::MAX);
+            let filter = params
+                .search_term
+                .as_deref()
+                .map(|t| format!("%{}%", t.to_lowercase()));
+            let (devices, total) =
+                auth::Device::get_paged(db, offset, limit, filter.as_deref()).await?;
+            (devices, total, offset as i32)
+        };
 
     // Batch-fetch usernames so we can populate last_user_name without N queries.
     let user_ids: Vec<uuid::Uuid> = {
@@ -174,13 +183,7 @@ pub async fn get_devices(
         ids.dedup();
         ids
     };
-    let users = db::User::get_by_ids(
-        &state
-            .ctx
-            .db,
-        &user_ids,
-    )
-    .await?;
+    let users = db::User::get_by_ids(db, &user_ids).await?;
     let username_map: std::collections::HashMap<uuid::Uuid, String> = users
         .into_iter()
         .map(|u| (u.id, u.username))
@@ -201,9 +204,9 @@ pub async fn get_devices(
         .collect();
 
     let result = api::QueryResult {
-        items: device_infos.clone(),
-        total_record_count: device_infos.len() as i64,
-        start_index: 0,
+        items: device_infos,
+        total_record_count,
+        start_index,
         ..Default::default()
     };
 
@@ -333,5 +336,98 @@ mod tests {
             .expect_failure()
             .await;
         resp.assert_status(StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn get_devices_search_filter() {
+        let (server, _guard, token) = authenticated_server().await;
+
+        // Register a second device.
+        server
+            .post("/users/authenticatebyname")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_static(AUTH_HEADER_2),
+            )
+            .json(&json!({ "Username": "test", "Pw": "test" }))
+            .await;
+
+        let auth = HeaderValue::from_str(&auth_header_with_token(&token)).unwrap();
+
+        // Partial match on "test" username → both devices.
+        let body: serde_json::Value = server
+            .get("/devices")
+            .add_query_param("searchTerm", "tes")
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .await
+            .json();
+        assert_eq!(body["TotalRecordCount"], 2);
+
+        // No match → 0 results.
+        let body: serde_json::Value = server
+            .get("/devices")
+            .add_query_param("searchTerm", "nonexistent")
+            .add_header(http::header::AUTHORIZATION, auth)
+            .await
+            .json();
+        assert_eq!(body["TotalRecordCount"], 0);
+        assert_eq!(
+            body["Items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn get_devices_pagination() {
+        let (server, _guard, token) = authenticated_server().await;
+
+        // Register a second device.
+        server
+            .post("/users/authenticatebyname")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_static(AUTH_HEADER_2),
+            )
+            .json(&json!({ "Username": "test", "Pw": "test" }))
+            .await;
+
+        let auth = HeaderValue::from_str(&auth_header_with_token(&token)).unwrap();
+
+        // First page: limit=1, start=0 → 1 item, total=2.
+        let body: serde_json::Value = server
+            .get("/devices")
+            .add_query_param("startIndex", "0")
+            .add_query_param("limit", "1")
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .await
+            .json();
+        assert_eq!(body["TotalRecordCount"], 2);
+        assert_eq!(
+            body["Items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Second page: limit=1, start=1 → 1 item, total=2.
+        let body: serde_json::Value = server
+            .get("/devices")
+            .add_query_param("startIndex", "1")
+            .add_query_param("limit", "1")
+            .add_header(http::header::AUTHORIZATION, auth)
+            .await
+            .json();
+        assert_eq!(body["TotalRecordCount"], 2);
+        assert_eq!(
+            body["Items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }
