@@ -3200,18 +3200,6 @@ fn lang_pref_set(pref: &Option<String>) -> bool {
         })
 }
 
-/// Clear the `is_default` flag on every subtitle stream in a source.
-fn clear_subtitle_defaults(source: &mut api::MediaSourceInfo) {
-    for s in source
-        .media_streams
-        .iter_mut()
-    {
-        if matches!(s.type_, Some(api::MediaStreamType::Subtitle)) {
-            s.is_default = Some(false);
-        }
-    }
-}
-
 /// Applies `audio_language_preference` and `subtitle_language_preference` from the
 /// user configuration to each source's default stream indexes, when not already set.
 /// Called from both the Items endpoint (detail page) and PlaybackInfo.
@@ -3418,16 +3406,9 @@ async fn apply_user_playback_prefs(
                             && matches!(s.type_, Some(api::MediaStreamType::Subtitle))
                     });
                 if exists {
-                    // Clear any previous default flag, set the recalled one
-                    clear_subtitle_defaults(source);
+                    // Recall the user's saved selection; leave the container's
+                    // stream flags untouched.
                     source.default_subtitle_stream_index = Some(idx);
-                    if let Some(s) = source
-                        .media_streams
-                        .iter_mut()
-                        .find(|s| s.index == idx)
-                    {
-                        s.is_default = Some(true);
-                    }
                     subtitle_decided = true;
                 }
             }
@@ -3523,37 +3504,14 @@ async fn apply_user_playback_prefs(
 }
 
 fn apply_subtitle_mode(mode: &api::SubtitleMode, source: &mut api::MediaSourceInfo) {
+    // Modes only decide the *selection* (`default_subtitle_stream_index`); the
+    // container's per-stream `is_default` flags are metadata and are left untouched.
     let clear_all = |source: &mut api::MediaSourceInfo| {
-        for s in source
-            .media_streams
-            .iter_mut()
-        {
-            if matches!(s.type_, Some(api::MediaStreamType::Subtitle)) {
-                s.is_default = Some(false);
-            }
-        }
         source.default_subtitle_stream_index = None;
     };
 
     let set_default = |source: &mut api::MediaSourceInfo, idx: Option<i64>| {
-        for s in source
-            .media_streams
-            .iter_mut()
-        {
-            if matches!(s.type_, Some(api::MediaStreamType::Subtitle)) {
-                s.is_default = Some(false);
-            }
-        }
         source.default_subtitle_stream_index = idx;
-        if let Some(i) = idx {
-            if let Some(s) = source
-                .media_streams
-                .iter_mut()
-                .find(|s| s.index == i)
-            {
-                s.is_default = Some(true);
-            }
-        }
     };
 
     match mode {
