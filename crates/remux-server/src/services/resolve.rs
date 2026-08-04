@@ -12,37 +12,10 @@ use crate::{AppContext, AppState, db, keyed_lock::KeyedLock};
 
 pub struct MediaResolveService;
 
-/// Best-effort artist name for a music item: loaded grandparent stub, the flat
-/// `external_ids.artist_name` (playlist imports have no artist row), or the
-/// legacy "by {artist}" description convention.
-fn music_artist_name(media: &db::Media) -> Option<&str> {
-    media
-        .grandparent
-        .as_deref()
-        .map(|g| {
-            g.title
-                .as_str()
-        })
-        .filter(|t| !t.is_empty())
-        .or_else(|| {
-            media
-                .external_ids
-                .artist_name
-                .as_deref()
-        })
-        .or_else(|| {
-            media
-                .description
-                .as_deref()
-                .and_then(|d| d.strip_prefix("by "))
-        })
-        .filter(|t| !t.is_empty())
-}
-
 /// Deezer search query that pins the artist when known, so a title-only match
 /// can't resolve to the wrong artist's track/album.
 fn deezer_search_q(media: &db::Media, kind: &str) -> String {
-    match music_artist_name(media) {
+    match media.artist_name() {
         Some(artist) => format!(
             "artist:\"{}\" {kind}:\"{}\"",
             artist.replace('"', ""),
@@ -456,7 +429,7 @@ impl FromRequestParts<AppState> for ResolvedItem {
 
 #[cfg(test)]
 mod tests {
-    use super::{deezer_search_q, music_artist_name};
+    use super::deezer_search_q;
     use crate::db;
     use uuid::Uuid;
 
@@ -481,26 +454,26 @@ mod tests {
     #[test]
     fn artist_from_grandparent_stub_wins() {
         let media = track(Some("Adele"), Some("Wrong"), None, "Hello");
-        assert_eq!(music_artist_name(&media), Some("Adele"));
+        assert_eq!(media.artist_name(), Some("Adele"));
     }
 
     #[test]
     fn artist_from_flat_name_for_playlist_imports() {
         // Playlist import: no grandparent stub, flat artist_name is the source.
         let media = track(None, Some("Adele"), None, "Hello");
-        assert_eq!(music_artist_name(&media), Some("Adele"));
+        assert_eq!(media.artist_name(), Some("Adele"));
     }
 
     #[test]
     fn artist_from_description_prefix() {
         let media = track(None, None, Some("by Adele"), "Hello");
-        assert_eq!(music_artist_name(&media), Some("Adele"));
+        assert_eq!(media.artist_name(), Some("Adele"));
     }
 
     #[test]
     fn empty_names_are_ignored() {
         let media = track(None, Some(""), Some("by "), "Hello");
-        assert_eq!(music_artist_name(&media), None);
+        assert_eq!(media.artist_name(), None);
     }
 
     #[test]

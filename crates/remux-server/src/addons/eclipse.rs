@@ -242,24 +242,17 @@ async fn eclipse_streams(
     // Build query: include artist name when available. Prefer the artist row
     // (grandparent for tracks); playlist imports have no artist row, so fall
     // back to the flat artist name stored on the track itself.
-    let artist_name: Option<String> = if let Some(gp_id) = media.grandparent_id {
-        db::Media::get_by_id(&ctx.db, &gp_id)
+    let gp_title = match media.grandparent_id {
+        Some(gp_id) => db::Media::get_by_id(&ctx.db, &gp_id)
             .await
             .ok()
             .flatten()
-            .map(|m| m.title)
-            .or_else(|| {
-                media
-                    .external_ids
-                    .artist_name
-                    .clone()
-            })
-    } else {
-        media
-            .external_ids
-            .artist_name
-            .clone()
+            .map(|m| m.title),
+        None => None,
     };
+    let artist_name = media
+        .artist_name_from(gp_title.as_deref())
+        .map(str::to_owned);
 
     let query = match artist_name {
         Some(ref artist) => format!("{} {}", artist, media.title),

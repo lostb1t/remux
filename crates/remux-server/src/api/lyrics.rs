@@ -164,29 +164,21 @@ fn titles_from_lookup(
     map: &std::collections::HashMap<Uuid, String>,
 ) -> (Option<String>, Option<String>) {
     let artist = media
-        .grandparent_id
-        .and_then(|id| {
-            map.get(&id)
-                .cloned()
-        })
-        .or_else(|| {
+        .artist_name_from(
             media
-                .external_ids
-                .artist_name
-                .clone()
-        });
+                .grandparent_id
+                .and_then(|id| map.get(&id))
+                .map(String::as_str),
+        )
+        .map(str::to_owned);
     let album = media
-        .parent_id
-        .and_then(|id| {
-            map.get(&id)
-                .cloned()
-        })
-        .or_else(|| {
+        .album_name_from(
             media
-                .external_ids
-                .album_title
-                .clone()
-        });
+                .parent_id
+                .and_then(|id| map.get(&id))
+                .map(String::as_str),
+        )
+        .map(str::to_owned);
     (artist, album)
 }
 

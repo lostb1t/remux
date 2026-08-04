@@ -105,19 +105,10 @@ fn mime_to_container(mime: &str) -> Option<String> {
 }
 
 fn build_query(media: &db::Media) -> String {
-    // Prefer the flat artist name (playlist imports have no artist row);
-    // fall back to the legacy "by {artist}" description convention.
+    // Prefer the artist row / flat artist name (playlist imports have no artist
+    // row); falls back to the legacy "by {artist}" description convention.
     let artist = media
-        .external_ids
-        .artist_name
-        .clone()
-        .or_else(|| {
-            media
-                .description
-                .as_deref()
-                .and_then(|d| d.strip_prefix("by "))
-                .map(str::to_owned)
-        })
+        .artist_name()
         .unwrap_or_default();
     if artist.is_empty() {
         media

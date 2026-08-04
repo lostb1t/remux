@@ -1373,6 +1373,73 @@ impl Media {
                 .contains(field)
     }
 
+    /// Best-effort artist name for a music item: the loaded grandparent row
+    /// (`self.grandparent`, set by [`Self::preload_parents`]), then the flat
+    /// `external_ids.artist_name` (playlist imports have no artist row), then
+    /// the legacy `"by {artist}"` description convention.
+    pub fn artist_name(&self) -> Option<&str> {
+        self.artist_name_from(
+            self.grandparent
+                .as_deref()
+                .map(|g| {
+                    g.title
+                        .as_str()
+                }),
+        )
+    }
+
+    /// Best-effort album name for a music item: the loaded parent row
+    /// (`self.parent`, set by [`Self::preload_parents`]), then the flat
+    /// `external_ids.album_title` (playlist imports have no album row).
+    pub fn album_name(&self) -> Option<&str> {
+        self.album_name_from(
+            self.parent
+                .as_deref()
+                .map(|p| {
+                    p.title
+                        .as_str()
+                }),
+        )
+    }
+
+    /// Shared artist-name chain. `parent_title` is the title of the artist row
+    /// when one is available; callers that resolve it outside `self.grandparent`
+    /// (eclipse fetches the row itself, the lyrics API batch-loads several)
+    /// pass it here instead.
+    pub(crate) fn artist_name_from<'a>(
+        &'a self,
+        parent_title: Option<&'a str>,
+    ) -> Option<&'a str> {
+        parent_title
+            .filter(|t| !t.is_empty())
+            .or_else(|| {
+                self.external_ids
+                    .artist_name
+                    .as_deref()
+            })
+            .or_else(|| {
+                self.description
+                    .as_deref()
+                    .and_then(|d| d.strip_prefix("by "))
+            })
+            .filter(|t| !t.is_empty())
+    }
+
+    /// Shared album-name chain; `parent_title` is the loaded album row title.
+    pub(crate) fn album_name_from<'a>(
+        &'a self,
+        parent_title: Option<&'a str>,
+    ) -> Option<&'a str> {
+        parent_title
+            .filter(|t| !t.is_empty())
+            .or_else(|| {
+                self.external_ids
+                    .album_title
+                    .as_deref()
+            })
+            .filter(|t| !t.is_empty())
+    }
+
     /// Batch-load parent and grandparent `Media` records (with images) for tracks,
     /// albums, episodes, seasons, and TV programs, storing them as `self.parent` /
     /// `self.grandparent`. The API layer reads titles and image tags from those
@@ -1591,12 +1658,7 @@ impl Media {
             }
             MediaKind::Track => {
                 let artist = self
-                    .grandparent
-                    .as_deref()
-                    .map(|g| {
-                        g.title
-                            .as_str()
-                    })
+                    .artist_name()
                     .unwrap_or_default();
                 if artist.is_empty() {
                     self.title
@@ -6497,6 +6559,87 @@ mod tests {
             )),
             None
         );
+    }
+
+    fn track(
+        artist_name: Option<&str>,
+        album_title: Option<&str>,
+        description: Option<&str>,
+    ) -> Media {
+        Media {
+            title: "Hello".to_string(),
+            description: description.map(String::from),
+            external_ids: ExternalIds {
+                artist_name: artist_name.map(String::from),
+                album_title: album_title.map(String::from),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn artist_name_prefers_grandparent_row() {
+        let mut media = track(Some("Stale"), None, None);
+        media.grandparent = Some(Media::stub(Uuid::new_v4(), "Adele"));
+        assert_eq!(media.artist_name(), Some("Adele"));
+    }
+
+    #[test]
+    fn artist_name_falls_back_to_flat_for_playlist_imports() {
+        let media = track(Some("Adele"), None, None);
+        assert_eq!(media.artist_name(), Some("Adele"));
+    }
+
+    #[test]
+    fn artist_name_falls_back_to_description_prefix() {
+        let media = track(None, None, Some("by Adele"));
+        assert_eq!(media.artist_name(), Some("Adele"));
+    }
+
+    #[test]
+    fn artist_name_prefers_flat_over_description() {
+        let media = track(Some("Adele"), None, Some("by Someone Else"));
+        assert_eq!(media.artist_name(), Some("Adele"));
+    }
+
+    #[test]
+    fn artist_name_ignores_empty_names() {
+        let media = track(Some(""), None, Some("by "));
+        assert_eq!(media.artist_name(), None);
+    }
+
+    #[test]
+    fn artist_name_from_external_parent_title() {
+        let media = track(Some("Stale"), None, None);
+        assert_eq!(media.artist_name_from(Some("Adele")), Some("Adele"));
+        assert_eq!(media.artist_name_from(None), Some("Stale"));
+    }
+
+    #[test]
+    fn album_name_prefers_parent_row() {
+        let mut media = track(None, Some("Stale"), None);
+        media.parent = Some(Media::stub(Uuid::new_v4(), "21"));
+        assert_eq!(media.album_name(), Some("21"));
+    }
+
+    #[test]
+    fn album_name_falls_back_to_flat_for_playlist_imports() {
+        let media = track(None, Some("21"), None);
+        assert_eq!(media.album_name(), Some("21"));
+    }
+
+    #[test]
+    fn album_name_ignores_empty_titles() {
+        let media = track(None, Some(""), None);
+        assert_eq!(media.album_name(), None);
+    }
+
+    #[test]
+    fn full_title_uses_flat_artist_for_playlist_tracks() {
+        let mut media = track(Some("Adele"), None, None);
+        media.kind = MediaKind::Track;
+        assert_eq!(media.full_title(), "Adele - Hello");
     }
 
     #[test]
