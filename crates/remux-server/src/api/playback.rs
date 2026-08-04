@@ -3000,6 +3000,104 @@ mod tests {
             "server metadata-language fallback (fr) should override the probe's container default (eng, index 3)"
         );
     }
+
+    /// When the user has no subtitle preference AND the server has no metadata
+    /// language, the container's default subtitle stream (the is_default flag
+    /// recorded by the probe) is used as the last fallback — and the stream's
+    /// is_default flag is left untouched.
+    #[tokio::test]
+    async fn test_container_default_subtitle_used_as_last_fallback() {
+        use crate::{api::ServerConfiguration, db::Settings};
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let ctx = &guard.0;
+
+        // Probe-style: the container flags eng (index 3) as the default subtitle.
+        let mut media = insert_subtitle_source(ctx).await;
+        if let Some(pd) = media
+            .probe_data
+            .as_mut()
+        {
+            for s in &mut pd.media_streams {
+                if matches!(s.type_, Some(crate::api::MediaStreamType::Subtitle)) {
+                    s.is_default = Some(s.index == 3);
+                }
+            }
+            pd.default_subtitle_stream_index = Some(3);
+        }
+        media
+            .save(&ctx.db)
+            .await
+            .expect("re-save media");
+
+        // No global metadata language configured at all.
+        Settings::set_config(
+            &ctx.db,
+            &ServerConfiguration {
+                preferred_metadata_language: None,
+                ..ServerConfiguration::default()
+            },
+        )
+        .await
+        .expect("set server config");
+
+        let me: serde_json::Value = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let user_id = me["Id"]
+            .as_str()
+            .unwrap();
+        server
+            .post(&format!("/users/{}/configuration", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&default_user_config())
+            .await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({}))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["MediaSources"][0]["DefaultSubtitleStreamIndex"].as_i64(),
+            Some(3),
+            "container default subtitle (eng, index 3) should be used when no user preference and no global metadata language exist"
+        );
+        // The stream's is_default flag must be left exactly as the container set it.
+        let subs = &body["MediaSources"][0]["MediaStreams"];
+        for s in subs
+            .as_array()
+            .unwrap()
+        {
+            if s["Type"] == "Subtitle" {
+                assert_eq!(
+                    s["IsDefault"]
+                        .as_bool()
+                        .unwrap(),
+                    s["Index"]
+                        .as_i64()
+                        .unwrap()
+                        == 3,
+                    "subtitle is_default flags must be preserved untouched"
+                );
+            }
+        }
+    }
 }
 
 /// Returns additional parts for a multi-file video item.
@@ -3169,15 +3267,7 @@ pub(crate) fn apply_language_defaults(
                         })
                     {
                         let idx = stream.index;
-                        clear_subtitle_defaults(source);
                         source.default_subtitle_stream_index = Some(idx);
-                        if let Some(s) = source
-                            .media_streams
-                            .iter_mut()
-                            .find(|s| s.index == idx)
-                        {
-                            s.is_default = Some(true);
-                        }
                     }
                 }
             }
@@ -3197,15 +3287,7 @@ pub(crate) fn apply_language_defaults(
                     })
                 {
                     let idx = stream.index;
-                    clear_subtitle_defaults(source);
                     source.default_subtitle_stream_index = Some(idx);
-                    if let Some(s) = source
-                        .media_streams
-                        .iter_mut()
-                        .find(|s| s.index == idx)
-                    {
-                        s.is_default = Some(true);
-                    }
                 }
             }
         }
@@ -3401,15 +3483,7 @@ async fn apply_user_playback_prefs(
                         })
                     {
                         let idx = stream.index;
-                        clear_subtitle_defaults(source);
                         source.default_subtitle_stream_index = Some(idx);
-                        if let Some(s) = source
-                            .media_streams
-                            .iter_mut()
-                            .find(|s| s.index == idx)
-                        {
-                            s.is_default = Some(true);
-                        }
                         subtitle_decided = true;
                     }
                 }
@@ -3436,15 +3510,7 @@ async fn apply_user_playback_prefs(
                         })
                     {
                         let idx = stream.index;
-                        clear_subtitle_defaults(source);
                         source.default_subtitle_stream_index = Some(idx);
-                        if let Some(s) = source
-                            .media_streams
-                            .iter_mut()
-                            .find(|s| s.index == idx)
-                        {
-                            s.is_default = Some(true);
-                        }
                         subtitle_decided = true;
                     }
                 }
