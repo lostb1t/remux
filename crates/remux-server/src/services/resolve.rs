@@ -59,13 +59,9 @@ impl MediaResolveService {
                 let Ok(client) = RestClient::new("https://api.deezer.com/") else {
                     return false;
                 };
+                let q = media.deezer_search_query("track");
                 let hit = match client
-                    .execute(dz::SearchTracksEndpoint {
-                        q: media
-                            .title
-                            .clone(),
-                        limit: 1,
-                    })
+                    .execute(dz::SearchTracksEndpoint { q, limit: 1 })
                     .await
                 {
                     Ok(dz::DeezerResult::Ok(list)) => list
@@ -112,13 +108,9 @@ impl MediaResolveService {
                 let Ok(client) = RestClient::new("https://api.deezer.com/") else {
                     return false;
                 };
+                let q = media.deezer_search_query("album");
                 let hit = match client
-                    .execute(dz::SearchAlbumsEndpoint {
-                        q: media
-                            .title
-                            .clone(),
-                        limit: 1,
-                    })
+                    .execute(dz::SearchAlbumsEndpoint { q, limit: 1 })
                     .await
                 {
                     Ok(dz::DeezerResult::Ok(list)) => list
@@ -415,5 +407,85 @@ impl FromRequestParts<AppState> for ResolvedItem {
             })?;
 
         Ok(ResolvedItem(media))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::db;
+    use uuid::Uuid;
+
+    fn track(
+        grandparent_title: Option<&str>,
+        artist_name: Option<&str>,
+        description: Option<&str>,
+        title: &str,
+    ) -> db::Media {
+        db::Media {
+            title: title.to_string(),
+            description: description.map(String::from),
+            grandparent: grandparent_title.map(|t| db::Media::stub(Uuid::new_v4(), t)),
+            external_ids: db::ExternalIds {
+                artist_name: artist_name.map(String::from),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn artist_from_grandparent_stub_wins() {
+        let media = track(Some("Adele"), Some("Wrong"), None, "Hello");
+        assert_eq!(media.artist_name(), Some("Adele"));
+    }
+
+    #[test]
+    fn artist_from_flat_name_for_playlist_imports() {
+        // Playlist import: no grandparent stub, flat artist_name is the source.
+        let media = track(None, Some("Adele"), None, "Hello");
+        assert_eq!(media.artist_name(), Some("Adele"));
+    }
+
+    #[test]
+    fn artist_from_description_prefix() {
+        let media = track(None, None, Some("by Adele"), "Hello");
+        assert_eq!(media.artist_name(), Some("Adele"));
+    }
+
+    #[test]
+    fn empty_names_are_ignored() {
+        let media = track(None, Some(""), Some("by "), "Hello");
+        assert_eq!(media.artist_name(), None);
+    }
+
+    #[test]
+    fn deezer_query_pins_artist_when_known() {
+        let media = track(None, Some("Adele"), None, "Hello");
+        assert_eq!(
+            media.deezer_search_query("track"),
+            "artist:\"Adele\" track:\"Hello\""
+        );
+    }
+
+    #[test]
+    fn deezer_query_strips_quotes_from_values() {
+        let media = db::Media {
+            title: "So \"Special\"".to_string(),
+            external_ids: db::ExternalIds {
+                artist_name: Some("A\"B".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            media.deezer_search_query("album"),
+            "artist:\"AB\" album:\"So Special\""
+        );
+    }
+
+    #[test]
+    fn deezer_query_title_only_without_artist() {
+        let media = track(None, None, None, "Hello");
+        assert_eq!(media.deezer_search_query("track"), "Hello");
     }
 }

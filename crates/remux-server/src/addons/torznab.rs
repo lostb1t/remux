@@ -136,14 +136,10 @@ impl TorznabAddon {
         &self,
         media: &db::Media,
     ) -> Result<Vec<crate::stream::StreamInfo>> {
+        // Prefer the artist row / flat artist name (playlist imports have no
+        // artist row); falls back to the legacy "by {artist}" description.
         let artist = media
-            .description
-            .as_deref()
-            .and_then(|d| d.strip_prefix("by "))
-            .filter(|a| {
-                !a.trim()
-                    .is_empty()
-            })
+            .artist_name()
             .map(str::to_string);
 
         let search = MediaSearch {
@@ -158,12 +154,7 @@ impl TorznabAddon {
                 .unwrap_or_default(),
         };
 
-        let query = match artist.as_deref() {
-            Some(a) => format!("{} {}", a, media.title),
-            None => media
-                .title
-                .clone(),
-        };
+        let query = media.track_search_query();
 
         debug!(query, title = %media.title, "torznab track stream lookup");
 

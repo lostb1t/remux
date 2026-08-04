@@ -127,7 +127,9 @@ pub(crate) async fn resolve_music_titles(
         .collect();
 
     if ids.is_empty() {
-        return (None, None);
+        // Playlist imports have no artist/album rows; the flat names on the
+        // track itself are the only source.
+        return titles_from_lookup(media, &std::collections::HashMap::new());
     }
 
     let mut qb = sqlx::QueryBuilder::new("SELECT id, title FROM media WHERE id IN (");
@@ -151,17 +153,104 @@ pub(crate) async fn resolve_music_titles(
         })
         .collect();
 
+    titles_from_lookup(media, &map)
+}
+
+/// Resolve artist/album names for a track from the loaded parent rows, falling
+/// back to the flat `external_ids.artist_name` / `album_title` when the rows
+/// are absent (playlist imports).
+fn titles_from_lookup(
+    media: &db::Media,
+    map: &std::collections::HashMap<Uuid, String>,
+) -> (Option<String>, Option<String>) {
     let artist = media
-        .grandparent_id
-        .and_then(|id| {
-            map.get(&id)
-                .cloned()
-        });
+        .artist_name_from(
+            media
+                .grandparent_id
+                .and_then(|id| map.get(&id))
+                .map(String::as_str),
+        )
+        .map(str::to_owned);
     let album = media
-        .parent_id
-        .and_then(|id| {
-            map.get(&id)
-                .cloned()
-        });
+        .album_name_from(
+            media
+                .parent_id
+                .and_then(|id| map.get(&id))
+                .map(String::as_str),
+        )
+        .map(str::to_owned);
     (artist, album)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::titles_from_lookup;
+    use crate::db;
+    use std::collections::HashMap;
+    use uuid::Uuid;
+
+    fn track(
+        grandparent_id: Option<Uuid>,
+        parent_id: Option<Uuid>,
+        artist_name: Option<&str>,
+        album_title: Option<&str>,
+    ) -> db::Media {
+        db::Media {
+            title: "Hello".to_string(),
+            grandparent_id,
+            parent_id,
+            external_ids: db::ExternalIds {
+                artist_name: artist_name.map(String::from),
+                album_title: album_title.map(String::from),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn uses_artist_row_when_present() {
+        let artist_id = Uuid::new_v4();
+        let media = track(Some(artist_id), None, Some("Stale"), None);
+        let map = HashMap::from([(artist_id, "Adele".to_string())]);
+        let (artist, album) = titles_from_lookup(&media, &map);
+        assert_eq!(artist.as_deref(), Some("Adele"));
+        assert_eq!(album, None);
+    }
+
+    #[test]
+    fn falls_back_to_flat_artist_name_for_playlist_imports() {
+        // Playlist import: no artist row, flat artist_name is the only source.
+        let media = track(None, None, Some("Adele"), None);
+        let (artist, album) = titles_from_lookup(&media, &HashMap::new());
+        assert_eq!(artist.as_deref(), Some("Adele"));
+        assert_eq!(album, None);
+    }
+
+    #[test]
+    fn falls_back_to_flat_album_title_for_playlist_imports() {
+        let media = track(None, None, None, Some("21"));
+        let (artist, album) = titles_from_lookup(&media, &HashMap::new());
+        assert_eq!(artist, None);
+        assert_eq!(album.as_deref(), Some("21"));
+    }
+
+    #[test]
+    fn flat_fallback_only_when_row_missing() {
+        let album_id = Uuid::new_v4();
+        let media = track(None, Some(album_id), Some("Adele"), Some("Stale"));
+        let map = HashMap::from([(album_id, "21".to_string())]);
+        let (artist, album) = titles_from_lookup(&media, &map);
+        // Artist row missing -> fall back to flat name; album row present -> row wins.
+        assert_eq!(artist.as_deref(), Some("Adele"));
+        assert_eq!(album.as_deref(), Some("21"));
+    }
+
+    #[test]
+    fn no_artist_or_album_anywhere() {
+        let media = track(None, None, None, None);
+        let (artist, album) = titles_from_lookup(&media, &HashMap::new());
+        assert_eq!(artist, None);
+        assert_eq!(album, None);
+    }
 }

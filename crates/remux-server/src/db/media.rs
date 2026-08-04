@@ -1373,6 +1373,114 @@ impl Media {
                 .contains(field)
     }
 
+    /// Best-effort artist name for a music item: the loaded grandparent row
+    /// (`self.grandparent`, set by [`Self::preload_parents`]), then the flat
+    /// `external_ids.artist_name` (playlist imports have no artist row), then
+    /// the legacy `"by {artist}"` description convention.
+    pub fn artist_name(&self) -> Option<&str> {
+        self.artist_name_from(
+            self.grandparent
+                .as_deref()
+                .map(|g| {
+                    g.title
+                        .as_str()
+                }),
+        )
+    }
+
+    /// Best-effort album name for a music item: the loaded parent row
+    /// (`self.parent`, set by [`Self::preload_parents`]), then the flat
+    /// `external_ids.album_title` (playlist imports have no album row).
+    pub fn album_name(&self) -> Option<&str> {
+        self.album_name_from(
+            self.parent
+                .as_deref()
+                .map(|p| {
+                    p.title
+                        .as_str()
+                }),
+        )
+    }
+
+    /// Shared artist-name chain. `parent_title` is the title of the artist row
+    /// when one is available; callers that resolve it outside `self.grandparent`
+    /// (eclipse fetches the row itself, the lyrics API batch-loads several)
+    /// pass it here instead.
+    pub(crate) fn artist_name_from<'a>(
+        &'a self,
+        parent_title: Option<&'a str>,
+    ) -> Option<&'a str> {
+        parent_title
+            .filter(|t| !t.is_empty())
+            .or_else(|| {
+                self.external_ids
+                    .artist_name
+                    .as_deref()
+            })
+            .or_else(|| {
+                self.description
+                    .as_deref()
+                    .and_then(|d| d.strip_prefix("by "))
+            })
+            .filter(|t| !t.is_empty())
+    }
+
+    /// Shared album-name chain; `parent_title` is the loaded album row title.
+    pub(crate) fn album_name_from<'a>(
+        &'a self,
+        parent_title: Option<&'a str>,
+    ) -> Option<&'a str> {
+        parent_title
+            .filter(|t| !t.is_empty())
+            .or_else(|| {
+                self.external_ids
+                    .album_title
+                    .as_deref()
+            })
+            .filter(|t| !t.is_empty())
+    }
+
+    /// Canonical "Artist Title" search query for track lookups; falls back to
+    /// the bare title when no artist is known. Requires parents preloaded via
+    /// [`Self::preload_parents`] (or the flat fallback names on the track).
+    pub fn track_search_query(&self) -> String {
+        self.track_search_query_from(
+            self.grandparent
+                .as_deref()
+                .map(|g| {
+                    g.title
+                        .as_str()
+                }),
+        )
+    }
+
+    /// Same as [`Self::track_search_query`] but takes the artist row title when
+    /// the caller resolved it externally (eclipse fetches the row itself).
+    pub fn track_search_query_from(&self, artist_title: Option<&str>) -> String {
+        match self.artist_name_from(artist_title) {
+            Some(artist) => format!("{} {}", artist, self.title),
+            None => self
+                .title
+                .clone(),
+        }
+    }
+
+    /// Deezer search query that pins the artist and kind so a title-only match
+    /// can't resolve to the wrong artist's track/album.
+    pub fn deezer_search_query(&self, kind: &str) -> String {
+        match self.artist_name() {
+            Some(artist) => format!(
+                "artist:\"{}\" {kind}:\"{}\"",
+                artist.replace('"', ""),
+                self.title
+                    .replace('"', ""),
+            ),
+            None => self
+                .title
+                .clone(),
+        }
+    }
+
     /// Batch-load parent and grandparent `Media` records (with images) for tracks,
     /// albums, episodes, seasons, and TV programs, storing them as `self.parent` /
     /// `self.grandparent`. The API layer reads titles and image tags from those
@@ -1591,12 +1699,7 @@ impl Media {
             }
             MediaKind::Track => {
                 let artist = self
-                    .grandparent
-                    .as_deref()
-                    .map(|g| {
-                        g.title
-                            .as_str()
-                    })
+                    .artist_name()
                     .unwrap_or_default();
                 if artist.is_empty() {
                     self.title
@@ -6497,6 +6600,137 @@ mod tests {
             )),
             None
         );
+    }
+
+    fn track(
+        artist_name: Option<&str>,
+        album_title: Option<&str>,
+        description: Option<&str>,
+    ) -> Media {
+        Media {
+            title: "Hello".to_string(),
+            description: description.map(String::from),
+            external_ids: ExternalIds {
+                artist_name: artist_name.map(String::from),
+                album_title: album_title.map(String::from),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn artist_name_prefers_grandparent_row() {
+        let mut media = track(Some("Stale"), None, None);
+        media.grandparent = Some(Media::stub(Uuid::new_v4(), "Adele"));
+        assert_eq!(media.artist_name(), Some("Adele"));
+    }
+
+    #[test]
+    fn artist_name_falls_back_to_flat_for_playlist_imports() {
+        let media = track(Some("Adele"), None, None);
+        assert_eq!(media.artist_name(), Some("Adele"));
+    }
+
+    #[test]
+    fn artist_name_falls_back_to_description_prefix() {
+        let media = track(None, None, Some("by Adele"));
+        assert_eq!(media.artist_name(), Some("Adele"));
+    }
+
+    #[test]
+    fn artist_name_prefers_flat_over_description() {
+        let media = track(Some("Adele"), None, Some("by Someone Else"));
+        assert_eq!(media.artist_name(), Some("Adele"));
+    }
+
+    #[test]
+    fn artist_name_ignores_empty_names() {
+        let media = track(Some(""), None, Some("by "));
+        assert_eq!(media.artist_name(), None);
+    }
+
+    #[test]
+    fn artist_name_from_external_parent_title() {
+        let media = track(Some("Stale"), None, None);
+        assert_eq!(media.artist_name_from(Some("Adele")), Some("Adele"));
+        assert_eq!(media.artist_name_from(None), Some("Stale"));
+    }
+
+    #[test]
+    fn album_name_prefers_parent_row() {
+        let mut media = track(None, Some("Stale"), None);
+        media.parent = Some(Media::stub(Uuid::new_v4(), "21"));
+        assert_eq!(media.album_name(), Some("21"));
+    }
+
+    #[test]
+    fn album_name_falls_back_to_flat_for_playlist_imports() {
+        let media = track(None, Some("21"), None);
+        assert_eq!(media.album_name(), Some("21"));
+    }
+
+    #[test]
+    fn album_name_ignores_empty_titles() {
+        let media = track(None, Some(""), None);
+        assert_eq!(media.album_name(), None);
+    }
+
+    #[test]
+    fn full_title_uses_flat_artist_for_playlist_tracks() {
+        let mut media = track(Some("Adele"), None, None);
+        media.kind = MediaKind::Track;
+        assert_eq!(media.full_title(), "Adele - Hello");
+    }
+
+    #[test]
+    fn track_search_query_uses_artist_and_title() {
+        let media = track(Some("Adele"), None, None);
+        assert_eq!(media.track_search_query(), "Adele Hello");
+    }
+
+    #[test]
+    fn track_search_query_prefers_grandparent_row() {
+        let mut media = track(Some("Stale"), None, None);
+        media.grandparent = Some(Media::stub(Uuid::new_v4(), "Adele"));
+        assert_eq!(media.track_search_query(), "Adele Hello");
+    }
+
+    #[test]
+    fn track_search_query_title_only_without_artist() {
+        let media = track(None, None, None);
+        assert_eq!(media.track_search_query(), "Hello");
+    }
+
+    #[test]
+    fn track_search_query_from_external_artist_title() {
+        let media = track(Some("Stale"), None, None);
+        assert_eq!(media.track_search_query_from(Some("Adele")), "Adele Hello");
+        assert_eq!(media.track_search_query_from(None), "Stale Hello");
+    }
+
+    #[test]
+    fn deezer_search_query_pins_artist_and_kind() {
+        let media = track(Some("Adele"), None, None);
+        assert_eq!(
+            media.deezer_search_query("track"),
+            "artist:\"Adele\" track:\"Hello\""
+        );
+    }
+
+    #[test]
+    fn deezer_search_query_strips_quotes() {
+        let media = track(Some("The \"Artist\""), None, None);
+        assert_eq!(
+            media.deezer_search_query("album"),
+            "artist:\"The Artist\" album:\"Hello\""
+        );
+    }
+
+    #[test]
+    fn deezer_search_query_title_only_without_artist() {
+        let media = track(None, None, None);
+        assert_eq!(media.deezer_search_query("track"), "Hello");
     }
 
     #[test]

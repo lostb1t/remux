@@ -440,16 +440,7 @@ impl YtDlpAddon {
                 return Ok(format!("https://www.youtube.com/watch?v={}", id));
             }
         }
-        let artist_part = media
-            .description
-            .as_deref()
-            .and_then(|d| d.strip_prefix("by "))
-            .unwrap_or("");
-        let query = if artist_part.is_empty() {
-            format!("ytsearch1:{}", media.title)
-        } else {
-            format!("ytsearch1:{} {}", media.title, artist_part)
-        };
+        let query = format!("ytsearch1:{}", media.track_search_query());
         debug!(?query, "searching YouTube for track");
         let video = self
             .dump_json(&query)
@@ -968,5 +959,47 @@ impl StreamAddon for YtDlpAddon {
     ) -> Result<Vec<crate::stream::StreamInfo>> {
         self.get_streams_for(media)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::db;
+
+    fn track(artist_name: Option<&str>, description: Option<&str>) -> db::Media {
+        db::Media {
+            title: "Hello".to_string(),
+            description: description.map(String::from),
+            external_ids: db::ExternalIds {
+                artist_name: artist_name.map(String::from),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn prefers_flat_artist_name() {
+        // Playlist import: no artist row, but artist_name is set on the track.
+        let media = track(Some("Adele"), None);
+        assert_eq!(media.artist_name(), Some("Adele"));
+    }
+
+    #[test]
+    fn falls_back_to_description_prefix() {
+        let media = track(None, Some("by Adele"));
+        assert_eq!(media.artist_name(), Some("Adele"));
+    }
+
+    #[test]
+    fn flat_artist_name_wins_over_description() {
+        let media = track(Some("Adele"), Some("by Someone Else"));
+        assert_eq!(media.artist_name(), Some("Adele"));
+    }
+
+    #[test]
+    fn no_artist_is_empty() {
+        let media = track(None, None);
+        assert_eq!(media.artist_name(), None);
     }
 }
