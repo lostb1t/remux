@@ -35,6 +35,7 @@ pub mod subtitles;
 pub mod system;
 pub mod tasks;
 pub mod users;
+pub mod webhooks;
 
 use axum::{Json, extract::State, response::IntoResponse};
 use http::StatusCode;

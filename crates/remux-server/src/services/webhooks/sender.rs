@@ -22,7 +22,7 @@
 //! log line in this module may contain a URL path or query; see [`redact_url`].
 
 use crate::db;
-use remux_sdks::remux::WebhookDestination;
+use remux_sdks::remux::{WebhookDestination, WebhookTestResult};
 use reqwest::{
     StatusCode,
     header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue},
@@ -258,6 +258,37 @@ pub(crate) async fn send_once(
         .map_err(anyhow::Error::from)
 }
 
+/// One POST, reported as the admin API's "test this webhook" result.
+///
+/// A single attempt on purpose: the retry policy exists so a transient failure
+/// does not lose a *notification*, but here an operator is waiting on the
+/// answer and what they need to see is what the endpoint said just now. The
+/// process-wide [`REQUEST_TIMEOUT`] still applies, so a hostile URL cannot pin
+/// the request handler.
+///
+/// The error text comes from [`SendError`], which is already redacted — a
+/// webhook URL is a credential and must not travel back to the browser.
+pub(crate) async fn send_test(hook: &db::Webhook, body: &str) -> WebhookTestResult {
+    match attempt_once(hook, body).await {
+        Ok(response) => WebhookTestResult {
+            success: true,
+            status_code: Some(
+                response
+                    .status()
+                    .as_u16(),
+            ),
+            error: None,
+        },
+        Err(e) => WebhookTestResult {
+            success: false,
+            status_code: e
+                .status
+                .map(|status| status.as_u16()),
+            error: Some(e.to_string()),
+        },
+    }
+}
+
 /// One POST, classified.
 ///
 /// `reqwest` treats a 4xx/5xx as a perfectly good response, so the status is
@@ -287,6 +318,8 @@ async fn attempt_once(
                 Retryability::Transient
             },
             retry_after: None,
+            // Nothing reached the endpoint, so there is no status to report.
+            status: None,
             // `reqwest`'s Display includes the URL, which is the credential.
             message: format!("request failed: {}", redact_reqwest_error(&e)),
         })?;
@@ -304,6 +337,7 @@ async fn attempt_once(
     Err(SendError {
         retryability,
         retry_after,
+        status: Some(status),
         message: format!(
             "endpoint returned {status}: {}",
             truncate(detail.trim(), MAX_LOGGED_RESPONSE)
@@ -324,6 +358,10 @@ pub(crate) struct SendError {
     pub retryability: Retryability,
     /// The endpoint's own instruction, when it sent one.
     pub retry_after: Option<Duration>,
+    /// The status the endpoint answered with, or `None` when the request never
+    /// got that far. Reported by [`send_test`]; the retry loop only cares about
+    /// [`Retryability`].
+    pub status: Option<StatusCode>,
     message: String,
 }
 

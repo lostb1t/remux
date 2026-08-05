@@ -16,7 +16,7 @@ pub use events::{
 };
 
 use crate::{AppContext, db};
-use remux_sdks::remux::NotificationType;
+use remux_sdks::remux::{NotificationType, WebhookTestResult};
 use std::{
     collections::HashSet,
     sync::{
@@ -33,6 +33,9 @@ use tracing::warn;
 /// Buffered events per subscriber. Large enough that a slow dispatcher pass
 /// (one enrichment round-trip) never drops events under normal playback load.
 const EVENT_CHANNEL_CAPACITY: usize = 4096;
+
+/// `Name` seen by the template of the synthetic event [`deliver_test`] sends.
+pub const TEST_EVENT_TITLE: &str = "Test notification";
 
 /// The enabled webhooks as last read from the database, plus everything derived
 /// from them that would otherwise be recomputed per event.
@@ -274,6 +277,58 @@ impl WebhookService {
     }
 }
 
+// --- the admin "test this webhook" path --------------------------------------
+
+/// Render `hook`'s body for the synthetic test event.
+///
+/// The template is compiled here rather than taken from the dispatcher's cached
+/// registry: the hook being tested was very likely saved a moment ago, and that
+/// cache only reloads when the dispatcher next sees an event. Testing a hook
+/// against a stale template would be worse than not testing it.
+fn test_body(
+    server: &payload::ServerInfo,
+    hook: &db::Webhook,
+) -> anyhow::Result<Option<String>> {
+    let event = WebhookEvent::Generic {
+        title: TEST_EVENT_TITLE.to_string(),
+        extra: Vec::new(),
+    };
+    let data = payload::build_data(server, &event, None);
+    let registry = template::build_registry(std::slice::from_ref(hook));
+    template::render(hook, &registry, &data)
+}
+
+/// Deliver one synthetic `Generic` event to `hook` and report what happened.
+///
+/// Deliberately not routed through [`WebhookService::emit`]: the broadcast path
+/// is fire-and-forget, filtered by the hook's own subscription and retried in
+/// the background, and none of that can answer "did *this* webhook work?".
+/// A hook that is disabled, or subscribes to nothing, is still testable — that
+/// is the point of the button.
+///
+/// One attempt, no retry, and the answer handed straight back to the caller.
+pub async fn deliver_test(ctx: &AppContext, hook: &db::Webhook) -> WebhookTestResult {
+    let server = payload::ServerInfo::load(ctx).await;
+    match test_body(&server, hook) {
+        Ok(Some(body)) => sender::send_test(hook, &body).await,
+        // `skip_empty_message_body` would drop this delivery in production, so
+        // reporting a success here would be a lie.
+        Ok(None) => WebhookTestResult {
+            success: false,
+            status_code: None,
+            error: Some(
+                "the template rendered an empty body and this webhook skips empty bodies"
+                    .to_string(),
+            ),
+        },
+        Err(e) => WebhookTestResult {
+            success: false,
+            status_code: None,
+            error: Some(format!("template render failed: {e}")),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,6 +419,65 @@ mod tests {
                 play_method: None,
             },
         }
+    }
+
+    // --- the test event ---------------------------------------------------
+
+    fn test_server_info() -> payload::ServerInfo {
+        payload::ServerInfo {
+            id: "server-1".into(),
+            name: "remux".into(),
+            version: "0.0.0".into(),
+            url: "https://remux.test".into(),
+        }
+    }
+
+    /// The dashboard's test button is only useful if the body it sends is the
+    /// body a real event would send, built from the same dictionary.
+    #[test]
+    fn the_test_event_renders_the_title_and_the_server_variables() {
+        let hook = db::Webhook {
+            template: r#"{"content":"{{Name}}","server":"{{ServerName}}","type":"{{NotificationType}}"}"#.into(),
+            ..permissive(vec![NotificationType::Generic])
+        };
+
+        let body = test_body(&test_server_info(), &hook)
+            .expect("the fixture template must render")
+            .expect("a non-empty body must be produced");
+
+        assert_eq!(
+            body,
+            r#"{"content":"Test notification","server":"remux","type":"Generic"}"#
+        );
+    }
+
+    /// The hook's template is compiled for this call, so a hook the dispatcher
+    /// has never seen is still testable.
+    #[test]
+    fn a_template_that_does_not_compile_is_reported_not_panicked() {
+        let hook = db::Webhook {
+            template: "{{#if_equals A}}unclosed".into(),
+            ..permissive(vec![NotificationType::Generic])
+        };
+        assert!(
+            test_body(&test_server_info(), &hook).is_err(),
+            "an uncompilable template must surface as an error"
+        );
+    }
+
+    /// `skip_empty_message_body` drops the delivery in production; the test
+    /// endpoint must say so rather than claim a success it never attempted.
+    #[test]
+    fn an_empty_body_is_reported_rather_than_posted() {
+        let hook = db::Webhook {
+            template: "   ".into(),
+            skip_empty_message_body: true,
+            ..permissive(vec![NotificationType::Generic])
+        };
+        assert_eq!(
+            test_body(&test_server_info(), &hook).expect("rendering must succeed"),
+            None
+        );
     }
 
     // --- cached snapshot -------------------------------------------------
