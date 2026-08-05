@@ -6258,25 +6258,20 @@ pub enum DiscordMentionType {
 /// UTF-8 BOM stripped), verbatim **except** for the plugin's triple-brace
 /// interpolations, which are double braces here.
 ///
-/// The plugin needs `{{{X}}}` because its Handlebars escapes for *HTML*, which
-/// would mangle a title into `Ocean&#x27;s 11`. remux replaces that escape
-/// function with a JSON-string escape, so the triple brace is no longer merely
-/// unnecessary — it is unsafe: it defeats the escaping and a title containing
-/// `"` or `\` renders a body Discord rejects as malformed JSON, fatally and
-/// without a retry. For a title with none of those characters the output is
-/// byte-identical either way.
+/// The plugin needs `{{{X}}}` because its Handlebars escapes for *HTML*. remux
+/// escapes for a JSON string instead, which makes the triple brace unsafe: it
+/// defeats the escaping, and a title containing `"` or `\` then renders a body
+/// Discord rejects, fatally and without a retry.
 ///
-/// This is not decoration. remux follows the plugin exactly: for a Discord
-/// destination the operator's template renders the **entire** Discord JSON
-/// payload, with the destination's options injected as the variables
-/// `MentionType`, `EmbedColor`, `AvatarUrl`, `Username` and `BotUsername`. A
-/// Discord webhook with an empty template therefore POSTs an empty body, which
-/// is why the dashboard pre-fills this when Discord is picked.
+/// For a Discord destination the operator's template renders the **entire**
+/// Discord JSON payload, with the destination's options injected as the
+/// variables `MentionType`, `EmbedColor`, `AvatarUrl`, `Username` and
+/// `BotUsername` — so an empty template POSTs an empty body, which is why the
+/// dashboard pre-fills this when Discord is picked.
 ///
-/// It lives in the SDK rather than in the dashboard because the dashboard is a
-/// WASM crate and the Handlebars registry that renders this lives in the
-/// server: both crates already depend on the SDK, so this is the only place
-/// from which the server can compile the very template it ships to operators.
+/// It lives in the SDK because the dashboard that ships it is a WASM crate and
+/// the Handlebars registry that renders it lives in the server; both depend on
+/// the SDK, so this is the only place both can reach.
 ///
 /// `{{ServerUrl}}` comes from the server's `public_url` setting. Unset, it
 /// renders empty and the `thumbnail` URL below is relative, which Discord

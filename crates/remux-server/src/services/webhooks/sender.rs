@@ -1,25 +1,19 @@
 //! HTTP delivery of a rendered webhook body.
 //!
-//! Everything that decides *what* goes on the wire lives in pure functions
-//! ([`shape_request`], [`detect_content_type`], [`classify_status`],
-//! [`parse_retry_after`]); [`attempt_once`] only performs the POST. A new
-//! destination is a new `WebhookDestination` variant plus an arm in
+//! A new destination is a new `WebhookDestination` variant plus an arm in
 //! [`shape_request`].
 //!
 //! The rendered body is never rewrapped here. Destination-specific *content* —
 //! the Discord payload, a Generic hook's extra fields — is produced by the
 //! template, from the variables [`super::payload::with_hook_fields`] puts in
-//! scope; that is how the Jellyfin webhook plugin works, and it is what lets a
-//! template written for the plugin render verbatim.
+//! scope, as in the Jellyfin webhook plugin.
 //!
 //! Delivery is fire-and-forget: [`spawn_delivery`] never blocks its caller and
-//! every error is logged and swallowed, so a broken endpoint can neither stall
-//! the dispatcher nor surface anywhere in the server.
+//! every error is logged and swallowed.
 //!
 //! **A webhook URL is a credential.** Discord's is
-//! `https://discord.com/api/webhooks/{id}/{token}` and that token is the entire
-//! authentication — anyone holding it can post as the webhook indefinitely. No
-//! log line in this module may contain a URL path or query; see [`redact_url`].
+//! `https://discord.com/api/webhooks/{id}/{token}`, so no log line in this
+//! module may contain a URL path or query; see [`redact_url`].
 
 use super::throttle::LogThrottle;
 use crate::db;
@@ -43,16 +37,14 @@ use uuid::Uuid;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Timeout for the admin "test this webhook" request, applied per request so
-/// [`REQUEST_TIMEOUT`] keeps governing background delivery. Shorter because the
-/// caller is an operator watching a button, not a retrying background task.
+/// [`REQUEST_TIMEOUT`] keeps governing background delivery.
 const TEST_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Ceiling on deliveries in flight **per hook**.
 const MAX_CONCURRENT_DELIVERIES_PER_HOOK: usize = 4;
 
-/// Upper bound on a `Retry-After` we will obey. The value is remote input and
-/// the waiter holds a delivery slot while it sleeps, so an endpoint must not be
-/// able to pin one indefinitely.
+/// Upper bound on a `Retry-After` we will obey: the value is remote input and
+/// the waiter holds a delivery slot while it sleeps.
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 /// `Encoding.UTF8` on the plugin's `StringContent` puts the charset on the
@@ -63,15 +55,11 @@ const TEXT_CONTENT_TYPE: &str = "text/plain; charset=utf-8";
 /// At most this many bytes of a failed response body make it into the log line.
 const MAX_LOGGED_RESPONSE: usize = 512;
 
-/// One client for the whole process: a client per delivery would rebuild the
-/// TLS config and throw away the connection pool on every event.
+/// One client for the whole process, so the connection pool survives.
 ///
-/// Redirects are **not** followed. `reqwest`'s default is up to ten hops, which
-/// would let a webhook URL the operator vetted hand the request to a host they
-/// never saw — the redirect target is chosen by the remote server, at request
-/// time, and would be reached from inside the network the server runs in. No
-/// real webhook receiver (Discord, Slack, Gotify, Teams) redirects, so there is
-/// nothing to trade away: a 3xx is simply reported as the non-2xx it is.
+/// Redirects are **not** followed: the target is chosen by the remote server at
+/// request time and would be reached from inside the network this server runs
+/// in. A 3xx is reported as the non-2xx it is.
 static WEBHOOK_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
         .user_agent("remux-server/1.0")
@@ -86,14 +74,9 @@ static DELIVERY_SLOTS: LazyLock<DeliverySlots> =
 
 /// How often a hook may repeat its "dropping event" line.
 ///
-/// Without a ceiling this is an amplification primitive rather than a log line.
-/// The `AuthenticationFailure` emission in `api::users` is the only one
-/// reachable **without credentials**, and `User::authenticate` short-circuits
-/// an unknown username in one indexed SELECT — so a credential-stuffing run is
-/// cheap for the attacker and every delivery past the per-hook ceiling of
-/// [`MAX_CONCURRENT_DELIVERIES_PER_HOOK`] used to write one `warn!`. At 1000
-/// requests a second that is 1000 lines a second onto the operator's disk,
-/// paced entirely by the attacker.
+/// Unthrottled this is an amplification primitive: the drop branch is reachable
+/// from an unauthenticated caller (`AuthenticationFailure` in `api::users`), so
+/// the line rate would be the attacker's request rate.
 const SATURATION_WARN_WINDOW: Duration = Duration::from_secs(60);
 
 static SATURATION_WARNINGS: LazyLock<LogThrottle> =
@@ -103,18 +86,12 @@ static SATURATION_WARNINGS: LazyLock<LogThrottle> =
 
 /// Delivery slots, counted **per hook**.
 ///
-/// A single process-wide pool would let one blackholing endpoint hold every
-/// slot for its full retry window — three attempts of up to 30 s each, plus
-/// backoff — after which deliveries to every *healthy* hook are dropped too.
-/// Keying by hook id keeps a broken Discord URL from disabling an operator's
-/// working Slack and Gotify hooks; the total is still bounded, at
-/// `enabled hooks × limit`.
+/// Not a single process-wide pool: one blackholing endpoint would hold every
+/// slot for its full retry window and drop deliveries to healthy hooks too. The
+/// total stays bounded at `enabled hooks × limit`.
 ///
-/// TODO: entries are never removed, so a delete-and-recreate cycle leaves the
-/// old hook's semaphore behind forever. It is tens of bytes per entry and only
-/// an operator can create one, so it is not worth a mechanism today; when it
-/// is, `WebhookService::reload` in `mod.rs` already knows the live hook set and
-/// is the natural place to prune from.
+/// TODO: entries are never removed. `WebhookService::reload` in `mod.rs` knows
+/// the live hook set and is the natural place to prune from.
 pub(crate) struct DeliverySlots {
     limit: usize,
     per_hook: Mutex<HashMap<Uuid, Arc<Semaphore>>>,
@@ -132,9 +109,8 @@ impl DeliverySlots {
     /// deliveries in flight. Never blocks and never waits.
     pub(crate) fn try_acquire(&self, hook_id: Uuid) -> Option<OwnedSemaphorePermit> {
         let semaphore = {
-            // Short, await-free critical section. A poisoned lock is recovered
-            // rather than propagated: a panic elsewhere must not disable
-            // webhooks for the rest of the process.
+            // Short, await-free critical section. A poisoned lock is recovered:
+            // a panic elsewhere must not disable webhooks for the process.
             let mut per_hook = self
                 .per_hook
                 .lock()
@@ -150,22 +126,17 @@ impl DeliverySlots {
     }
 }
 
-/// Hand a rendered body to the delivery pool.
-///
-/// Returns immediately. When the hook already has its share of deliveries in
-/// flight the event is dropped rather than queued: an unbounded backlog behind
-/// a dead endpoint is worse than a missed notification, and the dispatcher must
-/// never wait here.
+/// Hand a rendered body to the delivery pool. A hook with its share already in
+/// flight has the event dropped rather than queued: the dispatcher never waits.
 pub(crate) fn spawn_delivery(hook: db::Webhook, body: String) {
     spawn_delivery_with(&DELIVERY_SLOTS, hook, body, DeliveryPolicy::default());
 }
 
-/// [`spawn_delivery`] with its collaborators injected, and the accept/drop
-/// decision returned so both branches are observable.
+/// [`spawn_delivery`] with its collaborators injected.
 ///
 /// The permit is taken **before** the spawn, on purpose: acquiring it inside
 /// the task would bound concurrent sockets but let tasks pile up parked on the
-/// semaphore — the same unbounded growth in a different allocation.
+/// semaphore.
 pub(crate) fn spawn_delivery_with(
     slots: &DeliverySlots,
     hook: db::Webhook,
@@ -173,9 +144,8 @@ pub(crate) fn spawn_delivery_with(
     policy: DeliveryPolicy,
 ) -> bool {
     let Some(permit) = slots.try_acquire(hook.id) else {
-        // Throttled — see [`SATURATION_WARN_WINDOW`]. The drop itself is not
-        // rate-limited, only the line about it, and the line carries how many
-        // it now stands for.
+        // Only the line is rate-limited, never the drop — see
+        // [`SATURATION_WARN_WINDOW`].
         if let Some(dropped_since) = SATURATION_WARNINGS.allow(hook.id) {
             warn!(
                 webhook = %hook.name,
@@ -234,14 +204,11 @@ async fn deliver_logged(hook: db::Webhook, body: String, policy: DeliveryPolicy)
     }
 }
 
-/// The retried delivery, with its outcome still visible. [`deliver`] is this
-/// plus the logging.
+/// The retried delivery, with its outcome still visible.
 ///
 /// Only *transient* failures are retried. Hand-rolled rather than built on
-/// `remux_utils::retry!` because that macro retries every error
-/// unconditionally, which would spend three attempts on a 401 and — worse for
-/// Discord — hammer a 429 on a fixed backoff while ignoring the `Retry-After`
-/// the endpoint just sent, escalating the very rate limit it is reacting to.
+/// `remux_utils::retry!`, which retries unconditionally and on a fixed backoff:
+/// that would spend attempts on a 401 and ignore a 429's `Retry-After`.
 pub(crate) async fn deliver_with(
     hook: &db::Webhook,
     body: &str,
@@ -262,7 +229,6 @@ pub(crate) async fn deliver_with(
                 );
                 return Ok(());
             }
-            // Nothing about a second identical request would change the answer.
             Err(e) if e.retryability == Retryability::Fatal => {
                 return Err(e.into());
             }
@@ -295,29 +261,14 @@ pub(crate) async fn send_once(
 
 /// One POST, reported as the admin API's "test this webhook" result.
 ///
-/// A single attempt on purpose: the retry policy exists so a transient failure
-/// does not lose a *notification*, but here an operator is waiting on the
-/// answer and what they need to see is what the endpoint said just now.
+/// A single attempt on purpose: an operator is waiting on the answer and what
+/// they need is what the endpoint said just now.
 ///
 /// **The remote response body never travels back to the caller.** The hook's
 /// URL, headers and body are all admin-controlled and unrestricted by host, so
-/// echoing the response would turn this endpoint into a read primitive: point a
-/// hook at an internal service, press Test, and read its reply out of the admin
-/// API — from where it reaches browser devtools and support tickets. Only the
-/// status line comes back.
-///
-/// The body is not thrown away, though: this path writes its own server-side
-/// `warn!` carrying the truncated response, under exactly the redaction
-/// [`deliver_logged`] applies. It has to write its own, because
-/// `deliver_logged` is never on this path — and without it a failed test was
-/// *undiagnosable*, reporting `endpoint returned 400 Bad Request` to the
-/// operator and nothing at all to the log. The commonest cause is a stock
-/// Discord template rendering `{{ServerUrl}}` empty because `public_url` is
-/// unset, which Discord rejects as a non-absolute embed URL and which the
-/// status line alone cannot distinguish from anything else.
-///
-/// The transport-error text is [`SendError`]'s, which is already redacted — a
-/// webhook URL is a credential and must not travel back either.
+/// echoing it would make this endpoint a read primitive. Only the status comes
+/// back; the body is logged server-side instead, under the same redaction
+/// [`deliver_logged`] applies (which is never on this path).
 pub(crate) async fn send_test(hook: &db::Webhook, body: &str) -> WebhookTestResult {
     send_test_with(hook, body, TEST_REQUEST_TIMEOUT).await
 }
@@ -345,9 +296,7 @@ async fn send_test_with(
     };
 
     // Server-side only, and the same redaction guarantee as `deliver_logged`:
-    // no URL path or query, ever. `error` is `SendError`'s message, which
-    // already carries at most MAX_LOGGED_RESPONSE bytes of the remote body and
-    // has the URL stripped out of any transport error.
+    // no URL path or query, ever.
     warn!(
         webhook = %hook.name,
         webhook_id = %hook.id,
@@ -357,8 +306,7 @@ async fn send_test_with(
     );
 
     match error {
-        // Status only. `e.message` carries up to MAX_LOGGED_RESPONSE bytes of
-        // the remote body and must not leave the server.
+        // Status only: `e.message` carries part of the remote body.
         SendError {
             status: Some(status),
             ..
@@ -367,8 +315,7 @@ async fn send_test_with(
             status_code: Some(status.as_u16()),
             error: Some(format!("endpoint returned {status}")),
         },
-        // Nothing reached the endpoint: DNS, connect, TLS or timeout. The
-        // message is ours, not the remote's.
+        // Nothing reached the endpoint, so the message is ours to give.
         e => WebhookTestResult {
             success: false,
             status_code: None,
@@ -388,12 +335,8 @@ async fn attempt_once(
 /// One POST, classified.
 ///
 /// `reqwest` treats a 4xx/5xx as a perfectly good response, so the status is
-/// checked here: without this every failed delivery would be reported as a
-/// success and the retry would never fire. Redirects are not followed (see
-/// [`WEBHOOK_CLIENT`]), so a 3xx lands in the same non-2xx branch.
-///
-/// `timeout` overrides the client default for this request only; `None` keeps
-/// [`REQUEST_TIMEOUT`].
+/// checked here. Redirects are not followed (see [`WEBHOOK_CLIENT`]), so a 3xx
+/// lands in the same non-2xx branch.
 async fn attempt_once_within(
     hook: &db::Webhook,
     body: &str,
@@ -422,7 +365,6 @@ async fn attempt_once_within(
                 Retryability::Transient
             },
             retry_after: None,
-            // Nothing reached the endpoint, so there is no status to report.
             status: None,
             // `reqwest`'s Display includes the URL, which is the credential.
             message: format!("request failed: {}", redact_reqwest_error(&e)),
@@ -463,8 +405,7 @@ pub(crate) struct SendError {
     /// The endpoint's own instruction, when it sent one.
     pub retry_after: Option<Duration>,
     /// The status the endpoint answered with, or `None` when the request never
-    /// got that far. Reported by [`send_test`]; the retry loop only cares about
-    /// [`Retryability`].
+    /// got that far. Reported by [`send_test`].
     pub status: Option<StatusCode>,
     message: String,
 }
@@ -497,10 +438,8 @@ pub(crate) fn classify_status(status: StatusCode) -> Retryability {
 /// How long the endpoint asked us to wait, for a rate limit only.
 ///
 /// `Retry-After` first, then Discord's `X-RateLimit-Reset-After`. Restricted to
-/// 429 on purpose: Discord attaches its rate-limit headers to responses
-/// generally, so honouring them on a 5xx would let a `x-ratelimit-reset-after:
-/// 0` collapse the exponential backoff into three immediate retries against an
-/// endpoint that is already struggling.
+/// 429 on purpose: Discord attaches these headers to responses generally, so
+/// honouring them on a 5xx would collapse the backoff into an immediate burst.
 fn retry_after(status: StatusCode, headers: &HeaderMap) -> Option<Duration> {
     if status != StatusCode::TOO_MANY_REQUESTS {
         return None;
@@ -518,14 +457,12 @@ fn retry_after(status: StatusCode, headers: &HeaderMap) -> Option<Duration> {
 
 /// `Retry-After` as a delay, capped at [`MAX_RETRY_AFTER`].
 ///
-/// Only the delta-seconds form is understood — that is what Discord sends, and
-/// it may be fractional. An HTTP-date, or anything unparseable, yields `None`
-/// and the normal backoff applies.
+/// Only the delta-seconds form is understood — that is what Discord sends.
+/// Anything else yields `None` and the normal backoff applies.
 ///
 /// The cap is applied to the `f64` **before** the conversion:
 /// `Duration::from_secs_f64` panics outside `Duration`'s range, and this value
-/// comes straight off a remote response header — `Retry-After: 1e30` must be a
-/// clamped wait, not a panic in the delivery task.
+/// comes straight off a remote response header.
 pub(crate) fn parse_retry_after(value: &str) -> Option<Duration> {
     let seconds: f64 = value
         .trim()
@@ -563,8 +500,7 @@ pub(crate) struct ShapedRequest {
 /// Turn a rendered body into the request `hook`'s destination expects.
 pub(crate) fn shape_request(hook: &db::Webhook, rendered: &str) -> ShapedRequest {
     match &hook.destination {
-        // The rendered body goes out verbatim; the operator's headers are
-        // applied on top, with `Content-Type` pulled out because it describes
+        // `Content-Type` is pulled out of the operator's headers: it describes
         // the content rather than being a header of its own.
         WebhookDestination::Generic { headers, .. } => {
             let mut content_type =
@@ -610,8 +546,7 @@ pub(crate) fn shape_request(hook: &db::Webhook, rendered: &str) -> ShapedRequest
         }
         // Same as the plugin's `DiscordClient`: the template already rendered
         // the whole Discord payload — post it as-is, as JSON, with no headers
-        // of its own. The destination's settings reached the template through
-        // `payload::with_hook_fields`, not through this function.
+        // of its own.
         WebhookDestination::Discord { .. } => ShapedRequest {
             body: rendered.to_string(),
             content_type: HeaderValue::from_static(JSON_CONTENT_TYPE),
@@ -620,9 +555,8 @@ pub(crate) fn shape_request(hook: &db::Webhook, rendered: &str) -> ShapedRequest
     }
 }
 
-/// The content type a rendered body should be sent as when the operator has not
-/// named one: templates that produce JSON are the common case, but a template
-/// is free to produce anything.
+/// The content type to send when the operator has not named one. A deviation
+/// from the plugin, which sends everything as `text/plain`.
 pub(crate) fn detect_content_type(body: &str) -> &'static str {
     if serde_json::from_str::<Value>(body).is_ok() {
         JSON_CONTENT_TYPE
@@ -633,12 +567,8 @@ pub(crate) fn detect_content_type(body: &str) -> &'static str {
 
 // --- redaction --------------------------------------------------------------
 
-/// Scheme and host only.
-///
-/// A webhook URL's path is a credential: Discord's is
-/// `https://discord.com/api/webhooks/{id}/{token}`, and that token is the whole
-/// authentication. Log excerpts end up in bug reports, so nothing past the host
-/// may appear in one.
+/// Scheme and host only: a webhook URL's path is a credential (Discord's is
+/// `.../webhooks/{id}/{token}`), so nothing past the host may reach a log.
 pub(crate) fn redact_url(url: &str) -> String {
     match reqwest::Url::parse(url) {
         Ok(parsed) => match parsed.host_str() {
@@ -687,8 +617,6 @@ mod tests {
         time::Instant,
     };
 
-    /// Short enough that the suite does not crawl, long enough that the two
-    /// backoff sleeps are observable.
     const FAST: DeliveryPolicy = DeliveryPolicy {
         attempts: 3,
         retry_delay_ms: 20,
@@ -750,12 +678,9 @@ mod tests {
             .to_string()
     }
 
-    /// A local endpoint that answers `statuses` in order — by call count, not
-    /// by wall clock — repeating the last one once the list runs out.
-    ///
-    /// `httpmock` cannot vary a response by call count, and swapping mocks
-    /// mid-retry means racing the backoff. Returns the URL and the call
-    /// counter.
+    /// A local endpoint that answers `statuses` by call count, not by wall
+    /// clock, repeating the last one once the list runs out. `httpmock` cannot
+    /// do this, and swapping mocks mid-retry races the backoff.
     async fn sequenced_endpoint(
         statuses: &'static [u16],
     ) -> (String, Arc<AtomicUsize>) {
@@ -800,8 +725,8 @@ mod tests {
 
     // --- redaction --------------------------------------------------------
 
-    /// A Discord webhook token is the entire credential — it must never reach a
-    /// log line, and log lines are what operators paste into issue trackers.
+    /// A Discord webhook token is the entire credential and must never reach a
+    /// log line.
     #[test]
     fn redact_url_keeps_only_the_scheme_and_host() {
         let secret = "https://discord.com/api/webhooks/123456789/aVerySecretToken";
@@ -818,12 +743,10 @@ mod tests {
             redact_url("https://hooks.example.test/services/T/B/xyz?token=abc"),
             "https://hooks.example.test"
         );
-        // Operator input may not parse at all.
         assert_eq!(redact_url("not a url"), "<unparseable url>");
     }
 
-    /// The transport error's own `Display` embeds the URL; the message we log
-    /// must not.
+    /// The transport error's own `Display` embeds the URL.
     #[tokio::test]
     async fn a_transport_error_message_carries_no_url_path() {
         let hook = generic("http://127.0.0.1:1/api/webhooks/123/secret-token", &[]);
@@ -902,8 +825,6 @@ mod tests {
         assert_eq!(names, vec!["x-token", "x-other"]);
     }
 
-    /// Header names and values are operator input: a malformed pair must be
-    /// dropped, never panic.
     #[test]
     fn generic_skips_empty_and_malformed_headers() {
         let hook = generic(
@@ -940,9 +861,7 @@ mod tests {
     // --- shape_request: discord -------------------------------------------
 
     /// Parity with the plugin's `DiscordClient`: the template renders the whole
-    /// Discord payload, so the sender must post it byte for byte. Wrapping it
-    /// in a server-built envelope would break every template copied from the
-    /// plugin.
+    /// Discord payload, so the sender must post it byte for byte.
     #[test]
     fn discord_posts_the_rendered_body_unmodified() {
         let rendered = r#"{"content": "@everyone", "embeds": [{"title": "A Movie"}]}"#;
@@ -961,8 +880,6 @@ mod tests {
             "the plugin sends no custom headers to Discord"
         );
 
-        // Even a body that is not valid JSON goes out untouched, as JSON: the
-        // template — not the sender — owns the payload.
         let broken = shape_request(&hook, "not json at all");
         assert_eq!(broken.body, "not json at all");
         assert!(
@@ -976,10 +893,9 @@ mod tests {
 
     // --- the actual wire request ------------------------------------------
 
-    /// `shape_request` deciding something is worthless if the decision never
-    /// reaches the socket. This matches on the received bytes, so deleting the
-    /// header loop in `attempt_once` — silently dropping an operator's auth
-    /// token from every delivery — fails here.
+    /// Matches on the received bytes, so deleting the header loop in
+    /// `attempt_once` — which would silently drop an operator's auth token from
+    /// every delivery — fails here.
     #[tokio::test]
     async fn the_posted_request_carries_the_body_headers_and_content_type() {
         let server = MockServer::start_async().await;
@@ -1007,8 +923,6 @@ mod tests {
             .await;
     }
 
-    /// The operator's `Content-Type` must reach the wire too, not just
-    /// `ShapedRequest`.
     #[tokio::test]
     async fn the_operator_content_type_reaches_the_wire() {
         let server = MockServer::start_async().await;
@@ -1032,7 +946,6 @@ mod tests {
             .await;
     }
 
-    /// Discord gets the rendered bytes and nothing else.
     #[tokio::test]
     async fn a_discord_delivery_posts_the_template_output_byte_for_byte() {
         let server = MockServer::start_async().await;
@@ -1085,8 +998,7 @@ mod tests {
         assert_eq!(parse_retry_after("0"), Some(Duration::ZERO));
     }
 
-    /// The value is remote input: an HTTP-date, junk, or a hostile number must
-    /// not pin a delivery slot.
+    /// The value is remote input and the waiter holds a delivery slot.
     #[test]
     fn parse_retry_after_rejects_what_it_cannot_trust() {
         assert_eq!(parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT"), None);
@@ -1096,10 +1008,8 @@ mod tests {
         assert_eq!(parse_retry_after("999999"), Some(MAX_RETRY_AFTER));
     }
 
-    /// `Duration::from_secs_f64` panics outside `Duration`'s range, so the cap
-    /// has to be applied to the `f64` before the conversion. These all parse as
-    /// finite, positive floats and would otherwise panic the delivery task —
-    /// remotely, from a response header, on any failing status.
+    /// These all parse as finite, positive floats, so they reach
+    /// `Duration::from_secs_f64` — which panics outside `Duration`'s range.
     #[test]
     fn parse_retry_after_clamps_instead_of_panicking_on_huge_values() {
         for value in [
@@ -1116,9 +1026,7 @@ mod tests {
         }
     }
 
-    /// Discord attaches rate-limit headers to responses generally. Obeying them
-    /// on a 5xx would turn three spaced attempts into an immediate burst
-    /// against an endpoint that is already failing.
+    /// Discord attaches rate-limit headers to responses generally.
     #[test]
     fn rate_limit_headers_are_only_honoured_on_a_429() {
         let mut headers = HeaderMap::new();
@@ -1187,9 +1095,7 @@ mod tests {
 
     /// The hook's URL, headers and body are all admin-controlled and no host
     /// policy restricts them, so returning the endpoint's *response body* would
-    /// make the test button a read primitive: aim a hook at an internal service,
-    /// press Test, and read its reply out of the admin API response. Only the
-    /// status may come back.
+    /// make the test button a read primitive. Only the status may come back.
     #[tokio::test]
     async fn send_test_reports_the_status_without_the_remote_response_body() {
         let server = MockServer::start_async().await;
@@ -1257,15 +1163,8 @@ mod tests {
         }
     }
 
-    /// A failed test used to be *undiagnosable*: the operator was told
-    /// `endpoint returned 400 Bad Request` — deliberately, the response body is
-    /// an SSRF read primitive — and the server log was told nothing at all,
-    /// because `deliver_logged` is not on this path. The commonest real cause,
-    /// a stock Discord template whose `{{ServerUrl}}` rendered empty because
-    /// `public_url` is unset, is invisible from the status line alone.
-    ///
-    /// So the body is logged, and the credential still is not: the same
-    /// redaction `deliver_logged` applies.
+    /// The caller only ever gets the status, so the endpoint's reason has to
+    /// reach the server log instead — and the credential still must not.
     #[tokio::test]
     async fn a_failed_test_is_logged_server_side_without_the_url_path() {
         let server = MockServer::start_async().await;
@@ -1330,9 +1229,8 @@ mod tests {
         assert_eq!(result.error, None);
     }
 
-    /// The test request carries its own, shorter timeout so a blackholing
-    /// endpoint cannot hold an admin request handler for the full
-    /// [`REQUEST_TIMEOUT`]. Injected here so the test costs milliseconds.
+    /// A blackholing endpoint must not hold an admin request handler for the
+    /// full [`REQUEST_TIMEOUT`].
     #[tokio::test]
     async fn send_test_applies_its_own_timeout_to_the_request() {
         let server = MockServer::start_async().await;
@@ -1359,10 +1257,8 @@ mod tests {
 
     // --- redirects ----------------------------------------------------------
 
-    /// `reqwest` follows up to ten redirects by default, which would let a
-    /// vetted webhook URL hand the request to a host chosen by the remote server
-    /// at request time — reached from inside the network the server runs in.
-    /// The redirect is reported as the non-2xx it is instead.
+    /// `reqwest` follows up to ten redirects by default, which would let the
+    /// remote server pick a host reached from inside this server's network.
     #[tokio::test]
     async fn a_redirect_is_not_followed() {
         let server = MockServer::start_async().await;
@@ -1394,8 +1290,6 @@ mod tests {
         assert_eq!(result.status_code, Some(302));
     }
 
-    /// The same policy has to hold on the background delivery path, and a 302
-    /// must not be retried — repeating it verbatim would never succeed.
     #[tokio::test]
     async fn a_redirect_is_not_followed_or_retried_during_delivery() {
         let server = MockServer::start_async().await;
@@ -1452,8 +1346,7 @@ mod tests {
         );
     }
 
-    /// A 400 means the request itself is wrong: repeating it verbatim cannot
-    /// help, and on Discord it burns rate limit.
+    /// Repeating a 4xx verbatim cannot help, and on Discord it burns rate limit.
     #[tokio::test]
     async fn a_fatal_status_is_attempted_exactly_once() {
         for status in [400u16, 401, 403, 404] {
@@ -1481,7 +1374,6 @@ mod tests {
         }
     }
 
-    /// A 429 *is* retried — and on the endpoint's own schedule.
     #[tokio::test]
     async fn a_rate_limit_is_retried_on_the_endpoint_schedule() {
         let server = MockServer::start_async().await;
@@ -1519,9 +1411,8 @@ mod tests {
         );
     }
 
-    /// The same headers on a 5xx must be ignored: the exponential schedule has
-    /// to survive an endpoint that advertises a zero rate-limit reset while it
-    /// is failing for an unrelated reason.
+    /// The exponential schedule has to survive an endpoint that advertises a
+    /// zero rate-limit reset while failing for an unrelated reason.
     #[tokio::test]
     async fn a_server_error_keeps_the_exponential_schedule() {
         let server = MockServer::start_async().await;
@@ -1550,8 +1441,6 @@ mod tests {
                 .await,
             3
         );
-        // Two backoff sleeps of at least 150 ms and 300 ms. Honouring the
-        // headers would collapse this to a burst of three immediate requests.
         assert!(
             started.elapsed() >= Duration::from_millis(400),
             "the backoff was skipped, took only {:?}",
@@ -1559,11 +1448,6 @@ mod tests {
         );
     }
 
-    /// The endpoint answers by call count rather than by wall clock. The
-    /// previous version of this test swapped a failing mock for a healthy one
-    /// from the outside and needed two mock-server round-trips to land inside a
-    /// ~200-250 ms backoff window — which is a race, and the likeliest flake on
-    /// this branch. Nothing here depends on timing.
     #[tokio::test]
     async fn delivery_stops_at_the_first_success() {
         let (url, calls) = sequenced_endpoint(&[500, 500, 200]).await;
@@ -1580,8 +1464,6 @@ mod tests {
         );
     }
 
-    /// …and it really is the success that stops it: with a fourth attempt
-    /// available the delivery still ends on the 200.
     #[tokio::test]
     async fn a_success_ends_the_retry_loop_with_budget_to_spare() {
         let (url, calls) = sequenced_endpoint(&[500, 200, 500]).await;
@@ -1613,7 +1495,6 @@ mod tests {
         deliver_with(&hook, "ping", &FAST)
             .await
             .expect_err("a connection failure must surface as an error internally");
-        // …but the fire-and-forget entry point returns quietly.
         deliver(hook, "ping".into()).await;
     }
 
@@ -1629,8 +1510,7 @@ mod tests {
 
     // --- delivery slots ----------------------------------------------------
 
-    /// The point of keying by hook: a saturated endpoint must not consume the
-    /// slots of a healthy one.
+    /// A saturated endpoint must not consume the slots of a healthy one.
     #[test]
     fn slots_are_counted_per_hook() {
         let slots = DeliverySlots::new(2);
@@ -1665,8 +1545,8 @@ mod tests {
         );
     }
 
-    /// Entry condition 3: the drop branch drops, and it drops silently rather
-    /// than queueing — a saturated hook must produce no request at all.
+    /// The drop branch drops rather than queueing: a saturated hook must
+    /// produce no request at all.
     #[tokio::test]
     async fn spawn_delivery_drops_the_event_when_the_hook_is_saturated() {
         let server = MockServer::start_async().await;
@@ -1687,7 +1567,6 @@ mod tests {
             !spawn_delivery_with(&slots, hook.clone(), "ping".into(), FAST),
             "with no slot the delivery must be dropped"
         );
-        // A different hook is untouched by the first one's saturation.
         let other = db::Webhook {
             id: Uuid::from_u128(200),
             ..hook.clone()
@@ -1703,7 +1582,6 @@ mod tests {
             "the slot is available again once the delivery finishes"
         );
 
-        // Exactly the two accepted deliveries reached the endpoint.
         eventually("both accepted deliveries", async || {
             mock.hits_async()
                 .await
@@ -1719,14 +1597,8 @@ mod tests {
     }
 
     /// [`LogThrottle`] is unit-tested in its own module; this proves it is
-    /// actually wired into the drop branch.
-    ///
-    /// It has to be, because that branch is reachable from an *unauthenticated*
-    /// caller: `api::users` emits `AuthenticationFailure` on a failed login,
-    /// `User::authenticate` short-circuits an unknown username in one indexed
-    /// SELECT, and every delivery past the ceiling used to write a line. At
-    /// 1000 requests a second that is 1000 lines a second, paced by the
-    /// attacker.
+    /// wired into the drop branch, which is reachable from an *unauthenticated*
+    /// caller (`AuthenticationFailure` on a failed login).
     #[tokio::test]
     async fn the_saturation_warning_is_logged_once_not_once_per_dropped_event() {
         let slots = DeliverySlots::new(1);
@@ -1772,8 +1644,8 @@ mod tests {
 
     /// The permit is taken *before* the spawn: acquiring it inside the task
     /// would bound sockets but let tasks pile up parked on the semaphore.
-    /// Nothing is awaited between the call and the assertion, so the spawned
-    /// task cannot have run — this observes the synchronous acquisition only.
+    /// Nothing is awaited before the assertion, so the spawned task cannot have
+    /// run — this observes the synchronous acquisition only.
     #[tokio::test]
     async fn spawn_delivery_takes_its_permit_before_spawning() {
         let server = MockServer::start_async().await;
@@ -1800,7 +1672,6 @@ mod tests {
             "the permit must already be held before the task is polled"
         );
 
-        // And it is held for the whole delivery, then released.
         eventually("the slot to come back", async || {
             slots
                 .try_acquire(hook.id)

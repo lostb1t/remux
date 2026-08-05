@@ -454,12 +454,10 @@ pub struct Config {
     /// guessed.
     ///
     /// The config layer uses no env prefix, so this field's environment
-    /// variable is the bare `PUBLIC_URL` — a name Create-React-App builds
-    /// export and some PaaS runtimes already set, often to `/`. A value that is
-    /// not an absolute URL produces relative links that the consumer rejects
-    /// (Discord refuses a non-absolute embed URL), so an unexpectedly populated
-    /// `PUBLIC_URL` in the environment is worth ruling out first when those
-    /// links misbehave.
+    /// variable is the bare `PUBLIC_URL` — a name Create-React-App builds and
+    /// some PaaS runtimes already set, often to `/`. A value that is not an
+    /// absolute URL produces links the consumer rejects (Discord refuses a
+    /// non-absolute embed URL).
     #[serde(default)]
     pub public_url: Option<String>,
 }

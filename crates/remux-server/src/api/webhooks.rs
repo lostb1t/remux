@@ -1,18 +1,14 @@
 //! Admin CRUD over outgoing webhooks, plus the synchronous "test this webhook"
 //! endpoint the dashboard uses for immediate feedback.
 //!
-//! Two invariants hold across every handler here.
-//!
 //! **Every route is admin-only.** A webhook URL is a credential — Discord's is
-//! `https://discord.com/api/webhooks/{id}/{token}` and that token is the entire
-//! authentication — so read access is as sensitive as write access. `session:
-//! auth::AdminSession` in the signature is the whole mechanism; there is no
-//! path into this module without it.
+//! `https://discord.com/api/webhooks/{id}/{token}` — so read access is as
+//! sensitive as write access. `auth::AdminSession` in the signature is the
+//! whole mechanism.
 //!
 //! **Every mutation ends in `state.ctx.webhooks.invalidate()`.** The dispatcher
 //! caches the enabled hook set and reloads only when that flag is set, so a
-//! write that skips the call returns a perfect 200 and then silently does
-//! nothing until the process restarts.
+//! write that skips the call does nothing until the process restarts.
 
 use axum::{
     Json,
@@ -35,18 +31,14 @@ use axum_anyhow::ApiResult as Result;
 
 /// A URL the server is willing to POST a webhook to.
 ///
-/// Parse, don't validate: the value cannot be constructed from anything but an
-/// absolute `http(s)` URL with a host, so nothing downstream — the DB row, the
-/// dispatcher's cached snapshot, the delivery task — has to re-check. The
-/// scheme restriction is not cosmetic: `Url::parse` cheerfully accepts
-/// `file:///etc/shadow` and `javascript:alert(1)`, and neither belongs anywhere
-/// near the delivery path.
+/// Parse, don't validate: nothing downstream has to re-check. The scheme
+/// restriction is load-bearing — `Url::parse` accepts `file:///etc/shadow` and
+/// `javascript:alert(1)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebhookUrl(Url);
 
 impl WebhookUrl {
-    /// The canonical serialization — this, not the operator's raw string, is
-    /// what gets stored.
+    /// The canonical serialization, not the operator's raw string.
     fn into_stored(self) -> String {
         self.0
             .into()
@@ -103,15 +95,11 @@ fn with_parsed_url(payload: WebhookDto) -> Result<WebhookDto> {
 /// `payload` with its template proved to parse — or a 400 carrying handlebars'
 /// own message.
 ///
-/// Nothing compiled the template before it was stored, so a typo saved with a
-/// clean 200 and the operator's entire feedback loop was: the save succeeds,
-/// the Test button answers "Template not found: <uuid>", and production is
-/// silent. The parse error is derived from the operator's own template — never
-/// from a remote response, never from the URL — so returning it leaks nothing.
+/// The parse error is derived from the operator's own template — never from a
+/// remote response, never from the URL — so returning it leaks nothing.
 ///
 /// Checked even when `send_all_properties` bypasses the template at render
-/// time: the flag is one checkbox away from being turned off, and a template
-/// that cannot parse is a latent break either way.
+/// time: the flag is one checkbox away from being turned off.
 fn with_checked_template(payload: WebhookDto) -> Result<WebhookDto> {
     match webhooks::validate_template(&payload.template) {
         Ok(()) => Ok(payload),
@@ -122,8 +110,8 @@ fn with_checked_template(payload: WebhookDto) -> Result<WebhookDto> {
     }
 }
 
-/// The stored webhook, or a 404. Every by-id route starts here so a missing row
-/// is a 404 rather than a 500 out of the repository's re-read.
+/// The stored webhook, or a 404 — so a missing row is not a 500 out of the
+/// repository's re-read.
 async fn load(state: &AppState, id: &Uuid) -> Result<db::Webhook> {
     db::Webhook::get_by_id(
         &state
@@ -240,8 +228,7 @@ pub async fn delete_webhook(
 ///
 /// Synchronous and outside the broadcast channel on purpose — see
 /// [`webhooks::deliver_test`]. A refusing or unreachable endpoint is a `200`
-/// carrying `success: false`: the *request* worked, the *test* did not, and the
-/// dashboard needs the difference.
+/// carrying `success: false`: the *request* worked, the *test* did not.
 #[post("/remux/webhooks/{id}/test")]
 pub async fn test_webhook(
     State(state): State<AppState>,
@@ -272,8 +259,8 @@ mod tests {
     use serde_json::json;
     use std::time::{Duration, Instant};
 
-    /// A body that is valid JSON and echoes exactly one variable, so a received
-    /// request pins both the template output and the variable dictionary.
+    /// Valid JSON echoing exactly one variable, so a received request pins both
+    /// the template output and the variable dictionary.
     const TEMPLATE: &str = r#"{"content":"{{Name}}"}"#;
 
     fn auth(token: &str) -> (HeaderName, HeaderValue) {
@@ -283,8 +270,8 @@ mod tests {
         )
     }
 
-    /// A fully populated create payload. `id` is deliberately non-nil so the
-    /// round-trip proves the server assigns its own.
+    /// `id` is deliberately non-nil so the round-trip proves the server assigns
+    /// its own.
     fn hook_dto(name: &str, url: &str) -> WebhookDto {
         WebhookDto {
             id: Uuid::from_u128(0xdead_beef),
@@ -350,8 +337,7 @@ mod tests {
     }
 
     /// Give an unwanted delivery every chance to arrive before asserting it did
-    /// not. The dispatcher spawns deliveries, so "the canary was hit" only
-    /// proves the event was *dispatched*, not that a stray socket has settled.
+    /// not: the canary only proves the event was *dispatched*.
     async fn settle() {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
@@ -404,8 +390,7 @@ mod tests {
         }
     }
 
-    /// The rejection travels back to the browser and into logs, so it must not
-    /// carry the URL it is rejecting.
+    /// The rejection travels back to the browser and into logs.
     #[test]
     fn a_url_rejection_never_echoes_the_url() {
         let secret = "gopher://discord.com/api/webhooks/1/aVerySecretToken";
@@ -486,7 +471,6 @@ mod tests {
         );
         assert_eq!(updated.destination, update.destination);
 
-        // The update is persisted, not just echoed.
         let refetched: WebhookDto = server
             .get(&format!("/remux/webhooks/{}", created.id))
             .add_header(h.clone(), v.clone())
@@ -553,8 +537,6 @@ mod tests {
 
     // --- url validation ---------------------------------------------------
 
-    /// The URL is parsed, not trusted: a hook whose URL cannot be posted to is
-    /// a hook that fails silently in a background task forever after.
     #[tokio::test]
     async fn a_url_that_does_not_parse_is_rejected_on_create_and_on_update() {
         let (server, _guard, token) = authenticated_server().await;
@@ -610,12 +592,8 @@ mod tests {
 
     // --- template validation ----------------------------------------------
 
-    /// A template that does not parse used to save with a clean 200, then fail
-    /// at render time with handlebars' "Template not found: <uuid>" — a
-    /// diagnosis naming an id the operator never typed, while the real parse
-    /// error went only to the server log. Refuse the write instead, and say
-    /// why: the message comes from the operator's own template, not from any
-    /// remote response.
+    /// The write is refused with the parse error, which comes from the
+    /// operator's own template and not from any remote response.
     #[tokio::test]
     async fn a_template_that_does_not_parse_is_rejected_on_create_and_on_update() {
         let (server, _guard, token) = authenticated_server().await;
@@ -665,9 +643,7 @@ mod tests {
         );
     }
 
-    /// The template the dashboard pre-fills for a Discord destination has to be
-    /// acceptable to the endpoint that stores it, or picking Discord and
-    /// pressing Save is an instant 400.
+    /// The template the dashboard pre-fills has to be acceptable here.
     #[tokio::test]
     async fn the_stock_discord_template_is_accepted() {
         let (server, _guard, token) = authenticated_server().await;
@@ -726,9 +702,8 @@ mod tests {
         }
     }
 
-    /// A webhook URL embeds a credential (Discord's is
-    /// `.../webhooks/{id}/{token}`), so a non-admin must not be able to read
-    /// one — not through the list, not through a by-id read.
+    /// A webhook URL embeds a credential, so a non-admin must not be able to
+    /// read one — not through the list, not through a by-id read.
     #[tokio::test]
     async fn a_non_admin_cannot_read_or_write_webhooks() {
         let (server, _guard, admin_token) = authenticated_server().await;
@@ -808,10 +783,8 @@ mod tests {
 
     // --- the test endpoint ------------------------------------------------
 
-    /// The test endpoint bypasses the broadcast channel entirely: the hook here
-    /// is disabled and subscribes to nothing, so the dispatcher would never
-    /// deliver to it. It must still be tested, synchronously, and the endpoint's
-    /// answer must come back to the caller.
+    /// The hook here is disabled and subscribes to nothing, so the dispatcher
+    /// would never deliver to it — it must still be testable.
     #[tokio::test]
     async fn the_test_endpoint_delivers_once_and_reports_the_status() {
         let (server, _guard, token) = authenticated_server().await;
@@ -856,16 +829,10 @@ mod tests {
         assert_eq!(result.error, None);
     }
 
-    /// A failing endpoint is a failed *test*, not a failed request: the
-    /// dashboard needs the status to show it. And it is one attempt — the retry
-    /// policy belongs to background delivery, not to an operator waiting on an
-    /// answer.
-    ///
-    /// The remote's **response body** must not come back. The URL is
-    /// admin-controlled and unrestricted by host, so echoing what the endpoint
-    /// said would make this route a read primitive against anything the server
-    /// can reach; this asserts on the raw HTTP response, not just the parsed
-    /// field, so no route out of the handler is missed.
+    /// The remote's **response body** must not come back: the URL is
+    /// admin-controlled and unrestricted by host, so echoing it would make this
+    /// route a read primitive. Asserted on the raw HTTP response, not just the
+    /// parsed field.
     #[tokio::test]
     async fn the_test_endpoint_reports_a_rejecting_endpoint_without_retrying() {
         let (server, _guard, token) = authenticated_server().await;
@@ -913,8 +880,7 @@ mod tests {
             .await;
     }
 
-    /// An unreachable endpoint must come back as a failed test rather than
-    /// hanging the handler or leaking the URL path into the response.
+    /// An unreachable endpoint must not hang the handler or leak the URL path.
     #[tokio::test]
     async fn the_test_endpoint_reports_an_unreachable_endpoint() {
         let (server, _guard, token) = authenticated_server().await;
@@ -947,15 +913,9 @@ mod tests {
 
     // --- enrichment failures ----------------------------------------------
 
-    /// An item-scoped event whose item cannot be resolved must not be
-    /// delivered at all.
-    ///
-    /// Two separate breakages, one cause. `matches` only applies the item-type
-    /// rule when it is handed a kind, and enrichment is where the kind comes
-    /// from — so a hook with *every* item type unticked used to fire on an
-    /// unresolvable item. And the body it fired with had no `Name`, `ItemId` or
-    /// `ItemType`, which the stock Discord template renders as
-    /// `"title": " () has been added to remux"`.
+    /// An item-scoped event whose item cannot be resolved must not be delivered
+    /// at all: `matches` only applies the item-type rule when it is handed a
+    /// kind, and enrichment is where the kind comes from.
     ///
     /// The canary is subscribed to a different, itemless event and is the
     /// synchronisation point: once it has been hit, the dispatcher is past the
@@ -990,8 +950,7 @@ mod tests {
             &v,
             &WebhookDto {
                 notification_types: vec![NotificationType::ItemAdded],
-                // Nothing is allowed through — this hook wants no item type at
-                // all, which is exactly what the missing kind used to bypass.
+                // This hook wants no item type at all.
                 item_types: WebhookItemTypes {
                     movies: false,
                     episodes: false,
@@ -1006,7 +965,6 @@ mod tests {
         )
         .await;
 
-        // No such row exists, so `enrich_item` answers `None`.
         guard
             .0
             .webhooks
@@ -1033,16 +991,13 @@ mod tests {
 
     // --- dispatcher cache invalidation ------------------------------------
 
-    /// `invalidate()` is how a saved webhook reaches the *running* dispatcher:
-    /// it caches the enabled hook set and reloads only when that flag is set.
-    /// A create, update or delete that forgets the call looks perfect over HTTP
-    /// and silently does nothing until the process restarts — so this drives
-    /// the real cycle (write over HTTP, emit an event, watch the socket).
+    /// `invalidate()` is how a saved webhook reaches the *running* dispatcher,
+    /// so this drives the real cycle: write over HTTP, emit an event, watch the
+    /// socket.
     ///
     /// The canary hook is never touched after its creation. Its hit count is
     /// the synchronisation point: once it has seen event N, the dispatcher has
-    /// finished dispatching event N, which is what makes the negative
-    /// assertions below meaningful rather than a race.
+    /// finished dispatching event N, so the negative assertions are not races.
     #[tokio::test]
     async fn create_update_and_delete_each_reach_the_running_dispatcher() {
         let (server, guard, token) = authenticated_server().await;
@@ -1131,13 +1086,11 @@ mod tests {
 
     // --- the emission sites -----------------------------------------------
     //
-    // These drive real HTTP endpoints and watch a real socket. Each mock
-    // matches the *exact* body it expects, so a hit proves both that the site
-    // emits and that the event carried the right data — a wrong payload leaves
-    // the mock at zero hits and fails the wait.
+    // Each mock matches the *exact* body it expects, so a hit proves both that
+    // the site emits and that the event carried the right data.
 
-    /// The one variable every template below echoes, plus the event kind, so a
-    /// site wired to the wrong variant cannot pass.
+    /// Echoes one variable plus the event kind, so a site wired to the wrong
+    /// variant cannot pass.
     fn echo_template(variable: &str) -> String {
         format!(
             r#"{{"content":"{{{{{variable}}}}}","type":"{{{{NotificationType}}}}"}}"#
@@ -1148,7 +1101,6 @@ mod tests {
         format!(r#"{{"content":"{content}","type":"{notification_type}"}}"#)
     }
 
-    /// Report `item_id` as started playing, exactly as a client would.
     async fn report_playback_start(
         server: &TestServer,
         h: &HeaderName,
@@ -1171,7 +1123,6 @@ mod tests {
             .assert_status(StatusCode::NO_CONTENT);
     }
 
-    /// The id of the authenticated user, as the API itself reports it.
     async fn my_user_id(server: &TestServer, h: &HeaderName, v: &HeaderValue) -> Uuid {
         let me: serde_json::Value = server
             .get("/users/me")
@@ -1186,8 +1137,6 @@ mod tests {
         .expect("the reported id must be a uuid")
     }
 
-    /// `POST /sessions/playing` reaches a hook subscribed to `PlaybackStart`,
-    /// carrying the item that is being played.
     #[tokio::test]
     async fn a_playback_start_reaches_a_configured_webhook() {
         let (server, guard, token) = authenticated_server().await;
@@ -1224,13 +1173,10 @@ mod tests {
         .await;
     }
 
-    /// A stop report that records nothing must report nothing.
-    ///
-    /// The endpoint answers 204 to any authenticated client for any item id,
-    /// with or without a session behind it. Deriving the event from the request
-    /// rather than from what was written would let that client forge playback
-    /// against the operator's endpoint — and make the `UserDataSaved` that
-    /// rides along assert a save that provably did not happen.
+    /// A stop report that records nothing must report nothing: the endpoint
+    /// answers 204 to any authenticated client for any item id, so an event
+    /// derived from the request rather than from what was written would let
+    /// that client forge playback against the operator's endpoint.
     #[tokio::test]
     async fn a_stop_for_an_unknown_item_emits_nothing_and_still_answers_204() {
         let (server, guard, token) = authenticated_server().await;
@@ -1301,11 +1247,9 @@ mod tests {
         );
     }
 
-    /// `reload` is what narrows the probe, and every other test here runs with
-    /// a freshly widened mask (`create` invalidates, and nothing forces a
-    /// reload before the request under test). So without this, a `reload` that
-    /// computed an empty mask — or dropped a bit — would pass the whole suite
-    /// while permanently suppressing every guarded event on a real server.
+    /// Every other test here runs with a freshly widened mask, so a `reload`
+    /// that computed an empty mask would pass the whole suite while permanently
+    /// suppressing every guarded event on a real server.
     #[tokio::test]
     async fn a_reload_narrows_the_probe_to_the_subscribed_types() {
         let (server, guard, token) = authenticated_server().await;
@@ -1323,7 +1267,6 @@ mod tests {
         )
         .await;
 
-        // Drive one event through so the dispatcher performs a real reload.
         guard
             .0
             .webhooks
@@ -1348,10 +1291,8 @@ mod tests {
         );
     }
 
-    /// `DELETE /items/{id}` reaches a hook subscribed to `ItemDeleted` with the
-    /// deleted item's own data — which only works because the row is captured
-    /// before the DELETE. The row is gone by the time the payload is built, so
-    /// anything that re-read it would render an empty name.
+    /// The row is gone by the time the payload is built, so this only works
+    /// because it is captured before the DELETE.
     #[tokio::test]
     async fn an_item_deletion_carries_the_deleted_items_data() {
         let (server, guard, token) = authenticated_server().await;
@@ -1405,9 +1346,8 @@ mod tests {
         .await;
     }
 
-    /// A failed login emits `AuthenticationFailure` — and answers with exactly
-    /// the same 401 it answered before any webhook existed. A successful login
-    /// must not emit it.
+    /// Emitting must not change the 401 a client sees, and a successful login
+    /// must not emit at all.
     #[tokio::test]
     async fn an_authentication_failure_emits_without_changing_the_401() {
         let (server, _guard, token) = authenticated_server().await;
@@ -1425,7 +1365,6 @@ mod tests {
                 .await
         };
 
-        // Baseline: the refusal as it is with nothing listening.
         let before = bad_login().await;
         before.assert_status(StatusCode::UNAUTHORIZED);
         let before_body = before.text();
@@ -1464,8 +1403,7 @@ mod tests {
         })
         .await;
 
-        // The credential check is the trigger, not the endpoint: a login that
-        // succeeds must not report a failure.
+        // The credential check is the trigger, not the endpoint.
         server
             .post("/users/authenticatebyname")
             .add_header(
@@ -1489,21 +1427,12 @@ mod tests {
     ///
     /// `WebhookService::matches` is unit-tested against hand-built events, which
     /// cannot see what the *emission site* puts in one. The subscribed hook here
-    /// filters on the id `/users/me` reports, so a `PlaybackStart` emitted with
-    /// the device id, the session id, or any other uuid in `user.id` — all of
-    /// which pass every unit test — leaves it at zero hits and fails.
-    ///
-    /// Its body echoes `{{NotificationUsername}}` rather than `{{Name}}`: on a
-    /// playback event that variable comes from `put_user`, fed by the
-    /// `&db::User → UserEventData` conversion, and no other test pins it end to
-    /// end (`AuthenticationFailure` takes an inline branch that never touches
-    /// that conversion). A username half that shipped the device name, the
-    /// client name or an empty string would otherwise pass the whole suite.
+    /// filters on the id `/users/me` reports, and echoes
+    /// `{{NotificationUsername}}` — which comes from the `&db::User →
+    /// UserEventData` conversion that no other test pins end to end.
     ///
     /// That same hook is the canary for the two zero assertions: the dispatcher
-    /// picks all three targets in a single pass over the cached hook set, so its
-    /// delivery proves the event was processed and filtered rather than merely
-    /// still in flight.
+    /// picks all three targets in a single pass over the cached hook set.
     #[tokio::test]
     async fn a_playback_start_reaches_only_the_hooks_whose_filters_accept_it() {
         let (server, guard, token) = authenticated_server().await;
@@ -1587,13 +1516,8 @@ mod tests {
 
     // --- the enabled switch, end to end -------------------------------------
 
-    /// Disabling a hook over HTTP must stop the *running* dispatcher from
-    /// delivering to it.
-    ///
-    /// Neither half of that is proven by the parts: the repository test shows
-    /// `get_enabled` filters the query, and the invalidation test shows an
-    /// update reaches the dispatcher, but nothing pins the two together. A
-    /// `reload` that read `get_all` instead would keep every existing test green
+    /// Neither half of this is proven by the parts: a `reload` that read
+    /// `get_all` instead of `get_enabled` would keep every other test green
     /// while making the operator's kill switch do nothing until a restart.
     ///
     /// The canary is created once and never touched again; its second hit is
@@ -1667,23 +1591,19 @@ mod tests {
 
     // --- the Discord destination, end to end --------------------------------
 
-    /// A Discord hook, created over HTTP and driven by a real event, must reach
-    /// the endpoint as the JSON envelope its template describes.
-    ///
-    /// The destination's settings are template *variables*, so they only work if
-    /// the whole chain holds: the `Discord` variant survives the DB's JSON
-    /// column, the dispatcher's reload hands it to `with_hook_fields`, the
-    /// overlay lands under the plugin's key spellings, and the sender posts the
-    /// result as JSON. Every link is unit-tested; nothing composed them.
+    /// The destination's settings are template *variables*, so this only works
+    /// if the whole chain holds: the `Discord` variant survives the DB's JSON
+    /// column, the reload hands it to `with_hook_fields`, the overlay lands
+    /// under the plugin's key spellings, and the sender posts it as JSON. Every
+    /// link is unit-tested; nothing composed them.
     #[tokio::test]
     async fn a_discord_hook_posts_the_rendered_discord_envelope() {
         let (server, guard, token) = authenticated_server().await;
         let (h, v) = auth(&token);
         let media = crate::integration_test::insert_test_source(&guard.0).await;
 
-        // `#AA5CC3` as the integer Discord wants. Spelled out rather than
-        // computed so the plugin's off-by-one hex truncation cannot creep back
-        // in unnoticed.
+        // `#AA5CC3` as the integer Discord wants, spelled out rather than
+        // computed so the plugin's off-by-one hex truncation cannot creep back.
         let expected = format!(
             r#"{{"username":"remux","avatar_url":"https://example.test/a.png","content":"@everyone","embeds":[{{"color":11164867,"description":"{}"}}]}}"#,
             media.title

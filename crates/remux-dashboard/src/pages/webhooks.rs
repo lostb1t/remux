@@ -3,10 +3,8 @@
 //! Two rules govern everything in this module.
 //!
 //! **A webhook URL is a credential.** Discord's is
-//! `https://discord.com/api/webhooks/{id}/{token}` and that token is the whole
-//! authentication, so the URL is never written to the browser console (nothing
-//! here logs at all) and the list renders only a truncated prefix that stops
-//! short of any Discord token.
+//! `https://discord.com/api/webhooks/{id}/{token}`, so the URL is never logged
+//! and the list renders only a prefix that stops short of any Discord token.
 //!
 //! **Every mutation sends a complete [`WebhookDto`].** `WebhookDto` carries no
 //! `#[serde(default)]`, so a payload missing one field is a 422 rather than a
@@ -27,21 +25,17 @@ use std::{collections::HashMap, str::FromStr};
 use uuid::Uuid;
 
 /// The colour the server injects when a Discord hook names none (`0x3399FF`),
-/// mirrored here so the field is never blank: the stock template interpolates
-/// `EmbedColor` unguarded, and an empty swatch reads as a bug.
+/// mirrored here so the field is never blank.
 ///
-/// Lower-case on purpose. `<input type="color">` round-trips its value in lower
-/// case, and [`WebhookForm::to_dto`] stores the normalized form, so keeping the
-/// constant lower-case means the swatch, the text field, the stored value and
-/// the placeholder are all one string.
+/// Lower-case on purpose: `<input type="color">` round-trips its value in lower
+/// case and [`WebhookForm::to_dto`] stores the normalized form, so the swatch,
+/// the text field, the stored value and the placeholder are all one string.
 const DEFAULT_EMBED_COLOR: &str = "#3399ff";
 
 /// Every [`NotificationType`], in the order the SDK declares them.
 ///
-/// The list is hand-written, so a variant added to the SDK must be added here
-/// too. `every_notification_type_round_trips_through_its_label` keeps the
-/// entries themselves honest (each label parses back to the variant, and no
-/// entry is duplicated); the array's declared length is what pins the count.
+/// Hand-written, so a variant added to the SDK must be added here too — the
+/// array's declared length is what pins the count.
 const NOTIFICATION_TYPES: [NotificationType; 15] = [
     NotificationType::ItemAdded,
     NotificationType::ItemDeleted,
@@ -152,8 +146,7 @@ fn destination_label(destination: &WebhookDestination) -> &'static str {
     }
 }
 
-/// Badge styling for the list, reusing the existing user-badge variants rather
-/// than adding CSS: Discord gets the accented one, Generic the muted one.
+/// Reuses the existing user-badge variants rather than adding CSS.
 fn destination_badge_class(destination: &WebhookDestination) -> &'static str {
     match destination {
         WebhookDestination::Generic { .. } => "user-badge user-badge-self",
@@ -179,11 +172,9 @@ fn sorted_notification_types(selected: &[NotificationType]) -> Vec<NotificationT
         .collect()
 }
 
-/// The message an operator sees when a mutation fails.
-///
-/// `ClientError`'s `Display` carries the status, the remux endpoint and the
-/// message; `user_message()` is the half that means something to a human, and
-/// it is what the rest of the dashboard shows.
+/// The message an operator sees when a mutation fails. `ClientError`'s
+/// `Display` also carries the status and endpoint; `user_message()` is the half
+/// the rest of the dashboard shows.
 fn action_failure(action: &str, error: &ClientError) -> String {
     format!("Failed to {action}: {}", error.user_message())
 }
@@ -338,10 +329,9 @@ impl WebhookForm {
             WebhookDestination::Discord {
                 avatar_url: non_empty(&self.avatar_url),
                 bot_username: non_empty(&self.bot_username),
-                // Normalized, not passed through: what the swatch shows, what
-                // is stored and what reaches Discord must be one value. An
-                // unparseable colour is saved as `null`, which makes the server
-                // inject the same default the swatch is already displaying.
+                // What the swatch shows, what is stored and what reaches
+                // Discord must be one value: an unparseable colour is saved as
+                // `null`, so the server injects the default already displayed.
                 embed_color: normalize_hex_color(&self.embed_color),
                 mention_type: self.mention_type,
             }
@@ -401,8 +391,7 @@ impl WebhookForm {
 }
 
 /// Switch the destination, pre-filling the stock Discord template when — and
-/// only when — the operator has not written one. Overwriting an edited template
-/// would silently destroy their work.
+/// only when — the operator has not written one.
 fn apply_destination_change(form: &mut WebhookForm, discord: bool) {
     form.discord = discord;
     if discord
@@ -446,12 +435,9 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
     let mut error = use_signal(|| Option::<String>::None);
     let mut refresh = use_signal(|| 0_u32);
 
-    // Kept apart from `error` on purpose. `error` belongs to the list effect,
-    // which clears it on every successful reload and is only rendered when the
-    // page is not loading — so a failed toggle or delete written there would be
-    // hidden by the reload it triggers and then wiped. This one is owned by the
-    // mutation handlers, rendered unconditionally, and never touched by the
-    // effect.
+    // Kept apart from `error`, which the list effect clears on every successful
+    // reload and which only renders when the page is not loading: a mutation
+    // failure has to survive the reload it triggers.
     let mut action_error: Signal<Option<String>> = use_signal(|| None);
     let mut editing: Signal<Option<WebhookForm>> = use_signal(|| None);
     let mut to_delete: Signal<Option<(Uuid, String)>> = use_signal(|| None);
@@ -577,9 +563,8 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
                                                             match c.execute(UpdateWebhook { id: hook_id, webhook: dto }).await {
                                                                 Ok(_) => action_error.set(None),
                                                                 // The reload below snaps the switch back to
-                                                                // the stored value; without this the operator
-                                                                // sees a toggle that "won't stick" and no
-                                                                // reason why.
+                                                                // the stored value, so the refusal has to be
+                                                                // said out loud.
                                                                 Err(err) => action_error.set(Some(action_failure("update webhook", &err))),
                                                             }
                                                             let v = *refresh.peek() + 1;
@@ -602,7 +587,7 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
                                                     tests.write().insert(hook_id, TestState::Running);
                                                     let c = client_test.clone();
                                                     spawn(async move {
-                                                        // A refused delivery comes back as Ok(result) with
+                                                        // A refused delivery is Ok(result) with
                                                         // success: false — a result, not an error.
                                                         let outcome = match c.execute(TestWebhook { id: hook_id }).await {
                                                             Ok(result) => TestState::Done(result),
@@ -640,11 +625,10 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
                 on_close: move |_| editing.set(None),
                 on_saved: move |_| {
                     editing.set(None);
-                    // A successful save supersedes whatever a previous toggle or
-                    // delete failed at — leaving the banner up would make it lie.
-                    // A successful *test* deliberately does not clear it: a
+                    // A successful save supersedes a previously failed toggle or
+                    // delete. A successful *test* deliberately does not: a
                     // reachable endpoint says nothing about whether the failed
-                    // write went through, and the test has its own per-row line.
+                    // write went through.
                     action_error.set(None);
                     let v = *refresh.peek() + 1;
                     refresh.set(v);
@@ -691,8 +675,6 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
                                                         // and must leave its test result with it.
                                                         tests.write().remove(&id);
                                                     }
-                                                    // Without this the row simply stays and the
-                                                    // refusal is invisible.
                                                     Err(e) => action_error.set(Some(action_failure("delete webhook", &e))),
                                                 }
                                                 to_delete.set(None);
@@ -731,8 +713,8 @@ fn WebhookFormModal(
     let mut saving = use_signal(|| false);
     let mut save_error = use_signal(|| Option::<String>::None);
 
-    // One snapshot per render: reading fields off a clone keeps every handler
-    // free to `state.write()` without overlapping the render's borrow.
+    // One snapshot per render, so every handler is free to `state.write()`
+    // without overlapping the render's borrow.
     let f = state
         .read()
         .clone();
@@ -806,13 +788,10 @@ fn WebhookFormModal(
                             p { class: "field-hint",
                                 "These are injected into the template as MentionType, EmbedColor, AvatarUrl, Username and BotUsername."
                             }
-                            // The stock template's thumbnail and deep link are
-                            // built from {{ServerUrl}}, which is the server's
-                            // public URL setting. Unset it renders empty, the
-                            // thumbnail URL comes out relative, and Discord
-                            // answers 400 with nothing in the dashboard to say
-                            // why — so the setting has to be discoverable from
-                            // the one page that depends on it.
+                            // {{ServerUrl}} renders empty when the server's
+                            // public URL is unset, which Discord answers 400 to
+                            // — so the setting has to be discoverable from the
+                            // page that depends on it.
                             p { class: "field-hint",
                                 "The stock template also uses ServerUrl for the thumbnail and the \"open in remux\" link. It comes from the server's public URL (the PUBLIC_URL environment variable or public_url in the config file) and renders empty when that is unset — Discord rejects the embed in that case."
                             }
@@ -1318,8 +1297,7 @@ mod tests {
         assert_eq!(labels.len(), 15, "the list must have no duplicates");
     }
 
-    /// The form's list is hand-written; this is what stops a variant added to
-    /// the SDK from silently going missing from the checkbox grid.
+    /// The form's list is hand-written.
     #[test]
     fn the_list_covers_every_variant_the_sdk_declares() {
         assert_eq!(
@@ -1345,8 +1323,6 @@ mod tests {
 
     // -- form round-trip ----------------------------------------------------
 
-    /// The form must not silently drop a field: a fully populated hook that
-    /// goes through the form and back is the same JSON the server sent.
     #[test]
     fn a_discord_webhook_round_trips_without_losing_a_field() {
         let original = discord_dto();
@@ -1411,9 +1387,8 @@ mod tests {
         }
     }
 
-    /// What the swatch shows, what is saved and what Discord receives must be
-    /// one value: an unparseable colour is dropped on save so the server's
-    /// default — the colour the swatch is already displaying — applies.
+    /// An unparseable colour is dropped on save so the server's default — the
+    /// colour the swatch is already displaying — applies.
     #[test]
     fn an_unparseable_colour_is_not_sent_verbatim() {
         let form = WebhookForm {
@@ -1532,7 +1507,7 @@ mod tests {
     }
 
     /// The endpoint answers `200 OK` with `success: false` when the *target*
-    /// refuses. That is a result, not an API error, and must render as one.
+    /// refuses — a result, not an API error.
     #[test]
     fn a_refused_delivery_reads_as_a_failed_result() {
         let message = test_message(&WebhookTestResult {
@@ -1546,8 +1521,8 @@ mod tests {
 
     // -- mutation failures --------------------------------------------------
 
-    /// A failed toggle, save or delete must reach the operator as the server's
-    /// sentence, not as the SDK's `Display` with its status and endpoint noise.
+    /// The server's sentence, not the SDK's `Display` with its status and
+    /// endpoint noise.
     #[test]
     fn a_failed_mutation_shows_the_servers_message_only() {
         let error = ClientError::Http {

@@ -296,12 +296,10 @@ pub async fn report_playback_stopped(
             .ws_tx
             .send(crate::ws::WsEvent::SessionsChanged);
 
-        // Reported only for a stop that recorded something. The endpoint
-        // answers 204 to any authenticated client that posts any item id, with
-        // or without a session behind it, and deriving the event from the
-        // *request* rather than from what was written would let that client
-        // forge playback against the operator's endpoint — and make
-        // `UserDataSaved` assert a save that never happened.
+        // Only for a stop that recorded something: the endpoint answers 204 to
+        // any authenticated client for any item id, so an event derived from
+        // the *request* would let that client forge playback against the
+        // operator's endpoint.
         if let Some(recorded) = recorded {
             if state
                 .ctx

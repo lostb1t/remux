@@ -74,9 +74,8 @@ pub(crate) struct ItemContext {
 /// The identity of this server, resolved whenever the dispatcher's snapshot is
 /// (re)loaded — a rename must not keep shipping the old name until restart.
 ///
-/// `Default` is the pre-first-load placeholder only. The dispatcher loads the
-/// snapshot before it reads its first event, so no delivery is ever built from
-/// it.
+/// `Default` is the pre-first-load placeholder only: the dispatcher loads the
+/// snapshot before it reads its first event.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ServerInfo {
     pub id: String,
@@ -194,7 +193,7 @@ pub(crate) fn build_data(
 /// - `Generic` contributes the operator-defined `fields` under their own keys
 ///   (`GenericClient.SendAsync`).
 /// - `Discord` contributes `MentionType`, `EmbedColor`, `AvatarUrl`, `Username`
-///   and `BotUsername` (`DiscordClient.SendAsync`) — which is what lets a
+///   and `BotUsername` (`DiscordClient.SendAsync`), which is what lets a
 ///   Discord template copied from the plugin render the whole payload itself.
 ///   `EmbedColor` is the one intended deviation: always present, see below.
 ///
@@ -247,12 +246,9 @@ pub(crate) fn with_hook_fields<'a>(
             );
             // Intended deviation: the plugin omits `EmbedColor` when the hook
             // names no colour, which makes its own stock `Discord.handlebars`
-            // render `"color": ""` and Discord reject the payload with a 400.
-            // The key is therefore always present, defaulted. This costs no
-            // template-behaviour parity: across all five stock Discord
-            // templates `{{EmbedColor}}` appears exactly once, as a bare
-            // interpolation, never guarded by `if_exist` — the four per-event
-            // templates hardcode a literal colour and ignore the variable.
+            // render `"color": ""` and Discord reject the payload. The key is
+            // therefore always present, defaulted — no stock template guards
+            // `{{EmbedColor}}` with `if_exist`, so nothing changes behaviour.
             merged.insert(
                 "EmbedColor".into(),
                 Value::Number(
@@ -289,11 +285,11 @@ fn mention_type_variable(mention_type: DiscordMentionType) -> &'static str {
 
 /// `#RRGGBB` (or bare `RRGGBB`) as the integer Discord wants, mirroring the
 /// plugin's `FormatColorCode` — except that the plugin slices `hexCode[1..6]`
-/// and silently drops the last hex digit, turning `#AA5CC3` into 697 804. That
-/// bug is deliberately **not** reproduced: an admin gets the colour they pick.
+/// and drops the last hex digit, turning `#AA5CC3` into 697 804. That bug is
+/// deliberately **not** reproduced.
 ///
 /// Anything unparseable falls back to [`DEFAULT_EMBED_COLOR`] rather than
-/// throwing as the plugin does — this is operator input and must never fail a
+/// throwing as the plugin does: this is operator input and must never fail a
 /// delivery.
 pub(crate) fn parse_embed_color(hex: &str) -> u32 {
     let hex = hex
@@ -954,7 +950,6 @@ mod tests {
         assert_eq!(str_at(&data, "PremiereDate"), "2021-03-04");
     }
 
-    /// Jellyfin ids carry no dashes.
     #[test]
     fn item_id_is_the_dashless_uuid() {
         let item = episode();
@@ -1010,8 +1005,6 @@ mod tests {
         assert_eq!(str_at(&data, "RunTime"), "01:30:45");
     }
 
-    /// Imported templates print the runtime unconditionally, so the keys are
-    /// always present — zeroed rather than missing when it is unknown.
     #[test]
     fn runtime_variables_fall_back_to_zero() {
         let item = ItemContext {
@@ -1059,8 +1052,6 @@ mod tests {
         );
     }
 
-    /// The plugin reads `Year` off the *series* for an episode, not off the
-    /// episode's own air date.
     #[test]
     fn episode_year_comes_from_the_series() {
         let base = episode();
@@ -1089,8 +1080,6 @@ mod tests {
         assert_eq!(str_at(&data, "PremiereDate"), "2021-03-04");
     }
 
-    /// The plugin's stock template has a dedicated Season branch that prints
-    /// the series name and the season number.
     #[test]
     fn season_gets_the_series_keys_and_its_own_number() {
         let item = ItemContext {
@@ -1201,8 +1190,7 @@ mod tests {
         assert_eq!(data["Audio_0_Channels"], Value::from(6));
         assert_eq!(data["Audio_0_Bitrate"], Value::from(640_000));
 
-        // The index counts per type, not the raw media stream index: the second
-        // audio track is Audio_1 even though its stream index is 2.
+        // The second audio track is Audio_1 even though its stream index is 2.
         assert_eq!(str_at(&data, "Audio_1_Codec"), "ac3");
         assert_eq!(str_at(&data, "Audio_1_Language"), "fra");
         assert!(
@@ -1258,7 +1246,7 @@ mod tests {
         assert_eq!(str_at(&data, "NotificationUsername"), "alice");
     }
 
-    /// 90 % of the runtime is the threshold, inclusive.
+    /// The threshold is inclusive.
     #[test]
     fn played_to_completion_flips_at_ninety_percent() {
         let item = episode();
@@ -1396,9 +1384,8 @@ mod tests {
         let merged = with_hook_fields(&base, &hook);
         assert_eq!(str_at(&merged, "channel"), "#general");
         assert_eq!(str_at(&merged, "kind"), "alert");
-        // The common dictionary survives the overlay.
         assert_eq!(str_at(&merged, "Name"), "The One With The Test");
-        // …and the overlay does not mutate it.
+        // The overlay does not mutate the shared dictionary.
         assert!(!base.contains_key("channel"));
     }
 
@@ -1470,7 +1457,6 @@ mod tests {
     }
 
     /// `DiscordClient.SendAsync` always sets `MentionType`, empty for `None`.
-    /// This is what `{{MentionType}}` in a plugin template resolves against.
     #[test]
     fn discord_always_exposes_the_mention_type() {
         for (mention_type, expected) in [
@@ -1503,8 +1489,8 @@ mod tests {
     }
 
     /// Presence parity: the plugin only inserts these keys when configured, so
-    /// an unset one must be *missing*, not present-and-empty — that is what
-    /// makes `{{#if_exist AvatarUrl}}` behave as it does in the plugin.
+    /// an unset one must be *missing*, not present-and-empty, or
+    /// `{{#if_exist AvatarUrl}}` flips.
     #[test]
     fn discord_omits_the_unset_identity_options() {
         for hook in [
@@ -1524,7 +1510,7 @@ mod tests {
     }
 
     /// The plugin formats the colour into an integer before it reaches the
-    /// template (`FormatColorCode`), so `{{EmbedColor}}` is a number.
+    /// template, so `{{EmbedColor}}` is a number.
     #[test]
     fn discord_exposes_the_embed_color_as_an_integer() {
         let data = discord_vars(&discord_with(
@@ -1538,8 +1524,7 @@ mod tests {
 
     /// Intended deviation from the plugin, which omits the key: the stock
     /// `Discord.handlebars` interpolates `{{EmbedColor}}` bare, so an absent
-    /// key renders `"color": ""` and Discord rejects the payload. The
-    /// invariant belongs here, not in a dashboard form three crates away.
+    /// key renders `"color": ""` and Discord rejects the payload.
     #[test]
     fn discord_always_exposes_an_embed_color() {
         for embed_color in [None, Some(""), Some("nonsense")] {
@@ -1557,7 +1542,6 @@ mod tests {
         }
     }
 
-    /// A `Generic` hook must not gain Discord keys, and vice versa.
     #[test]
     fn discord_variables_are_not_exposed_to_generic_hooks() {
         let data = with_hook_fields(
@@ -1588,7 +1572,7 @@ mod tests {
     }
 
     /// The plugin's `FormatColorCode` slices `hexCode[1..6]` and drops the last
-    /// digit, so `#AA5CC3` reaches Discord as 697 804. That bug is not ours.
+    /// digit, so `#AA5CC3` reaches Discord as 697 804.
     #[test]
     fn parse_embed_color_does_not_reproduce_the_plugin_truncation() {
         assert_ne!(parse_embed_color("#AA5CC3"), 697_804);
@@ -1690,9 +1674,8 @@ mod tests {
         (series, season, episode)
     }
 
-    /// Pins the parent/grandparent assignment, which nothing else covers: with
-    /// the two swapped, `SeriesName` would render the season title on every
-    /// episode webhook and every hand-built `ItemContext` test would stay green.
+    /// Pins the parent/grandparent assignment, which nothing else covers: every
+    /// hand-built `ItemContext` test would stay green with the two swapped.
     #[tokio::test]
     async fn enrich_item_resolves_the_season_as_parent_and_the_series_as_grandparent() {
         let (_server, guard) = crate::integration_test::new_test_server()
@@ -1732,7 +1715,6 @@ mod tests {
         assert_eq!(grandparent.id, series.id, "grandparent must be the series");
         assert_eq!(grandparent.kind, db::MediaKind::Series);
 
-        // The consequence a swap would produce, asserted end to end.
         let data = build_data(
             &server(),
             &WebhookEvent::ItemAdded {
@@ -1783,9 +1765,8 @@ mod tests {
         );
     }
 
-    /// `ItemDeleted` must read the row off the event — the DB row is already
-    /// gone by the time the dispatcher sees it — while still resolving the
-    /// parents, which are not deleted.
+    /// `ItemDeleted` reads the row off the event — the DB row is already gone
+    /// by the time the dispatcher sees it — while still resolving the parents.
     #[tokio::test]
     async fn enrich_item_uses_the_row_embedded_in_item_deleted() {
         let (_server, guard) = crate::integration_test::new_test_server()
@@ -1836,7 +1817,6 @@ mod tests {
         );
     }
 
-    /// `ServerUrl` comes from `Config::public_url`.
     #[tokio::test]
     async fn server_info_reads_the_public_url_from_config() {
         let (_server, guard) = crate::integration_test::new_test_server()

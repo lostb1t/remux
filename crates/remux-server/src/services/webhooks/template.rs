@@ -25,10 +25,9 @@ pub(crate) fn fresh_registry() -> Handlebars<'static> {
     // most variables are event-specific and templates are user-written.
     registry.set_strict_mode(false);
     // Bodies are JSON, not HTML: `{{Var}}` almost always sits inside a JSON
-    // string literal, so that is what values are escaped for. HTML escaping
-    // would mangle `Ocean's` into `Ocean&#x27;s`, and no escaping at all would
-    // let a title like `The "Burbs` break the body. `{{{Var}}}` stays the raw
-    // escape hatch, exactly as in the Jellyfin plugin's stock templates.
+    // string literal, so that is what values are escaped for — a deviation from
+    // the plugin, whose HTML escaping mangles `Ocean's` into `Ocean&#x27;s`.
+    // `{{{Var}}}` stays the raw escape hatch, as in the plugin.
     registry.register_escape_fn(escape_json_string);
     register_helpers(&mut registry);
     registry
@@ -65,10 +64,9 @@ pub(crate) fn build_registry(hooks: &[db::Webhook]) -> Handlebars<'static> {
 /// **propagated**.
 ///
 /// [`build_registry`] is deliberately lenient — one hook's typo must not stop
-/// the others being delivered — but that leniency turns a syntax error into a
-/// later "Template not found: <uuid>" from `render`, naming an id the operator
-/// never typed and hiding the real error in the server log. Callers with a
-/// single hook in hand and an operator waiting on the answer use this instead.
+/// the others being delivered — but that turns a syntax error into a later
+/// "Template not found: <uuid>" from `render`. Callers with a single hook in
+/// hand and an operator waiting on the answer use this instead.
 pub(crate) fn single_registry(
     hook: &db::Webhook,
 ) -> Result<Handlebars<'static>, handlebars::TemplateError> {
@@ -82,15 +80,14 @@ pub(crate) fn single_registry(
     Ok(registry)
 }
 
-/// Whether an operator-supplied template parses.
-///
-/// The error text is derived from the operator's own template — never from a
-/// remote response — so it is safe to hand back over the API.
 /// The name the template is registered under while it is being checked. It
 /// appears in handlebars' error text, so it has to read as something the
 /// operator recognises rather than as an internal id.
 const VALIDATION_NAME: &str = "webhook template";
 
+/// Whether an operator-supplied template parses. The error text is derived from
+/// the operator's own template — never from a remote response — so it is safe
+/// to hand back over the API.
 pub(crate) fn validate(template: &str) -> Result<(), handlebars::TemplateError> {
     Handlebars::new().register_template_string(VALIDATION_NAME, template)
 }
@@ -113,8 +110,7 @@ pub(crate) fn render(
     let data = super::payload::with_hook_fields(data, hook);
 
     let body = if hook.send_all_properties {
-        // The whole dictionary, template ignored — this is the "show me every
-        // variable" mode of the plugin.
+        // The plugin's "show me every variable" mode: template ignored.
         serde_json::to_string_pretty(data.as_ref())?
     } else {
         registry.render(
@@ -309,8 +305,8 @@ mod tests {
             .clone()
     }
 
-    /// Renders `template` against `pairs` through the real registry path
-    /// (pre-compiled, registered under the hook id).
+    /// Renders through the real registry path: pre-compiled, registered under
+    /// the hook id.
     fn render_template(template: &str, pairs: Value) -> String {
         let hook = hook(template);
         let registry = build_registry(std::slice::from_ref(&hook));
@@ -394,8 +390,6 @@ mod tests {
 
     // --- link_to / url_encode / json_encode -------------------------------
 
-    /// Single-quoted `href`, as the plugin emits: the anchor has to survive
-    /// inside a JSON string literal, which a double quote would terminate.
     #[test]
     fn link_to_emits_a_single_quoted_anchor() {
         let body = render_template(
@@ -428,8 +422,8 @@ mod tests {
         );
     }
 
-    /// The template supplies the quotes (`"title": "{{json_encode Name}}"`), so
-    /// the helper must not add its own — that is what the plugin does.
+    /// The plugin idiom supplies the quotes (`"title": "{{json_encode Name}}"`),
+    /// so the helper must not add its own.
     #[test]
     fn json_encode_escapes_without_adding_quotes() {
         assert_eq!(
@@ -447,7 +441,6 @@ mod tests {
             "2"
         );
 
-        // The canonical plugin idiom must produce valid JSON.
         let body = render_template(
             r#"{"title": "{{json_encode Name}}"}"#,
             json!({ "Name": "He said \"hi\"" }),
@@ -457,9 +450,8 @@ mod tests {
         assert_eq!(parsed["title"], json!("He said \"hi\""));
     }
 
-    /// Bodies are JSON, not HTML: `'` and `&` must stay readable, while `"`,
-    /// `\` and control characters must be escaped for the string literal the
-    /// value almost always sits in.
+    /// Bodies are JSON, not HTML: `'` and `&` stay readable, `"`, `\` and
+    /// control characters are escaped for the surrounding string literal.
     #[test]
     fn plain_substitution_is_escaped_for_a_json_string() {
         assert_eq!(
@@ -479,7 +471,6 @@ mod tests {
             r"line\nbreak"
         );
 
-        // A body built the usual way survives a hostile title.
         let body = render_template(
             r#"{"title": "{{Name}}"}"#,
             json!({ "Name": "The \"Burbs\\" }),
@@ -489,8 +480,7 @@ mod tests {
         assert_eq!(parsed["title"], json!("The \"Burbs\\"));
     }
 
-    /// Triple braces stay the raw escape hatch, as in the plugin's stock
-    /// templates — which is also why the double-brace form must escape.
+    /// Triple braces stay the raw escape hatch, as in the plugin.
     #[test]
     fn triple_braces_bypass_the_escaping() {
         assert_eq!(
@@ -519,15 +509,10 @@ mod tests {
         })
     }
 
-    /// The stock template ships from the dashboard (a WASM crate) and is
-    /// rendered by this registry (the server crate), so until it moved into the
-    /// SDK *nothing anywhere* exercised the two halves together — which is how
-    /// seven `{{{triple}}}` interpolations survived the switch from the
-    /// plugin's HTML escaping to [`escape_json_string`].
-    ///
-    /// A triple brace bypasses the escape function, so a title carrying `"` or
-    /// `\` renders a body Discord answers 400 to. That is classified `Fatal`,
-    /// so there is no retry and the operator sees nothing.
+    /// The stock template ships from the SDK and is rendered by this registry,
+    /// and a triple brace bypasses [`escape_json_string`] — so a title carrying
+    /// `"` or `\` would render a body Discord answers 400 to, fatally and
+    /// without a retry.
     #[test]
     fn the_stock_discord_template_survives_a_title_that_is_hostile_to_json() {
         let name = r#"Ocean's "11" \ Redux"#;
@@ -546,8 +531,8 @@ mod tests {
         );
     }
 
-    /// …and an ordinary title must render byte-identically to what the plugin's
-    /// own template produced, so the change is a fix and not a behaviour break.
+    /// …and an ordinary title renders exactly what the plugin's own template
+    /// produced.
     #[test]
     fn the_stock_discord_template_is_unchanged_for_an_ordinary_title() {
         let body = render_template(
@@ -683,8 +668,6 @@ mod tests {
 
     // --- registry wiring --------------------------------------------------
 
-    /// The whole point of the cached registry: each hook's template is compiled
-    /// once, at reload time, and rendered by name afterwards.
     #[test]
     fn build_registry_precompiles_every_hook_template() {
         let first = db::Webhook {

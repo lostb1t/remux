@@ -1,19 +1,10 @@
 //! Rate-limiting for the two per-event webhook warnings.
 //!
-//! Both of them are driven by something the server does not control. The
-//! saturation warning in [`super::sender`] fires once per delivery past a
-//! hook's ceiling of four in flight, and the emission site behind it —
-//! `AuthenticationFailure` — is reachable **without credentials**: at 1000
-//! failed logins a second that is 1000 `warn!` lines a second onto the
-//! operator's disk, chosen by the attacker. The render-failure warning in
-//! [`super::mod`] fires once per event for a template that does not render, so
-//! a hook subscribed to `PlaybackProgress` with a broken template logs once per
-//! progress tick, forever.
-//!
-//! Neither line is worth dropping — the first time each happens is exactly what
-//! an operator needs to see. What is worth dropping is the repetition, so a
-//! [`LogThrottle`] emits one line per key per window and carries the count of
-//! what it suppressed since the last one.
+//! Both are driven by something the server does not control: the saturation
+//! warning in [`super::sender`] is reachable without credentials, and the
+//! render-failure warning fires once per event for a template that does not
+//! render. Neither line is worth dropping the first time, so a [`LogThrottle`]
+//! emits one per key per window carrying the count it suppressed.
 
 use std::{
     collections::HashMap,
@@ -24,10 +15,8 @@ use uuid::Uuid;
 
 /// One log line per key per window.
 ///
-/// Keyed by webhook id, so a flood against one hook never silences another —
-/// the same reasoning as `sender::DeliverySlots`, and the same accepted leak:
-/// entries are not pruned, which costs tens of bytes per hook an operator has
-/// ever created.
+/// Keyed by webhook id, so a flood against one hook never silences another.
+/// Entries are not pruned, at tens of bytes per hook ever created.
 pub(crate) struct LogThrottle {
     window: Duration,
     state: Mutex<HashMap<Uuid, Entry>>,
@@ -95,8 +84,6 @@ mod tests {
         Uuid::from_u128(n)
     }
 
-    /// The point of the whole module: an unauthenticated caller can drive the
-    /// call site at whatever rate it manages, and only the first line lands.
     #[test]
     fn only_the_first_occurrence_in_a_window_logs() {
         let throttle = LogThrottle::new(Duration::from_secs(3600));
@@ -110,8 +97,7 @@ mod tests {
         }
     }
 
-    /// A flood against one hook must not silence a different one — the same
-    /// reason delivery slots are counted per hook.
+    /// A flood against one hook must not silence a different one.
     #[test]
     fn keys_are_throttled_independently() {
         let throttle = LogThrottle::new(Duration::from_secs(3600));
@@ -124,8 +110,7 @@ mod tests {
         );
     }
 
-    /// The line that does get through has to say how much it stands for, or the
-    /// operator reads one dropped event where there were a thousand.
+    /// The line that gets through must say how much it stands for.
     #[test]
     fn the_next_line_carries_what_was_suppressed() {
         let throttle = LogThrottle::new(Duration::from_millis(30));
