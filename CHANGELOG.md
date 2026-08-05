@@ -1,3 +1,29 @@
+# [0.23.0](https://github.com/lostb1t/remux/compare/v0.22.0...v0.23.0) (2026-08-05)
+
+
+### Bug Fixes
+
+* clear the MediaTypes query param ([#187](https://github.com/lostb1t/remux/issues/187)) ([00da83e](https://github.com/lostb1t/remux/commit/00da83ee80f3002d0d4e724e0b04a5fc3bcf936d))
+* derive default audio/subtitle stream indexes per request ([#176](https://github.com/lostb1t/remux/issues/176)) ([1876100](https://github.com/lostb1t/remux/commit/18761006d32ad2fe08c2215b605460d8c8166419))
+* **desktop:** decouple dashboard and web-client embeds ([b6e18bd](https://github.com/lostb1t/remux/commit/b6e18bd58158b32ece116a0712075a08d1089b36))
+* emit two stub media sources in listings, route resume through items query ([9367ff6](https://github.com/lostb1t/remux/commit/9367ff6cb97a45498e77fa74c1df10cb4bb65d87))
+* global metadata language fallback for subtitle selection ([#174](https://github.com/lostb1t/remux/issues/174)) ([9c8e489](https://github.com/lostb1t/remux/commit/9c8e489654a093f4d5a012ce668543ba03128946))
+* **music:** use flat artist/album names for playlist imports ([#170](https://github.com/lostb1t/remux/issues/170)) ([1b6b385](https://github.com/lostb1t/remux/commit/1b6b3855f808aa55a132731f77d21baf29f3b0b2))
+* **subtitles:** serve native ASS from a separate cache ([#180](https://github.com/lostb1t/remux/issues/180)) ([158cebe](https://github.com/lostb1t/remux/commit/158cebebb2ebc9abe57796604a355e89a650cbd8))
+* **subtitles:** support tickless subtitle route ([#183](https://github.com/lostb1t/remux/issues/183)) ([c38019e](https://github.com/lostb1t/remux/commit/c38019e9fb36bbc785eb8a4e1c5ec16415ac06aa))
+* **web:** keep track panel hidden during stream load, render spinner inside it ([c1b23eb](https://github.com/lostb1t/remux/commit/c1b23ebf263895e90288e7df38094af00cf55153))
+
+
+### Features
+
+* **items:** implement missing sort arms ([#177](https://github.com/lostb1t/remux/issues/177)) ([7ec6c76](https://github.com/lostb1t/remux/commit/7ec6c76540ab279ed4fa527429f916ba9bba1ee0))
+* **music:** exclude singles/EPs from albums section ([#178](https://github.com/lostb1t/remux/issues/178)) ([1252b8f](https://github.com/lostb1t/remux/commit/1252b8ff2b934255137be1fd87e55fd0ffeb68a7))
+
+
+### Performance Improvements
+
+* pool the stream proxy HTTP client for keep-alive reuse ([#181](https://github.com/lostb1t/remux/issues/181)) ([3603a1e](https://github.com/lostb1t/remux/commit/3603a1e8c707e92a2ba25ab39eb7f19d84813b5f))
+
 # [0.22.0](https://github.com/lostb1t/remux/compare/v0.21.0...v0.22.0) (2026-08-04)
 
 
