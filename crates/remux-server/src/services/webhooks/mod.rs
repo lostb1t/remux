@@ -257,9 +257,10 @@ impl WebhookService {
                 for hook in targets {
                     match template::render(hook, &cache.registry, &data) {
                         // Delivery is spawned so one slow endpoint cannot stall
-                        // the dispatcher or the hooks behind it.
+                        // the dispatcher or the hooks behind it, and bounded so
+                        // a dead one cannot grow tasks without limit.
                         Ok(Some(body)) => {
-                            tokio::spawn(sender::deliver(hook.clone(), body));
+                            sender::spawn_delivery(hook.clone(), body);
                         }
                         // `skip_empty_message_body` suppressed the delivery.
                         Ok(None) => {}
