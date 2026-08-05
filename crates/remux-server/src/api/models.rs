@@ -276,6 +276,27 @@ pub fn db_state_to_dto(
     }
 }
 
+/// Stub sources for items without resolvable sources: two entries so
+/// multi-version clients (e.g. Infuse) expose a version picker.
+fn stub_sources(media: &db::Media) -> Vec<MediaSourceInfo> {
+    vec![
+        media
+            .clone()
+            .into(),
+        MediaSourceInfo {
+            id: uuid::Uuid::new_v5(
+                &uuid::Uuid::NAMESPACE_OID,
+                format!("{}-stub2", media.id).as_bytes(),
+            ),
+            e_tag: media.id,
+            name: Some(format!("{} (2)", media.title)),
+            protocol: MediaProtocol::File,
+            container: None,
+            ..Default::default()
+        },
+    ]
+}
+
 pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
     use crate::common::{IntoVec, ToRunTimeTicks};
 
@@ -1001,11 +1022,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             .sources
             .clone()
         {
-            Some(sources) if sources.is_empty() => Some(vec![
-                media
-                    .clone()
-                    .into(),
-            ]),
+            Some(sources) if sources.is_empty() => Some(stub_sources(&media)),
             Some(sources) => {
                 let mut infos: Vec<MediaSourceInfo> = sources
                     .into_iter()
@@ -1018,11 +1035,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                 }
                 Some(infos)
             }
-            None => Some(vec![
-                media
-                    .clone()
-                    .into(),
-            ]),
+            None => Some(stub_sources(&media)),
         };
         item.path = item
             .media_sources
