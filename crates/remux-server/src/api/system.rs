@@ -520,14 +520,6 @@ pub async fn quickconnect_authorize(
 
 const BRANDING_CONFIG_KEY: &str = "branding_configuration";
 
-fn default_branding_configuration() -> api::BrandingOptions {
-    api::BrandingOptions {
-        login_disclaimer: None,
-        custom_css: None,
-        splashscreen_enabled: Some(false),
-    }
-}
-
 #[get("/branding/configuration")]
 pub async fn get_branding_configuration(
     State(state): State<AppState>,
@@ -541,8 +533,8 @@ pub async fn get_branding_configuration(
     .await?
     {
         Some(json) => serde_json::from_str(&json)
-            .unwrap_or_else(|_| default_branding_configuration()),
-        None => default_branding_configuration(),
+            .unwrap_or_else(|_| api::BrandingOptions::default()),
+        None => api::BrandingOptions::default(),
     };
     Ok(Json(config))
 }
@@ -585,7 +577,7 @@ pub async fn update_branding_configuration(
 }
 
 async fn branding_css_response(state: &AppState) -> Result<Response> {
-    let config = match crate::db::Settings::get(
+    let config: api::BrandingOptions = match crate::db::Settings::get(
         &state
             .ctx
             .db,
@@ -593,11 +585,12 @@ async fn branding_css_response(state: &AppState) -> Result<Response> {
     )
     .await?
     {
-        Some(json) => serde_json::from_str::<api::BrandingOptions>(&json).ok(),
-        None => None,
+        Some(json) => serde_json::from_str(&json)
+            .unwrap_or_else(|_| api::BrandingOptions::default()),
+        None => api::BrandingOptions::default(),
     };
     match config
-        .and_then(|c| c.custom_css)
+        .custom_css
         .filter(|s| !s.is_empty())
     {
         Some(css) => Ok(([(header::CONTENT_TYPE, "text/css")], css).into_response()),
