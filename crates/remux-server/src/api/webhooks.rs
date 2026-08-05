@@ -100,6 +100,28 @@ fn with_parsed_url(payload: WebhookDto) -> Result<WebhookDto> {
     }
 }
 
+/// `payload` with its template proved to parse — or a 400 carrying handlebars'
+/// own message.
+///
+/// Nothing compiled the template before it was stored, so a typo saved with a
+/// clean 200 and the operator's entire feedback loop was: the save succeeds,
+/// the Test button answers "Template not found: <uuid>", and production is
+/// silent. The parse error is derived from the operator's own template — never
+/// from a remote response, never from the URL — so returning it leaks nothing.
+///
+/// Checked even when `send_all_properties` bypasses the template at render
+/// time: the flag is one checkbox away from being turned off, and a template
+/// that cannot parse is a latent break either way.
+fn with_checked_template(payload: WebhookDto) -> Result<WebhookDto> {
+    match webhooks::validate_template(&payload.template) {
+        Ok(()) => Ok(payload),
+        Err(e) => {
+            let detail = format!("webhook template does not parse: {e}");
+            Err(e.context_bad_request(&detail))
+        }
+    }
+}
+
 /// The stored webhook, or a 404. Every by-id route starts here so a missing row
 /// is a 404 rather than a 500 out of the repository's re-read.
 async fn load(state: &AppState, id: &Uuid) -> Result<db::Webhook> {
@@ -150,7 +172,7 @@ pub async fn create_webhook(
     _session: auth::AdminSession,
     Json(payload): Json<WebhookDto>,
 ) -> Result<impl IntoResponse> {
-    let payload = with_parsed_url(payload)?;
+    let payload = with_checked_template(with_parsed_url(payload)?)?;
     let created = db::Webhook::create(
         &state
             .ctx
@@ -175,7 +197,7 @@ pub async fn update_webhook(
     Json(payload): Json<WebhookDto>,
 ) -> Result<impl IntoResponse> {
     load(&state, &id).await?;
-    let payload = with_parsed_url(payload)?;
+    let payload = with_checked_template(with_parsed_url(payload)?)?;
     let updated = db::Webhook::update(
         &state
             .ctx
@@ -586,6 +608,83 @@ mod tests {
         );
     }
 
+    // --- template validation ----------------------------------------------
+
+    /// A template that does not parse used to save with a clean 200, then fail
+    /// at render time with handlebars' "Template not found: <uuid>" — a
+    /// diagnosis naming an id the operator never typed, while the real parse
+    /// error went only to the server log. Refuse the write instead, and say
+    /// why: the message comes from the operator's own template, not from any
+    /// remote response.
+    #[tokio::test]
+    async fn a_template_that_does_not_parse_is_rejected_on_create_and_on_update() {
+        let (server, _guard, token) = authenticated_server().await;
+        let (h, v) = auth(&token);
+
+        let broken = WebhookDto {
+            template: "{{#if_equals ItemType 'Movie'}}unclosed".into(),
+            ..hook_dto("broken", "https://example.test/hook")
+        };
+        server
+            .post("/remux/webhooks")
+            .add_header(h.clone(), v.clone())
+            .expect_failure()
+            .json(&broken)
+            .await
+            .assert_status(StatusCode::BAD_REQUEST);
+        assert!(
+            list(&server, &h, &v)
+                .await
+                .is_empty(),
+            "a rejected create must not store anything"
+        );
+
+        let created = create(
+            &server,
+            &h,
+            &v,
+            &hook_dto("good", "https://example.test/hook"),
+        )
+        .await;
+        server
+            .post(&format!("/remux/webhooks/{}", created.id))
+            .add_header(h.clone(), v.clone())
+            .expect_failure()
+            .json(&broken)
+            .await
+            .assert_status(StatusCode::BAD_REQUEST);
+
+        let unchanged: WebhookDto = server
+            .get(&format!("/remux/webhooks/{}", created.id))
+            .add_header(h, v)
+            .await
+            .json();
+        assert_eq!(
+            unchanged.template, TEMPLATE,
+            "a rejected update must not touch the stored row"
+        );
+    }
+
+    /// The template the dashboard pre-fills for a Discord destination has to be
+    /// acceptable to the endpoint that stores it, or picking Discord and
+    /// pressing Save is an instant 400.
+    #[tokio::test]
+    async fn the_stock_discord_template_is_accepted() {
+        let (server, _guard, token) = authenticated_server().await;
+        let (h, v) = auth(&token);
+
+        let dto = WebhookDto {
+            template: remux_sdks::remux::DISCORD_TEMPLATE.into(),
+            ..hook_dto("discord", "https://example.test/hook")
+        };
+        server
+            .post("/remux/webhooks")
+            .add_header(h, v)
+            .json(&dto)
+            .await
+            .assert_status_ok();
+    }
+
     // --- authorization ----------------------------------------------------
 
     #[tokio::test]
@@ -843,6 +942,92 @@ mod tests {
         assert!(
             !error.contains("s3cret"),
             "the URL path is a credential and must not be echoed: {error}"
+        );
+    }
+
+    // --- enrichment failures ----------------------------------------------
+
+    /// An item-scoped event whose item cannot be resolved must not be
+    /// delivered at all.
+    ///
+    /// Two separate breakages, one cause. `matches` only applies the item-type
+    /// rule when it is handed a kind, and enrichment is where the kind comes
+    /// from — so a hook with *every* item type unticked used to fire on an
+    /// unresolvable item. And the body it fired with had no `Name`, `ItemId` or
+    /// `ItemType`, which the stock Discord template renders as
+    /// `"title": " () has been added to remux"`.
+    ///
+    /// The canary is subscribed to a different, itemless event and is the
+    /// synchronisation point: once it has been hit, the dispatcher is past the
+    /// `ItemAdded` that preceded it, so the negative assertion is not a race.
+    #[tokio::test]
+    async fn an_item_event_whose_item_cannot_be_resolved_is_not_delivered() {
+        let (server, guard, token) = authenticated_server().await;
+        let (h, v) = auth(&token);
+        let endpoint_server = MockServer::start_async().await;
+
+        let canary_ep = endpoint_server.mock(|when, then| {
+            when.method(POST)
+                .path("/canary");
+            then.status(200);
+        });
+        let unticked_ep = endpoint_server.mock(|when, then| {
+            when.method(POST)
+                .path("/unticked");
+            then.status(200);
+        });
+
+        create(
+            &server,
+            &h,
+            &v,
+            &hook_dto("canary", &endpoint_server.url("/canary")),
+        )
+        .await;
+        create(
+            &server,
+            &h,
+            &v,
+            &WebhookDto {
+                notification_types: vec![NotificationType::ItemAdded],
+                // Nothing is allowed through — this hook wants no item type at
+                // all, which is exactly what the missing kind used to bypass.
+                item_types: WebhookItemTypes {
+                    movies: false,
+                    episodes: false,
+                    series: false,
+                    seasons: false,
+                    albums: false,
+                    songs: false,
+                    videos: false,
+                },
+                ..hook_dto("unticked", &endpoint_server.url("/unticked"))
+            },
+        )
+        .await;
+
+        // No such row exists, so `enrich_item` answers `None`.
+        guard
+            .0
+            .webhooks
+            .emit(WebhookEvent::ItemAdded {
+                item_id: Uuid::from_u128(0xf00d),
+            });
+        guard
+            .0
+            .webhooks
+            .emit(generic_event());
+
+        eventually(
+            "the dispatcher to get past the unresolvable item",
+            async || hits(&canary_ep).await == 1,
+        )
+        .await;
+        settle().await;
+        assert_eq!(
+            hits(&unticked_ep).await,
+            0,
+            "an event with no resolvable item must not slip past the item-type filter"
         );
     }
 

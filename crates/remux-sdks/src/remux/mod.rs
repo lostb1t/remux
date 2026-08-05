@@ -6249,6 +6249,96 @@ pub enum DiscordMentionType {
     Everyone,
 }
 
+/// The Jellyfin webhook plugin's stock `Templates/Discord.handlebars` (its
+/// UTF-8 BOM stripped), verbatim **except** for the plugin's triple-brace
+/// interpolations, which are double braces here.
+///
+/// The plugin needs `{{{X}}}` because its Handlebars escapes for *HTML*, which
+/// would mangle a title into `Ocean&#x27;s 11`. remux replaces that escape
+/// function with a JSON-string escape, so the triple brace is no longer merely
+/// unnecessary — it is unsafe: it defeats the escaping and a title containing
+/// `"` or `\` renders a body Discord rejects as malformed JSON, fatally and
+/// without a retry. For a title with none of those characters the output is
+/// byte-identical either way.
+///
+/// This is not decoration. remux follows the plugin exactly: for a Discord
+/// destination the operator's template renders the **entire** Discord JSON
+/// payload, with the destination's options injected as the variables
+/// `MentionType`, `EmbedColor`, `AvatarUrl`, `Username` and `BotUsername`. A
+/// Discord webhook with an empty template therefore POSTs an empty body, which
+/// is why the dashboard pre-fills this when Discord is picked.
+///
+/// It lives in the SDK rather than in the dashboard because the dashboard is a
+/// WASM crate and the Handlebars registry that renders this lives in the
+/// server: both crates already depend on the SDK, so this is the only place
+/// from which the server can compile the very template it ships to operators.
+///
+/// `{{ServerUrl}}` comes from the server's `public_url` setting. Unset, it
+/// renders empty and the `thumbnail` URL below is relative, which Discord
+/// refuses.
+pub const DISCORD_TEMPLATE: &str = r##"{
+    "content": "{{MentionType}}",
+    "avatar_url": "{{AvatarUrl}}",
+    "username": "{{BotUsername}}",
+    "embeds": [
+        {
+            "color": "{{EmbedColor}}",
+            "footer": {
+                "text": "From {{ServerName}}",
+                "icon_url": "{{AvatarUrl}}"
+            },
+            {{#if_equals ItemType 'Season'}}
+                "title": "{{SeriesName}} {{Name}} has been added to {{ServerName}}",
+            {{else}}
+                {{#if_equals ItemType 'Episode'}}
+                    "title": "{{SeriesName}} S{{SeasonNumber00}}E{{EpisodeNumber00}} {{Name}} has been added to {{ServerName}}",
+                {{else}}
+                    "title": "{{Name}} ({{Year}}) has been added to {{ServerName}}",
+                {{/if_equals}}
+            {{/if_equals}}
+            "thumbnail":{
+                "url": "{{ServerUrl}}/Items/{{ItemId}}/Images/Primary"
+            },
+            "description": "External Links:\n
+            {{~#if_exist Provider_imdb~}}
+            [IMDb](https://www.imdb.com/title/{{Provider_imdb}}/)\n
+            {{~/if_exist~}}
+            {{~#if_exist Provider_tmdb~}}
+                {{~#if_equals ItemType 'Movie'~}}
+                    [TMDb](https://www.themoviedb.org/movie/{{Provider_tmdb}})\n
+                {{~else~}}
+                    [TMDb](https://www.themoviedb.org/tv/{{Provider_tmdb}})\n
+                {{~/if_equals~}}
+            {{~/if_exist~}}
+            {{~#if_exist Provider_musicbrainzartist~}}
+                [MusicBrainz](https://musicbrainz.org/artist/{{Provider_musicbrainzartist}})\n
+            {{~/if_exist~}}
+            {{~#if_exist Provider_audiodbartist~}}
+                [AudioDb](https://theaudiodb.com/artist/{{Provider_audiodbartist}})\n
+            {{~/if_exist~}}
+            {{~#if_exist Provider_musicbrainztrack~}}
+                [MusicBrainz Track](https://musicbrainz.org/track/{{Provider_musicbrainztrack}})\n
+            {{~/if_exist~}}
+            {{~#if_exist Provider_musicbrainzalbum~}}
+                [MusicBrainz Album](https://musicbrainz.org/release/{{Provider_musicbrainzalbum}})\n
+            {{~/if_exist~}}
+            {{~#if_exist Provider_theaudiodbalbum~}}
+                [TADb Album](https://theaudiodb.com/album/{{Provider_theaudiodbalbum}})\n
+            {{~/if_exist~}}
+            {{~#if_exist Provider_tvmaze~}}
+                {{~#if_equals ItemType 'Episode'~}}
+                    [TVMaze](https://www.tvmaze.com/episodes/{{Provider_tvmaze}})\n
+                {{~/if_equals~}}
+                {{~#if_equals ItemType 'Series'~}}
+                    [TVMaze](https://www.tvmaze.com/shows/{{Provider_tvmaze}})\n
+                {{~/if_equals~}}
+            {{~/if_exist~}}
+            [Jellyfin]({{ServerUrl}}/web/index.html#!/details?id={{ItemId}}&serverId={{ServerId}})"
+        }
+    ]
+}
+"##;
+
 /// A user-defined header or template field attached to a generic webhook.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct WebhookKeyValue {

@@ -21,6 +21,7 @@
 //! authentication — anyone holding it can post as the webhook indefinitely. No
 //! log line in this module may contain a URL path or query; see [`redact_url`].
 
+use super::throttle::LogThrottle;
 use crate::db;
 use remux_sdks::remux::{WebhookDestination, WebhookTestResult};
 use reqwest::{
@@ -82,6 +83,21 @@ static WEBHOOK_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
 
 static DELIVERY_SLOTS: LazyLock<DeliverySlots> =
     LazyLock::new(|| DeliverySlots::new(MAX_CONCURRENT_DELIVERIES_PER_HOOK));
+
+/// How often a hook may repeat its "dropping event" line.
+///
+/// Without a ceiling this is an amplification primitive rather than a log line.
+/// The `AuthenticationFailure` emission in `api::users` is the only one
+/// reachable **without credentials**, and `User::authenticate` short-circuits
+/// an unknown username in one indexed SELECT — so a credential-stuffing run is
+/// cheap for the attacker and every delivery past the per-hook ceiling of
+/// [`MAX_CONCURRENT_DELIVERIES_PER_HOOK`] used to write one `warn!`. At 1000
+/// requests a second that is 1000 lines a second onto the operator's disk,
+/// paced entirely by the attacker.
+const SATURATION_WARN_WINDOW: Duration = Duration::from_secs(60);
+
+static SATURATION_WARNINGS: LazyLock<LogThrottle> =
+    LazyLock::new(|| LogThrottle::new(SATURATION_WARN_WINDOW));
 
 // --- concurrency ------------------------------------------------------------
 
@@ -157,12 +173,18 @@ pub(crate) fn spawn_delivery_with(
     policy: DeliveryPolicy,
 ) -> bool {
     let Some(permit) = slots.try_acquire(hook.id) else {
-        warn!(
-            webhook = %hook.name,
-            webhook_id = %hook.id,
-            limit = slots.limit,
-            "webhook already has its share of deliveries in flight, dropping event"
-        );
+        // Throttled — see [`SATURATION_WARN_WINDOW`]. The drop itself is not
+        // rate-limited, only the line about it, and the line carries how many
+        // it now stands for.
+        if let Some(dropped_since) = SATURATION_WARNINGS.allow(hook.id) {
+            warn!(
+                webhook = %hook.name,
+                webhook_id = %hook.id,
+                limit = slots.limit,
+                dropped_since,
+                "webhook already has its share of deliveries in flight, dropping event"
+            );
+        }
         return false;
     };
     tokio::spawn(async move {
@@ -282,8 +304,17 @@ pub(crate) async fn send_once(
 /// echoing the response would turn this endpoint into a read primitive: point a
 /// hook at an internal service, press Test, and read its reply out of the admin
 /// API — from where it reaches browser devtools and support tickets. Only the
-/// status line comes back; the body stays in the server-side log line that
-/// [`deliver_logged`] writes.
+/// status line comes back.
+///
+/// The body is not thrown away, though: this path writes its own server-side
+/// `warn!` carrying the truncated response, under exactly the redaction
+/// [`deliver_logged`] applies. It has to write its own, because
+/// `deliver_logged` is never on this path — and without it a failed test was
+/// *undiagnosable*, reporting `endpoint returned 400 Bad Request` to the
+/// operator and nothing at all to the log. The commonest cause is a stock
+/// Discord template rendering `{{ServerUrl}}` empty because `public_url` is
+/// unset, which Discord rejects as a non-absolute embed URL and which the
+/// status line alone cannot distinguish from anything else.
 ///
 /// The transport-error text is [`SendError`]'s, which is already redacted — a
 /// webhook URL is a credential and must not travel back either.
@@ -298,29 +329,47 @@ async fn send_test_with(
     body: &str,
     timeout: Duration,
 ) -> WebhookTestResult {
-    match attempt_once_within(hook, body, Some(timeout)).await {
-        Ok(response) => WebhookTestResult {
-            success: true,
-            status_code: Some(
-                response
-                    .status()
-                    .as_u16(),
-            ),
-            error: None,
-        },
+    let error = match attempt_once_within(hook, body, Some(timeout)).await {
+        Ok(response) => {
+            return WebhookTestResult {
+                success: true,
+                status_code: Some(
+                    response
+                        .status()
+                        .as_u16(),
+                ),
+                error: None,
+            };
+        }
+        Err(e) => e,
+    };
+
+    // Server-side only, and the same redaction guarantee as `deliver_logged`:
+    // no URL path or query, ever. `error` is `SendError`'s message, which
+    // already carries at most MAX_LOGGED_RESPONSE bytes of the remote body and
+    // has the URL stripped out of any transport error.
+    warn!(
+        webhook = %hook.name,
+        webhook_id = %hook.id,
+        endpoint = %redact_url(&hook.url),
+        error = %error,
+        "webhook test delivery failed"
+    );
+
+    match error {
         // Status only. `e.message` carries up to MAX_LOGGED_RESPONSE bytes of
         // the remote body and must not leave the server.
-        Err(SendError {
+        SendError {
             status: Some(status),
             ..
-        }) => WebhookTestResult {
+        } => WebhookTestResult {
             success: false,
             status_code: Some(status.as_u16()),
             error: Some(format!("endpoint returned {status}")),
         },
         // Nothing reached the endpoint: DNS, connect, TLS or timeout. The
         // message is ours, not the remote's.
-        Err(e) => WebhookTestResult {
+        e => WebhookTestResult {
             success: false,
             status_code: None,
             error: Some(e.to_string()),
@@ -633,7 +682,10 @@ mod tests {
         DiscordMentionType, NotificationType, WebhookDestination, WebhookItemTypes,
         WebhookKeyValue,
     };
-    use std::time::Instant;
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        time::Instant,
+    };
 
     /// Short enough that the suite does not crawl, long enough that the two
     /// backoff sleeps are observable.
@@ -696,6 +748,45 @@ mod tests {
             .to_str()
             .expect("content type must be a valid header value")
             .to_string()
+    }
+
+    /// A local endpoint that answers `statuses` in order — by call count, not
+    /// by wall clock — repeating the last one once the list runs out.
+    ///
+    /// `httpmock` cannot vary a response by call count, and swapping mocks
+    /// mid-retry means racing the backoff. Returns the URL and the call
+    /// counter.
+    async fn sequenced_endpoint(
+        statuses: &'static [u16],
+    ) -> (String, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let app = axum::Router::new().route(
+            "/hook",
+            axum::routing::post(move || {
+                let counter = Arc::clone(&counter);
+                async move {
+                    let nth = counter.fetch_add(1, Ordering::SeqCst);
+                    let status = statuses[nth.min(
+                        statuses
+                            .len()
+                            .saturating_sub(1),
+                    )];
+                    axum::http::StatusCode::from_u16(status)
+                        .expect("the test statuses must be valid")
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a free local port");
+        let addr = listener
+            .local_addr()
+            .expect("the listener must have an address");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (format!("http://{addr}/hook"), calls)
     }
 
     /// Poll `condition` until it holds, failing the test rather than hanging.
@@ -1129,6 +1220,99 @@ mod tests {
             .await;
     }
 
+    /// A `tracing` subscriber that keeps what was written, scoped to the
+    /// current thread so parallel tests do not see each other's lines.
+    #[derive(Clone, Default)]
+    struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
+
+    impl CapturedLogs {
+        fn text(&self) -> String {
+            String::from_utf8_lossy(
+                &self
+                    .0
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            )
+            .into_owned()
+        }
+    }
+
+    impl std::io::Write for CapturedLogs {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLogs {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// A failed test used to be *undiagnosable*: the operator was told
+    /// `endpoint returned 400 Bad Request` — deliberately, the response body is
+    /// an SSRF read primitive — and the server log was told nothing at all,
+    /// because `deliver_logged` is not on this path. The commonest real cause,
+    /// a stock Discord template whose `{{ServerUrl}}` rendered empty because
+    /// `public_url` is unset, is invisible from the status line alone.
+    ///
+    /// So the body is logged, and the credential still is not: the same
+    /// redaction `deliver_logged` applies.
+    #[tokio::test]
+    async fn a_failed_test_is_logged_server_side_without_the_url_path() {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.path("/api/webhooks/1/s3cret-token");
+                then.status(400)
+                    .body("Invalid Form Body: embeds.0.thumbnail.url: Not a well formed URL.");
+            })
+            .await;
+
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .finish();
+
+        let hook = generic(&server.url("/api/webhooks/1/s3cret-token"), &[]);
+        let result = {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            send_test(&hook, "ping").await
+        };
+
+        assert!(!result.success);
+        let logged = logs.text();
+        assert!(
+            logged.contains("webhook test delivery failed"),
+            "the failed test must reach the server log: {logged:?}"
+        );
+        assert!(
+            logged.contains("Not a well formed URL"),
+            "the operator needs the endpoint's reason, in the log: {logged:?}"
+        );
+        assert!(
+            !logged.contains("s3cret-token"),
+            "the URL path is a credential and must not be logged: {logged:?}"
+        );
+        assert!(
+            !result
+                .error
+                .unwrap_or_default()
+                .contains("Not a well formed URL"),
+            "…and the remote body still must not travel back to the caller"
+        );
+    }
+
     #[tokio::test]
     async fn send_test_reports_a_2xx_as_a_success() {
         let server = MockServer::start_async().await;
@@ -1375,56 +1559,49 @@ mod tests {
         );
     }
 
+    /// The endpoint answers by call count rather than by wall clock. The
+    /// previous version of this test swapped a failing mock for a healthy one
+    /// from the outside and needed two mock-server round-trips to land inside a
+    /// ~200-250 ms backoff window — which is a race, and the likeliest flake on
+    /// this branch. Nothing here depends on timing.
     #[tokio::test]
     async fn delivery_stops_at_the_first_success() {
-        let server = MockServer::start_async().await;
-        let failing = server
-            .mock_async(|when, then| {
-                when.path("/hook");
-                then.status(500);
-            })
-            .await;
+        let (url, calls) = sequenced_endpoint(&[500, 500, 200]).await;
 
-        let hook = generic(&server.url("/hook"), &[]);
-        let policy = DeliveryPolicy {
-            attempts: 3,
-            retry_delay_ms: 100,
-        };
-        let task =
-            tokio::spawn(async move { deliver_with(&hook, "ping", &policy).await });
-
-        // Let the first two attempts fail, then make the endpoint healthy again
-        // while the last backoff sleep is still running.
-        eventually("two failed attempts", async || {
-            failing
-                .hits_async()
-                .await
-                >= 2
-        })
-        .await;
-        let healthy = server
-            .mock_async(|when, then| {
-                when.path("/hook");
-                then.status(200);
-            })
-            .await;
-        let failed_attempts = failing
-            .hits_async()
-            .await;
-        failing
-            .delete_async()
-            .await;
-
-        task.await
-            .expect("the delivery task must not panic")
+        let hook = generic(&url, &[]);
+        deliver_with(&hook, "ping", &FAST)
+            .await
             .expect("the third attempt succeeded, so the delivery must succeed");
-        assert_eq!(failed_attempts, 2);
+
         assert_eq!(
-            healthy
-                .hits_async()
-                .await,
-            1,
-            "the retry must stop at the first success"
+            calls.load(Ordering::SeqCst),
+            3,
+            "the retry must stop at the first success, not spend the budget"
+        );
+    }
+
+    /// …and it really is the success that stops it: with a fourth attempt
+    /// available the delivery still ends on the 200.
+    #[tokio::test]
+    async fn a_success_ends_the_retry_loop_with_budget_to_spare() {
+        let (url, calls) = sequenced_endpoint(&[500, 200, 500]).await;
+
+        let hook = generic(&url, &[]);
+        deliver_with(
+            &hook,
+            "ping",
+            &DeliveryPolicy {
+                attempts: 3,
+                retry_delay_ms: 20,
+            },
+        )
+        .await
+        .expect("the second attempt succeeded");
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "the third attempt must never have been made"
         );
     }
 
@@ -1538,6 +1715,58 @@ mod tests {
                 .await,
             2,
             "the dropped delivery must not have been queued"
+        );
+    }
+
+    /// [`LogThrottle`] is unit-tested in its own module; this proves it is
+    /// actually wired into the drop branch.
+    ///
+    /// It has to be, because that branch is reachable from an *unauthenticated*
+    /// caller: `api::users` emits `AuthenticationFailure` on a failed login,
+    /// `User::authenticate` short-circuits an unknown username in one indexed
+    /// SELECT, and every delivery past the ceiling used to write a line. At
+    /// 1000 requests a second that is 1000 lines a second, paced by the
+    /// attacker.
+    #[tokio::test]
+    async fn the_saturation_warning_is_logged_once_not_once_per_dropped_event() {
+        let slots = DeliverySlots::new(1);
+        // A hook id of its own: the throttle is process-wide, so sharing one
+        // with another test would make this depend on execution order.
+        let hook = db::Webhook {
+            id: Uuid::from_u128(0x5a7a_1a7e),
+            ..generic("http://127.0.0.1:1/hook", &[])
+        };
+        let _held = slots
+            .try_acquire(hook.id)
+            .expect("a fresh hook has a slot");
+
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .finish();
+        {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            for _ in 0..50 {
+                assert!(
+                    !spawn_delivery_with(&slots, hook.clone(), "ping".into(), FAST),
+                    "with no slot every one of these must be dropped"
+                );
+            }
+        }
+
+        let logged = logs.text();
+        assert_eq!(
+            logged
+                .matches("dropping event")
+                .count(),
+            1,
+            "fifty drops must produce one line, not fifty: {logged:?}"
+        );
+        assert!(
+            logged.contains("dropped_since=0"),
+            "the line must carry the count it stands for: {logged:?}"
         );
     }
 

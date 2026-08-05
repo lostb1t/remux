@@ -61,6 +61,40 @@ pub(crate) fn build_registry(hooks: &[db::Webhook]) -> Handlebars<'static> {
     registry
 }
 
+/// A registry carrying exactly one hook's template, with the parse error
+/// **propagated**.
+///
+/// [`build_registry`] is deliberately lenient — one hook's typo must not stop
+/// the others being delivered — but that leniency turns a syntax error into a
+/// later "Template not found: <uuid>" from `render`, naming an id the operator
+/// never typed and hiding the real error in the server log. Callers with a
+/// single hook in hand and an operator waiting on the answer use this instead.
+pub(crate) fn single_registry(
+    hook: &db::Webhook,
+) -> Result<Handlebars<'static>, handlebars::TemplateError> {
+    let mut registry = fresh_registry();
+    registry.register_template_string(
+        &hook
+            .id
+            .to_string(),
+        &hook.template,
+    )?;
+    Ok(registry)
+}
+
+/// Whether an operator-supplied template parses.
+///
+/// The error text is derived from the operator's own template — never from a
+/// remote response — so it is safe to hand back over the API.
+/// The name the template is registered under while it is being checked. It
+/// appears in handlebars' error text, so it has to read as something the
+/// operator recognises rather than as an internal id.
+const VALIDATION_NAME: &str = "webhook template";
+
+pub(crate) fn validate(template: &str) -> Result<(), handlebars::TemplateError> {
+    Handlebars::new().register_template_string(VALIDATION_NAME, template)
+}
+
 pub(crate) fn register_helpers(registry: &mut Handlebars<'_>) {
     registry.register_helper("if_equals", Box::new(if_equals));
     registry.register_helper("if_exist", Box::new(if_exist));
@@ -466,6 +500,68 @@ mod tests {
         assert_eq!(
             render_template("{{{Name}}}", json!({ "Name": r"C:\media\x" })),
             r"C:\media\x"
+        );
+    }
+
+    // --- the stock Discord template ---------------------------------------
+
+    /// Data covering every variable the stock template interpolates outside a
+    /// guard, with a title that is hostile to a JSON string literal.
+    fn stock_discord_data(name: &str) -> Value {
+        json!({
+            "ServerId": "server-1",
+            "ServerName": "remux",
+            "ServerUrl": "https://media.example.test",
+            "ItemId": "1d0b6a1e",
+            "ItemType": "Movie",
+            "Name": name,
+            "Year": 2001,
+        })
+    }
+
+    /// The stock template ships from the dashboard (a WASM crate) and is
+    /// rendered by this registry (the server crate), so until it moved into the
+    /// SDK *nothing anywhere* exercised the two halves together — which is how
+    /// seven `{{{triple}}}` interpolations survived the switch from the
+    /// plugin's HTML escaping to [`escape_json_string`].
+    ///
+    /// A triple brace bypasses the escape function, so a title carrying `"` or
+    /// `\` renders a body Discord answers 400 to. That is classified `Fatal`,
+    /// so there is no retry and the operator sees nothing.
+    #[test]
+    fn the_stock_discord_template_survives_a_title_that_is_hostile_to_json() {
+        let name = r#"Ocean's "11" \ Redux"#;
+        let body = render_template(
+            remux_sdks::remux::DISCORD_TEMPLATE,
+            stock_discord_data(name),
+        );
+
+        let parsed: Value = serde_json::from_str(&body).unwrap_or_else(|e| {
+            panic!("the stock template must render valid JSON: {e}\n{body}")
+        });
+        assert_eq!(
+            parsed["embeds"][0]["title"],
+            json!(format!("{name} (2001) has been added to remux")),
+            "the title must arrive at Discord unmangled: {body}"
+        );
+    }
+
+    /// …and an ordinary title must render byte-identically to what the plugin's
+    /// own template produced, so the change is a fix and not a behaviour break.
+    #[test]
+    fn the_stock_discord_template_is_unchanged_for_an_ordinary_title() {
+        let body = render_template(
+            remux_sdks::remux::DISCORD_TEMPLATE,
+            stock_discord_data("A Movie"),
+        );
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(
+            parsed["embeds"][0]["title"],
+            json!("A Movie (2001) has been added to remux")
+        );
+        assert_eq!(
+            parsed["embeds"][0]["thumbnail"]["url"],
+            json!("https://media.example.test/Items/1d0b6a1e/Images/Primary")
         );
     }
 

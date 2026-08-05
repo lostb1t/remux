@@ -10,6 +10,7 @@ pub mod events;
 mod payload;
 mod sender;
 mod template;
+mod throttle;
 
 pub use events::{
     DeviceEventData, PlaybackEventData, UserDataSaveReason, UserEventData, WebhookEvent,
@@ -28,7 +29,7 @@ use tokio::{
     sync::{RwLock, broadcast, broadcast::error::RecvError},
     task::JoinHandle,
 };
-use tracing::warn;
+use tracing::{debug, warn};
 
 /// Buffered events per subscriber. Large enough that a slow dispatcher pass
 /// (one enrichment round-trip) never drops events under normal playback load.
@@ -36,6 +37,17 @@ const EVENT_CHANNEL_CAPACITY: usize = 4096;
 
 /// `Name` seen by the template of the synthetic event [`deliver_test`] sends.
 pub const TEST_EVENT_TITLE: &str = "Test notification";
+
+/// How often a hook may repeat its "template render failed" line.
+///
+/// The failure is per *event*, so a hook subscribed to `PlaybackProgress` with
+/// a template that does not render logs once per progress tick, forever. The
+/// first line is what an operator needs; the rest is the same line again.
+const RENDER_FAILURE_WARN_WINDOW: std::time::Duration =
+    std::time::Duration::from_secs(60);
+
+static RENDER_FAILURE_WARNINGS: std::sync::LazyLock<throttle::LogThrottle> =
+    std::sync::LazyLock::new(|| throttle::LogThrottle::new(RENDER_FAILURE_WARN_WINDOW));
 
 /// The enabled webhooks as last read from the database, plus everything derived
 /// from them that would otherwise be recomputed per event.
@@ -178,8 +190,18 @@ impl WebhookService {
     }
 
     /// Replace the cached snapshot from the database. On error the previous
-    /// hook set is kept — a transient DB failure must not silently disable
-    /// every webhook.
+    /// hook set is kept and the cache is marked stale again — a transient DB
+    /// failure must not silently disable every webhook.
+    ///
+    /// Re-raising `dirty` is what makes that promise true for the *first*
+    /// reload, and only the first reload can break it: [`Self::spawn_dispatcher`]
+    /// calls this when the previous set is [`LoadedWebhooks::default`], i.e.
+    /// empty, so "keep the previous set" keeps nothing. A `SQLITE_BUSY` at boot
+    /// would otherwise leave the cache empty with the flag down — nothing to
+    /// retry the load, and `wanted_mask` still `u32::MAX` from [`Self::new`], so
+    /// every guarded call site keeps paying full price to build events the
+    /// dispatcher then discards. Recovery would need an admin to touch a
+    /// webhook, or a restart.
     ///
     /// The server identity is reloaded here too, which is why settings writers
     /// call [`Self::invalidate`]: it is built once and then read by every
@@ -204,6 +226,12 @@ impl WebhookService {
                     .write()
                     .await
                     .server = server;
+                // Ask for another attempt. Without this the failure is
+                // permanent: the flag was consumed before the call, so nothing
+                // else will ever set it.
+                self.inner
+                    .dirty
+                    .store(true, Ordering::Release);
                 return;
             }
         };
@@ -230,12 +258,13 @@ impl WebhookService {
             wanted,
             server,
         };
-        // Published after the snapshot, and only when nothing invalidated while
-        // the rows above were being read. The dispatcher clears `dirty` before
-        // calling this, so finding it set again means `hooks` predates an
-        // `invalidate` whose widening this store would otherwise silently
-        // clobber — leaving the mask narrow, and stale, for as long as the flag
-        // stays unconsumed.
+        // Published after the snapshot, and only when the flag is down. On the
+        // dispatcher's steady-state path the flag was consumed just before this
+        // call, so finding it set again means `hooks` predates an `invalidate`
+        // whose widening this store would otherwise silently clobber — leaving
+        // the mask narrow, and stale, for as long as the flag stays unconsumed.
+        // The startup reload has no preceding swap, so there the check simply
+        // holds the mask open until a snapshot nobody has invalidated lands.
         if !self
             .inner
             .dirty
@@ -345,6 +374,28 @@ impl WebhookService {
                 }
 
                 let item = payload::enrich_item(&ctx, &event).await;
+                // An item-scoped event whose item could not be resolved has
+                // nothing left to deliver, and delivering it anyway is worse
+                // than dropping it twice over: `item_kind` is `None`, so
+                // `matches` skips the item-type rule entirely and a hook with
+                // every type unticked fires; and the dictionary has no `Name`,
+                // `ItemId` or `ItemType`, so the stock template renders
+                // `"title": " () has been added to remux"`. `ItemDeleted`
+                // carries its row inline and never lands here.
+                if event
+                    .item_id()
+                    .is_some()
+                    && item.is_none()
+                {
+                    // `debug`, not `warn`: `enrich_item` already logged the
+                    // real cause at warn, and a scan that deletes rows behind
+                    // an in-flight event makes this expected rather than wrong.
+                    debug!(
+                        notification_type = %event.notification_type(),
+                        "webhook event dropped, its item could not be resolved"
+                    );
+                    continue;
+                }
                 let item_kind = item
                     .as_ref()
                     .map(|i| {
@@ -373,8 +424,21 @@ impl WebhookService {
                         }
                         // `skip_empty_message_body` suppressed the delivery.
                         Ok(None) => {}
+                        // Throttled: the failure is a property of the template,
+                        // not of the event, so an unthrottled line repeats for
+                        // every tick of a `PlaybackProgress` subscription.
                         Err(e) => {
-                            warn!(webhook = %hook.name, error = %e, "webhook template render failed")
+                            if let Some(suppressed) =
+                                RENDER_FAILURE_WARNINGS.allow(hook.id)
+                            {
+                                warn!(
+                                    webhook = %hook.name,
+                                    webhook_id = %hook.id,
+                                    error = %e,
+                                    suppressed,
+                                    "webhook template render failed"
+                                );
+                            }
                         }
                     }
                 }
@@ -385,12 +449,30 @@ impl WebhookService {
 
 // --- the admin "test this webhook" path --------------------------------------
 
+/// Whether an operator-supplied template parses, for write-time validation.
+///
+/// The error is handlebars' own parse error, derived from the operator's text
+/// and nothing else — no remote response, no URL — so it is safe to return over
+/// the API. Rejecting at write time is the difference between "your template
+/// has an unclosed block on line 4" and a hook that saves clean, says
+/// "Template not found" when tested, and stays silent in production.
+pub fn validate_template(template: &str) -> Result<(), handlebars::TemplateError> {
+    template::validate(template)
+}
+
 /// Render `hook`'s body for the synthetic test event.
 ///
 /// The template is compiled here rather than taken from the dispatcher's cached
 /// registry: the hook being tested was very likely saved a moment ago, and that
 /// cache only reloads when the dispatcher next sees an event. Testing a hook
 /// against a stale template would be worse than not testing it.
+///
+/// Compiled through [`template::single_registry`], not `build_registry`: the
+/// latter warns-and-skips an unparseable template, which is right for the
+/// dispatcher — one hook's typo must not stop the others — and wrong here,
+/// because `render` would then fail with handlebars' "Template not found:
+/// <uuid>" while the operator's actual syntax error went only to the server
+/// log.
 fn test_body(
     server: &payload::ServerInfo,
     hook: &db::Webhook,
@@ -400,7 +482,7 @@ fn test_body(
         extra: Vec::new(),
     };
     let data = payload::build_data(server, &event, None);
-    let registry = template::build_registry(std::slice::from_ref(hook));
+    let registry = template::single_registry(hook)?;
     template::render(hook, &registry, &data)
 }
 
@@ -559,15 +641,42 @@ mod tests {
 
     /// The hook's template is compiled for this call, so a hook the dispatcher
     /// has never seen is still testable.
+    ///
+    /// And what comes back must be the *parse* error. Routed through
+    /// `build_registry` this failed with "Template not found: <uuid>", naming
+    /// an id the operator never typed while the real error went to the log —
+    /// so asserting `is_err()` alone was not enough to keep it honest.
     #[test]
-    fn a_template_that_does_not_compile_is_reported_not_panicked() {
+    fn a_template_that_does_not_compile_reports_its_parse_error() {
         let hook = db::Webhook {
             template: "{{#if_equals A}}unclosed".into(),
             ..permissive(vec![NotificationType::Generic])
         };
+        let error = test_body(&test_server_info(), &hook)
+            .expect_err("an uncompilable template must surface as an error")
+            .to_string();
         assert!(
-            test_body(&test_server_info(), &hook).is_err(),
-            "an uncompilable template must surface as an error"
+            !error.contains("Template not found"),
+            "the operator must not be told their template is missing: {error}"
+        );
+        assert!(
+            error.contains("{{#if_equals A}}unclosed"),
+            "the parse error must quote the operator's own template: {error}"
+        );
+    }
+
+    /// The same error is what the CRUD endpoints refuse a write with, so it has
+    /// to name something the operator can act on.
+    #[test]
+    fn validate_template_rejects_a_template_that_does_not_parse() {
+        assert!(validate_template(r#"{"content":"{{Name}}"}"#).is_ok());
+        assert!(validate_template("").is_ok());
+        let error = validate_template("{{#if_equals A}}unclosed")
+            .expect_err("an unclosed block must be refused")
+            .to_string();
+        assert!(
+            !error.is_empty() && !error.contains("Template not found"),
+            "the refusal must carry the parse error: {error}"
         );
     }
 
@@ -602,6 +711,74 @@ mod tests {
             )
             .expect("helpers must be registered on the default snapshot");
         assert_eq!(body, "ok");
+    }
+
+    /// The startup reload is the one call with nothing to "keep": the previous
+    /// set is `LoadedWebhooks::default()`, i.e. empty. A transient
+    /// `SQLITE_BUSY` there used to be permanent — the flag had already been
+    /// consumed, so nothing would ever ask for another attempt, and every
+    /// webhook stayed disabled until an admin touched one or the process
+    /// restarted.
+    #[tokio::test]
+    async fn a_failed_reload_asks_for_another_attempt() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .expect("test server");
+        let service = WebhookService::new();
+
+        // The dispatcher's startup path: consume the flag, then load — except
+        // the database is gone.
+        service
+            .inner
+            .dirty
+            .swap(false, Ordering::AcqRel);
+        guard
+            .0
+            .db
+            .close()
+            .await;
+
+        service
+            .reload(&guard.0)
+            .await;
+
+        assert!(
+            service
+                .inner
+                .dirty
+                .load(Ordering::Acquire),
+            "a failed load must leave the cache stale so the next event retries it"
+        );
+        assert!(
+            service.wants(NotificationType::PlaybackProgress),
+            "and the probe must stay open until a snapshot actually lands"
+        );
+    }
+
+    /// The mirror image: a load that worked must not ask to be redone, or the
+    /// dispatcher reloads on every single event.
+    #[tokio::test]
+    async fn a_successful_reload_leaves_the_cache_clean() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .expect("test server");
+        let service = WebhookService::new();
+
+        service
+            .inner
+            .dirty
+            .swap(false, Ordering::AcqRel);
+        service
+            .reload(&guard.0)
+            .await;
+
+        assert!(
+            !service
+                .inner
+                .dirty
+                .load(Ordering::Acquire),
+            "a load that succeeded must not mark the cache stale"
+        );
     }
 
     // --- the `wants` probe ------------------------------------------------

@@ -452,6 +452,14 @@ pub struct Config {
     /// server (webhook `ServerUrl`, deep links, image URLs); unset means "no
     /// absolute URL is known", and such links are rendered empty rather than
     /// guessed.
+    ///
+    /// The config layer uses no env prefix, so this field's environment
+    /// variable is the bare `PUBLIC_URL` — a name Create-React-App builds
+    /// export and some PaaS runtimes already set, often to `/`. A value that is
+    /// not an absolute URL produces relative links that the consumer rejects
+    /// (Discord refuses a non-absolute embed URL), so an unexpectedly populated
+    /// `PUBLIC_URL` in the environment is worth ruling out first when those
+    /// links misbehave.
     #[serde(default)]
     pub public_url: Option<String>,
 }

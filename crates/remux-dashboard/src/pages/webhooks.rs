@@ -20,83 +20,11 @@ use dioxus::prelude::*;
 use remux_sdks::remux::{
     CreateWebhook, DeleteWebhook, DiscordMentionType, GetUsers, GetWebhooks,
     NotificationType, TestWebhook, UpdateWebhook, UserDto, WebhookDestination,
-    WebhookDto, WebhookItemTypes, WebhookKeyValue, WebhookTestResult,
+    WebhookDto, WebhookItemTypes, WebhookKeyValue, WebhookTestResult, DISCORD_TEMPLATE,
 };
 use remux_sdks::ClientError;
 use std::{collections::HashMap, str::FromStr};
 use uuid::Uuid;
-
-/// The Jellyfin webhook plugin's stock `Templates/Discord.handlebars`, verbatim
-/// (its UTF-8 BOM stripped).
-///
-/// This is not decoration. remux follows the plugin exactly: for a Discord
-/// destination the operator's template renders the **entire** Discord JSON
-/// payload, with the destination's options injected as the variables
-/// `MentionType`, `EmbedColor`, `AvatarUrl`, `Username` and `BotUsername`. A
-/// Discord webhook with an empty template therefore POSTs an empty body, which
-/// is why picking Discord pre-fills this — see [`apply_destination_change`].
-const DISCORD_TEMPLATE: &str = r##"{
-    "content": "{{MentionType}}",
-    "avatar_url": "{{AvatarUrl}}",
-    "username": "{{BotUsername}}",
-    "embeds": [
-        {
-            "color": "{{EmbedColor}}",
-            "footer": {
-                "text": "From {{{ServerName}}}",
-                "icon_url": "{{AvatarUrl}}"
-            },
-            {{#if_equals ItemType 'Season'}}
-                "title": "{{{SeriesName}}} {{{Name}}} has been added to {{{ServerName}}}",
-            {{else}}
-                {{#if_equals ItemType 'Episode'}}
-                    "title": "{{{SeriesName}}} S{{SeasonNumber00}}E{{EpisodeNumber00}} {{{Name}}} has been added to {{{ServerName}}}",
-                {{else}}
-                    "title": "{{{Name}}} ({{Year}}) has been added to {{{ServerName}}}",
-                {{/if_equals}}
-            {{/if_equals}}
-            "thumbnail":{
-                "url": "{{ServerUrl}}/Items/{{ItemId}}/Images/Primary"
-            },
-            "description": "External Links:\n
-            {{~#if_exist Provider_imdb~}}
-            [IMDb](https://www.imdb.com/title/{{Provider_imdb}}/)\n
-            {{~/if_exist~}}
-            {{~#if_exist Provider_tmdb~}}
-                {{~#if_equals ItemType 'Movie'~}}
-                    [TMDb](https://www.themoviedb.org/movie/{{Provider_tmdb}})\n
-                {{~else~}}
-                    [TMDb](https://www.themoviedb.org/tv/{{Provider_tmdb}})\n
-                {{~/if_equals~}}
-            {{~/if_exist~}}
-            {{~#if_exist Provider_musicbrainzartist~}}
-                [MusicBrainz](https://musicbrainz.org/artist/{{Provider_musicbrainzartist}})\n
-            {{~/if_exist~}}
-            {{~#if_exist Provider_audiodbartist~}}
-                [AudioDb](https://theaudiodb.com/artist/{{Provider_audiodbartist}})\n
-            {{~/if_exist~}}
-            {{~#if_exist Provider_musicbrainztrack~}}
-                [MusicBrainz Track](https://musicbrainz.org/track/{{Provider_musicbrainztrack}})\n
-            {{~/if_exist~}}
-            {{~#if_exist Provider_musicbrainzalbum~}}
-                [MusicBrainz Album](https://musicbrainz.org/release/{{Provider_musicbrainzalbum}})\n
-            {{~/if_exist~}}
-            {{~#if_exist Provider_theaudiodbalbum~}}
-                [TADb Album](https://theaudiodb.com/album/{{Provider_theaudiodbalbum}})\n
-            {{~/if_exist~}}
-            {{~#if_exist Provider_tvmaze~}}
-                {{~#if_equals ItemType 'Episode'~}}
-                    [TVMaze](https://www.tvmaze.com/episodes/{{Provider_tvmaze}})\n
-                {{~/if_equals~}}
-                {{~#if_equals ItemType 'Series'~}}
-                    [TVMaze](https://www.tvmaze.com/shows/{{Provider_tvmaze}})\n
-                {{~/if_equals~}}
-            {{~/if_exist~}}
-            [Jellyfin]({{ServerUrl}}/web/index.html#!/details?id={{ItemId}}&serverId={{ServerId}})"
-        }
-    ]
-}
-"##;
 
 /// The colour the server injects when a Discord hook names none (`0x3399FF`),
 /// mirrored here so the field is never blank: the stock template interpolates
@@ -877,6 +805,16 @@ fn WebhookFormModal(
                             label { class: "form-label", "Discord options" }
                             p { class: "field-hint",
                                 "These are injected into the template as MentionType, EmbedColor, AvatarUrl, Username and BotUsername."
+                            }
+                            // The stock template's thumbnail and deep link are
+                            // built from {{ServerUrl}}, which is the server's
+                            // public URL setting. Unset it renders empty, the
+                            // thumbnail URL comes out relative, and Discord
+                            // answers 400 with nothing in the dashboard to say
+                            // why — so the setting has to be discoverable from
+                            // the one page that depends on it.
+                            p { class: "field-hint",
+                                "The stock template also uses ServerUrl for the thumbnail and the \"open in remux\" link. It comes from the server's public URL (the PUBLIC_URL environment variable or public_url in the config file) and renders empty when that is unset — Discord rejects the embed in that case."
                             }
                             FormGroup { label: "Avatar URL",
                                 input {
