@@ -471,91 +471,27 @@ impl UserMediaState {
             return Ok(row);
         }
 
-        let ext = &media.external_ids;
-
-        // Content-based fallback: catches legacy rows stored under a different UUID
-        // for the same content. Joins against the media table so we match on all
-        // external IDs, not just IMDB — same OR logic as find_existing_id_by_ext.
-        let fallback: Option<Self> = match media.kind {
-            super::MediaKind::Movie | super::MediaKind::Series => {
-                sqlx::query_as(
-                    "SELECT ums.* FROM user_media_state ums \
-                     JOIN media m ON ums.media_id = m.id \
-                     WHERE ums.user_id = ? \
-                       AND m.kind = ? \
-                       AND ( \
-                         (? IS NOT NULL AND json_extract(m.external_ids, '$.imdb') = ?) \
-                         OR (? IS NOT NULL AND CAST(json_extract(m.external_ids, '$.tmdb') AS INTEGER) = ?) \
-                         OR (? IS NOT NULL AND CAST(json_extract(m.external_ids, '$.tvdb') AS INTEGER) = ?) \
-                         OR (? IS NOT NULL AND CAST(json_extract(m.external_ids, '$.kitsu') AS INTEGER) = ?) \
-                         OR (? IS NOT NULL AND json_extract(m.external_ids, '$.custom_stremio_id') = ?) \
-                       ) \
-                     LIMIT 1",
-                )
-                .bind(user.id)
-                .bind(media.kind.to_string())
-                .bind(ext.imdb.as_deref())
-                .bind(ext.imdb.as_deref())
-                .bind(ext.tmdb)
-                .bind(ext.tmdb)
-                .bind(ext.tvdb)
-                .bind(ext.tvdb)
-                .bind(ext.kitsu)
-                .bind(ext.kitsu)
-                .bind(ext.custom_stremio_id.as_deref())
-                .bind(ext.custom_stremio_id.as_deref())
-                .fetch_optional(db)
-                .await?
+        // Content-based fallback: finds state stored under a legacy UUID for the same
+        // content. Computes all stable UUIDs the row could have been stored under
+        // (one per external ID) and queries WHERE media_id IN (...) on the PK index.
+        let candidates = super::Media::ext_id_uuid_candidates(media);
+        let fallback: Option<Self> = if candidates.is_empty() {
+            None
+        } else {
+            let placeholders = candidates
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "SELECT * FROM user_media_state WHERE user_id = ? AND media_id IN ({placeholders}) LIMIT 1"
+            );
+            let mut q = sqlx::query_as::<_, Self>(&sql).bind(user.id);
+            for uuid in &candidates {
+                q = q.bind(*uuid);
             }
-            super::MediaKind::Season => {
-                sqlx::query_as(
-                    "SELECT ums.* FROM user_media_state ums \
-                     JOIN media m ON ums.media_id = m.id \
-                     WHERE ums.user_id = ? \
-                       AND m.kind = ? \
-                       AND m.idx = ? \
-                       AND ( \
-                         (? IS NOT NULL AND json_extract(m.external_ids, '$.series_imdb') = ?) \
-                         OR (? IS NOT NULL AND json_extract(m.external_ids, '$.series_custom_stremio_id') = ?) \
-                       ) \
-                     LIMIT 1",
-                )
-                .bind(user.id)
-                .bind(super::MediaKind::Season)
-                .bind(media.idx)
-                .bind(ext.series_imdb.as_deref())
-                .bind(ext.series_imdb.as_deref())
-                .bind(ext.series_custom_stremio_id.as_deref())
-                .bind(ext.series_custom_stremio_id.as_deref())
-                .fetch_optional(db)
+            q.fetch_optional(db)
                 .await?
-            }
-            super::MediaKind::Episode => {
-                sqlx::query_as(
-                    "SELECT ums.* FROM user_media_state ums \
-                     JOIN media m ON ums.media_id = m.id \
-                     WHERE ums.user_id = ? \
-                       AND m.kind = ? \
-                       AND m.idx = ? \
-                       AND m.parent_idx = ? \
-                       AND ( \
-                         (? IS NOT NULL AND json_extract(m.external_ids, '$.series_imdb') = ?) \
-                         OR (? IS NOT NULL AND json_extract(m.external_ids, '$.series_custom_stremio_id') = ?) \
-                       ) \
-                     LIMIT 1",
-                )
-                .bind(user.id)
-                .bind(super::MediaKind::Episode)
-                .bind(media.idx)
-                .bind(media.parent_idx)
-                .bind(ext.series_imdb.as_deref())
-                .bind(ext.series_imdb.as_deref())
-                .bind(ext.series_custom_stremio_id.as_deref())
-                .bind(ext.series_custom_stremio_id.as_deref())
-                .fetch_optional(db)
-                .await?
-            }
-            _ => None,
         };
 
         if let Some(mut row) = fallback {

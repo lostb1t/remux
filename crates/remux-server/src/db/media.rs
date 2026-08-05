@@ -2390,7 +2390,14 @@ impl Media {
     /// Each external ID is turned into the stable UUID it would produce if it were
     /// the canonical key at insert time. The item's own current UUID is excluded so
     /// only *different* rows can match.
-    fn ext_id_uuid_candidates(item: &Self) -> Vec<Uuid> {
+    /// Compute all candidate UUIDs an existing DB row could have been stored under
+    /// for the given item's external IDs. Used by `find_existing_id_by_ext` (dedup)
+    /// and `UserMediaState::get_or_new` (legacy state lookup).
+    ///
+    /// Each external ID is turned into the stable UUID it would produce if it were
+    /// the canonical key at insert time. The item's own current UUID is excluded so
+    /// only *different* rows can match.
+    pub fn ext_id_uuid_candidates(item: &Self) -> Vec<Uuid> {
         use crate::common::stable_media_uuid;
         let kind = &item.kind;
         let ext = &item.external_ids;
@@ -2417,6 +2424,50 @@ impl Media {
                 }
                 if let Some(kitsu) = ext.kitsu {
                     candidates.push(stable_media_uuid(kind, &format!("kitsu:{kitsu}")));
+                }
+            }
+            MediaKind::Season => {
+                let idx = item
+                    .idx
+                    .unwrap_or(0);
+                if let Some(imdb) = ext
+                    .series_imdb
+                    .as_deref()
+                {
+                    candidates.push(stable_media_uuid(kind, &format!("{imdb}:{idx}")));
+                }
+                if let Some(custom) = ext
+                    .series_custom_stremio_id
+                    .as_deref()
+                {
+                    candidates
+                        .push(stable_media_uuid(kind, &format!("{custom}:{idx}")));
+                }
+            }
+            MediaKind::Episode => {
+                let season_idx = item
+                    .parent_idx
+                    .unwrap_or(0);
+                let ep_idx = item
+                    .idx
+                    .unwrap_or(0);
+                if let Some(imdb) = ext
+                    .series_imdb
+                    .as_deref()
+                {
+                    candidates.push(stable_media_uuid(
+                        kind,
+                        &format!("{imdb}:{season_idx}:{ep_idx}"),
+                    ));
+                }
+                if let Some(custom) = ext
+                    .series_custom_stremio_id
+                    .as_deref()
+                {
+                    candidates.push(stable_media_uuid(
+                        kind,
+                        &format!("{custom}:{season_idx}:{ep_idx}"),
+                    ));
                 }
             }
             MediaKind::Artist => {
