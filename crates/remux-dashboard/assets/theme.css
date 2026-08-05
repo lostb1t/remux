@@ -288,6 +288,78 @@ html, body {
   letter-spacing: .04em;
 }
 
+/* ── Activity log column header ──────────────────────────────────── */
+.activity-col-header {
+  display: flex;
+  align-items: center;
+  padding: 0;
+  background: var(--hover-overlay);
+  font-family: var(--font-mono);
+  font-size: .6rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+}
+
+.activity-col-date   { flex: 0 0 20%; min-width: 110px; padding: 8px 12px; }
+.activity-col-admin  { flex: 0 0 16%; min-width: 80px; padding: 8px 12px; }
+.activity-col-action { flex: 0 0 24%; min-width: 140px; padding: 8px 12px; }
+.activity-col-target { flex: 1; min-width: 0; padding: 8px 12px; }
+
+.activity-row { height: 38px; }
+
+/* ── Pagination bar ─────────────────────────────────────────────── */
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.pagination-summary {
+  font-size: .72rem;
+  color: var(--text-dim);
+}
+
+.pagination-page {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: none;
+  font-family: var(--font-mono);
+  font-size: .72rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+.pagination-page:hover:not(:disabled) { background: var(--hover-overlay); border-color: var(--border-hover); }
+.pagination-page.active { background: var(--primary-dim); border-color: var(--primary); color: var(--primary); cursor: default; }
+
+.pagination-ellipsis {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  font-family: var(--font-mono);
+  font-size: .72rem;
+  color: var(--text-dim);
+  user-select: none;
+}
+
+@media (max-width: 640px) {
+  .pagination-bar { flex-direction: column; align-items: stretch; gap: 6px; }
+  .pagination-page, .pagination-ellipsis { min-width: 24px; height: 24px; font-size: .65rem; }
+}
+
 /* ── Device search bar ───────────────────────────────────────────── */
 .device-search {
   display: flex;
@@ -636,7 +708,7 @@ html, body {
   text-transform: uppercase;
   letter-spacing: .12em;
   color: var(--text-muted);
-  padding: 8px 0 12px;
+  padding: 8px 12px 12px;
   border-bottom: 1px solid var(--border);
 }
 

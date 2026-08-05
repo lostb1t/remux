@@ -7,7 +7,33 @@ use remux_sdks::remux::{
     ActivityLogEntry, GetActivityLog, GetSessions, SessionInfoDto,
 };
 
-const DEFAULT_ACTIVITY_PAGE_SIZE: i64 = 25;
+const DEFAULT_ACTIVITY_PAGE_SIZE: i64 = 15;
+
+enum PageItem {
+    Page(i64),
+    Ellipsis,
+}
+
+fn paginate(current: i64, total: i64) -> Vec<PageItem> {
+    if total <= 7 {
+        return (0..total)
+            .map(PageItem::Page)
+            .collect();
+    }
+    let mut items = Vec::new();
+    items.push(PageItem::Page(0));
+    if current > 2 {
+        items.push(PageItem::Ellipsis);
+    }
+    for p in (current - 1).max(1)..=(current + 1).min(total - 2) {
+        items.push(PageItem::Page(p));
+    }
+    if current < total - 3 {
+        items.push(PageItem::Ellipsis);
+    }
+    items.push(PageItem::Page(total - 1));
+    items
+}
 
 #[component]
 pub fn SessionsCard(app_state: AppState) -> Element {
@@ -125,9 +151,6 @@ pub fn ActivityCard(app_state: AppState) -> Element {
     let total = *total_count.read();
     let offset = *start_index.read();
     let ps = *page_size.read();
-    let has_prev = offset > 0;
-    let has_next = offset + ps < total;
-
     rsx! {
         Card { title: "Admin Activity Log", tight: true,
             if *loading.read() {
@@ -139,7 +162,13 @@ pub fn ActivityCard(app_state: AppState) -> Element {
             } else {
                 div { class: "data-table-container",
                     div { style: "overflow-x:auto;-webkit-overflow-scrolling:touch",
-                        div { class: "row-list", style: "min-width:520px",
+                        div { class: "row-list", style: "min-width:520px;width:100%",
+                            div { class: "activity-col-header",
+                                span { class: "activity-col-date", "Date" }
+                                span { class: "activity-col-admin", "Admin" }
+                                span { class: "activity-col-action", "Action" }
+                                span { class: "activity-col-target", "Target" }
+                            }
                             for entry in activity_items.read().iter() {
                                 {
                                     let action = entry.name.as_deref().unwrap_or("");
@@ -150,22 +179,22 @@ pub fn ActivityCard(app_state: AppState) -> Element {
                                     };
                                     rsx! {
                                 div {
-                                    class: "flex items-center border-b border-[var(--border)] hover:bg-[var(--hover-overlay)]",
+                                    class: "activity-row flex items-center border-b border-[var(--border)] hover:bg-[var(--hover-overlay)]",
                                     key: "{entry.id.as_deref().unwrap_or(\"\")}",
-                                    div { class: "shrink-0 px-3 py-[8px] font-mono text-xs text-[var(--text-dim)] w-40",
+                                    div { class: "activity-col-date font-mono text-xs text-[var(--text-dim)]",
                                         if let Some(ts) = entry.date {
                                             "{fmt_datetime(ts)}"
                                         }
                                     }
-                                    div { class: "shrink-0 px-3 py-[8px] font-mono text-xs text-[var(--text-dim)] w-32",
+                                    div { class: "activity-col-admin font-mono text-xs text-[var(--text-dim)]",
                                         "{entry.remux.as_ref().and_then(|r| r.user_name.as_deref()).unwrap_or(\"\")}"
                                     }
                                     div {
-                                        class: "shrink-0 px-3 py-[8px] text-xs font-semibold w-40",
+                                        class: "activity-col-action text-xs font-semibold",
                                         style: "{action_color}",
                                         "{action}"
                                     }
-                                    div { class: "flex-1 min-w-0 flex items-center gap-2 px-3 py-[8px]",
+                                    div { class: "activity-col-target flex items-center gap-2",
                                         if let Some(target) = entry.remux.as_ref().and_then(|r| r.target_user_name.as_deref()) {
                                             span { class: "session-user", "{target}" }
                                         }
@@ -180,8 +209,8 @@ pub fn ActivityCard(app_state: AppState) -> Element {
                         }
                     }
 
-                    div { class: "flex items-center justify-between px-3 py-2 border-t border-[var(--border)]",
-                        span { class: "text-xs text-[var(--text-dim)]",
+                    div { class: "pagination-bar",
+                        span { class: "pagination-summary",
                             "{offset + 1}–{(offset + ps).min(total)} of {total}"
                         }
                         div { class: "flex items-center gap-2",
@@ -195,23 +224,54 @@ pub fn ActivityCard(app_state: AppState) -> Element {
                                         start_index.set(0);
                                     }
                                 },
+                                option { value: "15", selected: ps == 15, "15" }
                                 option { value: "25", selected: ps == 25, "25" }
                                 option { value: "50", selected: ps == 50, "50" }
                                 option { value: "100", selected: ps == 100, "100" }
                             }
-                            button {
-                                class: "btn btn-ghost",
-                                style: "height:28px;font-size:.72rem;padding:0 10px",
-                                disabled: !has_prev,
-                                onclick: move |_| start_index.set((offset - ps).max(0)),
-                                "← Prev"
-                            }
-                            button {
-                                class: "btn btn-ghost",
-                                style: "height:28px;font-size:.72rem;padding:0 10px",
-                                disabled: !has_next,
-                                onclick: move |_| start_index.set(offset + ps),
-                                "Next →"
+                            {
+                                let total_pages = ((total as f64) / (ps as f64)).ceil() as i64;
+                                let current_page = offset / ps;
+                                if total_pages > 1 {
+                                    let items = paginate(current_page, total_pages);
+                                    rsx! {
+                                        if current_page > 0 {
+                                            button {
+                                                class: "pagination-page",
+                                                onclick: move |_| start_index.set((offset - ps).max(0)),
+                                                "‹"
+                                            }
+                                        }
+                                        for (i, item) in items.iter().enumerate() {
+                                            match item {
+                                                PageItem::Page(p) => {
+                                                    let p = *p;
+                                                    rsx! {
+                                                        button {
+                                                            key: "p{p}",
+                                                            class: if p == current_page { "pagination-page active" } else { "pagination-page" },
+                                                            disabled: p == current_page,
+                                                            onclick: move |_| start_index.set(p * ps),
+                                                            "{p + 1}"
+                                                        }
+                                                    }
+                                                }
+                                                PageItem::Ellipsis => rsx! {
+                                                    span { key: "e{i}", class: "pagination-ellipsis", "…" }
+                                                },
+                                            }
+                                        }
+                                        if current_page < total_pages - 1 {
+                                            button {
+                                                class: "pagination-page",
+                                                onclick: move |_| start_index.set(offset + ps),
+                                                "›"
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    rsx! {}
+                                }
                             }
                         }
                     }

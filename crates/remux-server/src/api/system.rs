@@ -633,6 +633,7 @@ fn action_display_name(action: &str) -> String {
         "session_revoked" => "Session revoked",
         "all_sessions_revoked" => "All sessions revoked",
         "password_changed" => "Password changed",
+        "user_created" => "User created",
         _ => action,
     }
     .to_string()

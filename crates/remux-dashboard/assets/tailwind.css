@@ -184,12 +184,6 @@
   .table {
     display: table;
   }
-  .w-32 {
-    width: calc(var(--spacing) * 32);
-  }
-  .w-40 {
-    width: calc(var(--spacing) * 40);
-  }
   .min-w-0 {
     min-width: calc(var(--spacing) * 0);
   }
@@ -208,10 +202,6 @@
   .gap-2 {
     gap: calc(var(--spacing) * 2);
   }
-  .border-t {
-    border-top-style: var(--tw-border-style);
-    border-top-width: 1px;
-  }
   .border-b {
     border-bottom-style: var(--tw-border-style);
     border-bottom-width: 1px;
@@ -224,12 +214,6 @@
   }
   .py-1 {
     padding-block: calc(var(--spacing) * 1);
-  }
-  .py-2 {
-    padding-block: calc(var(--spacing) * 2);
-  }
-  .py-\[8px\] {
-    padding-block: 8px;
   }
   .py-\[10px\] {
     padding-block: 10px;
