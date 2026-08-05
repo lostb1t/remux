@@ -22,6 +22,7 @@ use remux_sdks::remux::{
     NotificationType, TestWebhook, UpdateWebhook, UserDto, WebhookDestination,
     WebhookDto, WebhookItemTypes, WebhookKeyValue, WebhookTestResult,
 };
+use remux_sdks::ClientError;
 use std::{collections::HashMap, str::FromStr};
 use uuid::Uuid;
 
@@ -97,10 +98,15 @@ const DISCORD_TEMPLATE: &str = r##"{
 }
 "##;
 
-/// The colour the server injects when a Discord hook names none, mirrored here
-/// so the field is never blank: the stock template interpolates `EmbedColor`
-/// unguarded, and an empty swatch reads as a bug.
-const DEFAULT_EMBED_COLOR: &str = "#3399FF";
+/// The colour the server injects when a Discord hook names none (`0x3399FF`),
+/// mirrored here so the field is never blank: the stock template interpolates
+/// `EmbedColor` unguarded, and an empty swatch reads as a bug.
+///
+/// Lower-case on purpose. `<input type="color">` round-trips its value in lower
+/// case, and [`WebhookForm::to_dto`] stores the normalized form, so keeping the
+/// constant lower-case means the swatch, the text field, the stored value and
+/// the placeholder are all one string.
+const DEFAULT_EMBED_COLOR: &str = "#3399ff";
 
 /// Every [`NotificationType`], in the order the SDK declares them.
 ///
@@ -182,7 +188,7 @@ fn normalize_hex_color(raw: &str) -> Option<String> {
 /// What to feed the colour swatch: the operator's colour when it parses, the
 /// server's default otherwise, so the widget is never blank while they type.
 fn color_input_value(raw: &str) -> String {
-    normalize_hex_color(raw).unwrap_or_else(|| DEFAULT_EMBED_COLOR.to_ascii_lowercase())
+    normalize_hex_color(raw).unwrap_or_else(|| DEFAULT_EMBED_COLOR.to_string())
 }
 
 fn item_type_flag(types: &WebhookItemTypes, idx: usize) -> bool {
@@ -243,6 +249,15 @@ fn sorted_notification_types(selected: &[NotificationType]) -> Vec<NotificationT
         .filter(|t| selected.contains(t))
         .copied()
         .collect()
+}
+
+/// The message an operator sees when a mutation fails.
+///
+/// `ClientError`'s `Display` carries the status, the remux endpoint and the
+/// message; `user_message()` is the half that means something to a human, and
+/// it is what the rest of the dashboard shows.
+fn action_failure(action: &str, error: &ClientError) -> String {
+    format!("Failed to {action}: {}", error.user_message())
 }
 
 /// One line describing a completed test. A refused delivery is a *result*, not
@@ -395,7 +410,11 @@ impl WebhookForm {
             WebhookDestination::Discord {
                 avatar_url: non_empty(&self.avatar_url),
                 bot_username: non_empty(&self.bot_username),
-                embed_color: non_empty(&self.embed_color),
+                // Normalized, not passed through: what the swatch shows, what
+                // is stored and what reaches Discord must be one value. An
+                // unparseable colour is saved as `null`, which makes the server
+                // inject the same default the swatch is already displaying.
+                embed_color: normalize_hex_color(&self.embed_color),
                 mention_type: self.mention_type,
             }
         } else {
@@ -499,6 +518,13 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
     let mut error = use_signal(|| Option::<String>::None);
     let mut refresh = use_signal(|| 0_u32);
 
+    // Kept apart from `error` on purpose. `error` belongs to the list effect,
+    // which clears it on every successful reload and is only rendered when the
+    // page is not loading — so a failed toggle or delete written there would be
+    // hidden by the reload it triggers and then wiped. This one is owned by the
+    // mutation handlers, rendered unconditionally, and never touched by the
+    // effect.
+    let mut action_error: Signal<Option<String>> = use_signal(|| None);
     let mut editing: Signal<Option<WebhookForm>> = use_signal(|| None);
     let mut to_delete: Signal<Option<(Uuid, String)>> = use_signal(|| None);
     let mut deleting = use_signal(|| false);
@@ -520,7 +546,7 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
                     hooks.set(list);
                     error.set(None);
                 }
-                Err(e) => error.set(Some(format!("Failed to load webhooks: {e}"))),
+                Err(e) => error.set(Some(action_failure("load webhooks", &e))),
             }
             // A user-filter list we cannot populate is a degraded form, not a
             // page-level failure.
@@ -548,6 +574,13 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
             },
             p { style: "color:var(--text-muted);font-size:.75rem;padding:0 12px 8px",
                 "Webhooks POST a rendered template to an external endpoint whenever a subscribed server event fires."
+            }
+            // Outside the loading/error chain below: a mutation failure must
+            // survive the reload it kicks off.
+            if let Some(message) = action_error.read().as_ref() {
+                div { style: "padding:0 12px 8px",
+                    ErrorAlert { message: message.clone() }
+                }
             }
             if *loading.read() {
                 LoadingText {}
@@ -611,9 +644,15 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
                                                     oninput: move |e| {
                                                         let dto = dto_with_enabled(&hook_toggle, e.checked());
                                                         let c = client_toggle.clone();
+                                                        action_error.set(None);
                                                         spawn(async move {
-                                                            if let Err(err) = c.execute(UpdateWebhook { id: hook_id, webhook: dto }).await {
-                                                                error.set(Some(format!("Failed to update webhook: {err}")));
+                                                            match c.execute(UpdateWebhook { id: hook_id, webhook: dto }).await {
+                                                                Ok(_) => action_error.set(None),
+                                                                // The reload below snaps the switch back to
+                                                                // the stored value; without this the operator
+                                                                // sees a toggle that "won't stick" and no
+                                                                // reason why.
+                                                                Err(err) => action_error.set(Some(action_failure("update webhook", &err))),
                                                             }
                                                             let v = *refresh.peek() + 1;
                                                             refresh.set(v);
@@ -639,7 +678,10 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
                                                         // success: false — a result, not an error.
                                                         let outcome = match c.execute(TestWebhook { id: hook_id }).await {
                                                             Ok(result) => TestState::Done(result),
-                                                            Err(e) => TestState::Failed(format!("Could not run the test: {e}")),
+                                                            Err(e) => TestState::Failed(format!(
+                                                                "Could not run the test: {}",
+                                                                e.user_message()
+                                                            )),
                                                         };
                                                         tests.write().insert(hook_id, outcome);
                                                     });
@@ -704,10 +746,14 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
                                         let c = client.clone();
                                         move |_| {
                                             deleting.set(true);
+                                            action_error.set(None);
                                             let cc = c.clone();
                                             spawn(async move {
-                                                if let Err(e) = cc.execute(DeleteWebhook { id }).await {
-                                                    error.set(Some(format!("Failed to delete webhook: {e}")));
+                                                match cc.execute(DeleteWebhook { id }).await {
+                                                    Ok(_) => action_error.set(None),
+                                                    // Without this the row simply stays and the
+                                                    // refusal is invisible.
+                                                    Err(e) => action_error.set(Some(action_failure("delete webhook", &e))),
                                                 }
                                                 tests.write().remove(&id);
                                                 to_delete.set(None);
@@ -754,6 +800,13 @@ fn WebhookFormModal(
     let is_new =
         f.id.is_none();
     let color_swatch = color_input_value(&f.embed_color);
+    // Blank is fine (the server injects its default); anything else that is not
+    // a hex colour is silently discarded on save, so say so.
+    let color_is_valid = f
+        .embed_color
+        .trim()
+        .is_empty()
+        || normalize_hex_color(&f.embed_color).is_some();
     let mention_value = f
         .mention_type
         .to_string();
@@ -846,6 +899,11 @@ fn WebhookFormModal(
                                         placeholder: "{DEFAULT_EMBED_COLOR}",
                                         value: "{f.embed_color}",
                                         oninput: move |e| state.write().embed_color = e.value(),
+                                    }
+                                }
+                                if !color_is_valid {
+                                    p { class: "field-hint", style: "color:var(--warning)",
+                                        "Not a #rrggbb colour — {DEFAULT_EMBED_COLOR} will be used."
                                     }
                                 }
                             }
@@ -1056,7 +1114,9 @@ fn WebhookFormModal(
                                 };
                                 match outcome {
                                     Ok(()) => on_saved.call(()),
-                                    Err(e) => save_error.set(Some(format!("Failed to save webhook: {e}"))),
+                                    Err(e) => {
+                                        save_error.set(Some(action_failure("save webhook", &e)))
+                                    }
                                 }
                                 saving.set(false);
                             });
@@ -1151,6 +1211,7 @@ fn KeyValueEditor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use remux_sdks::EnumCount;
 
     fn kv(key: &str, value: &str) -> WebhookKeyValue {
         WebhookKeyValue {
@@ -1308,6 +1369,17 @@ mod tests {
         assert_eq!(labels.len(), 15, "the list must have no duplicates");
     }
 
+    /// The form's list is hand-written; this is what stops a variant added to
+    /// the SDK from silently going missing from the checkbox grid.
+    #[test]
+    fn the_list_covers_every_variant_the_sdk_declares() {
+        assert_eq!(
+            NOTIFICATION_TYPES.len(),
+            NotificationType::COUNT,
+            "a NotificationType variant is missing from NOTIFICATION_TYPES"
+        );
+    }
+
     #[test]
     fn selection_is_sorted_into_the_canonical_order_and_deduped() {
         let selected = vec![
@@ -1385,6 +1457,47 @@ mod tests {
                 // guards them with `if_exist`, which an empty string flips.
                 assert_eq!(avatar_url, None);
                 assert_eq!(bot_username, None);
+            }
+            other => panic!("expected Discord, got {other:?}"),
+        }
+    }
+
+    /// What the swatch shows, what is saved and what Discord receives must be
+    /// one value: an unparseable colour is dropped on save so the server's
+    /// default — the colour the swatch is already displaying — applies.
+    #[test]
+    fn an_unparseable_colour_is_not_sent_verbatim() {
+        let form = WebhookForm {
+            discord: true,
+            embed_color: "purple".to_string(),
+            ..WebhookForm::default()
+        };
+        assert_eq!(color_input_value(&form.embed_color), DEFAULT_EMBED_COLOR);
+        match form
+            .to_dto()
+            .destination
+        {
+            WebhookDestination::Discord { embed_color, .. } => assert_eq!(
+                embed_color, None,
+                "an invalid colour must not reach the server"
+            ),
+            other => panic!("expected Discord, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_colour_is_stored_in_the_form_the_swatch_uses() {
+        let form = WebhookForm {
+            discord: true,
+            embed_color: "#AA5CC3".to_string(),
+            ..WebhookForm::default()
+        };
+        match form
+            .to_dto()
+            .destination
+        {
+            WebhookDestination::Discord { embed_color, .. } => {
+                assert_eq!(embed_color.as_deref(), Some("#aa5cc3"));
             }
             other => panic!("expected Discord, got {other:?}"),
         }
@@ -1480,6 +1593,29 @@ mod tests {
         });
         assert!(message.starts_with("Test failed (HTTP 401)"), "{message}");
         assert!(message.contains("401 Unauthorized"), "{message}");
+    }
+
+    // -- mutation failures --------------------------------------------------
+
+    /// A failed toggle, save or delete must reach the operator as the server's
+    /// sentence, not as the SDK's `Display` with its status and endpoint noise.
+    #[test]
+    fn a_failed_mutation_shows_the_servers_message_only() {
+        let error = ClientError::Http {
+            status: 400,
+            message: "webhook url must use http or https".to_string(),
+            endpoint: Some("/remux/webhooks".to_string()),
+            body: Some(
+                "{\"title\":\"webhook url must use http or https\"}".to_string(),
+            ),
+        };
+        let shown = action_failure("save webhook", &error);
+        assert_eq!(
+            shown,
+            "Failed to save webhook: webhook url must use http or https"
+        );
+        assert!(!shown.contains("status="), "{shown}");
+        assert!(!shown.contains("endpoint="), "{shown}");
     }
 
     #[test]
