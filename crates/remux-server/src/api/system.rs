@@ -626,6 +626,8 @@ struct ActivityLogQuery {
     start_index: Option<i64>,
     #[serde(alias = "Limit")]
     limit: Option<i64>,
+    #[serde(rename = "searchTerm", alias = "SearchTerm")]
+    search_term: Option<String>,
 }
 
 fn action_display_name(action: &str) -> String {
@@ -663,6 +665,8 @@ pub async fn system_activity_log(
             .db,
         start_index,
         limit,
+        q.search_term
+            .as_deref(),
     )
     .await?;
     let items: Vec<ActivityLogEntry> = rows

@@ -123,17 +123,27 @@ pub fn ActivityCard(app_state: AppState) -> Element {
     let mut loading = use_signal(|| true);
     let mut error = use_signal(|| Option::<String>::None);
     let mut page_size: Signal<i64> = use_signal(|| DEFAULT_ACTIVITY_PAGE_SIZE);
+    let mut search_input: Signal<String> = use_signal(String::new);
 
     use_effect(move || {
         let offset = *start_index.read();
         let limit = *page_size.read();
+        let search = search_input
+            .read()
+            .clone();
         loading.set(true);
         let client = app_state.clone();
         spawn(async move {
+            let search_term = if search.is_empty() {
+                None
+            } else {
+                Some(search)
+            };
             match client
                 .execute(GetActivityLog {
                     start_index: Some(offset),
                     limit: Some(limit),
+                    search_term,
                 })
                 .await
             {
@@ -153,12 +163,35 @@ pub fn ActivityCard(app_state: AppState) -> Element {
     let ps = *page_size.read();
     rsx! {
         Card { title: "Admin Activity Log", tight: true,
+            div { class: "device-search",
+                input {
+                    r#type: "text",
+                    class: "input",
+                    placeholder: "Filter by user, action, or device…",
+                    value: "{search_input.read()}",
+                    oninput: move |evt| {
+                        search_input.set(evt.value());
+                        start_index.set(0);
+                    },
+                }
+                if !search_input.read().is_empty() {
+                    button {
+                        class: "btn btn-ghost",
+                        style: "height:32px;padding:0 8px;font-size:.75rem",
+                        onclick: move |_| {
+                            search_input.set(String::new());
+                            start_index.set(0);
+                        },
+                        "×"
+                    }
+                }
+            }
             if *loading.read() {
                 LoadingText {}
             } else if let Some(err) = error.read().as_ref() {
                 ErrorAlert { message: err.clone() }
             } else if activity_items.read().is_empty() {
-                EmptyState { message: "No admin actions recorded yet" }
+                EmptyState { message: if search_input.read().is_empty() { "No admin actions recorded yet" } else { "No results match your filter" } }
             } else {
                 div { class: "data-table-container",
                     div { style: "overflow-x:auto;-webkit-overflow-scrolling:touch",

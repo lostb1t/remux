@@ -4608,6 +4608,8 @@ pub struct GetActivityLog {
     #[serde(rename = "startIndex")]
     pub start_index: Option<i64>,
     pub limit: Option<i64>,
+    #[serde(rename = "searchTerm")]
+    pub search_term: Option<String>,
 }
 
 impl Endpoint for GetActivityLog {

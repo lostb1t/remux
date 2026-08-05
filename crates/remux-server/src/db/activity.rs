@@ -63,18 +63,48 @@ impl ActivityLog {
         db: &SqlitePool,
         start_index: i64,
         limit: i64,
+        search_term: Option<&str>,
     ) -> Result<(Vec<Self>, i64)> {
-        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM activity_log")
-            .fetch_one(db)
-            .await?;
+        let pattern = search_term
+            .filter(|s| !s.is_empty())
+            .map(|t| format!("%{t}%"));
 
-        let rows = sqlx::query_as::<_, Self>(
-            "SELECT * FROM activity_log ORDER BY timestamp DESC, id LIMIT ? OFFSET ?",
-        )
-        .bind(limit)
-        .bind(start_index)
-        .fetch_all(db)
-        .await?;
+        let total: i64 = if let Some(ref p) = pattern {
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM activity_log \
+                 WHERE user_name LIKE ?1 OR target_user_name LIKE ?1 \
+                 OR action LIKE ?1 OR device_name LIKE ?1",
+            )
+            .bind(p)
+            .fetch_one(db)
+            .await?
+        } else {
+            sqlx::query_scalar("SELECT COUNT(*) FROM activity_log")
+                .fetch_one(db)
+                .await?
+        };
+
+        let rows = if let Some(ref p) = pattern {
+            sqlx::query_as::<_, Self>(
+                "SELECT * FROM activity_log \
+                 WHERE user_name LIKE ?1 OR target_user_name LIKE ?1 \
+                 OR action LIKE ?1 OR device_name LIKE ?1 \
+                 ORDER BY timestamp DESC, id LIMIT ?2 OFFSET ?3",
+            )
+            .bind(p)
+            .bind(limit)
+            .bind(start_index)
+            .fetch_all(db)
+            .await?
+        } else {
+            sqlx::query_as::<_, Self>(
+                "SELECT * FROM activity_log ORDER BY timestamp DESC, id LIMIT ?1 OFFSET ?2",
+            )
+            .bind(limit)
+            .bind(start_index)
+            .fetch_all(db)
+            .await?
+        };
 
         Ok((rows, total))
     }
@@ -126,7 +156,7 @@ mod tests {
         .await
         .unwrap();
 
-        let (rows, total) = ActivityLog::list(&db, 0, 50)
+        let (rows, total) = ActivityLog::list(&db, 0, 50, None)
             .await
             .unwrap();
         assert_eq!(total, 2);
@@ -163,13 +193,13 @@ mod tests {
             .unwrap();
         }
 
-        let (page1, total) = ActivityLog::list(&db, 0, 2)
+        let (page1, total) = ActivityLog::list(&db, 0, 2, None)
             .await
             .unwrap();
         assert_eq!(total, 5);
         assert_eq!(page1.len(), 2);
 
-        let (page2, _) = ActivityLog::list(&db, 2, 2)
+        let (page2, _) = ActivityLog::list(&db, 2, 2, None)
             .await
             .unwrap();
         assert_eq!(page2.len(), 2);
@@ -195,7 +225,7 @@ mod tests {
         .await
         .unwrap();
 
-        let (rows, _) = ActivityLog::list(&db, 0, 10)
+        let (rows, _) = ActivityLog::list(&db, 0, 10, None)
             .await
             .unwrap();
         let row = &rows[0];
