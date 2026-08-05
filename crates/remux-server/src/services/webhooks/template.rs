@@ -24,11 +24,22 @@ pub(crate) fn fresh_registry() -> Handlebars<'static> {
     // Missing variables render as empty rather than failing the whole body:
     // most variables are event-specific and templates are user-written.
     registry.set_strict_mode(false);
-    // Bodies are JSON, not HTML. HTML-escaping would turn `Ocean's` into
-    // `Ocean&#x27;s` and break `json_encode` output.
-    registry.register_escape_fn(handlebars::no_escape);
+    // Bodies are JSON, not HTML: `{{Var}}` almost always sits inside a JSON
+    // string literal, so that is what values are escaped for. HTML escaping
+    // would mangle `Ocean's` into `Ocean&#x27;s`, and no escaping at all would
+    // let a title like `The "Burbs` break the body. `{{{Var}}}` stays the raw
+    // escape hatch, exactly as in the Jellyfin plugin's stock templates.
+    registry.register_escape_fn(escape_json_string);
     register_helpers(&mut registry);
     registry
+}
+
+/// Escape `value` for insertion inside a JSON string literal: the JSON
+/// encoding of the string, minus its surrounding quotes.
+fn escape_json_string(value: &str) -> String {
+    let encoded = Value::String(value.to_string()).to_string();
+    // `Value::String` always serializes as `"…"`, so both quotes are present.
+    encoded[1..encoded.len() - 1].to_string()
 }
 
 /// A registry with every hook's template pre-compiled under its id.
@@ -147,7 +158,10 @@ fn if_exist<'reg, 'rc>(
     Ok(())
 }
 
-/// `{{link_to url text}}` → `<a href="url">text</a>`.
+/// `{{link_to url text}}` → `<a href='url'>text</a>`.
+///
+/// Single quotes on purpose, as in the plugin: the tag has to survive inside a
+/// JSON string literal, which double quotes would terminate.
 fn link_to(
     h: &Helper,
     _registry: &Handlebars,
@@ -157,7 +171,7 @@ fn link_to(
 ) -> HelperResult {
     let url = required_param(h, 0, "link_to")?;
     let text = required_param(h, 1, "link_to")?;
-    out.write(&format!("<a href=\"{url}\">{text}</a>"))?;
+    out.write(&format!("<a href='{url}'>{text}</a>"))?;
     Ok(())
 }
 
@@ -174,8 +188,12 @@ fn url_encode(
     Ok(())
 }
 
-/// `{{json_encode value}}` — the value as a JSON literal, quotes included for
-/// strings. Lets a template interpolate arbitrary text into a JSON body.
+/// `{{json_encode value}}` — the value escaped for a JSON string literal,
+/// **without** surrounding quotes.
+///
+/// The plugin idiom is `"title": "{{json_encode Name}}"`, i.e. the template
+/// supplies the quotes: emitting them here would produce `""…""` and an
+/// invalid body.
 fn json_encode(
     h: &Helper,
     _registry: &Handlebars,
@@ -187,8 +205,12 @@ fn json_encode(
         .param(0)
         .ok_or(RenderErrorReason::ParamNotFoundForIndex("json_encode", 0))?
         .value();
-    let encoded = serde_json::to_string(value)
-        .map_err(|e| RenderErrorReason::NestedError(Box::new(e)))?;
+    let encoded = match value {
+        // Non-string values are already valid JSON literals as they stand.
+        Value::String(s) => escape_json_string(s),
+        other => serde_json::to_string(other)
+            .map_err(|e| RenderErrorReason::NestedError(Box::new(e)))?,
+    };
     out.write(&encoded)?;
     Ok(())
 }
@@ -338,15 +360,27 @@ mod tests {
 
     // --- link_to / url_encode / json_encode -------------------------------
 
+    /// Single-quoted `href`, as the plugin emits: the anchor has to survive
+    /// inside a JSON string literal, which a double quote would terminate.
     #[test]
-    fn link_to_emits_an_anchor() {
-        assert_eq!(
-            render_template(
-                "{{link_to ServerUrl Name}}",
-                json!({ "ServerUrl": "https://example.test/web", "Name": "Open" })
-            ),
-            "<a href=\"https://example.test/web\">Open</a>"
+    fn link_to_emits_a_single_quoted_anchor() {
+        let body = render_template(
+            "{{link_to ServerUrl Name}}",
+            json!({ "ServerUrl": "https://example.test/web", "Name": "Open" }),
         );
+        assert_eq!(body, "<a href='https://example.test/web'>Open</a>");
+        assert!(
+            !body.contains('"'),
+            "a double quote would break the JSON body: {body}"
+        );
+
+        // The canonical use: inside a JSON string.
+        let json_body = render_template(
+            r#"{"content": "{{link_to ServerUrl Name}}"}"#,
+            json!({ "ServerUrl": "https://example.test/web", "Name": "Open" }),
+        );
+        serde_json::from_str::<Value>(&json_body)
+            .unwrap_or_else(|e| panic!("{json_body} must stay valid JSON: {e}"));
     }
 
     #[test]
@@ -360,14 +394,16 @@ mod tests {
         );
     }
 
+    /// The template supplies the quotes (`"title": "{{json_encode Name}}"`), so
+    /// the helper must not add its own — that is what the plugin does.
     #[test]
-    fn json_encode_produces_a_json_literal() {
+    fn json_encode_escapes_without_adding_quotes() {
         assert_eq!(
             render_template(
                 "{{json_encode Name}}",
                 json!({ "Name": "He said \"hi\"" })
             ),
-            r#""He said \"hi\"""#
+            r#"He said \"hi\""#
         );
         assert_eq!(
             render_template(
@@ -376,14 +412,60 @@ mod tests {
             ),
             "2"
         );
+
+        // The canonical plugin idiom must produce valid JSON.
+        let body = render_template(
+            r#"{"title": "{{json_encode Name}}"}"#,
+            json!({ "Name": "He said \"hi\"" }),
+        );
+        let parsed: Value = serde_json::from_str(&body)
+            .unwrap_or_else(|e| panic!("{body} must be valid JSON: {e}"));
+        assert_eq!(parsed["title"], json!("He said \"hi\""));
     }
 
-    /// Bodies are JSON, not HTML: escaping `'` or `&` would corrupt them.
+    /// Bodies are JSON, not HTML: `'` and `&` must stay readable, while `"`,
+    /// `\` and control characters must be escaped for the string literal the
+    /// value almost always sits in.
     #[test]
-    fn plain_substitution_is_not_html_escaped() {
+    fn plain_substitution_is_escaped_for_a_json_string() {
         assert_eq!(
             render_template("{{Name}}", json!({ "Name": "Ocean's 11 & 12" })),
             "Ocean's 11 & 12"
+        );
+        assert_eq!(
+            render_template("{{Name}}", json!({ "Name": "The \"Burbs" })),
+            r#"The \"Burbs"#
+        );
+        assert_eq!(
+            render_template("{{Name}}", json!({ "Name": r"C:\media\x" })),
+            r"C:\\media\\x"
+        );
+        assert_eq!(
+            render_template("{{Name}}", json!({ "Name": "line\nbreak" })),
+            r"line\nbreak"
+        );
+
+        // A body built the usual way survives a hostile title.
+        let body = render_template(
+            r#"{"title": "{{Name}}"}"#,
+            json!({ "Name": "The \"Burbs\\" }),
+        );
+        let parsed: Value = serde_json::from_str(&body)
+            .unwrap_or_else(|e| panic!("{body} must be valid JSON: {e}"));
+        assert_eq!(parsed["title"], json!("The \"Burbs\\"));
+    }
+
+    /// Triple braces stay the raw escape hatch, as in the plugin's stock
+    /// templates — which is also why the double-brace form must escape.
+    #[test]
+    fn triple_braces_bypass_the_escaping() {
+        assert_eq!(
+            render_template("{{{Name}}}", json!({ "Name": "The \"Burbs" })),
+            "The \"Burbs"
+        );
+        assert_eq!(
+            render_template("{{{Name}}}", json!({ "Name": r"C:\media\x" })),
+            r"C:\media\x"
         );
     }
 
@@ -553,7 +635,7 @@ mod tests {
                 &json!({ "A": "a" }),
             )
             .expect("every custom helper must be registered on a fresh registry");
-        assert_eq!(body, "12<a href=\"a\">a</a>a\"a\"");
+        assert_eq!(body, "12<a href='a'>a</a>aa");
     }
 
     #[test]

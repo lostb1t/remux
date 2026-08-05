@@ -70,7 +70,7 @@ pub(crate) struct ServerInfo {
     pub id: String,
     pub name: String,
     pub version: String,
-    /// Empty: nothing persists a public base URL for this server yet.
+    /// `Config::public_url`, or empty when the operator has not set one.
     pub url: String,
 }
 
@@ -89,7 +89,14 @@ impl ServerInfo {
             id: crate::common::server_id(),
             name,
             version: env!("CARGO_PKG_VERSION").to_string(),
-            url: String::new(),
+            url: ctx
+                .config
+                .public_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|url| !url.is_empty())
+                .unwrap_or_default()
+                .to_string(),
         }
     }
 }
@@ -211,21 +218,22 @@ fn put_item(data: &mut Map<String, Value>, item: &ItemContext) {
     put(data, "ItemId", simple_id(&media.id));
     put(data, "ItemType", ItemType::from(&media.kind).to_string());
 
-    if let Some(seconds) = media.runtime {
-        data.insert("RunTimeTicks".to_string(), Value::from(ticks(seconds)));
-        put(data, "RunTime", hms(seconds));
-    }
+    // Always emitted, zeroed when unknown: imported templates print them
+    // unconditionally, so an absent key would render as an empty string.
+    let runtime = media
+        .runtime
+        .unwrap_or(0);
+    data.insert("RunTimeTicks".to_string(), Value::from(ticks(runtime)));
+    put(data, "RunTime", hms(runtime));
 
+    put_year(data, item);
     if let Some(released_at) = media.released_at {
-        let date = released_at.date();
-        data.insert(
-            "Year".to_string(),
-            Value::from(chrono::Datelike::year(&date)),
-        );
         put(
             data,
             "PremiereDate",
-            date.format("%Y-%m-%d")
+            released_at
+                .date()
+                .format("%Y-%m-%d")
                 .to_string(),
         );
     }
@@ -244,6 +252,7 @@ fn put_item(data: &mut Map<String, Value>, item: &ItemContext) {
 
     match media.kind {
         db::MediaKind::Episode => put_episode(data, item),
+        db::MediaKind::Season => put_season(data, item),
         db::MediaKind::Track => {
             if let Some(album) = item
                 .parent
@@ -270,14 +279,36 @@ fn put_item(data: &mut Map<String, Value>, item: &ItemContext) {
     }
 }
 
-fn put_episode(data: &mut Map<String, Value>, item: &ItemContext) {
-    if let Some(series) = item
-        .grandparent
-        .as_ref()
+/// `Year` for an episode or a season is the *series'* production year, as the
+/// plugin reads it off `Series.ProductionYear`. Everything else reports its own
+/// release year.
+fn put_year(data: &mut Map<String, Value>, item: &ItemContext) {
+    let released_at = match item
+        .media
+        .kind
     {
-        put(data, "SeriesName", &series.title);
-        put(data, "SeriesId", simple_id(&series.id));
+        db::MediaKind::Episode | db::MediaKind::Season => item
+            .grandparent
+            .as_ref()
+            .and_then(|series| series.released_at)
+            .or(item
+                .media
+                .released_at),
+        _ => {
+            item.media
+                .released_at
+        }
+    };
+    if let Some(released_at) = released_at {
+        data.insert(
+            "Year".to_string(),
+            Value::from(chrono::Datelike::year(&released_at.date())),
+        );
     }
+}
+
+fn put_episode(data: &mut Map<String, Value>, item: &ItemContext) {
+    put_series(data, item);
     if let Some(season) = item
         .parent
         .as_ref()
@@ -298,6 +329,29 @@ fn put_episode(data: &mut Map<String, Value>, item: &ItemContext) {
         item.media
             .idx,
     );
+}
+
+/// A season carries the same series keys as an episode — the plugin's stock
+/// template has a dedicated season branch that prints `SeriesName` — and its
+/// own `idx` is the season number.
+fn put_season(data: &mut Map<String, Value>, item: &ItemContext) {
+    put_series(data, item);
+    put_padded_number(
+        data,
+        "SeasonNumber",
+        item.media
+            .idx,
+    );
+}
+
+fn put_series(data: &mut Map<String, Value>, item: &ItemContext) {
+    if let Some(series) = item
+        .grandparent
+        .as_ref()
+    {
+        put(data, "SeriesName", &series.title);
+        put(data, "SeriesId", simple_id(&series.id));
+    }
 }
 
 /// `SeasonNumber`, `SeasonNumber00` and `SeasonNumber000` (and the episode
@@ -855,8 +909,10 @@ mod tests {
         assert_eq!(str_at(&data, "RunTime"), "01:30:45");
     }
 
+    /// Imported templates print the runtime unconditionally, so the keys are
+    /// always present — zeroed rather than missing when it is unknown.
     #[test]
-    fn runtime_variables_are_absent_without_a_runtime() {
+    fn runtime_variables_fall_back_to_zero() {
         let item = ItemContext {
             media: db::Media {
                 runtime: None,
@@ -865,8 +921,8 @@ mod tests {
             ..movie()
         };
         let data = build_data(&server(), &item_added(), Some(&item));
-        assert!(!data.contains_key("RunTime"));
-        assert!(!data.contains_key("RunTimeTicks"));
+        assert_eq!(data["RunTimeTicks"], Value::from(0));
+        assert_eq!(str_at(&data, "RunTime"), "00:00:00");
     }
 
     // --- episode variables ------------------------------------------------
@@ -899,6 +955,85 @@ mod tests {
             Uuid::from_u128(SEASON_ID)
                 .simple()
                 .to_string()
+        );
+    }
+
+    /// The plugin reads `Year` off the *series* for an episode, not off the
+    /// episode's own air date.
+    #[test]
+    fn episode_year_comes_from_the_series() {
+        let base = episode();
+        let item = ItemContext {
+            grandparent: Some(db::Media {
+                released_at: Some(
+                    chrono::NaiveDate::from_ymd_opt(2019, 9, 1)
+                        .unwrap()
+                        .and_hms_opt(0, 0, 0)
+                        .unwrap(),
+                ),
+                ..base
+                    .grandparent
+                    .clone()
+                    .unwrap()
+            }),
+            ..base
+        };
+        let data = build_data(&server(), &item_added(), Some(&item));
+        assert_eq!(
+            data["Year"],
+            Value::from(2019),
+            "Year must be the series' production year"
+        );
+        // The episode's own air date still drives PremiereDate.
+        assert_eq!(str_at(&data, "PremiereDate"), "2021-03-04");
+    }
+
+    /// The plugin's stock template has a dedicated Season branch that prints
+    /// the series name and the season number.
+    #[test]
+    fn season_gets_the_series_keys_and_its_own_number() {
+        let item = ItemContext {
+            media: db::Media {
+                id: Uuid::from_u128(SEASON_ID),
+                kind: db::MediaKind::Season,
+                title: "Season 2".into(),
+                // A season's own `idx` is the season number.
+                idx: Some(2),
+                grandparent_id: Some(Uuid::from_u128(SERIES_ID)),
+                ..Default::default()
+            },
+            parent: None,
+            grandparent: Some(db::Media {
+                id: Uuid::from_u128(SERIES_ID),
+                kind: db::MediaKind::Series,
+                title: "Test Show".into(),
+                released_at: Some(
+                    chrono::NaiveDate::from_ymd_opt(2019, 9, 1)
+                        .unwrap()
+                        .and_hms_opt(0, 0, 0)
+                        .unwrap(),
+                ),
+                ..Default::default()
+            }),
+            genres: vec![],
+        };
+        let data = build_data(&server(), &item_added(), Some(&item));
+
+        assert_eq!(str_at(&data, "ItemType"), "Season");
+        assert_eq!(str_at(&data, "SeriesName"), "Test Show");
+        assert_eq!(
+            str_at(&data, "SeriesId"),
+            Uuid::from_u128(SERIES_ID)
+                .simple()
+                .to_string()
+        );
+        assert_eq!(data["SeasonNumber"], Value::from(2));
+        assert_eq!(str_at(&data, "SeasonNumber00"), "02");
+        assert_eq!(str_at(&data, "SeasonNumber000"), "002");
+        assert_eq!(data["Year"], Value::from(2019));
+        assert!(
+            !data.contains_key("EpisodeNumber"),
+            "a season has no episode number"
         );
     }
 
@@ -1172,5 +1307,265 @@ mod tests {
         let merged = with_hook_fields(&base, &discord());
         assert_eq!(merged.len(), base.len());
         assert!(matches!(merged, Cow::Borrowed(_)), "no clone is needed");
+    }
+
+    // --- enrich_item (against a real database) -----------------------------
+
+    const SERIES_IMDB: &str = "tt5550001";
+
+    fn imdb(value: &str) -> db::NonEmptyString {
+        db::NonEmptyString::try_new(value.to_string()).unwrap()
+    }
+
+    /// `Media::save` validates that the row id is the one derived from its
+    /// external ids, so the fixtures have to be keyed the same way.
+    fn derived_id(
+        kind: db::MediaKind,
+        external_ids: &db::ExternalIds,
+        season: Option<i64>,
+        episode: Option<i64>,
+    ) -> Uuid {
+        Uuid::from(&db::MediaIdRaw {
+            kind,
+            external_ids: external_ids.clone(),
+            season,
+            episode,
+        })
+    }
+
+    /// Inserts a `Test Show` / `Season 2` pair and returns
+    /// `(series, season, unsaved S02E05 episode)`.
+    async fn seed_show(ctx: &AppContext) -> (db::Media, db::Media, db::Media) {
+        let series_ids = db::ExternalIds {
+            imdb: Some(imdb(SERIES_IMDB)),
+            ..Default::default()
+        };
+        let child_ids = db::ExternalIds {
+            series_imdb: Some(imdb(SERIES_IMDB)),
+            ..Default::default()
+        };
+
+        let mut series = db::Media {
+            id: derived_id(db::MediaKind::Series, &series_ids, None, None),
+            kind: db::MediaKind::Series,
+            title: "Test Show".into(),
+            external_ids: series_ids,
+            ..Default::default()
+        };
+        series
+            .save(&ctx.db)
+            .await
+            .expect("series must insert");
+
+        let mut season = db::Media {
+            id: derived_id(db::MediaKind::Season, &child_ids, Some(2), None),
+            kind: db::MediaKind::Season,
+            title: "Season 2".into(),
+            idx: Some(2),
+            parent_id: Some(series.id),
+            grandparent_id: Some(series.id),
+            external_ids: child_ids.clone(),
+            ..Default::default()
+        };
+        season
+            .save(&ctx.db)
+            .await
+            .expect("season must insert");
+
+        let episode = db::Media {
+            id: derived_id(db::MediaKind::Episode, &child_ids, Some(2), Some(5)),
+            kind: db::MediaKind::Episode,
+            title: "The One With The Test".into(),
+            idx: Some(5),
+            parent_idx: Some(2),
+            parent_id: Some(season.id),
+            grandparent_id: Some(series.id),
+            external_ids: child_ids,
+            ..Default::default()
+        };
+
+        (series, season, episode)
+    }
+
+    /// Pins the parent/grandparent assignment, which nothing else covers: with
+    /// the two swapped, `SeriesName` would render the season title on every
+    /// episode webhook and every hand-built `ItemContext` test would stay green.
+    #[tokio::test]
+    async fn enrich_item_resolves_the_season_as_parent_and_the_series_as_grandparent() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let (series, season, mut episode) = seed_show(ctx).await;
+        episode
+            .save(&ctx.db)
+            .await
+            .expect("episode must insert");
+
+        let item = enrich_item(
+            ctx,
+            &WebhookEvent::ItemAdded {
+                item_id: episode.id,
+            },
+        )
+        .await
+        .expect("the item must be resolved");
+
+        assert_eq!(
+            item.media
+                .id,
+            episode.id
+        );
+        let parent = item
+            .parent
+            .as_ref()
+            .expect("an episode has a season");
+        let grandparent = item
+            .grandparent
+            .as_ref()
+            .expect("an episode has a series");
+        assert_eq!(parent.id, season.id, "parent must be the season");
+        assert_eq!(parent.kind, db::MediaKind::Season);
+        assert_eq!(grandparent.id, series.id, "grandparent must be the series");
+        assert_eq!(grandparent.kind, db::MediaKind::Series);
+
+        // The consequence a swap would produce, asserted end to end.
+        let data = build_data(
+            &server(),
+            &WebhookEvent::ItemAdded {
+                item_id: episode.id,
+            },
+            Some(&item),
+        );
+        assert_eq!(str_at(&data, "SeriesName"), "Test Show");
+        assert_eq!(
+            str_at(&data, "SeasonId"),
+            season
+                .id
+                .simple()
+                .to_string()
+        );
+        assert_eq!(
+            str_at(&data, "SeriesId"),
+            series
+                .id
+                .simple()
+                .to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn enrich_item_returns_none_for_an_unknown_or_itemless_event() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        assert!(
+            enrich_item(
+                ctx,
+                &WebhookEvent::ItemAdded {
+                    item_id: Uuid::from_u128(999),
+                }
+            )
+            .await
+            .is_none(),
+            "an item that is not in the database resolves to nothing"
+        );
+        assert!(
+            enrich_item(ctx, &WebhookEvent::UserCreated { user: user() })
+                .await
+                .is_none(),
+            "an event with no item resolves to nothing"
+        );
+    }
+
+    /// `ItemDeleted` must read the row off the event — the DB row is already
+    /// gone by the time the dispatcher sees it — while still resolving the
+    /// parents, which are not deleted.
+    #[tokio::test]
+    async fn enrich_item_uses_the_row_embedded_in_item_deleted() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        // The episode is deliberately never saved: it stands for a row that has
+        // just been deleted.
+        let (series, season, episode) = seed_show(ctx).await;
+
+        assert!(
+            enrich_item(
+                ctx,
+                &WebhookEvent::ItemAdded {
+                    item_id: episode.id
+                }
+            )
+            .await
+            .is_none(),
+            "guard: the episode row really is absent from the database"
+        );
+
+        let item = enrich_item(
+            ctx,
+            &WebhookEvent::ItemDeleted {
+                item: Box::new(episode.clone()),
+            },
+        )
+        .await
+        .expect("the embedded row must be used");
+
+        assert_eq!(
+            item.media
+                .title,
+            "The One With The Test"
+        );
+        assert_eq!(
+            item.parent
+                .as_ref()
+                .map(|p| p.id),
+            Some(season.id)
+        );
+        assert_eq!(
+            item.grandparent
+                .as_ref()
+                .map(|g| g.id),
+            Some(series.id)
+        );
+    }
+
+    /// `ServerUrl` comes from `Config::public_url`.
+    #[tokio::test]
+    async fn server_info_reads_the_public_url_from_config() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        assert_eq!(
+            ServerInfo::load(ctx)
+                .await
+                .url,
+            "",
+            "unset public_url renders as empty, never as a guess"
+        );
+
+        let configured = AppContext {
+            config: crate::Config {
+                public_url: Some("  https://media.example.com  ".into()),
+                ..ctx
+                    .config
+                    .clone()
+            },
+            ..ctx.clone()
+        };
+        let info = ServerInfo::load(&configured).await;
+        assert_eq!(info.url, "https://media.example.com");
+        assert!(
+            !info
+                .name
+                .is_empty(),
+            "ServerName must never be empty"
+        );
+        assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
     }
 }

@@ -444,6 +444,13 @@ pub struct Config {
     /// Base URL for remuxdb. When set, probe results are submitted after each live probe.
     #[serde(default = "default_remuxdb_url")]
     pub remuxdb_url: Option<String>,
+    /// Public base URL clients reach this server on, e.g.
+    /// `https://media.example.com`. Used to build absolute links that leave the
+    /// server (webhook `ServerUrl`, deep links, image URLs); unset means "no
+    /// absolute URL is known", and such links are rendered empty rather than
+    /// guessed.
+    #[serde(default)]
+    pub public_url: Option<String>,
 }
 
 fn default_remuxdb_url() -> Option<String> {
@@ -518,6 +525,7 @@ impl Default for Config {
             tmdb_base_url: default_tmdb_base_url(),
             trakt_base_url: default_trakt_base_url(),
             remuxdb_url: Some("https://remuxdb.1632022.xyz".to_string()),
+            public_url: None,
         }
         .resolve()
     }
