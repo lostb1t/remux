@@ -6902,17 +6902,119 @@ mod tests {
         assert!(t.videos);
     }
 
+    fn sample_webhook() -> WebhookDto {
+        WebhookDto {
+            id: Uuid::nil(),
+            name: "on new movie".to_string(),
+            enabled: true,
+            url: "https://example.test/hook".to_string(),
+            template: "{{Name}}".to_string(),
+            destination: WebhookDestination::Discord {
+                avatar_url: None,
+                bot_username: Some("remux".to_string()),
+                embed_color: Some("#AA5CC3".to_string()),
+                mention_type: DiscordMentionType::Everyone,
+            },
+            notification_types: vec![NotificationType::ItemAdded],
+            user_filter: vec![],
+            item_types: WebhookItemTypes::default(),
+            send_all_properties: false,
+            trim_whitespace: true,
+            skip_empty_message_body: true,
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    fn json_body(body: Body) -> serde_json::Value {
+        match body {
+            Body::Json(value) => value,
+            _ => panic!("expected Body::Json"),
+        }
+    }
+
     #[test]
-    fn webhook_endpoints_use_lowercase_remux_paths() {
+    fn webhook_endpoints_use_lowercase_remux_paths_and_methods() {
         let id = Uuid::nil();
+
         assert_eq!(GetWebhooks.path(), "/remux/webhooks");
+        assert_eq!(GetWebhooks.method(), Method::GET);
+
         assert_eq!(GetWebhook { id }.path(), format!("/remux/webhooks/{id}"));
+        assert_eq!(GetWebhook { id }.method(), Method::GET);
+
+        let create = CreateWebhook {
+            webhook: sample_webhook(),
+        };
+        assert_eq!(create.path(), "/remux/webhooks");
+        assert_eq!(create.method(), Method::POST);
+
+        let update = UpdateWebhook {
+            id,
+            webhook: sample_webhook(),
+        };
+        assert_eq!(update.path(), format!("/remux/webhooks/{id}"));
+        assert_eq!(update.method(), Method::POST);
+
         assert_eq!(DeleteWebhook { id }.path(), format!("/remux/webhooks/{id}"));
         assert_eq!(DeleteWebhook { id }.method(), Method::DELETE);
+
         assert_eq!(
             TestWebhook { id }.path(),
             format!("/remux/webhooks/{id}/test")
         );
         assert_eq!(TestWebhook { id }.method(), Method::POST);
+    }
+
+    #[test]
+    fn create_webhook_body_carries_the_serialized_dto() {
+        let webhook = sample_webhook();
+        let body = json_body(
+            CreateWebhook {
+                webhook: webhook.clone(),
+            }
+            .body(),
+        );
+
+        assert_eq!(body["name"], "on new movie");
+        assert_eq!(body["enabled"], true);
+        assert_eq!(body["url"], "https://example.test/hook");
+        assert_eq!(body["template"], "{{Name}}");
+        assert_eq!(body["destination"]["Type"], "Discord");
+        assert_eq!(body["destination"]["mention_type"], "Everyone");
+        assert_eq!(body["notification_types"][0], "ItemAdded");
+        assert_eq!(body["item_types"]["movies"], true);
+        assert_eq!(body["skip_empty_message_body"], true);
+
+        let back: WebhookDto = serde_json::from_value(body).unwrap();
+        assert_eq!(back.name, webhook.name);
+        assert_eq!(back.url, webhook.url);
+        assert_eq!(back.destination, webhook.destination);
+        assert_eq!(back.notification_types, webhook.notification_types);
+        assert_eq!(back.item_types, webhook.item_types);
+    }
+
+    #[test]
+    fn update_webhook_body_carries_the_serialized_dto() {
+        let id = Uuid::from_u128(42);
+        let mut webhook = sample_webhook();
+        webhook.name = "renamed".to_string();
+        webhook.enabled = false;
+
+        let endpoint = UpdateWebhook {
+            id,
+            webhook: webhook.clone(),
+        };
+        assert_eq!(endpoint.path(), format!("/remux/webhooks/{id}"));
+
+        let body = json_body(endpoint.body());
+        assert_eq!(body["name"], "renamed");
+        assert_eq!(body["enabled"], false);
+        assert_eq!(body["destination"]["Type"], "Discord");
+
+        let back: WebhookDto = serde_json::from_value(body).unwrap();
+        assert_eq!(back.name, webhook.name);
+        assert_eq!(back.enabled, webhook.enabled);
+        assert_eq!(back.destination, webhook.destination);
     }
 }
