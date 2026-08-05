@@ -21,7 +21,7 @@ use std::{
     collections::HashSet,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
 };
 use tokio::{
@@ -45,6 +45,9 @@ pub(crate) struct LoadedWebhooks {
     pub registry: handlebars::Handlebars<'static>,
     /// Union of every enabled hook's subscriptions — the dispatcher fast-path.
     pub wanted: HashSet<NotificationType>,
+    /// Server name/url/version as of this snapshot. Reloaded with the hooks so
+    /// that renaming the server does not leave stale values in every payload.
+    pub server: payload::ServerInfo,
 }
 
 /// The empty snapshot the dispatcher starts from. It must carry the helpers
@@ -56,6 +59,7 @@ impl Default for LoadedWebhooks {
             hooks: Vec::new(),
             registry: template::fresh_registry(),
             wanted: HashSet::new(),
+            server: payload::ServerInfo::default(),
         }
     }
 }
@@ -64,6 +68,17 @@ struct Inner {
     /// Set by the webhook CRUD endpoints; consumed by the dispatcher.
     dirty: AtomicBool,
     cache: RwLock<LoadedWebhooks>,
+    /// `cache.wanted` as a bitmask, readable without awaiting a lock. This is
+    /// what [`WebhookService::wants`] probes; see the note there.
+    wanted_mask: AtomicU32,
+}
+
+/// One bit per [`NotificationType`], indexed by its discriminant (the enum is
+/// fieldless). `None` for a type that would not fit in the mask — see
+/// [`WebhookService::wants`], which answers those optimistically, so growing the
+/// enum past 32 variants costs a little wasted work but never a lost event.
+fn wanted_bit(notification_type: NotificationType) -> Option<u32> {
+    1u32.checked_shl(notification_type as u32)
 }
 
 #[derive(Clone)]
@@ -82,6 +97,11 @@ impl WebhookService {
                 // stale until the CRUD endpoints say so.
                 dirty: AtomicBool::new(false),
                 cache: RwLock::new(LoadedWebhooks::default()),
+                // Everything is "wanted" until the first reload has run: the
+                // dispatcher buffers the events emitted during startup and
+                // filters them properly once its snapshot is loaded, so the
+                // probe must not tell callers to skip building them.
+                wanted_mask: AtomicU32::new(u32::MAX),
             }),
         }
     }
@@ -94,32 +114,74 @@ impl WebhookService {
             .send(Arc::new(event));
     }
 
+    /// Whether any enabled webhook subscribes to `notification_type`.
+    ///
+    /// `emit` is cheap, but the *caller* is not: building an event means
+    /// cloning usernames and device names, and for `ItemDeleted` re-reading and
+    /// boxing a whole [`db::Media`]. On a `PlaybackProgress` stream with no
+    /// webhooks configured that cost is paid per progress tick for nothing.
+    /// Guard those sites with this.
+    ///
+    /// Lock-free (one atomic load) and deliberately conservative: a pending
+    /// reload, or a subscription set too wide for the mask, answers `true`. It
+    /// is an optimisation, never the authority — the dispatcher re-checks every
+    /// event against the real snapshot.
+    pub fn wants(&self, notification_type: NotificationType) -> bool {
+        let Some(bit) = wanted_bit(notification_type) else {
+            return true;
+        };
+        self.inner
+            .wanted_mask
+            .load(Ordering::Relaxed)
+            & bit
+            != 0
+    }
+
     /// Mark the cached webhook set stale. The dispatcher reloads before it
     /// handles the next event.
     pub fn invalidate(&self) {
+        // Widened first, and only ever narrowed again by `reload` once the new
+        // snapshot is in place: a hook that just gained a subscription must not
+        // have its events skipped by `wants` during the window in between.
+        self.inner
+            .wanted_mask
+            .store(u32::MAX, Ordering::Relaxed);
         self.inner
             .dirty
             .store(true, Ordering::Release);
     }
 
     /// Replace the cached snapshot from the database. On error the previous
-    /// snapshot is kept — a transient DB failure must not silently disable
+    /// hook set is kept — a transient DB failure must not silently disable
     /// every webhook.
+    ///
+    /// The server identity is reloaded here too, which is why settings writers
+    /// call [`Self::invalidate`]: it is built once and then read by every
+    /// payload, so a rename would otherwise ship the old name until restart.
     ///
     /// Invariant: this is the only writer of `cache`, and it is only ever
     /// called from the dispatcher task itself, at a point where that task
     /// holds no read guard. That is what makes it safe for the dispatcher to
     /// hold the read guard across `enrich_item().await` — no other task can be
     /// waiting for the write lock.
-    async fn reload(&self, db: &sqlx::SqlitePool) {
-        let hooks = match db::Webhook::get_enabled(db).await {
+    async fn reload(&self, ctx: &AppContext) {
+        // Never fails (falls back to defaults), so it is applied even when the
+        // hook query below does not.
+        let server = payload::ServerInfo::load(ctx).await;
+
+        let hooks = match db::Webhook::get_enabled(&ctx.db).await {
             Ok(hooks) => hooks,
             Err(e) => {
                 warn!(error = %e, "failed to load webhooks, keeping previous set");
+                self.inner
+                    .cache
+                    .write()
+                    .await
+                    .server = server;
                 return;
             }
         };
-        let wanted = hooks
+        let wanted: HashSet<NotificationType> = hooks
             .iter()
             .flat_map(|hook| {
                 hook.notification_types
@@ -127,6 +189,10 @@ impl WebhookService {
                     .copied()
             })
             .collect();
+        let mask = wanted
+            .iter()
+            .filter_map(|t| wanted_bit(*t))
+            .fold(0u32, |mask, bit| mask | bit);
         let mut cache = self
             .inner
             .cache
@@ -136,7 +202,14 @@ impl WebhookService {
             registry: template::build_registry(&hooks),
             hooks,
             wanted,
+            server,
         };
+        // Published after the snapshot: this is the only narrowing writer, and
+        // `invalidate` has already widened the mask for the whole window that
+        // ends here.
+        self.inner
+            .wanted_mask
+            .store(mask, Ordering::Relaxed);
     }
 
     /// Whether `hook` wants `event`. Pure: `item_kind` is the kind of the item
@@ -199,10 +272,8 @@ impl WebhookService {
             .tx
             .subscribe();
         tokio::spawn(async move {
-            self.reload(&ctx.db)
+            self.reload(&ctx)
                 .await;
-            // Read once: every event of this process reports the same server.
-            let server = payload::ServerInfo::load(&ctx).await;
 
             loop {
                 let event = match rx
@@ -222,7 +293,7 @@ impl WebhookService {
                     .dirty
                     .swap(false, Ordering::AcqRel)
                 {
-                    self.reload(&ctx.db)
+                    self.reload(&ctx)
                         .await;
                 }
 
@@ -256,7 +327,7 @@ impl WebhookService {
 
                 // Built once per event; `render` applies the per-hook overlay
                 // (a Generic destination's operator-defined fields).
-                let data = payload::build_data(&server, &event, item.as_ref());
+                let data = payload::build_data(&cache.server, &event, item.as_ref());
                 for hook in targets {
                     match template::render(hook, &cache.registry, &data) {
                         // Delivery is spawned so one slow endpoint cannot stall
@@ -496,6 +567,69 @@ mod tests {
             )
             .expect("helpers must be registered on the default snapshot");
         assert_eq!(body, "ok");
+    }
+
+    // --- the `wants` probe ------------------------------------------------
+
+    /// Every notification type must own a bit. Two types sharing one would make
+    /// `wants` answer for the wrong subscription — and the bit index is the
+    /// enum's discriminant, which nothing else in the code pins down.
+    #[test]
+    fn every_notification_type_has_its_own_bit() {
+        let types = [
+            NotificationType::ItemAdded,
+            NotificationType::ItemDeleted,
+            NotificationType::Generic,
+            NotificationType::PlaybackStart,
+            NotificationType::PlaybackProgress,
+            NotificationType::PlaybackStop,
+            NotificationType::AuthenticationSuccess,
+            NotificationType::AuthenticationFailure,
+            NotificationType::SessionStart,
+            NotificationType::TaskCompleted,
+            NotificationType::UserCreated,
+            NotificationType::UserDeleted,
+            NotificationType::UserUpdated,
+            NotificationType::UserPasswordChanged,
+            NotificationType::UserDataSaved,
+        ];
+        let bits: HashSet<u32> = types
+            .iter()
+            .map(|t| {
+                wanted_bit(*t).unwrap_or_else(|| panic!("{t} must fit in the mask"))
+            })
+            .collect();
+        assert_eq!(
+            bits.len(),
+            types.len(),
+            "each notification type must map to its own bit"
+        );
+    }
+
+    /// Before the dispatcher's first load — and for the whole window a pending
+    /// reload is open — the probe must not tell callers to skip building
+    /// events. Skipping is only ever correct against a snapshot that is known
+    /// to be current.
+    #[tokio::test]
+    async fn the_probe_is_open_until_a_snapshot_says_otherwise() {
+        let service = WebhookService::new();
+        assert!(
+            service.wants(NotificationType::PlaybackProgress),
+            "a service whose snapshot has never loaded must want everything"
+        );
+
+        // Narrowed exactly as `reload` narrows it: nothing subscribes.
+        service
+            .inner
+            .wanted_mask
+            .store(0, Ordering::Relaxed);
+        assert!(!service.wants(NotificationType::PlaybackProgress));
+
+        service.invalidate();
+        assert!(
+            service.wants(NotificationType::PlaybackProgress),
+            "invalidate must re-open the probe until the reload it asked for lands"
+        );
     }
 
     // --- rule 1: notification types -------------------------------------

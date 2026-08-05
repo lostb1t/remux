@@ -299,6 +299,37 @@ impl Device {
     }
 }
 
+/// The client IP as reported by a reverse proxy, if it reported one.
+///
+/// `X-Forwarded-For` is a list; the first entry is the original client. Falls
+/// back to `X-Real-IP`. Both are untrusted input — this is display/audit data
+/// for sessions and webhooks, never an authorization input.
+pub fn remote_ip_from_headers(headers: &http::HeaderMap) -> Option<String> {
+    headers
+        .get("X-Forwarded-For")
+        .and_then(|v| {
+            v.to_str()
+                .ok()
+        })
+        .and_then(|v| {
+            v.split(',')
+                .next()
+        })
+        .map(|s| {
+            s.trim()
+                .to_string()
+        })
+        .or_else(|| {
+            headers
+                .get("X-Real-IP")
+                .and_then(|v| {
+                    v.to_str()
+                        .ok()
+                })
+                .map(|s| s.to_string())
+        })
+}
+
 #[derive(Clone)]
 pub struct AuthSession {
     pub device: Device,
@@ -326,31 +357,7 @@ impl FromRequestParts<AppState> for AuthSession {
             .as_deref();
 
         // Capture client IP from proxy headers or peer address.
-        let remote_ip = parts
-            .headers
-            .get("X-Forwarded-For")
-            .and_then(|v| {
-                v.to_str()
-                    .ok()
-            })
-            .and_then(|v| {
-                v.split(',')
-                    .next()
-            })
-            .map(|s| {
-                s.trim()
-                    .to_string()
-            })
-            .or_else(|| {
-                parts
-                    .headers
-                    .get("X-Real-IP")
-                    .and_then(|v| {
-                        v.to_str()
-                            .ok()
-                    })
-                    .map(|s| s.to_string())
-            });
+        let remote_ip = remote_ip_from_headers(&parts.headers);
 
         // First try the devices table (normal session token).
         if let Some(mut device) = Device::get_by_access_token(

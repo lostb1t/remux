@@ -5,8 +5,15 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::{common, db, db::auth, playback::session::TranscodeSession};
-use remux_sdks::remux::{PlayMethod, PlaybackInfo, QueueItem};
+use crate::{
+    common, db,
+    db::auth,
+    playback::session::TranscodeSession,
+    services::webhooks::{
+        DeviceEventData, PlaybackEventData, UserEventData, WebhookEvent, WebhookService,
+    },
+};
+use remux_sdks::remux::{NotificationType, PlayMethod, PlaybackInfo, QueueItem};
 
 #[derive(Clone)]
 pub struct PlaybackSession {
@@ -754,10 +761,15 @@ impl PlaybackSessionManager {
     }
 
     /// Spawn a background task that reaps sessions idle longer than `max_age`.
+    ///
+    /// A reaped session emits `PlaybackStop` just like an explicit stop does:
+    /// a client that dies mid-playback would otherwise never produce one.
     pub fn spawn_cleanup_task(
         self,
         interval: Duration,
         max_age: Duration,
+        db: sqlx::SqlitePool,
+        webhooks: WebhookService,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
@@ -782,11 +794,78 @@ impl PlaybackSessionManager {
                     .collect();
                 for id in stale {
                     info!("Cleaning up idle session: {}", id);
-                    self.stop(&id)
+                    let stopped = self
+                        .stop(&id)
                         .await;
+                    // Only past this point is the session really gone, and only
+                    // here are the two identity lookups below worth running.
+                    if let Some(ps) = stopped
+                        && !ps
+                            .item_id
+                            .is_nil()
+                        && webhooks.wants(NotificationType::PlaybackStop)
+                    {
+                        webhooks.emit(WebhookEvent::PlaybackStop {
+                            playback: reaped_playback_event(&db, &ps).await,
+                        });
+                    }
                 }
             }
         })
+    }
+}
+
+/// Rebuild the identity a reaped session no longer carries.
+///
+/// The in-memory session only holds ids, so the username and the device's
+/// display name come from the database. Both are best-effort: a webhook with a
+/// blank username is better than no stop event at all.
+async fn reaped_playback_event(
+    db: &sqlx::SqlitePool,
+    ps: &PlaybackSession,
+) -> PlaybackEventData {
+    let username = db::User::get_by_id(db, &ps.user_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.username)
+        .unwrap_or_default();
+    let device = auth::Device::get_by_id(db, &ps.device_id)
+        .await
+        .ok()
+        .flatten();
+    PlaybackEventData {
+        user: UserEventData {
+            id: ps.user_id,
+            username,
+        },
+        item_id: ps.item_id,
+        device: DeviceEventData {
+            id: ps
+                .device_id
+                .clone(),
+            name: device
+                .as_ref()
+                .map(|d| {
+                    d.name
+                        .clone()
+                })
+                .unwrap_or_default(),
+            client_name: ps
+                .client_name
+                .clone(),
+            remote_ip: device.and_then(|d| d.remote_ip),
+        },
+        position_ticks: ps.position_ticks,
+        // A reaped session is one that stopped reporting, not one that paused.
+        is_paused: ps.is_paused,
+        play_method: ps
+            .play_method
+            .as_deref()
+            .and_then(|m| {
+                m.parse()
+                    .ok()
+            }),
     }
 }
 

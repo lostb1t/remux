@@ -21,8 +21,36 @@ use crate::{
     db,
     db::auth,
     playback::session::TranscodeSession,
-    services::MediaResolveService,
+    services::{
+        MediaResolveService,
+        webhooks::{PlaybackEventData, UserDataSaveReason, WebhookEvent},
+    },
 };
+use remux_sdks::remux::NotificationType;
+
+/// The playback state the three playback webhook events share, read off the
+/// authenticated session and the report the client just sent.
+///
+/// Only ever called behind a `webhooks.wants(..)` probe: it clones the username
+/// and the device strings, which is not something a progress tick should pay
+/// for when no webhook is listening.
+fn playback_event(
+    session: &auth::AuthSession,
+    data: &api::PlaybackInfo,
+    item_id: Uuid,
+    position_ticks: i64,
+) -> PlaybackEventData {
+    PlaybackEventData {
+        user: (&session.user).into(),
+        item_id,
+        device: (&session.device).into(),
+        position_ticks,
+        is_paused: data.is_paused,
+        play_method: data
+            .play_method
+            .clone(),
+    }
+}
 
 #[post("/sessions/logout")]
 pub async fn sessions_logout(
@@ -113,6 +141,29 @@ pub async fn report_playback_start(
         .ctx
         .ws_tx
         .send(crate::ws::WsEvent::SessionsChanged);
+    // A nil item id makes `start` a no-op (no session is created), so there is
+    // no playback to report.
+    if !data
+        .item_id
+        .is_nil()
+        && state
+            .ctx
+            .webhooks
+            .wants(NotificationType::PlaybackStart)
+    {
+        state
+            .ctx
+            .webhooks
+            .emit(WebhookEvent::PlaybackStart {
+                playback: playback_event(
+                    &session,
+                    &data,
+                    data.item_id,
+                    data.position_ticks
+                        .unwrap_or(0),
+                ),
+            });
+    }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -154,6 +205,54 @@ pub async fn report_playback_progress(
             .ctx
             .ws_tx
             .send(crate::ws::WsEvent::SessionsChanged);
+
+        let wants_progress = state
+            .ctx
+            .webhooks
+            .wants(NotificationType::PlaybackProgress);
+        let wants_user_data = state
+            .ctx
+            .webhooks
+            .wants(NotificationType::UserDataSaved);
+        // Read back the session `progress` just updated. It is gone when the
+        // report belonged to no session, or to a ghost one that was evicted —
+        // in both cases nothing was recorded, so nothing is reported.
+        if let Some(ps) = (wants_progress || wants_user_data)
+            .then(|| {
+                state
+                    .ctx
+                    .sessions
+                    .get(psid)
+            })
+            .flatten()
+        {
+            let item_id = ps.item_id;
+            if !item_id.is_nil() {
+                if wants_progress {
+                    state
+                        .ctx
+                        .webhooks
+                        .emit(WebhookEvent::PlaybackProgress {
+                            playback: playback_event(
+                                &session,
+                                &data,
+                                item_id,
+                                ps.position_ticks,
+                            ),
+                        });
+                }
+                if wants_user_data {
+                    state
+                        .ctx
+                        .webhooks
+                        .emit(WebhookEvent::UserDataSaved {
+                            user: (&session.user).into(),
+                            item_id,
+                            save_reason: UserDataSaveReason::PlaybackProgress,
+                        });
+                }
+            }
+        }
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -179,6 +278,25 @@ pub async fn report_playback_stopped(
                 .map(|s| s.play_session_id)
         });
     if let Some(ref psid) = effective_psid {
+        let wants_stop = state
+            .ctx
+            .webhooks
+            .wants(NotificationType::PlaybackStop);
+        let wants_user_data = state
+            .ctx
+            .webhooks
+            .wants(NotificationType::UserDataSaved);
+        // `stopped` removes the session, so its final item/position have to be
+        // read before the call, exactly as `stopped` itself reads them.
+        let ps = (wants_stop || wants_user_data)
+            .then(|| {
+                state
+                    .ctx
+                    .sessions
+                    .get(psid)
+            })
+            .flatten();
+
         state
             .ctx
             .sessions
@@ -196,6 +314,46 @@ pub async fn report_playback_stopped(
             .ctx
             .ws_tx
             .send(crate::ws::WsEvent::SessionsChanged);
+
+        if let Some(item_id) = Some(data.item_id)
+            .filter(|id| !id.is_nil())
+            .or_else(|| {
+                ps.as_ref()
+                    .map(|s| s.item_id)
+            })
+            .filter(|id| !id.is_nil())
+        {
+            if wants_stop {
+                let position_ticks = data
+                    .position_ticks
+                    .or_else(|| {
+                        ps.as_ref()
+                            .map(|s| s.position_ticks)
+                    })
+                    .unwrap_or(0);
+                state
+                    .ctx
+                    .webhooks
+                    .emit(WebhookEvent::PlaybackStop {
+                        playback: playback_event(
+                            &session,
+                            &data,
+                            item_id,
+                            position_ticks,
+                        ),
+                    });
+            }
+            if wants_user_data {
+                state
+                    .ctx
+                    .webhooks
+                    .emit(WebhookEvent::UserDataSaved {
+                        user: (&session.user).into(),
+                        item_id,
+                        save_reason: UserDataSaveReason::PlaybackFinished,
+                    });
+            }
+        }
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -783,6 +941,14 @@ pub async fn user_mark_played(
             server_config.release_date_threshold(),
         )
         .await?;
+    state
+        .ctx
+        .webhooks
+        .emit(WebhookEvent::UserDataSaved {
+            user: (&user).into(),
+            item_id: media.id,
+            save_reason: UserDataSaveReason::TogglePlayed,
+        });
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -805,6 +971,14 @@ pub async fn user_unmark_played(
             true,
         )
         .await?;
+    state
+        .ctx
+        .webhooks
+        .emit(WebhookEvent::UserDataSaved {
+            user: (&user).into(),
+            item_id: media.id,
+            save_reason: UserDataSaveReason::TogglePlayed,
+        });
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 

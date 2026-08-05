@@ -15,6 +15,17 @@ pub struct UserEventData {
     pub username: String,
 }
 
+impl From<&db::User> for UserEventData {
+    fn from(user: &db::User) -> Self {
+        Self {
+            id: user.id,
+            username: user
+                .username
+                .clone(),
+        }
+    }
+}
+
 /// The client/device a webhook event originated from.
 #[derive(Debug, Clone)]
 pub struct DeviceEventData {
@@ -22,6 +33,25 @@ pub struct DeviceEventData {
     pub name: String,
     pub client_name: String,
     pub remote_ip: Option<String>,
+}
+
+impl From<&db::auth::Device> for DeviceEventData {
+    fn from(device: &db::auth::Device) -> Self {
+        Self {
+            id: device
+                .id
+                .clone(),
+            name: device
+                .name
+                .clone(),
+            client_name: device
+                .app_name
+                .clone(),
+            remote_ip: device
+                .remote_ip
+                .clone(),
+        }
+    }
 }
 
 /// The playback state shared by the three playback events.

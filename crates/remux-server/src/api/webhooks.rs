@@ -942,4 +942,209 @@ mod tests {
             "a deleted webhook must stop receiving events"
         );
     }
+
+    // --- the emission sites -----------------------------------------------
+    //
+    // These drive real HTTP endpoints and watch a real socket. Each mock
+    // matches the *exact* body it expects, so a hit proves both that the site
+    // emits and that the event carried the right data — a wrong payload leaves
+    // the mock at zero hits and fails the wait.
+
+    /// The one variable every template below echoes, plus the event kind, so a
+    /// site wired to the wrong variant cannot pass.
+    fn echo_template(variable: &str) -> String {
+        format!(
+            r#"{{"content":"{{{{{variable}}}}}","type":"{{{{NotificationType}}}}"}}"#
+        )
+    }
+
+    fn echoed(content: &str, notification_type: NotificationType) -> String {
+        format!(r#"{{"content":"{content}","type":"{notification_type}"}}"#)
+    }
+
+    /// `POST /sessions/playing` reaches a hook subscribed to `PlaybackStart`,
+    /// carrying the item that is being played.
+    #[tokio::test]
+    async fn a_playback_start_reaches_a_configured_webhook() {
+        let (server, guard, token) = authenticated_server().await;
+        let (h, v) = auth(&token);
+        let media = crate::integration_test::insert_test_source(&guard.0).await;
+
+        let endpoint_server = MockServer::start_async().await;
+        let endpoint = endpoint_server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/hook")
+                    .body(echoed(&media.title, NotificationType::PlaybackStart));
+                then.status(200);
+            })
+            .await;
+
+        create(
+            &server,
+            &h,
+            &v,
+            &WebhookDto {
+                notification_types: vec![NotificationType::PlaybackStart],
+                template: echo_template("Name"),
+                ..hook_dto("playback", &endpoint_server.url("/hook"))
+            },
+        )
+        .await;
+
+        server
+            .post("/sessions/playing")
+            .add_header(h.clone(), v.clone())
+            .json(&json!({
+                "ItemId": media.id,
+                "PlaySessionId": "emission-test",
+                "PositionTicks": 1_500_000_000i64,
+                "CanSeek": true,
+                "IsPaused": false,
+                "IsMuted": false,
+                "PlayMethod": "DirectPlay",
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        eventually("the playback start to reach the webhook", async || {
+            hits(&endpoint).await == 1
+        })
+        .await;
+    }
+
+    /// `DELETE /items/{id}` reaches a hook subscribed to `ItemDeleted` with the
+    /// deleted item's own data — which only works because the row is captured
+    /// before the DELETE. The row is gone by the time the payload is built, so
+    /// anything that re-read it would render an empty name.
+    #[tokio::test]
+    async fn an_item_deletion_carries_the_deleted_items_data() {
+        let (server, guard, token) = authenticated_server().await;
+        let (h, v) = auth(&token);
+        let media = crate::integration_test::insert_test_source(&guard.0).await;
+
+        let endpoint_server = MockServer::start_async().await;
+        let endpoint = endpoint_server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/hook")
+                    .body(echoed(&media.title, NotificationType::ItemDeleted));
+                then.status(200);
+            })
+            .await;
+
+        create(
+            &server,
+            &h,
+            &v,
+            &WebhookDto {
+                notification_types: vec![NotificationType::ItemDeleted],
+                template: echo_template("Name"),
+                ..hook_dto("deletions", &endpoint_server.url("/hook"))
+            },
+        )
+        .await;
+
+        server
+            .delete(&format!("/items/{}", media.id))
+            .add_header(h.clone(), v.clone())
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        assert!(
+            db::Media::get_by_id(
+                &guard
+                    .0
+                    .db,
+                &media.id
+            )
+            .await
+            .expect("the lookup must succeed")
+            .is_none(),
+            "the row must really be gone, or this test proves nothing"
+        );
+
+        eventually("the deletion to reach the webhook", async || {
+            hits(&endpoint).await == 1
+        })
+        .await;
+    }
+
+    /// A failed login emits `AuthenticationFailure` — and answers with exactly
+    /// the same 401 it answered before any webhook existed. A successful login
+    /// must not emit it.
+    #[tokio::test]
+    async fn an_authentication_failure_emits_without_changing_the_401() {
+        let (server, _guard, token) = authenticated_server().await;
+        let (h, v) = auth(&token);
+
+        let bad_login = async || {
+            server
+                .post("/users/authenticatebyname")
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_static(AUTH_HEADER),
+                )
+                .json(&json!({ "Username": "test", "Pw": "wrong" }))
+                .expect_failure()
+                .await
+        };
+
+        // Baseline: the refusal as it is with nothing listening.
+        let before = bad_login().await;
+        before.assert_status(StatusCode::UNAUTHORIZED);
+        let before_body = before.text();
+
+        let endpoint_server = MockServer::start_async().await;
+        let endpoint = endpoint_server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/hook")
+                    .body(echoed("test", NotificationType::AuthenticationFailure));
+                then.status(200);
+            })
+            .await;
+        create(
+            &server,
+            &h,
+            &v,
+            &WebhookDto {
+                notification_types: vec![NotificationType::AuthenticationFailure],
+                template: echo_template("NotificationUsername"),
+                ..hook_dto("failures", &endpoint_server.url("/hook"))
+            },
+        )
+        .await;
+
+        let after = bad_login().await;
+        after.assert_status(StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            after.text(),
+            before_body,
+            "emitting must not change the refusal a client sees"
+        );
+
+        eventually("the failed login to reach the webhook", async || {
+            hits(&endpoint).await == 1
+        })
+        .await;
+
+        // The credential check is the trigger, not the endpoint: a login that
+        // succeeds must not report a failure.
+        server
+            .post("/users/authenticatebyname")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_static(AUTH_HEADER),
+            )
+            .json(&json!({ "Username": "test", "Pw": "test" }))
+            .await
+            .assert_status_ok();
+        settle().await;
+        assert_eq!(
+            hits(&endpoint).await,
+            1,
+            "a successful login must not emit AuthenticationFailure"
+        );
+    }
 }

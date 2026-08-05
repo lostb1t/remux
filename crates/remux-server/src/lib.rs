@@ -277,6 +277,9 @@ pub async fn init_app(
         .spawn_cleanup_task(
             std::time::Duration::from_secs(60),
             std::time::Duration::from_secs(60 * 15),
+            conn.clone(),
+            ctx.webhooks
+                .clone(),
         );
 
     // Fans emitted webhook events out to the enabled webhooks.

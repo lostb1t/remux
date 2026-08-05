@@ -71,8 +71,13 @@ pub(crate) struct ItemContext {
     pub genres: Vec<String>,
 }
 
-/// The identity of this server, resolved once when the dispatcher starts.
-#[derive(Debug, Clone)]
+/// The identity of this server, resolved whenever the dispatcher's snapshot is
+/// (re)loaded — a rename must not keep shipping the old name until restart.
+///
+/// `Default` is the pre-first-load placeholder only. The dispatcher loads the
+/// snapshot before it reads its first event, so no delivery is ever built from
+/// it.
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ServerInfo {
     pub id: String,
     pub name: String,
