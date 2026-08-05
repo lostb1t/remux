@@ -712,6 +712,12 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
                 on_close: move |_| editing.set(None),
                 on_saved: move |_| {
                     editing.set(None);
+                    // A successful save supersedes whatever a previous toggle or
+                    // delete failed at — leaving the banner up would make it lie.
+                    // A successful *test* deliberately does not clear it: a
+                    // reachable endpoint says nothing about whether the failed
+                    // write went through, and the test has its own per-row line.
+                    action_error.set(None);
                     let v = *refresh.peek() + 1;
                     refresh.set(v);
                 },
@@ -750,12 +756,17 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
                                             let cc = c.clone();
                                             spawn(async move {
                                                 match cc.execute(DeleteWebhook { id }).await {
-                                                    Ok(_) => action_error.set(None),
+                                                    Ok(_) => {
+                                                        action_error.set(None);
+                                                        // Only once the row is really gone: a
+                                                        // refused delete leaves the row on screen
+                                                        // and must leave its test result with it.
+                                                        tests.write().remove(&id);
+                                                    }
                                                     // Without this the row simply stays and the
                                                     // refusal is invisible.
                                                     Err(e) => action_error.set(Some(action_failure("delete webhook", &e))),
                                                 }
-                                                tests.write().remove(&id);
                                                 to_delete.set(None);
                                                 deleting.set(false);
                                                 let v = *refresh.peek() + 1;
