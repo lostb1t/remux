@@ -795,6 +795,8 @@ pub async fn items_flat(
     session: auth::AuthSession,
     Query(mut q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
+    // Jellyfin ignores the MediaTypes query parameter for this request. 
+    // Without this, supplying a value (e.g. Video) would exclude Series collections.
     q.media_types = None;
     if let Some(parent_id) = q
         .parent_id
