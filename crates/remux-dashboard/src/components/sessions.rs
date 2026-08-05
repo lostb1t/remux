@@ -210,13 +210,13 @@ pub fn ActivityCard(app_state: AppState) -> Element {
                     }
 
                     div { class: "pagination-bar",
-                        span { class: "pagination-summary",
-                            "{offset + 1}–{(offset + ps).min(total)} of {total}"
-                        }
-                        div { class: "flex items-center gap-2",
+                        div { class: "flex items-center gap-1",
+                            span { class: "pagination-summary",
+                                "{offset + 1}–{(offset + ps).min(total)} of {total}"
+                            }
+                            span { class: "pagination-size-label", "·" }
                             select {
-                                class: "select-input",
-                                style: "height:28px;font-size:.72rem;width:auto;padding:0 8px",
+                                class: "pagination-size-select",
                                 value: "{ps}",
                                 onchange: move |evt| {
                                     if let Ok(v) = evt.value().parse::<i64>() {
@@ -229,6 +229,9 @@ pub fn ActivityCard(app_state: AppState) -> Element {
                                 option { value: "50", selected: ps == 50, "50" }
                                 option { value: "100", selected: ps == 100, "100" }
                             }
+                            span { class: "pagination-size-label", "/ page" }
+                        }
+                        div { class: "flex items-center gap-2",
                             {
                                 let total_pages = ((total as f64) / (ps as f64)).ceil() as i64;
                                 let current_page = offset / ps;
