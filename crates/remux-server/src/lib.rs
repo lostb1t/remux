@@ -261,6 +261,7 @@ pub async fn init_app(
         )),
         web_paths,
         addons,
+        webhooks: services::webhooks::WebhookService::new(),
         started_at: Utc::now(),
     };
 
@@ -277,6 +278,11 @@ pub async fn init_app(
             std::time::Duration::from_secs(60),
             std::time::Duration::from_secs(60 * 15),
         );
+
+    // Fans emitted webhook events out to the enabled webhooks.
+    ctx.webhooks
+        .clone()
+        .spawn_dispatcher(ctx.clone());
 
     db::StreamGroup::migrate_from_settings(&conn).await;
 
@@ -348,6 +354,7 @@ pub struct AppContext {
     /// Present in filesystem builds; `None` in desktop (assets are embedded).
     pub web_paths: Option<FilesystemPaths>,
     pub addons: addons::AddonService,
+    pub webhooks: services::webhooks::WebhookService,
     /// When this server process started.
     pub started_at: chrono::DateTime<chrono::Utc>,
 }
