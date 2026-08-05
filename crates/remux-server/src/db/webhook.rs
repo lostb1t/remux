@@ -195,8 +195,11 @@ mod tests {
                 songs: false,
                 ..Default::default()
             },
+            // Distinct values on purpose: these three bools sit on adjacent
+            // placeholders of the same type, so identical values would let any
+            // permutation of the binds pass.
             send_all_properties: true,
-            trim_whitespace: true,
+            trim_whitespace: false,
             skip_empty_message_body: true,
             created_at: None,
             updated_at: None,
@@ -230,6 +233,9 @@ mod tests {
         assert_eq!(fetched.url, "https://example.test/hook");
         assert_eq!(fetched.template, "{{ItemName}}");
         assert!(fetched.enabled);
+        assert!(fetched.send_all_properties);
+        assert!(!fetched.trim_whitespace);
+        assert!(fetched.skip_empty_message_body);
     }
 
     #[tokio::test]
@@ -447,8 +453,10 @@ mod tests {
                 movies: false,
                 ..Default::default()
             },
+            // Inverse of the fixture, and still distinct from each other, so a
+            // transposed bind in `update` cannot go unnoticed either.
             send_all_properties: false,
-            trim_whitespace: false,
+            trim_whitespace: true,
             skip_empty_message_body: false,
             created_at: None,
             updated_at: None,
@@ -464,7 +472,7 @@ mod tests {
         assert_eq!(updated.url, "https://example.test/other");
         assert_eq!(updated.template, "{{SeriesName}}");
         assert!(!updated.send_all_properties);
-        assert!(!updated.trim_whitespace);
+        assert!(updated.trim_whitespace);
         assert!(!updated.skip_empty_message_body);
 
         // JSON columns actually changed.
@@ -504,6 +512,9 @@ mod tests {
         assert_eq!(fetched.destination, patch.destination);
         assert_eq!(fetched.name, "renamed");
         assert_eq!(fetched.updated_at, updated.updated_at);
+        assert!(!fetched.send_all_properties);
+        assert!(fetched.trim_whitespace);
+        assert!(!fetched.skip_empty_message_body);
     }
 
     #[tokio::test]
