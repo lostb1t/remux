@@ -14,7 +14,5 @@ pub(crate) fn render(
     registry: &Handlebars<'static>,
     data: &Map<String, Value>,
 ) -> anyhow::Result<Option<String>> {
-    Ok(Some(
-        registry.render_template(&hook.template, data)?,
-    ))
+    Ok(Some(registry.render_template(&hook.template, data)?))
 }

@@ -5,7 +5,7 @@
 //! resolved later, off the hot path, by the dispatcher.
 
 use crate::db;
-use remux_sdks::remux::NotificationType;
+use remux_sdks::remux::{NotificationType, PlayMethod};
 use uuid::Uuid;
 
 /// The user a webhook event is attributed to.
@@ -32,7 +32,7 @@ pub struct PlaybackEventData {
     pub device: DeviceEventData,
     pub position_ticks: i64,
     pub is_paused: bool,
-    pub play_method: Option<String>,
+    pub play_method: Option<PlayMethod>,
 }
 
 /// Why a `UserDataSaved` event was raised.
@@ -210,7 +210,7 @@ mod tests {
             device: device(),
             position_ticks: 123,
             is_paused: false,
-            play_method: Some("DirectStream".into()),
+            play_method: Some(PlayMethod::DirectStream),
         }
     }
 

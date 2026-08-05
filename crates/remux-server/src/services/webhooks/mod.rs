@@ -90,6 +90,12 @@ impl WebhookService {
     /// Replace the cached snapshot from the database. On error the previous
     /// snapshot is kept — a transient DB failure must not silently disable
     /// every webhook.
+    ///
+    /// Invariant: this is the only writer of `cache`, and it is only ever
+    /// called from the dispatcher task itself, at a point where that task
+    /// holds no read guard. That is what makes it safe for the dispatcher to
+    /// hold the read guard across `enrich_item().await` — no other task can be
+    /// waiting for the write lock.
     async fn reload(&self, db: &sqlx::SqlitePool) {
         let hooks = match db::Webhook::get_enabled(db).await {
             Ok(hooks) => hooks,
@@ -166,12 +172,18 @@ impl WebhookService {
         true
     }
 
-    /// Run the dispatcher until the channel closes. Owns the only receiver.
+    /// Run the dispatcher for the lifetime of the process. Owns the only
+    /// receiver.
+    ///
+    /// The receiver is created here rather than inside the task: a broadcast
+    /// channel drops sends that happen while it has no subscriber, and
+    /// `init_app` starts emitting (library scan, startup tasks) before the
+    /// spawned task gets its first poll.
     pub fn spawn_dispatcher(self, ctx: AppContext) -> JoinHandle<()> {
+        let mut rx = self
+            .tx
+            .subscribe();
         tokio::spawn(async move {
-            let mut rx = self
-                .tx
-                .subscribe();
             self.reload(&ctx.db)
                 .await;
 
@@ -212,7 +224,10 @@ impl WebhookService {
                 let item = payload::enrich_item(&ctx, &event).await;
                 let item_kind = item
                     .as_ref()
-                    .map(|i| &i.media.kind);
+                    .map(|i| {
+                        &i.media
+                            .kind
+                    });
                 let targets: Vec<&db::Webhook> = cache
                     .hooks
                     .iter()
@@ -246,9 +261,7 @@ impl WebhookService {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use remux_sdks::remux::{
-        DiscordMentionType, WebhookDestination, WebhookItemTypes,
-    };
+    use remux_sdks::remux::{DiscordMentionType, WebhookDestination, WebhookItemTypes};
     use uuid::Uuid;
 
     const NONE_ENABLED: WebhookItemTypes = WebhookItemTypes {
@@ -371,11 +384,7 @@ mod tests {
     #[test]
     fn empty_user_filter_accepts_any_user() {
         let hook = permissive(vec![NotificationType::PlaybackStart]);
-        assert!(WebhookService::matches(
-            &hook,
-            &playback_by(alice()),
-            None
-        ));
+        assert!(WebhookService::matches(&hook, &playback_by(alice()), None));
         assert!(WebhookService::matches(
             &hook,
             &playback_by(Uuid::from_u128(99)),
