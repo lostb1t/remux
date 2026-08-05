@@ -41,6 +41,11 @@ use uuid::Uuid;
 /// then blackholes it would hold its task — and its delivery slot — forever.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Timeout for the admin "test this webhook" request, applied per request so
+/// [`REQUEST_TIMEOUT`] keeps governing background delivery. Shorter because the
+/// caller is an operator watching a button, not a retrying background task.
+const TEST_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Ceiling on deliveries in flight **per hook**.
 const MAX_CONCURRENT_DELIVERIES_PER_HOOK: usize = 4;
 
@@ -59,10 +64,18 @@ const MAX_LOGGED_RESPONSE: usize = 512;
 
 /// One client for the whole process: a client per delivery would rebuild the
 /// TLS config and throw away the connection pool on every event.
+///
+/// Redirects are **not** followed. `reqwest`'s default is up to ten hops, which
+/// would let a webhook URL the operator vetted hand the request to a host they
+/// never saw — the redirect target is chosen by the remote server, at request
+/// time, and would be reached from inside the network the server runs in. No
+/// real webhook receiver (Discord, Slack, Gotify, Teams) redirects, so there is
+/// nothing to trade away: a 3xx is simply reported as the non-2xx it is.
 static WEBHOOK_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
         .user_agent("remux-server/1.0")
         .timeout(REQUEST_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("failed to build the webhook HTTP client")
 });
@@ -262,14 +275,30 @@ pub(crate) async fn send_once(
 ///
 /// A single attempt on purpose: the retry policy exists so a transient failure
 /// does not lose a *notification*, but here an operator is waiting on the
-/// answer and what they need to see is what the endpoint said just now. The
-/// process-wide [`REQUEST_TIMEOUT`] still applies, so a hostile URL cannot pin
-/// the request handler.
+/// answer and what they need to see is what the endpoint said just now.
 ///
-/// The error text comes from [`SendError`], which is already redacted — a
-/// webhook URL is a credential and must not travel back to the browser.
+/// **The remote response body never travels back to the caller.** The hook's
+/// URL, headers and body are all admin-controlled and unrestricted by host, so
+/// echoing the response would turn this endpoint into a read primitive: point a
+/// hook at an internal service, press Test, and read its reply out of the admin
+/// API — from where it reaches browser devtools and support tickets. Only the
+/// status line comes back; the body stays in the server-side log line that
+/// [`deliver_logged`] writes.
+///
+/// The transport-error text is [`SendError`]'s, which is already redacted — a
+/// webhook URL is a credential and must not travel back either.
 pub(crate) async fn send_test(hook: &db::Webhook, body: &str) -> WebhookTestResult {
-    match attempt_once(hook, body).await {
+    send_test_with(hook, body, TEST_REQUEST_TIMEOUT).await
+}
+
+/// [`send_test`] with the timeout injected, so a test can prove it is applied
+/// without waiting for the real one.
+async fn send_test_with(
+    hook: &db::Webhook,
+    body: &str,
+    timeout: Duration,
+) -> WebhookTestResult {
+    match attempt_once_within(hook, body, Some(timeout)).await {
         Ok(response) => WebhookTestResult {
             success: true,
             status_code: Some(
@@ -279,24 +308,47 @@ pub(crate) async fn send_test(hook: &db::Webhook, body: &str) -> WebhookTestResu
             ),
             error: None,
         },
+        // Status only. `e.message` carries up to MAX_LOGGED_RESPONSE bytes of
+        // the remote body and must not leave the server.
+        Err(SendError {
+            status: Some(status),
+            ..
+        }) => WebhookTestResult {
+            success: false,
+            status_code: Some(status.as_u16()),
+            error: Some(format!("endpoint returned {status}")),
+        },
+        // Nothing reached the endpoint: DNS, connect, TLS or timeout. The
+        // message is ours, not the remote's.
         Err(e) => WebhookTestResult {
             success: false,
-            status_code: e
-                .status
-                .map(|status| status.as_u16()),
+            status_code: None,
             error: Some(e.to_string()),
         },
     }
+}
+
+/// One POST under the client's own [`REQUEST_TIMEOUT`].
+async fn attempt_once(
+    hook: &db::Webhook,
+    body: &str,
+) -> Result<reqwest::Response, SendError> {
+    attempt_once_within(hook, body, None).await
 }
 
 /// One POST, classified.
 ///
 /// `reqwest` treats a 4xx/5xx as a perfectly good response, so the status is
 /// checked here: without this every failed delivery would be reported as a
-/// success and the retry would never fire.
-async fn attempt_once(
+/// success and the retry would never fire. Redirects are not followed (see
+/// [`WEBHOOK_CLIENT`]), so a 3xx lands in the same non-2xx branch.
+///
+/// `timeout` overrides the client default for this request only; `None` keeps
+/// [`REQUEST_TIMEOUT`].
+async fn attempt_once_within(
     hook: &db::Webhook,
     body: &str,
+    timeout: Option<Duration>,
 ) -> Result<reqwest::Response, SendError> {
     let shaped = shape_request(hook, body);
     let mut request = WEBHOOK_CLIENT
@@ -304,6 +356,9 @@ async fn attempt_once(
         .header(CONTENT_TYPE, shaped.content_type);
     for (name, value) in shaped.headers {
         request = request.header(name, value);
+    }
+    if let Some(timeout) = timeout {
+        request = request.timeout(timeout);
     }
     let response = request
         .body(shaped.body)
@@ -1035,6 +1090,156 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    // --- send_test: what reaches the admin API -----------------------------
+
+    /// The hook's URL, headers and body are all admin-controlled and no host
+    /// policy restricts them, so returning the endpoint's *response body* would
+    /// make the test button a read primitive: aim a hook at an internal service,
+    /// press Test, and read its reply out of the admin API response. Only the
+    /// status may come back.
+    #[tokio::test]
+    async fn send_test_reports_the_status_without_the_remote_response_body() {
+        let server = MockServer::start_async().await;
+        let secret = "consul-token=s3cret internal detail";
+        let mock = server
+            .mock_async(|when, then| {
+                when.path("/hook");
+                then.status(500)
+                    .body(secret);
+            })
+            .await;
+
+        let hook = generic(&server.url("/hook"), &[]);
+        let result = send_test(&hook, "ping").await;
+
+        assert!(!result.success);
+        assert_eq!(result.status_code, Some(500));
+        let error = result
+            .error
+            .expect("a failed test must carry an error");
+        assert_eq!(error, "endpoint returned 500 Internal Server Error");
+        assert!(
+            !error.contains("consul-token"),
+            "the remote body must not reach the caller: {error}"
+        );
+        assert!(!error.contains("internal detail"), "{error}");
+        mock.assert_hits_async(1)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn send_test_reports_a_2xx_as_a_success() {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.path("/hook");
+                then.status(202);
+            })
+            .await;
+
+        let hook = generic(&server.url("/hook"), &[]);
+        let result = send_test(&hook, "ping").await;
+        assert!(result.success);
+        assert_eq!(result.status_code, Some(202));
+        assert_eq!(result.error, None);
+    }
+
+    /// The test request carries its own, shorter timeout so a blackholing
+    /// endpoint cannot hold an admin request handler for the full
+    /// [`REQUEST_TIMEOUT`]. Injected here so the test costs milliseconds.
+    #[tokio::test]
+    async fn send_test_applies_its_own_timeout_to_the_request() {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.path("/hook");
+                then.status(200)
+                    .delay(Duration::from_secs(5));
+            })
+            .await;
+
+        let hook = generic(&server.url("/hook"), &[]);
+        let started = Instant::now();
+        let result = send_test_with(&hook, "ping", Duration::from_millis(100)).await;
+        let elapsed = started.elapsed();
+
+        assert!(!result.success, "a timed-out request is not a success");
+        assert_eq!(result.status_code, None, "nothing answered");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "the per-request timeout must fire long before the response: {elapsed:?}"
+        );
+    }
+
+    // --- redirects ----------------------------------------------------------
+
+    /// `reqwest` follows up to ten redirects by default, which would let a
+    /// vetted webhook URL hand the request to a host chosen by the remote server
+    /// at request time — reached from inside the network the server runs in.
+    /// The redirect is reported as the non-2xx it is instead.
+    #[tokio::test]
+    async fn a_redirect_is_not_followed() {
+        let server = MockServer::start_async().await;
+        let redirect = server
+            .mock_async(|when, then| {
+                when.path("/hook");
+                then.status(302)
+                    .header("location", "/internal");
+            })
+            .await;
+        let target = server
+            .mock_async(|when, then| {
+                when.path("/internal");
+                then.status(200)
+                    .body("secrets");
+            })
+            .await;
+
+        let hook = generic(&server.url("/hook"), &[]);
+        let result = send_test(&hook, "ping").await;
+
+        redirect
+            .assert_hits_async(1)
+            .await;
+        target
+            .assert_hits_async(0)
+            .await;
+        assert!(!result.success, "a 302 is not a delivered webhook");
+        assert_eq!(result.status_code, Some(302));
+    }
+
+    /// The same policy has to hold on the background delivery path, and a 302
+    /// must not be retried — repeating it verbatim would never succeed.
+    #[tokio::test]
+    async fn a_redirect_is_not_followed_or_retried_during_delivery() {
+        let server = MockServer::start_async().await;
+        let redirect = server
+            .mock_async(|when, then| {
+                when.path("/hook");
+                then.status(302)
+                    .header("location", "/internal");
+            })
+            .await;
+        let target = server
+            .mock_async(|when, then| {
+                when.path("/internal");
+                then.status(200);
+            })
+            .await;
+
+        let hook = generic(&server.url("/hook"), &[]);
+        deliver_with(&hook, "ping", &FAST)
+            .await
+            .expect_err("a redirect is not a delivery");
+
+        redirect
+            .assert_hits_async(1)
+            .await;
+        target
+            .assert_hits_async(0)
+            .await;
     }
 
     // --- retry -------------------------------------------------------------

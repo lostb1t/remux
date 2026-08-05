@@ -760,17 +760,24 @@ mod tests {
     /// dashboard needs the status to show it. And it is one attempt — the retry
     /// policy belongs to background delivery, not to an operator waiting on an
     /// answer.
+    ///
+    /// The remote's **response body** must not come back. The URL is
+    /// admin-controlled and unrestricted by host, so echoing what the endpoint
+    /// said would make this route a read primitive against anything the server
+    /// can reach; this asserts on the raw HTTP response, not just the parsed
+    /// field, so no route out of the handler is missed.
     #[tokio::test]
     async fn the_test_endpoint_reports_a_rejecting_endpoint_without_retrying() {
         let (server, _guard, token) = authenticated_server().await;
         let (h, v) = auth(&token);
         let endpoint_server = MockServer::start_async().await;
+        let leak = "consul-token=s3cret internal detail";
         let endpoint = endpoint_server
             .mock_async(|when, then| {
                 when.method(POST)
                     .path("/hook");
                 then.status(500)
-                    .body("nope");
+                    .body(leak);
             })
             .await;
 
@@ -782,18 +789,25 @@ mod tests {
         )
         .await;
 
-        let result: WebhookTestResult = server
+        let response = server
             .post(&format!("/remux/webhooks/{}/test", created.id))
             .add_header(h, v)
-            .await
-            .json();
+            .await;
+        let raw = response.text();
+        let result: WebhookTestResult = response.json();
 
         assert!(!result.success);
         assert_eq!(result.status_code, Some(500));
         let error = result
             .error
+            .clone()
             .expect("a failed test must carry an error");
         assert!(error.contains("500"), "{error}");
+        assert!(
+            !raw.contains("consul-token"),
+            "the remote response body must not reach the admin API: {raw}"
+        );
+        assert!(!raw.contains("internal detail"), "{raw}");
         endpoint
             .assert_hits_async(1)
             .await;
