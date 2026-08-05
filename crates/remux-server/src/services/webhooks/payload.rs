@@ -11,7 +11,9 @@
 
 use super::events::{DeviceEventData, PlaybackEventData, UserEventData, WebhookEvent};
 use crate::{AppContext, db};
-use remux_sdks::remux::{MediaStream, MediaStreamType, WebhookDestination};
+use remux_sdks::remux::{
+    DiscordMentionType, MediaStream, MediaStreamType, WebhookDestination,
+};
 use serde_json::{Map, Value};
 use std::borrow::Cow;
 use tracing::warn;
@@ -25,6 +27,11 @@ const COMPLETION_RATIO: f64 = 0.9;
 
 /// Name used when the server has none configured.
 const DEFAULT_SERVER_NAME: &str = "remux";
+
+/// Discord's own default embed colour (`0x3399FF`), as hardcoded by the
+/// Jellyfin webhook plugin's stock Discord templates. Used when a hook names no
+/// colour or names an unparseable one.
+const DEFAULT_EMBED_COLOR: u32 = 3_381_759;
 
 /// The `ItemType` a template sees. Narrower than [`db::MediaKind`] on purpose:
 /// it is the Jellyfin `BaseItemKind` subset the webhook plugin emits, and
@@ -176,31 +183,108 @@ pub(crate) fn build_data(
     data
 }
 
-/// Per-hook overlay: a `Generic` destination's operator-defined fields are
-/// visible to that hook's template. Borrowed — and therefore free — for every
-/// hook that defines none.
+/// Per-hook overlay: the destination's own settings become template variables,
+/// exactly as the Jellyfin webhook plugin's clients do before rendering.
+///
+/// - `Generic` contributes the operator-defined `fields` under their own keys
+///   (`GenericClient.SendAsync`).
+/// - `Discord` contributes `MentionType`, `EmbedColor`, `AvatarUrl`, `Username`
+///   and `BotUsername` (`DiscordClient.SendAsync`) — which is what lets a
+///   Discord template copied from the plugin render the whole payload itself.
+///
+/// Borrowed — and therefore free — when the hook contributes nothing.
 pub(crate) fn with_hook_fields<'a>(
     data: &'a Map<String, Value>,
     hook: &db::Webhook,
 ) -> Cow<'a, Map<String, Value>> {
-    let fields = match &hook.destination {
-        WebhookDestination::Generic { fields, .. } if !fields.is_empty() => fields,
-        _ => return Cow::Borrowed(data),
-    };
-    let mut merged = data.clone();
-    for field in fields {
-        merged.insert(
-            field
-                .key
-                .clone(),
-            Value::String(
-                field
-                    .value
-                    .clone(),
-            ),
-        );
+    match &hook.destination {
+        WebhookDestination::Generic { fields, .. } => {
+            if fields.is_empty() {
+                return Cow::Borrowed(data);
+            }
+            let mut merged = data.clone();
+            for field in fields {
+                merged.insert(
+                    field
+                        .key
+                        .clone(),
+                    Value::String(
+                        field
+                            .value
+                            .clone(),
+                    ),
+                );
+            }
+            Cow::Owned(merged)
+        }
+        // Key spellings, value formats and presence rules follow
+        // `DiscordClient.SendAsync` literally: `MentionType` is always set (to
+        // the empty string for `None`), the other three only when configured,
+        // and a username lands under both `Username` and `BotUsername`.
+        WebhookDestination::Discord {
+            avatar_url,
+            bot_username,
+            embed_color,
+            mention_type,
+        } => {
+            let mut merged = data.clone();
+            merged.insert(
+                "MentionType".into(),
+                Value::String(mention_type_variable(*mention_type).to_string()),
+            );
+            if let Some(hex) = non_empty(embed_color.as_deref()) {
+                merged.insert(
+                    "EmbedColor".into(),
+                    Value::Number(parse_embed_color(hex).into()),
+                );
+            }
+            if let Some(url) = non_empty(avatar_url.as_deref()) {
+                merged.insert("AvatarUrl".into(), Value::String(url.to_string()));
+            }
+            if let Some(username) = non_empty(bot_username.as_deref()) {
+                merged.insert("Username".into(), Value::String(username.to_string()));
+                merged
+                    .insert("BotUsername".into(), Value::String(username.to_string()));
+            }
+            Cow::Owned(merged)
+        }
     }
-    Cow::Owned(merged)
+}
+
+/// What `{{MentionType}}` renders to. Empty for `None`, as in the plugin's
+/// `DiscordClient.GetMentionType`.
+fn mention_type_variable(mention_type: DiscordMentionType) -> &'static str {
+    match mention_type {
+        DiscordMentionType::None => "",
+        DiscordMentionType::Here => "@here",
+        DiscordMentionType::Everyone => "@everyone",
+    }
+}
+
+/// `#RRGGBB` (or bare `RRGGBB`) as the integer Discord wants, mirroring the
+/// plugin's `FormatColorCode` — except that the plugin slices `hexCode[1..6]`
+/// and silently drops the last hex digit, turning `#AA5CC3` into 697 804. That
+/// bug is deliberately **not** reproduced: an admin gets the colour they pick.
+///
+/// Anything unparseable falls back to [`DEFAULT_EMBED_COLOR`] rather than
+/// throwing as the plugin does — this is operator input and must never fail a
+/// delivery.
+pub(crate) fn parse_embed_color(hex: &str) -> u32 {
+    let hex = hex
+        .trim()
+        .trim_start_matches('#');
+    if hex.len() != 6
+        || !hex
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit())
+    {
+        return DEFAULT_EMBED_COLOR;
+    }
+    u32::from_str_radix(hex, 16).unwrap_or(DEFAULT_EMBED_COLOR)
+}
+
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.filter(|value| !value.is_empty())
 }
 
 // --- item -----------------------------------------------------------------
@@ -812,15 +896,6 @@ mod tests {
         }
     }
 
-    fn discord() -> db::Webhook {
-        hook(WebhookDestination::Discord {
-            avatar_url: None,
-            bot_username: None,
-            embed_color: None,
-            mention_type: DiscordMentionType::None,
-        })
-    }
-
     // --- common variables -------------------------------------------------
 
     #[test]
@@ -1302,11 +1377,160 @@ mod tests {
     }
 
     #[test]
-    fn hook_fields_are_only_merged_for_generic_destinations() {
+    fn a_generic_hook_with_no_fields_borrows_the_dictionary() {
         let base = build_data(&server(), &item_added(), Some(&episode()));
-        let merged = with_hook_fields(&base, &discord());
+        let merged = with_hook_fields(
+            &base,
+            &hook(WebhookDestination::Generic {
+                headers: vec![],
+                fields: vec![],
+            }),
+        );
         assert_eq!(merged.len(), base.len());
         assert!(matches!(merged, Cow::Borrowed(_)), "no clone is needed");
+    }
+
+    // --- discord destination variables -------------------------------------
+
+    fn discord_with(
+        avatar_url: Option<&str>,
+        bot_username: Option<&str>,
+        embed_color: Option<&str>,
+        mention_type: DiscordMentionType,
+    ) -> db::Webhook {
+        hook(WebhookDestination::Discord {
+            avatar_url: avatar_url.map(str::to_string),
+            bot_username: bot_username.map(str::to_string),
+            embed_color: embed_color.map(str::to_string),
+            mention_type,
+        })
+    }
+
+    fn discord_vars(hook: &db::Webhook) -> Map<String, Value> {
+        let base = build_data(&server(), &item_added(), Some(&episode()));
+        with_hook_fields(&base, hook).into_owned()
+    }
+
+    /// `DiscordClient.SendAsync` always sets `MentionType`, empty for `None`.
+    /// This is what `{{MentionType}}` in a plugin template resolves against.
+    #[test]
+    fn discord_always_exposes_the_mention_type() {
+        for (mention_type, expected) in [
+            (DiscordMentionType::None, ""),
+            (DiscordMentionType::Here, "@here"),
+            (DiscordMentionType::Everyone, "@everyone"),
+        ] {
+            let data = discord_vars(&discord_with(None, None, None, mention_type));
+            assert_eq!(
+                str_at(&data, "MentionType"),
+                expected,
+                "{mention_type:?} must render as {expected:?}"
+            );
+        }
+    }
+
+    /// The plugin sets a username under **both** `Username` and `BotUsername`,
+    /// and only when it is non-empty. Its stock templates use `{{BotUsername}}`.
+    #[test]
+    fn discord_exposes_the_bot_identity_under_the_plugin_keys() {
+        let data = discord_vars(&discord_with(
+            Some("https://example.test/a.png"),
+            Some("remux"),
+            Some("#AA5CC3"),
+            DiscordMentionType::None,
+        ));
+        assert_eq!(str_at(&data, "AvatarUrl"), "https://example.test/a.png");
+        assert_eq!(str_at(&data, "Username"), "remux");
+        assert_eq!(str_at(&data, "BotUsername"), "remux");
+    }
+
+    /// Presence parity: the plugin only inserts these keys when configured, so
+    /// an unset one must be *missing*, not present-and-empty — that is what
+    /// makes `{{#if_exist AvatarUrl}}` behave as it does in the plugin.
+    #[test]
+    fn discord_omits_the_unset_options() {
+        for hook in [
+            discord_with(None, None, None, DiscordMentionType::None),
+            discord_with(Some(""), Some(""), Some(""), DiscordMentionType::None),
+        ] {
+            let data = discord_vars(&hook);
+            for key in ["AvatarUrl", "Username", "BotUsername", "EmbedColor"] {
+                assert!(
+                    !data.contains_key(key),
+                    "{key} must be absent when it is not configured"
+                );
+            }
+            // …but the mention type is always there.
+            assert!(data.contains_key("MentionType"));
+        }
+    }
+
+    /// The plugin formats the colour into an integer before it reaches the
+    /// template (`FormatColorCode`), so `{{EmbedColor}}` is a number.
+    #[test]
+    fn discord_exposes_the_embed_color_as_an_integer() {
+        let data = discord_vars(&discord_with(
+            None,
+            None,
+            Some("#AA5CC3"),
+            DiscordMentionType::None,
+        ));
+        assert_eq!(data["EmbedColor"], Value::from(11_164_867));
+    }
+
+    /// A `Generic` hook must not gain Discord keys, and vice versa.
+    #[test]
+    fn discord_variables_are_not_exposed_to_generic_hooks() {
+        let data = with_hook_fields(
+            &build_data(&server(), &item_added(), Some(&episode())),
+            &hook(WebhookDestination::Generic {
+                headers: vec![],
+                fields: vec![WebhookKeyValue {
+                    key: "channel".into(),
+                    value: "#general".into(),
+                }],
+            }),
+        )
+        .into_owned();
+        for key in ["MentionType", "AvatarUrl", "Username", "BotUsername"] {
+            assert!(!data.contains_key(key), "{key} is Discord-only");
+        }
+    }
+
+    // --- parse_embed_color -------------------------------------------------
+
+    #[test]
+    fn parse_embed_color_reads_a_six_digit_hex() {
+        assert_eq!(parse_embed_color("#AA5CC3"), 11_164_867);
+        // Lower case and a missing '#' are both accepted.
+        assert_eq!(parse_embed_color("aa5cc3"), 11_164_867);
+        assert_eq!(parse_embed_color("#000000"), 0);
+        assert_eq!(parse_embed_color("#FFFFFF"), 16_777_215);
+    }
+
+    /// The plugin's `FormatColorCode` slices `hexCode[1..6]` and drops the last
+    /// digit, so `#AA5CC3` reaches Discord as 697 804. That bug is not ours.
+    #[test]
+    fn parse_embed_color_does_not_reproduce_the_plugin_truncation() {
+        assert_ne!(parse_embed_color("#AA5CC3"), 697_804);
+    }
+
+    #[test]
+    fn parse_embed_color_falls_back_to_the_default() {
+        for input in [
+            "",
+            "#",
+            "#AA5CC",   // too short
+            "#AA5CC3F", // too long
+            "#GGGGGG",  // not hex
+            "rebeccapurple",
+        ] {
+            assert_eq!(
+                parse_embed_color(input),
+                DEFAULT_EMBED_COLOR,
+                "{input:?} must fall back to the default colour"
+            );
+        }
     }
 
     // --- enrich_item (against a real database) -----------------------------

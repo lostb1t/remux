@@ -1,19 +1,24 @@
 //! HTTP delivery of a rendered webhook body.
 //!
 //! Everything that decides *what* goes on the wire lives in pure functions
-//! ([`shape_request`], [`build_discord_body`], [`parse_embed_color`],
-//! [`detect_content_type`]); [`send_once`] only performs the POST. A new
-//! destination is a new `WebhookDestination` variant plus an arm in
-//! [`shape_request`].
+//! ([`shape_request`], [`detect_content_type`]); [`send_once`] only performs
+//! the POST. A new destination is a new `WebhookDestination` variant plus an
+//! arm in [`shape_request`].
+//!
+//! The rendered body is never rewrapped here. Destination-specific *content* —
+//! the Discord payload, a Generic hook's extra fields — is produced by the
+//! template, from the variables [`super::payload::with_hook_fields`] puts in
+//! scope; that is how the Jellyfin webhook plugin works, and it is what lets a
+//! template written for the plugin render verbatim.
 //!
 //! Delivery is fire-and-forget: [`spawn_delivery`] never blocks its caller and
 //! every error is logged and swallowed, so a broken endpoint can neither stall
 //! the dispatcher nor surface anywhere in the server.
 
 use crate::db;
-use remux_sdks::remux::{DiscordMentionType, WebhookDestination};
+use remux_sdks::remux::WebhookDestination;
 use reqwest::header::{CONTENT_TYPE, HeaderName, HeaderValue};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::{
     sync::{Arc, LazyLock},
     time::Duration,
@@ -29,10 +34,6 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// `PlaybackProgress` stream would otherwise spawn tasks without bound; past
 /// this many, events are dropped with a warning rather than queued.
 const MAX_CONCURRENT_DELIVERIES: usize = 16;
-
-/// Discord's own default embed colour, as used by the Jellyfin webhook plugin's
-/// stock Discord templates (`0x3399FF`).
-const DEFAULT_EMBED_COLOR: u32 = 3_381_759;
 
 /// `Encoding.UTF8` on the plugin's `StringContent` puts the charset on the
 /// header; these are the two defaults [`detect_content_type`] picks between.
@@ -214,87 +215,16 @@ pub(crate) fn shape_request(hook: &db::Webhook, rendered: &str) -> ShapedRequest
                 headers: extra,
             }
         }
-        // The rendered body is the embed description; everything around it is
-        // built from the destination's own settings.
-        WebhookDestination::Discord {
-            avatar_url,
-            bot_username,
-            embed_color,
-            mention_type,
-        } => ShapedRequest {
-            body: build_discord_body(
-                avatar_url.as_deref(),
-                bot_username.as_deref(),
-                embed_color.as_deref(),
-                *mention_type,
-                rendered,
-            )
-            .to_string(),
+        // Same as the plugin's `DiscordClient`: the template already rendered
+        // the whole Discord payload — post it as-is, as JSON, with no headers
+        // of its own. The destination's settings reached the template through
+        // `payload::with_hook_fields`, not through this function.
+        WebhookDestination::Discord { .. } => ShapedRequest {
+            body: rendered.to_string(),
             content_type: HeaderValue::from_static(JSON_CONTENT_TYPE),
             headers: Vec::new(),
         },
     }
-}
-
-/// The Discord execute-webhook payload wrapping `rendered`.
-///
-/// `content` carries the mention (empty for `None`); the rendered text becomes
-/// the description of a single embed. `username` and `avatar_url` are omitted
-/// when unset rather than sent empty.
-pub(crate) fn build_discord_body(
-    avatar_url: Option<&str>,
-    bot_username: Option<&str>,
-    embed_color: Option<&str>,
-    mention_type: DiscordMentionType,
-    rendered: &str,
-) -> Value {
-    let mut embed = Map::new();
-    embed.insert("description".into(), Value::String(rendered.to_string()));
-    embed.insert(
-        "color".into(),
-        Value::Number(parse_embed_color(embed_color).into()),
-    );
-
-    let mut body = Map::new();
-    body.insert(
-        "content".into(),
-        Value::String(mention_content(mention_type).to_string()),
-    );
-    if let Some(username) = non_empty(bot_username) {
-        body.insert("username".into(), Value::String(username.to_string()));
-    }
-    if let Some(avatar) = non_empty(avatar_url) {
-        body.insert("avatar_url".into(), Value::String(avatar.to_string()));
-    }
-    body.insert("embeds".into(), Value::Array(vec![Value::Object(embed)]));
-    Value::Object(body)
-}
-
-/// What a mention type puts in Discord's `content` field.
-fn mention_content(mention_type: DiscordMentionType) -> &'static str {
-    match mention_type {
-        DiscordMentionType::None => "",
-        DiscordMentionType::Here => "@here",
-        DiscordMentionType::Everyone => "@everyone",
-    }
-}
-
-/// `#RRGGBB` (or bare `RRGGBB`) as the integer Discord wants. Anything else —
-/// including a missing colour — falls back to [`DEFAULT_EMBED_COLOR`]: the
-/// value is operator input and must never fail a delivery.
-pub(crate) fn parse_embed_color(hex: Option<&str>) -> u32 {
-    hex.map(|hex| {
-        hex.trim()
-            .trim_start_matches('#')
-    })
-    .filter(|hex| {
-        hex.len() == 6
-            && hex
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit())
-    })
-    .and_then(|hex| u32::from_str_radix(hex, 16).ok())
-    .unwrap_or(DEFAULT_EMBED_COLOR)
 }
 
 /// The content type a rendered body should be sent as when the operator has not
@@ -306,10 +236,6 @@ pub(crate) fn detect_content_type(body: &str) -> &'static str {
     } else {
         TEXT_CONTENT_TYPE
     }
-}
-
-fn non_empty(value: Option<&str>) -> Option<&str> {
-    value.filter(|value| !value.is_empty())
 }
 
 /// Truncate on a char boundary — response bodies are arbitrary bytes.
@@ -397,100 +323,6 @@ mod tests {
             .to_str()
             .expect("content type must be a valid header value")
             .to_string()
-    }
-
-    // --- parse_embed_color ------------------------------------------------
-
-    #[test]
-    fn parse_embed_color_reads_a_six_digit_hex() {
-        assert_eq!(parse_embed_color(Some("#AA5CC3")), 11_164_867);
-        // Lower case and a missing '#' are both accepted.
-        assert_eq!(parse_embed_color(Some("aa5cc3")), 11_164_867);
-        assert_eq!(parse_embed_color(Some("#000000")), 0);
-        assert_eq!(parse_embed_color(Some("#FFFFFF")), 16_777_215);
-    }
-
-    #[test]
-    fn parse_embed_color_falls_back_to_the_default() {
-        for input in [
-            None,
-            Some(""),
-            Some("#"),
-            Some("#AA5CC"),   // too short
-            Some("#AA5CC3F"), // too long
-            Some("#GGGGGG"),  // not hex
-            Some("rebeccapurple"),
-        ] {
-            assert_eq!(
-                parse_embed_color(input),
-                DEFAULT_EMBED_COLOR,
-                "{input:?} must fall back to the default colour"
-            );
-        }
-    }
-
-    // --- build_discord_body -----------------------------------------------
-
-    #[test]
-    fn discord_body_content_carries_the_mention_type() {
-        for (mention_type, expected) in [
-            (DiscordMentionType::None, ""),
-            (DiscordMentionType::Here, "@here"),
-            (DiscordMentionType::Everyone, "@everyone"),
-        ] {
-            let body = build_discord_body(None, None, None, mention_type, "hi");
-            assert_eq!(
-                body["content"],
-                json!(expected),
-                "{mention_type:?} must produce {expected:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn discord_body_wraps_the_rendered_text_in_a_single_embed() {
-        let body = build_discord_body(
-            None,
-            None,
-            Some("#AA5CC3"),
-            DiscordMentionType::None,
-            "a line",
-        );
-        let embeds = body["embeds"]
-            .as_array()
-            .expect("embeds must be an array");
-        assert_eq!(embeds.len(), 1);
-        assert_eq!(embeds[0]["description"], json!("a line"));
-        assert_eq!(embeds[0]["color"], json!(11_164_867));
-    }
-
-    #[test]
-    fn discord_body_carries_the_bot_identity_only_when_set() {
-        let with = build_discord_body(
-            Some("https://example.test/a.png"),
-            Some("remux"),
-            None,
-            DiscordMentionType::None,
-            "hi",
-        );
-        assert_eq!(with["avatar_url"], json!("https://example.test/a.png"));
-        assert_eq!(with["username"], json!("remux"));
-
-        let without =
-            build_discord_body(None, None, None, DiscordMentionType::None, "hi");
-        assert!(
-            !without
-                .as_object()
-                .unwrap()
-                .contains_key("avatar_url"),
-            "an unset avatar must not be sent as an empty string"
-        );
-        assert!(
-            !without
-                .as_object()
-                .unwrap()
-                .contains_key("username")
-        );
     }
 
     // --- detect_content_type ----------------------------------------------
@@ -595,23 +427,38 @@ mod tests {
 
     // --- shape_request: discord -------------------------------------------
 
+    /// Parity with the plugin's `DiscordClient`: the template renders the whole
+    /// Discord payload, so the sender must post it byte for byte. Wrapping it
+    /// in a server-built envelope would break every template copied from the
+    /// plugin.
     #[test]
-    fn discord_posts_the_envelope_as_json() {
+    fn discord_posts_the_rendered_body_unmodified() {
+        let rendered = r#"{"content": "@everyone", "embeds": [{"title": "A Movie"}]}"#;
         let hook =
             discord_hook("https://example.test/hook", DiscordMentionType::Everyone);
-        let shaped = shape_request(&hook, "a line");
+        let shaped = shape_request(&hook, rendered);
+        assert_eq!(shaped.body, rendered, "the body must not be rewrapped");
         assert!(
-            content_type(&hook, "a line").starts_with("application/json"),
-            "Discord always takes JSON"
+            content_type(&hook, rendered).starts_with("application/json"),
+            "Discord always takes JSON, whatever the body looks like"
         );
-        let parsed: Value =
-            serde_json::from_str(&shaped.body).expect("the body must be valid JSON");
-        assert_eq!(parsed["content"], json!("@everyone"));
-        assert_eq!(parsed["embeds"][0]["description"], json!("a line"));
         assert!(
             shaped
                 .headers
-                .is_empty()
+                .is_empty(),
+            "the plugin sends no custom headers to Discord"
+        );
+
+        // Even a body that is not valid JSON goes out untouched, as JSON: the
+        // template — not the sender — owns the payload.
+        let broken = shape_request(&hook, "not json at all");
+        assert_eq!(broken.body, "not json at all");
+        assert!(
+            broken
+                .content_type
+                .to_str()
+                .unwrap()
+                .starts_with("application/json")
         );
     }
 
