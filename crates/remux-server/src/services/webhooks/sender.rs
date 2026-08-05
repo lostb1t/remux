@@ -80,6 +80,12 @@ static DELIVERY_SLOTS: LazyLock<DeliverySlots> =
 /// Keying by hook id keeps a broken Discord URL from disabling an operator's
 /// working Slack and Gotify hooks; the total is still bounded, at
 /// `enabled hooks × limit`.
+///
+/// TODO: entries are never removed, so a delete-and-recreate cycle leaves the
+/// old hook's semaphore behind forever. It is tens of bytes per entry and only
+/// an operator can create one, so it is not worth a mechanism today; when it
+/// is, `WebhookService::reload` in `mod.rs` already knows the live hook set and
+/// is the natural place to prune from.
 pub(crate) struct DeliverySlots {
     limit: usize,
     per_hook: Mutex<HashMap<Uuid, Arc<Semaphore>>>,
@@ -290,7 +296,7 @@ async fn attempt_once(
         return Ok(response);
     }
     let retryability = classify_status(status);
-    let retry_after = retry_after(response.headers());
+    let retry_after = retry_after(status, response.headers());
     let detail = response
         .text()
         .await
@@ -346,9 +352,17 @@ pub(crate) fn classify_status(status: StatusCode) -> Retryability {
     }
 }
 
-/// How long the endpoint asked us to wait. `Retry-After` first, then Discord's
-/// `X-RateLimit-Reset-After`, which it sends alongside every 429.
-fn retry_after(headers: &HeaderMap) -> Option<Duration> {
+/// How long the endpoint asked us to wait, for a rate limit only.
+///
+/// `Retry-After` first, then Discord's `X-RateLimit-Reset-After`. Restricted to
+/// 429 on purpose: Discord attaches its rate-limit headers to responses
+/// generally, so honouring them on a 5xx would let a `x-ratelimit-reset-after:
+/// 0` collapse the exponential backoff into three immediate retries against an
+/// endpoint that is already struggling.
+fn retry_after(status: StatusCode, headers: &HeaderMap) -> Option<Duration> {
+    if status != StatusCode::TOO_MANY_REQUESTS {
+        return None;
+    }
     ["retry-after", "x-ratelimit-reset-after"]
         .into_iter()
         .filter_map(|name| {
@@ -365,6 +379,11 @@ fn retry_after(headers: &HeaderMap) -> Option<Duration> {
 /// Only the delta-seconds form is understood — that is what Discord sends, and
 /// it may be fractional. An HTTP-date, or anything unparseable, yields `None`
 /// and the normal backoff applies.
+///
+/// The cap is applied to the `f64` **before** the conversion:
+/// `Duration::from_secs_f64` panics outside `Duration`'s range, and this value
+/// comes straight off a remote response header — `Retry-After: 1e30` must be a
+/// clamped wait, not a panic in the delivery task.
 pub(crate) fn parse_retry_after(value: &str) -> Option<Duration> {
     let seconds: f64 = value
         .trim()
@@ -373,7 +392,9 @@ pub(crate) fn parse_retry_after(value: &str) -> Option<Duration> {
     if !seconds.is_finite() || seconds < 0.0 {
         return None;
     }
-    Some(Duration::from_secs_f64(seconds).min(MAX_RETRY_AFTER))
+    Some(Duration::from_secs_f64(
+        seconds.min(MAX_RETRY_AFTER.as_secs_f64()),
+    ))
 }
 
 /// `base * 2^attempt` plus jitter in `[0, base/2)`, mirroring
@@ -891,6 +912,49 @@ mod tests {
         assert_eq!(parse_retry_after("999999"), Some(MAX_RETRY_AFTER));
     }
 
+    /// `Duration::from_secs_f64` panics outside `Duration`'s range, so the cap
+    /// has to be applied to the `f64` before the conversion. These all parse as
+    /// finite, positive floats and would otherwise panic the delivery task —
+    /// remotely, from a response header, on any failing status.
+    #[test]
+    fn parse_retry_after_clamps_instead_of_panicking_on_huge_values() {
+        for value in [
+            "1e30",
+            "99999999999999999999999",
+            "179769313486231570000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+            &f64::MAX.to_string(),
+        ] {
+            assert_eq!(
+                parse_retry_after(value),
+                Some(MAX_RETRY_AFTER),
+                "{value} must clamp to the cap, not panic"
+            );
+        }
+    }
+
+    /// Discord attaches rate-limit headers to responses generally. Obeying them
+    /// on a 5xx would turn three spaced attempts into an immediate burst
+    /// against an endpoint that is already failing.
+    #[test]
+    fn rate_limit_headers_are_only_honoured_on_a_429() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-ratelimit-reset-after", HeaderValue::from_static("0"));
+        headers.insert("retry-after", HeaderValue::from_static("0"));
+
+        assert_eq!(
+            retry_after(StatusCode::TOO_MANY_REQUESTS, &headers),
+            Some(Duration::ZERO),
+            "a 429 is exactly what these headers are for"
+        );
+        for status in [500u16, 502, 503, 408] {
+            assert_eq!(
+                retry_after(StatusCode::from_u16(status).unwrap(), &headers),
+                None,
+                "{status} must fall back to the exponential backoff"
+            );
+        }
+    }
+
     // --- send_once: status handling ---------------------------------------
 
     #[tokio::test]
@@ -1024,6 +1088,46 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_secs(5),
             "Retry-After must override the backoff, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// The same headers on a 5xx must be ignored: the exponential schedule has
+    /// to survive an endpoint that advertises a zero rate-limit reset while it
+    /// is failing for an unrelated reason.
+    #[tokio::test]
+    async fn a_server_error_keeps_the_exponential_schedule() {
+        let server = MockServer::start_async().await;
+        let mock = server
+            .mock_async(|when, then| {
+                when.path("/hook");
+                then.status(500)
+                    .header("x-ratelimit-reset-after", "0")
+                    .header("retry-after", "0");
+            })
+            .await;
+
+        let hook = generic(&server.url("/hook"), &[]);
+        let policy = DeliveryPolicy {
+            attempts: 3,
+            retry_delay_ms: 150,
+        };
+        let started = Instant::now();
+        assert!(
+            deliver_with(&hook, "ping", &policy)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            mock.hits_async()
+                .await,
+            3
+        );
+        // Two backoff sleeps of at least 150 ms and 300 ms. Honouring the
+        // headers would collapse this to a burst of three immediate requests.
+        assert!(
+            started.elapsed() >= Duration::from_millis(400),
+            "the backoff was skipped, took only {:?}",
             started.elapsed()
         );
     }
