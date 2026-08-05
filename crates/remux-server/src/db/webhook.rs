@@ -197,12 +197,101 @@ mod tests {
             },
             // Distinct values on purpose: these three bools sit on adjacent
             // placeholders of the same type, so identical values would let any
-            // permutation of the binds pass.
+            // permutation of the binds pass. This shape alone still cannot
+            // catch a 1↔3 swap (both are `true`) — see `FLAG_CASES` below.
             send_all_properties: true,
             trim_whitespace: false,
             skip_empty_message_body: true,
             created_at: None,
             updated_at: None,
+        }
+    }
+
+    /// `(send_all_properties, trim_whitespace, skip_empty_message_body)`.
+    ///
+    /// Three booleans only take two values, so no single combination can
+    /// distinguish all three pairwise swaps: whichever shape is chosen, one
+    /// pair holds the same value and swapping it is invisible. These one-hot
+    /// cases cover the three swaps between them — each case detects the two
+    /// swaps that involve its single `true`:
+    ///
+    /// | case          | 1↔2 | 2↔3 | 1↔3 |
+    /// |---------------|-----|-----|-----|
+    /// | `(T, F, F)`   | ✓   |     | ✓   |
+    /// | `(F, T, F)`   | ✓   | ✓   |     |
+    /// | `(F, F, T)`   |     | ✓   | ✓   |
+    const FLAG_CASES: [(bool, bool, bool); 3] = [
+        (true, false, false),
+        (false, true, false),
+        (false, false, true),
+    ];
+
+    fn assert_flags(webhook: &Webhook, expected: (bool, bool, bool), stage: &str) {
+        assert_eq!(
+            (
+                webhook.send_all_properties,
+                webhook.trim_whitespace,
+                webhook.skip_empty_message_body,
+            ),
+            expected,
+            "{stage}: (send_all_properties, trim_whitespace, skip_empty_message_body)"
+        );
+    }
+
+    /// Guards against a transposed `.bind()` among the three adjacent boolean
+    /// placeholders in `create` and in `update`.
+    #[tokio::test]
+    async fn boolean_flags_land_in_their_own_columns() {
+        let db = test_db().await;
+
+        for (send_all, trim, skip_empty) in FLAG_CASES {
+            let expected = (send_all, trim, skip_empty);
+            let dto = WebhookDto {
+                send_all_properties: send_all,
+                trim_whitespace: trim,
+                skip_empty_message_body: skip_empty,
+                ..sample_dto()
+            };
+
+            // create writes the triple.
+            let created = Webhook::create(&db, &dto)
+                .await
+                .unwrap();
+            assert_flags(&created, expected, "create returned");
+            assert_flags(
+                &Webhook::get_by_id(&db, &created.id)
+                    .await
+                    .unwrap()
+                    .expect("created webhook must be readable back"),
+                expected,
+                "create stored",
+            );
+
+            // update writes the triple onto a row currently holding its inverse,
+            // so every column has to be written to reach the expected state.
+            let seed = Webhook::create(
+                &db,
+                &WebhookDto {
+                    send_all_properties: !send_all,
+                    trim_whitespace: !trim,
+                    skip_empty_message_body: !skip_empty,
+                    ..sample_dto()
+                },
+            )
+            .await
+            .unwrap();
+            let updated = Webhook::update(&db, &seed.id, &dto)
+                .await
+                .unwrap();
+            assert_flags(&updated, expected, "update returned");
+            assert_flags(
+                &Webhook::get_by_id(&db, &seed.id)
+                    .await
+                    .unwrap()
+                    .expect("updated webhook must be readable back"),
+                expected,
+                "update stored",
+            );
         }
     }
 
