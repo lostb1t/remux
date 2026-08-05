@@ -101,11 +101,12 @@ pub static JS: &str = r#"
   }
 
   function getDetailsPage() {
-    // Jellyfin caches views: multiple .trackSelections may exist in the DOM
-    // (one per cached view). Use offsetParent to find the visible one.
-    var all = document.querySelectorAll('.trackSelections');
+    // Jellyfin caches views: multiple detail-page trees may exist in the DOM
+    // (one per cached view). Anchor on the always-visible primary container and
+    // use offsetParent to find the visible view.
+    var all = document.querySelectorAll('.detailPagePrimaryContainer');
     for (var i = 0; i < all.length; i++) {
-      if (all[i].offsetParent !== null) return all[i].closest('.detailPagePrimaryContent');
+      if (all[i].offsetParent !== null) return all[i].querySelector('.detailPagePrimaryContent');
     }
     return null;
   }
@@ -118,10 +119,20 @@ pub static JS: &str = r#"
     return null;
   }
 
+  function hideTrackControls(page) {
+    var form = page.querySelector('.trackSelections');
+    if (!form) return;
+    var containers = form.querySelectorAll('.selectSourceContainer, .selectVideoContainer, .selectAudioContainer, .selectSubtitlesContainer');
+    for (var i = 0; i < containers.length; i++) containers[i].classList.add('hide');
+  }
+
   function showSpinner(page) {
     removeSpinner(page);
     var form = page.querySelector('.trackSelections');
     if (!form) return;
+    // Hide the stub-rendered selects but keep the outer panel: the spinner
+    // renders inside it, centered like the track fields do after load.
+    hideTrackControls(page);
     var spin = document.createElement('div');
     spin.className = 'remux-sources-loading';
     // margin:auto centres the item in any flex or block context the theme uses
@@ -144,6 +155,7 @@ pub static JS: &str = r#"
     removeSpinner(page);
     var form = page.querySelector('.trackSelections');
     if (!form) return;
+    hideTrackControls(page);
     var msg = document.createElement('div');
     msg.className = 'remux-no-streams';
     msg.style.cssText = 'color:rgba(255,255,255,0.5);font-size:0.85em;text-align:center;padding:0.4em 0;';
