@@ -1,3 +1,10 @@
+## [0.23.1](https://github.com/lostb1t/remux/compare/v0.23.0...v0.23.1) (2026-08-05)
+
+
+### Bug Fixes
+
+* only override collection default sort when SortName is the primary key ([ffacd4b](https://github.com/lostb1t/remux/commit/ffacd4b3eefb0226de6306aa7814288aee89af5b))
+
 # [0.23.0](https://github.com/lostb1t/remux/compare/v0.22.0...v0.23.0) (2026-08-05)
 
 
