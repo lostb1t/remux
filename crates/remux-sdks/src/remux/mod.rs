@@ -355,6 +355,11 @@ pub struct QueryResult<T> {
 #[dto]
 pub struct BrandingOptions {
     pub login_disclaimer: Option<String>,
+    #[default(Some(concat!(
+        "@import url(\"https://cdn.jsdelivr.net/gh/lscambo13/ElegantFin@main/Theme/ElegantFin-jellyfin-theme-build-latest-minified.css\");\n\n",
+        ".trackSelections {\n    order: 1;\n}\n\n",
+        ".docspinner {\n    top: 80px;\n    right: 21px;\n    left: unset;\n    width: 46px;\n    height: 46px;\n}"
+    ).to_string()))]
     pub custom_css: Option<String>,
     pub splashscreen_enabled: Option<bool>,
 }

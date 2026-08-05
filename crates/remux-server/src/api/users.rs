@@ -31,7 +31,7 @@ use axum_anyhow::ApiResult as Result;
 use remux_sdks::remux::{NotificationType, Username};
 
 use super::{
-    items::{ItemsQueryResultBuilder, item, items, items_flat},
+    items::{ItemsQueryResultBuilder, get_items, item, items, items_flat},
     mock_items,
     shows::livetv_view_item,
 };
@@ -1158,31 +1158,15 @@ async fn resume_items(
     {
         q.sort_order = Some(vec![api::SortOrder::Descending]);
     }
-    let server_config = crate::db::Settings::get_config_or_default(
-        &state
-            .ctx
-            .db,
-    )
-    .await;
-    let result = db::Media::get_by_jellyfin_filter(
-        &state
-            .ctx
-            .db,
-        &q,
-        true,
-        Some(&session.user),
-        Some(&server_config),
-        None,
-        None,
-    )
-    .await?;
+    let items = get_items(state.clone(), session.clone(), q.clone(), true)
+        .await?
+        .with_permissions()
+        .with_client_patches()
+        .build();
+
     Ok(Json(api::BaseItemDtoQueryResult {
-        items: result
-            .records
-            .into_iter()
-            .map(|m| api::db_media_to_item(m, false))
-            .collect(),
-        total_record_count: result.total_count as i64,
+        items: items.items,
+        total_record_count: items.total_count as i64,
         start_index: q
             .start_index
             .unwrap_or(0),

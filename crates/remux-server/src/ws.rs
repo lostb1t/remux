@@ -119,7 +119,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, session: AuthSess
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => {
-                        info!(device_id = %my_device_id, "WS connection closed");
+                        debug!(device_id = %my_device_id, "WS connection closed");
                         return;
                     }
                     _ => {}

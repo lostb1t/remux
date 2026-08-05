@@ -213,14 +213,10 @@ pub async fn get_items(
                     .as_deref()
                     .map(|s| {
                         s.is_empty()
-                            || s.iter()
-                                .any(|v| {
-                                    matches!(
-                                        v,
-                                        api::ItemSortBy::SortName
-                                            | api::ItemSortBy::Name
-                                    )
-                                })
+                            || matches!(
+                                s.first(),
+                                Some(api::ItemSortBy::SortName | api::ItemSortBy::Name)
+                            )
                     })
                     .unwrap_or(true);
                 if is_client_default {
@@ -800,6 +796,9 @@ pub async fn items_flat(
     session: auth::AuthSession,
     Query(mut q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
+    // Jellyfin ignores the MediaTypes query parameter for this request.
+    // Without this, supplying a value (e.g. Video) would exclude Series collections.
+    q.media_types = None;
     if let Some(parent_id) = q
         .parent_id
         .clone()
@@ -835,14 +834,13 @@ pub async fn items_flat(
                         .as_deref()
                         .map(|s| {
                             s.is_empty()
-                                || s.iter()
-                                    .any(|v| {
-                                        matches!(
-                                            v,
-                                            api::ItemSortBy::SortName
-                                                | api::ItemSortBy::Name
-                                        )
-                                    })
+                                || matches!(
+                                    s.first(),
+                                    Some(
+                                        api::ItemSortBy::SortName
+                                            | api::ItemSortBy::Name
+                                    )
+                                )
                         })
                         .unwrap_or(true);
                     if is_client_default {

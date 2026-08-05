@@ -325,6 +325,10 @@ impl CatalogAddon for StremioAddon {
                 let svc = svc.clone();
                 let tmdb = tmdb_client.clone();
                 async move {
+                    if meta.is_error() {
+                        debug!(id = %meta.id, "catalog item is an error stub, skipping");
+                        return vec![];
+                    }
                     if !resolve_imdb_id(&mut meta, Some(&svc), tmdb.as_ref()).await {
                         debug!(id = %meta.id, "could not resolve imdb_id, skipping");
                         return vec![];
@@ -1232,6 +1236,7 @@ async fn stremio_search(
                 .unwrap_or_else(|| format!("{}:{}", m.media_type, m.id))
         })
         .take(limit)
+        .filter(|meta| !meta.is_error())
         .filter_map(|meta| {
             let mut m = db::Media::try_from(meta.clone()).ok()?;
             let rels = build_relations(&m, &meta);
