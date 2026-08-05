@@ -75,11 +75,20 @@ struct Inner {
 
 /// One bit per [`NotificationType`], indexed by its discriminant (the enum is
 /// fieldless). `None` for a type that would not fit in the mask — see
-/// [`WebhookService::wants`], which answers those optimistically, so growing the
-/// enum past 32 variants costs a little wasted work but never a lost event.
+/// [`WebhookService::wants`], which answers those optimistically, so an enum
+/// too wide for the mask costs wasted work but never a lost event.
 fn wanted_bit(notification_type: NotificationType) -> Option<u32> {
     1u32.checked_shl(notification_type as u32)
 }
+
+/// The degradation above is correct but *silent*: a 33rd variant would quietly
+/// turn the probe into "always true" for everything past the 32nd, and no test
+/// would notice. Make outgrowing the mask a build error instead, so the choice
+/// (widen the mask, or accept the loss) is made deliberately.
+const _: () = assert!(
+    <NotificationType as strum::EnumCount>::COUNT <= u32::BITS as usize,
+    "NotificationType has outgrown the u32 `wants` mask — widen it to u64"
+);
 
 #[derive(Clone)]
 pub struct WebhookService {
@@ -122,27 +131,44 @@ impl WebhookService {
     /// webhooks configured that cost is paid per progress tick for nothing.
     /// Guard those sites with this.
     ///
-    /// Lock-free (one atomic load) and deliberately conservative: a pending
+    /// Lock-free (two atomic loads) and deliberately conservative: a pending
     /// reload, or a subscription set too wide for the mask, answers `true`. It
     /// is an optimisation, never the authority — the dispatcher re-checks every
     /// event against the real snapshot.
+    ///
+    /// The `dirty` half is not redundant with the widening in [`Self::invalidate`],
+    /// and leaving it out is a *sticky* bug rather than a transient one. The
+    /// mask is narrowed by `reload` from a snapshot it read some time earlier,
+    /// so an `invalidate` that lands mid-reload has its widen clobbered by a
+    /// mask that predates it. Were `wants` to answer from the mask alone, it
+    /// would then suppress exactly the guarded events that would otherwise have
+    /// woken the dispatcher and made it consume the still-set `dirty` flag — so
+    /// nothing would heal it until some *unguarded* event happened to fire,
+    /// which on a quiet server can be hours. Consulting `dirty` keeps the
+    /// staleness self-healing, which is what it was before this probe existed.
     pub fn wants(&self, notification_type: NotificationType) -> bool {
         let Some(bit) = wanted_bit(notification_type) else {
             return true;
         };
         self.inner
-            .wanted_mask
-            .load(Ordering::Relaxed)
-            & bit
-            != 0
+            .dirty
+            .load(Ordering::Acquire)
+            || self
+                .inner
+                .wanted_mask
+                .load(Ordering::Relaxed)
+                & bit
+                != 0
     }
 
     /// Mark the cached webhook set stale. The dispatcher reloads before it
     /// handles the next event.
     pub fn invalidate(&self) {
-        // Widened first, and only ever narrowed again by `reload` once the new
-        // snapshot is in place: a hook that just gained a subscription must not
-        // have its events skipped by `wants` during the window in between.
+        // Widened before the flag is raised: a hook that just gained a
+        // subscription must not have its events skipped in the window before
+        // the dispatcher reloads. `reload` declines to narrow again while the
+        // flag is still up, and `wants` consults the flag too, so this is the
+        // fast path rather than the correctness argument.
         self.inner
             .wanted_mask
             .store(u32::MAX, Ordering::Relaxed);
@@ -204,12 +230,21 @@ impl WebhookService {
             wanted,
             server,
         };
-        // Published after the snapshot: this is the only narrowing writer, and
-        // `invalidate` has already widened the mask for the whole window that
-        // ends here.
-        self.inner
-            .wanted_mask
-            .store(mask, Ordering::Relaxed);
+        // Published after the snapshot, and only when nothing invalidated while
+        // the rows above were being read. The dispatcher clears `dirty` before
+        // calling this, so finding it set again means `hooks` predates an
+        // `invalidate` whose widening this store would otherwise silently
+        // clobber — leaving the mask narrow, and stale, for as long as the flag
+        // stays unconsumed.
+        if !self
+            .inner
+            .dirty
+            .load(Ordering::Acquire)
+        {
+            self.inner
+                .wanted_mask
+                .store(mask, Ordering::Relaxed);
+        }
     }
 
     /// Whether `hook` wants `event`. Pure: `item_kind` is the kind of the item
@@ -629,6 +664,47 @@ mod tests {
         assert!(
             service.wants(NotificationType::PlaybackProgress),
             "invalidate must re-open the probe until the reload it asked for lands"
+        );
+    }
+
+    /// The narrowing store at the end of `reload` publishes a mask derived from
+    /// rows read some time earlier. An `invalidate` that lands in between must
+    /// not have its widening clobbered by it.
+    ///
+    /// This is the interleaving, in order: the dispatcher consumes the flag and
+    /// starts reloading, the operator saves a hook mid-reload, the reload
+    /// finishes from its now-outdated snapshot. Left unhandled the result is
+    /// *sticky*, not transient — the closed probe suppresses exactly the
+    /// guarded events that would have woken the dispatcher into consuming the
+    /// flag, so nothing reopens it until some unguarded event happens to fire.
+    #[tokio::test]
+    async fn a_reload_that_races_an_invalidate_leaves_the_probe_open() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .expect("test server");
+        let service = WebhookService::new();
+
+        // The dispatcher takes the flag and begins reading the database, which
+        // at this point holds no webhooks at all — so this reload can only
+        // compute an empty mask.
+        service.invalidate();
+        service
+            .inner
+            .dirty
+            .swap(false, Ordering::AcqRel);
+
+        // Mid-read: the operator saves a hook that subscribes to a guarded event.
+        service.invalidate();
+
+        // The reload lands, carrying the snapshot from before that save.
+        service
+            .reload(&guard.0)
+            .await;
+
+        assert!(
+            service.wants(NotificationType::PlaybackProgress),
+            "a reload that raced an invalidate must not leave the probe closed \
+             — the flag is still set, so its own snapshot is known to be stale"
         );
     }
 

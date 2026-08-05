@@ -44,6 +44,19 @@ pub struct PlaybackSession {
     pub item_kind: Option<db::MediaKind>,
 }
 
+/// What a stop report actually persisted.
+///
+/// [`PlaybackSessionManager::stopped`] answers `None` when it wrote nothing:
+/// no session to close and no usable item id, or an id that resolves to no row
+/// in the library. The endpoint answers 204 either way, so this is the only
+/// thing that distinguishes a real stop from a report that named an item the
+/// server knows nothing about.
+#[derive(Debug, Clone, Copy)]
+pub struct StoppedPlayback {
+    pub item_id: Uuid,
+    pub position_ticks: i64,
+}
+
 #[derive(Clone)]
 pub struct PlaybackSessionManager {
     sessions: Arc<DashMap<String, PlaybackSession>>,
@@ -427,13 +440,16 @@ impl PlaybackSessionManager {
     /// Removes the playback session (stopping any active transcode), persists
     /// the final position to the DB (with the 90 % watched-mark check), and
     /// emits a debug log line.
+    ///
+    /// Returns what was actually written, so callers can tell a real stop from
+    /// a report that resolved to nothing — see [`StoppedPlayback`].
     pub async fn stopped(
         &self,
         db: &sqlx::SqlitePool,
         user: &db::User,
         psid: &str,
         data: &PlaybackInfo,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<StoppedPlayback>> {
         let ps = self
             .stop(psid)
             .await;
@@ -444,30 +460,36 @@ impl PlaybackSessionManager {
                 ps.as_ref()
                     .map(|s| s.item_id)
             });
-        let final_ticks = data
+        let position_ticks = data
             .position_ticks
             .or_else(|| {
                 ps.as_ref()
                     .map(|s| s.position_ticks)
-            });
+            })
+            .unwrap_or(0);
 
+        let mut recorded = None;
         if let Some(item_id) = item_id {
             if let Ok(Some(media)) = db::Media::get_by_id(db, &item_id).await {
                 db::UserMediaState::update_playback(
                     db,
                     user,
                     &media,
-                    final_ticks.unwrap_or(0),
+                    position_ticks,
                     None, // don't overwrite stream selections on stop
                     None,
                     media.runtime, // Some(runtime) triggers watched-threshold check
                 )
                 .await?;
+                recorded = Some(StoppedPlayback {
+                    item_id,
+                    position_ticks,
+                });
             }
         }
 
         debug!(play_session_id = psid, "Playback stopped");
-        Ok(())
+        Ok(recorded)
     }
 
     /// Insert (or replace) a playback session, preserving any transcode that was
@@ -857,7 +879,9 @@ async fn reaped_playback_event(
             remote_ip: device.and_then(|d| d.remote_ip),
         },
         position_ticks: ps.position_ticks,
-        // A reaped session is one that stopped reporting, not one that paused.
+        // The last state the client reported. A reap says the client stopped
+        // reporting, which tells us nothing about whether it was paused when it
+        // did — so the last known value is the honest answer.
         is_paused: ps.is_paused,
         play_method: ps
             .play_method

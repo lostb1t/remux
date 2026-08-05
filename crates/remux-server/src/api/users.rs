@@ -349,7 +349,18 @@ pub async fn users_authenticatebyname(
     // password, and only for those — a DB failure is an error, not a failed
     // login, and must not be reported as one. The `?` below is untouched, so
     // the refusal is the same 401 with the same body and the same timing.
-    if authenticated.is_none() {
+    //
+    // Guarded, unlike the other auth events: this is the only emission site
+    // reachable without credentials, so a credential-stuffing run drives it at
+    // whatever rate the attacker can manage. With nothing subscribed that is an
+    // allocation and a broadcast send per attempt, and enough of them push the
+    // dispatcher into `Lagged` warn-spam.
+    if authenticated.is_none()
+        && state
+            .ctx
+            .webhooks
+            .wants(NotificationType::AuthenticationFailure)
+    {
         state
             .ctx
             .webhooks

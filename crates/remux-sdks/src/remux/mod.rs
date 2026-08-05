@@ -6210,6 +6210,7 @@ pub struct RefreshItemQuery {
     Deserialize,
     strum_macros::EnumString,
     strum_macros::Display,
+    strum_macros::EnumCount,
 )]
 pub enum NotificationType {
     ItemAdded,

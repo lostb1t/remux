@@ -1013,6 +1013,130 @@ mod tests {
         .await;
     }
 
+    /// A stop report that records nothing must report nothing.
+    ///
+    /// The endpoint answers 204 to any authenticated client for any item id,
+    /// with or without a session behind it. Deriving the event from the request
+    /// rather than from what was written would let that client forge playback
+    /// against the operator's endpoint — and make the `UserDataSaved` that
+    /// rides along assert a save that provably did not happen.
+    #[tokio::test]
+    async fn a_stop_for_an_unknown_item_emits_nothing_and_still_answers_204() {
+        let (server, guard, token) = authenticated_server().await;
+        let (h, v) = auth(&token);
+        let endpoint_server = MockServer::start_async().await;
+        // Deliberately unconstrained: any delivery at all is a failure here.
+        let forged = endpoint_server.mock(|when, then| {
+            when.method(POST)
+                .path("/forged");
+            then.status(200);
+        });
+        let canary_ep = endpoint_server.mock(|when, then| {
+            when.method(POST)
+                .path("/canary");
+            then.status(200);
+        });
+
+        create(
+            &server,
+            &h,
+            &v,
+            &WebhookDto {
+                notification_types: vec![
+                    NotificationType::PlaybackStop,
+                    NotificationType::UserDataSaved,
+                ],
+                ..hook_dto("forgeable", &endpoint_server.url("/forged"))
+            },
+        )
+        .await;
+        create(
+            &server,
+            &h,
+            &v,
+            &hook_dto("canary", &endpoint_server.url("/canary")),
+        )
+        .await;
+
+        server
+            .post("/sessions/playing/stopped")
+            .add_header(h.clone(), v.clone())
+            .json(&json!({
+                "ItemId": Uuid::from_u128(0xf0f0),
+                "PlaySessionId": "never-started",
+                "PositionTicks": 9_000_000_000i64,
+                "CanSeek": true,
+                "IsPaused": false,
+                "IsMuted": false,
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        // The canary rides the same dispatcher: once it has seen an event
+        // emitted *after* the stop, the stop has been fully dispatched.
+        guard
+            .0
+            .webhooks
+            .emit(generic_event());
+        eventually("the dispatcher to drain past the stop", async || {
+            hits(&canary_ep).await == 1
+        })
+        .await;
+        settle().await;
+        assert_eq!(
+            hits(&forged).await,
+            0,
+            "a stop that recorded nothing must not manufacture playback events"
+        );
+    }
+
+    /// `reload` is what narrows the probe, and every other test here runs with
+    /// a freshly widened mask (`create` invalidates, and nothing forces a
+    /// reload before the request under test). So without this, a `reload` that
+    /// computed an empty mask — or dropped a bit — would pass the whole suite
+    /// while permanently suppressing every guarded event on a real server.
+    #[tokio::test]
+    async fn a_reload_narrows_the_probe_to_the_subscribed_types() {
+        let (server, guard, token) = authenticated_server().await;
+        let (h, v) = auth(&token);
+        let endpoint_server = MockServer::start_async().await;
+
+        create(
+            &server,
+            &h,
+            &v,
+            &WebhookDto {
+                notification_types: vec![NotificationType::PlaybackStart],
+                ..hook_dto("starts only", &endpoint_server.url("/hook"))
+            },
+        )
+        .await;
+
+        // Drive one event through so the dispatcher performs a real reload.
+        guard
+            .0
+            .webhooks
+            .emit(generic_event());
+        eventually(
+            "the dispatcher to reload and narrow the probe",
+            async || {
+                !guard
+                    .0
+                    .webhooks
+                    .wants(NotificationType::ItemAdded)
+            },
+        )
+        .await;
+
+        assert!(
+            guard
+                .0
+                .webhooks
+                .wants(NotificationType::PlaybackStart),
+            "the one subscribed type must survive the narrowing"
+        );
+    }
+
     /// `DELETE /items/{id}` reaches a hook subscribed to `ItemDeleted` with the
     /// deleted item's own data — which only works because the row is captured
     /// before the DELETE. The row is gone by the time the payload is built, so

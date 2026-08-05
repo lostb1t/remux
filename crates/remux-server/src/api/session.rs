@@ -278,26 +278,7 @@ pub async fn report_playback_stopped(
                 .map(|s| s.play_session_id)
         });
     if let Some(ref psid) = effective_psid {
-        let wants_stop = state
-            .ctx
-            .webhooks
-            .wants(NotificationType::PlaybackStop);
-        let wants_user_data = state
-            .ctx
-            .webhooks
-            .wants(NotificationType::UserDataSaved);
-        // `stopped` removes the session, so its final item/position have to be
-        // read before the call, exactly as `stopped` itself reads them.
-        let ps = (wants_stop || wants_user_data)
-            .then(|| {
-                state
-                    .ctx
-                    .sessions
-                    .get(psid)
-            })
-            .flatten();
-
-        state
+        let recorded = state
             .ctx
             .sessions
             .stopped(
@@ -315,22 +296,18 @@ pub async fn report_playback_stopped(
             .ws_tx
             .send(crate::ws::WsEvent::SessionsChanged);
 
-        if let Some(item_id) = Some(data.item_id)
-            .filter(|id| !id.is_nil())
-            .or_else(|| {
-                ps.as_ref()
-                    .map(|s| s.item_id)
-            })
-            .filter(|id| !id.is_nil())
-        {
-            if wants_stop {
-                let position_ticks = data
-                    .position_ticks
-                    .or_else(|| {
-                        ps.as_ref()
-                            .map(|s| s.position_ticks)
-                    })
-                    .unwrap_or(0);
+        // Reported only for a stop that recorded something. The endpoint
+        // answers 204 to any authenticated client that posts any item id, with
+        // or without a session behind it, and deriving the event from the
+        // *request* rather than from what was written would let that client
+        // forge playback against the operator's endpoint — and make
+        // `UserDataSaved` assert a save that never happened.
+        if let Some(recorded) = recorded {
+            if state
+                .ctx
+                .webhooks
+                .wants(NotificationType::PlaybackStop)
+            {
                 state
                     .ctx
                     .webhooks
@@ -338,18 +315,22 @@ pub async fn report_playback_stopped(
                         playback: playback_event(
                             &session,
                             &data,
-                            item_id,
-                            position_ticks,
+                            recorded.item_id,
+                            recorded.position_ticks,
                         ),
                     });
             }
-            if wants_user_data {
+            if state
+                .ctx
+                .webhooks
+                .wants(NotificationType::UserDataSaved)
+            {
                 state
                     .ctx
                     .webhooks
                     .emit(WebhookEvent::UserDataSaved {
                         user: (&session.user).into(),
-                        item_id,
+                        item_id: recorded.item_id,
                         save_reason: UserDataSaveReason::PlaybackFinished,
                     });
             }
