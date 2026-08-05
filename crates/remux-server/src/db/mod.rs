@@ -18,6 +18,7 @@ pub mod settings;
 pub mod stream_group;
 pub mod task;
 pub mod user;
+pub mod webhook;
 pub use api_key::*;
 pub use image::*;
 pub use iptv::*;
@@ -26,6 +27,7 @@ pub use settings::*;
 pub use stream_group::*;
 pub use task::*;
 pub use user::*;
+pub use webhook::*;
 
 pub async fn connect(url: &str, slow_query_threshold_ms: u64) -> Result<SqlitePool> {
     let opts = SqliteConnectOptions::from_str(url)?
