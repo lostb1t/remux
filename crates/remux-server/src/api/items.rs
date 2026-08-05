@@ -795,6 +795,7 @@ pub async fn items_flat(
     session: auth::AuthSession,
     Query(mut q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
+    q.media_types = None;
     if let Some(parent_id) = q
         .parent_id
         .clone()
