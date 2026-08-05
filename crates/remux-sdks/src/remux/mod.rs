@@ -3227,6 +3227,18 @@ pub enum FilterRule {
         op: SetOp,
         catalog_ids: Vec<Uuid>,
     },
+    /// Matches items that are (or are not) children of any group container
+    /// (a manual collection with `collection_media_kind = 'collection'`).
+    GroupContainer {
+        value: bool,
+    },
+    /// Matches items that are (or are not) explicit children of the given manual collection(s)
+    /// via the `media_relations` `role = 'collection'` edge.
+    CollectionMember {
+        #[serde(default)]
+        op: SetOp,
+        collection_ids: Vec<Uuid>,
+    },
 }
 
 /// Whether all rules must match (AND) or any rule must match (OR).

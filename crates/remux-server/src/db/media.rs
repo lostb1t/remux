@@ -1301,11 +1301,7 @@ pub struct MediaFilter {
     /// container kinds — including smart and catalog collections — are dropped
     /// when empty.
     pub exclude_childless: bool,
-    /// When true, exclude items that are children of a group container
-    /// (collection_media_kind='collection'), unless they are also explicit children
-    /// of the container specified by `exclude_collection_groups_except`.
-    pub exclude_collection_groups: bool,
-    pub exclude_collection_groups_except: Option<Uuid>,
+    pub exclude_ids: Option<Vec<Uuid>>,
 }
 
 /// Normalise any country string to an ISO 3166-1 alpha-2 code (e.g. "US").
@@ -3483,37 +3479,16 @@ impl Media {
             if let Some(ref f) = filter.filter_rules {
                 apply_filter_rules(qb, f);
             }
-            if filter.exclude_collection_groups {
-                if let Some(except_id) = &filter.exclude_collection_groups_except {
-                    qb.push(
-                        " AND (NOT EXISTS (\
-                        SELECT 1 FROM media_relations mr \
-                        JOIN media grp ON grp.id = mr.left_media_id \
-                        WHERE mr.right_media_id = media.id \
-                        AND mr.role = 'collection' \
-                        AND grp.collection_media_kind = 'collection' \
-                        AND grp.collection_kind = 'manual'\
-                    ) OR EXISTS (\
-                        SELECT 1 FROM media_relations mr2 \
-                        WHERE mr2.right_media_id = media.id \
-                        AND mr2.left_media_id = ",
-                    );
-                    qb.push_bind(*except_id);
-                    qb.push(" AND mr2.role = 'collection'))");
-                } else {
-                    qb.push(
-                        " AND NOT EXISTS (\
-                        SELECT 1 FROM media_relations mr \
-                        JOIN media grp ON grp.id = mr.left_media_id \
-                        WHERE mr.right_media_id = media.id \
-                        AND mr.role = 'collection' \
-                        AND grp.collection_media_kind = 'collection' \
-                        AND grp.collection_kind = 'manual'\
-                    )",
-                    );
+            if let Some(ref ids) = filter.exclude_ids {
+                if !ids.is_empty() {
+                    qb.push(" AND media.id NOT IN (");
+                    let mut sep = qb.separated(", ");
+                    for id in ids {
+                        sep.push_bind(*id);
+                    }
+                    qb.push(")");
                 }
             }
-
             // CLAUDE.md: content policy must not filter container rows themselves.
             // Applying tag/rating rules to Collection/Folder records would wrongly
             // hide libraries. Child-count branches still use policy_filter via
@@ -4599,6 +4574,40 @@ impl Media {
             records,
             total_count,
         })
+    }
+
+    pub async fn get_smart_group_excluded_ids(db: &SqlitePool) -> Result<Vec<Uuid>> {
+        let groups: Vec<Self> = sqlx::query_as(
+            "SELECT * FROM media \
+             WHERE kind = 'collection' \
+             AND collection_media_kind = 'collection' \
+             AND collection_kind = 'smart' \
+             AND collection_smart_filter IS NOT NULL",
+        )
+        .fetch_all(db)
+        .await?;
+
+        let mut excluded = Vec::new();
+        for group in &groups {
+            let Some(sf) = group.parse_smart_filter() else {
+                continue;
+            };
+            let filter = MediaFilter {
+                kind: Some(vec![MediaKind::Collection]),
+                filter_rules: Some(sf.clone()),
+                ..Default::default()
+            };
+            let result = Self::get_by_filter(db, &filter).await?;
+            excluded.extend(
+                result
+                    .records
+                    .iter()
+                    .map(|m| m.id),
+            );
+        }
+        excluded.sort_unstable();
+        excluded.dedup();
+        Ok(excluded)
     }
 
     pub async fn get_refreshable(
@@ -6920,6 +6929,32 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
             Some((sql, negated))
         }
         R::Catalog { .. } => None,
+        R::GroupContainer { value } => {
+            let sql = "EXISTS (\
+                SELECT 1 FROM media_relations mr \
+                JOIN media grp ON grp.id = mr.left_media_id \
+                WHERE mr.right_media_id = media.id \
+                AND mr.role = 'collection' \
+                AND grp.collection_media_kind = 'collection'\
+            )"
+            .to_string();
+            Some((sql, !value))
+        }
+        R::CollectionMember { op, collection_ids } if !collection_ids.is_empty() => {
+            let in_clause = collection_ids
+                .iter()
+                .map(|id| format!("X'{}'", id.simple()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "EXISTS (SELECT 1 FROM media_relations mr \
+                 WHERE mr.right_media_id = media.id AND mr.role = 'collection' \
+                 AND mr.left_media_id IN ({in_clause}))"
+            );
+            let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
+            Some((sql, negated))
+        }
+        R::CollectionMember { .. } => None,
     }
 }
 
@@ -8390,5 +8425,98 @@ mod tests {
 
         let filtered = fetch_titles(Some(vec![AlbumKind::Album])).await;
         assert_eq!(filtered, vec!["No Type", "Real Album"]);
+    }
+
+    #[tokio::test]
+    async fn get_smart_group_excluded_ids_returns_matched_collections() {
+        use remux_sdks::remux::{
+            CollectionFilter, FilterGroup, FilterMatchMode, FilterRule, SetOp,
+        };
+
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let now = chrono::Utc::now().naive_utc();
+
+        // Create a smart group container with a tag filter.
+        let mut group = Media {
+            title: "Tagged Group".to_string(),
+            kind: MediaKind::Collection,
+            collection_kind: Some(CollectionKind::Smart),
+            collection_media_kind: Some(CollectionMediaKind::Collection),
+            collection_smart_filter: Some(CollectionFilter {
+                match_mode: FilterMatchMode::All,
+                groups: vec![FilterGroup {
+                    match_mode: FilterMatchMode::All,
+                    rules: vec![FilterRule::Tag {
+                        op: SetOp::In,
+                        values: vec!["smart-test".to_string()],
+                    }],
+                }],
+            }),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        group
+            .save(db)
+            .await
+            .unwrap();
+
+        // A collection tagged to match the filter.
+        let mut matched = Media {
+            title: "Matched Col".to_string(),
+            kind: MediaKind::Collection,
+            collection_kind: Some(CollectionKind::Smart),
+            collection_media_kind: Some(CollectionMediaKind::Movie),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        matched
+            .save(db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT OR IGNORE INTO media_tags (media_id, tag) VALUES (?, ?)")
+            .bind(matched.id)
+            .bind("smart-test")
+            .execute(db)
+            .await
+            .unwrap();
+
+        // A collection without the tag.
+        let mut unmatched = Media {
+            title: "Unmatched Col".to_string(),
+            kind: MediaKind::Collection,
+            collection_kind: Some(CollectionKind::Smart),
+            collection_media_kind: Some(CollectionMediaKind::Movie),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        unmatched
+            .save(db)
+            .await
+            .unwrap();
+
+        let excluded = Media::get_smart_group_excluded_ids(db)
+            .await
+            .unwrap();
+
+        assert!(
+            excluded.contains(&matched.id),
+            "tagged collection must be in excluded IDs; got: {excluded:?}"
+        );
+        assert!(
+            !excluded.contains(&unmatched.id),
+            "untagged collection must not be in excluded IDs; got: {excluded:?}"
+        );
+        assert!(
+            !excluded.contains(&group.id),
+            "the group container itself must not be in excluded IDs; got: {excluded:?}"
+        );
     }
 }

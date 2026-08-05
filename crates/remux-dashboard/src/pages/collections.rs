@@ -327,22 +327,6 @@ pub fn CollectionForm(
             .unwrap_or_else(|| "movies".to_string())
     });
     let mut col_kind = use_signal(|| {
-        // Force manual for group containers (guards against pre-validation data).
-        let is_group_container = existing
-            .as_ref()
-            .and_then(|f| {
-                f.remux
-                    .as_ref()
-            })
-            .and_then(|r| {
-                r.collection_media_kind
-                    .as_ref()
-            })
-            .map(|mk| matches!(mk, remux_sdks::remux::MediaKind::Collection))
-            .unwrap_or(false);
-        if is_group_container {
-            return "manual".to_string();
-        }
         existing
             .as_ref()
             .and_then(|f| {
@@ -700,11 +684,7 @@ pub fn CollectionForm(
                     class: "select-input",
                     value: "{col_type}",
                     onchange: move |e| {
-                        let v = e.value();
-                        if v == "collections" {
-                            col_kind.set("manual".to_string());
-                        }
-                        col_type.set(v);
+                        col_type.set(e.value());
                     },
                     option { value: "movies",      "Movies"      }
                     option { value: "tvshows",     "TV Shows"    }
@@ -715,17 +695,18 @@ pub fn CollectionForm(
                 }
             }
 
-            if col_type.read().as_str() != "collections" {
-                div { class: "field",
-                    label { class: "field-label", r#for: "col-kind", "Collection Kind" }
-                    select {
-                        id: "col-kind",
-                        class: "select-input",
-                        value: "{col_kind}",
-                        disabled: is_edit,
-                        onchange: move |e| col_kind.set(e.value()),
-                        option { value: "smart",  "Smart"  }
-                        option { value: "manual", "Manual" }
+            div { class: "field",
+                label { class: "field-label", r#for: "col-kind", "Collection Kind" }
+                select {
+                    id: "col-kind",
+                    class: "select-input",
+                    value: "{col_kind}",
+                    disabled: false,
+                    onchange: move |e| col_kind.set(e.value()),
+                    option { value: "smart",  "Smart"  }
+                    option { value: "manual", "Manual" }
+                    if col_type.read().as_str() != "collections" {
+                        option { value: "catalog", "Catalog" }
                     }
                 }
             }
@@ -836,7 +817,7 @@ pub fn CollectionForm(
                 }
             }
 
-            if (col_kind.read().as_str() == "smart" || col_kind.read().as_str() == "catalog") && col_type.read().as_str() != "collections" {
+            if col_kind.read().as_str() == "smart" || col_kind.read().as_str() == "catalog" {
                 FilterRuleEditor { match_mode: sf_match, groups: sf_groups }
 
                 div { class: "field",
@@ -879,12 +860,16 @@ pub fn CollectionForm(
                 }
             }
 
-            if is_edit && col_type.read().as_str() == "collections" {
-                if let Some(ref e) = existing_for_children {
-                    CollectionGroupChildren {
-                        app_state: app_state_for_children.clone(),
-                        collection_id: e.id.to_string(),
+            if col_type.read().as_str() == "collections" && col_kind.read().as_str() == "manual" {
+                if is_edit {
+                    if let Some(ref e) = existing_for_children {
+                        CollectionGroupChildren {
+                            app_state: app_state_for_children.clone(),
+                            collection_id: e.id.to_string(),
+                        }
                     }
+                } else {
+                    p { class: "field-hint", "Save this collection first, then edit it to manage child collections." }
                 }
             }
 
