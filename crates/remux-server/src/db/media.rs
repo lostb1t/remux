@@ -2474,6 +2474,21 @@ impl Media {
             .await?)
     }
 
+    /// Genre titles linked to `id` through `media_relations`, both `Genre` and
+    /// `MusicGenre` rows, in relation order.
+    pub async fn genre_names(db: &SqlitePool, id: &Uuid) -> Result<Vec<String>> {
+        let names = sqlx::query_scalar::<_, String>(
+            "SELECT g.title FROM media_relations mr \
+             JOIN media g ON g.id = mr.right_media_id \
+             WHERE mr.left_media_id = ? AND g.kind IN ('genre', 'music_genre') \
+             ORDER BY COALESCE(mr.weight, 0) ASC, g.title ASC",
+        )
+        .bind(id)
+        .fetch_all(db)
+        .await?;
+        Ok(names)
+    }
+
     pub async fn get_by_id(
         db: &SqlitePool,
         id: &Uuid,
@@ -7253,6 +7268,99 @@ mod tests {
         assert!(
             ids.tmdb
                 .is_none()
+        );
+    }
+
+    /// `genre_names` walks `media_relations` and keeps only genre rows, in
+    /// relation order. Other related rows (cast, studios…) must not leak in.
+    #[tokio::test]
+    async fn genre_names_reads_genre_rows_through_media_relations() {
+        let db = crate::db::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        crate::db::migrate(&db)
+            .await
+            .unwrap();
+
+        // `save` requires a movie to carry an imdb id and an id derived from it.
+        let movie_ids = ExternalIds {
+            imdb: Some(NonEmptyString::try_new("tt9000001".to_string()).unwrap()),
+            ..Default::default()
+        };
+        let movie_id = uuid::Uuid::from(&MediaIdRaw {
+            kind: MediaKind::Movie,
+            external_ids: movie_ids.clone(),
+            season: None,
+            episode: None,
+        });
+        let mut rows = vec![
+            Media {
+                id: movie_id,
+                title: "A Movie".to_string(),
+                kind: MediaKind::Movie,
+                external_ids: movie_ids,
+                ..Default::default()
+            },
+            Media {
+                id: uuid::Uuid::from_u128(2),
+                title: "Drama".to_string(),
+                kind: MediaKind::Genre,
+                ..Default::default()
+            },
+            Media {
+                id: uuid::Uuid::from_u128(3),
+                title: "Electro".to_string(),
+                kind: MediaKind::MusicGenre,
+                ..Default::default()
+            },
+            Media {
+                id: uuid::Uuid::from_u128(4),
+                title: "Someone".to_string(),
+                kind: MediaKind::Person,
+                ..Default::default()
+            },
+        ];
+        for row in rows.iter_mut() {
+            row.save(&db)
+                .await
+                .unwrap();
+        }
+        let (movie, drama, electro, person) = (&rows[0], &rows[1], &rows[2], &rows[3]);
+
+        // Weights are deliberately out of title order: the relation order wins.
+        let relations = [
+            (electro, 0, None),
+            (drama, 1, None),
+            (person, 2, Some(RelationRole::Actor)),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, (right, weight, role))| MediaRelation {
+            relation_id: uuid::Uuid::from_u128(i as u128 + 100),
+            left_media_id: movie.id,
+            right_media_id: right.id,
+            weight: Some(weight),
+            role,
+            character: None,
+        })
+        .collect::<Vec<_>>();
+        MediaRelation::upsert(&db, &relations)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            Media::genre_names(&db, &movie.id)
+                .await
+                .unwrap(),
+            vec!["Electro".to_string(), "Drama".to_string()],
+            "both genre kinds, in relation order, and nothing else"
+        );
+        // Relations are directional: the genre row itself has none.
+        assert!(
+            Media::genre_names(&db, &drama.id)
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 

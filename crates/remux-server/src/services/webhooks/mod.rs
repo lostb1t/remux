@@ -36,13 +36,25 @@ const EVENT_CHANNEL_CAPACITY: usize = 4096;
 
 /// The enabled webhooks as last read from the database, plus everything derived
 /// from them that would otherwise be recomputed per event.
-#[derive(Default)]
 pub(crate) struct LoadedWebhooks {
     pub hooks: Vec<db::Webhook>,
-    /// Template registry. Helpers and partials are registered in task 4.
+    /// Every hook's template, pre-compiled under its id, plus the custom helpers.
     pub registry: handlebars::Handlebars<'static>,
     /// Union of every enabled hook's subscriptions — the dispatcher fast-path.
     pub wanted: HashSet<NotificationType>,
+}
+
+/// The empty snapshot the dispatcher starts from. It must carry the helpers
+/// too: a hook whose template uses one would otherwise fail to render until the
+/// first reload.
+impl Default for LoadedWebhooks {
+    fn default() -> Self {
+        Self {
+            hooks: Vec::new(),
+            registry: template::fresh_registry(),
+            wanted: HashSet::new(),
+        }
+    }
 }
 
 struct Inner {
@@ -118,8 +130,8 @@ impl WebhookService {
             .write()
             .await;
         *cache = LoadedWebhooks {
+            registry: template::build_registry(&hooks),
             hooks,
-            registry: handlebars::Handlebars::new(),
             wanted,
         };
     }
@@ -186,6 +198,8 @@ impl WebhookService {
         tokio::spawn(async move {
             self.reload(&ctx.db)
                 .await;
+            // Read once: every event of this process reports the same server.
+            let server = payload::ServerInfo::load(&ctx).await;
 
             loop {
                 let event = match rx
@@ -237,7 +251,9 @@ impl WebhookService {
                     continue;
                 }
 
-                let data = payload::build_data(&ctx, &event, item.as_ref());
+                // Built once per event; `render` applies the per-hook overlay
+                // (a Generic destination's operator-defined fields).
+                let data = payload::build_data(&server, &event, item.as_ref());
                 for hook in targets {
                     match template::render(hook, &cache.registry, &data) {
                         // Delivery is spawned so one slow endpoint cannot stall
@@ -347,6 +363,24 @@ mod tests {
                 play_method: None,
             },
         }
+    }
+
+    // --- cached snapshot -------------------------------------------------
+
+    /// The registry is built in two places (here and in `reload`). Both must
+    /// carry the custom helpers, or every template using one breaks until — or
+    /// from — the first `invalidate()`.
+    #[test]
+    fn the_default_snapshot_registry_carries_the_custom_helpers() {
+        let snapshot = LoadedWebhooks::default();
+        let body = snapshot
+            .registry
+            .render_template(
+                "{{#if_equals A \"a\"}}ok{{/if_equals}}",
+                &serde_json::json!({ "A": "A" }),
+            )
+            .expect("helpers must be registered on the default snapshot");
+        assert_eq!(body, "ok");
     }
 
     // --- rule 1: notification types -------------------------------------
