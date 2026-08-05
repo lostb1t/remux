@@ -2391,102 +2391,80 @@ impl Media {
     /// Only called for root-level items (Movie, Series, Artist, Album, Track).
     /// Season / Episode deduplication uses `(parent_id, kind, idx)` instead.
     pub async fn find_existing_id_by_ext(db: &SqlitePool, item: &Self) -> Option<Uuid> {
-        match &item.kind {
+        let candidates = Self::ext_id_uuid_candidates(item);
+        if candidates.is_empty() {
+            return None;
+        }
+        let placeholders = candidates
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!("SELECT id FROM media WHERE id IN ({placeholders}) LIMIT 1");
+        let mut q = sqlx::query_scalar::<_, Uuid>(&sql);
+        for uuid in &candidates {
+            q = q.bind(*uuid);
+        }
+        q.fetch_optional(db)
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// Compute all candidate UUIDs an existing DB row could have been stored under
+    /// for the given item's external IDs. Used by `find_existing_id_by_ext`.
+    ///
+    /// Each external ID is turned into the stable UUID it would produce if it were
+    /// the canonical key at insert time. The item's own current UUID is excluded so
+    /// only *different* rows can match.
+    fn ext_id_uuid_candidates(item: &Self) -> Vec<Uuid> {
+        use crate::common::stable_media_uuid;
+        let kind = &item.kind;
+        let ext = &item.external_ids;
+        let mut candidates: Vec<Uuid> = Vec::new();
+        match kind {
             MediaKind::Movie | MediaKind::Series => {
-                let imdb = item
-                    .external_ids
+                if let Some(imdb) = ext
                     .imdb
-                    .as_deref();
-                let tmdb = item
-                    .external_ids
-                    .tmdb;
-                let tvdb = item
-                    .external_ids
-                    .tvdb;
-                let kitsu = item
-                    .external_ids
-                    .kitsu;
-                let custom = item
-                    .external_ids
-                    .custom_stremio_id
-                    .as_deref();
-
-                if imdb.is_none()
-                    && tmdb.is_none()
-                    && tvdb.is_none()
-                    && kitsu.is_none()
-                    && custom.is_none()
+                    .as_deref()
                 {
-                    return None;
+                    candidates.push(stable_media_uuid(kind, imdb));
                 }
-
-                sqlx::query_scalar::<_, Uuid>(
-                    "SELECT id FROM media
-                     WHERE kind = ?
-                       AND (
-                         (? IS NOT NULL AND json_extract(external_ids, '$.imdb') = ?)
-                         OR
-                         (? IS NOT NULL AND CAST(json_extract(external_ids, '$.tmdb') AS INTEGER) = ?)
-                         OR
-                         (? IS NOT NULL AND CAST(json_extract(external_ids, '$.tvdb') AS INTEGER) = ?)
-                         OR
-                         (? IS NOT NULL AND CAST(json_extract(external_ids, '$.kitsu') AS INTEGER) = ?)
-                         OR
-                         (? IS NOT NULL AND json_extract(external_ids, '$.custom_stremio_id') = ?)
-                       )
-                       AND id != ?
-                     LIMIT 1",
-                )
-                .bind(&item.kind)
-                .bind(imdb).bind(imdb)
-                .bind(tmdb).bind(tmdb)
-                .bind(tvdb).bind(tvdb)
-                .bind(kitsu).bind(kitsu)
-                .bind(custom).bind(custom)
-                .bind(item.id)
-                .fetch_optional(db)
-                .await
-                .ok()
-                .flatten()
+                if let Some(custom) = ext
+                    .custom_stremio_id
+                    .as_deref()
+                {
+                    candidates.push(stable_media_uuid(kind, custom));
+                }
+                if let Some(tmdb) = ext.tmdb {
+                    candidates.push(stable_media_uuid(kind, &format!("tmdb:{tmdb}")));
+                }
+                if let Some(tvdb) = ext.tvdb {
+                    candidates.push(stable_media_uuid(kind, &format!("tvdb:{tvdb}")));
+                }
+                if let Some(kitsu) = ext.kitsu {
+                    candidates.push(stable_media_uuid(kind, &format!("kitsu:{kitsu}")));
+                }
             }
             MediaKind::Artist => {
-                let id = item
-                    .external_ids
-                    .deezer_artist?;
-                sqlx::query_scalar::<_, Uuid>(
-                    "SELECT id FROM media WHERE kind = 'Artist'
-                     AND CAST(json_extract(external_ids, '$.deezer_artist') AS INTEGER) = ?
-                     AND id != ? LIMIT 1",
-                )
-                .bind(id).bind(item.id)
-                .fetch_optional(db).await.ok().flatten()
+                if let Some(id) = ext.deezer_artist {
+                    candidates.push(stable_media_uuid(kind, &id.to_string()));
+                }
             }
             MediaKind::Album => {
-                let id = item
-                    .external_ids
-                    .deezer_album?;
-                sqlx::query_scalar::<_, Uuid>(
-                    "SELECT id FROM media WHERE kind = 'Album'
-                     AND CAST(json_extract(external_ids, '$.deezer_album') AS INTEGER) = ?
-                     AND id != ? LIMIT 1",
-                )
-                .bind(id).bind(item.id)
-                .fetch_optional(db).await.ok().flatten()
+                if let Some(id) = ext.deezer_album {
+                    candidates.push(stable_media_uuid(kind, &id.to_string()));
+                }
             }
             MediaKind::Track => {
-                let id = item
-                    .external_ids
-                    .deezer_track?;
-                sqlx::query_scalar::<_, Uuid>(
-                    "SELECT id FROM media WHERE kind = 'Track'
-                     AND CAST(json_extract(external_ids, '$.deezer_track') AS INTEGER) = ?
-                     AND id != ? LIMIT 1",
-                )
-                .bind(id).bind(item.id)
-                .fetch_optional(db).await.ok().flatten()
+                if let Some(id) = ext.deezer_track {
+                    candidates.push(stable_media_uuid(kind, &id.to_string()));
+                }
             }
-            _ => None,
+            _ => {}
         }
+        candidates.retain(|u| *u != item.id);
+        candidates
     }
 
     /// Update all `parent_id` / `grandparent_id` references from `old_id` to `new_id`
