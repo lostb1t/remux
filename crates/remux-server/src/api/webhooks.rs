@@ -1308,6 +1308,13 @@ mod tests {
     /// the device id, the session id, or any other uuid in `user.id` — all of
     /// which pass every unit test — leaves it at zero hits and fails.
     ///
+    /// Its body echoes `{{NotificationUsername}}` rather than `{{Name}}`: on a
+    /// playback event that variable comes from `put_user`, fed by the
+    /// `&db::User → UserEventData` conversion, and no other test pins it end to
+    /// end (`AuthenticationFailure` takes an inline branch that never touches
+    /// that conversion). A username half that shipped the device name, the
+    /// client name or an empty string would otherwise pass the whole suite.
+    ///
     /// That same hook is the canary for the two zero assertions: the dispatcher
     /// picks all three targets in a single pass over the cached hook set, so its
     /// delivery proves the event was processed and filtered rather than merely
@@ -1324,7 +1331,8 @@ mod tests {
             .mock_async(|when, then| {
                 when.method(POST)
                     .path("/subscribed")
-                    .body(echoed(&media.title, NotificationType::PlaybackStart));
+                    // "test" is the user `authenticated_server` seeds and logs in.
+                    .body(echoed("test", NotificationType::PlaybackStart));
                 then.status(200);
             })
             .await;
@@ -1346,7 +1354,7 @@ mod tests {
             &WebhookDto {
                 notification_types: vec![NotificationType::PlaybackStart],
                 user_filter: vec![me],
-                template: echo_template("Name"),
+                template: echo_template("NotificationUsername"),
                 ..hook_dto("mine", &endpoint_server.url("/subscribed"))
             },
         )
