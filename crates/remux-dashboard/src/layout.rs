@@ -111,6 +111,7 @@ pub fn DashboardLayout() -> Element {
         Route::SettingsBrandingRoute => "Branding",
         Route::SettingsIntroRoute => "Intro",
         Route::SettingsRemuxdbRoute => "Remuxdb",
+        Route::SettingsWebhooksRoute => "Webhooks",
         Route::AccessUsersRoute => "Users",
         Route::AccessApiKeysRoute => "API Keys",
         Route::TasksRoute => "Tasks",
@@ -198,6 +199,7 @@ pub fn DashboardLayout() -> Element {
                             | Route::SettingsBrandingRoute
                             | Route::SettingsIntroRoute
                             | Route::SettingsRemuxdbRoute
+                            | Route::SettingsWebhooksRoute
                         ),
                         NavSubItem {
                             label: "General",
@@ -233,6 +235,11 @@ pub fn DashboardLayout() -> Element {
                             label: "Branding",
                             active: route == Route::SettingsBrandingRoute,
                             on_click: move |_| { navigator().push(Route::SettingsBrandingRoute); sidebar_open.set(false); },
+                        }
+                        NavSubItem {
+                            label: "Webhooks",
+                            active: route == Route::SettingsWebhooksRoute,
+                            on_click: move |_| { navigator().push(Route::SettingsWebhooksRoute); sidebar_open.set(false); },
                         }
                     }
 

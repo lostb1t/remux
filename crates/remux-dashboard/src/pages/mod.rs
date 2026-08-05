@@ -7,6 +7,7 @@ pub mod iptv;
 pub mod settings;
 pub mod streams;
 pub mod users;
+pub mod webhooks;
 
 pub use addons::AddonsPage;
 pub use api_keys::ApiKeysPage;
@@ -20,3 +21,4 @@ pub use settings::{
 };
 pub use streams::StreamGroupsCard;
 pub use users::UsersPage;
+pub use webhooks::WebhooksPage;
