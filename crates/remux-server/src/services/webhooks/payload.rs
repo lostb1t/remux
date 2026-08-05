@@ -191,6 +191,7 @@ pub(crate) fn build_data(
 /// - `Discord` contributes `MentionType`, `EmbedColor`, `AvatarUrl`, `Username`
 ///   and `BotUsername` (`DiscordClient.SendAsync`) — which is what lets a
 ///   Discord template copied from the plugin render the whole payload itself.
+///   `EmbedColor` is the one intended deviation: always present, see below.
 ///
 /// Borrowed — and therefore free — when the hook contributes nothing.
 pub(crate) fn with_hook_fields<'a>(
@@ -204,23 +205,30 @@ pub(crate) fn with_hook_fields<'a>(
             }
             let mut merged = data.clone();
             for field in fields {
-                merged.insert(
-                    field
-                        .key
-                        .clone(),
-                    Value::String(
+                // `GenericClient.SendAsync` skips a pair when either half is
+                // empty — the same rule the headers half of that method applies.
+                let (Some(key), Some(value)) = (
+                    non_empty(Some(
+                        field
+                            .key
+                            .as_str(),
+                    )),
+                    non_empty(Some(
                         field
                             .value
-                            .clone(),
-                    ),
-                );
+                            .as_str(),
+                    )),
+                ) else {
+                    continue;
+                };
+                merged.insert(key.to_string(), Value::String(value.to_string()));
             }
             Cow::Owned(merged)
         }
         // Key spellings, value formats and presence rules follow
         // `DiscordClient.SendAsync` literally: `MentionType` is always set (to
-        // the empty string for `None`), the other three only when configured,
-        // and a username lands under both `Username` and `BotUsername`.
+        // the empty string for `None`) and a username lands under both
+        // `Username` and `BotUsername`, present only when configured.
         WebhookDestination::Discord {
             avatar_url,
             bot_username,
@@ -232,12 +240,25 @@ pub(crate) fn with_hook_fields<'a>(
                 "MentionType".into(),
                 Value::String(mention_type_variable(*mention_type).to_string()),
             );
-            if let Some(hex) = non_empty(embed_color.as_deref()) {
-                merged.insert(
-                    "EmbedColor".into(),
-                    Value::Number(parse_embed_color(hex).into()),
-                );
-            }
+            // Intended deviation: the plugin omits `EmbedColor` when the hook
+            // names no colour, which makes its own stock `Discord.handlebars`
+            // render `"color": ""` and Discord reject the payload with a 400.
+            // The key is therefore always present, defaulted. This costs no
+            // template-behaviour parity: across all five stock Discord
+            // templates `{{EmbedColor}}` appears exactly once, as a bare
+            // interpolation, never guarded by `if_exist` — the four per-event
+            // templates hardcode a literal colour and ignore the variable.
+            merged.insert(
+                "EmbedColor".into(),
+                Value::Number(
+                    non_empty(embed_color.as_deref())
+                        .map_or(DEFAULT_EMBED_COLOR, parse_embed_color)
+                        .into(),
+                ),
+            );
+            // `AvatarUrl` / `Username` / `BotUsername` keep strict presence
+            // parity: the stock templates *do* guard these with `if_exist`, so
+            // an always-present empty string would flip those blocks.
             if let Some(url) = non_empty(avatar_url.as_deref()) {
                 merged.insert("AvatarUrl".into(), Value::String(url.to_string()));
             }
@@ -1376,6 +1397,38 @@ mod tests {
         assert!(!base.contains_key("channel"));
     }
 
+    /// `GenericClient.SendAsync` skips a field when either half is empty — the
+    /// same rule its header loop applies.
+    #[test]
+    fn generic_destination_fields_skip_empty_halves() {
+        let base = build_data(&server(), &item_added(), Some(&episode()));
+        let hook = hook(WebhookDestination::Generic {
+            headers: vec![],
+            fields: vec![
+                WebhookKeyValue {
+                    key: "".into(),
+                    value: "orphan".into(),
+                },
+                WebhookKeyValue {
+                    key: "blank".into(),
+                    value: "".into(),
+                },
+                WebhookKeyValue {
+                    key: "channel".into(),
+                    value: "#general".into(),
+                },
+            ],
+        });
+
+        let merged = with_hook_fields(&base, &hook);
+        assert_eq!(str_at(&merged, "channel"), "#general");
+        assert!(!merged.contains_key(""), "an empty key must be skipped");
+        assert!(
+            !merged.contains_key("blank"),
+            "an empty value must be skipped"
+        );
+    }
+
     #[test]
     fn a_generic_hook_with_no_fields_borrows_the_dictionary() {
         let base = build_data(&server(), &item_added(), Some(&episode()));
@@ -1448,13 +1501,13 @@ mod tests {
     /// an unset one must be *missing*, not present-and-empty — that is what
     /// makes `{{#if_exist AvatarUrl}}` behave as it does in the plugin.
     #[test]
-    fn discord_omits_the_unset_options() {
+    fn discord_omits_the_unset_identity_options() {
         for hook in [
             discord_with(None, None, None, DiscordMentionType::None),
             discord_with(Some(""), Some(""), Some(""), DiscordMentionType::None),
         ] {
             let data = discord_vars(&hook);
-            for key in ["AvatarUrl", "Username", "BotUsername", "EmbedColor"] {
+            for key in ["AvatarUrl", "Username", "BotUsername"] {
                 assert!(
                     !data.contains_key(key),
                     "{key} must be absent when it is not configured"
@@ -1476,6 +1529,27 @@ mod tests {
             DiscordMentionType::None,
         ));
         assert_eq!(data["EmbedColor"], Value::from(11_164_867));
+    }
+
+    /// Intended deviation from the plugin, which omits the key: the stock
+    /// `Discord.handlebars` interpolates `{{EmbedColor}}` bare, so an absent
+    /// key renders `"color": ""` and Discord rejects the payload. The
+    /// invariant belongs here, not in a dashboard form three crates away.
+    #[test]
+    fn discord_always_exposes_an_embed_color() {
+        for embed_color in [None, Some(""), Some("nonsense")] {
+            let data = discord_vars(&discord_with(
+                None,
+                None,
+                embed_color,
+                DiscordMentionType::None,
+            ));
+            assert_eq!(
+                data["EmbedColor"],
+                Value::from(DEFAULT_EMBED_COLOR),
+                "{embed_color:?} must still yield a usable colour"
+            );
+        }
     }
 
     /// A `Generic` hook must not gain Discord keys, and vice versa.
