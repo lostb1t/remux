@@ -176,7 +176,8 @@ pub async fn get_devices(
                 .unwrap_or(0);
             let limit = params
                 .limit
-                .unwrap_or(i64::MAX);
+                .unwrap_or(50)
+                .clamp(0, 200);
             let filter = params
                 .search_term
                 .as_deref()
