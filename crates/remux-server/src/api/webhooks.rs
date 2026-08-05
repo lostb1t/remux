@@ -244,7 +244,8 @@ mod tests {
     use http::header::{HeaderName, HeaderValue};
     use httpmock::{Method::POST, Mock, MockServer};
     use remux_sdks::remux::{
-        NotificationType, WebhookDestination, WebhookItemTypes, WebhookKeyValue,
+        DiscordMentionType, NotificationType, WebhookDestination, WebhookItemTypes,
+        WebhookKeyValue,
     };
     use serde_json::json;
     use std::time::{Duration, Instant};
@@ -962,6 +963,44 @@ mod tests {
         format!(r#"{{"content":"{content}","type":"{notification_type}"}}"#)
     }
 
+    /// Report `item_id` as started playing, exactly as a client would.
+    async fn report_playback_start(
+        server: &TestServer,
+        h: &HeaderName,
+        v: &HeaderValue,
+        item_id: Uuid,
+    ) {
+        server
+            .post("/sessions/playing")
+            .add_header(h.clone(), v.clone())
+            .json(&json!({
+                "ItemId": item_id,
+                "PlaySessionId": "emission-test",
+                "PositionTicks": 1_500_000_000i64,
+                "CanSeek": true,
+                "IsPaused": false,
+                "IsMuted": false,
+                "PlayMethod": "DirectPlay",
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+    }
+
+    /// The id of the authenticated user, as the API itself reports it.
+    async fn my_user_id(server: &TestServer, h: &HeaderName, v: &HeaderValue) -> Uuid {
+        let me: serde_json::Value = server
+            .get("/users/me")
+            .add_header(h.clone(), v.clone())
+            .await
+            .json();
+        Uuid::parse_str(
+            me["Id"]
+                .as_str()
+                .expect("/users/me must carry an Id"),
+        )
+        .expect("the reported id must be a uuid")
+    }
+
     /// `POST /sessions/playing` reaches a hook subscribed to `PlaybackStart`,
     /// carrying the item that is being played.
     #[tokio::test]
@@ -992,20 +1031,7 @@ mod tests {
         )
         .await;
 
-        server
-            .post("/sessions/playing")
-            .add_header(h.clone(), v.clone())
-            .json(&json!({
-                "ItemId": media.id,
-                "PlaySessionId": "emission-test",
-                "PositionTicks": 1_500_000_000i64,
-                "CanSeek": true,
-                "IsPaused": false,
-                "IsMuted": false,
-                "PlayMethod": "DirectPlay",
-            }))
-            .await
-            .assert_status(StatusCode::NO_CONTENT);
+        report_playback_start(&server, &h, &v, media.id).await;
 
         eventually("the playback start to reach the webhook", async || {
             hits(&endpoint).await == 1
@@ -1270,5 +1296,242 @@ mod tests {
             1,
             "a successful login must not emit AuthenticationFailure"
         );
+    }
+
+    // --- the filters, against the event the server actually builds ----------
+
+    /// One `PlaybackStart`, three hooks, one delivery.
+    ///
+    /// `WebhookService::matches` is unit-tested against hand-built events, which
+    /// cannot see what the *emission site* puts in one. The subscribed hook here
+    /// filters on the id `/users/me` reports, so a `PlaybackStart` emitted with
+    /// the device id, the session id, or any other uuid in `user.id` — all of
+    /// which pass every unit test — leaves it at zero hits and fails.
+    ///
+    /// That same hook is the canary for the two zero assertions: the dispatcher
+    /// picks all three targets in a single pass over the cached hook set, so its
+    /// delivery proves the event was processed and filtered rather than merely
+    /// still in flight.
+    #[tokio::test]
+    async fn a_playback_start_reaches_only_the_hooks_whose_filters_accept_it() {
+        let (server, guard, token) = authenticated_server().await;
+        let (h, v) = auth(&token);
+        let media = crate::integration_test::insert_test_source(&guard.0).await;
+        let me = my_user_id(&server, &h, &v).await;
+
+        let endpoint_server = MockServer::start_async().await;
+        let subscribed = endpoint_server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/subscribed")
+                    .body(echoed(&media.title, NotificationType::PlaybackStart));
+                then.status(200);
+            })
+            .await;
+        // Deliberately unconstrained: any request at all is a failure.
+        let mut reject = |path: &'static str| {
+            endpoint_server.mock(|when, then| {
+                when.method(POST)
+                    .path(path);
+                then.status(200);
+            })
+        };
+        let wrong_type = reject("/wrong-type");
+        let wrong_user = reject("/wrong-user");
+
+        create(
+            &server,
+            &h,
+            &v,
+            &WebhookDto {
+                notification_types: vec![NotificationType::PlaybackStart],
+                user_filter: vec![me],
+                template: echo_template("Name"),
+                ..hook_dto("mine", &endpoint_server.url("/subscribed"))
+            },
+        )
+        .await;
+        create(
+            &server,
+            &h,
+            &v,
+            &WebhookDto {
+                notification_types: vec![NotificationType::ItemDeleted],
+                ..hook_dto("deletions only", &endpoint_server.url("/wrong-type"))
+            },
+        )
+        .await;
+        create(
+            &server,
+            &h,
+            &v,
+            &WebhookDto {
+                notification_types: vec![NotificationType::PlaybackStart],
+                user_filter: vec![Uuid::from_u128(0xf0f0)],
+                ..hook_dto("someone else", &endpoint_server.url("/wrong-user"))
+            },
+        )
+        .await;
+
+        report_playback_start(&server, &h, &v, media.id).await;
+
+        eventually("the subscribed hook to be delivered to", async || {
+            hits(&subscribed).await == 1
+        })
+        .await;
+        settle().await;
+        assert_eq!(
+            hits(&wrong_type).await,
+            0,
+            "a hook subscribed to another type must not receive this event"
+        );
+        assert_eq!(
+            hits(&wrong_user).await,
+            0,
+            "a hook filtered on another user must not receive this event"
+        );
+    }
+
+    // --- the enabled switch, end to end -------------------------------------
+
+    /// Disabling a hook over HTTP must stop the *running* dispatcher from
+    /// delivering to it.
+    ///
+    /// Neither half of that is proven by the parts: the repository test shows
+    /// `get_enabled` filters the query, and the invalidation test shows an
+    /// update reaches the dispatcher, but nothing pins the two together. A
+    /// `reload` that read `get_all` instead would keep every existing test green
+    /// while making the operator's kill switch do nothing until a restart.
+    ///
+    /// The canary is created once and never touched again; its second hit is
+    /// what proves the post-disable event was dispatched.
+    #[tokio::test]
+    async fn disabling_a_hook_over_http_stops_its_deliveries() {
+        let (server, guard, token) = authenticated_server().await;
+        let (h, v) = auth(&token);
+        let endpoint_server = MockServer::start_async().await;
+
+        let mut endpoint = |path: &'static str| {
+            endpoint_server.mock(|when, then| {
+                when.method(POST)
+                    .path(path);
+                then.status(200);
+            })
+        };
+        let canary_ep = endpoint("/canary");
+        let target_ep = endpoint("/target");
+
+        create(
+            &server,
+            &h,
+            &v,
+            &hook_dto("canary", &endpoint_server.url("/canary")),
+        )
+        .await;
+        let target = create(
+            &server,
+            &h,
+            &v,
+            &hook_dto("target", &endpoint_server.url("/target")),
+        )
+        .await;
+
+        guard
+            .0
+            .webhooks
+            .emit(generic_event());
+        eventually("the enabled hook to be delivered to", async || {
+            hits(&canary_ep).await == 1 && hits(&target_ep).await == 1
+        })
+        .await;
+
+        let disabled: WebhookDto = server
+            .post(&format!("/remux/webhooks/{}", target.id))
+            .add_header(h.clone(), v.clone())
+            .json(&WebhookDto {
+                enabled: false,
+                ..hook_dto("target", &endpoint_server.url("/target"))
+            })
+            .await
+            .json();
+        assert!(!disabled.enabled, "the write must have taken effect");
+
+        guard
+            .0
+            .webhooks
+            .emit(generic_event());
+        eventually("the canary to see the second event", async || {
+            hits(&canary_ep).await == 2
+        })
+        .await;
+        settle().await;
+        assert_eq!(
+            hits(&target_ep).await,
+            1,
+            "a disabled webhook must stop receiving events"
+        );
+    }
+
+    // --- the Discord destination, end to end --------------------------------
+
+    /// A Discord hook, created over HTTP and driven by a real event, must reach
+    /// the endpoint as the JSON envelope its template describes.
+    ///
+    /// The destination's settings are template *variables*, so they only work if
+    /// the whole chain holds: the `Discord` variant survives the DB's JSON
+    /// column, the dispatcher's reload hands it to `with_hook_fields`, the
+    /// overlay lands under the plugin's key spellings, and the sender posts the
+    /// result as JSON. Every link is unit-tested; nothing composed them.
+    #[tokio::test]
+    async fn a_discord_hook_posts_the_rendered_discord_envelope() {
+        let (server, guard, token) = authenticated_server().await;
+        let (h, v) = auth(&token);
+        let media = crate::integration_test::insert_test_source(&guard.0).await;
+
+        // `#AA5CC3` as the integer Discord wants. Spelled out rather than
+        // computed so the plugin's off-by-one hex truncation cannot creep back
+        // in unnoticed.
+        let expected = format!(
+            r#"{{"username":"remux","avatar_url":"https://example.test/a.png","content":"@everyone","embeds":[{{"color":11164867,"description":"{}"}}]}}"#,
+            media.title
+        );
+        let endpoint_server = MockServer::start_async().await;
+        let endpoint = endpoint_server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/api/webhooks/1/token")
+                    .header("content-type", "application/json; charset=utf-8")
+                    .body(&expected);
+                then.status(204);
+            })
+            .await;
+
+        create(
+            &server,
+            &h,
+            &v,
+            &WebhookDto {
+                notification_types: vec![NotificationType::PlaybackStart],
+                destination: WebhookDestination::Discord {
+                    avatar_url: Some("https://example.test/a.png".into()),
+                    bot_username: Some("remux".into()),
+                    embed_color: Some("#AA5CC3".into()),
+                    mention_type: DiscordMentionType::Everyone,
+                },
+                template: r#"{"username":"{{BotUsername}}","avatar_url":"{{AvatarUrl}}","content":"{{MentionType}}","embeds":[{"color":{{EmbedColor}},"description":"{{Name}}"}]}"#.into(),
+                ..hook_dto(
+                    "discord",
+                    &endpoint_server.url("/api/webhooks/1/token"),
+                )
+            },
+        )
+        .await;
+
+        report_playback_start(&server, &h, &v, media.id).await;
+
+        eventually("the discord envelope to reach the endpoint", async || {
+            hits(&endpoint).await == 1
+        })
+        .await;
     }
 }
