@@ -1936,6 +1936,7 @@ impl AddonService {
         .bind(parent_id)
         .fetch_all(db)
         .await
+        .inspect_err(|e| error!(parent_id = %parent_id, error = %e, "child_uuid_map query failed"))
         .unwrap_or_default()
         .into_iter()
         .filter_map(|(k, idx, id)| idx.map(|i| ((k, i), id)))
@@ -2082,7 +2083,6 @@ impl AddonService {
         let mut level1: Vec<db::Media> = Vec::with_capacity(raw_level1.len());
         for mut child in raw_level1 {
             child.parent_id = Some(actual_root_id);
-            child.grandparent_id = Some(actual_root_id);
             child.grandparent = Some(Box::new(gp_stub.clone()));
 
             // Adopt existing UUID for this (kind, idx) if root was remapped.
@@ -2128,6 +2128,7 @@ impl AddonService {
             level1.push(child);
         }
 
+        let mut level1_ok: Vec<&db::Media> = Vec::with_capacity(level1.len());
         for chunk in level1.chunks(db::CHUNK_SIZE) {
             if let Err(e) = db::Media::upsert(&ctx.db, chunk).await {
                 error!(error = %e, "failed to upsert level-1 children");
@@ -2135,11 +2136,13 @@ impl AddonService {
                 save_pending_relations(&ctx, chunk).await;
                 save_pending_tags(&ctx, chunk).await;
                 save_pending_popularity(&ctx, chunk).await;
+                level1_ok.extend(chunk);
             }
         }
 
         // Level 2: grandchildren (Episodes, Tracks, etc.) — one fetch+upsert per child.
-        for child in &level1 {
+        // Only process children whose level-1 upsert succeeded to avoid orphaned rows.
+        for child in &level1_ok {
             let actual_child_id = child.id;
             let raw_level2 = self
                 .get_direct_children(child, &ctx)

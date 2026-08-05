@@ -512,7 +512,7 @@ impl UserMediaState {
                     "SELECT ums.* FROM user_media_state ums \
                      JOIN media m ON ums.media_id = m.id \
                      WHERE ums.user_id = ? \
-                       AND m.kind = 'season' \
+                       AND m.kind = ? \
                        AND m.idx = ? \
                        AND ( \
                          (? IS NOT NULL AND json_extract(m.external_ids, '$.series_imdb') = ?) \
@@ -521,6 +521,7 @@ impl UserMediaState {
                      LIMIT 1",
                 )
                 .bind(user.id)
+                .bind(super::MediaKind::Season)
                 .bind(media.idx)
                 .bind(ext.series_imdb.as_deref())
                 .bind(ext.series_imdb.as_deref())
@@ -534,7 +535,7 @@ impl UserMediaState {
                     "SELECT ums.* FROM user_media_state ums \
                      JOIN media m ON ums.media_id = m.id \
                      WHERE ums.user_id = ? \
-                       AND m.kind = 'episode' \
+                       AND m.kind = ? \
                        AND m.idx = ? \
                        AND m.parent_idx = ? \
                        AND ( \
@@ -544,6 +545,7 @@ impl UserMediaState {
                      LIMIT 1",
                 )
                 .bind(user.id)
+                .bind(super::MediaKind::Episode)
                 .bind(media.idx)
                 .bind(media.parent_idx)
                 .bind(ext.series_imdb.as_deref())

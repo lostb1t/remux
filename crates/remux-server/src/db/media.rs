@@ -2189,33 +2189,6 @@ impl Media {
             return Ok(());
         }
 
-        // For root-level items: if a row with matching external IDs already exists
-        // under a different UUID (e.g. TMDB-based UUID before IMDB was resolved),
-        // adopt the existing UUID so we don't create a duplicate row.
-        for item in items.iter_mut() {
-            if !matches!(
-                item.kind,
-                MediaKind::Movie
-                    | MediaKind::Series
-                    | MediaKind::Artist
-                    | MediaKind::Album
-                    | MediaKind::Track
-            ) {
-                continue;
-            }
-            if let Some(existing_id) = Self::find_existing_id_by_ext(db, item).await {
-                if existing_id != item.id {
-                    if let Err(e) =
-                        Self::cascade_update_parent_refs(db, item.id, existing_id).await
-                    {
-                        warn!(old = %item.id, new = %existing_id, error = %e,
-                            "cascade_update_parent_refs failed in upsert");
-                    }
-                    item.id = existing_id;
-                }
-            }
-        }
-
         let now = chrono::Utc::now().naive_utc();
 
         for chunk in items.chunks(CHUNK_SIZE) {
