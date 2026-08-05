@@ -529,10 +529,10 @@ impl Task for JellyfinImportTask {
                 }
 
                 // Use the local DB UUID when the item is already imported; otherwise
-                // use a random placeholder — the state will be migrated to the real UUID
-                // via media_raw content-based matching when the item is imported later.
+                // derive the stable UUID from external IDs so get_or_new can find the
+                // state row via ext_id_uuid_candidates when the item is imported later.
                 let media_uuid = resolve_from_index(&index, imdb, tmdb, tvdb)
-                    .unwrap_or_else(uuid::Uuid::new_v4);
+                    .unwrap_or_else(|| uuid::Uuid::from(&raw));
 
                 let state = db::UserMediaState {
                     user_id: local_user.id,

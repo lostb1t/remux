@@ -2385,12 +2385,6 @@ impl Media {
     }
 
     /// Compute all candidate UUIDs an existing DB row could have been stored under
-    /// for the given item's external IDs. Used by `find_existing_id_by_ext`.
-    ///
-    /// Each external ID is turned into the stable UUID it would produce if it were
-    /// the canonical key at insert time. The item's own current UUID is excluded so
-    /// only *different* rows can match.
-    /// Compute all candidate UUIDs an existing DB row could have been stored under
     /// for the given item's external IDs. Used by `find_existing_id_by_ext` (dedup)
     /// and `UserMediaState::get_or_new` (legacy state lookup).
     ///
