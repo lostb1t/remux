@@ -602,7 +602,7 @@ mod test {
         series_title: &str,
         episode_titles: &[&str],
     ) -> (db::Media, Vec<db::Media>) {
-        let series_imdb = db::NonEmptyString::try_new(format!(
+        let imdb = db::NonEmptyString::try_new(format!(
             "tt{}",
             series_title
                 .bytes()
@@ -615,7 +615,7 @@ mod test {
             id: Uuid::from(&db::MediaIdRaw {
                 kind: db::MediaKind::Series,
                 external_ids: db::ExternalIds {
-                    imdb: Some(series_imdb.clone()),
+                    imdb: Some(imdb.clone()),
                     ..Default::default()
                 },
                 season: None,
@@ -624,7 +624,7 @@ mod test {
             title: series_title.to_string(),
             kind: db::MediaKind::Series,
             external_ids: db::ExternalIds {
-                imdb: Some(series_imdb.clone()),
+                imdb: Some(imdb),
                 ..Default::default()
             },
             ..Default::default()
@@ -634,22 +634,14 @@ mod test {
             .await
             .unwrap();
 
+        let season_id = crate::common::stable_media_uuid(
+            &db::MediaKind::Season,
+            &format!("{}:1", series.id),
+        );
         let mut season = db::Media {
-            id: Uuid::from(&db::MediaIdRaw {
-                kind: db::MediaKind::Season,
-                external_ids: db::ExternalIds {
-                    series_imdb: Some(series_imdb.clone()),
-                    ..Default::default()
-                },
-                season: Some(1),
-                episode: None,
-            }),
+            id: season_id,
             title: format!("{series_title} Season 1"),
             kind: db::MediaKind::Season,
-            external_ids: db::ExternalIds {
-                series_imdb: Some(series_imdb.clone()),
-                ..Default::default()
-            },
             grandparent_id: Some(series.id),
             parent_id: Some(series.id),
             idx: Some(1),
@@ -665,26 +657,18 @@ mod test {
             .iter()
             .enumerate()
         {
+            let ep_num = idx as i64 + 1;
             let mut episode = db::Media {
-                id: Uuid::from(&db::MediaIdRaw {
-                    kind: db::MediaKind::Episode,
-                    external_ids: db::ExternalIds {
-                        series_imdb: Some(series_imdb.clone()),
-                        ..Default::default()
-                    },
-                    season: Some(1),
-                    episode: Some(idx as i64 + 1),
-                }),
+                id: crate::common::stable_media_uuid(
+                    &db::MediaKind::Episode,
+                    &format!("{}:{ep_num}", season_id),
+                ),
                 title: (*title).to_string(),
                 kind: db::MediaKind::Episode,
-                external_ids: db::ExternalIds {
-                    series_imdb: Some(series_imdb.clone()),
-                    ..Default::default()
-                },
                 grandparent_id: Some(series.id),
                 parent_id: Some(season.id),
                 parent_idx: Some(1),
-                idx: Some(idx as i64 + 1),
+                idx: Some(ep_num),
                 digital_released_at: Some(
                     NaiveDate::from_ymd_opt(2020, 1, 1)
                         .unwrap()
@@ -1388,12 +1372,11 @@ mod test {
         let now = Utc::now().naive_utc();
         let future = now + chrono::Duration::days(30);
 
-        let series_imdb = db::NonEmptyString::try_new("tt9999991".to_string()).unwrap();
         let mut series = db::Media {
             id: uuid::Uuid::from(&db::MediaIdRaw {
                 kind: db::MediaKind::Series,
                 external_ids: db::ExternalIds {
-                    imdb: Some(series_imdb.clone()),
+                    imdb: db::NonEmptyString::try_new("tt9999991".to_string()).ok(),
                     ..Default::default()
                 },
                 season: None,
@@ -1402,7 +1385,7 @@ mod test {
             title: "FutureSeries".to_string(),
             kind: db::MediaKind::Series,
             external_ids: db::ExternalIds {
-                imdb: Some(series_imdb.clone()),
+                imdb: db::NonEmptyString::try_new("tt9999991".to_string()).ok(),
                 ..Default::default()
             },
             ..Default::default()
@@ -1412,22 +1395,14 @@ mod test {
             .await
             .unwrap();
 
+        let season_id = crate::common::stable_media_uuid(
+            &db::MediaKind::Season,
+            &format!("{}:1", series.id),
+        );
         let mut season = db::Media {
-            id: uuid::Uuid::from(&db::MediaIdRaw {
-                kind: db::MediaKind::Season,
-                external_ids: db::ExternalIds {
-                    series_imdb: Some(series_imdb.clone()),
-                    ..Default::default()
-                },
-                season: Some(1),
-                episode: None,
-            }),
+            id: season_id,
             title: "FutureSeries Season 1".to_string(),
             kind: db::MediaKind::Season,
-            external_ids: db::ExternalIds {
-                series_imdb: Some(series_imdb.clone()),
-                ..Default::default()
-            },
             grandparent_id: Some(series.id),
             parent_id: Some(series.id),
             idx: Some(1),
@@ -1440,21 +1415,12 @@ mod test {
 
         // Ep1: already released and played.
         let mut ep1 = db::Media {
-            id: uuid::Uuid::from(&db::MediaIdRaw {
-                kind: db::MediaKind::Episode,
-                external_ids: db::ExternalIds {
-                    series_imdb: Some(series_imdb.clone()),
-                    ..Default::default()
-                },
-                season: Some(1),
-                episode: Some(1),
-            }),
+            id: crate::common::stable_media_uuid(
+                &db::MediaKind::Episode,
+                &format!("{}:1", season_id),
+            ),
             title: "Ep1".to_string(),
             kind: db::MediaKind::Episode,
-            external_ids: db::ExternalIds {
-                series_imdb: Some(series_imdb.clone()),
-                ..Default::default()
-            },
             grandparent_id: Some(series.id),
             parent_id: Some(season.id),
             parent_idx: Some(1),
@@ -1468,21 +1434,12 @@ mod test {
 
         // Ep2: not yet released — must be hidden from Next Up.
         let mut ep2 = db::Media {
-            id: uuid::Uuid::from(&db::MediaIdRaw {
-                kind: db::MediaKind::Episode,
-                external_ids: db::ExternalIds {
-                    series_imdb: Some(series_imdb.clone()),
-                    ..Default::default()
-                },
-                season: Some(1),
-                episode: Some(2),
-            }),
+            id: crate::common::stable_media_uuid(
+                &db::MediaKind::Episode,
+                &format!("{}:2", season_id),
+            ),
             title: "Ep2 (unreleased)".to_string(),
             kind: db::MediaKind::Episode,
-            external_ids: db::ExternalIds {
-                series_imdb: Some(series_imdb.clone()),
-                ..Default::default()
-            },
             grandparent_id: Some(series.id),
             parent_id: Some(season.id),
             parent_idx: Some(1),
@@ -1540,14 +1497,12 @@ mod test {
 
         let now = Utc::now().naive_utc();
 
-        let series_imdb =
-            db::NonEmptyString::try_new("tt_null_nup_001".to_string()).unwrap();
-
         let mut series = db::Media {
             id: uuid::Uuid::from(&db::MediaIdRaw {
                 kind: db::MediaKind::Series,
                 external_ids: db::ExternalIds {
-                    imdb: Some(series_imdb.clone()),
+                    imdb: db::NonEmptyString::try_new("tt_null_nup_001".to_string())
+                        .ok(),
                     ..Default::default()
                 },
                 season: None,
@@ -1556,7 +1511,7 @@ mod test {
             title: "NullDateNextUpSeries".to_string(),
             kind: db::MediaKind::Series,
             external_ids: db::ExternalIds {
-                imdb: Some(series_imdb.clone()),
+                imdb: db::NonEmptyString::try_new("tt_null_nup_001".to_string()).ok(),
                 ..Default::default()
             },
             ..Default::default()
@@ -1566,22 +1521,14 @@ mod test {
             .await
             .unwrap();
 
+        let season_id = crate::common::stable_media_uuid(
+            &db::MediaKind::Season,
+            &format!("{}:1", series.id),
+        );
         let mut season = db::Media {
-            id: uuid::Uuid::from(&db::MediaIdRaw {
-                kind: db::MediaKind::Season,
-                external_ids: db::ExternalIds {
-                    series_imdb: Some(series_imdb.clone()),
-                    ..Default::default()
-                },
-                season: Some(1),
-                episode: None,
-            }),
+            id: season_id,
             title: "Season 1".to_string(),
             kind: db::MediaKind::Season,
-            external_ids: db::ExternalIds {
-                series_imdb: Some(series_imdb.clone()),
-                ..Default::default()
-            },
             grandparent_id: Some(series.id),
             parent_id: Some(series.id),
             idx: Some(1),
@@ -1594,21 +1541,12 @@ mod test {
 
         // ep1: released and played
         let mut ep1 = db::Media {
-            id: uuid::Uuid::from(&db::MediaIdRaw {
-                kind: db::MediaKind::Episode,
-                external_ids: db::ExternalIds {
-                    series_imdb: Some(series_imdb.clone()),
-                    ..Default::default()
-                },
-                season: Some(1),
-                episode: Some(1),
-            }),
+            id: crate::common::stable_media_uuid(
+                &db::MediaKind::Episode,
+                &format!("{}:1", season_id),
+            ),
             title: "Ep1".to_string(),
             kind: db::MediaKind::Episode,
-            external_ids: db::ExternalIds {
-                series_imdb: Some(series_imdb.clone()),
-                ..Default::default()
-            },
             grandparent_id: Some(series.id),
             parent_id: Some(season.id),
             parent_idx: Some(1),
@@ -1622,21 +1560,12 @@ mod test {
 
         // ep2: no air date — upcoming anime episode with no scheduled release
         let mut ep2 = db::Media {
-            id: uuid::Uuid::from(&db::MediaIdRaw {
-                kind: db::MediaKind::Episode,
-                external_ids: db::ExternalIds {
-                    series_imdb: Some(series_imdb.clone()),
-                    ..Default::default()
-                },
-                season: Some(1),
-                episode: Some(2),
-            }),
+            id: crate::common::stable_media_uuid(
+                &db::MediaKind::Episode,
+                &format!("{}:2", season_id),
+            ),
             title: "Ep2 (no air date)".to_string(),
             kind: db::MediaKind::Episode,
-            external_ids: db::ExternalIds {
-                series_imdb: Some(series_imdb.clone()),
-                ..Default::default()
-            },
             grandparent_id: Some(series.id),
             parent_id: Some(season.id),
             parent_idx: Some(1),
@@ -1704,15 +1633,14 @@ mod test {
         let past = now - chrono::Duration::days(30);
         let future = now + chrono::Duration::days(30);
 
-        let series_imdb =
-            db::NonEmptyString::try_new("tt_seasons_unreleased_001".to_string())
-                .unwrap();
-
         let mut series = db::Media {
             id: uuid::Uuid::from(&db::MediaIdRaw {
                 kind: db::MediaKind::Series,
                 external_ids: db::ExternalIds {
-                    imdb: Some(series_imdb.clone()),
+                    imdb: db::NonEmptyString::try_new(
+                        "tt_seasons_unreleased_001".to_string(),
+                    )
+                    .ok(),
                     ..Default::default()
                 },
                 season: None,
@@ -1721,7 +1649,10 @@ mod test {
             title: "TestSeries".to_string(),
             kind: db::MediaKind::Series,
             external_ids: db::ExternalIds {
-                imdb: Some(series_imdb.clone()),
+                imdb: db::NonEmptyString::try_new(
+                    "tt_seasons_unreleased_001".to_string(),
+                )
+                .ok(),
                 ..Default::default()
             },
             digital_released_at: Some(past),
@@ -1735,21 +1666,12 @@ mod test {
 
         // Season 1: already released.
         let mut season1 = db::Media {
-            id: uuid::Uuid::from(&db::MediaIdRaw {
-                kind: db::MediaKind::Season,
-                external_ids: db::ExternalIds {
-                    series_imdb: Some(series_imdb.clone()),
-                    ..Default::default()
-                },
-                season: Some(1),
-                episode: None,
-            }),
+            id: crate::common::stable_media_uuid(
+                &db::MediaKind::Season,
+                &format!("{}:1", series.id),
+            ),
             title: "Season 1".to_string(),
             kind: db::MediaKind::Season,
-            external_ids: db::ExternalIds {
-                series_imdb: Some(series_imdb.clone()),
-                ..Default::default()
-            },
             grandparent_id: Some(series.id),
             parent_id: Some(series.id),
             idx: Some(1),
@@ -1764,21 +1686,12 @@ mod test {
 
         // Season 2: premiere in the future — must be hidden.
         let mut season2 = db::Media {
-            id: uuid::Uuid::from(&db::MediaIdRaw {
-                kind: db::MediaKind::Season,
-                external_ids: db::ExternalIds {
-                    series_imdb: Some(series_imdb.clone()),
-                    ..Default::default()
-                },
-                season: Some(2),
-                episode: None,
-            }),
+            id: crate::common::stable_media_uuid(
+                &db::MediaKind::Season,
+                &format!("{}:2", series.id),
+            ),
             title: "Season 2".to_string(),
             kind: db::MediaKind::Season,
-            external_ids: db::ExternalIds {
-                series_imdb: Some(series_imdb.clone()),
-                ..Default::default()
-            },
             grandparent_id: Some(series.id),
             parent_id: Some(series.id),
             idx: Some(2),
@@ -1848,15 +1761,14 @@ mod test {
         let now = Utc::now().naive_utc();
         let past = now - chrono::Duration::days(365);
 
-        let series_imdb =
-            db::NonEmptyString::try_new("tt_seasons_null_tvdb_001".to_string())
-                .unwrap();
-
         let mut series = db::Media {
             id: uuid::Uuid::from(&db::MediaIdRaw {
                 kind: db::MediaKind::Series,
                 external_ids: db::ExternalIds {
-                    imdb: Some(series_imdb.clone()),
+                    imdb: db::NonEmptyString::try_new(
+                        "tt_seasons_null_tvdb_001".to_string(),
+                    )
+                    .ok(),
                     ..Default::default()
                 },
                 season: None,
@@ -1865,7 +1777,10 @@ mod test {
             title: "NullTvdbSeries".to_string(),
             kind: db::MediaKind::Series,
             external_ids: db::ExternalIds {
-                imdb: Some(series_imdb.clone()),
+                imdb: db::NonEmptyString::try_new(
+                    "tt_seasons_null_tvdb_001".to_string(),
+                )
+                .ok(),
                 ..Default::default()
             },
             digital_released_at: Some(past),
@@ -1878,21 +1793,12 @@ mod test {
             .unwrap();
 
         let mut season1 = db::Media {
-            id: uuid::Uuid::from(&db::MediaIdRaw {
-                kind: db::MediaKind::Season,
-                external_ids: db::ExternalIds {
-                    series_imdb: Some(series_imdb.clone()),
-                    ..Default::default()
-                },
-                season: Some(1),
-                episode: None,
-            }),
+            id: crate::common::stable_media_uuid(
+                &db::MediaKind::Season,
+                &format!("{}:1", series.id),
+            ),
             title: "Season 1".to_string(),
             kind: db::MediaKind::Season,
-            external_ids: db::ExternalIds {
-                series_imdb: Some(series_imdb.clone()),
-                ..Default::default()
-            },
             grandparent_id: Some(series.id),
             parent_id: Some(series.id),
             idx: Some(1),
@@ -1907,21 +1813,12 @@ mod test {
 
         // Season 2: TVDB knows it exists but has no air date yet.
         let mut season2 = db::Media {
-            id: uuid::Uuid::from(&db::MediaIdRaw {
-                kind: db::MediaKind::Season,
-                external_ids: db::ExternalIds {
-                    series_imdb: Some(series_imdb.clone()),
-                    ..Default::default()
-                },
-                season: Some(2),
-                episode: None,
-            }),
+            id: crate::common::stable_media_uuid(
+                &db::MediaKind::Season,
+                &format!("{}:2", series.id),
+            ),
             title: "Season 2".to_string(),
             kind: db::MediaKind::Season,
-            external_ids: db::ExternalIds {
-                series_imdb: Some(series_imdb.clone()),
-                ..Default::default()
-            },
             grandparent_id: Some(series.id),
             parent_id: Some(series.id),
             idx: Some(2),

@@ -182,23 +182,14 @@ async fn seed_series(
             ..Default::default()
         });
 
-        let season_id = Uuid::from(&db::MediaIdRaw {
-            kind: db::MediaKind::Season,
-            external_ids: db::ExternalIds {
-                series_imdb: Some(imdb.clone()),
-                ..Default::default()
-            },
-            season: Some(1),
-            episode: None,
-        });
+        let season_id = remux_server::stable_media_uuid(
+            &db::MediaKind::Season,
+            &format!("{}:1", series_id),
+        );
         items.push(db::Media {
             id: season_id,
             title: format!("Bench Series {i} Season 1"),
             kind: db::MediaKind::Season,
-            external_ids: db::ExternalIds {
-                series_imdb: Some(imdb.clone()),
-                ..Default::default()
-            },
             grandparent_id: Some(series_id),
             parent_id: Some(series_id),
             idx: Some(1),
@@ -207,23 +198,14 @@ async fn seed_series(
         });
 
         for ep in 1..=EPISODES {
-            let ep_id = Uuid::from(&db::MediaIdRaw {
-                kind: db::MediaKind::Episode,
-                external_ids: db::ExternalIds {
-                    series_imdb: Some(imdb.clone()),
-                    ..Default::default()
-                },
-                season: Some(1),
-                episode: Some(ep),
-            });
+            let ep_id = remux_server::stable_media_uuid(
+                &db::MediaKind::Episode,
+                &format!("{}:{ep}", season_id),
+            );
             items.push(db::Media {
                 id: ep_id,
                 title: format!("Bench Series {i} S01E{ep:02}"),
                 kind: db::MediaKind::Episode,
-                external_ids: db::ExternalIds {
-                    series_imdb: Some(imdb.clone()),
-                    ..Default::default()
-                },
                 grandparent_id: Some(series_id),
                 parent_id: Some(season_id),
                 parent_idx: Some(1),

@@ -810,9 +810,13 @@ async fn stremio_meta_fetch(
     >,
 ) -> Result<Option<db::Media>> {
     let imdb_id = media
-        .external_ids
-        .series_imdb
-        .clone()
+        .grandparent
+        .as_deref()
+        .and_then(|gp| {
+            gp.external_ids
+                .imdb
+                .clone()
+        })
         .or(media
             .external_ids
             .imdb
@@ -1251,10 +1255,14 @@ async fn stremio_subtitles(
         ),
         db::MediaKind::Episode => (
             media
-                .external_ids
-                .series_imdb
+                .grandparent
                 .as_deref()
-                .ok_or_else(|| anyhow!("no series_imdb"))?,
+                .and_then(|gp| {
+                    gp.external_ids
+                        .imdb
+                        .as_deref()
+                })
+                .ok_or_else(|| anyhow!("no grandparent imdb for subtitle lookup"))?,
             sdks::stremio::MediaType::Series,
             media.parent_idx,
             media.idx,

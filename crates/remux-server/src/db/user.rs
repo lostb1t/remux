@@ -350,54 +350,7 @@ impl MediaIdRaw {
                         .kitsu
                         .map(|id| format!("kitsu:{id}"))
                 }),
-            MediaKind::Season => {
-                let anchor = self
-                    .external_ids
-                    .series_imdb
-                    .as_deref()
-                    .map(|s| s.to_string())
-                    .or_else(|| {
-                        self.external_ids
-                            .series_custom_stremio_id
-                            .clone()
-                    })
-                    .or_else(|| {
-                        self.external_ids
-                            .series_tmdb
-                            .map(|id| format!("tmdb:{id}"))
-                    })?;
-                Some(format!(
-                    "{}:{}",
-                    anchor,
-                    self.season
-                        .unwrap_or(0)
-                ))
-            }
-            MediaKind::Episode => {
-                let anchor = self
-                    .external_ids
-                    .series_imdb
-                    .as_deref()
-                    .map(|s| s.to_string())
-                    .or_else(|| {
-                        self.external_ids
-                            .series_custom_stremio_id
-                            .clone()
-                    })
-                    .or_else(|| {
-                        self.external_ids
-                            .series_tmdb
-                            .map(|id| format!("tmdb:{id}"))
-                    })?;
-                Some(format!(
-                    "{}:{}:{}",
-                    anchor,
-                    self.season
-                        .unwrap_or(0),
-                    self.episode
-                        .unwrap_or(0)
-                ))
-            }
+            MediaKind::Season | MediaKind::Episode => None,
             MediaKind::Artist => self
                 .external_ids
                 .deezer_artist

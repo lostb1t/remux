@@ -2624,9 +2624,13 @@ impl AddonService {
             };
             let imdb_id = if media.kind == db::MediaKind::Episode {
                 media
-                    .external_ids
-                    .series_imdb
+                    .grandparent
                     .as_deref()
+                    .and_then(|gp| {
+                        gp.external_ids
+                            .imdb
+                            .as_deref()
+                    })
                     .or(media
                         .external_ids
                         .imdb

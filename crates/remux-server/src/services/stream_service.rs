@@ -456,7 +456,7 @@ impl StreamService {
             .ctx
             .config
             .port;
-        let item = db::Media::get_by_id(
+        let mut item = db::Media::get_by_id(
             &self
                 .ctx
                 .db,
@@ -465,6 +465,15 @@ impl StreamService {
         .await
         .ok()
         .flatten();
+        if let Some(ref mut it) = item {
+            it.grandparent(
+                &self
+                    .ctx
+                    .db,
+            )
+            .await
+            .ok();
+        }
 
         let mut results = Vec::with_capacity(
             sel.candidates
@@ -730,11 +739,17 @@ fn media_info_from_probe(
             .external_ids
             .imdb
             .as_ref()
-            .or(item
-                .external_ids
-                .series_imdb
-                .as_ref())
-            .map(|v| v.to_string());
+            .map(|v| v.to_string())
+            .or_else(|| {
+                item.grandparent
+                    .as_deref()
+                    .and_then(|gp| {
+                        gp.external_ids
+                            .imdb
+                            .as_ref()
+                    })
+                    .map(|v| v.to_string())
+            });
         let ids = (imdb_id.is_some()
             || item
                 .external_ids
