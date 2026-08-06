@@ -360,6 +360,11 @@ impl MediaIdRaw {
                         self.external_ids
                             .series_custom_stremio_id
                             .clone()
+                    })
+                    .or_else(|| {
+                        self.external_ids
+                            .series_tmdb
+                            .map(|id| format!("tmdb:{id}"))
                     })?;
                 Some(format!(
                     "{}:{}",
@@ -378,6 +383,11 @@ impl MediaIdRaw {
                         self.external_ids
                             .series_custom_stremio_id
                             .clone()
+                    })
+                    .or_else(|| {
+                        self.external_ids
+                            .series_tmdb
+                            .map(|id| format!("tmdb:{id}"))
                     })?;
                 Some(format!(
                     "{}:{}:{}",

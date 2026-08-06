@@ -1554,12 +1554,13 @@ impl Media {
             id: Uuid,
             title: String,
             channel_number: Option<i64>,
+            external_ids: ExternalIds,
         }
 
         let mut parent_map: HashMap<Uuid, ParentRow> = HashMap::new();
         for chunk in ids_needed.chunks(500) {
             let mut qb = sqlx::QueryBuilder::new(
-                "SELECT id, title, channel_number FROM media WHERE id IN (",
+                "SELECT id, title, channel_number, external_ids FROM media WHERE id IN (",
             );
             let mut sep = qb.separated(", ");
             for id in chunk {
@@ -1577,6 +1578,12 @@ impl Media {
                             let id: Option<Uuid> = r.get(0);
                             let title: Option<String> = r.get(1);
                             let channel_number: Option<i64> = r.get(2);
+                            let external_ids: ExternalIds = r
+                                .try_get::<Option<String>, _>(3)
+                                .ok()
+                                .flatten()
+                                .and_then(|s| serde_json::from_str(&s).ok())
+                                .unwrap_or_default();
                             id.zip(title)
                                 .map(|(id, title)| {
                                     (
@@ -1585,6 +1592,7 @@ impl Media {
                                             id,
                                             title,
                                             channel_number,
+                                            external_ids,
                                         },
                                     )
                                 })
@@ -1611,6 +1619,9 @@ impl Media {
                     .title
                     .clone();
                 m.channel_number = row.channel_number;
+                m.external_ids = row
+                    .external_ids
+                    .clone();
                 m.images = images;
                 Box::new(m)
             };
@@ -1901,14 +1912,21 @@ impl Media {
                 | MediaKind::Episode
         ) {
             let raw = self.media_id_raw();
-            if let Some(_key) = raw.canonical() {
-                let expected = Uuid::from(&raw);
-                if expected != self.id {
-                    return Err(MediaError::ValidationError(format!(
-                        "{:?} '{}' UUID mismatch: id={} expected={}",
-                        self.kind, self.title, self.id, expected
-                    )));
-                }
+            if raw
+                .canonical()
+                .is_none()
+            {
+                return Err(MediaError::ValidationError(format!(
+                    "{:?} '{}' has no canonical external ID — cannot assign stable UUID",
+                    self.kind, self.title,
+                )));
+            }
+            let expected = Uuid::from(&raw);
+            if expected != self.id {
+                return Err(MediaError::ValidationError(format!(
+                    "{:?} '{}' UUID mismatch: id={} expected={}",
+                    self.kind, self.title, self.id, expected
+                )));
             }
         }
         if self.kind == MediaKind::Person {
@@ -2437,6 +2455,10 @@ impl Media {
                     candidates
                         .push(stable_media_uuid(kind, &format!("{custom}:{idx}")));
                 }
+                if let Some(tmdb) = ext.series_tmdb {
+                    candidates
+                        .push(stable_media_uuid(kind, &format!("tmdb:{tmdb}:{idx}")));
+                }
             }
             MediaKind::Episode => {
                 let season_idx = item
@@ -2461,6 +2483,12 @@ impl Media {
                     candidates.push(stable_media_uuid(
                         kind,
                         &format!("{custom}:{season_idx}:{ep_idx}"),
+                    ));
+                }
+                if let Some(tmdb) = ext.series_tmdb {
+                    candidates.push(stable_media_uuid(
+                        kind,
+                        &format!("tmdb:{tmdb}:{season_idx}:{ep_idx}"),
                     ));
                 }
             }
@@ -2514,6 +2542,13 @@ impl Media {
             .bind(old_id)
             .execute(&mut *tx)
             .await?;
+        sqlx::query(
+            "UPDATE media_relations SET left_media_id = ? WHERE left_media_id = ?",
+        )
+        .bind(new_id)
+        .bind(old_id)
+        .execute(&mut *tx)
+        .await?;
         tx.commit()
             .await?;
         Ok(())

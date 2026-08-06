@@ -91,7 +91,9 @@ impl Task for RefreshAllMetaTask {
             if batch.is_empty() {
                 break;
             }
-            last_id = batch.last().map(|m| m.id);
+            last_id = batch
+                .last()
+                .map(|m| m.id);
             ctx.addons
                 .process_meta_batch(batch, &ctx, true, Some(Arc::clone(&on_item_done)))
                 .await?;
