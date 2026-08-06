@@ -732,6 +732,7 @@ pub trait StreamAddon: Send + Sync {
         &self,
         media: &db::Media,
         ctx: &AppContext,
+        id_prefixes: Option<&[String]>,
     ) -> Result<Vec<crate::stream::StreamInfo>>;
     /// Serve bytes for a stream that requires this addon's config (e.g. credentials).
     /// Only called when `StreamDescriptor::addon_id()` points to this addon.
@@ -1055,15 +1056,23 @@ impl PickCap<dyn MetaAddon> for AddonRuntime {
             return false;
         };
         if let Some(prefixes) = self.resource_id_prefixes(&ResourceType::Meta) {
-            let Some(id) = media
+            let gp_ext = media
+                .grandparent
+                .as_deref()
+                .map(|gp| &gp.external_ids);
+            let candidates = media
                 .external_ids
-                .stremio_lookup_id()
-            else {
+                .candidate_ids(&media.kind, media.parent_idx, media.idx, gp_ext);
+            if candidates.is_empty() {
                 return false;
-            };
-            return prefixes
+            }
+            return candidates
                 .iter()
-                .any(|p| id.starts_with(p.as_str()));
+                .any(|id| {
+                    prefixes
+                        .iter()
+                        .any(|p| id.starts_with(p.as_str()))
+                });
         }
         cap.supports(media)
             .await
@@ -1081,15 +1090,23 @@ impl PickCap<dyn StreamAddon> for AddonRuntime {
             return false;
         }
         if let Some(prefixes) = self.resource_id_prefixes(&ResourceType::Stream) {
-            let Some(id) = media
+            let gp_ext = media
+                .grandparent
+                .as_deref()
+                .map(|gp| &gp.external_ids);
+            let candidates = media
                 .external_ids
-                .stremio_lookup_id()
-            else {
+                .candidate_ids(&media.kind, media.parent_idx, media.idx, gp_ext);
+            if candidates.is_empty() {
                 return false;
-            };
-            return prefixes
+            }
+            return candidates
                 .iter()
-                .any(|p| id.starts_with(p.as_str()));
+                .any(|id| {
+                    prefixes
+                        .iter()
+                        .any(|p| id.starts_with(p.as_str()))
+                });
         }
         match self
             .caps
@@ -1113,15 +1130,23 @@ impl PickCap<dyn SubtitleAddon> for AddonRuntime {
             return false;
         }
         if let Some(prefixes) = self.resource_id_prefixes(&ResourceType::Subtitles) {
-            let Some(id) = media
+            let gp_ext = media
+                .grandparent
+                .as_deref()
+                .map(|gp| &gp.external_ids);
+            let candidates = media
                 .external_ids
-                .stremio_lookup_id()
-            else {
+                .candidate_ids(&media.kind, media.parent_idx, media.idx, gp_ext);
+            if candidates.is_empty() {
                 return false;
-            };
-            return prefixes
+            }
+            return candidates
                 .iter()
-                .any(|p| id.starts_with(p.as_str()));
+                .any(|id| {
+                    prefixes
+                        .iter()
+                        .any(|p| id.starts_with(p.as_str()))
+                });
         }
         match self
             .caps
@@ -1720,13 +1745,8 @@ impl AddonService {
         apply_title_format(media);
 
         // Recompute stable UUID once external IDs are resolved by meta enrichment.
-        if matches!(
-            media.kind,
-            db::MediaKind::Movie
-                | db::MediaKind::Series
-                | db::MediaKind::Season
-                | db::MediaKind::Episode
-        ) {
+        // Season/Episode UUIDs are anchored to parent_id, not external IDs — skip them.
+        if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
             let raw = media.media_id_raw();
             if raw
                 .canonical()
@@ -1783,15 +1803,17 @@ impl AddonService {
                         }
                         if let Some(prefixes) = r.resource_id_prefixes(&ResourceType::Meta)
                         {
-                            let Some(id) = node
+                            let gp_ext = node
+                                .grandparent
+                                .as_deref()
+                                .map(|gp| &gp.external_ids);
+                            let candidates = node
                                 .external_ids
-                                .stremio_lookup_id()
-                            else {
-                                return None;
-                            };
-                            if !prefixes
-                                .iter()
-                                .any(|p| id.starts_with(p.as_str()))
+                                .candidate_ids(&node.kind, node.parent_idx, node.idx, gp_ext);
+                            if candidates.is_empty()
+                                || !candidates
+                                    .iter()
+                                    .any(|id| prefixes.iter().any(|p| id.starts_with(p.as_str())))
                             {
                                 return None;
                             }
@@ -1893,12 +1915,21 @@ impl AddonService {
                     return None;
                 }
                 if let Some(prefixes) = r.resource_id_prefixes(&ResourceType::Meta) {
-                    let id = node
+                    let gp_ext = node
+                        .grandparent
+                        .as_deref()
+                        .map(|gp| &gp.external_ids);
+                    let candidates = node
                         .external_ids
-                        .stremio_lookup_id()?;
-                    if !prefixes
-                        .iter()
-                        .any(|p| id.starts_with(p.as_str()))
+                        .candidate_ids(&node.kind, node.parent_idx, node.idx, gp_ext);
+                    if candidates.is_empty()
+                        || !candidates
+                            .iter()
+                            .any(|id| {
+                                prefixes
+                                    .iter()
+                                    .any(|p| id.starts_with(p.as_str()))
+                            })
                     {
                         return None;
                     }
@@ -2049,53 +2080,49 @@ impl AddonService {
             return actual_root_id;
         }
 
-        // UUID maps are only needed when the root was remapped — meaning a previous
-        // import used a different UUID for the same content. In that case existing
-        // children may be stored under mismatched UUIDs that need adopting.
-        // For fresh imports and stable re-syncs these maps are always empty, so we
-        // skip the DB queries entirely to avoid saturating the connection pool.
-        let existing_l1 = if root_was_remapped {
-            self.child_uuid_map(&ctx.db, actual_root_id)
-                .await
-        } else {
-            Default::default()
-        };
+        // Always load existing level-1 UUIDs by (kind, idx) position. This lets us adopt
+        // the stored UUID for any child whose UUID scheme changed (e.g. old series_imdb-
+        // anchored → new parent_id-anchored). Also handles root-remap cases.
+        let existing_l1 = self
+            .child_uuid_map(&ctx.db, actual_root_id)
+            .await;
 
         // Load ALL grandchild UUIDs in one query keyed by (parent_id, kind, idx).
         // Avoids one query per season (O(n_seasons) → O(1) queries).
         let existing_l2: std::collections::HashMap<(Uuid, String, i64), Uuid> =
-            if root_was_remapped {
-                sqlx::query_as::<_, (Uuid, String, Option<i64>, Uuid)>(
-                    "SELECT parent_id, CAST(kind AS TEXT), idx, id
-                     FROM media WHERE grandparent_id = ? AND idx IS NOT NULL",
-                )
-                .bind(actual_root_id)
-                .fetch_all(&ctx.db)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|(pid, k, idx, id)| idx.map(|i| ((pid, k, i), id)))
-                .collect()
-            } else {
-                Default::default()
-            };
+            sqlx::query_as::<_, (Uuid, String, Option<i64>, Uuid)>(
+                "SELECT parent_id, CAST(kind AS TEXT), idx, id
+                 FROM media WHERE grandparent_id = ? AND idx IS NOT NULL",
+            )
+            .bind(actual_root_id)
+            .fetch_all(&ctx.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(pid, k, idx, id)| idx.map(|i| ((pid, k, i), id)))
+            .collect();
 
         let mut level1: Vec<db::Media> = Vec::with_capacity(raw_level1.len());
         for mut child in raw_level1 {
             child.parent_id = Some(actual_root_id);
             child.grandparent = Some(Box::new(gp_stub.clone()));
 
-            // Adopt existing UUID for this (kind, idx) if root was remapped.
-            if root_was_remapped {
-                if let Some(idx) = child.idx {
-                    let key = (
-                        child
-                            .kind
-                            .to_string(),
-                        idx,
-                    );
-                    if let Some(&existing_id) = existing_l1.get(&key) {
-                        if existing_id != child.id {
+            // Adopt the existing DB UUID for this (kind, idx) position if found.
+            // The new child UUID may differ from what's stored (due to UUID scheme changes
+            // or root remapping) — adopting the stored UUID avoids duplicate rows and
+            // keeps grandchild parent_id references intact.
+            if let Some(idx) = child.idx {
+                let key = (
+                    child
+                        .kind
+                        .to_string(),
+                    idx,
+                );
+                if let Some(&existing_id) = existing_l1.get(&key) {
+                    if existing_id != child.id {
+                        // When the root was remapped, cascade any references to the new
+                        // child UUID (which was never in the DB) before adopting.
+                        if root_was_remapped {
                             if let Err(e) = db::Media::cascade_update_parent_refs(
                                 &ctx.db,
                                 child.id,
@@ -2106,8 +2133,8 @@ impl AddonService {
                                 warn!(old = %child.id, new = %existing_id, error = %e,
                                     "cascade for level-1 child failed");
                             }
-                            child.id = existing_id;
                         }
+                        child.id = existing_id;
                     }
                 }
             }
@@ -2378,7 +2405,16 @@ impl AddonService {
             .map(|r| async move {
                 let name = &r.row.name;
                 let t = std::time::Instant::now();
-                match r.stream.as_ref().unwrap().get_streams(media, ctx).await {
+                let id_prefixes = r
+                    .resource_id_prefixes(&ResourceType::Stream)
+                    .map(|p| p.to_vec());
+                match r
+                    .stream
+                    .as_ref()
+                    .unwrap()
+                    .get_streams(media, ctx, id_prefixes.as_deref())
+                    .await
+                {
                     Ok(mut streams) => {
                         let elapsed = t.elapsed();
                         if streams.is_empty() {

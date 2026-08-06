@@ -628,6 +628,7 @@ impl StreamAddon for OpendalAddon {
         &self,
         media: &db::Media,
         ctx: &AppContext,
+        _id_prefixes: Option<&[String]>,
     ) -> Result<Vec<crate::stream::StreamInfo>> {
         let files: Vec<OpendalFile> = if self.media_kind == "track" {
             sqlx::query_as(
@@ -1954,7 +1955,7 @@ mod tests {
                 ..Default::default()
             };
             let streams = addon
-                .get_streams(&stub, ctx)
+                .get_streams(&stub, ctx, None)
                 .await
                 .unwrap();
             assert!(
@@ -2373,7 +2374,7 @@ mod tests {
             );
 
             let streams = addon
-                .get_streams(ep, ctx)
+                .get_streams(ep, ctx, None)
                 .await
                 .unwrap();
             assert!(
@@ -3616,7 +3617,7 @@ mod tests {
         // get_streams must return a Local stream for each track (matched by title).
         for item in &catalog {
             let streams = addon
-                .get_streams(item, ctx)
+                .get_streams(item, ctx, None)
                 .await
                 .unwrap();
             assert!(
@@ -3683,7 +3684,7 @@ mod tests {
             ..Default::default()
         };
         let streams = addon
-            .get_streams(&stub, ctx)
+            .get_streams(&stub, ctx, None)
             .await
             .unwrap();
         assert_eq!(streams.len(), 1);

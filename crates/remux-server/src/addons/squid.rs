@@ -320,6 +320,7 @@ impl StreamAddon for SquidAddon {
         &self,
         media: &db::Media,
         _ctx: &AppContext,
+        _id_prefixes: Option<&[String]>,
     ) -> Result<Vec<crate::stream::StreamInfo>> {
         let query = media.track_search_query();
         debug!(query, title = %media.title, "squid stream lookup");

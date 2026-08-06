@@ -956,6 +956,7 @@ impl StreamAddon for YtDlpAddon {
         &self,
         media: &db::Media,
         _ctx: &AppContext,
+        _id_prefixes: Option<&[String]>,
     ) -> Result<Vec<crate::stream::StreamInfo>> {
         self.get_streams_for(media)
             .await
