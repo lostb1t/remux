@@ -7,33 +7,7 @@ use remux_sdks::remux::{
     ActivityLogEntry, GetActivityLog, GetSessions, SessionInfoDto,
 };
 
-const DEFAULT_ACTIVITY_PAGE_SIZE: i64 = 15;
-
-enum PageItem {
-    Page(i64),
-    Ellipsis,
-}
-
-fn paginate(current: i64, total: i64) -> Vec<PageItem> {
-    if total <= 7 {
-        return (0..total)
-            .map(PageItem::Page)
-            .collect();
-    }
-    let mut items = Vec::new();
-    items.push(PageItem::Page(0));
-    if current > 2 {
-        items.push(PageItem::Ellipsis);
-    }
-    for p in (current - 1).max(1)..=(current + 1).min(total - 2) {
-        items.push(PageItem::Page(p));
-    }
-    if current < total - 3 {
-        items.push(PageItem::Ellipsis);
-    }
-    items.push(PageItem::Page(total - 1));
-    items
-}
+const PAGE_SIZE: i64 = 25;
 
 #[component]
 pub fn SessionsCard(app_state: AppState) -> Element {
@@ -119,15 +93,14 @@ pub fn SessionsCard(app_state: AppState) -> Element {
 pub fn ActivityCard(app_state: AppState) -> Element {
     let mut activity_items: Signal<Vec<ActivityLogEntry>> = use_signal(Vec::new);
     let mut total_count: Signal<i64> = use_signal(|| 0);
-    let mut start_index: Signal<i64> = use_signal(|| 0);
+    let mut page: Signal<i64> = use_signal(|| 0);
     let mut loading = use_signal(|| true);
     let mut error = use_signal(|| Option::<String>::None);
-    let mut page_size: Signal<i64> = use_signal(|| DEFAULT_ACTIVITY_PAGE_SIZE);
     let mut search_input: Signal<String> = use_signal(String::new);
 
     use_effect(move || {
-        let offset = *start_index.read();
-        let limit = *page_size.read();
+        let page_v = *page.read();
+        let offset = page_v * PAGE_SIZE;
         let search = search_input
             .read()
             .clone();
@@ -142,7 +115,7 @@ pub fn ActivityCard(app_state: AppState) -> Element {
             match client
                 .execute(GetActivityLog {
                     start_index: Some(offset),
-                    limit: Some(limit),
+                    limit: Some(PAGE_SIZE),
                     search_term,
                 })
                 .await
@@ -159,8 +132,8 @@ pub fn ActivityCard(app_state: AppState) -> Element {
     });
 
     let total = *total_count.read();
-    let offset = *start_index.read();
-    let ps = *page_size.read();
+    let page_v = *page.read();
+    let total_pages = (total + PAGE_SIZE - 1) / PAGE_SIZE;
     rsx! {
         Card { title: "Admin Activity Log", tight: true,
             div { class: "device-search",
@@ -171,7 +144,7 @@ pub fn ActivityCard(app_state: AppState) -> Element {
                     value: "{search_input.read()}",
                     oninput: move |evt| {
                         search_input.set(evt.value());
-                        start_index.set(0);
+                        page.set(0);
                     },
                 }
                 if !search_input.read().is_empty() {
@@ -180,7 +153,7 @@ pub fn ActivityCard(app_state: AppState) -> Element {
                         style: "height:32px;padding:0 8px;font-size:.75rem",
                         onclick: move |_| {
                             search_input.set(String::new());
-                            start_index.set(0);
+                            page.set(0);
                         },
                         "×"
                     }
@@ -242,72 +215,24 @@ pub fn ActivityCard(app_state: AppState) -> Element {
                         }
                     }
 
-                    div { class: "pagination-bar",
-                        div { class: "flex items-center gap-1",
-                            span { class: "pagination-summary",
-                                "{offset + 1}–{(offset + ps).min(total)} of {total}"
+                    if total_pages > 1 {
+                        div { class: "pagination-bar",
+                            button {
+                                class: "btn btn-ghost",
+                                style: "height:28px;font-size:.75rem",
+                                disabled: page_v == 0,
+                                onclick: move |_| page.set((page_v - 1).max(0)),
+                                "‹ Prev"
                             }
-                            span { class: "pagination-size-label", "·" }
-                            select {
-                                class: "pagination-size-select",
-                                value: "{ps}",
-                                onchange: move |evt| {
-                                    if let Ok(v) = evt.value().parse::<i64>() {
-                                        page_size.set(v);
-                                        start_index.set(0);
-                                    }
-                                },
-                                option { value: "15", selected: ps == 15, "15" }
-                                option { value: "25", selected: ps == 25, "25" }
-                                option { value: "50", selected: ps == 50, "50" }
-                                option { value: "100", selected: ps == 100, "100" }
+                            span { style: "font-size:.8rem;opacity:.7",
+                                "Page {page_v + 1} of {total_pages}"
                             }
-                            span { class: "pagination-size-label", "/ page" }
-                        }
-                        div { class: "flex items-center gap-2",
-                            {
-                                let total_pages = ((total as f64) / (ps as f64)).ceil() as i64;
-                                let current_page = offset / ps;
-                                if total_pages > 1 {
-                                    let items = paginate(current_page, total_pages);
-                                    rsx! {
-                                        if current_page > 0 {
-                                            button {
-                                                class: "pagination-page",
-                                                onclick: move |_| start_index.set((offset - ps).max(0)),
-                                                "‹"
-                                            }
-                                        }
-                                        for (i, item) in items.iter().enumerate() {
-                                            match item {
-                                                PageItem::Page(p) => {
-                                                    let p = *p;
-                                                    rsx! {
-                                                        button {
-                                                            key: "p{p}",
-                                                            class: if p == current_page { "pagination-page active" } else { "pagination-page" },
-                                                            disabled: p == current_page,
-                                                            onclick: move |_| start_index.set(p * ps),
-                                                            "{p + 1}"
-                                                        }
-                                                    }
-                                                }
-                                                PageItem::Ellipsis => rsx! {
-                                                    span { key: "e{i}", class: "pagination-ellipsis", "…" }
-                                                },
-                                            }
-                                        }
-                                        if current_page < total_pages - 1 {
-                                            button {
-                                                class: "pagination-page",
-                                                onclick: move |_| start_index.set(offset + ps),
-                                                "›"
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    rsx! {}
-                                }
+                            button {
+                                class: "btn btn-ghost",
+                                style: "height:28px;font-size:.75rem",
+                                disabled: page_v + 1 >= total_pages,
+                                onclick: move |_| page.set(page_v + 1),
+                                "Next ›"
                             }
                         }
                     }
