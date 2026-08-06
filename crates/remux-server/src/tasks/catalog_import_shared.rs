@@ -124,7 +124,7 @@ where
 
         if let Err(e) = ctx
             .addons
-            .process_meta_batch(new_items.clone(), ctx, true)
+            .process_meta_batch(new_items.clone(), ctx, true, None)
             .await
         {
             error!(catalog = media_id, error = %e, "failed to process new items chunk");
@@ -161,7 +161,7 @@ where
         if !existing_playlists.is_empty() {
             if let Err(e) = ctx
                 .addons
-                .process_meta_batch(existing_playlists, ctx, false)
+                .process_meta_batch(existing_playlists, ctx, false, None)
                 .await
             {
                 warn!(

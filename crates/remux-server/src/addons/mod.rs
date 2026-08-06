@@ -1719,22 +1719,7 @@ impl AddonService {
         // Calling it inside apply_meta would re-apply the prefix on every patch.
         apply_title_format(media);
 
-        // Recompute stable UUID for Person once TMDB ID is resolved.
-        if media.kind == db::MediaKind::Person {
-            if let Some(tmdb_id) = media
-                .external_ids
-                .tmdb
-            {
-                media.id = crate::common::stable_media_uuid(
-                    &db::MediaKind::Person,
-                    &tmdb_id.to_string(),
-                );
-            }
-        }
-
-        // Recompute stable UUID for Movie/Series/Season/Episode once the canonical external ID
-        // (IMDB or custom stremio) is resolved by meta enrichment. Catalog stubs
-        // arrive with a TMDB-keyed UUID; validate() expects the canonical one.
+        // Recompute stable UUID once external IDs are resolved by meta enrichment.
         if matches!(
             media.kind,
             db::MediaKind::Movie
@@ -1748,6 +1733,17 @@ impl AddonService {
                 .is_some()
             {
                 media.id = uuid::Uuid::from(&raw);
+            }
+        }
+        if media.kind == db::MediaKind::Person {
+            if let Some(tmdb_id) = media
+                .external_ids
+                .tmdb
+            {
+                media.id = crate::common::stable_media_uuid(
+                    &db::MediaKind::Person,
+                    &tmdb_id.to_string(),
+                );
             }
         }
 
@@ -1843,8 +1839,9 @@ impl AddonService {
         media: Vec<db::Media>,
         ctx: &AppContext,
         force_refresh: bool,
+        on_item_done: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Result<()> {
-        use futures::stream::{self, StreamExt};
+        use futures::StreamExt;
 
         let config = db::Settings::get_config_or_default(&ctx.db).await;
         let concurrency = config.meta_concurrency as usize;
@@ -1853,160 +1850,371 @@ impl AddonService {
         let svc = self.clone();
         let ctx_owned = ctx.clone();
 
-        // flat_map_unordered drives up to `concurrency` process_meta_item streams
-        // simultaneously and yields individual db::Media items as they arrive — no
-        // tree is ever fully buffered in memory.
-        let mut merged =
-            stream::iter(media).flat_map_unordered(concurrency, move |m| {
+        futures::stream::iter(media)
+            .map(move |m| {
+                let svc = svc.clone();
+                let ctx = ctx_owned.clone();
                 let cfg = Arc::clone(&config);
-                let svc2 = svc.clone();
-                let ctx2 = ctx_owned.clone();
-                Box::pin(svc2.process_meta_item(m, ctx2, force_refresh, cfg))
-            });
-
-        let mut batch: Vec<db::Media> = Vec::with_capacity(db::CHUNK_SIZE);
-        let mut total_flushed = 0usize;
-        let mut last_flush = std::time::Instant::now();
-
-        while let Some(item) = merged
-            .next()
-            .await
-        {
-            batch.push(item);
-            if batch.len() >= db::CHUNK_SIZE {
-                let flush_ms = last_flush
-                    .elapsed()
-                    .as_millis();
-                match db::Media::upsert(&ctx.db, &batch).await {
-                    Ok(_) => {
-                        save_pending_relations(ctx, &batch).await;
-                        save_pending_tags(ctx, &batch).await;
-                        save_pending_popularity(ctx, &batch).await;
-                    }
-                    Err(e) => error!(error = %e, "failed to upsert media batch"),
+                async move {
+                    svc.process_meta_item(m, ctx, force_refresh, cfg)
+                        .await
                 }
-                total_flushed += batch.len();
-                batch.clear();
-                last_flush = std::time::Instant::now();
-            }
-        }
-
-        if !batch.is_empty() {
-            total_flushed += batch.len();
-            match db::Media::upsert(&ctx.db, &batch).await {
-                Ok(_) => {
-                    save_pending_relations(ctx, &batch).await;
-                    save_pending_tags(ctx, &batch).await;
-                    save_pending_popularity(ctx, &batch).await;
+            })
+            .buffer_unordered(concurrency)
+            .for_each(move |_| {
+                if let Some(ref f) = on_item_done {
+                    f();
                 }
-                Err(e) => error!(error = %e, "failed to upsert final media batch"),
-            }
-        }
+                async {}
+            })
+            .await;
 
         Ok(())
     }
 
-    pub(crate) fn process_meta_item(
+    /// Fetch the direct children of `node` from the first applicable tree addon.
+    /// Returns an empty vec if no addon supports this node or none return children.
+    async fn get_direct_children(
         &self,
-        media: db::Media,
+        node: &db::Media,
+        ctx: &AppContext,
+    ) -> Vec<db::Media> {
+        let applicable: Vec<Arc<dyn TreeAddon>> = self
+            .inner
+            .load()
+            .iter()
+            .filter_map(|r| {
+                if !r
+                    .tree
+                    .as_ref()
+                    .map(|t| t.supports(node))
+                    .unwrap_or(false)
+                {
+                    return None;
+                }
+                if let Some(prefixes) = r.resource_id_prefixes(&ResourceType::Meta) {
+                    let id = node
+                        .external_ids
+                        .stremio_lookup_id()?;
+                    if !prefixes
+                        .iter()
+                        .any(|p| id.starts_with(p.as_str()))
+                    {
+                        return None;
+                    }
+                }
+                r.tree
+                    .as_ref()
+                    .cloned()
+            })
+            .collect();
+
+        for addon in &applicable {
+            match addon
+                .get_children(node, ctx)
+                .await
+            {
+                Ok(Some(children)) if !children.is_empty() => return children,
+                Ok(_) => continue,
+                Err(e) => debug!(id = %node.id, error = %e, "get_children failed"),
+            }
+        }
+        vec![]
+    }
+
+    /// Load a map of `(kind_str, idx) → existing_uuid` for all direct children
+    /// of `parent_id` that have a non-null idx. Used to adopt existing UUIDs
+    /// for children arriving with a different computed UUID.
+    async fn child_uuid_map(
+        &self,
+        db: &sqlx::SqlitePool,
+        parent_id: Uuid,
+    ) -> std::collections::HashMap<(String, i64), Uuid> {
+        sqlx::query_as::<_, (String, Option<i64>, Uuid)>(
+            "SELECT CAST(kind AS TEXT), idx, id FROM media WHERE parent_id = ? AND idx IS NOT NULL",
+        )
+        .bind(parent_id)
+        .fetch_all(db)
+        .await
+        .inspect_err(|e| error!(parent_id = %parent_id, error = %e, "child_uuid_map query failed"))
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(k, idx, id)| idx.map(|i| ((k, i), id)))
+        .collect()
+    }
+
+    pub(crate) async fn process_meta_item(
+        &self,
+        mut media: db::Media,
         ctx: AppContext,
         force_refresh: bool,
         config: Arc<api::ServerConfiguration>,
-    ) -> impl futures::Stream<Item = db::Media> + 'static + use<> {
-        let svc = self.clone();
-        async_stream::stream! {
-            let mut media = media;
-            let original_id = media.id;
+    ) -> Uuid {
+        let original_id = media.id;
 
-            if let Err(e) = svc
-                .refresh_meta(&mut media, &ctx, force_refresh, &config)
-                .await
-            {
-                warn!(id = %media.id, error = %e, "failed to refresh metadata, keeping as-is");
-                yield media;
-                return;
-            }
-
-            // If this Person's ID was rewritten (name-keyed → tmdb-keyed) by refresh_meta,
-            // delete the stale name-keyed row so it doesn't linger as a duplicate.
-            if media.kind == db::MediaKind::Person && media.id != original_id {
-                if let Err(e) = db::Media::delete(&ctx.db, &original_id).await {
-                    warn!(
-                        old_id = %original_id,
-                        new_id = %media.id,
-                        error = %e,
-                        "failed to delete stale name-keyed person row"
-                    );
-                }
-            }
-
-            // Populate a minimal grandparent stub on tree children so their
-            // refresh_meta calls (Season → tmdb_id, Episode → tmdb_id + genres)
-            // find the resolved parent info in-memory instead of falling back
-            // to DB queries.
-            let has_series_ids = media
-                .external_ids
-                .tmdb
-                .is_some()
-                || media
-                    .external_ids
-                    .imdb
-                    .is_some();
-            let gp_stub: Option<db::Media> = if has_series_ids {
-                let mut gp = db::Media::default();
-                gp.id = media.id;
-                gp.external_ids = media.external_ids.clone();
-                if let Some(rels) = media.relations.as_ref() {
-                    let genre_rels: Vec<(db::MediaRelation, db::Media)> = rels
-                        .iter()
-                        .filter(|(_, m)| m.kind == db::MediaKind::Genre)
-                        .cloned()
-                        .collect();
-                    if !genre_rels.is_empty() {
-                        gp.relations = Some(genre_rels);
-                    }
-                }
-                Some(gp)
+        if let Err(e) = self
+            .refresh_meta(&mut media, &ctx, force_refresh, &config)
+            .await
+        {
+            warn!(id = %media.id, error = %e, "failed to refresh metadata, keeping as-is");
+            if let Err(e) = db::Media::upsert(&ctx.db, &[media.clone()]).await {
+                error!(id = %media.id, error = %e, "failed to upsert media");
             } else {
-                None
+                save_pending_relations(&ctx, &[media.clone()]).await;
+                save_pending_tags(&ctx, &[media.clone()]).await;
+                save_pending_popularity(&ctx, &[media.clone()]).await;
+            }
+            return media.id;
+        }
+
+        // If this Person's ID was rewritten (name-keyed → tmdb-keyed) by refresh_meta,
+        // delete the stale name-keyed row so it doesn't linger as a duplicate.
+        if media.kind == db::MediaKind::Person && media.id != original_id {
+            if let Err(e) = db::Media::delete(&ctx.db, &original_id).await {
+                warn!(
+                    old_id = %original_id,
+                    new_id = %media.id,
+                    error = %e,
+                    "failed to delete stale name-keyed person row"
+                );
+            }
+        }
+
+        // Resolve actual UUID: adopt an existing DB row that shares any external ID.
+        // Cascades stale parent_id / grandparent_id references in existing children
+        // before adopting, so those rows stay attached to the correct parent UUID.
+        let computed_id = media.id;
+        let mut root_was_remapped = false;
+        if let Some(existing_id) =
+            db::Media::find_existing_id_by_ext(&ctx.db, &media).await
+        {
+            if existing_id != computed_id {
+                if let Err(e) = db::Media::cascade_update_parent_refs(
+                    &ctx.db,
+                    computed_id,
+                    existing_id,
+                )
+                .await
+                {
+                    warn!(old = %computed_id, new = %existing_id, error = %e,
+                        "cascade_update_parent_refs failed");
+                }
+                media.id = existing_id;
+                root_was_remapped = true;
+            }
+        }
+        let actual_root_id = media.id;
+
+        // Build in-memory grandparent stub so children's refresh_meta calls can read
+        // the series TMDB/IMDB ID and genres without hitting the DB.
+        let gp_stub = {
+            let mut gp = db::Media::default();
+            gp.id = actual_root_id;
+            gp.external_ids = media
+                .external_ids
+                .clone();
+            if let Some(rels) = media
+                .relations
+                .as_ref()
+            {
+                let genre_rels: Vec<(db::MediaRelation, db::Media)> = rels
+                    .iter()
+                    .filter(|(_, m)| m.kind == db::MediaKind::Genre)
+                    .cloned()
+                    .collect();
+                if !genre_rels.is_empty() {
+                    gp.relations = Some(genre_rels);
+                }
+            }
+            gp
+        };
+
+        // Upsert root.
+        if let Err(e) = db::Media::upsert(&ctx.db, &[media.clone()]).await {
+            error!(id = %actual_root_id, error = %e, "failed to upsert root media");
+            return actual_root_id;
+        }
+        save_pending_relations(&ctx, &[media.clone()]).await;
+        save_pending_tags(&ctx, &[media.clone()]).await;
+        save_pending_popularity(&ctx, &[media.clone()]).await;
+
+        let is_continuing = series_is_active(&media.status);
+
+        // Level 1: direct children (Seasons, Albums, etc.)
+        let raw_level1 = self
+            .get_direct_children(&media, &ctx)
+            .await;
+        if raw_level1.is_empty() {
+            self.notify_series_done(&media);
+            return actual_root_id;
+        }
+
+        // UUID maps are only needed when the root was remapped — meaning a previous
+        // import used a different UUID for the same content. In that case existing
+        // children may be stored under mismatched UUIDs that need adopting.
+        // For fresh imports and stable re-syncs these maps are always empty, so we
+        // skip the DB queries entirely to avoid saturating the connection pool.
+        let existing_l1 = if root_was_remapped {
+            self.child_uuid_map(&ctx.db, actual_root_id)
+                .await
+        } else {
+            Default::default()
+        };
+
+        // Load ALL grandchild UUIDs in one query keyed by (parent_id, kind, idx).
+        // Avoids one query per season (O(n_seasons) → O(1) queries).
+        let existing_l2: std::collections::HashMap<(Uuid, String, i64), Uuid> =
+            if root_was_remapped {
+                sqlx::query_as::<_, (Uuid, String, Option<i64>, Uuid)>(
+                    "SELECT parent_id, CAST(kind AS TEXT), idx, id
+                     FROM media WHERE grandparent_id = ? AND idx IS NOT NULL",
+                )
+                .bind(actual_root_id)
+                .fetch_all(&ctx.db)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|(pid, k, idx, id)| idx.map(|i| ((pid, k, i), id)))
+                .collect()
+            } else {
+                Default::default()
             };
 
-            // Root always goes first — parent row must exist before children land in a
-            // later upsert chunk (PRAGMA defer_foreign_keys is per-transaction only).
-            yield media.clone();
+        let mut level1: Vec<db::Media> = Vec::with_capacity(raw_level1.len());
+        for mut child in raw_level1 {
+            child.parent_id = Some(actual_root_id);
+            child.grandparent = Some(Box::new(gp_stub.clone()));
 
-            {
-                let is_continuing = series_is_active(&media.status);
-                let root_clone = media.clone();
-                let mut tree = std::pin::pin!(svc.get_tree(root_clone, &ctx));
-                while let Some(mut child) = futures::StreamExt::next(&mut tree).await {
-                    if let Some(gp) = &gp_stub {
-                        child.grandparent = Some(Box::new(gp.clone()));
-                    }
-                    let in_active_window = is_continuing
-                        && matches!(child.kind, db::MediaKind::Episode)
-                        && episode_in_active_window(&child);
-                    if let Some(effective_force) =
-                        child_refresh_force(force_refresh, in_active_window, &child)
-                    {
-                        if let Err(e) = svc
-                            .refresh_meta(&mut child, &ctx, effective_force, &config)
+            // Adopt existing UUID for this (kind, idx) if root was remapped.
+            if root_was_remapped {
+                if let Some(idx) = child.idx {
+                    let key = (
+                        child
+                            .kind
+                            .to_string(),
+                        idx,
+                    );
+                    if let Some(&existing_id) = existing_l1.get(&key) {
+                        if existing_id != child.id {
+                            if let Err(e) = db::Media::cascade_update_parent_refs(
+                                &ctx.db,
+                                child.id,
+                                existing_id,
+                            )
                             .await
-                        {
-                            warn!(id = %child.id, error = %e, "failed to refresh child meta");
+                            {
+                                warn!(old = %child.id, new = %existing_id, error = %e,
+                                    "cascade for level-1 child failed");
+                            }
+                            child.id = existing_id;
                         }
                     }
-                    yield child;
+                }
+            }
+
+            let in_active_window = is_continuing
+                && matches!(child.kind, db::MediaKind::Episode)
+                && episode_in_active_window(&child);
+            if let Some(effective_force) =
+                child_refresh_force(force_refresh, in_active_window, &child)
+            {
+                if let Err(e) = self
+                    .refresh_meta(&mut child, &ctx, effective_force, &config)
+                    .await
+                {
+                    warn!(id = %child.id, error = %e, "failed to refresh level-1 child meta");
+                }
+            }
+            level1.push(child);
+        }
+
+        let mut level1_ok: Vec<&db::Media> = Vec::with_capacity(level1.len());
+        for chunk in level1.chunks(db::CHUNK_SIZE) {
+            if let Err(e) = db::Media::upsert(&ctx.db, chunk).await {
+                error!(error = %e, "failed to upsert level-1 children");
+            } else {
+                save_pending_relations(&ctx, chunk).await;
+                save_pending_tags(&ctx, chunk).await;
+                save_pending_popularity(&ctx, chunk).await;
+                level1_ok.extend(chunk);
+            }
+        }
+
+        // Level 2: grandchildren (Episodes, Tracks, etc.) — one fetch+upsert per child.
+        // Only process children whose level-1 upsert succeeded to avoid orphaned rows.
+        for child in &level1_ok {
+            let actual_child_id = child.id;
+            let raw_level2 = self
+                .get_direct_children(child, &ctx)
+                .await;
+            if raw_level2.is_empty() {
+                continue;
+            }
+
+            let mut level2: Vec<db::Media> = Vec::with_capacity(raw_level2.len());
+            for mut gc in raw_level2 {
+                gc.parent_id = Some(actual_child_id);
+                gc.grandparent_id = Some(actual_root_id);
+                gc.grandparent = Some(Box::new(gp_stub.clone()));
+
+                // Adopt existing UUID from the single pre-loaded grandchild map.
+                if root_was_remapped {
+                    if let Some(idx) = gc.idx {
+                        let key = (
+                            actual_child_id,
+                            gc.kind
+                                .to_string(),
+                            idx,
+                        );
+                        if let Some(&existing_id) = existing_l2.get(&key) {
+                            gc.id = existing_id;
+                        }
+                    }
                 }
 
-                // Notify addons that all items for this series have been processed
-                // so they can evict per-series caches.
-                if let Some(meta_id) = media.external_ids.stremio_lookup_id() {
-                    for r in svc.inner.load().iter() {
-                        if let Some(ref meta_addon) = r.meta {
-                            meta_addon.on_series_done(&meta_id);
-                        }
+                let in_active_window = is_continuing
+                    && matches!(gc.kind, db::MediaKind::Episode)
+                    && episode_in_active_window(&gc);
+                if let Some(effective_force) =
+                    child_refresh_force(force_refresh, in_active_window, &gc)
+                {
+                    if let Err(e) = self
+                        .refresh_meta(&mut gc, &ctx, effective_force, &config)
+                        .await
+                    {
+                        warn!(id = %gc.id, error = %e, "failed to refresh level-2 child meta");
                     }
+                }
+                level2.push(gc);
+            }
+
+            for chunk in level2.chunks(db::CHUNK_SIZE) {
+                if let Err(e) = db::Media::upsert(&ctx.db, chunk).await {
+                    error!(error = %e, "failed to upsert level-2 children");
+                } else {
+                    save_pending_relations(&ctx, chunk).await;
+                    save_pending_tags(&ctx, chunk).await;
+                    save_pending_popularity(&ctx, chunk).await;
+                }
+            }
+        }
+
+        self.notify_series_done(&media);
+        actual_root_id
+    }
+
+    fn notify_series_done(&self, media: &db::Media) {
+        if let Some(meta_id) = media
+            .external_ids
+            .stremio_lookup_id()
+        {
+            for r in self
+                .inner
+                .load()
+                .iter()
+            {
+                if let Some(ref meta_addon) = r.meta {
+                    meta_addon.on_series_done(&meta_id);
                 }
             }
         }

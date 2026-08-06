@@ -334,6 +334,21 @@ impl MediaIdRaw {
                     self.external_ids
                         .custom_stremio_id
                         .clone()
+                })
+                .or_else(|| {
+                    self.external_ids
+                        .tmdb
+                        .map(|id| format!("tmdb:{id}"))
+                })
+                .or_else(|| {
+                    self.external_ids
+                        .tvdb
+                        .map(|id| format!("tvdb:{id}"))
+                })
+                .or_else(|| {
+                    self.external_ids
+                        .kitsu
+                        .map(|id| format!("kitsu:{id}"))
                 }),
             MediaKind::Season => {
                 let anchor = self
@@ -345,6 +360,11 @@ impl MediaIdRaw {
                         self.external_ids
                             .series_custom_stremio_id
                             .clone()
+                    })
+                    .or_else(|| {
+                        self.external_ids
+                            .series_tmdb
+                            .map(|id| format!("tmdb:{id}"))
                     })?;
                 Some(format!(
                     "{}:{}",
@@ -363,6 +383,11 @@ impl MediaIdRaw {
                         self.external_ids
                             .series_custom_stremio_id
                             .clone()
+                    })
+                    .or_else(|| {
+                        self.external_ids
+                            .series_tmdb
+                            .map(|id| format!("tmdb:{id}"))
                     })?;
                 Some(format!(
                     "{}:{}:{}",
@@ -452,100 +477,33 @@ impl UserMediaState {
         user: &User,
         media: &super::Media,
     ) -> Result<Self> {
-        if let Some(row) = Self::get_by_user_and_media(db, user, media).await? {
-            return Ok(row);
+        // Include the current UUID plus all stable UUIDs this item could have been
+        // stored under (one per external ID). ORDER BY puts the current ID first so
+        // no migration fires for the common case.
+        let mut all_ids: Vec<Uuid> = Vec::with_capacity(6);
+        all_ids.push(media.id);
+        all_ids.extend(super::Media::ext_id_uuid_candidates(media));
+
+        let placeholders = all_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT * FROM user_media_state \
+             WHERE user_id = ? AND media_id IN ({placeholders}) \
+             ORDER BY (media_id = ?) DESC LIMIT 1"
+        );
+        let mut q = sqlx::query_as::<_, Self>(&sql).bind(user.id);
+        for uuid in &all_ids {
+            q = q.bind(*uuid);
         }
+        q = q.bind(media.id);
 
-        let raw = media.media_id_raw();
-
-        // Content-based fallback: catches legacy rows stored under a different UUID
-        // (e.g. pre-fix random UUID) for the same content, matched via media_raw JSON.
-        let fallback: Option<Self> = match media.kind {
-            super::MediaKind::Movie | super::MediaKind::Series => {
-                if let Some(imdb) = &raw
-                    .external_ids
-                    .imdb
-                {
-                    sqlx::query_as(
-                        "SELECT * FROM user_media_state \
-                         WHERE user_id = ? \
-                           AND json_valid(media_raw) \
-                           AND json_extract(media_raw, '$.kind') = ? \
-                           AND json_extract(media_raw, '$.external_ids.imdb') = ? \
-                         LIMIT 1",
-                    )
-                    .bind(user.id)
-                    .bind(
-                        media
-                            .kind
-                            .to_string(),
-                    )
-                    .bind(imdb.as_ref())
-                    .fetch_optional(db)
-                    .await?
-                } else {
-                    None
-                }
-            }
-            super::MediaKind::Season => {
-                if let (Some(series_imdb), Some(season)) = (
-                    &raw.external_ids
-                        .series_imdb,
-                    raw.season,
-                ) {
-                    sqlx::query_as(
-                        "SELECT * FROM user_media_state \
-                         WHERE user_id = ? \
-                           AND json_valid(media_raw) \
-                           AND json_extract(media_raw, '$.kind') = ? \
-                           AND json_extract(media_raw, '$.external_ids.series_imdb') = ? \
-                           AND json_extract(media_raw, '$.season') = ? \
-                         LIMIT 1",
-                    )
-                    .bind(user.id)
-                    .bind(media.kind.to_string())
-                    .bind(series_imdb.as_ref())
-                    .bind(season)
-                    .fetch_optional(db)
-                    .await?
-                } else {
-                    None
-                }
-            }
-            super::MediaKind::Episode => {
-                if let (Some(series_imdb), Some(season), Some(episode)) = (
-                    &raw.external_ids
-                        .series_imdb,
-                    raw.season,
-                    raw.episode,
-                ) {
-                    sqlx::query_as(
-                        "SELECT * FROM user_media_state \
-                         WHERE user_id = ? \
-                           AND json_valid(media_raw) \
-                           AND json_extract(media_raw, '$.kind') = ? \
-                           AND json_extract(media_raw, '$.external_ids.series_imdb') = ? \
-                           AND json_extract(media_raw, '$.season') = ? \
-                           AND json_extract(media_raw, '$.episode') = ? \
-                         LIMIT 1",
-                    )
-                    .bind(user.id)
-                    .bind(media.kind.to_string())
-                    .bind(series_imdb.as_ref())
-                    .bind(season)
-                    .bind(episode)
-                    .fetch_optional(db)
-                    .await?
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        };
-
-        if let Some(mut row) = fallback {
-            // Migrate legacy state to the current media_id so batch loads and
-            // SQL filters (which do direct media_id lookups) find it going forward.
+        if let Some(mut row) = q
+            .fetch_optional(db)
+            .await?
+        {
             if row.media_id != media.id {
                 sqlx::query(
                     "UPDATE user_media_state SET media_id = ? WHERE user_id = ? AND media_id = ?",
@@ -564,7 +522,6 @@ impl UserMediaState {
         Ok(Self {
             user_id: user.id,
             media_id: media.id,
-            media_raw: serde_json::to_string(&raw).ok(),
             ..Default::default()
         })
     }
