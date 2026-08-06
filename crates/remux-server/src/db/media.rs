@@ -1026,9 +1026,10 @@ impl ExternalIds {
     }
 
     /// All Stremio-formatted ID strings this item could be requested under, in preference
-    /// order. For Season/Episode, `grandparent_ext` must be the series' `external_ids`
-    /// (from `media.grandparent`); returns empty when grandparent IDs are absent or the
-    /// required `season`/`episode` index is missing.
+    /// order. For Season/Episode, `grandparent_ext` should be the series' `external_ids`
+    /// (from `media.grandparent`); grandparent-derived IDs are omitted when it is absent.
+    /// Episodes may still return their own `custom_stremio_id` without a grandparent.
+    /// Returns empty when the required `season`/`episode` index is missing.
     ///
     /// `season` = the season index (Season's own `idx`; Episode's `parent_idx`).
     /// `episode` = the episode index (Episode's `idx`); ignored for other kinds.
