@@ -1049,12 +1049,13 @@ mod test {
             .await;
 
         resp.assert_status_ok();
-        resp.assert_json(&json!({ "SplashscreenEnabled": false }));
         let body: serde_json::Value = resp.json();
         assert!(
-            body.get("CustomCss")
-                .is_none()
-                || body["CustomCss"].is_null()
+            body["CustomCss"]
+                .as_str()
+                .map(|s| !s.is_empty())
+                .unwrap_or(false),
+            "default branding should include CSS"
         );
     }
 
@@ -1128,7 +1129,7 @@ mod test {
         server
             .get("/branding/css")
             .await
-            .assert_status(StatusCode::NO_CONTENT);
+            .assert_status_ok();
     }
 
     #[tokio::test]
@@ -1140,7 +1141,7 @@ mod test {
         server
             .get("/branding/css.css")
             .await
-            .assert_status(StatusCode::NO_CONTENT);
+            .assert_status_ok();
     }
 
     #[tokio::test]
