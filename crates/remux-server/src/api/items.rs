@@ -3119,12 +3119,15 @@ pub async fn patch_item(
 }
 
 fn warm_providers_cache(ctx: &crate::AppContext, media: &db::Media) {
-    let media = media.clone();
+    let mut media = media.clone();
     let ctx = ctx.clone();
     tokio::spawn(async move {
         let _ = ctx
             .addons
             .fetch_subtitles(&media, &ctx.db, true, None)
+            .await;
+        let _ = media
+            .grandparent(&ctx.db)
             .await;
         let _ = ctx
             .addons
@@ -3191,7 +3194,7 @@ pub async fn media_segments(
     };
     let filter_ref = type_filter.as_deref();
 
-    let media = db::Media::get_by_id(
+    let mut media = db::Media::get_by_id(
         &state
             .ctx
             .db,
@@ -3202,6 +3205,13 @@ pub async fn media_segments(
         id,
         ..Default::default()
     });
+    let _ = media
+        .grandparent(
+            &state
+                .ctx
+                .db,
+        )
+        .await;
 
     let segs = state
         .ctx
