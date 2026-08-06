@@ -1357,9 +1357,7 @@ async fn stremio_streams(
         .grandparent
         .as_deref()
         .map(|gp| &gp.external_ids);
-    let all_candidates = media
-        .external_ids
-        .candidate_ids(&media.kind, media.parent_idx, media.idx, gp_ext);
+    let all_candidates = media.candidate_ids(gp_ext);
     let ids_to_try: Vec<String> = match id_prefixes {
         Some(prefixes) => all_candidates
             .into_iter()

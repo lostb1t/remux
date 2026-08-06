@@ -1060,9 +1060,7 @@ impl PickCap<dyn MetaAddon> for AddonRuntime {
                 .grandparent
                 .as_deref()
                 .map(|gp| &gp.external_ids);
-            let candidates = media
-                .external_ids
-                .candidate_ids(&media.kind, media.parent_idx, media.idx, gp_ext);
+            let candidates = media.candidate_ids(gp_ext);
             if candidates.is_empty() {
                 return false;
             }
@@ -1094,9 +1092,7 @@ impl PickCap<dyn StreamAddon> for AddonRuntime {
                 .grandparent
                 .as_deref()
                 .map(|gp| &gp.external_ids);
-            let candidates = media
-                .external_ids
-                .candidate_ids(&media.kind, media.parent_idx, media.idx, gp_ext);
+            let candidates = media.candidate_ids(gp_ext);
             if candidates.is_empty() {
                 return false;
             }
@@ -1134,9 +1130,7 @@ impl PickCap<dyn SubtitleAddon> for AddonRuntime {
                 .grandparent
                 .as_deref()
                 .map(|gp| &gp.external_ids);
-            let candidates = media
-                .external_ids
-                .candidate_ids(&media.kind, media.parent_idx, media.idx, gp_ext);
+            let candidates = media.candidate_ids(gp_ext);
             if candidates.is_empty() {
                 return false;
             }
@@ -1807,9 +1801,7 @@ impl AddonService {
                                 .grandparent
                                 .as_deref()
                                 .map(|gp| &gp.external_ids);
-                            let candidates = node
-                                .external_ids
-                                .candidate_ids(&node.kind, node.parent_idx, node.idx, gp_ext);
+                            let candidates = node.candidate_ids(gp_ext);
                             if candidates.is_empty()
                                 || !candidates
                                     .iter()
@@ -1919,9 +1911,7 @@ impl AddonService {
                         .grandparent
                         .as_deref()
                         .map(|gp| &gp.external_ids);
-                    let candidates = node
-                        .external_ids
-                        .candidate_ids(&node.kind, node.parent_idx, node.idx, gp_ext);
+                    let candidates = node.candidate_ids(gp_ext);
                     if candidates.is_empty()
                         || !candidates
                             .iter()
@@ -2184,18 +2174,16 @@ impl AddonService {
                 gc.grandparent_id = Some(actual_root_id);
                 gc.grandparent = Some(Box::new(gp_stub.clone()));
 
-                // Adopt existing UUID from the single pre-loaded grandchild map.
-                if root_was_remapped {
-                    if let Some(idx) = gc.idx {
-                        let key = (
-                            actual_child_id,
-                            gc.kind
-                                .to_string(),
-                            idx,
-                        );
-                        if let Some(&existing_id) = existing_l2.get(&key) {
-                            gc.id = existing_id;
-                        }
+                // Adopt existing UUID from the pre-loaded grandchild map.
+                if let Some(idx) = gc.idx {
+                    let key = (
+                        actual_child_id,
+                        gc.kind
+                            .to_string(),
+                        idx,
+                    );
+                    if let Some(&existing_id) = existing_l2.get(&key) {
+                        gc.id = existing_id;
                     }
                 }
 

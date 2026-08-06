@@ -1050,9 +1050,13 @@ impl ExternalIds {
     }
 
     /// All Stremio-formatted ID strings this item could be requested under, in preference
-    /// order. For Season/Episode, `grandparent_ext` must be the series' `external_ids`
-    /// (loaded via `preload_parents` or `media.grandparent`). Returns empty when no
-    /// external IDs are present or `grandparent_ext` is absent for children.
+    /// order. For Season/Episode, `grandparent_ext` should be the series' `external_ids`
+    /// (from `media.grandparent`); when absent, the deprecated `series_*` fields on `self`
+    /// are used as a fallback. Returns empty when no IDs can be derived (e.g. Season/Episode
+    /// with no grandparent IDs at all, or a missing `season`/`episode` index).
+    ///
+    /// `season` = the season index (Season's own `idx`; Episode's `parent_idx`).
+    /// `episode` = the episode index (Episode's `idx`); ignored for other kinds.
     pub fn candidate_ids(
         &self,
         kind: &MediaKind,
@@ -1081,7 +1085,9 @@ impl ExternalIds {
                 ids
             }
             MediaKind::Season => {
-                let s = season.unwrap_or(0);
+                let Some(s) = season else {
+                    return Vec::new();
+                };
                 // Prefer grandparent external IDs; fall back to deprecated series_* fields.
                 let gp_imdb = grandparent_ext
                     .and_then(|gp| {
@@ -1125,8 +1131,9 @@ impl ExternalIds {
                 ids
             }
             MediaKind::Episode => {
-                let s = season.unwrap_or(0);
-                let e = episode.unwrap_or(0);
+                let (Some(s), Some(e)) = (season, episode) else {
+                    return Vec::new();
+                };
                 // Prefer grandparent external IDs; fall back to deprecated series_* fields.
                 let gp_imdb = grandparent_ext
                     .and_then(|gp| {
@@ -1953,6 +1960,23 @@ impl Media {
                 None
             },
         }
+    }
+
+    /// All Stremio-formatted IDs this item could be requested under. Convenience wrapper
+    /// over `ExternalIds::candidate_ids` that maps Season/Episode index fields correctly.
+    pub fn candidate_ids(&self, grandparent_ext: Option<&ExternalIds>) -> Vec<String> {
+        let season = match self.kind {
+            MediaKind::Season => self.idx,
+            MediaKind::Episode => self.parent_idx,
+            _ => None,
+        };
+        let episode = if self.kind == MediaKind::Episode {
+            self.idx
+        } else {
+            None
+        };
+        self.external_ids
+            .candidate_ids(&self.kind, season, episode, grandparent_ext)
     }
 
     pub fn get_image(&self, kind: ImageKind) -> Option<&str> {
