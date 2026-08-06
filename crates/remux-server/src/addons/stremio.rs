@@ -427,25 +427,14 @@ impl TreeAddon for StremioAddon {
                     Some(i) => i,
                     None => return Ok(None),
                 };
-                // Rebuild series external_ids from what the season carries.
-                let series_external_ids = db::ExternalIds {
-                    imdb: root
-                        .external_ids
-                        .series_imdb
-                        .clone(),
-                    tmdb: root
-                        .external_ids
-                        .series_tmdb,
-                    custom_stremio_id: root
-                        .external_ids
-                        .series_custom_stremio_id
-                        .clone(),
-                    custom_stremio_type: root
-                        .external_ids
-                        .custom_stremio_type
-                        .clone(),
-                    ..Default::default()
-                };
+                let series_external_ids = root
+                    .grandparent
+                    .as_deref()
+                    .map(|gp| {
+                        gp.external_ids
+                            .clone()
+                    })
+                    .ok_or_else(|| anyhow!("season {} missing grandparent", root.id))?;
                 let series_id = root
                     .grandparent_id
                     .ok_or_else(|| {
@@ -739,12 +728,6 @@ async fn fetch_and_cache_meta(
             gp.external_ids
                 .imdb
                 .clone()
-        })
-        .or_else(|| {
-            media
-                .external_ids
-                .series_imdb
-                .clone()
         });
     let is_custom = media
         .external_ids
@@ -794,10 +777,7 @@ async fn fetch_and_cache_meta(
                     .and_then(|gp| {
                         gp.external_ids
                             .tmdb
-                    })
-                    .or(media
-                        .external_ids
-                        .series_tmdb);
+                    });
                 let tmdb_id = media
                     .external_ids
                     .tmdb
@@ -887,24 +867,7 @@ async fn stremio_meta_fetch(
                     gp.external_ids
                         .clone()
                 })
-                .unwrap_or_else(|| db::ExternalIds {
-                    imdb: media
-                        .external_ids
-                        .series_imdb
-                        .clone(),
-                    tmdb: media
-                        .external_ids
-                        .series_tmdb,
-                    custom_stremio_id: media
-                        .external_ids
-                        .series_custom_stremio_id
-                        .clone(),
-                    custom_stremio_type: media
-                        .external_ids
-                        .custom_stremio_type
-                        .clone(),
-                    ..Default::default()
-                });
+                .ok_or_else(|| anyhow!("season {} missing grandparent", media.id))?;
             let seasons =
                 db::stremio_meta_seasons(&meta_arc, series_id, &series_external_ids);
             Ok(seasons
@@ -930,24 +893,7 @@ async fn stremio_meta_fetch(
                     gp.external_ids
                         .clone()
                 })
-                .unwrap_or_else(|| db::ExternalIds {
-                    imdb: media
-                        .external_ids
-                        .series_imdb
-                        .clone(),
-                    tmdb: media
-                        .external_ids
-                        .series_tmdb,
-                    custom_stremio_id: media
-                        .external_ids
-                        .series_custom_stremio_id
-                        .clone(),
-                    custom_stremio_type: media
-                        .external_ids
-                        .custom_stremio_type
-                        .clone(),
-                    ..Default::default()
-                });
+                .ok_or_else(|| anyhow!("episode {} missing grandparent", media.id))?;
             let episodes = db::stremio_meta_season_episodes(
                 &meta_arc,
                 series_id,
@@ -1688,12 +1634,21 @@ mod tests {
         let svc =
             stremio_service::StremioService::from_url(&server.base_url()).unwrap();
         let manifest_url = StremioManifestUrl::try_new(server.base_url()).unwrap();
-        let media = episode_media(db::ExternalIds {
-            series_custom_stremio_id: Some("fk:27".to_string()),
+        let grandparent = db::Media {
+            kind: db::MediaKind::Series,
+            external_ids: db::ExternalIds {
+                custom_stremio_id: Some("fk:27".to_string()),
+                custom_stremio_type: Some("anime".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut media = episode_media(db::ExternalIds {
             custom_stremio_id: Some("fk-ep-1".to_string()),
             custom_stremio_type: Some("anime".to_string()),
             ..Default::default()
         });
+        media.grandparent = Some(Box::new(grandparent));
 
         let streams = stremio_streams(&svc, &manifest_url, &media, None)
             .await
@@ -1716,11 +1671,20 @@ mod tests {
         let svc =
             stremio_service::StremioService::from_url(&server.base_url()).unwrap();
         let manifest_url = StremioManifestUrl::try_new(server.base_url()).unwrap();
-        let media = episode_media(db::ExternalIds {
-            series_custom_stremio_id: Some("fk:27".to_string()),
+        let grandparent = db::Media {
+            kind: db::MediaKind::Series,
+            external_ids: db::ExternalIds {
+                custom_stremio_id: Some("fk:27".to_string()),
+                custom_stremio_type: Some("anime".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut media = episode_media(db::ExternalIds {
             custom_stremio_type: Some("anime".to_string()),
             ..Default::default()
         });
+        media.grandparent = Some(Box::new(grandparent));
 
         let streams = stremio_streams(&svc, &manifest_url, &media, None)
             .await

@@ -1050,10 +1050,9 @@ impl ExternalIds {
     }
 
     /// All Stremio-formatted ID strings this item could be requested under, in preference
-    /// order. For Season/Episode, `grandparent_ext` should be the series' `external_ids`
-    /// (from `media.grandparent`); when absent, the deprecated `series_*` fields on `self`
-    /// are used as a fallback. Returns empty when no IDs can be derived (e.g. Season/Episode
-    /// with no grandparent IDs at all, or a missing `season`/`episode` index).
+    /// order. For Season/Episode, `grandparent_ext` must be the series' `external_ids`
+    /// (from `media.grandparent`); returns empty when grandparent IDs are absent or the
+    /// required `season`/`episode` index is missing.
     ///
     /// `season` = the season index (Season's own `idx`; Episode's `parent_idx`).
     /// `episode` = the episode index (Episode's `idx`); ignored for other kinds.
@@ -1088,28 +1087,15 @@ impl ExternalIds {
                 let Some(s) = season else {
                     return Vec::new();
                 };
-                // Prefer grandparent external IDs; fall back to deprecated series_* fields.
-                let gp_imdb = grandparent_ext
-                    .and_then(|gp| {
-                        gp.imdb
-                            .as_deref()
-                    })
-                    .or_else(|| {
-                        self.series_imdb
-                            .as_deref()
-                    });
-                let gp_custom = grandparent_ext
-                    .and_then(|gp| {
-                        gp.custom_stremio_id
-                            .as_deref()
-                    })
-                    .or_else(|| {
-                        self.series_custom_stremio_id
-                            .as_deref()
-                    });
-                let gp_tmdb = grandparent_ext
-                    .and_then(|gp| gp.tmdb)
-                    .or(self.series_tmdb);
+                let gp_imdb = grandparent_ext.and_then(|gp| {
+                    gp.imdb
+                        .as_deref()
+                });
+                let gp_custom = grandparent_ext.and_then(|gp| {
+                    gp.custom_stremio_id
+                        .as_deref()
+                });
+                let gp_tmdb = grandparent_ext.and_then(|gp| gp.tmdb);
                 let gp_tvdb = grandparent_ext.and_then(|gp| gp.tvdb);
                 let gp_kitsu = grandparent_ext.and_then(|gp| gp.kitsu);
                 let mut ids = Vec::new();
@@ -1134,28 +1120,15 @@ impl ExternalIds {
                 let (Some(s), Some(e)) = (season, episode) else {
                     return Vec::new();
                 };
-                // Prefer grandparent external IDs; fall back to deprecated series_* fields.
-                let gp_imdb = grandparent_ext
-                    .and_then(|gp| {
-                        gp.imdb
-                            .as_deref()
-                    })
-                    .or_else(|| {
-                        self.series_imdb
-                            .as_deref()
-                    });
-                let gp_custom = grandparent_ext
-                    .and_then(|gp| {
-                        gp.custom_stremio_id
-                            .as_deref()
-                    })
-                    .or_else(|| {
-                        self.series_custom_stremio_id
-                            .as_deref()
-                    });
-                let gp_tmdb = grandparent_ext
-                    .and_then(|gp| gp.tmdb)
-                    .or(self.series_tmdb);
+                let gp_imdb = grandparent_ext.and_then(|gp| {
+                    gp.imdb
+                        .as_deref()
+                });
+                let gp_custom = grandparent_ext.and_then(|gp| {
+                    gp.custom_stremio_id
+                        .as_deref()
+                });
+                let gp_tmdb = grandparent_ext.and_then(|gp| gp.tmdb);
                 let gp_tvdb = grandparent_ext.and_then(|gp| gp.tvdb);
                 let gp_kitsu = grandparent_ext.and_then(|gp| gp.kitsu);
                 let mut ids = Vec::new();
@@ -1193,33 +1166,6 @@ impl ExternalIds {
                 .map(|n| vec![format!("deezer:{n}")])
                 .unwrap_or_default(),
             _ => Vec::new(),
-        }
-    }
-
-    /// Returns the first candidate ID that starts with any of the addon's declared
-    /// `id_prefixes`. When `prefixes` is `None` (no prefix restriction), returns the
-    /// first candidate (highest priority). Returns `None` when no candidate matches or
-    /// the item has no resolvable IDs.
-    pub fn id_for_prefixes(
-        &self,
-        kind: &MediaKind,
-        season: Option<i64>,
-        episode: Option<i64>,
-        grandparent_ext: Option<&ExternalIds>,
-        prefixes: Option<&[String]>,
-    ) -> Option<String> {
-        let candidates = self.candidate_ids(kind, season, episode, grandparent_ext);
-        match prefixes {
-            None => candidates
-                .into_iter()
-                .next(),
-            Some(prefixes) => candidates
-                .into_iter()
-                .find(|id| {
-                    prefixes
-                        .iter()
-                        .any(|p| id.starts_with(p.as_str()))
-                }),
         }
     }
 
@@ -1977,6 +1923,27 @@ impl Media {
         };
         self.external_ids
             .candidate_ids(&self.kind, season, episode, grandparent_ext)
+    }
+
+    /// Returns the grandparent `Media`, loading and caching it from the DB if not already set.
+    /// Returns `None` when this item has no `grandparent_id`.
+    pub async fn grandparent(
+        &mut self,
+        db: &SqlitePool,
+    ) -> Result<Option<&Self>, sqlx::Error> {
+        if self
+            .grandparent
+            .is_none()
+        {
+            if let Some(gp_id) = self.grandparent_id {
+                if let Some(gp) = Self::get_by_id(db, &gp_id).await? {
+                    self.grandparent = Some(Box::new(gp));
+                }
+            }
+        }
+        Ok(self
+            .grandparent
+            .as_deref())
     }
 
     pub fn get_image(&self, kind: ImageKind) -> Option<&str> {
@@ -7410,6 +7377,91 @@ mod tests {
             legacy_uuid,
             crate::common::stable_media_uuid(&MediaKind::Season, "tt1844624:0")
         );
+    }
+
+    #[test]
+    fn candidate_ids_movie_all_id_types() {
+        let ext = ExternalIds {
+            imdb: NonEmptyString::try_new("tt1234567".to_string()).ok(),
+            custom_stremio_id: Some("custom:abc".into()),
+            tmdb: Some(999),
+            tvdb: Some(777),
+            kitsu: Some(555),
+            ..Default::default()
+        };
+        let ids = ext.candidate_ids(&MediaKind::Movie, None, None, None);
+        assert_eq!(
+            ids,
+            vec![
+                "tt1234567",
+                "custom:abc",
+                "tmdb:999",
+                "tvdb:777",
+                "kitsu:555"
+            ]
+        );
+    }
+
+    #[test]
+    fn candidate_ids_movie_imdb_only() {
+        let ext = ExternalIds {
+            imdb: NonEmptyString::try_new("tt9999999".to_string()).ok(),
+            ..Default::default()
+        };
+        let ids = ext.candidate_ids(&MediaKind::Movie, None, None, None);
+        assert_eq!(ids, vec!["tt9999999"]);
+    }
+
+    #[test]
+    fn candidate_ids_season_with_grandparent() {
+        let gp = ExternalIds {
+            imdb: NonEmptyString::try_new("tt1844624".to_string()).ok(),
+            tmdb: Some(123),
+            ..Default::default()
+        };
+        let ext = ExternalIds::default();
+        let ids = ext.candidate_ids(&MediaKind::Season, Some(2), None, Some(&gp));
+        assert_eq!(ids, vec!["tt1844624:2", "tmdb:123:2"]);
+    }
+
+    #[test]
+    fn candidate_ids_season_no_grandparent_returns_empty() {
+        let ext = ExternalIds::default();
+        let ids = ext.candidate_ids(&MediaKind::Season, Some(1), None, None);
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn candidate_ids_season_no_index_returns_empty() {
+        let gp = ExternalIds {
+            imdb: NonEmptyString::try_new("tt1844624".to_string()).ok(),
+            ..Default::default()
+        };
+        let ext = ExternalIds::default();
+        let ids = ext.candidate_ids(&MediaKind::Season, None, None, Some(&gp));
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn candidate_ids_episode_custom_stremio_id_comes_first() {
+        let gp = ExternalIds {
+            imdb: NonEmptyString::try_new("tt1844624".to_string()).ok(),
+            ..Default::default()
+        };
+        let ext = ExternalIds {
+            custom_stremio_id: Some("yt:xyz123".into()),
+            ..Default::default()
+        };
+        let ids = ext.candidate_ids(&MediaKind::Episode, Some(1), Some(3), Some(&gp));
+        assert_eq!(ids[0], "yt:xyz123");
+        assert_eq!(ids[1], "tt1844624:1:3");
+    }
+
+    #[test]
+    fn candidate_ids_episode_no_grandparent_returns_empty() {
+        let ext = ExternalIds::default();
+        let ids = ext.candidate_ids(&MediaKind::Episode, Some(1), Some(1), None);
+        assert!(ids.is_empty());
     }
 
     #[test]

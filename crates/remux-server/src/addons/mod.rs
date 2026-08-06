@@ -1689,6 +1689,11 @@ impl AddonService {
         force_refresh: bool,
         config: &api::ServerConfiguration,
     ) -> Result<()> {
+        media
+            .grandparent(&ctx.db)
+            .await
+            .ok();
+
         let applicable = self
             .addons_for::<dyn MetaAddon>(media, &ctx.db, None)
             .await;
@@ -2602,6 +2607,11 @@ impl AddonService {
             media.streams_refreshed_at = refreshed_at;
             return Ok(());
         }
+
+        media
+            .grandparent(&ctx.db)
+            .await
+            .ok();
 
         let instant = Instant::now();
         let probe_versions_fut = async {
