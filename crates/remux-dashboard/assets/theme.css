@@ -1526,6 +1526,8 @@ html, body {
   gap: 6px;
   margin-top: 2px;
   align-items: center;
+  flex-wrap: wrap;
+  row-gap: 6px;
 }
 
 .addon-card-sort {

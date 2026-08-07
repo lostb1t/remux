@@ -13,6 +13,8 @@ pub enum Route {
     DashboardRoute,
     #[route("/addons")]
     AddonsRoute,
+    #[route("/addons/:addon_id/catalogs")]
+    AddonCatalogsRoute { addon_id: uuid::Uuid },
     #[route("/content/library")]
     LibraryRoute,
     #[route("/content/iptv")]
@@ -62,6 +64,12 @@ pub(crate) fn DashboardRoute() -> Element {
 pub(crate) fn AddonsRoute() -> Element {
     let app_state = use_context::<AppState>();
     rsx! { AddonsPage { app_state } }
+}
+
+#[component]
+pub(crate) fn AddonCatalogsRoute(addon_id: uuid::Uuid) -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { AddonCatalogsPage { app_state, addon_id } }
 }
 
 #[component]

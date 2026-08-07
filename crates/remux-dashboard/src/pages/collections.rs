@@ -531,6 +531,7 @@ pub fn CollectionForm(
                             latest_sort_digital: Some(sort_digital),
                             collection_default_sort: default_sort_payload,
                             collection_default_sort_order: default_sort_order_payload,
+                            collection_source: None,
                         },
                     })
                     .await;
@@ -583,6 +584,7 @@ pub fn CollectionForm(
                             latest_sort_digital: Some(sort_digital),
                             collection_default_sort: default_sort_payload,
                             collection_default_sort_order: default_sort_order_payload,
+                            collection_source: None,
                         },
                     })
                     .await;

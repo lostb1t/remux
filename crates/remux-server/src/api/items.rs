@@ -3033,6 +3033,7 @@ struct PatchItemRequest {
     latest_sort_digital: Option<bool>,
     collection_default_sort: Option<Vec<api::ItemSortBy>>,
     collection_default_sort_order: Option<Vec<api::SortOrder>>,
+    collection_source: Option<String>,
 }
 
 #[patch("/items/{id}")]
@@ -3094,6 +3095,10 @@ pub async fn patch_item(
     if let Some(ref v) = payload.collection_default_sort_order {
         qb.push(", collection_default_sort_order = ")
             .push_bind(sqlx::types::Json(v));
+    }
+    if let Some(cs) = &payload.collection_source {
+        qb.push(", collection_source = ")
+            .push_bind(cs);
     }
 
     qb.push(" WHERE id = ")
