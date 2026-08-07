@@ -140,13 +140,18 @@ impl ImageService {
             .join(id.to_string())
     }
 
-    /// Returns the local path for a specific image type (e.g. `primary.jpg`).
+    /// Returns the local path for a specific image type with the given extension.
     pub fn image_path(
         data_dir: &std::path::Path,
         id: Uuid,
         image_type: &str,
+        ext: &str,
     ) -> PathBuf {
-        Self::image_dir(data_dir, id).join(format!("{}.jpg", image_type.to_lowercase()))
+        Self::image_dir(data_dir, id).join(format!(
+            "{}.{}",
+            image_type.to_lowercase(),
+            ext
+        ))
     }
 
     /// Generate the library placeholder image, write it to disk, save the path
@@ -157,7 +162,7 @@ impl ImageService {
         name: &str,
         db: &sqlx::SqlitePool,
     ) -> anyhow::Result<Vec<u8>> {
-        let path = Self::image_path(data_dir, id, "primary");
+        let path = Self::image_path(data_dir, id, "primary", "jpg");
 
         if path.exists() {
             return Ok(tokio::fs::read(&path).await?);
@@ -188,7 +193,8 @@ impl ImageService {
         bytes: &[u8],
         db: &sqlx::SqlitePool,
     ) -> anyhow::Result<()> {
-        let path = Self::image_path(data_dir, id, &kind.to_string());
+        let ext = ext_for_content_type(detect_content_type(bytes));
+        let path = Self::image_path(data_dir, id, &kind.to_string(), ext);
         Self::write_image_to_disk(&path, bytes).await?;
         let (img_w, img_h) = image::load_from_memory(bytes)
             .map(|img| (img.width() as i64, img.height() as i64))
@@ -210,14 +216,25 @@ impl ImageService {
 
     /// Delete the local image for `id`/`kind` and remove from media_images.
     pub async fn delete_image(
-        data_dir: &std::path::Path,
+        _data_dir: &std::path::Path,
         id: Uuid,
         kind: ImageKind,
         db: &sqlx::SqlitePool,
     ) -> anyhow::Result<()> {
-        let path = Self::image_path(data_dir, id, &kind.to_string());
-        if path.exists() {
-            tokio::fs::remove_file(&path).await?;
+        // Look up the stored path from the DB rather than reconstructing it —
+        // the extension varies by format (gif, png, webp, jpg).
+        if let Ok(images) = db::MediaImage::get_for_media(db, &id).await {
+            if let Some(img) = images.get(kind) {
+                if img
+                    .path
+                    .starts_with('/')
+                {
+                    let path = std::path::PathBuf::from(&img.path);
+                    if path.exists() {
+                        tokio::fs::remove_file(&path).await?;
+                    }
+                }
+            }
         }
         db::MediaImage::delete_for_type(db, id, kind)
             .await
@@ -254,6 +271,11 @@ impl ImageService {
         if !opts.needs_processing() {
             let ct = detect_content_type(&bytes);
             return Ok((bytes, ct));
+        }
+
+        // GIFs are always served as-is to preserve animation.
+        if detect_content_type(&bytes) == "image/gif" {
+            return Ok((bytes, "image/gif"));
         }
 
         let cache_key = opts.cache_key(source_key);
@@ -488,6 +510,15 @@ fn measure_text_width(font: &FontRef<'_>, scale: PxScale, text: &str) -> f32 {
         prev = Some(glyph_id);
     }
     width
+}
+
+fn ext_for_content_type(ct: &str) -> &'static str {
+    match ct {
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => "jpg",
+    }
 }
 
 fn encode_jpeg(img: RgbImage) -> anyhow::Result<Vec<u8>> {
