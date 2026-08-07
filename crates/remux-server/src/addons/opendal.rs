@@ -3795,14 +3795,47 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
 
-        let (_, guard) = new_test_server()
-            .await
-            .unwrap();
-        let ctx = &guard.0;
+        // Mock TMDB so the test is hermetic — CI has no reliable access to
+        // api.themoviedb.org (rate limits / timeouts made this flaky).
+        let tmdb = httpmock::MockServer::start();
+        // [tmdbid-603] → The Matrix
+        tmdb.mock(|when, then| {
+            when.path("/movie/603");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "id": 603,
+                    "title": "The Matrix",
+                    "adult": false,
+                    "original_language": "en",
+                    "imdb_id": "tt0133093"
+                }));
+        });
+        // Interstellar.2014 → title+year search, then details
+        tmdb.mock(|when, then| {
+            when.path("/search/movie")
+                .query_param("query", "Interstellar");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "results": [{ "id": 157336, "title": "Interstellar" }]
+                }));
+        });
+        tmdb.mock(|when, then| {
+            when.path("/movie/157336");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "id": 157336,
+                    "title": "Interstellar",
+                    "adult": false,
+                    "original_language": "en",
+                    "imdb_id": "tt0816692"
+                }));
+        });
 
-        let (addon, db_addon) = make_local_addon(ctx, dir.path(), "movie").await;
+        let (ctx, _guard) = test_server_with_tmdb(&tmdb).await;
+
+        let (addon, db_addon) = make_local_addon(&ctx, dir.path(), "movie").await;
         addon
-            .refresh_index(ctx, &db_addon, noop_progress())
+            .refresh_index(&ctx, &db_addon, noop_progress())
             .await
             .unwrap();
 
@@ -3822,7 +3855,7 @@ mod tests {
 
         // catalog_stream must return one Movie item per distinct IMDB.
         let catalog: Vec<db::Media> = addon
-            .catalog_stream(ctx, "files")
+            .catalog_stream(&ctx, "files")
             .await
             .unwrap()
             .unwrap()
