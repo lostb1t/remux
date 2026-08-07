@@ -154,6 +154,9 @@ async fn items_playbackinfo_inner(
     });
     let is_live = media.is_live();
     let is_track_item = media.is_track();
+    let original_language = media
+        .original_language
+        .clone();
     service
         .load(media)
         .await?;
@@ -359,6 +362,7 @@ async fn items_playbackinfo_inner(
         source.resolve_default_streams(
             &user_cfg,
             server_subtitle_lang,
+            original_language.as_deref(),
             q.audio_stream_index,
             q.subtitle_stream_index,
             saved_audio,
@@ -500,6 +504,7 @@ async fn items_playbackinfo_inner(
         source.resolve_default_streams(
             &user_cfg,
             server_subtitle_lang,
+            original_language.as_deref(),
             q.audio_stream_index,
             q.subtitle_stream_index,
             saved_audio,
@@ -2361,42 +2366,74 @@ mod tests {
         );
     }
 
-    /// After reporting progress with `AudioStreamIndex=2`, the next PlaybackInfo
-    /// request should recall that selection as `DefaultAudioStreamIndex`.
-    /// PlayDefaultAudioTrack=true must NOT suppress a matching audio language
-    /// preference: remux honors the configured language (English here, index 2)
-    /// over the container's first-track default (Dutch, index 1).
+    /// PlayDefaultAudioTrack=true selects the audio track whose language
+    /// matches the item's `original_language` from DB metadata, even when it
+    /// is not the container's first track (Dutch here, index 1).
     #[tokio::test]
-    async fn test_audio_language_preference_honored_even_with_play_default_audio_track()
-    {
+    async fn test_play_default_audio_track_uses_original_language() {
+        use crate::{
+            api::{MediaSourceInfo, MediaStream, MediaStreamType},
+            db,
+        };
         let (server, guard, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
-        let media = insert_multilang_source(&guard.0).await;
 
-        let me: serde_json::Value = server
-            .get("/users/me")
-            .add_header(
-                http::header::AUTHORIZATION,
-                HeaderValue::from_str(&auth).unwrap(),
+        // Build a media item whose original_language is "en" but whose first
+        // audio track is Dutch — the server must pick English (index 2).
+        let now = chrono::Utc::now().naive_utc();
+        let probe = MediaSourceInfo {
+            container: Some("mp4".to_string()),
+            bitrate: Some(8_000_000),
+            run_time_ticks: Some(100_000_000),
+            media_streams: vec![
+                MediaStream {
+                    codec: Some("h264".to_string()),
+                    type_: Some(MediaStreamType::Video),
+                    index: 0,
+                    width: Some(1920),
+                    height: Some(1080),
+                    ..Default::default()
+                },
+                MediaStream {
+                    codec: Some("aac".to_string()),
+                    type_: Some(MediaStreamType::Audio),
+                    index: 1,
+                    language: Some("nl".to_string()),
+                    ..Default::default()
+                },
+                MediaStream {
+                    codec: Some("aac".to_string()),
+                    type_: Some(MediaStreamType::Audio),
+                    index: 2,
+                    language: Some("en".to_string()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let mut media = db::Media {
+            title: "Original Lang Test".to_string(),
+            kind: db::MediaKind::Stream,
+            original_language: Some("en".to_string()),
+            stream_info: Some(crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::Local(
+                    "test-fixture-orig-lang.mp4".into(),
+                ),
+                ..Default::default()
+            }),
+            probe_data: Some(probe),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        media
+            .save(
+                &guard
+                    .0
+                    .db,
             )
             .await
-            .json();
-        let user_id = me["Id"]
-            .as_str()
-            .unwrap();
-
-        // English is NOT the container's first track — only the language
-        // preference can select it.
-        server
-            .post(&format!("/users/{}/configuration", user_id))
-            .add_header(
-                http::header::AUTHORIZATION,
-                HeaderValue::from_str(&auth).unwrap(),
-            )
-            .json(&user_config_with(
-                json!({ "AudioLanguagePreference": "en", "PlayDefaultAudioTrack": true }),
-            ))
-            .await;
+            .expect("insert media failed");
 
         let resp = server
             .post(&format!("/items/{}/playbackinfo", media.id))
@@ -2412,7 +2449,7 @@ mod tests {
         assert_eq!(
             body["MediaSources"][0]["DefaultAudioStreamIndex"].as_i64(),
             Some(2),
-            "AudioLanguagePreference=en should be honored even with PlayDefaultAudioTrack=true"
+            "PlayDefaultAudioTrack=true should select the track matching original_language=en (index 2)"
         );
     }
 

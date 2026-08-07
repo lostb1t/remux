@@ -1896,6 +1896,9 @@ async fn item_for_user(
                     server_config
                         .preferred_metadata_language
                         .as_deref(),
+                    media
+                        .original_language
+                        .as_deref(),
                     None,
                     None,
                     None,
