@@ -1,8 +1,15 @@
 use dioxus::prelude::*;
 use gloo_storage::{LocalStorage, Storage};
-use remux_sdks::{remux::JellyfinAuth, RestClient};
+use remux_sdks::{remux::JellyfinAuth, ClientError, Endpoint, RestClient};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+pub static LOGGED_IN: GlobalSignal<bool> = Signal::global(|| false);
+
+pub fn logout() {
+    clear_credentials();
+    *LOGGED_IN.write() = false;
+}
 
 pub const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 pub const THEME_CSS: Asset = asset!("/assets/theme.css");
@@ -65,6 +72,20 @@ impl AppState {
             .with_auth(auth);
         Self { server, client }
     }
+
+    pub async fn execute<EP: Endpoint + Clone>(
+        &self,
+        ep: EP,
+    ) -> Result<EP::Output, ClientError> {
+        let r = self
+            .client
+            .execute(ep)
+            .await;
+        if matches!(&r, Err(ClientError::Unauthorized)) {
+            logout();
+        }
+        r
+    }
 }
 
 pub fn detect_image_content_type(bytes: &[u8]) -> &'static str {
@@ -86,6 +107,42 @@ pub fn fmt_time(dt: impl std::fmt::Display) -> String {
         .skip(11)
         .take(5)
         .collect()
+}
+
+/// Returns "DD Mon HH:MM" from a DateTime Display string — suitable for audit log entries.
+pub fn fmt_datetime(dt: impl std::fmt::Display) -> String {
+    let s = dt.to_string();
+    let date = s
+        .get(..10)
+        .unwrap_or(&s);
+    let time = s
+        .chars()
+        .skip(11)
+        .take(5)
+        .collect::<String>(); // "HH:MM"
+    let parts: Vec<&str> = date
+        .split('-')
+        .collect();
+    if parts.len() == 3 {
+        let month = match parts[1] {
+            "01" => "Jan",
+            "02" => "Feb",
+            "03" => "Mar",
+            "04" => "Apr",
+            "05" => "May",
+            "06" => "Jun",
+            "07" => "Jul",
+            "08" => "Aug",
+            "09" => "Sep",
+            "10" => "Oct",
+            "11" => "Nov",
+            "12" => "Dec",
+            _ => parts[1],
+        };
+        format!("{} {} {}", parts[2], month, time)
+    } else {
+        format!("{date} {time}")
+    }
 }
 
 pub fn get_origin() -> String {
@@ -134,6 +191,10 @@ pub fn get_stored_server() -> Option<StoredServer> {
         .servers
         .into_iter()
         .next()
+}
+
+pub fn clear_credentials() {
+    LocalStorage::delete(CREDENTIALS_KEY);
 }
 
 pub fn store_credentials(server: StoredServer) {

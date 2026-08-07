@@ -76,9 +76,7 @@ pub fn ServerInfoCard(app_state: AppState) -> Element {
     let app_state_for_restart = app_state.clone();
 
     use_effect(move || {
-        let client = app_state_for_effect
-            .client
-            .clone();
+        let client = app_state_for_effect.clone();
         spawn(async move {
             match client
                 .execute(PublicSystemInfo::default())
@@ -95,9 +93,7 @@ pub fn ServerInfoCard(app_state: AppState) -> Element {
     });
 
     let on_restart = move |_| {
-        let client = app_state_for_restart
-            .client
-            .clone();
+        let client = app_state_for_restart.clone();
         restarting.set(true);
         spawn(async move {
             let _ = client
@@ -157,9 +153,7 @@ pub fn MediaStatsCard(app_state: AppState) -> Element {
     let mut error = use_signal(|| Option::<String>::None);
 
     use_effect(move || {
-        let client = app_state
-            .client
-            .clone();
+        let client = app_state.clone();
         spawn(async move {
             match client
                 .execute(GetItemCounts)

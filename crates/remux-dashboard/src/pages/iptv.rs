@@ -1,5 +1,5 @@
 use crate::{
-    components::{FormGroup, LoadingText, Modal},
+    components::{FormGroup, LoadingText, Modal, PaginationBar},
     state::AppState,
 };
 use dioxus::prelude::*;
@@ -23,7 +23,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
     let mut total: Signal<usize> = use_signal(|| 0);
     let mut loading = use_signal(|| true);
     let mut error = use_signal(|| Option::<String>::None);
-    let mut page = use_signal(|| 0_u32);
+    let mut page = use_signal(|| 0_i64);
     // committed search (triggers fetch); typed search (live input)
     let mut search_committed = use_signal(String::new);
     let mut search_input = use_signal(String::new);
@@ -41,9 +41,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
     // Load distinct country codes and groups once on mount
     let app_state_countries = app_state.clone();
     use_effect(move || {
-        let client = app_state_countries
-            .client
-            .clone();
+        let client = app_state_countries.clone();
         spawn(async move {
             if let Ok(cs) = client
                 .execute(GetIptvChannelCountries)
@@ -79,9 +77,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
             .read()
             .clone();
         loading.set(true);
-        let client = app_state_effect
-            .client
-            .clone();
+        let client = app_state_effect.clone();
         spawn(async move {
             let enabled = match ef.as_str() {
                 "true" => Some(true),
@@ -91,7 +87,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
             match client
                 .execute(GetIptvChannels {
                     limit: PAGE_SIZE,
-                    offset: p * PAGE_SIZE,
+                    offset: (p as u32) * PAGE_SIZE,
                     search: s,
                     enabled,
                     country: cf,
@@ -112,8 +108,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
     });
 
     let total_v = *total.read();
-    let page_v = *page.read();
-    let total_pages = total_v.div_ceil(PAGE_SIZE as usize) as u32;
+    let total_pages = (total_v as i64 + PAGE_SIZE as i64 - 1) / PAGE_SIZE as i64;
 
     let mut do_search = move || {
         let s = search_input
@@ -153,7 +148,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
                         style: "height:32px;font-size:.68rem",
                         disabled: *bulk_working.read() || total_v == 0,
                         onclick: {
-                            let client = app_state.client.clone();
+                            let client = app_state.clone();
                             move |_| {
                                 let search = search_committed.peek().clone();
                                 bulk_working.set(true);
@@ -176,7 +171,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
                                         _ => None,
                                     };
                                     loading.set(true);
-                                    if let Ok(r) = c.execute(GetIptvChannels { limit: PAGE_SIZE, offset: p * PAGE_SIZE, search: s, enabled, country: cf, group: gf, sort: sm }).await {
+                                    if let Ok(r) = c.execute(GetIptvChannels { limit: PAGE_SIZE, offset: (p as u32) * PAGE_SIZE, search: s, enabled, country: cf, group: gf, sort: sm }).await {
                                         total.set(r.total_record_count);
                                         channels.set(r.items);
                                     }
@@ -191,7 +186,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
                         style: "height:32px;font-size:.68rem",
                         disabled: *bulk_working.read() || total_v == 0,
                         onclick: {
-                            let client = app_state.client.clone();
+                            let client = app_state.clone();
                             move |_| {
                                 let search = search_committed.peek().clone();
                                 bulk_working.set(true);
@@ -213,7 +208,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
                                         _ => None,
                                     };
                                     loading.set(true);
-                                    if let Ok(r) = c.execute(GetIptvChannels { limit: PAGE_SIZE, offset: p * PAGE_SIZE, search: s, enabled, country: cf, group: gf, sort: sm }).await {
+                                    if let Ok(r) = c.execute(GetIptvChannels { limit: PAGE_SIZE, offset: (p as u32) * PAGE_SIZE, search: s, enabled, country: cf, group: gf, sort: sm }).await {
                                         total.set(r.total_record_count);
                                         channels.set(r.items);
                                     }
@@ -258,9 +253,9 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
                             for ch in channels.read().clone() {
                                 {
                                     let id = ch.id.clone();
-                                    let client1 = app_state.client.clone();
-                                    let client2 = app_state.client.clone();
-                                    let client3 = app_state.client.clone();
+                                    let client1 = app_state.clone();
+                                    let client2 = app_state.clone();
+                                    let client3 = app_state.clone();
                                     let sort_val = ch.sort_order.map(|n| n.to_string()).unwrap_or_default();
                                     let ch_placeholder = ch.channel_number.map(|n| n.to_string()).unwrap_or_else(|| "–".into());
                                     let name_val = ch.custom_name.clone().unwrap_or_default();
@@ -357,28 +352,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
                         }
                     }
 
-                    // Pagination bar
-                    if total_pages > 1 {
-                        div { class: "pagination-bar",
-                            button {
-                                class: "btn btn-ghost",
-                                style: "height:28px;font-size:.75rem",
-                                disabled: page_v == 0,
-                                onclick: move |_| page.set(page_v.saturating_sub(1)),
-                                "‹ Prev"
-                            }
-                            span { style: "font-size:.8rem;opacity:.7",
-                                "Page {page_v + 1} of {total_pages}"
-                            }
-                            button {
-                                class: "btn btn-ghost",
-                                style: "height:28px;font-size:.75rem",
-                                disabled: page_v + 1 >= total_pages,
-                                onclick: move |_| page.set(page_v + 1),
-                                "Next ›"
-                            }
-                        }
-                    }
+                    PaginationBar { page, total_pages }
                 }
             }
         }

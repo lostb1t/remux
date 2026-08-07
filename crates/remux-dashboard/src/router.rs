@@ -1,5 +1,5 @@
 use crate::{
-    components::{SessionsCard, TasksCard},
+    components::{ActivityCard, TasksCard},
     layout::DashboardLayout,
     pages::*,
     state::AppState,
@@ -43,6 +43,8 @@ pub enum Route {
     AccessApiKeysRoute,
     #[route("/tasks")]
     TasksRoute,
+    #[route("/devices")]
+    DevicesRoute,
     #[route("/activity")]
     ActivityRoute,
     #[end_layout]
@@ -153,9 +155,15 @@ pub(crate) fn TasksRoute() -> Element {
 }
 
 #[component]
+pub(crate) fn DevicesRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { DevicesPage { app_state } }
+}
+
+#[component]
 pub(crate) fn ActivityRoute() -> Element {
     let app_state = use_context::<AppState>();
-    rsx! { SessionsCard { app_state } }
+    rsx! { ActivityCard { app_state } }
 }
 
 #[component]

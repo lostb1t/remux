@@ -19,9 +19,7 @@ pub fn BrandingPage(app_state: AppState) -> Element {
 
     let app_state_load = app_state.clone();
     use_effect(move || {
-        let client = app_state_load
-            .client
-            .clone();
+        let client = app_state_load.clone();
         spawn(async move {
             match client
                 .execute(GetBrandingConfiguration)
@@ -48,9 +46,7 @@ pub fn BrandingPage(app_state: AppState) -> Element {
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
-        let client = app_state
-            .client
-            .clone();
+        let client = app_state.clone();
         let css = custom_css
             .peek()
             .clone();

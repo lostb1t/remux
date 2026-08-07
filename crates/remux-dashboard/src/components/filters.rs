@@ -1,13 +1,10 @@
 use crate::state::AppState;
 use dioxus::prelude::*;
-use remux_sdks::{
-    remux::{
-        FilterGroup, FilterMatchMode, FilterRule, GetAddonCatalogs,
-        GetCertificationSuggestions, GetCountrySuggestions, GetLanguageSuggestions,
-        GetLocalSuggestions, GetParentalRatings, GetTagSuggestions, JellyfinAuth,
-        ListAddons, NumericOp, ParentalRating, SetOp,
-    },
-    RestClient,
+use remux_sdks::remux::{
+    FilterGroup, FilterMatchMode, FilterRule, GetAddonCatalogs,
+    GetCertificationSuggestions, GetCountrySuggestions, GetLanguageSuggestions,
+    GetLocalSuggestions, GetParentalRatings, GetTagSuggestions, ListAddons, NumericOp,
+    ParentalRating, SetOp,
 };
 use uuid::Uuid;
 
@@ -42,7 +39,7 @@ fn is_set_field(key: &str) -> bool {
 }
 
 async fn fetch_suggestions(
-    client: &RestClient<JellyfinAuth>,
+    client: &AppState,
     field: &str,
     query: &str,
 ) -> Vec<(String, String)> {
@@ -378,9 +375,7 @@ pub fn TagChipInput(tags: Signal<Vec<String>>) -> Element {
     let mut suggestions: Signal<Vec<String>> = use_signal(Vec::new);
     let mut show_dropdown = use_signal(|| false);
 
-    let client_fetch = app_state
-        .client
-        .clone();
+    let client_fetch = app_state.clone();
     use_effect(move || {
         let q = input_text
             .read()
@@ -493,9 +488,7 @@ pub fn ChipInput(
         use_signal(std::collections::HashMap::new);
 
     let fk_fetch = field_key.clone();
-    let client_fetch = app_state
-        .client
-        .clone();
+    let client_fetch = app_state.clone();
     use_effect(move || {
         let q = input_text
             .read()
@@ -647,12 +640,8 @@ pub fn FilterRuleRow(
     rules: Signal<Vec<FilterRule>>,
 ) -> Element {
     let app_state = use_context::<AppState>();
-    let client_for_ratings = app_state
-        .client
-        .clone();
-    let client_for_catalogs = app_state
-        .client
-        .clone();
+    let client_for_ratings = app_state.clone();
+    let client_for_catalogs = app_state.clone();
     let mut parental_ratings: Signal<Vec<ParentalRating>> = use_signal(Vec::new);
     use_effect(move || {
         let client = client_for_ratings.clone();

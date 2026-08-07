@@ -150,6 +150,30 @@ impl User {
         Ok(row)
     }
 
+    pub async fn get_by_ids(db: &SqlitePool, ids: &[Uuid]) -> Result<Vec<Self>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut results = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(500) {
+            let placeholders = chunk
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!("SELECT * FROM users WHERE id IN ({placeholders})");
+            let mut q = sqlx::query_as::<_, Self>(&sql);
+            for id in chunk {
+                q = q.bind(id);
+            }
+            results.extend(
+                q.fetch_all(db)
+                    .await?,
+            );
+        }
+        Ok(results)
+    }
+
     pub async fn get_by_username(
         db: &SqlitePool,
         username: &str,
