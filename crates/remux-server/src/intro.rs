@@ -187,6 +187,7 @@ pub fn pick_intro<'a>(
         IntroOrder::Sequential => {
             let i = store
                 .get::<usize>(INTRO_IDX_KEY)
+                .map(|v| *v)
                 .unwrap_or(0)
                 % intros.len();
             store.save(INTRO_IDX_KEY, i + 1, std::time::Duration::MAX);

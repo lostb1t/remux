@@ -760,7 +760,7 @@ async fn fetch_and_cache_meta(
     let media_type = media
         .external_ids
         .stremio_media_type(&media.kind);
-    let meta = if let Some(stored) = ctx
+    let meta: Arc<sdks::stremio::Meta> = if let Some(stored) = ctx
         .store
         .get::<sdks::stremio::Meta>(
             media
@@ -769,54 +769,57 @@ async fn fetch_and_cache_meta(
         ) {
         stored
     } else {
-        match svc
-            .get_meta(media_type.clone(), meta_id.clone())
-            .await
-        {
-            Ok(m) => m,
-            // Custom-ID items (no IMDB/TMDB) have no `MediaKind`-derived type that's
-            // guaranteed correct: a DB row imported before `custom_stremio_type` was
-            // tracked (or a season/episode that never inherited it) falls back to a
-            // generic type that may not match the addon's own non-standard one (e.g.
-            // "anime"). Ask the addon's manifest what type(s) it actually serves for
-            // this ID and retry, rather than failing permanently.
-            Err(e)
-                if is_404(&e)
-                    && is_custom
-                    && media
-                        .external_ids
-                        .custom_stremio_type
-                        .is_none() =>
+        Arc::new(
+            match svc
+                .get_meta(media_type.clone(), meta_id.clone())
+                .await
             {
-                match manifest_meta_type_fallback(svc, &media_type, &meta_id).await {
-                    Some(m) => m,
-                    None => return Err(e),
+                Ok(m) => m,
+                // Custom-ID items (no IMDB/TMDB) have no `MediaKind`-derived type that's
+                // guaranteed correct: a DB row imported before `custom_stremio_type` was
+                // tracked (or a season/episode that never inherited it) falls back to a
+                // generic type that may not match the addon's own non-standard one (e.g.
+                // "anime"). Ask the addon's manifest what type(s) it actually serves for
+                // this ID and retry, rather than failing permanently.
+                Err(e)
+                    if is_404(&e)
+                        && is_custom
+                        && media
+                            .external_ids
+                            .custom_stremio_type
+                            .is_none() =>
+                {
+                    match manifest_meta_type_fallback(svc, &media_type, &meta_id).await
+                    {
+                        Some(m) => m,
+                        None => return Err(e),
+                    }
                 }
-            }
-            Err(e) if is_404(&e) && !is_custom => {
-                let series_tmdb = media
-                    .grandparent
-                    .as_deref()
-                    .and_then(|gp| {
-                        gp.external_ids
-                            .tmdb
-                    });
-                let tmdb_id = media
-                    .external_ids
-                    .tmdb
-                    .or(series_tmdb);
-                if let Some(tid) = tmdb_id {
-                    svc.get_meta(media_type, format!("tmdb:{}", tid))
-                        .await?
-                } else {
-                    return Err(e);
+                Err(e) if is_404(&e) && !is_custom => {
+                    let series_tmdb = media
+                        .grandparent
+                        .as_deref()
+                        .and_then(|gp| {
+                            gp.external_ids
+                                .tmdb
+                        });
+                    let tmdb_id = media
+                        .external_ids
+                        .tmdb
+                        .or(series_tmdb);
+                    if let Some(tid) = tmdb_id {
+                        svc.get_meta(media_type, format!("tmdb:{}", tid))
+                            .await?
+                    } else {
+                        return Err(e);
+                    }
                 }
-            }
-            Err(e) => return Err(e),
-        }
+                Err(e) => return Err(e),
+            },
+        )
     };
 
-    let arc = Arc::new(meta);
+    let arc = meta;
     cache
         .lock()
         .unwrap()

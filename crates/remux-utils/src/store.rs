@@ -119,32 +119,13 @@ impl Store {
         true
     }
 
-    pub fn get<T: Any + Send + Sync + Clone>(
-        &self,
-        key: impl Into<String>,
-    ) -> Option<T> {
-        let key: String = key.into();
-
-        self.inner
-            .get(&key)
-            .and_then(|entry| {
-                Arc::clone(&entry.item)
-                    .downcast::<T>()
-                    .ok()
-                    .map(|arc| (*arc).clone())
-            })
-    }
-
-    /// Shared handle to the cached value, without deep-copying it.
+    /// Shared handle to the cached value.
     ///
-    /// Entries are already stored behind an `Arc`; `get` only clones because it
-    /// hands back an owned `T`. Callers that just read the value should use this
-    /// instead — for large cached payloads (e.g. a TMDB season with every
-    /// episode's overview, credits and guest stars) the copy dominates.
-    pub fn get_arc<T: Any + Send + Sync>(
-        &self,
-        key: impl Into<String>,
-    ) -> Option<Arc<T>> {
+    /// Entries are stored behind an `Arc`, so this is a refcount bump — never a
+    /// copy of the payload. `Arc<T>` derefs to `T`, so read-only callers need
+    /// nothing else; a caller that genuinely needs ownership writes
+    /// `.map(|v| (*v).clone())` and pays for the copy where it can be seen.
+    pub fn get<T: Any + Send + Sync>(&self, key: impl Into<String>) -> Option<Arc<T>> {
         let key: String = key.into();
 
         self.inner

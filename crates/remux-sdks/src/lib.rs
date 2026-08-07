@@ -280,7 +280,7 @@ impl<A: Auth + Clone> RestClient<A> {
             .cache_ttl()
             .is_some()
         {
-            if let Some(value) = HTTP_CACHE.get_arc::<EP::Output>(&cache_key) {
+            if let Some(value) = HTTP_CACHE.get::<EP::Output>(&cache_key) {
                 return Ok(value);
             }
         }

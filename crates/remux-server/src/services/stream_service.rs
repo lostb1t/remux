@@ -249,7 +249,7 @@ impl StreamService {
                     let by_pref = saved.and_then(|sid| {
                         sources
                             .iter()
-                            .find(|s| s.id == sid)
+                            .find(|s| s.id == *sid)
                             .cloned()
                     });
                     by_pref
@@ -656,7 +656,9 @@ impl StreamService {
         user_id: Uuid,
         group_id: Uuid,
     ) -> Option<Uuid> {
-        store.get::<Uuid>(format!("gitem:{}:{}", user_id, group_id))
+        store
+            .get::<Uuid>(format!("gitem:{}:{}", user_id, group_id))
+            .map(|id| *id)
     }
 }
 
