@@ -247,63 +247,100 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
 /// Persist `provider:` tags collected from meta addons. Only `provider:`-prefixed
 /// tags are touched — user-set tags with other prefixes are left intact.
 pub(crate) async fn save_pending_tags(ctx: &AppContext, items: &[db::Media]) {
+    // Collect (media_id, tag) pairs for all items with provider tags.
+    let mut rows: Vec<(uuid::Uuid, &str)> = Vec::new();
+    let mut ids_with_tags: Vec<uuid::Uuid> = Vec::new();
     for item in items {
-        let provider_tags: Vec<&String> = item
+        let provider_tags: Vec<&str> = item
             .tags
             .iter()
             .filter(|t| t.starts_with("provider:"))
+            .map(String::as_str)
             .collect();
         if provider_tags.is_empty() {
             continue;
         }
-        if let Err(e) = sqlx::query(
-            "DELETE FROM media_tags WHERE media_id = ? AND tag LIKE 'provider:%'",
-        )
-        .bind(item.id)
+        ids_with_tags.push(item.id);
+        for tag in provider_tags {
+            rows.push((item.id, tag));
+        }
+    }
+
+    if rows.is_empty() {
+        return;
+    }
+
+    // One DELETE for all affected media IDs, one batch INSERT for all tags.
+    let mut delete_qb = sqlx::QueryBuilder::new(
+        "DELETE FROM media_tags WHERE tag LIKE 'provider:%' AND media_id IN (",
+    );
+    let mut sep = delete_qb.separated(", ");
+    for id in &ids_with_tags {
+        sep.push_bind(id);
+    }
+    delete_qb.push(")");
+
+    let mut insert_qb =
+        sqlx::QueryBuilder::new("INSERT OR IGNORE INTO media_tags (media_id, tag) ");
+    insert_qb.push_values(&rows, |mut b, (id, tag)| {
+        b.push_bind(id)
+            .push_bind(tag);
+    });
+
+    if let Err(e) = delete_qb
+        .build()
         .execute(&ctx.db)
         .await
-        {
-            warn!(id = %item.id, error = %e, "failed to clear provider tags");
-            continue;
-        }
-        for tag in provider_tags {
-            if let Err(e) = sqlx::query(
-                "INSERT OR IGNORE INTO media_tags (media_id, tag) VALUES (?, ?)",
-            )
-            .bind(item.id)
-            .bind(tag)
-            .execute(&ctx.db)
-            .await
-            {
-                warn!(id = %item.id, %tag, error = %e, "failed to insert provider tag");
-            }
-        }
+    {
+        warn!(error = %e, "failed to clear provider tags");
+        return;
+    }
+    if let Err(e) = insert_qb
+        .build()
+        .execute(&ctx.db)
+        .await
+    {
+        warn!(error = %e, "failed to insert provider tags");
     }
 }
 
 pub(crate) async fn save_pending_popularity(ctx: &AppContext, items: &[db::Media]) {
     let today = chrono::Utc::now().date_naive();
-    for item in items {
-        let Some((ref ext_id, value)) = item.pending_popularity else {
-            continue;
-        };
-        if let Err(e) = sqlx::query(
-            "INSERT INTO popularity_raw (source, external_id, media_id, media_raw, value, date) \
-             VALUES ('tmdb', ?, ?, ?, ?, ?) \
-             ON CONFLICT DO UPDATE SET value = excluded.value, \
-             media_id = COALESCE(excluded.media_id, popularity_raw.media_id), \
-             media_raw = COALESCE(excluded.media_raw, popularity_raw.media_raw)",
-        )
-        .bind(ext_id)
-        .bind(item.id)
-        .bind(ext_id)
-        .bind(value.get())
-        .bind(&today)
+    let rows: Vec<_> = items
+        .iter()
+        .filter_map(|item| {
+            item.pending_popularity
+                .as_ref()
+                .map(|(ext_id, value)| (item.id, ext_id.clone(), value.get()))
+        })
+        .collect();
+
+    if rows.is_empty() {
+        return;
+    }
+
+    let mut qb = sqlx::QueryBuilder::new(
+        "INSERT INTO popularity_raw (source, external_id, media_id, media_raw, value, date) ",
+    );
+    qb.push_values(&rows, |mut b, (media_id, ext_id, value)| {
+        b.push_bind("tmdb")
+            .push_bind(ext_id)
+            .push_bind(media_id)
+            .push_bind(ext_id)
+            .push_bind(value)
+            .push_bind(&today);
+    });
+    qb.push(
+        " ON CONFLICT DO UPDATE SET value = excluded.value, \
+         media_id = COALESCE(excluded.media_id, popularity_raw.media_id), \
+         media_raw = COALESCE(excluded.media_raw, popularity_raw.media_raw)",
+    );
+    if let Err(e) = qb
+        .build()
         .execute(&ctx.db)
         .await
-        {
-            warn!(id = %item.id, error = %e, "failed to write popularity_raw");
-        }
+    {
+        warn!(error = %e, "failed to write popularity_raw batch");
     }
 }
 

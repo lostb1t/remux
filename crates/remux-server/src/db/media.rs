@@ -6402,13 +6402,6 @@ pub fn stremio_meta_season_episodes(
     season_idx: i64,
     series_external_ids: &ExternalIds,
 ) -> Result<Vec<Media>> {
-    let imdb_id = series_external_ids
-        .imdb
-        .clone();
-    let custom_id = series_external_ids
-        .custom_stremio_id
-        .clone();
-
     let Some(videos) = meta
         .videos
         .as_ref()
@@ -6421,50 +6414,77 @@ pub fn stremio_meta_season_episodes(
         .iter()
         .filter(|e| e.season == Some(season_idx))
     {
-        let ep_idx = ep
-            .episode
-            .unwrap_or(0);
-        let mut episode: Media = ep
-            .clone()
-            .try_into()?;
-
-        if imdb_id.is_some() || custom_id.is_some() {
-            episode.external_ids = ExternalIds {
-                custom_stremio_type: series_external_ids
-                    .custom_stremio_type
-                    .clone(),
-                custom_stremio_id: Some(
-                    ep.id
-                        .clone(),
-                ),
-                ..Default::default()
-            };
-            // UUID anchored to stable season UUID + episode index.
-            episode.id = crate::common::stable_media_uuid(
-                &MediaKind::Episode,
-                &format!("{season_id}:{ep_idx}"),
-            );
-        }
-
-        episode.idx = ep.episode;
-        episode.parent_idx = Some(season_idx);
-        episode.parent_id = Some(season_id);
-        episode.grandparent_id = Some(series_id);
-        episode.released_at = ep
-            .released
-            .map(|x| x.naive_utc());
-        episode.digital_released_at = ep
-            .released
-            .map(|x| x.naive_utc());
-
-        let rels = build_episode_relations_from_ep(&episode, ep);
-        if !rels.is_empty() {
-            episode.relations = Some(rels);
-        }
-
-        out.push(episode);
+        out.push(stremio_meta_episode(
+            ep,
+            series_id,
+            season_id,
+            season_idx,
+            series_external_ids,
+        )?);
     }
     Ok(out)
+}
+
+/// Build a single episode `Media` from one Stremio `videos[]` entry.
+///
+/// Split out of `stremio_meta_season_episodes` so per-episode meta refresh can
+/// convert just the video it needs instead of materialising the whole season and
+/// discarding all but one row (quadratic on series with thousands of episodes).
+pub fn stremio_meta_episode(
+    ep: &crate::sdks::stremio::Episode,
+    series_id: Uuid,
+    season_id: Uuid,
+    season_idx: i64,
+    series_external_ids: &ExternalIds,
+) -> Result<Media> {
+    let ep_idx = ep
+        .episode
+        .unwrap_or(0);
+    let mut episode: Media = ep
+        .clone()
+        .try_into()?;
+
+    if series_external_ids
+        .imdb
+        .is_some()
+        || series_external_ids
+            .custom_stremio_id
+            .is_some()
+    {
+        episode.external_ids = ExternalIds {
+            custom_stremio_type: series_external_ids
+                .custom_stremio_type
+                .clone(),
+            custom_stremio_id: Some(
+                ep.id
+                    .clone(),
+            ),
+            ..Default::default()
+        };
+        // UUID anchored to stable season UUID + episode index.
+        episode.id = crate::common::stable_media_uuid(
+            &MediaKind::Episode,
+            &format!("{season_id}:{ep_idx}"),
+        );
+    }
+
+    episode.idx = ep.episode;
+    episode.parent_idx = Some(season_idx);
+    episode.parent_id = Some(season_id);
+    episode.grandparent_id = Some(series_id);
+    episode.released_at = ep
+        .released
+        .map(|x| x.naive_utc());
+    episode.digital_released_at = ep
+        .released
+        .map(|x| x.naive_utc());
+
+    let rels = build_episode_relations_from_ep(&episode, ep);
+    if !rels.is_empty() {
+        episode.relations = Some(rels);
+    }
+
+    Ok(episode)
 }
 
 /// Push the release-date WHERE condition onto a query builder, binding `threshold`.
@@ -6958,6 +6978,73 @@ pub(crate) fn build_genre_relations_from_names(
 mod tests {
     use super::*;
     use crate::db::MediaIdRaw;
+
+    /// `stremio_meta_episode` is the per-episode fast path used by meta refresh;
+    /// it must produce exactly what the whole-season builder produces for the
+    /// same video, otherwise refreshing an episode would rewrite it differently
+    /// than the tree import created it.
+    #[test]
+    fn stremio_meta_episode_matches_season_builder() {
+        let series_id = Uuid::from_u128(1);
+        let season_id = Uuid::from_u128(2);
+        let ext = ExternalIds {
+            imdb: Some(NonEmptyString::try_new("tt1234567".to_string()).unwrap()),
+            ..Default::default()
+        };
+        let videos_json: Vec<_> = (1..=5)
+            .map(|e| (1, e))
+            .chain((1..=3).map(|e| (2, e)))
+            .map(|(s, e)| {
+                serde_json::json!({
+                    "id": format!("tt1234567:{s}:{e}"),
+                    "title": format!("Episode {e}"),
+                    "season": s,
+                    "episode": e,
+                    "thumbnail": "https://example.invalid/thumb.jpg",
+                    "overview": "overview",
+                })
+            })
+            .collect();
+        let meta: sdks::stremio::Meta = serde_json::from_value(serde_json::json!({
+            "id": "tt1234567",
+            "type": "series",
+            "name": "Test Series",
+            "imdb_id": "tt1234567",
+            "videos": videos_json,
+        }))
+        .expect("fixture meta deserializes");
+        let videos = meta
+            .videos
+            .clone()
+            .expect("videos present");
+
+        let whole_season =
+            stremio_meta_season_episodes(&meta, series_id, season_id, 1, &ext).unwrap();
+        assert_eq!(whole_season.len(), 5, "season 1 should yield 5 episodes");
+
+        for expected in &whole_season {
+            let video = videos
+                .iter()
+                .find(|v| v.episode == expected.idx && v.season == Some(1))
+                .expect("fixture video exists");
+            let single =
+                stremio_meta_episode(video, series_id, season_id, 1, &ext).unwrap();
+            assert_eq!(single.id, expected.id);
+            assert_eq!(single.idx, expected.idx);
+            assert_eq!(single.parent_idx, expected.parent_idx);
+            assert_eq!(single.parent_id, expected.parent_id);
+            assert_eq!(single.grandparent_id, expected.grandparent_id);
+            assert_eq!(single.title, expected.title);
+            assert_eq!(
+                single
+                    .external_ids
+                    .custom_stremio_id,
+                expected
+                    .external_ids
+                    .custom_stremio_id
+            );
+        }
+    }
 
     #[test]
     fn custom_stremio_type_extracts_non_standard_type() {

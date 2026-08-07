@@ -408,9 +408,20 @@ impl TreeAddon for StremioAddon {
                 }
             }
             db::MediaKind::Season => {
+                // The series meta is cached under the series' own lookup ID.
+                // Prefer grandparent (always set during process_tree_root) over
+                // the season's own external_ids which carry no series-level ID.
                 let meta_id = root
-                    .external_ids
-                    .stremio_lookup_id()
+                    .grandparent
+                    .as_deref()
+                    .and_then(|gp| {
+                        gp.external_ids
+                            .stremio_lookup_id()
+                    })
+                    .or_else(|| {
+                        root.external_ids
+                            .stremio_lookup_id()
+                    })
                     .ok_or_else(|| {
                         anyhow!("season {} has no resolvable meta id", root.id)
                     })?;
@@ -707,9 +718,21 @@ async fn fetch_and_cache_meta(
     >,
     ctx: &AppContext,
 ) -> Result<Arc<sdks::stremio::Meta>> {
+    // For Season/Episode, the series meta is cached under the series' ID.
+    // Prefer grandparent lookup so Seasons/Episodes with empty own external_ids
+    // still resolve to the correct cache entry.
     let meta_id: String = media
-        .external_ids
-        .stremio_lookup_id()
+        .grandparent
+        .as_deref()
+        .and_then(|gp| {
+            gp.external_ids
+                .stremio_lookup_id()
+        })
+        .or_else(|| {
+            media
+                .external_ids
+                .stremio_lookup_id()
+        })
         .ok_or_else(|| anyhow!("no resolvable meta id for {}", media.id))?;
 
     if let Some(cached) = cache
@@ -825,21 +848,24 @@ async fn stremio_meta_fetch(
 
     let meta_arc = fetch_and_cache_meta(svc, media, medias_cache, ctx).await?;
 
-    // Patch imdb_id into a mutable clone for root-level conversion and relations.
-    let mut meta_patched = (*meta_arc).clone();
-    if meta_patched
-        .imdb_id
-        .is_none()
-        && !is_custom
-    {
-        meta_patched.imdb_id = db::ExternalIds::from_stremio_id(&meta_patched.id)
-            .imdb
-            .map(Into::into)
-            .or_else(|| imdb_id.map(Into::into));
-    }
-
     match media.kind {
         db::MediaKind::Movie | db::MediaKind::Series => {
+            // Patch imdb_id into a mutable clone for root-level conversion and
+            // relations. Only the Movie/Series arm needs the owned copy — cloning
+            // it unconditionally deep-copies every entry in `videos`, which is
+            // ruinous for series with thousands of episodes.
+            let mut meta_patched = (*meta_arc).clone();
+            if meta_patched
+                .imdb_id
+                .is_none()
+                && !is_custom
+            {
+                meta_patched.imdb_id =
+                    db::ExternalIds::from_stremio_id(&meta_patched.id)
+                        .imdb
+                        .map(Into::into)
+                        .or_else(|| imdb_id.map(Into::into));
+            }
             if meta_patched.is_error() {
                 warn!(
                     id = %media.id,
@@ -898,34 +924,33 @@ async fn stremio_meta_fetch(
                         .clone()
                 })
                 .ok_or_else(|| anyhow!("episode {} missing grandparent", media.id))?;
-            let episodes = db::stremio_meta_season_episodes(
-                &meta_arc,
+            // Locate just this episode's video entry. Materialising the whole
+            // season here and discarding all but one row made a season of N
+            // episodes cost O(N^2) to refresh.
+            let Some(meta_ep) = meta_arc
+                .videos
+                .as_ref()
+                .and_then(|v| {
+                    v.iter()
+                        .find(|e| {
+                            e.episode == media.idx && e.season == media.parent_idx
+                        })
+                })
+            else {
+                return Ok(None);
+            };
+            let mut found = db::stremio_meta_episode(
+                meta_ep,
                 series_id,
                 season_id,
                 season_idx,
                 &series_external_ids,
             )?;
-            let mut found = episodes
-                .into_iter()
-                .find(|e| e.idx == media.idx);
-            if let Some(ref mut ep) = found {
-                if let Some(meta_ep) = meta_patched
-                    .videos
-                    .as_ref()
-                    .and_then(|v| {
-                        v.iter()
-                            .find(|e| {
-                                e.episode == media.idx && e.season == media.parent_idx
-                            })
-                    })
-                {
-                    let relations = build_episode_relations(media, meta_ep);
-                    if !relations.is_empty() {
-                        ep.relations = Some(relations);
-                    }
-                }
+            let relations = build_episode_relations(media, meta_ep);
+            if !relations.is_empty() {
+                found.relations = Some(relations);
             }
-            Ok(found)
+            Ok(Some(found))
         }
         _ => Ok(None),
     }
