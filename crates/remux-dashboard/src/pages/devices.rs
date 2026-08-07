@@ -1,5 +1,7 @@
 use crate::{
-    components::{Card, ConfirmDialog, EmptyState, ErrorAlert, LoadingText},
+    components::{
+        Card, ConfirmDialog, EmptyState, ErrorAlert, LoadingText, PaginationBar,
+    },
     state::{fmt_time, AppState},
 };
 use dioxus::prelude::*;
@@ -100,7 +102,6 @@ pub fn DevicesPage(app_state: AppState) -> Element {
     let app_state_revoke_all = app_state.clone();
 
     let total = *total_count.read();
-    let page_v = *page.read();
     let total_pages = (total + PAGE_SIZE - 1) / PAGE_SIZE;
     let sections = group_by_user(&devices.read());
 
@@ -224,27 +225,7 @@ pub fn DevicesPage(app_state: AppState) -> Element {
                         }
                     }
 
-                    if total_pages > 1 {
-                        div { class: "pagination-bar",
-                            button {
-                                class: "btn btn-ghost",
-                                style: "height:28px;font-size:.75rem",
-                                disabled: page_v == 0,
-                                onclick: move |_| page.set((page_v - 1).max(0)),
-                                "‹ Prev"
-                            }
-                            span { style: "font-size:.8rem;opacity:.7",
-                                "Page {page_v + 1} of {total_pages}"
-                            }
-                            button {
-                                class: "btn btn-ghost",
-                                style: "height:28px;font-size:.75rem",
-                                disabled: page_v + 1 >= total_pages,
-                                onclick: move |_| page.set(page_v + 1),
-                                "Next ›"
-                            }
-                        }
-                    }
+                    PaginationBar { page, total_pages }
                 }
             }
         }

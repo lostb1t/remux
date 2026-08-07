@@ -1,5 +1,5 @@
 use crate::{
-    components::{FormGroup, LoadingText, Modal},
+    components::{FormGroup, LoadingText, Modal, PaginationBar},
     state::AppState,
 };
 use dioxus::prelude::*;
@@ -23,7 +23,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
     let mut total: Signal<usize> = use_signal(|| 0);
     let mut loading = use_signal(|| true);
     let mut error = use_signal(|| Option::<String>::None);
-    let mut page = use_signal(|| 0_u32);
+    let mut page = use_signal(|| 0_i64);
     // committed search (triggers fetch); typed search (live input)
     let mut search_committed = use_signal(String::new);
     let mut search_input = use_signal(String::new);
@@ -87,7 +87,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
             match client
                 .execute(GetIptvChannels {
                     limit: PAGE_SIZE,
-                    offset: p * PAGE_SIZE,
+                    offset: (p as u32) * PAGE_SIZE,
                     search: s,
                     enabled,
                     country: cf,
@@ -108,8 +108,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
     });
 
     let total_v = *total.read();
-    let page_v = *page.read();
-    let total_pages = total_v.div_ceil(PAGE_SIZE as usize) as u32;
+    let total_pages = (total_v as i64 + PAGE_SIZE as i64 - 1) / PAGE_SIZE as i64;
 
     let mut do_search = move || {
         let s = search_input
@@ -172,7 +171,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
                                         _ => None,
                                     };
                                     loading.set(true);
-                                    if let Ok(r) = c.execute(GetIptvChannels { limit: PAGE_SIZE, offset: p * PAGE_SIZE, search: s, enabled, country: cf, group: gf, sort: sm }).await {
+                                    if let Ok(r) = c.execute(GetIptvChannels { limit: PAGE_SIZE, offset: (p as u32) * PAGE_SIZE, search: s, enabled, country: cf, group: gf, sort: sm }).await {
                                         total.set(r.total_record_count);
                                         channels.set(r.items);
                                     }
@@ -209,7 +208,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
                                         _ => None,
                                     };
                                     loading.set(true);
-                                    if let Ok(r) = c.execute(GetIptvChannels { limit: PAGE_SIZE, offset: p * PAGE_SIZE, search: s, enabled, country: cf, group: gf, sort: sm }).await {
+                                    if let Ok(r) = c.execute(GetIptvChannels { limit: PAGE_SIZE, offset: (p as u32) * PAGE_SIZE, search: s, enabled, country: cf, group: gf, sort: sm }).await {
                                         total.set(r.total_record_count);
                                         channels.set(r.items);
                                     }
@@ -353,28 +352,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
                         }
                     }
 
-                    // Pagination bar
-                    if total_pages > 1 {
-                        div { class: "pagination-bar",
-                            button {
-                                class: "btn btn-ghost",
-                                style: "height:28px;font-size:.75rem",
-                                disabled: page_v == 0,
-                                onclick: move |_| page.set(page_v.saturating_sub(1)),
-                                "‹ Prev"
-                            }
-                            span { style: "font-size:.8rem;opacity:.7",
-                                "Page {page_v + 1} of {total_pages}"
-                            }
-                            button {
-                                class: "btn btn-ghost",
-                                style: "height:28px;font-size:.75rem",
-                                disabled: page_v + 1 >= total_pages,
-                                onclick: move |_| page.set(page_v + 1),
-                                "Next ›"
-                            }
-                        }
-                    }
+                    PaginationBar { page, total_pages }
                 }
             }
         }
