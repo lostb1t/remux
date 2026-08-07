@@ -361,13 +361,20 @@ impl PlaybackSessionManager {
         });
 
         // Update transcode buffer monitor with actual playback position.
+        // Take the max so a late-arriving or stale progress report never regresses
+        // a position already advanced by segment download tracking.
         if let Some(position_ticks) = data.position_ticks {
             if let Some(ref ts_lock) = ps.transcode {
                 if let Ok(ts) = ts_lock.try_read() {
                     let position_secs = (position_ticks / 10_000_000) as u32;
                     let offset = position_secs.saturating_sub(ts.start_time_secs);
-                    ts.playback_offset_secs
-                        .store(offset, std::sync::atomic::Ordering::Relaxed);
+                    let current = ts
+                        .playback_offset_secs
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    if offset > current {
+                        ts.playback_offset_secs
+                            .store(offset, std::sync::atomic::Ordering::Relaxed);
+                    }
                 }
             }
         }
@@ -754,11 +761,16 @@ impl PlaybackSessionManager {
     }
 
     /// Spawn a background task that reaps sessions idle longer than `max_age`.
+    ///
+    /// Paused sessions use the full `max_age` — the user may come back.
+    /// Unpaused sessions that go silent for 60 s are treated as dead: an active
+    /// client pings the server on every segment fetch, so silence means gone.
     pub fn spawn_cleanup_task(
         self,
         interval: Duration,
         max_age: Duration,
     ) -> JoinHandle<()> {
+        const UNPAUSED_MAX_AGE: Duration = Duration::from_secs(60);
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             loop {
@@ -767,13 +779,16 @@ impl PlaybackSessionManager {
                     .await;
                 let cutoff = Utc::now()
                     - chrono::Duration::from_std(max_age).unwrap_or_default();
+                let unpaused_cutoff = Utc::now()
+                    - chrono::Duration::from_std(UNPAUSED_MAX_AGE).unwrap_or_default();
                 let stale: Vec<String> = self
                     .sessions
                     .iter()
                     .filter(|e| {
-                        e.value()
-                            .last_activity
-                            < cutoff
+                        let s = e.value();
+                        let threshold =
+                            if s.is_paused { cutoff } else { unpaused_cutoff };
+                        s.last_activity < threshold
                     })
                     .map(|e| {
                         e.key()
