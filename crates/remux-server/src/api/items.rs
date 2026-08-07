@@ -1927,6 +1927,9 @@ async fn item_for_user(
                     server_config
                         .preferred_metadata_language
                         .as_deref(),
+                    media
+                        .original_language
+                        .as_deref(),
                     None,
                     None,
                     None,
@@ -3150,12 +3153,15 @@ pub async fn patch_item(
 }
 
 fn warm_providers_cache(ctx: &crate::AppContext, media: &db::Media) {
-    let media = media.clone();
+    let mut media = media.clone();
     let ctx = ctx.clone();
     tokio::spawn(async move {
         let _ = ctx
             .addons
             .fetch_subtitles(&media, &ctx.db, true, None)
+            .await;
+        let _ = media
+            .grandparent(&ctx.db)
             .await;
         let _ = ctx
             .addons
@@ -3222,7 +3228,7 @@ pub async fn media_segments(
     };
     let filter_ref = type_filter.as_deref();
 
-    let media = db::Media::get_by_id(
+    let mut media = db::Media::get_by_id(
         &state
             .ctx
             .db,
@@ -3233,6 +3239,13 @@ pub async fn media_segments(
         id,
         ..Default::default()
     });
+    let _ = media
+        .grandparent(
+            &state
+                .ctx
+                .db,
+        )
+        .await;
 
     let segs = state
         .ctx
@@ -3704,22 +3717,10 @@ mod tests {
 
         let series =
             insert_media(db, "Alias Show", db::MediaKind::Series, "tt9000001").await;
-        let series_imdb = series
-            .external_ids
-            .imdb
-            .clone()
-            .unwrap();
-
-        let season_ext = ExternalIds {
-            series_imdb: Some(series_imdb),
-            ..Default::default()
-        };
-        let season_id = Uuid::from(&MediaIdRaw {
-            kind: db::MediaKind::Season,
-            external_ids: season_ext.clone(),
-            season: Some(1),
-            episode: None,
-        });
+        let season_id = crate::common::stable_media_uuid(
+            &db::MediaKind::Season,
+            &format!("{}:1", series.id),
+        );
         let mut season = db::Media {
             id: season_id,
             title: "Season 1".to_string(),
@@ -3727,7 +3728,6 @@ mod tests {
             parent_id: Some(series.id),
             grandparent_id: Some(series.id),
             idx: Some(1),
-            external_ids: season_ext,
             created_at: now,
             updated_at: now,
             ..Default::default()
@@ -3903,10 +3903,6 @@ mod tests {
         // Build the canonical series (IMDB-derived UUID) and insert it into DB.
         let (canonical_id, series_ext) =
             make_content_ids(db::MediaKind::Series, "tt9000002");
-        let series_imdb = series_ext
-            .imdb
-            .clone()
-            .unwrap();
         let mut series = db::Media {
             id: canonical_id,
             title: "Store Persist Show".to_string(),
@@ -3922,16 +3918,10 @@ mod tests {
             .unwrap();
 
         // Season linked to the canonical series UUID.
-        let season_ext = ExternalIds {
-            series_imdb: Some(series_imdb),
-            ..Default::default()
-        };
-        let season_id = Uuid::from(&MediaIdRaw {
-            kind: db::MediaKind::Season,
-            external_ids: season_ext.clone(),
-            season: Some(1),
-            episode: None,
-        });
+        let season_id = crate::common::stable_media_uuid(
+            &db::MediaKind::Season,
+            &format!("{}:1", canonical_id),
+        );
         let mut season = db::Media {
             id: season_id,
             title: "Season 1".to_string(),
@@ -3939,7 +3929,6 @@ mod tests {
             parent_id: Some(canonical_id),
             grandparent_id: Some(canonical_id),
             idx: Some(1),
-            external_ids: season_ext,
             created_at: now,
             updated_at: now,
             ..Default::default()

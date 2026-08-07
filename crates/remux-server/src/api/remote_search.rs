@@ -335,10 +335,10 @@ pub async fn download_remote_subtitle(
     _session: auth::AuthSession,
     Path((_item_id, subtitle_id)): Path<(Uuid, String)>,
 ) -> Result<impl IntoResponse> {
-    let _url: Option<String> = state
+    let _url = state
         .ctx
         .store
-        .get(format!("subtitle:{}", subtitle_id));
+        .get::<String>(format!("subtitle:{}", subtitle_id));
     Ok(StatusCode::NO_CONTENT)
 }
 

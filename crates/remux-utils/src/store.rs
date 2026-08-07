@@ -78,6 +78,24 @@ impl Store {
             .insert(key.into(), entry);
     }
 
+    /// Store an already-shared value without copying it. Pairs with `get_arc` so a
+    /// value can be cached and handed to the caller with no deep copy on either side.
+    pub fn save_arc_with_weight<T: Any + Send + Sync + 'static>(
+        &self,
+        key: impl Into<String>,
+        item: Arc<T>,
+        weight: u32,
+        ttl: Duration,
+    ) {
+        let entry = Arc::new(StoreEntry {
+            item: item as Arc<dyn Any + Send + Sync>,
+            ttl,
+            weight,
+        });
+        self.inner
+            .insert(key.into(), entry);
+    }
+
     pub fn insert<T: Any + Send + Sync + 'static>(
         &self,
         key: impl Into<String>,
@@ -101,10 +119,13 @@ impl Store {
         true
     }
 
-    pub fn get<T: Any + Send + Sync + Clone>(
-        &self,
-        key: impl Into<String>,
-    ) -> Option<T> {
+    /// Shared handle to the cached value.
+    ///
+    /// Entries are stored behind an `Arc`, so this is a refcount bump — never a
+    /// copy of the payload. `Arc<T>` derefs to `T`, so read-only callers need
+    /// nothing else; a caller that genuinely needs ownership writes
+    /// `.map(|v| (*v).clone())` and pays for the copy where it can be seen.
+    pub fn get<T: Any + Send + Sync>(&self, key: impl Into<String>) -> Option<Arc<T>> {
         let key: String = key.into();
 
         self.inner
@@ -113,7 +134,6 @@ impl Store {
                 Arc::clone(&entry.item)
                     .downcast::<T>()
                     .ok()
-                    .map(|arc| (*arc).clone())
             })
     }
 

@@ -454,6 +454,21 @@ impl Task for JellyfinImportTask {
                     Some("Episode") => db::MediaKind::Episode,
                     _ => db::MediaKind::Movie,
                 };
+                // For Season/Episode: check if we resolved a series IMDB (used for has_ids).
+                // ProviderIds["Imdb"] is NOT used — it can be the episode's own IMDB.
+                let series_imdb_resolved =
+                    matches!(kind, db::MediaKind::Season | db::MediaKind::Episode)
+                        && (item
+                            .series_provider_ids
+                            .as_ref()
+                            .and_then(|p| p.get("Imdb"))
+                            .is_some()
+                            || item
+                                .series_id
+                                .as_deref()
+                                .and_then(|sid| series_imdb_map.get(sid))
+                                .is_some());
+
                 let raw = db::MediaIdRaw {
                     kind: kind.clone(),
                     external_ids: db::ExternalIds {
@@ -465,28 +480,6 @@ impl Task for JellyfinImportTask {
                             imdb.and_then(|s| {
                                 db::NonEmptyString::try_new(s.to_string()).ok()
                             })
-                        })
-                        .flatten(),
-                        // For episodes/seasons, resolve series IMDB via:
-                        // 1. SeriesProviderIds["Imdb"] (authoritative when set)
-                        // 2. series_imdb_map[SeriesId] (look up series item by Jellyfin UUID)
-                        // ProviderIds["Imdb"] is NOT used — it can be the episode's own IMDB.
-                        series_imdb: matches!(
-                            kind,
-                            db::MediaKind::Season | db::MediaKind::Episode
-                        )
-                        .then(|| {
-                            item.series_provider_ids
-                                .as_ref()
-                                .and_then(|p| p.get("Imdb"))
-                                .map(|s| s.to_string())
-                                .or_else(|| {
-                                    item.series_id
-                                        .as_deref()
-                                        .and_then(|sid| series_imdb_map.get(sid))
-                                        .cloned()
-                                })
-                                .and_then(|s| db::NonEmptyString::try_new(s).ok())
                         })
                         .flatten(),
                         tmdb,
@@ -501,10 +494,7 @@ impl Task for JellyfinImportTask {
                     .external_ids
                     .imdb
                     .is_some()
-                    || raw
-                        .external_ids
-                        .series_imdb
-                        .is_some()
+                    || series_imdb_resolved
                     || raw
                         .external_ids
                         .tmdb

@@ -481,10 +481,26 @@ pub async fn quickconnect_connect(
             None
         },
         date_added: entry.date_added,
-        device_id: Some(entry.device_id),
-        device_name: Some(entry.device_name),
-        app_name: Some(entry.app_name),
-        app_version: Some(entry.app_version),
+        device_id: Some(
+            entry
+                .device_id
+                .clone(),
+        ),
+        device_name: Some(
+            entry
+                .device_name
+                .clone(),
+        ),
+        app_name: Some(
+            entry
+                .app_name
+                .clone(),
+        ),
+        app_version: Some(
+            entry
+                .app_version
+                .clone(),
+        ),
     }))
 }
 
@@ -517,7 +533,7 @@ pub async fn quickconnect_authorize(
             QuickConnectEntry {
                 authenticated: true,
                 user_id: Some(approved_user_id),
-                ..entry
+                ..(*entry).clone()
             },
             Duration::from_secs(300),
         );

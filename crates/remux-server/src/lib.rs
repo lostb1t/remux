@@ -52,6 +52,7 @@ pub mod sdks {
 mod addons;
 pub mod api;
 mod common;
+pub use common::stable_media_uuid;
 pub mod db;
 #[cfg(feature = "desktop")]
 pub mod embedded_static;

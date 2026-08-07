@@ -2123,15 +2123,21 @@ impl MediaSourceInfo {
     /// API-layer values — they are never persisted; this method derives them
     /// per request.
     ///
-    /// Precedence: client-requested index → remembered selection → user language
-    /// preference → server metadata-language fallback (subtitles only) →
-    /// container default (flags, else first-of-type) → subtitle mode.
-    /// Per-stream `is_default` flags are container metadata and are never
-    /// modified.
+    /// Audio precedence when `play_default_audio_track` is true:
+    ///   client-requested → remembered → original-language (from TMDB metadata) →
+    ///   container embedded default.
+    /// Audio precedence when `play_default_audio_track` is false:
+    ///   client-requested → remembered → audio_language_preference →
+    ///   container embedded default.
+    /// Subtitle precedence (independent of `play_default_audio_track`):
+    ///   client-requested → remembered → subtitle_language_preference →
+    ///   server metadata-language fallback → container embedded default → subtitle mode.
+    /// Per-stream `is_default` flags are container metadata and are never modified.
     pub fn resolve_default_streams(
         &mut self,
         user: &UserConfiguration,
         server_metadata_language: Option<&str>,
+        original_language: Option<&str>,
         requested_audio: Option<i64>,
         requested_subtitle: Option<i64>,
         remembered_audio: Option<i64>,
@@ -2187,30 +2193,51 @@ impl MediaSourceInfo {
             }
         }
 
-        // --- audio_language_preference ---
-        // Honored whenever it matches, even when `play_default_audio_track` is
-        // true: remux treats the configured language as the default audio and
-        // only falls back to the container default when it matches nothing.
-        // (Deviation from Jellyfin, where PlayDefaultAudioTrack=true ignores the
-        // preference entirely — that silently surprises users.)
-        if !audio_decided && lang_pref_set(&user.audio_language_preference) {
-            if let Some(ref pref) = user.audio_language_preference {
-                let pref_two = lang_to_two_letter(pref);
-                if let Some(ref target) = pref_two {
-                    if let Some(stream) = self
-                        .media_streams
-                        .iter()
-                        .find(|s| {
-                            matches!(s.type_, Some(MediaStreamType::Audio))
-                                && s.language
-                                    .as_deref()
-                                    .and_then(lang_to_two_letter)
-                                    .as_deref()
-                                    == Some(target.as_str())
-                        })
-                    {
-                        self.default_audio_stream_index = Some(stream.index);
-                        audio_decided = true;
+        // --- audio track selection ---
+        if !audio_decided {
+            if user.play_default_audio_track {
+                // Trust our DB metadata over the container's embedded default
+                // flag: find the first audio stream whose language matches the
+                // title's original language, then fall back to the container
+                // embedded default when no match is found.
+                if let Some(lang) = original_language {
+                    if let Some(target) = lang_to_two_letter(lang) {
+                        if let Some(stream) = self
+                            .media_streams
+                            .iter()
+                            .find(|s| {
+                                matches!(s.type_, Some(MediaStreamType::Audio))
+                                    && s.language
+                                        .as_deref()
+                                        .and_then(lang_to_two_letter)
+                                        .as_deref()
+                                        == Some(target.as_str())
+                            })
+                        {
+                            self.default_audio_stream_index = Some(stream.index);
+                            audio_decided = true;
+                        }
+                    }
+                }
+            } else if lang_pref_set(&user.audio_language_preference) {
+                if let Some(ref pref) = user.audio_language_preference {
+                    let pref_two = lang_to_two_letter(pref);
+                    if let Some(ref target) = pref_two {
+                        if let Some(stream) = self
+                            .media_streams
+                            .iter()
+                            .find(|s| {
+                                matches!(s.type_, Some(MediaStreamType::Audio))
+                                    && s.language
+                                        .as_deref()
+                                        .and_then(lang_to_two_letter)
+                                        .as_deref()
+                                        == Some(target.as_str())
+                            })
+                        {
+                            self.default_audio_stream_index = Some(stream.index);
+                            audio_decided = true;
+                        }
                     }
                 }
             }
@@ -6897,7 +6924,7 @@ mod tests {
     #[test]
     fn resolve_no_container_default_when_nothing_flagged() {
         let mut src = source_with_subs();
-        src.resolve_default_streams(&user_cfg(), None, None, None, None, None);
+        src.resolve_default_streams(&user_cfg(), None, None, None, None, None, None);
         assert_eq!(src.default_audio_stream_index, None);
         assert_eq!(src.default_subtitle_stream_index, None);
     }
@@ -6907,7 +6934,7 @@ mod tests {
     fn resolve_flagged_stream_is_container_default() {
         let mut src = source_with_subs();
         src.media_streams[3].is_default = Some(true); // eng sub (index 4) flagged
-        src.resolve_default_streams(&user_cfg(), None, None, None, None, None);
+        src.resolve_default_streams(&user_cfg(), None, None, None, None, None, None);
         assert_eq!(src.default_audio_stream_index, None); // audio unflagged
         assert_eq!(src.default_subtitle_stream_index, Some(4));
     }
@@ -6918,7 +6945,7 @@ mod tests {
         let mut src = source_with_subs();
         let mut cfg = user_cfg();
         cfg.subtitle_language_preference = Some("eng".to_string());
-        src.resolve_default_streams(&cfg, None, None, None, None, None);
+        src.resolve_default_streams(&cfg, None, None, None, None, None, None);
         assert_eq!(src.default_subtitle_stream_index, Some(4));
     }
 
@@ -6926,7 +6953,15 @@ mod tests {
     #[test]
     fn resolve_server_language_fallback() {
         let mut src = source_with_subs();
-        src.resolve_default_streams(&user_cfg(), Some("fr"), None, None, None, None);
+        src.resolve_default_streams(
+            &user_cfg(),
+            Some("fr"),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         assert_eq!(src.default_subtitle_stream_index, Some(3));
     }
 
@@ -6937,7 +6972,7 @@ mod tests {
         let mut src = source_with_subs();
         let mut cfg = user_cfg();
         cfg.subtitle_language_preference = Some(String::new());
-        src.resolve_default_streams(&cfg, Some("fr"), None, None, None, None);
+        src.resolve_default_streams(&cfg, Some("fr"), None, None, None, None, None);
         assert_eq!(src.default_subtitle_stream_index, Some(3));
     }
 
@@ -6948,7 +6983,7 @@ mod tests {
         let mut src = source_with_subs();
         let mut cfg = user_cfg();
         cfg.subtitle_language_preference = Some("jpn".to_string());
-        src.resolve_default_streams(&cfg, Some("fr"), None, None, None, None);
+        src.resolve_default_streams(&cfg, Some("fr"), None, None, None, None, None);
         assert_eq!(src.default_subtitle_stream_index, None);
     }
 
@@ -6958,12 +6993,20 @@ mod tests {
         let mut src = source_with_subs();
         let mut cfg = user_cfg();
         cfg.subtitle_language_preference = Some("fra".to_string());
-        src.resolve_default_streams(&cfg, None, Some(2), Some(4), None, None);
+        src.resolve_default_streams(&cfg, None, None, Some(2), Some(4), None, None);
         assert_eq!(src.default_audio_stream_index, Some(2));
         assert_eq!(src.default_subtitle_stream_index, Some(4));
 
         let mut src2 = source_with_subs();
-        src2.resolve_default_streams(&user_cfg(), None, Some(-1), Some(-1), None, None);
+        src2.resolve_default_streams(
+            &user_cfg(),
+            None,
+            None,
+            Some(-1),
+            Some(-1),
+            None,
+            None,
+        );
         assert_eq!(src2.default_audio_stream_index, None);
         assert_eq!(src2.default_subtitle_stream_index, None);
     }
@@ -6975,20 +7018,55 @@ mod tests {
         let mut cfg = user_cfg();
         cfg.audio_language_preference = Some("fra".to_string());
         cfg.play_default_audio_track = false;
-        src.resolve_default_streams(&cfg, None, None, None, Some(2), Some(4));
+        src.resolve_default_streams(&cfg, None, None, None, None, Some(2), Some(4));
         assert_eq!(src.default_audio_stream_index, Some(2));
         assert_eq!(src.default_subtitle_stream_index, Some(4));
     }
 
-    /// PlayDefaultAudioTrack=true must NOT suppress a matching audio language
-    /// preference — remux honors the configured language.
+    /// PlayDefaultAudioTrack=true selects the track matching the title's
+    /// original language from DB metadata (not the embedded default flag).
     #[test]
-    fn resolve_pref_honored_even_with_play_default_audio_track() {
+    fn resolve_play_default_audio_track_prefers_original_language() {
         let mut src = source_with_subs();
         let mut cfg = user_cfg();
-        cfg.audio_language_preference = Some("fra".to_string());
         cfg.play_default_audio_track = true;
-        src.resolve_default_streams(&cfg, None, None, None, None, None);
+        src.resolve_default_streams(&cfg, None, Some("fra"), None, None, None, None);
+        assert_eq!(src.default_audio_stream_index, Some(2));
+    }
+
+    /// PlayDefaultAudioTrack=true with no matching original-language track
+    /// falls back to the container's embedded default flag.
+    #[test]
+    fn resolve_play_default_audio_track_falls_back_to_container_default() {
+        let mut src = source_with_subs();
+        src.media_streams[0].is_default = Some(true); // eng audio index 1 flagged
+        let mut cfg = user_cfg();
+        cfg.play_default_audio_track = true;
+        // "deu" not present in the source → container default (index 1) wins
+        src.resolve_default_streams(&cfg, None, Some("deu"), None, None, None, None);
+        assert_eq!(src.default_audio_stream_index, Some(1));
+    }
+
+    /// PlayDefaultAudioTrack=true with no original_language falls back to
+    /// container embedded default.
+    #[test]
+    fn resolve_play_default_audio_track_no_original_language_uses_container_default() {
+        let mut src = source_with_subs();
+        src.media_streams[0].is_default = Some(true); // eng audio index 1 flagged
+        let mut cfg = user_cfg();
+        cfg.play_default_audio_track = true;
+        src.resolve_default_streams(&cfg, None, None, None, None, None, None);
+        assert_eq!(src.default_audio_stream_index, Some(1));
+    }
+
+    /// PlayDefaultAudioTrack=false honors audio_language_preference.
+    #[test]
+    fn resolve_play_default_audio_false_honors_language_preference() {
+        let mut src = source_with_subs();
+        let mut cfg = user_cfg();
+        cfg.play_default_audio_track = false;
+        cfg.audio_language_preference = Some("fra".to_string());
+        src.resolve_default_streams(&cfg, None, None, None, None, None, None);
         assert_eq!(src.default_audio_stream_index, Some(2));
     }
 
@@ -6998,13 +7076,13 @@ mod tests {
         let mut src = source_with_subs();
         let mut cfg = user_cfg();
         cfg.subtitle_mode = SubtitleMode::None;
-        src.resolve_default_streams(&cfg, None, None, None, None, None);
+        src.resolve_default_streams(&cfg, None, None, None, None, None, None);
         assert_eq!(src.default_subtitle_stream_index, None);
 
         let mut src = source_with_subs();
         let mut cfg = user_cfg();
         cfg.subtitle_mode = SubtitleMode::Always;
-        src.resolve_default_streams(&cfg, None, None, None, None, None);
+        src.resolve_default_streams(&cfg, None, None, None, None, None, None);
         assert_eq!(src.default_subtitle_stream_index, Some(3));
     }
 
@@ -7015,13 +7093,13 @@ mod tests {
         src.media_streams[2].is_forced = true; // fra sub index 3 forced
         let mut cfg = user_cfg();
         cfg.subtitle_mode = SubtitleMode::OnlyForced;
-        src.resolve_default_streams(&cfg, None, None, None, None, None);
+        src.resolve_default_streams(&cfg, None, None, None, None, None, None);
         assert_eq!(src.default_subtitle_stream_index, Some(3));
 
         let mut src2 = source_with_subs();
         let mut cfg2 = user_cfg();
         cfg2.subtitle_mode = SubtitleMode::OnlyForced;
-        src2.resolve_default_streams(&cfg2, None, None, None, None, None);
+        src2.resolve_default_streams(&cfg2, None, None, None, None, None, None);
         assert_eq!(src2.default_subtitle_stream_index, None);
     }
 
@@ -7037,7 +7115,7 @@ mod tests {
             .collect();
         let mut cfg = user_cfg();
         cfg.subtitle_language_preference = Some("fra".to_string());
-        src.resolve_default_streams(&cfg, Some("fr"), None, None, None, None);
+        src.resolve_default_streams(&cfg, Some("fr"), None, None, None, None, None);
         let flags_after: Vec<Option<bool>> = src
             .media_streams
             .iter()

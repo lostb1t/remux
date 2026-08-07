@@ -518,9 +518,13 @@ impl SubtitleAddon for OpendalAddon {
             "episode" => {
                 media.kind == db::MediaKind::Episode
                     && media
-                        .external_ids
-                        .series_imdb
-                        .is_some()
+                        .grandparent
+                        .as_deref()
+                        .map_or(false, |gp| {
+                            gp.external_ids
+                                .imdb
+                                .is_some()
+                        })
             }
             _ => false,
         }
@@ -533,9 +537,13 @@ impl SubtitleAddon for OpendalAddon {
     ) -> Result<Vec<SubtitleInfo>> {
         let files: Vec<OpendalFile> = if self.media_kind == "episode" {
             let Some(imdb_id) = media
-                .external_ids
-                .series_imdb
+                .grandparent
                 .as_deref()
+                .and_then(|gp| {
+                    gp.external_ids
+                        .imdb
+                        .as_deref()
+                })
             else {
                 return Ok(vec![]);
             };
@@ -615,9 +623,13 @@ impl StreamAddon for OpendalAddon {
             "episode" => {
                 media.kind == db::MediaKind::Episode
                     && media
-                        .external_ids
-                        .series_imdb
-                        .is_some()
+                        .grandparent
+                        .as_deref()
+                        .map_or(false, |gp| {
+                            gp.external_ids
+                                .imdb
+                                .is_some()
+                        })
             }
             "track" => media.kind == db::MediaKind::Track,
             _ => false,
@@ -628,6 +640,7 @@ impl StreamAddon for OpendalAddon {
         &self,
         media: &db::Media,
         ctx: &AppContext,
+        _id_prefixes: Option<&[String]>,
     ) -> Result<Vec<crate::stream::StreamInfo>> {
         let files: Vec<OpendalFile> = if self.media_kind == "track" {
             sqlx::query_as(
@@ -640,13 +653,15 @@ impl StreamAddon for OpendalAddon {
             .fetch_all(&ctx.db)
             .await?
         } else {
-            // Episodes are identified by series_imdb (the show's IMDB ID scraped from the
-            // filename tag); movies use their own imdb directly.
             let imdb_id = if self.media_kind == "episode" {
                 media
-                    .external_ids
-                    .series_imdb
+                    .grandparent
                     .as_deref()
+                    .and_then(|gp| {
+                        gp.external_ids
+                            .imdb
+                            .as_deref()
+                    })
             } else {
                 media
                     .external_ids
@@ -840,6 +855,7 @@ impl TreeAddon for OpendalAddon {
                     return Ok(None);
                 }
 
+                let gp_box = Some(Box::new(root.clone()));
                 let seasons = season_nums
                     .into_iter()
                     .map(|s| db::Media {
@@ -853,13 +869,7 @@ impl TreeAddon for OpendalAddon {
                         grandparent_id: Some(root.id),
                         idx: Some(s),
                         parent_idx: Some(s),
-                        external_ids: db::ExternalIds {
-                            series_imdb: db::NonEmptyString::try_new(
-                                imdb_id.to_string(),
-                            )
-                            .ok(),
-                            ..Default::default()
-                        },
+                        grandparent: gp_box.clone(),
                         ..Default::default()
                     })
                     .collect();
@@ -868,9 +878,29 @@ impl TreeAddon for OpendalAddon {
             }
 
             db::MediaKind::Season => {
-                let Some(series_imdb) = root
+                // Resolve grandparent (Series) — try in-memory first, then DB.
+                let gp = if let Some(gp) = root
+                    .grandparent
+                    .as_deref()
+                {
+                    Some(gp.clone())
+                } else if let Some(gp_id) = root
+                    .grandparent_id
+                    .or(root.parent_id)
+                {
+                    db::Media::get_by_id(&ctx.db, &gp_id)
+                        .await
+                        .ok()
+                        .flatten()
+                } else {
+                    None
+                };
+                let Some(gp) = gp else {
+                    return Ok(None);
+                };
+                let Some(series_imdb) = gp
                     .external_ids
-                    .series_imdb
+                    .imdb
                     .as_deref()
                 else {
                     return Ok(None);
@@ -928,15 +958,9 @@ impl TreeAddon for OpendalAddon {
                             kind: db::MediaKind::Episode,
                             parent_id: Some(root.id),
                             grandparent_id: Some(series_id),
+                            grandparent: Some(Box::new(gp.clone())),
                             idx: Some(ep_num),
                             parent_idx: Some(season_num),
-                            external_ids: db::ExternalIds {
-                                series_imdb: db::NonEmptyString::try_new(
-                                    series_imdb.to_string(),
-                                )
-                                .ok(),
-                                ..Default::default()
-                            },
                             stream_info: Some(crate::stream::StreamInfo {
                                 descriptor,
                                 name: Some(
@@ -1954,7 +1978,7 @@ mod tests {
                 ..Default::default()
             };
             let streams = addon
-                .get_streams(&stub, ctx)
+                .get_streams(&stub, ctx, None)
                 .await
                 .unwrap();
             assert!(
@@ -2188,12 +2212,8 @@ mod tests {
             assert!(
                 seasons
                     .iter()
-                    .all(|s| s
-                        .external_ids
-                        .series_imdb
-                        .as_deref()
-                        == Some(imdb)),
-                "{imdb}: Season items must carry series_imdb"
+                    .all(|s| s.kind == db::MediaKind::Season),
+                "{imdb}: all children of a Series must be Seasons"
             );
 
             let expected_season_nums: Vec<i64> = {
@@ -2243,12 +2263,8 @@ mod tests {
                 assert!(
                     episodes
                         .iter()
-                        .all(|e| e
-                            .external_ids
-                            .series_imdb
-                            .as_deref()
-                            == Some(imdb)),
-                    "{imdb} s{season_num}: Episode items must carry series_imdb"
+                        .all(|e| e.kind == db::MediaKind::Episode),
+                    "{imdb} s{season_num}: all children of a Season must be Episodes"
                 );
 
                 let expected_ep_nums: Vec<i64> = {
@@ -2291,7 +2307,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // Episode stream_supports + get_streams must use series_imdb, not imdb.
+    // Episode stream_supports + get_streams use the grandparent's IMDB (not the episode's own).
     // The existing tree-walk test only exercises get_children; this test covers
     // the separate path used when the server resolves streams for a known media row.
     // ---------------------------------------------------------------------------
@@ -2299,7 +2315,7 @@ mod tests {
     #[tokio::test]
     async fn opendal_episode_stream_supports_and_get_streams() {
         let fixtures: &[(&str, &str, i64, i64)] = &[
-            // (rel_path, series_imdb, season, episode)
+            // (rel_path, series_imdb_for_filename, season, episode)
             (
                 "[imdbid-tt0903747] Breaking Bad/Season 01/Breaking.Bad.S01E01.720p.mkv",
                 "tt0903747",
@@ -2338,7 +2354,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Walk Series → Season → Episodes to get real Episode rows with series_imdb set.
+        // Walk Series → Season → Episodes to get real Episode rows with grandparent set.
         let stream = addon
             .catalog_stream(ctx, "files")
             .await
@@ -2364,16 +2380,16 @@ mod tests {
         assert_eq!(episodes.len(), 2);
 
         for ep in &episodes {
-            // stream_supports must return true — this was the bug: it returned false when
-            // it checked .imdb instead of .series_imdb.
+            // stream_supports must return true — episodes returned by get_children have
+            // grandparent set (via DB lookup), so supports() correctly returns true.
             assert!(
                 StreamAddon::supports(&addon, ep),
-                "stream_supports must be true for episode with series_imdb set (e{:?})",
+                "stream_supports must be true for episode with grandparent imdb set (e{:?})",
                 ep.idx
             );
 
             let streams = addon
-                .get_streams(ep, ctx)
+                .get_streams(ep, ctx, None)
                 .await
                 .unwrap();
             assert!(
@@ -2390,20 +2406,19 @@ mod tests {
             }
         }
 
-        // Negative: an Episode row that only has `imdb` set (not `series_imdb`) must
-        // return false — the opendal_files table stores series IMDB, not episode IMDB.
-        let ep_with_imdb_only = db::Media {
+        // Negative: an Episode row without a grandparent (no series IMDB accessible)
+        // must return false — the opendal_files table stores series IMDB, not episode IMDB.
+        let ep_without_grandparent = db::Media {
             kind: db::MediaKind::Episode,
             external_ids: db::ExternalIds {
                 imdb: db::NonEmptyString::try_new("tt0903747").ok(),
-                series_imdb: None,
                 ..Default::default()
             },
             ..Default::default()
         };
         assert!(
-            !StreamAddon::supports(&addon, &ep_with_imdb_only),
-            "stream_supports must be false for episode with only imdb (not series_imdb)"
+            !StreamAddon::supports(&addon, &ep_without_grandparent),
+            "stream_supports must be false for episode without grandparent"
         );
     }
 
@@ -3616,7 +3631,7 @@ mod tests {
         // get_streams must return a Local stream for each track (matched by title).
         for item in &catalog {
             let streams = addon
-                .get_streams(item, ctx)
+                .get_streams(item, ctx, None)
                 .await
                 .unwrap();
             assert!(
@@ -3683,7 +3698,7 @@ mod tests {
             ..Default::default()
         };
         let streams = addon
-            .get_streams(&stub, ctx)
+            .get_streams(&stub, ctx, None)
             .await
             .unwrap();
         assert_eq!(streams.len(), 1);

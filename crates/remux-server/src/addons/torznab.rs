@@ -112,6 +112,7 @@ impl StreamAddon for TorznabAddon {
         &self,
         media: &db::Media,
         _ctx: &AppContext,
+        _id_prefixes: Option<&[String]>,
     ) -> Result<Vec<crate::stream::StreamInfo>> {
         match media.kind {
             db::MediaKind::Track => {
