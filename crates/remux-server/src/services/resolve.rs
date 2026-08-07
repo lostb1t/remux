@@ -153,9 +153,12 @@ impl MediaResolveService {
         id: Uuid,
         ctx: &AppContext,
     ) -> anyhow::Result<Option<db::Media>> {
+        // Mutated below (IMDB/Deezer resolution rewrites ids), so this one needs its
+        // own copy rather than the shared handle.
         let Some(mut media) = ctx
             .store
             .get::<db::Media>(id.to_string())
+            .map(|m| (*m).clone())
         else {
             return Ok(None);
         };

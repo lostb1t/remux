@@ -68,9 +68,13 @@ impl SegmentAddon for IntroDbAddon {
     fn supports(&self, media: &db::Media) -> bool {
         matches!(media.kind, db::MediaKind::Episode | db::MediaKind::Stream)
             && media
-                .external_ids
-                .series_imdb
-                .is_some()
+                .grandparent
+                .as_deref()
+                .map_or(false, |gp| {
+                    gp.external_ids
+                        .imdb
+                        .is_some()
+                })
             && media
                 .parent_idx
                 .is_some()
@@ -85,10 +89,14 @@ impl SegmentAddon for IntroDbAddon {
         _ctx: &AppContext,
     ) -> Result<MediaSegments> {
         let imdb_id = media
-            .external_ids
-            .series_imdb
+            .grandparent
             .as_deref()
-            .ok_or_else(|| anyhow!("no series_imdb"))?;
+            .and_then(|gp| {
+                gp.external_ids
+                    .imdb
+                    .as_deref()
+            })
+            .ok_or_else(|| anyhow!("no grandparent imdb"))?;
         remux_sdks::introdb::fetch_episode_segments(
             imdb_id,
             media

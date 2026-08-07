@@ -516,9 +516,13 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                         db::MediaKind::Episode | db::MediaKind::Season
                     ) {
                         media
-                            .external_ids
-                            .series_imdb
+                            .grandparent
                             .as_deref()
+                            .and_then(|gp| {
+                                gp.external_ids
+                                    .imdb
+                                    .as_deref()
+                            })
                     } else {
                         None
                     }
