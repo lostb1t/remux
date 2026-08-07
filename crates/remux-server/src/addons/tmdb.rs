@@ -1762,8 +1762,11 @@ async fn fetch_tmdb_meta(
             {
                 // Use the SeasonEndpoint (already cached from get_tree) instead of
                 // a separate per-episode EpisodeEndpoint call.
+                // Borrow the cached season rather than taking it by value: this runs
+                // once per episode, and copying every episode's overview/credits/
+                // guest stars just to read one of them is quadratic per season.
                 let season = client
-                    .execute(
+                    .execute_arc(
                         sdks::tmdb::SeasonEndpoint {
                             series_id: tmdb_id,
                             season_number: s_n,
@@ -1777,13 +1780,14 @@ async fn fetch_tmdb_meta(
                     .await?;
                 let Some(ep) = season
                     .episodes
+                    .as_deref()
                     .unwrap_or_default()
-                    .into_iter()
+                    .iter()
                     .find(|e| e.episode_number == e_n)
                 else {
                     return Ok(None);
                 };
-                return Ok(Some(db::Media::from(&ep)));
+                return Ok(Some(db::Media::from(ep)));
             }
         }
         db::MediaKind::Season => {

@@ -236,10 +236,26 @@ impl<A: Auth + Clone> RestClient<A> {
         self
     }
 
+    /// Owned result. Prefer `execute_arc` when the value is only read — on a cache
+    /// hit this has to deep-copy the payload to hand back a `T`.
     pub async fn execute<EP: Endpoint + Clone>(
         &self,
         endpoint: EP,
     ) -> Result<EP::Output, ClientError> {
+        self.execute_arc(endpoint)
+            .await
+            .map(|arc| {
+                // Uncached responses are uniquely owned here, so this unwraps
+                // without copying; only cache hits fall back to a clone.
+                Arc::try_unwrap(arc).unwrap_or_else(|arc| (*arc).clone())
+            })
+    }
+
+    /// Shared result — no deep copy on a cache hit.
+    pub async fn execute_arc<EP: Endpoint + Clone>(
+        &self,
+        endpoint: EP,
+    ) -> Result<Arc<EP::Output>, ClientError> {
         let path = endpoint.path();
         let mut url = self
             .base
@@ -264,7 +280,7 @@ impl<A: Auth + Clone> RestClient<A> {
             .cache_ttl()
             .is_some()
         {
-            if let Some(value) = HTTP_CACHE.get::<EP::Output>(&cache_key) {
+            if let Some(value) = HTTP_CACHE.get_arc::<EP::Output>(&cache_key) {
                 return Ok(value);
             }
         }
@@ -342,21 +358,19 @@ impl<A: Auth + Clone> RestClient<A> {
                             body: Some(text.clone()),
                         }
                     });
-                if let Ok(ref val) = result {
-                    if let Some(ttl) = endpoint.cache_ttl() {
-                        let weight = text
-                            .len()
-                            .min(u32::MAX as usize)
-                            as u32;
-                        HTTP_CACHE.save_with_weight(
-                            cache_key,
-                            val.clone(),
-                            weight,
-                            ttl,
-                        );
-                    }
+                let arc = result.map(Arc::new)?;
+                if let Some(ttl) = endpoint.cache_ttl() {
+                    let weight = text
+                        .len()
+                        .min(u32::MAX as usize) as u32;
+                    HTTP_CACHE.save_arc_with_weight(
+                        cache_key,
+                        Arc::clone(&arc),
+                        weight,
+                        ttl,
+                    );
                 }
-                result
+                Ok(arc)
             }
             s => Err((self.map_error)(s, &url.to_string(), &text)),
         }

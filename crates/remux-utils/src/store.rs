@@ -78,6 +78,24 @@ impl Store {
             .insert(key.into(), entry);
     }
 
+    /// Store an already-shared value without copying it. Pairs with `get_arc` so a
+    /// value can be cached and handed to the caller with no deep copy on either side.
+    pub fn save_arc_with_weight<T: Any + Send + Sync + 'static>(
+        &self,
+        key: impl Into<String>,
+        item: Arc<T>,
+        weight: u32,
+        ttl: Duration,
+    ) {
+        let entry = Arc::new(StoreEntry {
+            item: item as Arc<dyn Any + Send + Sync>,
+            ttl,
+            weight,
+        });
+        self.inner
+            .insert(key.into(), entry);
+    }
+
     pub fn insert<T: Any + Send + Sync + 'static>(
         &self,
         key: impl Into<String>,
@@ -114,6 +132,27 @@ impl Store {
                     .downcast::<T>()
                     .ok()
                     .map(|arc| (*arc).clone())
+            })
+    }
+
+    /// Shared handle to the cached value, without deep-copying it.
+    ///
+    /// Entries are already stored behind an `Arc`; `get` only clones because it
+    /// hands back an owned `T`. Callers that just read the value should use this
+    /// instead — for large cached payloads (e.g. a TMDB season with every
+    /// episode's overview, credits and guest stars) the copy dominates.
+    pub fn get_arc<T: Any + Send + Sync>(
+        &self,
+        key: impl Into<String>,
+    ) -> Option<Arc<T>> {
+        let key: String = key.into();
+
+        self.inner
+            .get(&key)
+            .and_then(|entry| {
+                Arc::clone(&entry.item)
+                    .downcast::<T>()
+                    .ok()
             })
     }
 
