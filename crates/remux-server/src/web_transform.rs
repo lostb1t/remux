@@ -15,6 +15,8 @@ use tower::{Layer, Service};
 
 use crate::web_patches::{CSS, JS};
 
+const BRANDING_CONFIG_KEY: &str = "branding_configuration";
+
 #[derive(Clone, Default)]
 pub struct TransformCache(Arc<Mutex<HashMap<String, Bytes>>>);
 
@@ -37,12 +39,14 @@ impl TransformCache {
 #[derive(Clone)]
 pub struct TransformLayer {
     cache: TransformCache,
+    pool: Option<sqlx::SqlitePool>,
 }
 
 impl TransformLayer {
-    pub fn new() -> Self {
+    pub fn new(pool: Option<sqlx::SqlitePool>) -> Self {
         Self {
             cache: TransformCache::default(),
+            pool,
         }
     }
 }
@@ -55,6 +59,9 @@ impl<S> Layer<S> for TransformLayer {
             cache: self
                 .cache
                 .clone(),
+            pool: self
+                .pool
+                .clone(),
         }
     }
 }
@@ -63,6 +70,7 @@ impl<S> Layer<S> for TransformLayer {
 pub struct TransformService<S> {
     inner: S,
     cache: TransformCache,
+    pool: Option<sqlx::SqlitePool>,
 }
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for TransformService<S>
@@ -93,6 +101,9 @@ where
             .to_string();
         let cache = self
             .cache
+            .clone();
+        let pool = self
+            .pool
             .clone();
         let fut = self
             .inner
@@ -136,8 +147,16 @@ where
                 html = html.replace("</head>", &tag);
             }
 
-            if !JS.is_empty() {
-                let tag = format!("<script data-remux>{JS}</script></body>");
+            let user_js = match pool.as_ref() {
+                Some(p) => custom_js_from_db(p).await,
+                None => None,
+            };
+
+            if !JS.is_empty() || user_js.is_some() {
+                let extra = user_js
+                    .as_deref()
+                    .unwrap_or("");
+                let tag = format!("<script data-remux>{JS}{extra}</script></body>");
                 html = html.replace("</body>", &tag);
             }
 
@@ -152,4 +171,14 @@ where
             Ok(response)
         })
     }
+}
+
+async fn custom_js_from_db(pool: &sqlx::SqlitePool) -> Option<String> {
+    let json = crate::db::Settings::get(pool, BRANDING_CONFIG_KEY)
+        .await
+        .ok()??;
+    let opts: remux_sdks::remux::BrandingOptions = serde_json::from_str(&json).ok()?;
+    opts.remux?
+        .custom_js
+        .filter(|s| !s.is_empty())
 }

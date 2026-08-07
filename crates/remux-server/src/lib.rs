@@ -96,10 +96,11 @@ pub type AdminService = tower::util::BoxCloneSyncService<
 >;
 
 /// Build an `AdminService` that serves dashboard files from the filesystem.
+/// Does not inject user custom JS (admin panel is remux's own UI).
 pub fn admin_from_filesystem(dashboard_path: &str) -> AdminService {
     let index = format!("{dashboard_path}/index.html");
     tower::util::BoxCloneSyncService::new(
-        web_transform::TransformLayer::new()
+        web_transform::TransformLayer::new(None)
             .layer(ServeDir::new(dashboard_path).fallback(ServeFile::new(index))),
     )
 }
@@ -125,8 +126,13 @@ pub async fn init_app_with_config(config: Config) -> Result<Router> {
             .dashboard_path
             .clone(),
     );
-    let web_client = WebClientService::from_filesystem(&paths.web_path);
-    let (router, _ctx) = init_app(config, Some(paths), admin, web_client).await?;
+    let web_path = paths
+        .web_path
+        .clone();
+    let (router, _ctx) = init_app(config, Some(paths), admin, move |pool| {
+        WebClientService::from_filesystem(&web_path, pool)
+    })
+    .await?;
     Ok(router)
 }
 
@@ -137,8 +143,13 @@ pub async fn init_app_with_ctx(config: Config) -> Result<(Router, AppContext)> {
             .dashboard_path
             .clone(),
     );
-    let web_client = WebClientService::from_filesystem(&paths.web_path);
-    init_app(config, Some(paths), admin, web_client).await
+    let web_path = paths
+        .web_path
+        .clone();
+    init_app(config, Some(paths), admin, move |pool| {
+        WebClientService::from_filesystem(&web_path, pool)
+    })
+    .await
 }
 
 /// Start the HTTP server with web assets served from the filesystem.
@@ -149,9 +160,14 @@ pub async fn serve(config: Config, paths: FilesystemPaths) -> Result<()> {
             .dashboard_path
             .clone(),
     );
-    let web_client = WebClientService::from_filesystem(&paths.web_path);
+    let web_path = paths
+        .web_path
+        .clone();
     let port = config.port;
-    let (router, _) = init_app(config, Some(paths), admin, web_client).await?;
+    let (router, _) = init_app(config, Some(paths), admin, move |pool| {
+        WebClientService::from_filesystem(&web_path, pool)
+    })
+    .await?;
     bind_and_serve(router, port).await
 }
 
@@ -168,7 +184,7 @@ pub async fn init_app(
     config: Config,
     web_paths: Option<FilesystemPaths>,
     admin: AdminService,
-    web_client: WebClientService,
+    make_web_client: impl FnOnce(sqlx::SqlitePool) -> WebClientService,
 ) -> Result<(Router, AppContext)> {
     info!("starting remux {}", env!("CARGO_PKG_VERSION"));
     info!("config: {}", serde_json::to_string_pretty(&config).unwrap());
@@ -246,6 +262,8 @@ pub async fn init_app(
                 .unwrap_or(0),
         );
     }
+
+    let web_client = make_web_client(conn.clone());
 
     let addons = addons::AddonService::from_db(&conn, &config).await?;
     let ctx = AppContext {

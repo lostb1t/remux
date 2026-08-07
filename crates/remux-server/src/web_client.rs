@@ -123,9 +123,9 @@ pub struct WebClientService {
 }
 
 impl WebClientService {
-    pub fn from_filesystem(web_path: &str) -> Self {
+    pub fn from_filesystem(web_path: &str, pool: sqlx::SqlitePool) -> Self {
         let jellyfin = BoxCloneSyncService::new(
-            TransformLayer::new().layer(ServeDir::new(web_path)),
+            TransformLayer::new(Some(pool)).layer(ServeDir::new(web_path)),
         );
         Self { jellyfin }
     }
@@ -133,12 +133,16 @@ impl WebClientService {
 
 #[cfg(feature = "desktop")]
 impl WebClientService {
-    pub fn from_embedded(jellyfin_web: &'static include_dir::Dir<'static>) -> Self {
-        let jellyfin =
-            BoxCloneSyncService::new(TransformLayer::new().layer(EmbeddedDir {
+    pub fn from_embedded(
+        jellyfin_web: &'static include_dir::Dir<'static>,
+        pool: sqlx::SqlitePool,
+    ) -> Self {
+        let jellyfin = BoxCloneSyncService::new(TransformLayer::new(Some(pool)).layer(
+            EmbeddedDir {
                 dir: jellyfin_web,
                 spa_fallback: false,
-            }));
+            },
+        ));
         Self { jellyfin }
     }
 }
