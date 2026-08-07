@@ -47,7 +47,7 @@ impl Task for SeriesSyncTask {
             .collect();
 
         ctx.addons
-            .process_meta_batch(media_list, &ctx, false)
+            .process_meta_batch(media_list, &ctx, false, None)
             .await?;
 
         // After syncing, un-mark any series that a user had marked played but now
