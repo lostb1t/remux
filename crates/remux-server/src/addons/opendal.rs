@@ -4372,7 +4372,7 @@ mod tests {
             .expect("track under Artist A");
 
         let streams = addon
-            .get_streams(target, ctx)
+            .get_streams(target, ctx, None)
             .await
             .unwrap();
         assert_eq!(streams.len(), 1, "exactly one stream for the track");
