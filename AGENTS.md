@@ -32,6 +32,8 @@ If a field's default depends on another field (e.g. `database_url` derived from 
 
 Always run `cargo fmt` on every crate you touched before committing. CI enforces formatting and will fail the build if it's skipped.
 
+When the user says "commit and close issue", include `(fixes #N)` in the commit subject line to auto-close the issue via GitHub. Example: `feat: allow JS injection on branding page (fixes #190)`.
+
 ## Coding conventions
 
 - Prefer `strum`-derived enums over raw strings for any value that has a fixed set of variants (media kinds, image types, codec names, etc.). Use `#[derive(EnumString, Display, ...)]` so the enum round-trips cleanly through serde and DB layers without stringly-typed branches.

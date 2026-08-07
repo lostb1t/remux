@@ -4,13 +4,15 @@ use crate::{
 };
 use dioxus::prelude::*;
 use remux_sdks::remux::{
-    BrandingOptions, GetBrandingConfiguration, UpdateBrandingConfiguration,
+    BrandingOptions, GetBrandingConfiguration, RemuxBrandingExtensions,
+    UpdateBrandingConfiguration,
 };
 
 #[component]
 pub fn BrandingPage(app_state: AppState) -> Element {
     let mut base_cfg: Signal<Option<BrandingOptions>> = use_signal(|| None);
     let mut custom_css = use_signal(String::new);
+    let mut custom_js = use_signal(String::new);
     let mut login_disclaimer = use_signal(String::new);
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
@@ -29,6 +31,15 @@ pub fn BrandingPage(app_state: AppState) -> Element {
                     custom_css.set(
                         cfg.custom_css
                             .clone()
+                            .unwrap_or_default(),
+                    );
+                    custom_js.set(
+                        cfg.remux
+                            .as_ref()
+                            .and_then(|r| {
+                                r.custom_js
+                                    .clone()
+                            })
                             .unwrap_or_default(),
                     );
                     login_disclaimer.set(
@@ -50,6 +61,9 @@ pub fn BrandingPage(app_state: AppState) -> Element {
         let css = custom_css
             .peek()
             .clone();
+        let js = custom_js
+            .peek()
+            .clone();
         let disc = login_disclaimer
             .peek()
             .clone();
@@ -60,6 +74,9 @@ pub fn BrandingPage(app_state: AppState) -> Element {
             .unwrap_or_default();
         cfg.custom_css = if css.is_empty() { None } else { Some(css) };
         cfg.login_disclaimer = if disc.is_empty() { None } else { Some(disc) };
+        cfg.remux = Some(RemuxBrandingExtensions {
+            custom_js: if js.is_empty() { None } else { Some(js) },
+        });
 
         saving.set(true);
         error.set(None);
@@ -94,6 +111,18 @@ pub fn BrandingPage(app_state: AppState) -> Element {
                                 style: "min-height:220px;resize:vertical;font-family:var(--font-mono);font-size:.78rem",
                                 value: "{custom_css}",
                                 oninput: move |e| custom_css.set(e.value()),
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", r#for: "b-js", "Custom JS" }
+                            p { class: "field-hint", "Injected into every page of the Jellyfin web client." }
+                            textarea {
+                                id: "b-js",
+                                class: "field-input",
+                                style: "min-height:220px;resize:vertical;font-family:var(--font-mono);font-size:.78rem",
+                                value: "{custom_js}",
+                                oninput: move |e| custom_js.set(e.value()),
                             }
                         }
 

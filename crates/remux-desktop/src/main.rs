@@ -179,17 +179,20 @@ async fn serve(config: remux_server::Config) -> anyhow::Result<()> {
         &remux_server::FilesystemPaths::default().dashboard_path,
     );
 
-    #[cfg(jellyfin_web_built)]
-    let web_client = remux_server::WebClientService::from_embedded(&JELLYFIN_WEB);
-
-    #[cfg(not(jellyfin_web_built))]
-    let web_client = {
-        let paths = remux_server::FilesystemPaths::default();
-        remux_server::WebClientService::from_filesystem(&paths.web_path)
-    };
-
     let port = config.port;
-    let (router, _) = remux_server::init_app(config, None, admin, web_client).await?;
+    let (router, _) = remux_server::init_app(config, None, admin, |pool| {
+        #[cfg(jellyfin_web_built)]
+        {
+            remux_server::WebClientService::from_embedded(&JELLYFIN_WEB, pool)
+        }
+
+        #[cfg(not(jellyfin_web_built))]
+        {
+            let paths = remux_server::FilesystemPaths::default();
+            remux_server::WebClientService::from_filesystem(&paths.web_path, pool)
+        }
+    })
+    .await?;
     remux_server::bind_and_serve(router, port).await
 }
 

@@ -352,6 +352,12 @@ pub struct QueryResult<T> {
     pub start_index: i32,
 }
 
+#[serde_with::skip_serializing_none]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
+pub struct RemuxBrandingExtensions {
+    pub custom_js: Option<String>,
+}
+
 #[dto]
 pub struct BrandingOptions {
     pub login_disclaimer: Option<String>,
@@ -362,6 +368,8 @@ pub struct BrandingOptions {
     ).to_string()))]
     pub custom_css: Option<String>,
     pub splashscreen_enabled: Option<bool>,
+    #[serde(rename = "remux")]
+    pub remux: Option<RemuxBrandingExtensions>,
 }
 
 #[dto]

@@ -175,6 +175,10 @@ pub static JS: &str = r#"
   }
 
   function renderTracksForSource(page, mediaSources, selectedSourceId) {
+    // Same guard as renderAsyncTrackSelections: the version-change handler
+    // re-renders the track selects, and the observer must not loop on that.
+    var form = page.querySelector('.trackSelections');
+    if (form) form._remuxRendering = true;
     var source = null;
     for (var i = 0; i < mediaSources.length; i++) {
       if (mediaSources[i].Id === selectedSourceId) { source = mediaSources[i]; break; }
@@ -216,11 +220,35 @@ pub static JS: &str = r#"
     }).join('');
     selSubs[subTracks.length ? 'removeAttribute' : 'setAttribute']('disabled', 'disabled');
     page.querySelector('.selectSubtitlesContainer').classList[subTracks.length ? 'remove' : 'add']('hide');
+    if (form) setTimeout(function () { form._remuxRendering = false; }, 0);
+  }
+
+  // The core re-renders the track selects from its cached item (the fast item
+  // with stub MediaSources) on player changes and cached-view restores, wiping
+  // our real audio/subtitle dropdowns. Re-apply our loaded data whenever the
+  // core touches the panel.
+  function attachTrackSelectionsGuard(page) {
+    var form = page.querySelector('.trackSelections');
+    if (!form || form._remuxObsAttached) return;
+    form._remuxObsAttached = true;
+    var obs = new MutationObserver(function () {
+      if (form._remuxRendering) return;
+      if (!form._remuxLoaded) return;
+      var ms = window._remuxCurrentMediaSources;
+      if (!ms || !ms.length) return;
+      renderAsyncTrackSelections(page, ms);
+    });
+    obs.observe(form, { childList: true, subtree: true });
   }
 
   function renderAsyncTrackSelections(page, mediaSources) {
     var form = page.querySelector('.trackSelections');
     if (!form) return;
+    // Guard: the MutationObserver below must not react to our own renders.
+    // Observer callbacks run as microtasks before the next macrotask, so a
+    // setTimeout(0) clear happens after any observer callback queued by this
+    // render has already run (and been skipped).
+    form._remuxRendering = true;
 
     var selSrc = page.querySelector('.selectSource');
     var selectedId = mediaSources[0].Id;
@@ -249,6 +277,8 @@ pub static JS: &str = r#"
     } else {
       form.classList.add('hide');
     }
+
+    setTimeout(function () { form._remuxRendering = false; }, 0);
   }
 
   // Adds a second change listener that re-renders stream dropdowns when the user picks
@@ -373,6 +403,7 @@ pub static JS: &str = r#"
               if (streamsReady) {
                 renderAsyncTrackSelections(page, ms);
                 attachSourceChangeHandler(page);
+                attachTrackSelectionsGuard(page);
                 var f = page.querySelector('.trackSelections');
                 if (f) f._remuxNavCount = capturedNav;
               } else {

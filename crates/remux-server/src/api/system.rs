@@ -1254,4 +1254,32 @@ mod test {
         dotcss_resp.assert_status_ok();
         assert_eq!(dotcss_resp.text(), css);
     }
+
+    #[tokio::test]
+    async fn branding_custom_js_roundtrip_test() {
+        let (server, _ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let js = "console.log('hello')";
+
+        server
+            .post("/branding/configuration")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({ "remux": { "custom_js": js } }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        let resp = server
+            .get("/branding/configuration")
+            .await;
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["remux"]["custom_js"].as_str(),
+            Some(js),
+            "custom_js should round-trip through branding config"
+        );
+    }
 }
