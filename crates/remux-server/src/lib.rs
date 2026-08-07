@@ -460,10 +460,16 @@ pub struct Config {
     /// non-absolute embed URL).
     #[serde(default)]
     pub public_url: Option<String>,
+    #[serde(default = "default_activity_log_retention_days")]
+    pub activity_log_retention_days: u32,
 }
 
 fn default_remuxdb_url() -> Option<String> {
     Some("https://remuxdb.1632022.xyz".to_string())
+}
+
+fn default_activity_log_retention_days() -> u32 {
+    90
 }
 
 fn default_tmdb_base_url() -> String {
@@ -535,6 +541,7 @@ impl Default for Config {
             trakt_base_url: default_trakt_base_url(),
             remuxdb_url: Some("https://remuxdb.1632022.xyz".to_string()),
             public_url: None,
+            activity_log_retention_days: default_activity_log_retention_days(),
         }
         .resolve()
     }

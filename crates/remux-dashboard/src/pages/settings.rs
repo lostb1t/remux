@@ -32,9 +32,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
 
     let app_state_load = app_state.clone();
     use_effect(move || {
-        let client = app_state_load
-            .client
-            .clone();
+        let client = app_state_load.clone();
         spawn(async move {
             match client
                 .execute(GetSystemConfiguration)
@@ -95,9 +93,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
-        let client = app_state
-            .client
-            .clone();
+        let client = app_state.clone();
         let name = server_name
             .peek()
             .clone();
@@ -359,9 +355,7 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
 
     let app_state_load = app_state.clone();
     use_effect(move || {
-        let client = app_state_load
-            .client
-            .clone();
+        let client = app_state_load.clone();
         spawn(async move {
             match client
                 .execute(GetEncodingConfiguration)
@@ -449,9 +443,7 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
-        let client = app_state
-            .client
-            .clone();
+        let client = app_state.clone();
         let accel_type = match hw_accel
             .peek()
             .as_str()
@@ -786,9 +778,7 @@ pub fn ProbeSettingsCard(app_state: AppState) -> Element {
 
     let app_state_load = app_state.clone();
     use_effect(move || {
-        let client = app_state_load
-            .client
-            .clone();
+        let client = app_state_load.clone();
         spawn(async move {
             match client
                 .execute(GetSystemConfiguration)
@@ -821,9 +811,7 @@ pub fn ProbeSettingsCard(app_state: AppState) -> Element {
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
-        let client = app_state
-            .client
-            .clone();
+        let client = app_state.clone();
         let Some(cfg) = base_cfg
             .peek()
             .clone()
@@ -969,9 +957,7 @@ pub fn SearchSettingsCard(app_state: AppState) -> Element {
 
     let app_state_load = app_state.clone();
     use_effect(move || {
-        let client = app_state_load
-            .client
-            .clone();
+        let client = app_state_load.clone();
         spawn(async move {
             match client
                 .execute(GetSystemConfiguration)
@@ -998,9 +984,7 @@ pub fn SearchSettingsCard(app_state: AppState) -> Element {
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
-        let client = app_state
-            .client
-            .clone();
+        let client = app_state.clone();
         let mut cfg = base_cfg
             .peek()
             .clone()
@@ -1115,9 +1099,7 @@ pub fn JellyfinImportCard(app_state: AppState) -> Element {
 
     let app_state_load = app_state.clone();
     use_effect(move || {
-        let client = app_state_load
-            .client
-            .clone();
+        let client = app_state_load.clone();
         spawn(async move {
             match client
                 .execute(GetSystemConfiguration)
@@ -1145,9 +1127,7 @@ pub fn JellyfinImportCard(app_state: AppState) -> Element {
     let app_state_save = app_state.clone();
     let on_save = move |e: Event<FormData>| {
         e.prevent_default();
-        let client = app_state_save
-            .client
-            .clone();
+        let client = app_state_save.clone();
         let url = jellyfin_url
             .peek()
             .clone();
@@ -1178,9 +1158,7 @@ pub fn JellyfinImportCard(app_state: AppState) -> Element {
     };
 
     let on_import = move |_| {
-        let client = app_state
-            .client
-            .clone();
+        let client = app_state.clone();
         importing.set(true);
         import_error.set(None);
         import_done.set(false);
@@ -1291,9 +1269,7 @@ pub fn P2pSettingsCard(app_state: AppState) -> Element {
 
     let app_state_load = app_state.clone();
     use_effect(move || {
-        let client = app_state_load
-            .client
-            .clone();
+        let client = app_state_load.clone();
         spawn(async move {
             match client
                 .execute(GetSystemConfiguration)
@@ -1322,9 +1298,7 @@ pub fn P2pSettingsCard(app_state: AppState) -> Element {
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
-        let client = app_state
-            .client
-            .clone();
+        let client = app_state.clone();
         let Some(cfg) = base_cfg
             .peek()
             .clone()
@@ -1437,9 +1411,7 @@ pub fn IntroSettingsCard(app_state: AppState) -> Element {
 
     let app_state_load = app_state.clone();
     use_effect(move || {
-        let client = app_state_load
-            .client
-            .clone();
+        let client = app_state_load.clone();
         spawn(async move {
             match client
                 .execute(GetIntroConfiguration)
@@ -1478,9 +1450,7 @@ pub fn IntroSettingsCard(app_state: AppState) -> Element {
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
-        let client = app_state
-            .client
-            .clone();
+        let client = app_state.clone();
         let dir_val = intro_dir
             .peek()
             .clone();
@@ -1627,9 +1597,7 @@ pub fn RemuxdbSettingsCard(app_state: AppState) -> Element {
 
     let app_state_load = app_state.clone();
     use_effect(move || {
-        let client = app_state_load
-            .client
-            .clone();
+        let client = app_state_load.clone();
         spawn(async move {
             match client
                 .execute(GetSystemConfiguration)
@@ -1650,9 +1618,7 @@ pub fn RemuxdbSettingsCard(app_state: AppState) -> Element {
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
-        let client = app_state
-            .client
-            .clone();
+        let client = app_state.clone();
         let Some(cfg) = base_cfg
             .peek()
             .clone()

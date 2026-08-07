@@ -9,6 +9,7 @@ use sqlx::{
 use std::{str::FromStr, time::Duration};
 use tracing::{info, warn};
 use uuid::Uuid;
+pub mod activity;
 pub mod api_key;
 pub mod auth;
 pub mod image;
@@ -19,6 +20,7 @@ pub mod stream_group;
 pub mod task;
 pub mod user;
 pub mod webhook;
+pub use activity::*;
 pub use api_key::*;
 pub use image::*;
 pub use iptv::*;

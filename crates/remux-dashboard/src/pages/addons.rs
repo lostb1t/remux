@@ -64,9 +64,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
     use_effect(move || {
         let _r = *refresh.read();
         loading.set(true);
-        let client = app_state_effect
-            .client
-            .clone();
+        let client = app_state_effect.clone();
         spawn(async move {
             let kinds_res = client
                 .execute(ListAddonKinds)
@@ -189,7 +187,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                     disabled: addon_idx == 0,
                                                     title: "Move up (higher priority)",
                                                     onclick: {
-                                                        let client = app_state.client.clone();
+                                                        let client = app_state.clone();
                                                         move |_| {
                                                             let current = addons.read().clone();
                                                             if addon_idx == 0 { return; }
@@ -218,7 +216,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                     disabled: addon_idx + 1 >= addon_count,
                                                     title: "Move down (lower priority)",
                                                     onclick: {
-                                                        let client = app_state.client.clone();
+                                                        let client = app_state.clone();
                                                         move |_| {
                                                             let current = addons.read().clone();
                                                             if addon_idx + 1 >= current.len() { return; }
@@ -247,7 +245,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                 class: "btn btn-ghost",
                                                 style: "height:28px;font-size:.68rem;padding:0 10px",
                                                 onclick: {
-                                                    let client = app_state.client.clone();
+                                                    let client = app_state.clone();
                                                     move |_| {
                                                         if let Some(a) = addons.read().iter().find(|a| a.id == id).cloned() {
                                                             edit_name_input.set(a.name.clone());
@@ -426,7 +424,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                 class: "btn btn-primary",
                                 disabled: *creating.read() || name_input.read().trim().is_empty() || selected_kind.read().is_none(),
                                 onclick: {
-                                    let client = app_state.client.clone();
+                                    let client = app_state.clone();
                                     move |_| {
                                         let name = name_input.read().trim().to_string();
                                         let Some(kind) = selected_kind.read().clone() else { return; };
@@ -675,7 +673,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                     class: "btn btn-primary",
                                     disabled: *editing.read() || edit_name_input.read().trim().is_empty(),
                                     onclick: {
-                                        let client = app_state.client.clone();
+                                        let client = app_state.clone();
                                         move |_| {
                                             let name = edit_name_input.read().trim().to_string();
                                             if name.is_empty() { return; }
@@ -779,7 +777,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                             disabled: *deleting.read(),
                             style: "background:var(--error);border-color:var(--error)",
                             onclick: {
-                                let client = app_state.client.clone();
+                                let client = app_state.clone();
                                 move |_| {
                                     deleting.set(true);
                                     let c = client.clone();

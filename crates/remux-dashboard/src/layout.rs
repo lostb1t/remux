@@ -1,6 +1,6 @@
 use crate::{
     router::Route,
-    state::{get_stored_server, AppState, CREDENTIALS_KEY},
+    state::{get_stored_server, logout, AppState},
 };
 use dioxus::prelude::*;
 use gloo_storage::{LocalStorage, Storage};
@@ -92,7 +92,6 @@ pub fn DashboardLayout() -> Element {
     let app_state = AppState::new(server);
     use_context_provider(|| app_state.clone());
 
-    let mut logged_in = use_context::<Signal<bool>>();
     let mut sidebar_open = use_signal(|| false);
     let route = use_route::<Route>();
 
@@ -115,6 +114,7 @@ pub fn DashboardLayout() -> Element {
         Route::AccessUsersRoute => "Users",
         Route::AccessApiKeysRoute => "API Keys",
         Route::TasksRoute => "Tasks",
+        Route::DevicesRoute => "Devices",
         Route::ActivityRoute => "Activity",
         Route::NotFound { .. } => "",
     };
@@ -260,10 +260,19 @@ pub fn DashboardLayout() -> Element {
 
                     div { class: "nav-divider" }
 
-                    NavItem {
-                        label: "Activity",
-                        active: route == Route::ActivityRoute,
-                        on_click: move |_| { navigator().push(Route::ActivityRoute); sidebar_open.set(false); },
+                    SidebarGroup {
+                        label: "Devices",
+                        active: matches!(route, Route::DevicesRoute | Route::ActivityRoute),
+                        NavSubItem {
+                            label: "Devices",
+                            active: route == Route::DevicesRoute,
+                            on_click: move |_| { navigator().push(Route::DevicesRoute); sidebar_open.set(false); },
+                        }
+                        NavSubItem {
+                            label: "Activity",
+                            active: route == Route::ActivityRoute,
+                            on_click: move |_| { navigator().push(Route::ActivityRoute); sidebar_open.set(false); },
+                        }
                     }
                 }
 
@@ -277,10 +286,7 @@ pub fn DashboardLayout() -> Element {
                     button {
                         class: "btn btn-ghost",
                         style: "width:100%",
-                        onclick: move |_| {
-                            LocalStorage::delete(CREDENTIALS_KEY);
-                            logged_in.set(false);
-                        },
+                        onclick: move |_| logout(),
                         "Sign Out"
                     }
                 }

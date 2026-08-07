@@ -259,7 +259,7 @@ pub fn TaskTriggersModal(
                 variant: ButtonVariant::Primary,
                 disabled: *saving.read(),
                 onclick: move |_| {
-                    let client = app_state.client.clone();
+                    let client = app_state.clone();
                     let tid = task_id.clone();
                     let t = triggers.read().clone();
                     saving.set(true);
@@ -295,9 +295,7 @@ pub fn TasksCard(
     use_effect(move || {
         let _r = *refresh.read();
         loading.set(true);
-        let client = app_state_effect
-            .client
-            .clone();
+        let client = app_state_effect.clone();
         spawn(async move {
             match client
                 .execute(GetScheduledTasks {
@@ -317,9 +315,7 @@ pub fn TasksCard(
 
     let app_state_poll = app_state.clone();
     use_effect(move || {
-        let client = app_state_poll
-            .client
-            .clone();
+        let client = app_state_poll.clone();
         spawn(async move {
             loop {
                 gloo_timers::future::sleep(std::time::Duration::from_secs(5)).await;
@@ -478,13 +474,9 @@ pub fn TaskPageRow(
     let stop_id = task
         .id
         .clone();
-    let c_start = app_state
-        .client
-        .clone();
+    let c_start = app_state.clone();
     let c_start_confirm = c_start.clone();
-    let c_stop = app_state
-        .client
-        .clone();
+    let c_stop = app_state.clone();
     let task_for_edit = task.clone();
 
     rsx! {
