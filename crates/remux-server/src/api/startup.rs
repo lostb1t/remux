@@ -77,6 +77,12 @@ pub async fn post_startup_configuration(
         &config,
     )
     .await?;
+    // The server name is baked into every webhook payload from the dispatcher's
+    // cached snapshot; this is what makes it re-read the new one.
+    state
+        .ctx
+        .webhooks
+        .invalidate();
 
     Ok(StatusCode::NO_CONTENT)
 }

@@ -13,7 +13,7 @@ use tokio::{sync::Mutex as AsyncMutex, task::JoinHandle};
 use tokio_cron_scheduler::{Job, JobScheduler, job::JobId};
 use tracing::{error, info};
 
-use crate::{AppContext, db, ws};
+use crate::{AppContext, db, services::webhooks::WebhookEvent, ws};
 use remux_sdks::remux::TaskTriggerInfoType;
 use strum_macros::{Display, EnumString};
 
@@ -241,6 +241,16 @@ impl TaskHandler {
             *status
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = new_status;
+
+            ctx.webhooks
+                .emit(WebhookEvent::TaskCompleted {
+                    key: task_key.clone(),
+                    name: task
+                        .name()
+                        .to_string(),
+                    succeeded: result.is_ok(),
+                    elapsed_ms: elapsed.as_millis() as u64,
+                });
 
             let task_result = db::TaskResult {
                 task_id: task_key.clone(),

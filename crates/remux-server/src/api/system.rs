@@ -239,6 +239,13 @@ pub async fn update_system_configuration(
         &config,
     )
     .await?;
+    // The server name reaches every webhook payload through the dispatcher's
+    // cached snapshot, which only reloads when this flag is set. Without this,
+    // renaming the server keeps shipping the old name until a restart.
+    state
+        .ctx
+        .webhooks
+        .invalidate();
 
     Ok(StatusCode::NO_CONTENT)
 }

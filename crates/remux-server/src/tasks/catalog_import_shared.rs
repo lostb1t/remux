@@ -6,7 +6,10 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use super::ProgressReporter;
-use crate::{AppContext, addons::ResolvedCatalog, db};
+use crate::{
+    AppContext, addons::ResolvedCatalog, db, services::webhooks::WebhookEvent,
+};
+use remux_sdks::remux::NotificationType;
 
 /// Consume `stream`, fetching metadata + full tree for new items and upserting everything.
 ///
@@ -129,6 +132,20 @@ where
         {
             error!(catalog = media_id, error = %e, "failed to process new items chunk");
             continue;
+        }
+
+        // The partition above is the only place that knows which of these rows
+        // are new. A scan can produce tens of thousands of them, so the whole
+        // loop is skipped — at the cost of one atomic load per chunk — when no
+        // webhook subscribes.
+        if ctx
+            .webhooks
+            .wants(NotificationType::ItemAdded)
+        {
+            for item in new_items.iter() {
+                ctx.webhooks
+                    .emit(WebhookEvent::ItemAdded { item_id: item.id });
+            }
         }
 
         for id in new_series_ids {

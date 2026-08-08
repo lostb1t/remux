@@ -280,6 +280,7 @@ pub async fn init_app(
         )),
         web_paths,
         addons,
+        webhooks: services::webhooks::WebhookService::new(),
         started_at: Utc::now(),
     };
 
@@ -295,7 +296,15 @@ pub async fn init_app(
         .spawn_cleanup_task(
             std::time::Duration::from_secs(60),
             std::time::Duration::from_secs(60 * 15),
+            conn.clone(),
+            ctx.webhooks
+                .clone(),
         );
+
+    // Fans emitted webhook events out to the enabled webhooks.
+    ctx.webhooks
+        .clone()
+        .spawn_dispatcher(ctx.clone());
 
     db::StreamGroup::migrate_from_settings(&conn).await;
 
@@ -367,6 +376,7 @@ pub struct AppContext {
     /// Present in filesystem builds; `None` in desktop (assets are embedded).
     pub web_paths: Option<FilesystemPaths>,
     pub addons: addons::AddonService,
+    pub webhooks: services::webhooks::WebhookService,
     /// When this server process started.
     pub started_at: chrono::DateTime<chrono::Utc>,
 }
@@ -456,6 +466,19 @@ pub struct Config {
     /// Base URL for remuxdb. When set, probe results are submitted after each live probe.
     #[serde(default = "default_remuxdb_url")]
     pub remuxdb_url: Option<String>,
+    /// Public base URL clients reach this server on, e.g.
+    /// `https://media.example.com`. Used to build absolute links that leave the
+    /// server (webhook `ServerUrl`, deep links, image URLs); unset means "no
+    /// absolute URL is known", and such links are rendered empty rather than
+    /// guessed.
+    ///
+    /// The config layer uses no env prefix, so this field's environment
+    /// variable is the bare `PUBLIC_URL` — a name Create-React-App builds and
+    /// some PaaS runtimes already set, often to `/`. A value that is not an
+    /// absolute URL produces links the consumer rejects (Discord refuses a
+    /// non-absolute embed URL).
+    #[serde(default)]
+    pub public_url: Option<String>,
     #[serde(default = "default_activity_log_retention_days")]
     pub activity_log_retention_days: u32,
 }
@@ -536,6 +559,7 @@ impl Default for Config {
             tmdb_base_url: default_tmdb_base_url(),
             trakt_base_url: default_trakt_base_url(),
             remuxdb_url: Some("https://remuxdb.1632022.xyz".to_string()),
+            public_url: None,
             activity_log_retention_days: default_activity_log_retention_days(),
         }
         .resolve()

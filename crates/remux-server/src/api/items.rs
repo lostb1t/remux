@@ -24,6 +24,7 @@ use crate::{
 };
 use axum_anyhow::ApiResult as Result;
 use chrono::{Datelike, Utc};
+use remux_sdks::remux::NotificationType;
 use sqlx::SqlitePool;
 
 use super::{mock_items, stub_json};
@@ -933,6 +934,28 @@ pub async fn delete_item(
     _session: auth::AdminSession,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode> {
+    // The payload is built from the row itself (name, kind, overview, …), so it
+    // has to be captured before the DELETE — afterwards there is nothing left
+    // to describe. Best-effort and only when a webhook subscribes: this is an
+    // extra read on a path that otherwise does none, and a failed read must not
+    // turn a working delete into an error.
+    let deleted = if state
+        .ctx
+        .webhooks
+        .wants(NotificationType::ItemDeleted)
+    {
+        db::Media::get_by_id(
+            &state
+                .ctx
+                .db,
+            &id,
+        )
+        .await
+        .ok()
+        .flatten()
+    } else {
+        None
+    };
     db::Media::delete(
         &state
             .ctx
@@ -944,6 +967,14 @@ pub async fn delete_item(
         .ctx
         .ws_tx
         .send(crate::ws::WsEvent::LibraryChanged);
+    if let Some(item) = deleted {
+        state
+            .ctx
+            .webhooks
+            .emit(crate::services::webhooks::WebhookEvent::ItemDeleted {
+                item: Box::new(item),
+            });
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

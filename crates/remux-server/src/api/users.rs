@@ -21,11 +21,14 @@ use crate::{
     common::{get_uuid, server_id},
     db,
     db::{auth, user::User},
-    services::MediaResolveService,
+    services::{
+        MediaResolveService,
+        webhooks::{DeviceEventData, UserDataSaveReason, UserEventData, WebhookEvent},
+    },
     ws::WsEvent,
 };
 use axum_anyhow::ApiResult as Result;
-use remux_sdks::remux::Username;
+use remux_sdks::remux::{NotificationType, Username};
 
 use super::{
     items::{ItemsQueryResultBuilder, get_items, item, items, items_flat},
@@ -203,6 +206,63 @@ fn require_self_or_admin(target_id: Uuid, session: &auth::AuthSession) -> Result
     Ok(())
 }
 
+/// Report that a user's data for one item changed.
+///
+/// Instrumented in the handlers rather than in `db::UserMediaState` on purpose:
+/// the reason is a property of the request (a favourite toggle, a played
+/// toggle, a position save), not of the row being written, and the db layer
+/// stays free of the event bus.
+fn emit_user_data_saved(
+    state: &AppState,
+    user: &db::User,
+    item_id: Uuid,
+    save_reason: UserDataSaveReason,
+) {
+    state
+        .ctx
+        .webhooks
+        .emit(WebhookEvent::UserDataSaved {
+            user: user.into(),
+            item_id,
+            save_reason,
+        });
+}
+
+/// Report a successful login.
+///
+/// Jellyfin raises both events for one login: `AuthenticationSuccess` is the
+/// credential check, `SessionStart` is the session it opened. Webhooks
+/// subscribe to them separately, so both are emitted.
+///
+/// `remote_ip` is passed in rather than read off `device`: the row is being
+/// created by this very request and has no IP recorded yet.
+fn emit_authenticated(
+    state: &AppState,
+    user: &db::User,
+    device: &auth::Device,
+    remote_ip: Option<String>,
+) {
+    let user_data: UserEventData = user.into();
+    let device_data = DeviceEventData {
+        remote_ip,
+        ..device.into()
+    };
+    state
+        .ctx
+        .webhooks
+        .emit(WebhookEvent::AuthenticationSuccess {
+            user: user_data.clone(),
+            device: device_data.clone(),
+        });
+    state
+        .ctx
+        .webhooks
+        .emit(WebhookEvent::SessionStart {
+            user: user_data,
+            device: device_data,
+        });
+}
+
 fn build_auth_response(
     data_dir: &std::path::Path,
     device: auth::Device,
@@ -268,21 +328,43 @@ fn build_auth_response(
 pub async fn users_authenticatebyname(
     State(state): State<AppState>,
     auth_header: auth::JellyfinAuthHeader,
+    headers: header::HeaderMap,
     Json(data): Json<api::AuthenticateUserByName>,
 ) -> Result<impl IntoResponse> {
-    let user = User::authenticate(
+    let username = data
+        .username
+        .as_deref()
+        .unwrap_or("");
+    let authenticated = User::authenticate(
         &state
             .ctx
             .db,
-        data.username
-            .as_deref()
-            .unwrap_or(""),
+        username,
         data.pw
             .as_deref()
             .unwrap_or(""),
     )
-    .await?
-    .context_unauthorized("not found")?;
+    .await?;
+    // `authenticate` answers `Ok(None)` only for an unknown user or a wrong
+    // password — a DB failure is an error, not a failed login.
+    //
+    // Guarded, unlike the other auth events: this is the only emission site
+    // reachable without credentials, so its rate is the attacker's.
+    if authenticated.is_none()
+        && state
+            .ctx
+            .webhooks
+            .wants(NotificationType::AuthenticationFailure)
+    {
+        state
+            .ctx
+            .webhooks
+            .emit(WebhookEvent::AuthenticationFailure {
+                username: username.to_string(),
+                remote_ip: auth::remote_ip_from_headers(&headers),
+            });
+    }
+    let user = authenticated.context_unauthorized("not found")?;
     let device = auth::Device::new_from_header(auth_header, &user)?;
     device
         .save(
@@ -291,6 +373,12 @@ pub async fn users_authenticatebyname(
                 .db,
         )
         .await?;
+    emit_authenticated(
+        &state,
+        &user,
+        &device,
+        auth::remote_ip_from_headers(&headers),
+    );
 
     Ok(build_auth_response(
         &state
@@ -306,6 +394,7 @@ pub async fn users_authenticatebyname(
 pub async fn authenticate_with_quickconnect(
     State(state): State<AppState>,
     auth_header: auth::JellyfinAuthHeader,
+    headers: header::HeaderMap,
     Json(body): Json<api::AuthenticateWithQuickConnect>,
 ) -> Result<impl IntoResponse> {
     let entry = state
@@ -359,6 +448,13 @@ pub async fn authenticate_with_quickconnect(
                 .db,
         )
         .await?;
+
+    emit_authenticated(
+        &state,
+        &user,
+        &device,
+        auth::remote_ip_from_headers(&headers),
+    );
 
     // clean up store entries
     state
@@ -445,6 +541,12 @@ pub async fn mark_favorite(
             &session.user,
         )
         .await?;
+    emit_user_data_saved(
+        &state,
+        &session.user,
+        media.id,
+        UserDataSaveReason::ToggleFavorite,
+    );
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -465,6 +567,12 @@ pub async fn unmark_favorite(
             &session.user,
         )
         .await?;
+    emit_user_data_saved(
+        &state,
+        &session.user,
+        media.id,
+        UserDataSaveReason::ToggleFavorite,
+    );
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -485,6 +593,12 @@ pub async fn mark_favorite_modern(
             &session.user,
         )
         .await?;
+    emit_user_data_saved(
+        &state,
+        &session.user,
+        media.id,
+        UserDataSaveReason::ToggleFavorite,
+    );
     Ok(Json(api::db_state_to_dto(s, &media)).into_response())
 }
 
@@ -505,6 +619,12 @@ pub async fn unmark_favorite_modern(
             &session.user,
         )
         .await?;
+    emit_user_data_saved(
+        &state,
+        &session.user,
+        media.id,
+        UserDataSaveReason::ToggleFavorite,
+    );
     Ok(Json(api::db_state_to_dto(s, &media)).into_response())
 }
 
@@ -534,6 +654,7 @@ pub async fn mark_played(
             server_config.release_date_threshold(),
         )
         .await?;
+    emit_user_data_saved(&state, &user, media.id, UserDataSaveReason::TogglePlayed);
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -556,6 +677,7 @@ pub async fn unmark_played(
             true,
         )
         .await?;
+    emit_user_data_saved(&state, &user, media.id, UserDataSaveReason::TogglePlayed);
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -595,6 +717,12 @@ pub async fn create_user(
         .ctx
         .ws_tx
         .send(WsEvent::UserUpdated(user.id));
+    state
+        .ctx
+        .webhooks
+        .emit(WebhookEvent::UserCreated {
+            user: (&user).into(),
+        });
     Ok((
         StatusCode::OK,
         Json(api::db_user_to_dto(
@@ -622,6 +750,27 @@ pub async fn delete_user(
         return Err(anyhow::anyhow!("Cannot delete yourself")
             .context_bad_request("cannot delete own account"));
     }
+    // The row is about to disappear, so the name has to be read first — and
+    // only when something is listening, since that is one extra query per
+    // deletion.
+    let username = if state
+        .ctx
+        .webhooks
+        .wants(NotificationType::UserDeleted)
+    {
+        db::User::get_by_id(
+            &state
+                .ctx
+                .db,
+            &user_id,
+        )
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.username)
+    } else {
+        None
+    };
     db::User::delete(
         &state
             .ctx
@@ -633,6 +782,12 @@ pub async fn delete_user(
         .ctx
         .ws_tx
         .send(WsEvent::UserDeleted(user_id));
+    if let Some(username) = username {
+        state
+            .ctx
+            .webhooks
+            .emit(WebhookEvent::UserDeleted { user_id, username });
+    }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -734,6 +889,12 @@ pub async fn change_password(
         .ctx
         .ws_tx
         .send(WsEvent::SessionsChanged);
+    state
+        .ctx
+        .webhooks
+        .emit(WebhookEvent::UserPasswordChanged {
+            user: (&user).into(),
+        });
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -764,6 +925,12 @@ pub async fn update_user_policy(
         .ctx
         .ws_tx
         .send(WsEvent::UserUpdated(user_id));
+    state
+        .ctx
+        .webhooks
+        .emit(WebhookEvent::UserUpdated {
+            user: (&user).into(),
+        });
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -800,6 +967,12 @@ pub async fn update_user(
         .ctx
         .ws_tx
         .send(WsEvent::UserUpdated(user_id));
+    state
+        .ctx
+        .webhooks
+        .emit(WebhookEvent::UserUpdated {
+            user: (&user).into(),
+        });
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
