@@ -244,6 +244,9 @@ pub async fn init_app(
                 .as_deref()
                 .expect("Config::resolve() must be called before init_app"),
         ),
+        config
+            .data_dir
+            .join("cache"),
         config.torrent_http_port,
         config.disable_dht,
         config.torrent_peer_port,
