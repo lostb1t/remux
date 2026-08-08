@@ -1627,10 +1627,9 @@ mod tests {
             imdb: Some(imdb(SERIES_IMDB)),
             ..Default::default()
         };
-        let child_ids = db::ExternalIds {
-            series_imdb: Some(imdb(SERIES_IMDB)),
-            ..Default::default()
-        };
+        // Season and episode ids derive from the series' external ids plus the
+        // season/episode numbers, so the children carry the series' ids.
+        let child_ids = series_ids.clone();
 
         let mut series = db::Media {
             id: derived_id(db::MediaKind::Series, &series_ids, None, None),
