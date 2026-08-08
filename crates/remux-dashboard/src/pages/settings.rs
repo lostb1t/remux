@@ -1651,7 +1651,7 @@ pub fn RemuxdbSettingsCard(app_state: AppState) -> Element {
             } else {
                 form { onsubmit: on_submit, style: "display:flex;flex-direction:column;gap:14px",
                     p { style: "font-size:.8rem;color:var(--text-secondary);line-height:1.5;margin:0",
-                        "RemuxDB is a comprehensive media metadata database for torrents. Instead of relying on file names, it probes the actual files to build accurate stream information."
+                        "RemuxDB is a comprehensive media metadata database for torrents and NZBs. Instead of relying on file names, it probes the actual files to build accurate stream information."
                     }
                     p { style: "font-size:.8rem;color:var(--text-secondary);line-height:1.5;margin:0",
                         "Want to help populate the DB faster? You can run a worker! Join Discord for more info."
@@ -1665,7 +1665,6 @@ pub fn RemuxdbSettingsCard(app_state: AppState) -> Element {
                             }
                             " Enable RemuxDB"
                         }
-                        p { class: "field-hint", "Submit probe data to RemuxDB after each live probe." }
                     }
                     if let Some(err) = error.read().as_ref() {
                         ErrorAlert { message: err.clone() }
