@@ -3227,6 +3227,18 @@ pub enum FilterRule {
         op: SetOp,
         catalog_ids: Vec<Uuid>,
     },
+    /// Matches items that are (or are not) children of any group container
+    /// (a manual collection with `collection_media_kind = 'collection'`).
+    GroupContainer {
+        value: bool,
+    },
+    /// Matches items that are (or are not) explicit children of the given manual collection(s)
+    /// via the `media_relations` `role = 'collection'` edge.
+    CollectionMember {
+        #[serde(default)]
+        op: SetOp,
+        collection_ids: Vec<Uuid>,
+    },
 }
 
 /// Whether all rules must match (AND) or any rule must match (OR).
@@ -5154,6 +5166,99 @@ impl Endpoint for PatchItem {
     }
     fn body(&self) -> Body {
         Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
+    }
+}
+
+/// GET /collections/{id}/items — fetch items in a manual collection.
+/// Each item's `playlist_item_id` is the relation_id used for removal.
+#[derive(Debug, Clone)]
+pub struct GetCollectionItems {
+    pub collection_id: String,
+    pub start_index: Option<u32>,
+    pub limit: Option<u32>,
+}
+
+impl Endpoint for GetCollectionItems {
+    type Output = BaseItemDtoQueryResult;
+
+    fn path(&self) -> String {
+        format!("/collections/{}/items", self.collection_id)
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        #[derive(Serialize)]
+        struct Q {
+            #[serde(rename = "startIndex", skip_serializing_if = "Option::is_none")]
+            start_index: Option<u32>,
+            #[serde(rename = "limit", skip_serializing_if = "Option::is_none")]
+            limit: Option<u32>,
+        }
+        Q {
+            start_index: self.start_index,
+            limit: self.limit,
+        }
+    }
+}
+
+/// POST /collections/{id}/items?ids=uuid,uuid — add items to a manual collection.
+#[derive(Debug, Clone)]
+pub struct AddCollectionItems {
+    pub collection_id: String,
+    pub ids: Vec<String>,
+}
+
+impl Endpoint for AddCollectionItems {
+    type Output = ();
+
+    fn path(&self) -> String {
+        format!("/collections/{}/items", self.collection_id)
+    }
+
+    fn method(&self) -> Method {
+        Method::POST
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        #[derive(Serialize)]
+        struct Q {
+            ids: String,
+        }
+        Q {
+            ids: self
+                .ids
+                .join(","),
+        }
+    }
+}
+
+/// DELETE /collections/{id}/items?ids=id,... — remove items from a collection.
+#[derive(Debug, Clone)]
+pub struct RemoveCollectionItems {
+    pub collection_id: String,
+    pub ids: Vec<String>,
+}
+
+impl Endpoint for RemoveCollectionItems {
+    type Output = ();
+
+    fn path(&self) -> String {
+        format!("/collections/{}/items", self.collection_id)
+    }
+
+    fn method(&self) -> Method {
+        Method::DELETE
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        #[derive(Serialize)]
+        struct Q {
+            ids: String,
+        }
+        Q {
+            ids: self
+                .ids
+                .join(","),
+        }
     }
 }
 

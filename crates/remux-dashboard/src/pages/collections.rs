@@ -1,10 +1,25 @@
 use crate::{components::*, state::AppState};
 use dioxus::prelude::*;
 use remux_sdks::remux::{
-    BaseItemDto, CollectionFilter, CreateVirtualFolder, CreateVirtualFolderPayload,
-    DeleteVirtualFolder, FilterGroup, FilterMatchMode, GetItems, GetItemsQuery,
-    ItemSortBy, MediaType, PatchItem, PatchItemPayload, SortOrder,
+    AddCollectionItems, BaseItemDto, CollectionFilter, CollectionType,
+    CreateVirtualFolder, CreateVirtualFolderPayload, DeleteVirtualFolder, FilterGroup,
+    FilterMatchMode, GetCollectionItems, GetItems, GetItemsQuery, ItemSortBy,
+    MediaType, PatchItem, PatchItemPayload, RemoveCollectionItems, RemuxCollectionKind,
+    SortOrder,
 };
+
+fn is_group_container(item: &BaseItemDto) -> bool {
+    item.collection_type
+        .as_ref()
+        == Some(&CollectionType::Boxsets)
+}
+
+fn is_promoted(item: &BaseItemDto) -> bool {
+    item.remux
+        .as_ref()
+        .and_then(|r| r.promoted)
+        .unwrap_or(false)
+}
 
 /// Which collection is currently being edited (None = creating new).
 #[derive(Clone, Debug)]
@@ -114,8 +129,11 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                                     if !col_kind_label.is_empty() {
                                                         span { class: "session-client-badge", "{col_kind_label}" }
                                                     }
-                                                    if col.remux.as_ref().and_then(|r| r.promoted).unwrap_or(false) {
+                                                    if is_promoted(&col) {
                                                         span { class: "task-badge task-badge-running", "Library" }
+                                                    }
+                                                    if is_group_container(&col) && !is_promoted(&col) {
+                                                        span { class: "task-badge task-badge-idle", "Group" }
                                                     }
                                                 }
                                             }
@@ -439,6 +457,8 @@ pub fn CollectionForm(
     let mut pending_image_bytes: Signal<Option<Vec<u8>>> = use_signal(|| None);
     let mut pending_image_preview: Signal<Option<String>> = use_signal(|| None);
     let mut has_image = use_signal(|| existing_image_tag.is_some());
+    let app_state_for_children = app_state.clone();
+    let existing_for_children = existing.clone();
     let client_for_delete = app_state.clone();
     let app_state_delete = app_state.clone();
     let delete_name = existing
@@ -463,6 +483,7 @@ pub fn CollectionForm(
         let ct = col_type
             .peek()
             .clone();
+        let is_group = ct == "collections";
         let ck = col_kind
             .peek()
             .clone();
@@ -527,8 +548,16 @@ pub fn CollectionForm(
                             promoted: Some(prm),
                             tags: Some(current_tags),
                             sort_order: None,
-                            latest_auto_unplayed: Some(auto_unplayed),
-                            latest_sort_digital: Some(sort_digital),
+                            latest_auto_unplayed: Some(if is_group {
+                                false
+                            } else {
+                                auto_unplayed
+                            }),
+                            latest_sort_digital: Some(if is_group {
+                                false
+                            } else {
+                                sort_digital
+                            }),
                             collection_default_sort: default_sort_payload,
                             collection_default_sort_order: default_sort_order_payload,
                         },
@@ -579,8 +608,16 @@ pub fn CollectionForm(
                             promoted: None,
                             tags: Some(current_tags),
                             sort_order: None,
-                            latest_auto_unplayed: Some(auto_unplayed),
-                            latest_sort_digital: Some(sort_digital),
+                            latest_auto_unplayed: Some(if is_group {
+                                false
+                            } else {
+                                auto_unplayed
+                            }),
+                            latest_sort_digital: Some(if is_group {
+                                false
+                            } else {
+                                sort_digital
+                            }),
                             collection_default_sort: default_sort_payload,
                             collection_default_sort_order: default_sort_order_payload,
                         },
@@ -638,7 +675,9 @@ pub fn CollectionForm(
                     id: "col-type",
                     class: "select-input",
                     value: "{col_type}",
-                    onchange: move |e| col_type.set(e.value()),
+                    onchange: move |e| {
+                        col_type.set(e.value());
+                    },
                     option { value: "movies",      "Movies"      }
                     option { value: "tvshows",     "TV Shows"    }
                     option { value: "mixed",       "Mixed (Movies & Shows)" }
@@ -648,17 +687,18 @@ pub fn CollectionForm(
                 }
             }
 
-            if col_type.read().as_str() != "collections" {
-                div { class: "field",
-                    label { class: "field-label", r#for: "col-kind", "Collection Kind" }
-                    select {
-                        id: "col-kind",
-                        class: "select-input",
-                        value: "{col_kind}",
-                        disabled: is_edit,
-                        onchange: move |e| col_kind.set(e.value()),
-                        option { value: "smart",  "Smart"  }
-                        option { value: "manual", "Manual" }
+            div { class: "field",
+                label { class: "field-label", r#for: "col-kind", "Collection Kind" }
+                select {
+                    id: "col-kind",
+                    class: "select-input",
+                    value: "{col_kind}",
+                    disabled: false,
+                    onchange: move |e| col_kind.set(e.value()),
+                    option { value: "smart",  "Smart"  }
+                    option { value: "manual", "Manual" }
+                    if col_type.read().as_str() != "collections" {
+                        option { value: "catalog", "Catalog" }
                     }
                 }
             }
@@ -755,19 +795,21 @@ pub fn CollectionForm(
                 on_change: move |v| promoted.set(v),
             }
 
-            ToggleRow {
-                label: "Latest: Unplayed Only",
-                checked: *latest_auto_unplayed.read(),
-                on_change: move |v| latest_auto_unplayed.set(v),
+            if col_type.read().as_str() != "collections" {
+                ToggleRow {
+                    label: "Latest: Unplayed Only",
+                    checked: *latest_auto_unplayed.read(),
+                    on_change: move |v| latest_auto_unplayed.set(v),
+                }
+
+                ToggleRow {
+                    label: "Latest: Sort by Digital Release",
+                    checked: *latest_sort_digital.read(),
+                    on_change: move |v| latest_sort_digital.set(v),
+                }
             }
 
-            ToggleRow {
-                label: "Latest: Sort by Digital Release",
-                checked: *latest_sort_digital.read(),
-                on_change: move |v| latest_sort_digital.set(v),
-            }
-
-            if (col_kind.read().as_str() == "smart" || col_kind.read().as_str() == "catalog") && col_type.read().as_str() != "collections" {
+            if col_kind.read().as_str() == "smart" || col_kind.read().as_str() == "catalog" {
                 FilterRuleEditor { match_mode: sf_match, groups: sf_groups }
 
                 div { class: "field",
@@ -810,6 +852,19 @@ pub fn CollectionForm(
                 }
             }
 
+            if col_type.read().as_str() == "collections" && col_kind.read().as_str() == "manual" {
+                if is_edit {
+                    if let Some(ref e) = existing_for_children {
+                        CollectionGroupChildren {
+                            app_state: app_state_for_children.clone(),
+                            collection_id: e.id.to_string(),
+                        }
+                    }
+                } else {
+                    p { class: "field-hint", "Save this collection first, then edit it to manage child collections." }
+                }
+            }
+
             if let Some(e) = err.read().as_ref() {
                 ErrorAlert { message: e.clone() }
             }
@@ -846,6 +901,172 @@ pub fn CollectionForm(
                     class: "btn btn-primary",
                     disabled: *saving.read(),
                     if *saving.read() { "Saving…" } else { "Save" }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn CollectionGroupChildren(app_state: AppState, collection_id: String) -> Element {
+    let mut all_collections: Signal<Vec<BaseItemDto>> = use_signal(Vec::new);
+    let mut current_children: Signal<Vec<String>> = use_signal(Vec::new);
+    let mut loading = use_signal(|| true);
+    let mut child_error: Signal<Option<String>> = use_signal(|| None);
+
+    let col_id = collection_id.clone();
+    let client = app_state
+        .client
+        .clone();
+    use_effect(move || {
+        let col_id = col_id.clone();
+        let client = client.clone();
+        spawn(async move {
+            let child_items: Vec<BaseItemDto> = client
+                .execute(GetCollectionItems {
+                    collection_id: col_id.clone(),
+                    start_index: None,
+                    limit: None,
+                })
+                .await
+                .ok()
+                .map(|r| r.items)
+                .unwrap_or_default();
+            let child_ids: Vec<String> = child_items
+                .iter()
+                .map(|item| {
+                    item.id
+                        .to_string()
+                })
+                .collect();
+            current_children.set(child_ids);
+
+            let mut all: Vec<BaseItemDto> = client
+                .execute(GetItems(GetItemsQuery {
+                    include_item_types: Some(vec![MediaType::BoxSet]),
+                    include_childless: Some(true),
+                    sort_by: Some(vec![ItemSortBy::SortName]),
+                    sort_order: Some(vec![SortOrder::Ascending]),
+                    ..Default::default()
+                }))
+                .await
+                .ok()
+                .map(|r| {
+                    r.items
+                        .into_iter()
+                        .filter(|item| {
+                            item.id
+                                .to_string()
+                                != col_id
+                                && !is_group_container(item)
+                                && !is_promoted(item)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+
+            // Merge in children that are already assigned to this group —
+            // the index query excludes them (parent_id IS NOT NULL) but
+            // they must appear as checked checkboxes.
+            let all_ids: std::collections::HashSet<String> = all
+                .iter()
+                .map(|item| {
+                    item.id
+                        .to_string()
+                })
+                .collect();
+            for child in child_items {
+                if !all_ids.contains(
+                    &child
+                        .id
+                        .to_string(),
+                ) {
+                    all.push(child);
+                }
+            }
+            all.sort_by(|a, b| {
+                a.sort_name
+                    .as_deref()
+                    .unwrap_or("")
+                    .cmp(
+                        b.sort_name
+                            .as_deref()
+                            .unwrap_or(""),
+                    )
+            });
+
+            all_collections.set(all);
+            loading.set(false);
+        });
+    });
+
+    rsx! {
+        div { class: "field",
+            label { class: "field-label", "Child Collections" }
+            p { class: "field-hint", "Select which collections appear inside this group." }
+
+            if *loading.read() {
+                LoadingText {}
+            } else {
+                div { style: "display:flex;flex-direction:column;gap:4px;max-height:240px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:8px",
+                    for item in all_collections.read().clone() {
+                        {
+                            let item_id = item.id.to_string();
+                            let item_name = item.name.clone().unwrap_or_default();
+                            let children_snapshot = current_children.read().clone();
+                            let is_checked = children_snapshot.iter().any(|mid| mid == &item_id);
+                            let client_toggle = app_state.client.clone();
+                            let col_id_toggle = collection_id.clone();
+                            rsx! {
+                                label {
+                                    style: "display:flex;align-items:center;gap:8px;cursor:pointer;padding:4px 0",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: is_checked,
+                                        onchange: move |e| {
+                                            let checked = e.checked();
+                                            let client = client_toggle.clone();
+                                            let col_id = col_id_toggle.clone();
+                                            let media_id = item_id.clone();
+                                            child_error.set(None);
+                                            spawn(async move {
+                                                let result = if checked {
+                                                    client.execute(AddCollectionItems {
+                                                        collection_id: col_id,
+                                                        ids: vec![media_id.clone()],
+                                                    }).await
+                                                } else {
+                                                    client.execute(RemoveCollectionItems {
+                                                        collection_id: col_id,
+                                                        ids: vec![media_id.clone()],
+                                                    }).await
+                                                };
+                                                match result {
+                                                    Ok(_) => {
+                                                        if checked {
+                                                            current_children.write().push(media_id);
+                                                        } else {
+                                                            current_children.write().retain(|mid| mid != &media_id);
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        child_error.set(Some(e.user_message()));
+                                                    }
+                                                }
+                                            });
+                                        },
+                                    }
+                                    span { "{item_name}" }
+                                }
+                            }
+                        }
+                    }
+                    if all_collections.read().is_empty() {
+                        span { class: "loading-text", "No other collections available." }
+                    }
+                }
+                if let Some(err) = child_error.read().as_ref() {
+                    p { style: "color:var(--error);font-size:0.8rem;margin-top:4px", "{err}" }
                 }
             }
         }

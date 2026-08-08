@@ -1301,6 +1301,7 @@ pub struct MediaFilter {
     /// container kinds — including smart and catalog collections — are dropped
     /// when empty.
     pub exclude_childless: bool,
+    pub exclude_ids: Option<Vec<Uuid>>,
 }
 
 /// Normalise any country string to an ISO 3166-1 alpha-2 code (e.g. "US").
@@ -1487,6 +1488,11 @@ pub struct Media {
 }
 
 impl Media {
+    pub fn is_group_container(&self) -> bool {
+        self.kind == MediaKind::Collection
+            && self.collection_media_kind == Some(CollectionMediaKind::Collection)
+    }
+
     pub fn is_field_locked(&self, field: &MetadataField) -> bool {
         self.is_locked
             || self
@@ -2804,6 +2810,63 @@ impl Media {
             .collect())
     }
 
+    pub async fn get_children_by_parent_id(
+        db: &SqlitePool,
+        parent_id: &Uuid,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> Result<Vec<Self>, sqlx::Error> {
+        let limit = limit.unwrap_or(i64::MAX);
+        let offset = offset.unwrap_or(0);
+        sqlx::query_as::<_, Self>(
+            "SELECT * FROM media WHERE parent_id = $1 ORDER BY title COLLATE NOCASE LIMIT $2 OFFSET $3",
+        )
+        .bind(parent_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(db)
+        .await
+    }
+
+    pub async fn set_parent_id(
+        db: &SqlitePool,
+        media_ids: &[Uuid],
+        parent_id: Option<Uuid>,
+    ) -> Result<(), sqlx::Error> {
+        if media_ids.is_empty() {
+            return Ok(());
+        }
+        let _permit = DB_WRITE_SEMAPHORE
+            .acquire()
+            .await
+            .unwrap();
+        for chunk in media_ids.chunks(SQLITE_VAR_LIMIT) {
+            let mut qb = sqlx::QueryBuilder::new("UPDATE media SET parent_id = ");
+            qb.push_bind(parent_id);
+            qb.push(" WHERE id IN (");
+            let mut sep = qb.separated(", ");
+            for id in chunk {
+                sep.push_bind(id);
+            }
+            qb.push(")");
+            qb.build()
+                .execute(db)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn detach_children(
+        db: &SqlitePool,
+        parent_id: &Uuid,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE media SET parent_id = NULL WHERE parent_id = $1")
+            .bind(parent_id)
+            .execute(db)
+            .await?;
+        Ok(())
+    }
+
     pub async fn get_by_filter(
         db: &SqlitePool,
         filter: &MediaFilter,
@@ -3478,6 +3541,16 @@ impl Media {
             if let Some(ref f) = filter.filter_rules {
                 apply_filter_rules(qb, f);
             }
+            if let Some(ref ids) = filter.exclude_ids {
+                if !ids.is_empty() {
+                    qb.push(" AND media.id NOT IN (");
+                    let mut sep = qb.separated(", ");
+                    for id in ids {
+                        sep.push_bind(*id);
+                    }
+                    qb.push(")");
+                }
+            }
             // CLAUDE.md: content policy must not filter container rows themselves.
             // Applying tag/rating rules to Collection/Folder records would wrongly
             // hide libraries. Child-count branches still use policy_filter via
@@ -4143,9 +4216,8 @@ impl Media {
                 }
             }
 
-            // For manual collections: count members via media_relations (role='collection').
-            // The parent_id branch above always returns 0 for these — they store
-            // membership in media_relations, not via parent_id.
+            // For manual collections (non-group): count members via media_relations.
+            // Group containers use parent_id (handled above).
             let manual_coll_ids: Vec<Uuid> = records
                 .iter()
                 .filter(|m| {
@@ -4546,7 +4618,7 @@ impl Media {
                 ) {
                     return true;
                 }
-                if m.collection_media_kind == Some(CollectionMediaKind::Collection) {
+                if m.is_group_container() {
                     return true;
                 }
                 m.child_count
@@ -4563,6 +4635,40 @@ impl Media {
             records,
             total_count,
         })
+    }
+
+    pub async fn get_smart_group_excluded_ids(db: &SqlitePool) -> Result<Vec<Uuid>> {
+        let groups: Vec<Self> = sqlx::query_as(
+            "SELECT * FROM media \
+             WHERE kind = 'collection' \
+             AND collection_media_kind = 'collection' \
+             AND collection_kind = 'smart' \
+             AND collection_smart_filter IS NOT NULL",
+        )
+        .fetch_all(db)
+        .await?;
+
+        let mut excluded = Vec::new();
+        for group in &groups {
+            let Some(sf) = group.parse_smart_filter() else {
+                continue;
+            };
+            let filter = MediaFilter {
+                kind: Some(vec![MediaKind::Collection]),
+                filter_rules: Some(sf.clone()),
+                ..Default::default()
+            };
+            let result = Self::get_by_filter(db, &filter).await?;
+            excluded.extend(
+                result
+                    .records
+                    .iter()
+                    .map(|m| m.id),
+            );
+        }
+        excluded.sort_unstable();
+        excluded.dedup();
+        Ok(excluded)
     }
 
     pub async fn get_refreshable(
@@ -6884,6 +6990,25 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
             Some((sql, negated))
         }
         R::Catalog { .. } => None,
+        R::GroupContainer { value } => {
+            let sql = "media.parent_id IS NOT NULL".to_string();
+            Some((sql, !value))
+        }
+        R::CollectionMember { op, collection_ids } if !collection_ids.is_empty() => {
+            let in_clause = collection_ids
+                .iter()
+                .map(|id| format!("X'{}'", id.simple()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "EXISTS (SELECT 1 FROM media_relations mr \
+                 WHERE mr.right_media_id = media.id AND mr.role = 'collection' \
+                 AND mr.left_media_id IN ({in_clause}))"
+            );
+            let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
+            Some((sql, negated))
+        }
+        R::CollectionMember { .. } => None,
     }
 }
 
@@ -8354,5 +8479,98 @@ mod tests {
 
         let filtered = fetch_titles(Some(vec![AlbumKind::Album])).await;
         assert_eq!(filtered, vec!["No Type", "Real Album"]);
+    }
+
+    #[tokio::test]
+    async fn get_smart_group_excluded_ids_returns_matched_collections() {
+        use remux_sdks::remux::{
+            CollectionFilter, FilterGroup, FilterMatchMode, FilterRule, SetOp,
+        };
+
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let now = chrono::Utc::now().naive_utc();
+
+        // Create a smart group container with a tag filter.
+        let mut group = Media {
+            title: "Tagged Group".to_string(),
+            kind: MediaKind::Collection,
+            collection_kind: Some(CollectionKind::Smart),
+            collection_media_kind: Some(CollectionMediaKind::Collection),
+            collection_smart_filter: Some(CollectionFilter {
+                match_mode: FilterMatchMode::All,
+                groups: vec![FilterGroup {
+                    match_mode: FilterMatchMode::All,
+                    rules: vec![FilterRule::Tag {
+                        op: SetOp::In,
+                        values: vec!["smart-test".to_string()],
+                    }],
+                }],
+            }),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        group
+            .save(db)
+            .await
+            .unwrap();
+
+        // A collection tagged to match the filter.
+        let mut matched = Media {
+            title: "Matched Col".to_string(),
+            kind: MediaKind::Collection,
+            collection_kind: Some(CollectionKind::Smart),
+            collection_media_kind: Some(CollectionMediaKind::Movie),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        matched
+            .save(db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT OR IGNORE INTO media_tags (media_id, tag) VALUES (?, ?)")
+            .bind(matched.id)
+            .bind("smart-test")
+            .execute(db)
+            .await
+            .unwrap();
+
+        // A collection without the tag.
+        let mut unmatched = Media {
+            title: "Unmatched Col".to_string(),
+            kind: MediaKind::Collection,
+            collection_kind: Some(CollectionKind::Smart),
+            collection_media_kind: Some(CollectionMediaKind::Movie),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        unmatched
+            .save(db)
+            .await
+            .unwrap();
+
+        let excluded = Media::get_smart_group_excluded_ids(db)
+            .await
+            .unwrap();
+
+        assert!(
+            excluded.contains(&matched.id),
+            "tagged collection must be in excluded IDs; got: {excluded:?}"
+        );
+        assert!(
+            !excluded.contains(&unmatched.id),
+            "untagged collection must not be in excluded IDs; got: {excluded:?}"
+        );
+        assert!(
+            !excluded.contains(&group.id),
+            "the group container itself must not be in excluded IDs; got: {excluded:?}"
+        );
     }
 }

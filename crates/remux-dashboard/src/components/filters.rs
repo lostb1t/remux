@@ -21,6 +21,10 @@ fn rule_values(rule: &FilterRule) -> Vec<String> {
             .iter()
             .map(|id| id.to_string())
             .collect(),
+        FilterRule::CollectionMember { collection_ids, .. } => collection_ids
+            .iter()
+            .map(|id| id.to_string())
+            .collect(),
         _ => vec![],
     }
 }
@@ -268,6 +272,17 @@ fn rule_to_raw(rule: &FilterRule) -> (String, String, String) {
         }
         FilterRule::HasTrailer { value } => {
             ("has_trailer".into(), String::new(), value.to_string())
+        }
+        FilterRule::GroupContainer { value } => {
+            ("group_container".into(), String::new(), value.to_string())
+        }
+        FilterRule::CollectionMember { op, collection_ids } => {
+            let val = collection_ids
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            ("collection_member".into(), set_op_str(op), val)
         }
     }
 }

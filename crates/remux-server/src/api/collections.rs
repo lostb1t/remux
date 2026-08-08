@@ -32,7 +32,7 @@ pub async fn get_collection_items(
     Path(id): Path<Uuid>,
     Query(q): Query<CollectionItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    db::Media::get_by_id(
+    let collection = db::Media::get_by_id(
         &state
             .ctx
             .db,
@@ -41,6 +41,47 @@ pub async fn get_collection_items(
     .await?
     .filter(|m| m.kind == db::MediaKind::Collection)
     .context_not_found("Collection not found")?;
+
+    if collection.is_group_container() {
+        let start_index = q
+            .start_index
+            .unwrap_or(0);
+        let children = db::Media::get_children_by_parent_id(
+            &state
+                .ctx
+                .db,
+            &id,
+            q.limit
+                .map(|l| l as i64),
+            Some(start_index as i64),
+        )
+        .await?;
+        let total: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM media WHERE parent_id = $1")
+                .bind(&id)
+                .fetch_one(
+                    &state
+                        .ctx
+                        .db,
+                )
+                .await?;
+        let items: Vec<_> = children
+            .into_iter()
+            .map(|m| {
+                let id_str =
+                    m.id.to_string();
+                let mut dto = api::db_media_to_item(m, false);
+                dto.playlist_item_id = Some(id_str);
+                dto
+            })
+            .collect();
+        return Ok(Json(api::BaseItemDtoQueryResult {
+            items,
+            total_record_count: total,
+            start_index: start_index,
+            ..Default::default()
+        }));
+    }
 
     let relations = db::MediaRelation::get_collection_items(
         &state
@@ -109,7 +150,7 @@ pub async fn add_collection_items(
     Path(id): Path<Uuid>,
     Query(q): Query<AddCollectionItemsQuery>,
 ) -> Result<StatusCode> {
-    db::Media::get_by_id(
+    let collection = db::Media::get_by_id(
         &state
             .ctx
             .db,
@@ -126,21 +167,33 @@ pub async fn add_collection_items(
         .filter_map(|s| Uuid::parse_str(s.trim()).ok())
         .collect();
 
-    db::MediaRelation::add_collection_items(
-        &state
-            .ctx
-            .db,
-        &id,
-        &media_ids,
-    )
-    .await
-    .context_bad_request("failed to add items")?;
+    if collection.is_group_container() {
+        db::Media::set_parent_id(
+            &state
+                .ctx
+                .db,
+            &media_ids,
+            Some(id),
+        )
+        .await
+        .context_bad_request("failed to add items")?;
+    } else {
+        db::MediaRelation::add_collection_items(
+            &state
+                .ctx
+                .db,
+            &id,
+            &media_ids,
+        )
+        .await
+        .context_bad_request("failed to add items")?;
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
 
 // ---------------------------------------------------------------------------
-// DELETE /collections/{id}/items  (?ids=relation_id,...)
+// DELETE /collections/{id}/items  (?ids=media_id,...)
 // ---------------------------------------------------------------------------
 
 #[query]
@@ -156,7 +209,7 @@ pub async fn remove_collection_items(
     Path(id): Path<Uuid>,
     Query(q): Query<RemoveCollectionItemsQuery>,
 ) -> Result<StatusCode> {
-    db::Media::get_by_id(
+    let collection = db::Media::get_by_id(
         &state
             .ctx
             .db,
@@ -166,21 +219,33 @@ pub async fn remove_collection_items(
     .filter(|m| m.kind == db::MediaKind::Collection)
     .context_not_found("Collection not found")?;
 
-    let relation_ids: Vec<Uuid> = q
+    let ids: Vec<Uuid> = q
         .ids
         .unwrap_or_default()
         .split(',')
         .filter_map(|s| Uuid::parse_str(s.trim()).ok())
         .collect();
 
-    db::MediaRelation::delete_by_relation_ids(
-        &state
-            .ctx
-            .db,
-        &relation_ids,
-    )
-    .await
-    .context_bad_request("failed to remove items")?;
+    if collection.is_group_container() {
+        db::Media::set_parent_id(
+            &state
+                .ctx
+                .db,
+            &ids,
+            None,
+        )
+        .await
+        .context_bad_request("failed to remove items")?;
+    } else {
+        db::MediaRelation::delete_by_relation_ids(
+            &state
+                .ctx
+                .db,
+            &ids,
+        )
+        .await
+        .context_bad_request("failed to remove items")?;
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
