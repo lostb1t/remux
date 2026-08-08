@@ -101,6 +101,9 @@ impl AddonPreset for YtDlpPreset {
             bgutil_script_path: config
                 .bgutil_script_path
                 .clone(),
+            cache_dir: config
+                .data_dir
+                .join("cache/yt-dlp"),
         });
         Ok(AddonCapabilities {
             kind: Some(addon.clone()),
@@ -152,6 +155,18 @@ pub struct YtDlpAddon {
     cookies: Option<String>,
     executable: PathBuf,
     bgutil_script_path: PathBuf,
+    cache_dir: PathBuf,
+}
+
+impl YtDlpAddon {
+    fn cache_args(&self) -> Vec<String> {
+        vec![
+            "--cache-dir".to_string(),
+            self.cache_dir
+                .to_string_lossy()
+                .into_owned(),
+        ]
+    }
 }
 
 fn ytdlp_extra_args() -> Vec<String> {
@@ -387,6 +402,7 @@ impl YtDlpAddon {
                 url_or_query,
             ])
             .args(self.cookies_args())
+            .args(self.cache_args())
             .args(ytdlp_extra_args())
             .args(self.bgutil_args())
             .output()
@@ -467,6 +483,7 @@ impl YtDlpAddon {
                 url_or_query,
             ])
             .args(self.cookies_args())
+            .args(self.cache_args())
             .args(ytdlp_extra_args())
             .args(self.bgutil_args())
             .output()
@@ -529,6 +546,7 @@ impl YtDlpAddon {
                 &url,
             ])
             .args(self.cookies_args())
+            .args(self.cache_args())
             .args(ytdlp_extra_args())
             .args(self.bgutil_args())
             .output()
@@ -678,6 +696,7 @@ impl YtDlpAddon {
                 &search_url,
             ])
             .args(self.cookies_args())
+            .args(self.cache_args())
             .args(ytdlp_extra_args())
             .args(self.bgutil_args())
             .output()

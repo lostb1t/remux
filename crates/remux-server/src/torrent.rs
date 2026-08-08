@@ -3,6 +3,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use anyhow::{Context, Result};
 use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, Session, SessionOptions,
+    SessionPersistenceConfig,
     api::{Api, TorrentIdOrHash},
     http_api::HttpApi,
 };
@@ -16,6 +17,7 @@ pub struct TorrentManager {
 impl TorrentManager {
     pub async fn new(
         data_dir: PathBuf,
+        cache_dir: PathBuf,
         http_port: Option<u16>,
         disable_dht: bool,
         peer_port: Option<u16>,
@@ -26,6 +28,9 @@ impl TorrentManager {
                 disable_dht,
                 disable_dht_persistence: disable_dht,
                 listen_port_range: peer_port.map(|p| p..p + 10),
+                persistence: Some(SessionPersistenceConfig::Json {
+                    folder: Some(cache_dir.join("rqbit")),
+                }),
                 ..Default::default()
             },
         )

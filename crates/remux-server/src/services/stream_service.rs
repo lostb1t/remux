@@ -731,6 +731,10 @@ fn media_info_from_probe(
         ),
     };
 
+    if info_hash.is_none() && nzb.is_none() {
+        return None;
+    }
+
     let (kind, external_ids, season, episode) = if let Some(item) = item {
         let kind = match item.kind {
             db::MediaKind::Episode => "episode",

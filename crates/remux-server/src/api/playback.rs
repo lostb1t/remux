@@ -326,34 +326,7 @@ async fn items_playbackinfo_inner(
                 si.descriptor
                     .server_input(effective_stream.id, port)
             });
-        if let Some(ref input_url) = effective_url {
-            let text_sub_indices: Vec<i64> = source
-                .media_streams
-                .iter()
-                .filter(|s| {
-                    matches!(s.type_, Some(api::MediaStreamType::Subtitle))
-                        && !s.is_external
-                        && s.is_text_subtitle_stream
-                })
-                .map(|s| s.index)
-                .collect();
-            if !text_sub_indices.is_empty() {
-                let data_dir = state
-                    .ctx
-                    .config
-                    .data_dir
-                    .clone();
-                let url = input_url.clone();
-                tokio::spawn(
-                    crate::api::subtitles::pre_extract_all_subtitles_to_cache(
-                        data_dir,
-                        url,
-                        id,
-                        text_sub_indices,
-                    ),
-                );
-            }
-        }
+        let _ = effective_url;
 
         // Resolve default audio/subtitle stream indexes for this source. These are
         // per-request API values (never persisted); resolving before the burn

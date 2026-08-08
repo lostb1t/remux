@@ -7,12 +7,7 @@ use axum::{
 use axum_anyhow::ApiResult as Result;
 use http::{Response, StatusCode};
 use remux_macros::get;
-use std::{
-    collections::HashMap,
-    sync::{Mutex, OnceLock},
-};
-use tokio::sync::watch;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 use crate::{AppState, IntoApiError, OptionExt, ResultExt, api, db, db::auth};
@@ -67,15 +62,6 @@ fn subtitle_cache_path(
             "{item_id}_{stream_index}.{}",
             cache_codec.to_string()
         ))
-}
-
-/// Tracks in-progress batch subtitle extractions. Subtitle endpoint waits on these
-/// instead of launching a competing on-demand FFmpeg process.
-static BATCH_EXTRACTING: OnceLock<Mutex<HashMap<Uuid, watch::Receiver<bool>>>> =
-    OnceLock::new();
-
-fn batch_extraction_map() -> &'static Mutex<HashMap<Uuid, watch::Receiver<bool>>> {
-    BATCH_EXTRACTING.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Extract an embedded text subtitle stream to the requested cache format.
@@ -168,117 +154,6 @@ async fn extract_subtitle_to_cache(
     }
 
     Ok(cache_path)
-}
-
-/// Pre-extract all embedded text subtitle streams for a media source in one FFmpeg pass.
-/// Mirrors Jellyfin's approach: one command, multiple outputs, fire-and-forget at PlaybackInfo time.
-/// The `subtitles_stream` endpoint falls back to on-demand extraction for any cache misses.
-pub(crate) async fn pre_extract_all_subtitles_to_cache(
-    data_dir: std::path::PathBuf,
-    input_url: String,
-    item_id: uuid::Uuid,
-    stream_indices: Vec<i64>,
-) {
-    let cache_dir = data_dir.join("subtitle-cache");
-    let _ = tokio::fs::create_dir_all(&cache_dir).await;
-
-    let mut to_extract: Vec<(i64, std::path::PathBuf)> = Vec::new();
-    for idx in &stream_indices {
-        let path = cache_dir.join(format!("{item_id}_{idx}.srt"));
-        if path.exists() {
-            if let Ok(b) = tokio::fs::read(&path).await {
-                if !String::from_utf8_lossy(&b)
-                    .trim()
-                    .is_empty()
-                {
-                    debug!(%item_id, stream_index = idx, "subtitle cache hit, skipping");
-                    continue;
-                }
-            }
-        }
-        to_extract.push((*idx, path));
-    }
-
-    if to_extract.is_empty() {
-        debug!(%item_id, "all {} subtitle track(s) already cached", stream_indices.len());
-        return;
-    }
-
-    let indices: Vec<i64> = to_extract
-        .iter()
-        .map(|(i, _)| *i)
-        .collect();
-    info!(
-        %item_id,
-        ?indices,
-        "pre-extracting {} subtitle track(s) in background",
-        to_extract.len()
-    );
-
-    // Register in-progress signal so the subtitle endpoint can wait on us
-    // instead of launching a competing FFmpeg process.
-    let (done_tx, done_rx) = watch::channel(false);
-    batch_extraction_map()
-        .lock()
-        .unwrap()
-        .insert(item_id, done_rx);
-
-    let mut cmd = tokio::process::Command::new(ffmpeg_bin());
-    cmd.kill_on_drop(true);
-    // -y: overwrite without prompting (hangs forever waiting for stdin otherwise)
-    // -nostdin: don't read from stdin at all
-    // -c:s srt: convert to SRT so the cache is always valid SRT (not raw ASS/VTT bytes)
-    cmd.args(["-y", "-nostdin", "-i", &input_url]);
-    for (idx, path) in &to_extract {
-        if let Some(p) = path.to_str() {
-            cmd.args([
-                "-map",
-                &format!("0:{idx}"),
-                "-an",
-                "-vn",
-                "-c:s",
-                "srt",
-                "-flush_packets",
-                "1",
-                p,
-            ]);
-        }
-    }
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::null());
-    cmd.stderr(std::process::Stdio::piped());
-
-    let start = std::time::Instant::now();
-    match tokio::time::timeout(std::time::Duration::from_secs(120), cmd.output()).await
-    {
-        Ok(Ok(output)) => {
-            let elapsed = start
-                .elapsed()
-                .as_secs_f32();
-            if output
-                .status
-                .success()
-            {
-                info!(%item_id, ?indices, elapsed_secs = elapsed, "batch subtitle extraction completed");
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                warn!(%item_id, ?indices, elapsed_secs = elapsed, %stderr, "batch subtitle extraction non-zero exit");
-            }
-        }
-        Ok(Err(e)) => {
-            warn!(%item_id, ?indices, "failed to spawn ffmpeg for batch subtitle extraction: {e}");
-        }
-        Err(_) => {
-            warn!(%item_id, ?indices, "batch subtitle extraction timed out after 120s");
-        }
-    }
-
-    // Signal done and clean up (drop tx signals all receivers).
-    let _ = done_tx.send(true);
-    batch_extraction_map()
-        .lock()
-        .unwrap()
-        .remove(&item_id);
 }
 
 /// Subtitle extraction endpoint - extracts a subtitle stream from a media source
@@ -401,7 +276,7 @@ async fn subtitles_stream_inner(
                         &state
                             .ctx
                             .db,
-                        false,
+                        true,
                         Some(
                             session
                                 .user
@@ -626,31 +501,7 @@ async fn subtitles_stream_inner(
     if is_cached(&cache_file) {
         debug!(%item_id, stream_index, "subtitle cache hit");
     } else {
-        // Only the SRT cache is populated by the background batch extraction;
-        // ASS requests skip the wait and extract on demand.
-        if cache_codec == api::SubtitleCodec::Srt {
-            let in_progress_rx = batch_extraction_map()
-                .lock()
-                .unwrap()
-                .get(&item_id)
-                .cloned();
-            if let Some(mut rx) = in_progress_rx {
-                if !*rx.borrow() {
-                    info!(%item_id, stream_index, "batch extraction in progress — waiting for it to finish");
-                    let _ = tokio::time::timeout(
-                        std::time::Duration::from_secs(120),
-                        rx.changed(),
-                    )
-                    .await;
-                }
-            }
-        }
-
-        if is_cached(&cache_file) {
-            info!(%item_id, stream_index, "subtitle ready after waiting for batch extraction");
-        } else {
-            info!(%item_id, stream_index, %map_spec, "subtitle cache miss — extracting on-demand");
-        }
+        info!(%item_id, stream_index, %map_spec, "subtitle cache miss — extracting on-demand");
     }
     let cache_path = match extract_subtitle_to_cache(
         &state
