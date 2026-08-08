@@ -2813,11 +2813,17 @@ impl Media {
     pub async fn get_children_by_parent_id(
         db: &SqlitePool,
         parent_id: &Uuid,
+        limit: Option<i64>,
+        offset: Option<i64>,
     ) -> Result<Vec<Self>, sqlx::Error> {
+        let limit = limit.unwrap_or(i64::MAX);
+        let offset = offset.unwrap_or(0);
         sqlx::query_as::<_, Self>(
-            "SELECT * FROM media WHERE parent_id = $1 ORDER BY title COLLATE NOCASE",
+            "SELECT * FROM media WHERE parent_id = $1 ORDER BY title COLLATE NOCASE LIMIT $2 OFFSET $3",
         )
         .bind(parent_id)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(db)
         .await
     }
@@ -2827,10 +2833,23 @@ impl Media {
         media_ids: &[Uuid],
         parent_id: Option<Uuid>,
     ) -> Result<(), sqlx::Error> {
-        for id in media_ids {
-            sqlx::query("UPDATE media SET parent_id = $1 WHERE id = $2")
-                .bind(parent_id)
-                .bind(id)
+        if media_ids.is_empty() {
+            return Ok(());
+        }
+        let _permit = DB_WRITE_SEMAPHORE
+            .acquire()
+            .await
+            .unwrap();
+        for chunk in media_ids.chunks(SQLITE_VAR_LIMIT) {
+            let mut qb = sqlx::QueryBuilder::new("UPDATE media SET parent_id = ");
+            qb.push_bind(parent_id);
+            qb.push(" WHERE id IN (");
+            let mut sep = qb.separated(", ");
+            for id in chunk {
+                sep.push_bind(id);
+            }
+            qb.push(")");
+            qb.build()
                 .execute(db)
                 .await?;
         }

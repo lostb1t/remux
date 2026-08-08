@@ -43,33 +43,34 @@ pub async fn get_collection_items(
     .context_not_found("Collection not found")?;
 
     if collection.is_group_container() {
+        let start_index = q
+            .start_index
+            .unwrap_or(0);
         let children = db::Media::get_children_by_parent_id(
             &state
                 .ctx
                 .db,
             &id,
+            q.limit
+                .map(|l| l as i64),
+            Some(start_index as i64),
         )
         .await?;
-        let total = children.len() as i64;
-        let start = q
-            .start_index
-            .unwrap_or(0) as usize;
-        let remaining = children
-            .len()
-            .saturating_sub(start);
-        let slice = match q.limit {
-            Some(limit) => {
-                &children[start.min(children.len())..]
-                    [..(limit as usize).min(remaining)]
-            }
-            None => &children[start.min(children.len())..],
-        };
-        let items: Vec<_> = slice
-            .iter()
+        let total: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM media WHERE parent_id = $1")
+                .bind(&id)
+                .fetch_one(
+                    &state
+                        .ctx
+                        .db,
+                )
+                .await?;
+        let items: Vec<_> = children
+            .into_iter()
             .map(|m| {
                 let id_str =
                     m.id.to_string();
-                let mut dto = api::db_media_to_item(m.clone(), false);
+                let mut dto = api::db_media_to_item(m, false);
                 dto.playlist_item_id = Some(id_str);
                 dto
             })
@@ -77,9 +78,7 @@ pub async fn get_collection_items(
         return Ok(Json(api::BaseItemDtoQueryResult {
             items,
             total_record_count: total,
-            start_index: q
-                .start_index
-                .unwrap_or(0),
+            start_index: start_index,
             ..Default::default()
         }));
     }
