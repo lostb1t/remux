@@ -2405,7 +2405,11 @@ impl AddonService {
                 }
             }
         }
-        debug!(subs = subs.len(), addons = addons.len(), elapsed = ?instant.elapsed(), "subtitles fetched");
+        if background {
+            debug!(subs = subs.len(), addons = addons.len(), elapsed = ?instant.elapsed(), "subtitles fetched");
+        } else {
+            info!(subs = subs.len(), addons = addons.len(), elapsed = ?instant.elapsed(), "subtitles fetched");
+        }
         subs
     }
 

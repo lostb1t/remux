@@ -276,7 +276,7 @@ async fn subtitles_stream_inner(
                         &state
                             .ctx
                             .db,
-                        false,
+                        true,
                         Some(
                             session
                                 .user
