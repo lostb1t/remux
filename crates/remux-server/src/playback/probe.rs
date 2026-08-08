@@ -284,12 +284,139 @@ struct FfprobeStream {
     disposition: FfprobeDisposition,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct FfprobeFormat {
     duration: Option<String>,
     format_name: Option<String>,
     bit_rate: Option<String>,
     size: Option<String>,
+    #[serde(default)]
+    tags: HashMap<String, String>,
+}
+
+/// Embedded audio metadata (ID3/Vorbis tags) extracted with ffprobe — the same
+/// source of truth Jellyfin uses for music.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct AudioTags {
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub title: Option<String>,
+    pub track_number: Option<i64>,
+    pub disc_number: Option<i64>,
+    pub year: Option<i64>,
+}
+
+/// Case-insensitive lookup into an ffprobe tags map (keys like "artist",
+/// "ALBUM", "track", "disc", "date", "originalyear").
+fn tag_value<'a>(tags: &'a HashMap<String, String>, key: &str) -> Option<&'a str> {
+    tags.iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        .map(|(_, v)| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+/// Extract music metadata from raw ffprobe JSON (`-show_format -show_streams`).
+/// Embedded tags win over any folder/filename parsing — Jellyfin's priority.
+pub(crate) fn parse_audio_tags(json: &str) -> Option<AudioTags> {
+    #[derive(Deserialize)]
+    struct Out {
+        #[serde(default)]
+        format: FfprobeFormat,
+        #[serde(default)]
+        streams: Vec<FfprobeStream>,
+    }
+    let out: Out = serde_json::from_str(json).ok()?;
+    let mut tags: HashMap<String, String> = out
+        .format
+        .tags
+        .clone();
+    // Some muxers put the metadata on the first audio stream instead.
+    if let Some(stream) = out
+        .streams
+        .iter()
+        .find(|s| {
+            s.codec_type
+                .as_deref()
+                == Some("audio")
+        })
+    {
+        for (k, v) in &stream.tags {
+            tags.entry(k.clone())
+                .or_insert_with(|| v.clone());
+        }
+    }
+
+    let artist = tag_value(&tags, "artist")
+        .or_else(|| tag_value(&tags, "albumartist"))
+        .map(str::to_owned);
+    let album = tag_value(&tags, "album").map(str::to_owned);
+    let title = tag_value(&tags, "title").map(str::to_owned);
+    let track_number = tag_value(&tags, "track")
+        .and_then(|t| {
+            t.split('/')
+                .next()
+        })
+        .and_then(|t| {
+            t.trim()
+                .parse::<i64>()
+                .ok()
+        });
+    let disc_number = tag_value(&tags, "disc")
+        .and_then(|t| {
+            t.split('/')
+                .next()
+        })
+        .and_then(|t| {
+            t.trim()
+                .parse::<i64>()
+                .ok()
+        });
+    let year = tag_value(&tags, "date")
+        .or_else(|| tag_value(&tags, "originaldate"))
+        .or_else(|| tag_value(&tags, "year"))
+        .and_then(|t| {
+            t.chars()
+                .take(4)
+                .collect::<String>()
+                .parse::<i64>()
+                .ok()
+        });
+
+    if artist.is_none() && album.is_none() && title.is_none() {
+        return None;
+    }
+    Some(AudioTags {
+        artist,
+        album,
+        title,
+        track_number,
+        disc_number,
+        year,
+    })
+}
+
+/// Probe a local audio file for its embedded metadata (artist, album, track...).
+pub(crate) fn probe_audio_tags(path: &str) -> Option<AudioTags> {
+    let output = std::process::Command::new(ffprobe_bin())
+        .args([
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            path,
+        ])
+        .output()
+        .ok()?;
+    if !output
+        .status
+        .success()
+    {
+        return None;
+    }
+    parse_audio_tags(&String::from_utf8_lossy(&output.stdout))
 }
 
 fn parse_frame_rate(s: &str) -> Option<f64> {
@@ -1649,6 +1776,63 @@ mod probe_tests {
                 "stream {} missing from pool",
                 sibling.id
             );
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::parse_audio_tags;
+
+        #[test]
+        fn audio_tags_from_format() {
+            let json = r#"{"format":{"tags":{"artist":"Steely Dan","album":"Two Against Nature","title":"Two Against Nature","track":"3/10","date":"2000"}},"streams":[]}"#;
+            let t = parse_audio_tags(json).unwrap();
+            assert_eq!(
+                t.artist
+                    .as_deref(),
+                Some("Steely Dan")
+            );
+            assert_eq!(
+                t.album
+                    .as_deref(),
+                Some("Two Against Nature")
+            );
+            assert_eq!(
+                t.title
+                    .as_deref(),
+                Some("Two Against Nature")
+            );
+            assert_eq!(t.track_number, Some(3));
+            assert_eq!(t.year, Some(2000));
+        }
+
+        #[test]
+        fn audio_tags_from_stream_when_format_empty() {
+            let json = r#"{"format":{},"streams":[{"index":0,"codec_type":"audio","tags":{"ARTIST":"Incubus","ALBUM":"Morning View","TITLE":"Wish You Were Here","track":"3","DATE":"2024"}}]}"#;
+            let t = parse_audio_tags(json).unwrap();
+            assert_eq!(
+                t.artist
+                    .as_deref(),
+                Some("Incubus")
+            );
+            assert_eq!(
+                t.album
+                    .as_deref(),
+                Some("Morning View")
+            );
+            assert_eq!(
+                t.title
+                    .as_deref(),
+                Some("Wish You Were Here")
+            );
+            assert_eq!(t.track_number, Some(3));
+            assert_eq!(t.year, Some(2024));
+        }
+
+        #[test]
+        fn audio_tags_none_without_music_metadata() {
+            let json = r#"{"format":{"tags":{"encoder":"Lavf60.0.0"}},"streams":[]}"#;
+            assert!(parse_audio_tags(json).is_none());
         }
     }
 }

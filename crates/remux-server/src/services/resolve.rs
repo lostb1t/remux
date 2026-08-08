@@ -46,7 +46,7 @@ impl MediaResolveService {
         true
     }
 
-    async fn resolve_music_deezer(media: &mut db::Media) -> bool {
+    pub(crate) async fn resolve_music_deezer(media: &mut db::Media) -> bool {
         match media.kind {
             db::MediaKind::Track => {
                 if media

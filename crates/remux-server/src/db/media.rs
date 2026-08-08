@@ -7047,6 +7047,50 @@ mod tests {
     }
 
     #[test]
+    fn music_items_require_provider_id() {
+        let track = Media {
+            kind: MediaKind::Track,
+            title: "X".to_string(),
+            ..Default::default()
+        };
+        assert!(
+            track
+                .validate()
+                .is_err(),
+            "track without deezer/youtube id must be rejected"
+        );
+        let mut with_id = track.clone();
+        with_id
+            .external_ids
+            .deezer_track = Some(1);
+        assert!(
+            with_id
+                .validate()
+                .is_ok()
+        );
+
+        let album = Media {
+            kind: MediaKind::Album,
+            title: "X".to_string(),
+            ..Default::default()
+        };
+        assert!(
+            album
+                .validate()
+                .is_err()
+        );
+        let mut album_ok = album.clone();
+        album_ok
+            .external_ids
+            .deezer_album = Some(1);
+        assert!(
+            album_ok
+                .validate()
+                .is_ok()
+        );
+    }
+
+    #[test]
     fn custom_stremio_type_extracts_non_standard_type() {
         assert_eq!(
             custom_stremio_type(&sdks::stremio::MediaType::Unknown(
