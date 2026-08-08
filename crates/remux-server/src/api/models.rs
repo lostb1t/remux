@@ -1140,7 +1140,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             .collection_media_kind
             .clone()
             .and_then(db_media_kind_to_collection_type);
-        if media.promoted {
+        if media.promoted || media.is_group_container() {
             item.type_ = MediaType::CollectionFolder;
             item.display_preferences_id = Some(
                 item.id

@@ -500,10 +500,11 @@ pub async fn get_items(
         // collection browse
         if parent.kind == db::MediaKind::Collection {
             // Manual group container browse (Root Collections exempt — uses index below).
-            if parent.collection_media_kind == Some(db::CollectionMediaKind::Collection)
+            if parent.is_group_container()
                 && parent.collection_kind == Some(db::CollectionKind::Manual)
                 && parent.id != COLLECTIONS_ROOT_ID
             {
+                q.parent_id = Some(parent.id);
                 q.include_item_types = Some(vec![api::MediaType::BoxSet]);
                 q.include_childless = Some(true);
                 q.user_id = Some(
@@ -520,7 +521,7 @@ pub async fn get_items(
                     Some(&session.user),
                     Some(&server_config),
                     None,
-                    Some(&parent),
+                    None,
                 )
                 .await?;
                 return Ok(ItemsQueryResultBuilder::with_items(
@@ -531,7 +532,7 @@ pub async fn get_items(
             }
 
             // Smart group container browse.
-            if parent.collection_media_kind == Some(db::CollectionMediaKind::Collection)
+            if parent.is_group_container()
                 && parent.collection_kind == Some(db::CollectionKind::Smart)
                 && parent.id != COLLECTIONS_ROOT_ID
             {
@@ -564,8 +565,7 @@ pub async fn get_items(
             }
 
             // Collections index.
-            if parent.collection_media_kind == Some(db::CollectionMediaKind::Collection)
-            {
+            if parent.is_group_container() {
                 let smart_excluded = db::Media::get_smart_group_excluded_ids(
                     &state
                         .ctx
@@ -2366,6 +2366,16 @@ pub async fn delete_virtual_folder(
 
     let media = result.context_not_found("Collection not found")?;
 
+    if media.is_group_container() {
+        db::Media::detach_children(
+            &state
+                .ctx
+                .db,
+            &media.id,
+        )
+        .await?;
+    }
+
     db::Media::delete(
         &state
             .ctx
@@ -3275,6 +3285,24 @@ pub async fn patch_item(
         )
         .await
         .context_bad_request("Failed to update tags")?;
+    }
+
+    if payload
+        .name
+        .is_some()
+    {
+        let _ = ImageService::delete_image(
+            &state
+                .ctx
+                .config
+                .data_dir,
+            id,
+            db::ImageKind::Primary,
+            &state
+                .ctx
+                .db,
+        )
+        .await;
     }
 
     Ok(StatusCode::NO_CONTENT)
@@ -4282,13 +4310,9 @@ mod tests {
         let _unrelated =
             insert_smart_collection(db, "Disney", db::CollectionMediaKind::Movie).await;
 
-        db::MediaRelation::add_collection_items(
-            db,
-            &group.id,
-            &[child_a.id, child_b.id],
-        )
-        .await
-        .unwrap();
+        db::Media::set_parent_id(db, &[child_a.id, child_b.id], Some(group.id))
+            .await
+            .unwrap();
 
         let body: serde_json::Value = server
             .get(&format!("/users/{user_id}/items"))
@@ -4363,7 +4387,7 @@ mod tests {
             .await
             .unwrap();
 
-        db::MediaRelation::add_collection_items(db, &group.id, &[grouped.id])
+        db::Media::set_parent_id(db, &[grouped.id], Some(group.id))
             .await
             .unwrap();
 
@@ -4419,13 +4443,12 @@ mod tests {
             .await
             .unwrap();
 
-        // Assign to group (grouped)
-        db::MediaRelation::add_collection_items(db, &group.id, &[child.id])
+        // Assign to group via parent_id
+        db::Media::set_parent_id(db, &[child.id], Some(group.id))
             .await
             .unwrap();
-        // Also pin to root Collections (override)
-        let root_id = COLLECTIONS_ROOT_ID;
-        db::MediaRelation::add_collection_items(db, &root_id, &[child.id])
+        // Pin to root Collections via media_relations (override)
+        db::MediaRelation::add_collection_items(db, &COLLECTIONS_ROOT_ID, &[child.id])
             .await
             .unwrap();
 
@@ -4489,9 +4512,8 @@ mod tests {
             .await
             .unwrap();
 
-        // Pin one collection to root Collections — root must still show ungrouped ones too
-        let root_id = COLLECTIONS_ROOT_ID;
-        db::MediaRelation::add_collection_items(db, &root_id, &[pinned.id])
+        // Pin one collection to root Collections
+        db::MediaRelation::add_collection_items(db, &COLLECTIONS_ROOT_ID, &[pinned.id])
             .await
             .unwrap();
 
@@ -4861,6 +4883,142 @@ mod tests {
             ),
             "top-level Collection must report ParentId=COLLECTIONS_ROOT_ID; got: {}",
             json!(body["ParentId"])
+        );
+    }
+
+    #[tokio::test]
+    async fn add_collection_items_sets_parent_id_for_group_container() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let group = insert_group_container(db, "My Group", false).await;
+        let child =
+            insert_smart_collection(db, "Netflix", db::CollectionMediaKind::Series)
+                .await;
+
+        let resp = server
+            .post(&format!("/collections/{}/items", group.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[(
+                "ids",
+                child
+                    .id
+                    .to_string()
+                    .as_str(),
+            )])
+            .await;
+
+        assert_eq!(
+            resp.status_code()
+                .as_u16(),
+            204,
+            "POST /collections/{{id}}/items must succeed for group container"
+        );
+
+        let updated = db::Media::get_by_id(db, &child.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            updated.parent_id,
+            Some(group.id),
+            "child's parent_id must be set to the group container"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_collection_items_returns_children_for_group_container() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let group = insert_group_container(db, "My Group", false).await;
+        let child =
+            insert_smart_collection(db, "HBO", db::CollectionMediaKind::Series).await;
+        db::Media::set_parent_id(db, &[child.id], Some(group.id))
+            .await
+            .unwrap();
+
+        let resp = server
+            .get(&format!("/collections/{}/items", group.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+
+        assert_eq!(
+            resp.status_code()
+                .as_u16(),
+            200,
+            "GET /collections/{{id}}/items failed with status {} body: {}",
+            resp.status_code(),
+            resp.text()
+        );
+        let body: serde_json::Value = resp.json();
+
+        let items = body["Items"]
+            .as_array()
+            .expect("Items must be an array");
+        assert_eq!(items.len(), 1, "group must have one child; got: {body}");
+        assert_eq!(
+            items[0]["Name"].as_str(),
+            Some("HBO"),
+            "child name must match"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_group_container_does_not_cascade_to_children() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let group = insert_group_container(db, "Doomed Group", false).await;
+        let child =
+            insert_smart_collection(db, "Survivor", db::CollectionMediaKind::Series)
+                .await;
+        db::Media::set_parent_id(db, &[child.id], Some(group.id))
+            .await
+            .unwrap();
+
+        let resp = server
+            .delete("/library/virtualfolders")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[("name", "Doomed Group")])
+            .await;
+        assert_eq!(
+            resp.status_code()
+                .as_u16(),
+            204
+        );
+
+        let child_after = db::Media::get_by_id(db, &child.id)
+            .await
+            .unwrap();
+        assert!(
+            child_after.is_some(),
+            "child collection must survive group container deletion"
+        );
+        assert_eq!(
+            child_after
+                .unwrap()
+                .parent_id,
+            None,
+            "child's parent_id must be cleared"
         );
     }
 }

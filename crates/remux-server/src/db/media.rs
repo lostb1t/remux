@@ -1488,6 +1488,11 @@ pub struct Media {
 }
 
 impl Media {
+    pub fn is_group_container(&self) -> bool {
+        self.kind == MediaKind::Collection
+            && self.collection_media_kind == Some(CollectionMediaKind::Collection)
+    }
+
     pub fn is_field_locked(&self, field: &MetadataField) -> bool {
         self.is_locked
             || self
@@ -2803,6 +2808,44 @@ impl Media {
                 r.get::<Option<i64>, _>(0)
             })
             .collect())
+    }
+
+    pub async fn get_children_by_parent_id(
+        db: &SqlitePool,
+        parent_id: &Uuid,
+    ) -> Result<Vec<Self>, sqlx::Error> {
+        sqlx::query_as::<_, Self>(
+            "SELECT * FROM media WHERE parent_id = $1 ORDER BY title COLLATE NOCASE",
+        )
+        .bind(parent_id)
+        .fetch_all(db)
+        .await
+    }
+
+    pub async fn set_parent_id(
+        db: &SqlitePool,
+        media_ids: &[Uuid],
+        parent_id: Option<Uuid>,
+    ) -> Result<(), sqlx::Error> {
+        for id in media_ids {
+            sqlx::query("UPDATE media SET parent_id = $1 WHERE id = $2")
+                .bind(parent_id)
+                .bind(id)
+                .execute(db)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn detach_children(
+        db: &SqlitePool,
+        parent_id: &Uuid,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE media SET parent_id = NULL WHERE parent_id = $1")
+            .bind(parent_id)
+            .execute(db)
+            .await?;
+        Ok(())
     }
 
     pub async fn get_by_filter(
@@ -4154,9 +4197,8 @@ impl Media {
                 }
             }
 
-            // For manual collections: count members via media_relations (role='collection').
-            // The parent_id branch above always returns 0 for these — they store
-            // membership in media_relations, not via parent_id.
+            // For manual collections (non-group): count members via media_relations.
+            // Group containers use parent_id (handled above).
             let manual_coll_ids: Vec<Uuid> = records
                 .iter()
                 .filter(|m| {
@@ -4557,7 +4599,7 @@ impl Media {
                 ) {
                     return true;
                 }
-                if m.collection_media_kind == Some(CollectionMediaKind::Collection) {
+                if m.is_group_container() {
                     return true;
                 }
                 m.child_count
@@ -6930,14 +6972,7 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
         }
         R::Catalog { .. } => None,
         R::GroupContainer { value } => {
-            let sql = "EXISTS (\
-                SELECT 1 FROM media_relations mr \
-                JOIN media grp ON grp.id = mr.left_media_id \
-                WHERE mr.right_media_id = media.id \
-                AND mr.role = 'collection' \
-                AND grp.collection_media_kind = 'collection'\
-            )"
-            .to_string();
+            let sql = "media.parent_id IS NOT NULL".to_string();
             Some((sql, !value))
         }
         R::CollectionMember { op, collection_ids } if !collection_ids.is_empty() => {

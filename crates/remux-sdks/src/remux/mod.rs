@@ -5231,13 +5231,11 @@ impl Endpoint for AddCollectionItems {
     }
 }
 
-/// DELETE /collections/{id}/items?ids=relation_id,... — remove items by relation ID.
-/// Use the `playlist_item_id` from GetCollectionItems as the relation ID, not the media ID.
+/// DELETE /collections/{id}/items?ids=id,... — remove items from a collection.
 #[derive(Debug, Clone)]
 pub struct RemoveCollectionItems {
     pub collection_id: String,
-    /// Relation IDs (from `playlist_item_id`), NOT media IDs.
-    pub relation_ids: Vec<String>,
+    pub ids: Vec<String>,
 }
 
 impl Endpoint for RemoveCollectionItems {
@@ -5258,7 +5256,7 @@ impl Endpoint for RemoveCollectionItems {
         }
         Q {
             ids: self
-                .relation_ids
+                .ids
                 .join(","),
         }
     }

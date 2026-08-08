@@ -12,14 +12,6 @@ fn is_group_container(item: &BaseItemDto) -> bool {
     item.collection_type
         .as_ref()
         == Some(&CollectionType::Boxsets)
-        && item
-            .remux
-            .as_ref()
-            .and_then(|r| {
-                r.collection_kind
-                    .as_ref()
-            })
-            == Some(&RemuxCollectionKind::Manual)
 }
 
 fn is_promoted(item: &BaseItemDto) -> bool {
@@ -918,8 +910,9 @@ pub fn CollectionForm(
 #[component]
 fn CollectionGroupChildren(app_state: AppState, collection_id: String) -> Element {
     let mut all_collections: Signal<Vec<BaseItemDto>> = use_signal(Vec::new);
-    let mut current_children: Signal<Vec<(String, String)>> = use_signal(Vec::new);
+    let mut current_children: Signal<Vec<String>> = use_signal(Vec::new);
     let mut loading = use_signal(|| true);
+    let mut child_error: Signal<Option<String>> = use_signal(|| None);
 
     let col_id = collection_id.clone();
     let client = app_state
@@ -929,7 +922,7 @@ fn CollectionGroupChildren(app_state: AppState, collection_id: String) -> Elemen
         let col_id = col_id.clone();
         let client = client.clone();
         spawn(async move {
-            let children = client
+            let child_items: Vec<BaseItemDto> = client
                 .execute(GetCollectionItems {
                     collection_id: col_id.clone(),
                     start_index: None,
@@ -937,22 +930,18 @@ fn CollectionGroupChildren(app_state: AppState, collection_id: String) -> Elemen
                 })
                 .await
                 .ok()
-                .map(|r| {
-                    r.items
-                        .into_iter()
-                        .filter_map(|item| {
-                            let media_id = item
-                                .id
-                                .to_string();
-                            let relation_id = item.playlist_item_id?;
-                            Some((media_id, relation_id))
-                        })
-                        .collect::<Vec<_>>()
-                })
+                .map(|r| r.items)
                 .unwrap_or_default();
-            current_children.set(children);
+            let child_ids: Vec<String> = child_items
+                .iter()
+                .map(|item| {
+                    item.id
+                        .to_string()
+                })
+                .collect();
+            current_children.set(child_ids);
 
-            let all = client
+            let mut all: Vec<BaseItemDto> = client
                 .execute(GetItems(GetItemsQuery {
                     include_item_types: Some(vec![MediaType::BoxSet]),
                     include_childless: Some(true),
@@ -975,6 +964,37 @@ fn CollectionGroupChildren(app_state: AppState, collection_id: String) -> Elemen
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+
+            // Merge in children that are already assigned to this group —
+            // the index query excludes them (parent_id IS NOT NULL) but
+            // they must appear as checked checkboxes.
+            let all_ids: std::collections::HashSet<String> = all
+                .iter()
+                .map(|item| {
+                    item.id
+                        .to_string()
+                })
+                .collect();
+            for child in child_items {
+                if !all_ids.contains(
+                    &child
+                        .id
+                        .to_string(),
+                ) {
+                    all.push(child);
+                }
+            }
+            all.sort_by(|a, b| {
+                a.sort_name
+                    .as_deref()
+                    .unwrap_or("")
+                    .cmp(
+                        b.sort_name
+                            .as_deref()
+                            .unwrap_or(""),
+                    )
+            });
+
             all_collections.set(all);
             loading.set(false);
         });
@@ -994,13 +1014,9 @@ fn CollectionGroupChildren(app_state: AppState, collection_id: String) -> Elemen
                             let item_id = item.id.to_string();
                             let item_name = item.name.clone().unwrap_or_default();
                             let children_snapshot = current_children.read().clone();
-                            let is_checked = children_snapshot.iter().any(|(mid, _)| mid == &item_id);
+                            let is_checked = children_snapshot.iter().any(|mid| mid == &item_id);
                             let client_toggle = app_state.client.clone();
                             let col_id_toggle = collection_id.clone();
-                            let relation_id = children_snapshot
-                                .iter()
-                                .find(|(mid, _)| mid == &item_id)
-                                .map(|(_, rid)| rid.clone());
                             rsx! {
                                 label {
                                     style: "display:flex;align-items:center;gap:8px;cursor:pointer;padding:4px 0",
@@ -1012,30 +1028,30 @@ fn CollectionGroupChildren(app_state: AppState, collection_id: String) -> Elemen
                                             let client = client_toggle.clone();
                                             let col_id = col_id_toggle.clone();
                                             let media_id = item_id.clone();
-                                            let rel_id = relation_id.clone();
+                                            child_error.set(None);
                                             spawn(async move {
-                                                if checked {
-                                                    let _ = client.execute(AddCollectionItems {
-                                                        collection_id: col_id.clone(),
-                                                        ids: vec![media_id.clone()],
-                                                    }).await;
-                                                    // Refresh to get the new relation_id
-                                                    if let Ok(r) = client.execute(GetCollectionItems {
+                                                let result = if checked {
+                                                    client.execute(AddCollectionItems {
                                                         collection_id: col_id,
-                                                        start_index: None,
-                                                        limit: None,
-                                                    }).await {
-                                                        let updated = r.items.into_iter().filter_map(|i| {
-                                                            Some((i.id.to_string(), i.playlist_item_id?))
-                                                        }).collect();
-                                                        current_children.set(updated);
+                                                        ids: vec![media_id.clone()],
+                                                    }).await
+                                                } else {
+                                                    client.execute(RemoveCollectionItems {
+                                                        collection_id: col_id,
+                                                        ids: vec![media_id.clone()],
+                                                    }).await
+                                                };
+                                                match result {
+                                                    Ok(_) => {
+                                                        if checked {
+                                                            current_children.write().push(media_id);
+                                                        } else {
+                                                            current_children.write().retain(|mid| mid != &media_id);
+                                                        }
                                                     }
-                                                } else if let Some(rid) = rel_id {
-                                                    let _ = client.execute(RemoveCollectionItems {
-                                                        collection_id: col_id.clone(),
-                                                        relation_ids: vec![rid],
-                                                    }).await;
-                                                    current_children.write().retain(|(mid, _)| mid != &media_id);
+                                                    Err(e) => {
+                                                        child_error.set(Some(e.user_message()));
+                                                    }
                                                 }
                                             });
                                         },
@@ -1048,6 +1064,9 @@ fn CollectionGroupChildren(app_state: AppState, collection_id: String) -> Elemen
                     if all_collections.read().is_empty() {
                         span { class: "loading-text", "No other collections available." }
                     }
+                }
+                if let Some(err) = child_error.read().as_ref() {
+                    p { style: "color:var(--error);font-size:0.8rem;margin-top:4px", "{err}" }
                 }
             }
         }
