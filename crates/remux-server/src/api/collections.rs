@@ -56,15 +56,16 @@ pub async fn get_collection_items(
             Some(start_index as i64),
         )
         .await?;
-        let total: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM media WHERE parent_id = $1")
-                .bind(&id)
-                .fetch_one(
-                    &state
-                        .ctx
-                        .db,
-                )
-                .await?;
+        let total: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM media WHERE parent_id = $1 AND kind = 'collection'",
+        )
+        .bind(&id)
+        .fetch_one(
+            &state
+                .ctx
+                .db,
+        )
+        .await?;
         let items: Vec<_> = children
             .into_iter()
             .map(|m| {

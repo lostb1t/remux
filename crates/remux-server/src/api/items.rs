@@ -12,7 +12,7 @@ use remux_macros::{delete, get, patch, post, query};
 use remux_utils::merge_option;
 use serde::Deserialize;
 use tracing::{debug, error, info, trace, warn};
-use uuid::Uuid;
+use uuid::{Uuid, uuid};
 
 use crate::{
     AppState, IntoApiError, OptionExt, ResultExt, api,
@@ -890,6 +890,21 @@ pub async fn items(
         start_index: q
             .start_index
             .unwrap_or_else(|| 0),
+        ..Default::default()
+    }))
+}
+
+/// Return the virtual root folder
+#[get("/items/root")]
+pub async fn items_root(
+    State(_state): State<AppState>,
+    _session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
+    Ok(Json(api::BaseItemDto {
+        id: uuid!("f47ac10b-58cc-4372-a567-0e02b2c3d479"),
+        name: Some("Media Library".to_string()),
+        type_: api::MediaType::CollectionFolder,
+        is_folder: true,
         ..Default::default()
     }))
 }

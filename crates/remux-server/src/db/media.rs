@@ -2819,7 +2819,7 @@ impl Media {
         let limit = limit.unwrap_or(i64::MAX);
         let offset = offset.unwrap_or(0);
         sqlx::query_as::<_, Self>(
-            "SELECT * FROM media WHERE parent_id = $1 ORDER BY title COLLATE NOCASE LIMIT $2 OFFSET $3",
+            "SELECT * FROM media WHERE parent_id = $1 AND kind = 'collection' ORDER BY title COLLATE NOCASE LIMIT $2 OFFSET $3",
         )
         .bind(parent_id)
         .bind(limit)
@@ -2860,6 +2860,10 @@ impl Media {
         db: &SqlitePool,
         parent_id: &Uuid,
     ) -> Result<(), sqlx::Error> {
+        let _permit = DB_WRITE_SEMAPHORE
+            .acquire()
+            .await
+            .unwrap();
         sqlx::query("UPDATE media SET parent_id = NULL WHERE parent_id = $1")
             .bind(parent_id)
             .execute(db)
