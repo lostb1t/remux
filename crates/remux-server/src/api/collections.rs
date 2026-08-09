@@ -46,14 +46,21 @@ pub async fn get_collection_items(
         let start_index = q
             .start_index
             .unwrap_or(0);
-        let children = db::Media::get_children_by_parent_id(
+        let limit = q
+            .limit
+            .map(|l| l as i64)
+            .unwrap_or(i64::MAX);
+        let children: Vec<db::Media> = sqlx::query_as(
+            "SELECT * FROM media WHERE parent_id = $1 AND kind = 'collection' \
+             ORDER BY title COLLATE NOCASE LIMIT $2 OFFSET $3",
+        )
+        .bind(&id)
+        .bind(limit)
+        .bind(start_index as i64)
+        .fetch_all(
             &state
                 .ctx
                 .db,
-            &id,
-            q.limit
-                .map(|l| l as i64),
-            Some(start_index as i64),
         )
         .await?;
         let total: i64 = sqlx::query_scalar(

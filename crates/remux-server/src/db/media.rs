@@ -2810,24 +2810,6 @@ impl Media {
             .collect())
     }
 
-    pub async fn get_children_by_parent_id(
-        db: &SqlitePool,
-        parent_id: &Uuid,
-        limit: Option<i64>,
-        offset: Option<i64>,
-    ) -> Result<Vec<Self>, sqlx::Error> {
-        let limit = limit.unwrap_or(i64::MAX);
-        let offset = offset.unwrap_or(0);
-        sqlx::query_as::<_, Self>(
-            "SELECT * FROM media WHERE parent_id = $1 AND kind = 'collection' ORDER BY title COLLATE NOCASE LIMIT $2 OFFSET $3",
-        )
-        .bind(parent_id)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(db)
-        .await
-    }
-
     pub async fn set_parent_id(
         db: &SqlitePool,
         media_ids: &[Uuid],
