@@ -1,10 +1,9 @@
 use crate::{components::*, state::AppState};
 use dioxus::prelude::*;
 use remux_sdks::remux::{
-    AddCollectionItems, BaseItemDto, CollectionFilter, CollectionType,
-    CreateVirtualFolder, CreateVirtualFolderPayload, DeleteVirtualFolder, FilterGroup,
-    FilterMatchMode, GetCollectionItems, GetItems, GetItemsQuery, ItemSortBy,
-    MediaType, PatchItem, PatchItemPayload, RemoveCollectionItems, RemuxCollectionKind,
+    BaseItemDto, CollectionFilter, CollectionType, CreateVirtualFolder,
+    CreateVirtualFolderPayload, DeleteVirtualFolder, FilterGroup, FilterMatchMode,
+    GetItems, GetItemsQuery, ItemSortBy, MediaType, PatchItem, PatchItemPayload,
     SortOrder,
 };
 
@@ -457,8 +456,6 @@ pub fn CollectionForm(
     let mut pending_image_bytes: Signal<Option<Vec<u8>>> = use_signal(|| None);
     let mut pending_image_preview: Signal<Option<String>> = use_signal(|| None);
     let mut has_image = use_signal(|| existing_image_tag.is_some());
-    let app_state_for_children = app_state.clone();
-    let existing_for_children = existing.clone();
     let client_for_delete = app_state.clone();
     let app_state_delete = app_state.clone();
     let delete_name = existing
@@ -810,58 +807,53 @@ pub fn CollectionForm(
             }
 
             if col_kind.read().as_str() == "smart" || col_kind.read().as_str() == "catalog" {
-                FilterRuleEditor { match_mode: sf_match, groups: sf_groups }
-
-                div { class: "field",
-                    label { class: "field-label", "Default Sort Override" }
-                    p { class: "field-hint", "Overrides the sort order when the client sends no preference or its default (Sort Name). Note: the client UI may still show its own sort label." }
-                    div { style: "display:flex;gap:8px",
-                        select {
-                            class: "select-input",
-                            style: "flex:1;min-width:0",
-                            value: "{default_sort}",
-                            onchange: move |e| default_sort.set(e.value()),
-                            option { value: "", selected: default_sort.read().is_empty(), "— None —" }
-                            if sf_groups.read().iter().flat_map(|g| g.rules.iter()).any(|r| matches!(r, remux_sdks::remux::FilterRule::Catalog { .. })) {
-                                option { value: "CatalogOrder", selected: *default_sort.read() == "CatalogOrder", "Catalog Order" }
-                            }
-                            option { value: "SortName",           selected: *default_sort.read() == "SortName",           "Name" }
-                            option { value: "PremiereDate",       selected: *default_sort.read() == "PremiereDate",       "Release Date" }
-                            option { value: "DigitalReleaseDate", selected: *default_sort.read() == "DigitalReleaseDate", "Digital Release Date" }
-                            option { value: "DateCreated",        selected: *default_sort.read() == "DateCreated",        "Date Added" }
-                            option { value: "CommunityRating",    selected: *default_sort.read() == "CommunityRating",    "Community Rating" }
-                            option { value: "PopularityDay",      selected: *default_sort.read() == "PopularityDay",      "Popularity (Today)" }
-                            option { value: "PopularityWeek",     selected: *default_sort.read() == "PopularityWeek",     "Popularity (This Week)" }
-                            option { value: "PopularityMonth",    selected: *default_sort.read() == "PopularityMonth",    "Popularity (This Month)" }
-                            option { value: "PopularityAllTime",  selected: *default_sort.read() == "PopularityAllTime",  "Popularity (All Time)" }
-                            option { value: "TrendingWeek",       selected: *default_sort.read() == "TrendingWeek",       "Trending (7 days)" }
-                            option { value: "TrendingMonth",      selected: *default_sort.read() == "TrendingMonth",      "Trending (30 days)" }
-                            option { value: "Random",             selected: *default_sort.read() == "Random",             "Random" }
-                        }
-                        if !default_sort.read().is_empty() && *default_sort.read() != "Random" {
-                            select {
-                                class: "select-input",
-                                style: "flex:0 0 auto;width:auto",
-                                value: "{default_sort_order}",
-                                onchange: move |e| default_sort_order.set(e.value()),
-                                option { value: "Ascending",  selected: *default_sort_order.read() == "Ascending",  "Asc" }
-                                option { value: "Descending", selected: *default_sort_order.read() == "Descending", "Desc" }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if col_type.read().as_str() == "collections" && col_kind.read().as_str() == "manual" {
-                if is_edit {
-                    if let Some(ref e) = existing_for_children {
-                        CollectionGroupChildren {
-                            app_state: app_state_for_children.clone(),
-                            collection_id: e.id.to_string(),
-                        }
+                if col_type.read().as_str() == "collections" {
+                    FilterRuleEditor {
+                        match_mode: sf_match,
+                        groups: sf_groups,
+                        allowed_fields: vec!["collection_id"],
                     }
                 } else {
-                    p { class: "field-hint", "Save this collection first, then edit it to manage child collections." }
+                    FilterRuleEditor { match_mode: sf_match, groups: sf_groups }
+
+                    div { class: "field",
+                        label { class: "field-label", "Default Sort Override" }
+                        p { class: "field-hint", "Overrides the sort order when the client sends no preference or its default (Sort Name). Note: the client UI may still show its own sort label." }
+                        div { style: "display:flex;gap:8px",
+                            select {
+                                class: "select-input",
+                                style: "flex:1;min-width:0",
+                                value: "{default_sort}",
+                                onchange: move |e| default_sort.set(e.value()),
+                                option { value: "", selected: default_sort.read().is_empty(), "— None —" }
+                                if sf_groups.read().iter().flat_map(|g| g.rules.iter()).any(|r| matches!(r, remux_sdks::remux::FilterRule::Catalog { .. })) {
+                                    option { value: "CatalogOrder", selected: *default_sort.read() == "CatalogOrder", "Catalog Order" }
+                                }
+                                option { value: "SortName",           selected: *default_sort.read() == "SortName",           "Name" }
+                                option { value: "PremiereDate",       selected: *default_sort.read() == "PremiereDate",       "Release Date" }
+                                option { value: "DigitalReleaseDate", selected: *default_sort.read() == "DigitalReleaseDate", "Digital Release Date" }
+                                option { value: "DateCreated",        selected: *default_sort.read() == "DateCreated",        "Date Added" }
+                                option { value: "CommunityRating",    selected: *default_sort.read() == "CommunityRating",    "Community Rating" }
+                                option { value: "PopularityDay",      selected: *default_sort.read() == "PopularityDay",      "Popularity (Today)" }
+                                option { value: "PopularityWeek",     selected: *default_sort.read() == "PopularityWeek",     "Popularity (This Week)" }
+                                option { value: "PopularityMonth",    selected: *default_sort.read() == "PopularityMonth",    "Popularity (This Month)" }
+                                option { value: "PopularityAllTime",  selected: *default_sort.read() == "PopularityAllTime",  "Popularity (All Time)" }
+                                option { value: "TrendingWeek",       selected: *default_sort.read() == "TrendingWeek",       "Trending (7 days)" }
+                                option { value: "TrendingMonth",      selected: *default_sort.read() == "TrendingMonth",      "Trending (30 days)" }
+                                option { value: "Random",             selected: *default_sort.read() == "Random",             "Random" }
+                            }
+                            if !default_sort.read().is_empty() && *default_sort.read() != "Random" {
+                                select {
+                                    class: "select-input",
+                                    style: "flex:0 0 auto;width:auto",
+                                    value: "{default_sort_order}",
+                                    onchange: move |e| default_sort_order.set(e.value()),
+                                    option { value: "Ascending",  selected: *default_sort_order.read() == "Ascending",  "Asc" }
+                                    option { value: "Descending", selected: *default_sort_order.read() == "Descending", "Desc" }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -901,172 +893,6 @@ pub fn CollectionForm(
                     class: "btn btn-primary",
                     disabled: *saving.read(),
                     if *saving.read() { "Saving…" } else { "Save" }
-                }
-            }
-        }
-    }
-}
-
-#[component]
-fn CollectionGroupChildren(app_state: AppState, collection_id: String) -> Element {
-    let mut all_collections: Signal<Vec<BaseItemDto>> = use_signal(Vec::new);
-    let mut current_children: Signal<Vec<String>> = use_signal(Vec::new);
-    let mut loading = use_signal(|| true);
-    let mut child_error: Signal<Option<String>> = use_signal(|| None);
-
-    let col_id = collection_id.clone();
-    let client = app_state
-        .client
-        .clone();
-    use_effect(move || {
-        let col_id = col_id.clone();
-        let client = client.clone();
-        spawn(async move {
-            let child_items: Vec<BaseItemDto> = client
-                .execute(GetCollectionItems {
-                    collection_id: col_id.clone(),
-                    start_index: None,
-                    limit: None,
-                })
-                .await
-                .ok()
-                .map(|r| r.items)
-                .unwrap_or_default();
-            let child_ids: Vec<String> = child_items
-                .iter()
-                .map(|item| {
-                    item.id
-                        .to_string()
-                })
-                .collect();
-            current_children.set(child_ids);
-
-            let mut all: Vec<BaseItemDto> = client
-                .execute(GetItems(GetItemsQuery {
-                    include_item_types: Some(vec![MediaType::BoxSet]),
-                    include_childless: Some(true),
-                    sort_by: Some(vec![ItemSortBy::SortName]),
-                    sort_order: Some(vec![SortOrder::Ascending]),
-                    ..Default::default()
-                }))
-                .await
-                .ok()
-                .map(|r| {
-                    r.items
-                        .into_iter()
-                        .filter(|item| {
-                            item.id
-                                .to_string()
-                                != col_id
-                                && !is_group_container(item)
-                                && !is_promoted(item)
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-
-            // Merge in children that are already assigned to this group —
-            // the index query excludes them (parent_id IS NOT NULL) but
-            // they must appear as checked checkboxes.
-            let all_ids: std::collections::HashSet<String> = all
-                .iter()
-                .map(|item| {
-                    item.id
-                        .to_string()
-                })
-                .collect();
-            for child in child_items {
-                if !all_ids.contains(
-                    &child
-                        .id
-                        .to_string(),
-                ) {
-                    all.push(child);
-                }
-            }
-            all.sort_by(|a, b| {
-                a.sort_name
-                    .as_deref()
-                    .unwrap_or("")
-                    .cmp(
-                        b.sort_name
-                            .as_deref()
-                            .unwrap_or(""),
-                    )
-            });
-
-            all_collections.set(all);
-            loading.set(false);
-        });
-    });
-
-    rsx! {
-        div { class: "field",
-            label { class: "field-label", "Child Collections" }
-            p { class: "field-hint", "Select which collections appear inside this group." }
-
-            if *loading.read() {
-                LoadingText {}
-            } else {
-                div { style: "display:flex;flex-direction:column;gap:4px;max-height:240px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:8px",
-                    for item in all_collections.read().clone() {
-                        {
-                            let item_id = item.id.to_string();
-                            let item_name = item.name.clone().unwrap_or_default();
-                            let children_snapshot = current_children.read().clone();
-                            let is_checked = children_snapshot.iter().any(|mid| mid == &item_id);
-                            let client_toggle = app_state.client.clone();
-                            let col_id_toggle = collection_id.clone();
-                            rsx! {
-                                label {
-                                    style: "display:flex;align-items:center;gap:8px;cursor:pointer;padding:4px 0",
-                                    input {
-                                        r#type: "checkbox",
-                                        checked: is_checked,
-                                        onchange: move |e| {
-                                            let checked = e.checked();
-                                            let client = client_toggle.clone();
-                                            let col_id = col_id_toggle.clone();
-                                            let media_id = item_id.clone();
-                                            child_error.set(None);
-                                            spawn(async move {
-                                                let result = if checked {
-                                                    client.execute(AddCollectionItems {
-                                                        collection_id: col_id,
-                                                        ids: vec![media_id.clone()],
-                                                    }).await
-                                                } else {
-                                                    client.execute(RemoveCollectionItems {
-                                                        collection_id: col_id,
-                                                        ids: vec![media_id.clone()],
-                                                    }).await
-                                                };
-                                                match result {
-                                                    Ok(_) => {
-                                                        if checked {
-                                                            current_children.write().push(media_id);
-                                                        } else {
-                                                            current_children.write().retain(|mid| mid != &media_id);
-                                                        }
-                                                    }
-                                                    Err(e) => {
-                                                        child_error.set(Some(e.user_message()));
-                                                    }
-                                                }
-                                            });
-                                        },
-                                    }
-                                    span { "{item_name}" }
-                                }
-                            }
-                        }
-                    }
-                    if all_collections.read().is_empty() {
-                        span { class: "loading-text", "No other collections available." }
-                    }
-                }
-                if let Some(err) = child_error.read().as_ref() {
-                    p { style: "color:var(--error);font-size:0.8rem;margin-top:4px", "{err}" }
                 }
             }
         }

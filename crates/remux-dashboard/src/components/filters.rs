@@ -25,6 +25,10 @@ fn rule_values(rule: &FilterRule) -> Vec<String> {
             .iter()
             .map(|id| id.to_string())
             .collect(),
+        FilterRule::CollectionId { ids, .. } => ids
+            .iter()
+            .map(|id| id.to_string())
+            .collect(),
         _ => vec![],
     }
 }
@@ -155,6 +159,58 @@ async fn fetch_suggestions(
             }
             results
         }
+        "collection_id" => {
+            let q_lower = query.to_lowercase();
+            match client
+                .execute(remux_sdks::remux::GetItems(
+                    remux_sdks::remux::GetItemsQuery {
+                        include_item_types: Some(vec![
+                            remux_sdks::remux::MediaType::BoxSet,
+                        ]),
+                        include_childless: Some(true),
+                        sort_by: Some(vec![remux_sdks::remux::ItemSortBy::SortName]),
+                        sort_order: Some(vec![remux_sdks::remux::SortOrder::Ascending]),
+                        ..Default::default()
+                    },
+                ))
+                .await
+            {
+                Ok(r) => r
+                    .items
+                    .into_iter()
+                    .filter(|item| {
+                        let promoted = item
+                            .remux
+                            .as_ref()
+                            .and_then(|r| r.promoted)
+                            .unwrap_or(false);
+                        let is_group = item
+                            .collection_type
+                            .as_ref()
+                            == Some(&remux_sdks::remux::CollectionType::Boxsets);
+                        !promoted && !is_group
+                    })
+                    .filter(|item| {
+                        item.name
+                            .as_deref()
+                            .unwrap_or("")
+                            .to_lowercase()
+                            .contains(&q_lower)
+                    })
+                    .filter_map(|item| {
+                        item.name
+                            .map(|n| {
+                                (
+                                    n,
+                                    item.id
+                                        .to_string(),
+                                )
+                            })
+                    })
+                    .collect(),
+                Err(_) => vec![],
+            }
+        }
         _ => vec![],
     }
 }
@@ -174,6 +230,7 @@ fn field_label(key: &str) -> &'static str {
         "original_language" => "Original Language",
         "person" => "Person",
         "catalog" => "Catalog",
+        "collection_id" => "Collection",
         _ => "",
     }
 }
@@ -284,6 +341,14 @@ fn rule_to_raw(rule: &FilterRule) -> (String, String, String) {
                 .join(", ");
             ("collection_member".into(), set_op_str(op), val)
         }
+        FilterRule::CollectionId { op, ids } => {
+            let val = ids
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            ("collection_id".into(), set_op_str(op), val)
+        }
     }
 }
 
@@ -372,6 +437,13 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
         "catalog" => FilterRule::Catalog {
             op: set_op,
             catalog_ids: value_str
+                .split(", ")
+                .filter_map(|s| Uuid::parse_str(s.trim()).ok())
+                .collect(),
+        },
+        "collection_id" => FilterRule::CollectionId {
+            op: set_op,
+            ids: value_str
                 .split(", ")
                 .filter_map(|s| Uuid::parse_str(s.trim()).ok())
                 .collect(),
@@ -653,6 +725,7 @@ pub fn FilterRuleRow(
     idx: usize,
     rule: FilterRule,
     rules: Signal<Vec<FilterRule>>,
+    #[props(default)] allowed_fields: Vec<&'static str>,
 ) -> Element {
     let app_state = use_context::<AppState>();
     let client_for_ratings = app_state.clone();
@@ -709,6 +782,7 @@ pub fn FilterRuleRow(
     let is_trailer = field_val == "has_trailer";
     let is_parental_rating = field_val == "parental_rating";
     let is_catalog = field_val == "catalog";
+    let is_collection_id = field_val == "collection_id";
     let hide_operator = is_trailer || is_parental_rating;
 
     let fv1 = field_val.clone();
@@ -758,6 +832,10 @@ pub fn FilterRuleRow(
             .collect()
     };
 
+    let show_field = move |key: &'static str| {
+        allowed_fields.is_empty() || allowed_fields.contains(&key)
+    };
+
     let field_style = if hide_operator {
         "flex:1 1 100%;min-width:110px"
     } else {
@@ -776,18 +854,19 @@ pub fn FilterRuleRow(
                         *row = raw_to_rule(&new_field, default_op, "");
                     }
                 },
-                option { value: "genre",           selected: field_val == "genre",           { field_label("genre") } }
-                option { value: "year",            selected: field_val == "year",            { field_label("year") } }
-                option { value: "rating_audience", selected: field_val == "rating_audience", { field_label("rating_audience") } }
-                option { value: "rating_critic",   selected: field_val == "rating_critic",   { field_label("rating_critic") } }
-                option { value: "parental_rating", selected: field_val == "parental_rating", { field_label("parental_rating") } }
-                option { value: "tag",             selected: field_val == "tag",             { field_label("tag") } }
-                option { value: "studio",          selected: field_val == "studio",          { field_label("studio") } }
-                option { value: "has_trailer",     selected: field_val == "has_trailer",     { field_label("has_trailer") } }
-                option { value: "country",            selected: field_val == "country",            { field_label("country") } }
-                option { value: "original_language", selected: field_val == "original_language", { field_label("original_language") } }
-                option { value: "person",             selected: field_val == "person",             { field_label("person") } }
-                option { value: "catalog", selected: field_val == "catalog", { field_label("catalog") } }
+                if show_field("genre")           { option { value: "genre",            selected: field_val == "genre",            { field_label("genre") } } }
+                if show_field("year")            { option { value: "year",             selected: field_val == "year",             { field_label("year") } } }
+                if show_field("rating_audience") { option { value: "rating_audience",  selected: field_val == "rating_audience",  { field_label("rating_audience") } } }
+                if show_field("rating_critic")   { option { value: "rating_critic",    selected: field_val == "rating_critic",    { field_label("rating_critic") } } }
+                if show_field("parental_rating") { option { value: "parental_rating",  selected: field_val == "parental_rating",  { field_label("parental_rating") } } }
+                if show_field("tag")             { option { value: "tag",              selected: field_val == "tag",              { field_label("tag") } } }
+                if show_field("studio")          { option { value: "studio",           selected: field_val == "studio",           { field_label("studio") } } }
+                if show_field("has_trailer")     { option { value: "has_trailer",      selected: field_val == "has_trailer",      { field_label("has_trailer") } } }
+                if show_field("country")         { option { value: "country",          selected: field_val == "country",          { field_label("country") } } }
+                if show_field("original_language") { option { value: "original_language", selected: field_val == "original_language", { field_label("original_language") } } }
+                if show_field("person")          { option { value: "person",           selected: field_val == "person",           { field_label("person") } } }
+                if show_field("catalog")         { option { value: "catalog",          selected: field_val == "catalog",          { field_label("catalog") } } }
+                if show_field("collection_id")   { option { value: "collection_id",    selected: field_val == "collection_id",    { field_label("collection_id") } } }
             }
             if !hide_operator {
                 select {
@@ -812,6 +891,14 @@ pub fn FilterRuleRow(
                     idx,
                     rules,
                     value_labels: Some(catalog_options),
+                }
+            } else if is_collection_id {
+                ChipInput {
+                    field_key: "collection_id".to_string(),
+                    op_val: op_val.clone(),
+                    values: rule_values(&rule),
+                    idx,
+                    rules,
                 }
             } else if is_trailer {
                 select {
@@ -890,10 +977,19 @@ fn FilterGroupRow(
     group_idx: usize,
     group: FilterGroup,
     groups: Signal<Vec<FilterGroup>>,
+    #[props(default)] allowed_fields: Vec<&'static str>,
 ) -> Element {
-    let default_new_rule = FilterRule::Genre {
-        op: SetOp::In,
-        values: vec![],
+    let default_new_rule = if let Some(&first) = allowed_fields.first() {
+        let default_op = ops_for_field(first)
+            .first()
+            .map(|(v, _)| *v)
+            .unwrap_or("");
+        raw_to_rule(first, default_op, "")
+    } else {
+        FilterRule::Genre {
+            op: SetOp::In,
+            values: vec![],
+        }
     };
     let can_delete = groups
         .read()
@@ -973,6 +1069,7 @@ fn FilterGroupRow(
                             idx,
                             rule: rule.clone(),
                             rules,
+                            allowed_fields: allowed_fields.clone(),
                         }
                     }
                 }
@@ -997,6 +1094,7 @@ fn FilterGroupRow(
 pub fn FilterRuleEditor(
     match_mode: Signal<FilterMatchMode>,
     groups: Signal<Vec<FilterGroup>>,
+    #[props(default)] allowed_fields: Vec<&'static str>,
 ) -> Element {
     let has_multiple = groups
         .read()
@@ -1034,6 +1132,7 @@ pub fn FilterRuleEditor(
                         group_idx: idx,
                         group,
                         groups,
+                        allowed_fields: allowed_fields.clone(),
                     }
                 }
             }
