@@ -2838,21 +2838,6 @@ impl Media {
         Ok(())
     }
 
-    pub async fn detach_children(
-        db: &SqlitePool,
-        parent_id: &Uuid,
-    ) -> Result<(), sqlx::Error> {
-        let _permit = DB_WRITE_SEMAPHORE
-            .acquire()
-            .await
-            .unwrap();
-        sqlx::query("UPDATE media SET parent_id = NULL WHERE parent_id = $1")
-            .bind(parent_id)
-            .execute(db)
-            .await?;
-        Ok(())
-    }
-
     pub async fn get_by_filter(
         db: &SqlitePool,
         filter: &MediaFilter,
