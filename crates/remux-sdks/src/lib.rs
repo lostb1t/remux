@@ -427,6 +427,55 @@ impl<EP: Endpoint> Endpoint for Cached<EP> {
     }
 }
 
+/// Wraps an endpoint and appends extra query parameters to every request.
+/// Used by `StremioService` to forward manifest-URL query params to all resource calls.
+#[derive(Clone)]
+pub struct WithExtraQuery<EP: Endpoint> {
+    pub endpoint: EP,
+    pub extra: Vec<(String, String)>,
+}
+
+impl<EP: Endpoint> Endpoint for WithExtraQuery<EP> {
+    type Output = EP::Output;
+
+    fn path(&self) -> String {
+        self.endpoint
+            .path()
+    }
+
+    fn query(&self) -> Vec<(String, String)> {
+        let mut q = self
+            .endpoint
+            .query();
+        q.extend(
+            self.extra
+                .iter()
+                .cloned(),
+        );
+        q
+    }
+
+    fn method(&self) -> Method {
+        self.endpoint
+            .method()
+    }
+
+    fn headers(&self) -> HeaderMap {
+        self.endpoint
+            .headers()
+    }
+
+    fn body(&self) -> Body {
+        self.endpoint
+            .body()
+    }
+
+    fn cache_ttl(&self) -> Option<Duration> {
+        self.endpoint
+            .cache_ttl()
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CommaSeparatedList<T> {
     data: Vec<T>,

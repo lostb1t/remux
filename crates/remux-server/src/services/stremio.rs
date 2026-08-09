@@ -1,6 +1,6 @@
 use crate::{
     sdks,
-    sdks::{CachedEndpoint, ClientError},
+    sdks::{CachedEndpoint, ClientError, Endpoint, WithExtraQuery},
 };
 use anyhow::{Result, anyhow};
 use futures::{
@@ -28,24 +28,44 @@ fn is_404(e: &ClientError) -> bool {
 #[derive(Clone)]
 pub struct StremioService {
     pub client: sdks::RestClient,
+    extra_query: Vec<(String, String)>,
 }
 
 impl StremioService {
     pub fn from_url(url: &str) -> Result<Self> {
-        let base = url
+        let parsed = url::Url::parse(url).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let extra_query: Vec<(String, String)> = parsed
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        let mut clean = parsed.clone();
+        clean.set_query(None);
+        let base = clean
+            .as_str()
             .trim_end_matches('/')
             .to_string()
             + "/";
         Ok(Self {
             client: sdks::stremio::client(&base)?,
+            extra_query,
         })
+    }
+
+    fn ep<EP: Endpoint + Clone>(&self, endpoint: EP) -> WithExtraQuery<EP> {
+        WithExtraQuery {
+            endpoint,
+            extra: self
+                .extra_query
+                .clone(),
+        }
     }
 
     pub async fn get_manifest(&self) -> Result<sdks::stremio::Manifest> {
         Ok(self
             .client
             .execute(
-                sdks::stremio::ManifestEndpoint.with_cache(Duration::from_secs(3600)),
+                self.ep(sdks::stremio::ManifestEndpoint)
+                    .with_cache(Duration::from_secs(3600)),
             )
             .await?)
     }
@@ -58,12 +78,12 @@ impl StremioService {
         Ok(self
             .client
             .execute(
-                sdks::stremio::MetaEndpoint {
+                self.ep(sdks::stremio::MetaEndpoint {
                     media_type,
                     id: id.into(),
                     season: None,
                     episode: None,
-                }
+                })
                 .with_cache(Duration::from_secs(3600)),
             )
             .await?
@@ -83,7 +103,7 @@ impl StremioService {
         Ok(self
             .client
             .execute(
-                sdks::stremio::CatalogEndpoint {
+                self.ep(sdks::stremio::CatalogEndpoint {
                     kind: catalog
                         .kind
                         .clone(),
@@ -93,7 +113,7 @@ impl StremioService {
                     search: Some(q),
                     genre: None,
                     skip: None,
-                }
+                })
                 .with_cache(Duration::from_secs(60)),
             )
             .await?
@@ -108,10 +128,10 @@ impl StremioService {
         Ok(self
             .client
             .execute(
-                sdks::stremio::StreamEndpoint {
+                self.ep(sdks::stremio::StreamEndpoint {
                     kind: media_type,
                     id: id.into(),
-                }
+                })
                 .with_cache(Duration::from_secs(300)),
             )
             .await?
@@ -128,12 +148,12 @@ impl StremioService {
         Ok(self
             .client
             .execute(
-                sdks::stremio::SubtitlesEndpoint {
+                self.ep(sdks::stremio::SubtitlesEndpoint {
                     media_type,
                     imdb_id: imdb_id.to_string(),
                     season,
                     episode,
-                }
+                })
                 .with_cache(Duration::from_secs(86_400)),
             )
             .await?
@@ -149,15 +169,21 @@ impl StremioService {
         let client = self
             .client
             .clone();
+        let extra_query = self
+            .extra_query
+            .clone();
 
         let t0 = Instant::now();
         let first_page = client
-            .execute(sdks::stremio::CatalogEndpoint {
-                kind: kind.clone(),
-                id: id.clone(),
-                search: None,
-                genre: None,
-                skip: None,
+            .execute(WithExtraQuery {
+                endpoint: sdks::stremio::CatalogEndpoint {
+                    kind: kind.clone(),
+                    id: id.clone(),
+                    search: None,
+                    genre: None,
+                    skip: None,
+                },
+                extra: extra_query.clone(),
             })
             .await?;
 
@@ -176,15 +202,18 @@ impl StremioService {
                 let client = client.clone();
                 let kind = kind.clone();
                 let id = id.clone();
+                let extra_query = extra_query.clone();
                 async move {
-                    let t = Instant::now();
                     let result = client
-                        .execute(sdks::stremio::CatalogEndpoint {
-                            kind: kind.clone(),
-                            id: id.clone(),
-                            search: None,
-                            genre: None,
-                            skip: Some(page * page_size),
+                        .execute(WithExtraQuery {
+                            endpoint: sdks::stremio::CatalogEndpoint {
+                                kind: kind.clone(),
+                                id: id.clone(),
+                                search: None,
+                                genre: None,
+                                skip: Some(page * page_size),
+                            },
+                            extra: extra_query,
                         })
                         .await;
                     result
