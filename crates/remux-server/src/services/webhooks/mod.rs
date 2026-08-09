@@ -34,6 +34,131 @@ use tracing::{debug, warn};
 /// (one enrichment round-trip) never drops events under normal playback load.
 const EVENT_CHANNEL_CAPACITY: usize = 4096;
 
+/// How hard a [`Pacer`] tries to let the dispatcher catch up. Extracted so tests
+/// do not have to wait out the real thresholds.
+#[derive(Debug, Clone, Copy)]
+struct PacingPolicy {
+    /// Backlog above which emission waits.
+    high_water: usize,
+    /// Longest a single emission waits before going ahead anyway.
+    max_wait: std::time::Duration,
+    /// Gap between backlog checks.
+    poll_interval: std::time::Duration,
+    /// Consecutive exhausted waits after which the burst stops pacing. See
+    /// [`Pacer`].
+    give_up_after: u32,
+}
+
+impl Default for PacingPolicy {
+    fn default() -> Self {
+        Self {
+            // Half the channel, so a paced burst keeps a margin for the unpaced
+            // events (playback, auth) that share it.
+            high_water: EVENT_CHANNEL_CAPACITY / 2,
+            max_wait: std::time::Duration::from_secs(5),
+            poll_interval: std::time::Duration::from_millis(50),
+            give_up_after: 3,
+        }
+    }
+}
+
+/// Emits a burst of events at a rate the dispatcher can keep up with.
+///
+/// A library scan produces `ItemAdded` in tens of thousands, faster than the
+/// dispatcher — one enrichment query per event — drains them, so unpaced the
+/// overflow becomes a `Lagged` line and the "new movie" notification is silently
+/// lost. Batching would fix the throughput but not the contract: one event per
+/// item is what the plugin's templates are written against.
+///
+/// Two bounds stop a sick dispatcher from stalling the scan: a wait gives up
+/// after `max_wait` and emits anyway, and `give_up_after` exhausted waits in a
+/// row drop the burst back to unpaced emission — dropped events at full speed
+/// beats `max_wait` per item for a whole library. Pacing resumes once the
+/// backlog is back under the mark, so an early hiccup does not cost the rest.
+///
+/// One per burst: the give-up counter is what makes the second bound work.
+pub struct Pacer {
+    service: WebhookService,
+    policy: PacingPolicy,
+    consecutive_timeouts: u32,
+    /// Latched: a burst that gave up does not start pacing again.
+    gave_up: bool,
+}
+
+impl Pacer {
+    fn new(service: WebhookService, policy: PacingPolicy) -> Self {
+        Self {
+            service,
+            policy,
+            consecutive_timeouts: 0,
+            gave_up: false,
+        }
+    }
+
+    /// Emit `event`, waiting first if the dispatcher is behind.
+    pub async fn emit(&mut self, event: WebhookEvent) {
+        // One channel read, no wait: a cleared stall resumes pacing, a dispatcher
+        // that really is wedged stays given up on.
+        if self.gave_up
+            && self
+                .service
+                .tx
+                .len()
+                <= self
+                    .policy
+                    .high_water
+        {
+            self.gave_up = false;
+            self.consecutive_timeouts = 0;
+        }
+        if !self.gave_up {
+            self.wait_for_room()
+                .await;
+        }
+        self.service
+            .emit(event);
+    }
+
+    async fn wait_for_room(&mut self) {
+        let deadline = std::time::Instant::now()
+            + self
+                .policy
+                .max_wait;
+        while self
+            .service
+            .tx
+            .len()
+            > self
+                .policy
+                .high_water
+        {
+            if std::time::Instant::now() >= deadline {
+                self.consecutive_timeouts += 1;
+                if self.consecutive_timeouts
+                    >= self
+                        .policy
+                        .give_up_after
+                {
+                    warn!(
+                        waits = self.consecutive_timeouts,
+                        "webhook dispatcher is not draining, emitting the rest of \
+                         this burst unpaced"
+                    );
+                    self.gave_up = true;
+                }
+                return;
+            }
+            tokio::time::sleep(
+                self.policy
+                    .poll_interval,
+            )
+            .await;
+        }
+        // Under the mark within the budget — the normal case is not waiting at all.
+        self.consecutive_timeouts = 0;
+    }
+}
+
 /// `Name` seen by the template of the synthetic event [`deliver_test`] sends.
 pub const TEST_EVENT_TITLE: &str = "Test notification";
 
@@ -95,6 +220,70 @@ const _: () = assert!(
     "NotificationType has outgrown the u32 `wants` mask — widen it to u64"
 );
 
+/// Whether [`WebhookService::reload`] got a snapshot out of the database.
+///
+/// A failure leaves `dirty` set, so the next event would retry the query — one
+/// failing query per event for as long as the database is down, at a rate an
+/// unauthenticated caller can drive through `AuthenticationFailure`. Hence
+/// [`ReloadRetry`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReloadOutcome {
+    Loaded,
+    Failed,
+}
+
+/// Base delay of the reload retry, grown exponentially per consecutive failure.
+const RELOAD_RETRY_BASE_MS: u64 = 500;
+
+/// Cap on consecutive failures counted, so the delay tops out at
+/// `RELOAD_RETRY_BASE_MS * 2^4` ≈ 8s rather than growing without bound.
+///
+/// Kept low because nothing interrupts the wait: it is also how long a recovered
+/// database goes unnoticed, and how long `dirty` stays raised — during which
+/// [`WebhookService::wants`] answers `true` for everything.
+const RELOAD_RETRY_MAX_EXPONENT: u32 = 4;
+
+/// When the dispatcher may next attempt a reload.
+///
+/// Owned by the dispatcher task, which is the only caller of
+/// [`WebhookService::reload`] — see the invariant documented there.
+#[derive(Debug, Default)]
+struct ReloadRetry {
+    /// `None` once a reload has succeeded: the next one runs immediately.
+    not_before: Option<std::time::Instant>,
+    consecutive_failures: u32,
+}
+
+impl ReloadRetry {
+    fn is_due(&self) -> bool {
+        match self.not_before {
+            Some(deadline) => std::time::Instant::now() >= deadline,
+            None => true,
+        }
+    }
+
+    fn record(&mut self, outcome: ReloadOutcome) {
+        match outcome {
+            ReloadOutcome::Loaded => {
+                self.not_before = None;
+                self.consecutive_failures = 0;
+            }
+            ReloadOutcome::Failed => {
+                let attempt = self
+                    .consecutive_failures
+                    .min(RELOAD_RETRY_MAX_EXPONENT);
+                self.not_before = Some(
+                    std::time::Instant::now()
+                        + remux_utils::retry::backoff(RELOAD_RETRY_BASE_MS, attempt),
+                );
+                self.consecutive_failures = self
+                    .consecutive_failures
+                    .saturating_add(1);
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct WebhookService {
     tx: broadcast::Sender<Arc<WebhookEvent>>,
@@ -124,6 +313,11 @@ impl WebhookService {
         let _ = self
             .tx
             .send(Arc::new(event));
+    }
+
+    /// A [`Pacer`] for one burst of events. See its documentation.
+    pub fn pacer(&self) -> Pacer {
+        Pacer::new(self.clone(), PacingPolicy::default())
     }
 
     /// Whether any enabled webhook subscribes to `notification_type`.
@@ -184,7 +378,7 @@ impl WebhookService {
     /// holds no read guard. That is what makes it safe for the dispatcher to
     /// hold the read guard across `enrich_item().await` — no other task can be
     /// waiting for the write lock.
-    async fn reload(&self, ctx: &AppContext) {
+    async fn reload(&self, ctx: &AppContext) -> ReloadOutcome {
         // Never fails (falls back to defaults), so it is applied even when the
         // hook query below does not.
         let server = payload::ServerInfo::load(ctx).await;
@@ -199,13 +393,23 @@ impl WebhookService {
                     .await
                     .server = server;
                 // Ask for another attempt: the flag was consumed before the
-                // call, so nothing else will set it.
+                // call, so nothing else will set it. The caller decides *when*
+                // that attempt happens — see [`ReloadOutcome`].
                 self.inner
                     .dirty
                     .store(true, Ordering::Release);
-                return;
+                return ReloadOutcome::Failed;
             }
         };
+
+        // Slots are keyed by hook id and created on first delivery, so this is
+        // the only place that ever learns a hook is gone.
+        sender::retain_delivery_slots(
+            &hooks
+                .iter()
+                .map(|hook| hook.id)
+                .collect(),
+        );
         let wanted: HashSet<NotificationType> = hooks
             .iter()
             .flat_map(|hook| {
@@ -240,6 +444,7 @@ impl WebhookService {
                 .wanted_mask
                 .store(mask, Ordering::Relaxed);
         }
+        ReloadOutcome::Loaded
     }
 
     /// Whether `hook` wants `event`. `item_kind` is `None` when the event
@@ -300,8 +505,13 @@ impl WebhookService {
             .tx
             .subscribe();
         tokio::spawn(async move {
-            self.reload(&ctx)
-                .await;
+            // Local to the task on purpose: `reload` is only ever called from
+            // here, so this needs no synchronisation.
+            let mut retry = ReloadRetry::default();
+            retry.record(
+                self.reload(&ctx)
+                    .await,
+            );
 
             loop {
                 let event = match rx
@@ -316,13 +526,19 @@ impl WebhookService {
                     Err(RecvError::Closed) => return,
                 };
 
-                if self
-                    .inner
-                    .dirty
-                    .swap(false, Ordering::AcqRel)
+                // Only consume the flag when a reload is due: a failed reload
+                // re-raises it, so without the deadline check that would be one
+                // failing query per event.
+                if retry.is_due()
+                    && self
+                        .inner
+                        .dirty
+                        .swap(false, Ordering::AcqRel)
                 {
-                    self.reload(&ctx)
-                        .await;
+                    retry.record(
+                        self.reload(&ctx)
+                            .await,
+                    );
                 }
 
                 let cache = self
@@ -404,10 +620,11 @@ impl WebhookService {
 
 // --- the admin "test this webhook" path --------------------------------------
 
-/// Whether an operator-supplied template parses, for write-time validation. The
-/// error is handlebars' own, derived from the operator's text and nothing else
-/// — no remote response, no URL — so it is safe to return over the API.
-pub fn validate_template(template: &str) -> Result<(), handlebars::TemplateError> {
+/// Whether an operator-supplied template parses **and renders**, for write-time
+/// validation. The error is handlebars' own, derived from the operator's text
+/// and nothing else — no remote response, no URL — so it is safe to return over
+/// the API.
+pub fn validate_template(template: &str) -> anyhow::Result<()> {
     template::validate(template)
 }
 
@@ -467,6 +684,227 @@ mod tests {
     use chrono::Utc;
     use remux_sdks::remux::{DiscordMentionType, WebhookDestination, WebhookItemTypes};
     use uuid::Uuid;
+
+    // --- reload pacing -----------------------------------------------------
+
+    #[test]
+    fn a_fresh_reload_retry_is_due_immediately() {
+        assert!(ReloadRetry::default().is_due());
+    }
+
+    #[test]
+    fn a_failed_reload_is_not_retried_until_its_deadline() {
+        let mut retry = ReloadRetry::default();
+        retry.record(ReloadOutcome::Failed);
+        assert!(
+            !retry.is_due(),
+            "a failing DB must not be re-queried on the very next event"
+        );
+        assert_eq!(retry.consecutive_failures, 1);
+    }
+
+    /// The delay has to grow, otherwise a long outage is still one query per
+    /// event once the first short delay has elapsed.
+    #[test]
+    fn consecutive_failures_push_the_deadline_further_out() {
+        let mut retry = ReloadRetry::default();
+        retry.record(ReloadOutcome::Failed);
+        let first = retry
+            .not_before
+            .expect("a failure sets a deadline");
+        for _ in 0..4 {
+            retry.record(ReloadOutcome::Failed);
+        }
+        assert!(
+            retry
+                .not_before
+                .expect("still set")
+                > first,
+            "the deadline must move out as failures accumulate"
+        );
+    }
+
+    #[test]
+    fn a_successful_reload_clears_the_pacing() {
+        let mut retry = ReloadRetry::default();
+        retry.record(ReloadOutcome::Failed);
+        retry.record(ReloadOutcome::Loaded);
+        assert!(retry.is_due(), "a recovered DB must be readable at once");
+        assert_eq!(retry.consecutive_failures, 0);
+    }
+
+    // --- pacing ------------------------------------------------------------
+
+    fn test_event() -> WebhookEvent {
+        WebhookEvent::Generic {
+            title: "t".into(),
+            extra: Vec::new(),
+        }
+    }
+
+    /// A policy whose waits are short enough to sit in a unit test, with enough
+    /// slack that the parallel suite cannot flake it.
+    const FAST_PACING: PacingPolicy = PacingPolicy {
+        high_water: 2,
+        max_wait: std::time::Duration::from_millis(500),
+        poll_interval: std::time::Duration::from_millis(10),
+        give_up_after: 2,
+    };
+
+    fn fast_pacer(service: &WebhookService) -> Pacer {
+        Pacer::new(service.clone(), FAST_PACING)
+    }
+
+    /// Fills the channel past the high-water mark and keeps a receiver that
+    /// never drains, so the backlog only ever grows.
+    fn wedged(service: &WebhookService) -> broadcast::Receiver<Arc<WebhookEvent>> {
+        let rx = service
+            .tx
+            .subscribe();
+        for _ in 0..=FAST_PACING.high_water {
+            service.emit(test_event());
+        }
+        rx
+    }
+
+    #[tokio::test]
+    async fn pacing_does_not_wait_while_the_backlog_is_low() {
+        let service = WebhookService::new();
+        let _rx = service
+            .tx
+            .subscribe();
+        let started = std::time::Instant::now();
+        fast_pacer(&service)
+            .emit(test_event())
+            .await;
+        assert!(
+            started.elapsed() < FAST_PACING.max_wait,
+            "an idle dispatcher must not slow emission down"
+        );
+        assert_eq!(
+            service
+                .tx
+                .len(),
+            1
+        );
+    }
+
+    /// The wait is bounded, so a dispatcher that never drains must not stall a
+    /// scan for good.
+    #[tokio::test]
+    async fn pacing_emits_anyway_once_the_wait_runs_out() {
+        let service = WebhookService::new();
+        let _rx = wedged(&service);
+
+        let started = std::time::Instant::now();
+        fast_pacer(&service)
+            .emit(test_event())
+            .await;
+
+        assert!(
+            started.elapsed() >= FAST_PACING.max_wait,
+            "it must actually have paced"
+        );
+        assert_eq!(
+            service
+                .tx
+                .len(),
+            FAST_PACING.high_water + 2,
+            "past the deadline the event goes out anyway rather than hanging"
+        );
+    }
+
+    /// Otherwise a wedged dispatcher would cost `max_wait` per item for the
+    /// length of a library — worse than the dropped events it replaces.
+    #[tokio::test]
+    async fn pacing_gives_up_on_the_rest_of_a_burst_after_repeated_timeouts() {
+        let service = WebhookService::new();
+        let _rx = wedged(&service);
+        let mut pacer = fast_pacer(&service);
+
+        for _ in 0..FAST_PACING.give_up_after {
+            pacer
+                .emit(test_event())
+                .await;
+        }
+        assert!(pacer.gave_up, "repeated timeouts must latch the give-up");
+
+        let started = std::time::Instant::now();
+        pacer
+            .emit(test_event())
+            .await;
+        // Half the budget, not the poll interval: a tighter bound would measure
+        // the test runner's scheduling rather than the pacer.
+        assert!(
+            started.elapsed() < FAST_PACING.max_wait / 2,
+            "a burst that gave up must not pace again"
+        );
+    }
+
+    /// A hiccup early in a scan must not cost the pacing for the rest of it.
+    #[tokio::test]
+    async fn pacing_resumes_after_a_stall_clears() {
+        let service = WebhookService::new();
+        let mut rx = wedged(&service);
+        let mut pacer = fast_pacer(&service);
+        for _ in 0..FAST_PACING.give_up_after {
+            pacer
+                .emit(test_event())
+                .await;
+        }
+        assert!(pacer.gave_up, "the stall must have latched the give-up");
+
+        while rx
+            .try_recv()
+            .is_ok()
+        {}
+        pacer
+            .emit(test_event())
+            .await;
+
+        assert!(
+            !pacer.gave_up,
+            "a drained backlog must put the burst back under pacing"
+        );
+        assert_eq!(pacer.consecutive_timeouts, 0);
+    }
+
+    /// The pacing has to end as soon as the dispatcher drains, not at the
+    /// deadline — and a drain must clear the give-up counter.
+    #[tokio::test]
+    async fn pacing_resumes_as_soon_as_the_backlog_drains() {
+        let service = WebhookService::new();
+        let mut rx = wedged(&service);
+
+        let drainer = tokio::spawn(async move {
+            tokio::time::sleep(FAST_PACING.poll_interval).await;
+            while rx
+                .try_recv()
+                .is_ok()
+            {}
+            rx
+        });
+
+        let mut pacer = fast_pacer(&service);
+        let started = std::time::Instant::now();
+        pacer
+            .emit(test_event())
+            .await;
+        let waited = started.elapsed();
+        let _rx = drainer
+            .await
+            .expect("the drainer must not panic");
+
+        assert!(
+            waited < FAST_PACING.max_wait,
+            "emission must resume on drain, not wait out the deadline: {waited:?}"
+        );
+        assert!(
+            !pacer.gave_up,
+            "a dispatcher that drains must not be given up on"
+        );
+        assert_eq!(pacer.consecutive_timeouts, 0);
+    }
 
     const NONE_ENABLED: WebhookItemTypes = WebhookItemTypes {
         movies: false,

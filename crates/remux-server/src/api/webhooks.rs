@@ -92,11 +92,11 @@ fn with_parsed_url(payload: WebhookDto) -> Result<WebhookDto> {
     }
 }
 
-/// `payload` with its template proved to parse — or a 400 carrying handlebars'
-/// own message.
+/// `payload` with its template proved to parse *and* render — or a 400 carrying
+/// handlebars' own message.
 ///
-/// The parse error is derived from the operator's own template — never from a
-/// remote response, never from the URL — so returning it leaks nothing.
+/// The error is derived from the operator's own template — never from a remote
+/// response, never from the URL — so returning it leaks nothing.
 ///
 /// Checked even when `send_all_properties` bypasses the template at render
 /// time: the flag is one checkbox away from being turned off.
@@ -104,7 +104,7 @@ fn with_checked_template(payload: WebhookDto) -> Result<WebhookDto> {
     match webhooks::validate_template(&payload.template) {
         Ok(()) => Ok(payload),
         Err(e) => {
-            let detail = format!("webhook template does not parse: {e}");
+            let detail = format!("webhook template is not usable: {e}");
             Err(e.context_bad_request(&detail))
         }
     }

@@ -43,6 +43,11 @@ where
         None => Uuid::nil(),
     };
 
+    // One pacer for the whole scan, not one per chunk — see `webhooks::Pacer`.
+    let mut pacer = ctx
+        .webhooks
+        .pacer();
+
     while let Some(items) = chunks
         .next()
         .await
@@ -138,13 +143,17 @@ where
         // are new. A scan can produce tens of thousands of them, so the whole
         // loop is skipped — at the cost of one atomic load per chunk — when no
         // webhook subscribes.
+        //
+        // Through the pacer, not `emit`: a scan outruns the dispatcher and would
+        // overflow the event channel. See `webhooks::Pacer`.
         if ctx
             .webhooks
             .wants(NotificationType::ItemAdded)
         {
             for item in new_items.iter() {
-                ctx.webhooks
-                    .emit(WebhookEvent::ItemAdded { item_id: item.id });
+                pacer
+                    .emit(WebhookEvent::ItemAdded { item_id: item.id })
+                    .await;
             }
         }
 

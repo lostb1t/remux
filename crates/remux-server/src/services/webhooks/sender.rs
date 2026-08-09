@@ -18,13 +18,13 @@
 use super::throttle::LogThrottle;
 use crate::db;
 use remux_sdks::remux::{WebhookDestination, WebhookTestResult};
+use remux_utils::retry::backoff;
 use reqwest::{
     StatusCode,
     header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue},
 };
-use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, LazyLock, Mutex},
     time::Duration,
 };
@@ -90,8 +90,9 @@ static SATURATION_WARNINGS: LazyLock<LogThrottle> =
 /// slot for its full retry window and drop deliveries to healthy hooks too. The
 /// total stays bounded at `enabled hooks × limit`.
 ///
-/// TODO: entries are never removed. `WebhookService::reload` in `mod.rs` knows
-/// the live hook set and is the natural place to prune from.
+/// Entries are created on first delivery and dropped by [`Self::retain`], which
+/// [`super::WebhookService::reload`] calls with the live hook set — otherwise a
+/// deleted or disabled hook would keep its entry until restart.
 pub(crate) struct DeliverySlots {
     limit: usize,
     per_hook: Mutex<HashMap<Uuid, Arc<Semaphore>>>,
@@ -124,6 +125,24 @@ impl DeliverySlots {
             .try_acquire_owned()
             .ok()
     }
+
+    /// Forget every hook not in `live`, except one with a delivery still in
+    /// flight: dropping that entry would let the next delivery build a fresh
+    /// semaphore and exceed the limit. A later pass collects it.
+    pub(crate) fn retain(&self, live: &HashSet<Uuid>) {
+        let mut per_hook = self
+            .per_hook
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        per_hook.retain(|hook_id, semaphore| {
+            live.contains(hook_id) || semaphore.available_permits() < self.limit
+        });
+    }
+}
+
+/// [`DeliverySlots::retain`] on the process-wide slots.
+pub(crate) fn retain_delivery_slots(live: &HashSet<Uuid>) {
+    DELIVERY_SLOTS.retain(live);
 }
 
 /// Hand a rendered body to the delivery pool. A hook with its share already in
@@ -158,8 +177,14 @@ pub(crate) fn spawn_delivery_with(
         return false;
     };
     tokio::spawn(async move {
-        // Held for the whole delivery, retries included: the slot is the
-        // ceiling on work owed to one endpoint, not on one HTTP round-trip.
+        // Held for the whole delivery, retries and `Retry-After` sleeps
+        // included: the slot is the ceiling on work owed to one endpoint, not on
+        // one HTTP round-trip. So a rate-limiting endpoint can pin all its slots
+        // for ~210s (`attempts × REQUEST_TIMEOUT + (attempts - 1) ×
+        // MAX_RETRY_AFTER`) and have its new events dropped — deliberately:
+        // releasing the permit around the sleep would only turn "dropped" into
+        // "tasks parked on a semaphore", and keep pushing at an endpoint that
+        // just asked us to stop.
         let _permit = permit;
         deliver_logged(hook, body, policy).await;
     });
@@ -476,16 +501,8 @@ pub(crate) fn parse_retry_after(value: &str) -> Option<Duration> {
     ))
 }
 
-/// `base * 2^attempt` plus jitter in `[0, base/2)`, mirroring
-/// `remux_utils::retry!`.
-fn backoff(base_ms: u64, attempt: u32) -> Duration {
-    let exponential = base_ms.saturating_mul(1u64 << attempt.min(10));
-    let jitter = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|since| since.subsec_nanos() as u64 % (base_ms / 2 + 1))
-        .unwrap_or(0);
-    Duration::from_millis(exponential.saturating_add(jitter))
-}
+// The backoff curve is `remux_utils::retry::backoff`, imported at the top: only
+// the *decision* to retry is webhook-specific, the delay is not.
 
 // --- request shaping --------------------------------------------------------
 
@@ -557,8 +574,11 @@ pub(crate) fn shape_request(hook: &db::Webhook, rendered: &str) -> ShapedRequest
 
 /// The content type to send when the operator has not named one. A deviation
 /// from the plugin, which sends everything as `text/plain`.
+///
+/// Validated, not deserialized: only the parse's success matters, so
+/// `IgnoredAny` runs the same parser without building a `Value` tree.
 pub(crate) fn detect_content_type(body: &str) -> &'static str {
-    if serde_json::from_str::<Value>(body).is_ok() {
+    if serde_json::from_str::<serde::de::IgnoredAny>(body).is_ok() {
         JSON_CONTENT_TYPE
     } else {
         TEXT_CONTENT_TYPE
@@ -1542,6 +1562,65 @@ mod tests {
                 .try_acquire(busy)
                 .is_some(),
             "a released slot comes back"
+        );
+    }
+
+    #[test]
+    fn retain_forgets_hooks_that_are_gone() {
+        let slots = DeliverySlots::new(2);
+        let live = Uuid::from_u128(1);
+        let removed = Uuid::from_u128(2);
+        drop(
+            slots
+                .try_acquire(live)
+                .expect("a fresh hook has slots"),
+        );
+        drop(
+            slots
+                .try_acquire(removed)
+                .expect("a fresh hook has slots"),
+        );
+
+        slots.retain(&HashSet::from([live]));
+
+        let per_hook = slots
+            .per_hook
+            .lock()
+            .expect("uncontended");
+        assert!(per_hook.contains_key(&live));
+        assert!(
+            !per_hook.contains_key(&removed),
+            "a hook no longer in the live set must not keep its entry"
+        );
+    }
+
+    /// Evicting an entry whose permit is still out would let the next delivery
+    /// build a second semaphore and exceed the per-hook limit.
+    #[test]
+    fn retain_keeps_a_hook_with_a_delivery_still_in_flight() {
+        let slots = DeliverySlots::new(1);
+        let removed = Uuid::from_u128(2);
+        let permit = slots
+            .try_acquire(removed)
+            .expect("a fresh hook has slots");
+
+        slots.retain(&HashSet::new());
+        assert!(
+            slots
+                .try_acquire(removed)
+                .is_none(),
+            "the in-flight permit must still be counted after a prune"
+        );
+
+        drop(permit);
+        slots.retain(&HashSet::new());
+        assert!(
+            !slots
+                .per_hook
+                .lock()
+                .expect("uncontended")
+                .contains_key(&removed),
+            "a later prune collects it once the permit is back"
         );
     }
 

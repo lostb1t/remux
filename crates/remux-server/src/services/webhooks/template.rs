@@ -85,11 +85,34 @@ pub(crate) fn single_registry(
 /// operator recognises rather than as an internal id.
 const VALIDATION_NAME: &str = "webhook template";
 
-/// Whether an operator-supplied template parses. The error text is derived from
-/// the operator's own template — never from a remote response — so it is safe
-/// to hand back over the API.
-pub(crate) fn validate(template: &str) -> Result<(), handlebars::TemplateError> {
-    Handlebars::new().register_template_string(VALIDATION_NAME, template)
+/// Whether an operator-supplied template is usable. The error text is derived
+/// from the operator's own template — never from a remote response — so it is
+/// safe to hand back over the API.
+///
+/// Two checks, because parsing alone is not enough: handlebars resolves a helper
+/// name at *render* time, so `{{url_encod Name}}` parses cleanly and then fails
+/// every delivery. Through [`fresh_registry`], without which the render would
+/// reject every template that uses one of the custom helpers.
+pub(crate) fn validate(template: &str) -> anyhow::Result<()> {
+    let mut registry = fresh_registry();
+    registry.register_template_string(VALIDATION_NAME, template)?;
+    // Missing variables render empty (`strict_mode` is off) and the helpers treat
+    // a `Null` param as empty, so only a template broken for *every* event fails.
+    registry.render(VALIDATION_NAME, &validation_data())?;
+    Ok(())
+}
+
+/// The payload the dry run renders against: the same synthetic `Generic` event
+/// the admin test button uses, so validation and the test button agree.
+fn validation_data() -> Map<String, Value> {
+    super::payload::build_data(
+        &super::payload::ServerInfo::default(),
+        &super::WebhookEvent::Generic {
+            title: super::TEST_EVENT_TITLE.to_string(),
+            extra: Vec::new(),
+        },
+        None,
+    )
 }
 
 pub(crate) fn register_helpers(registry: &mut Handlebars<'_>) {
@@ -725,5 +748,51 @@ mod tests {
             render(&hook, &registry, &data(json!({}))).is_err(),
             "a helper called without its parameters must surface as an error"
         );
+    }
+
+    // --- validate ---------------------------------------------------------
+
+    /// Pins *why* [`validate`] renders instead of only registering: handlebars
+    /// looks a helper up at render time, so no registry — helpers or not —
+    /// rejects an unknown helper at parse time.
+    #[test]
+    fn parsing_alone_accepts_an_unknown_helper() {
+        assert!(
+            fresh_registry()
+                .register_template_string(VALIDATION_NAME, "{{url_encod Name}}")
+                .is_ok(),
+            "parsing is not helper-aware; validate() must render to catch this"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_a_helper_typo() {
+        assert!(
+            validate("{{url_encod Name}}").is_err(),
+            "a misspelt helper would drop every delivery, so it must not save"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_a_syntax_error() {
+        assert!(validate("{{#if_equals A \"a\"}}unclosed").is_err());
+    }
+
+    #[test]
+    fn validate_accepts_the_shipped_discord_template() {
+        validate(remux_sdks::remux::DISCORD_TEMPLATE)
+            .expect("the template we ship must pass our own validation");
+    }
+
+    /// The dry run must not reject a template whose variables simply are not in
+    /// the synthetic payload — most variables are event-specific.
+    #[test]
+    fn validate_accepts_variables_absent_from_the_dry_run_payload() {
+        validate(
+            "{{SeriesName}} {{url_encode ItemId}} {{json_encode Provider_imdb}}\
+             {{#if_exist SeasonNumber}}s{{/if_exist}}\
+             {{#if_equals ItemType \"Episode\"}}e{{/if_equals}}",
+        )
+        .expect("event-specific variables must not fail validation");
     }
 }
