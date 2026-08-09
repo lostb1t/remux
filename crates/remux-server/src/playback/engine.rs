@@ -675,14 +675,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             .map(VideoCodec::is_hevc)
             .unwrap_or(false);
 
-    let mut args: Vec<String> = vec![
-        "-v".into(),
-        "error".into(),
-        "-analyzeduration".into(),
-        "1000000".into(),
-        "-probesize".into(),
-        "1000000".into(),
-    ];
+    let mut args: Vec<String> = vec!["-v".into(), "error".into()];
 
     let burn_subtitle_filter = params.burn_subtitle
         && params
@@ -1501,10 +1494,6 @@ pub(crate) fn build_progressive_args(
     let mut args: Vec<String> = vec![
         "-v".into(),
         "error".into(),
-        "-analyzeduration".into(),
-        "5000000".into(),
-        "-probesize".into(),
-        "5000000".into(),
         "-reconnect".into(),
         "1".into(),
         "-reconnect_at_eof".into(),
