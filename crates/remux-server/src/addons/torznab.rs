@@ -53,6 +53,7 @@ impl AddonPreset for TorznabPreset {
                     kind: AddonOptionType::String,
                 },
             ],
+            ..Default::default()
         }
     }
 

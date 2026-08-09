@@ -66,6 +66,7 @@ impl AddonPreset for YtDlpPreset {
                     kind: AddonOptionType::String,
                 },
             ],
+            ..Default::default()
         }
     }
 

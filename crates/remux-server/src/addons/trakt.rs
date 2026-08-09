@@ -39,6 +39,7 @@ impl AddonPreset for TraktPreset {
                 default: None,
                 kind: AddonOptionType::Password,
             }],
+            ..Default::default()
         }
     }
 

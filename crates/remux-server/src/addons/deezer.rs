@@ -80,6 +80,7 @@ impl AddonPreset for DeezerPreset {
                 default: None,
                 kind: AddonOptionType::StringList,
             }],
+            ..Default::default()
         }
     }
 

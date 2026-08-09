@@ -417,6 +417,7 @@ pub struct UserMediaState {
     pub last_played_at: Option<NaiveDateTime>,
     pub subtitle_idx: Option<i64>,
     pub audio_idx: Option<i64>,
+    pub rating: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -645,9 +646,10 @@ impl UserMediaState {
                 playback_position,
                 last_played_at,
                 subtitle_idx,
-                audio_idx
+                audio_idx,
+                rating
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
             ON CONFLICT(user_id, media_id)
             DO UPDATE SET
                 media_raw = excluded.media_raw,
@@ -658,7 +660,8 @@ impl UserMediaState {
                 playback_position = excluded.playback_position,
                 last_played_at = excluded.last_played_at,
                 subtitle_idx = excluded.subtitle_idx,
-                audio_idx = excluded.audio_idx
+                audio_idx = excluded.audio_idx,
+                rating = excluded.rating
             "#,
         )
         .bind(self.user_id)
@@ -672,10 +675,25 @@ impl UserMediaState {
         .bind(now)
         .bind(self.subtitle_idx)
         .bind(self.audio_idx)
+        .bind(self.rating)
         .execute(db)
         .await?;
 
         Ok(())
+    }
+
+    pub async fn set_rating(
+        db: &SqlitePool,
+        user: &User,
+        media: &super::Media,
+        rating: Option<f64>,
+    ) -> Result<Self> {
+        let mut state = Self::get_or_new(db, user, media).await?;
+        state.rating = rating;
+        state
+            .save(db)
+            .await?;
+        Ok(state)
     }
 
     pub async fn get_by_filter(

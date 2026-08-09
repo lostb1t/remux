@@ -444,6 +444,16 @@ pub async fn mark_favorite(
             &session.user,
         )
         .await?;
+    let _ = state
+        .ctx
+        .tracking_tx
+        .send(crate::tracking::TrackingEvent::Favorite {
+            user_id: session
+                .user
+                .id,
+            media_id: media.id,
+            is_favorite: true,
+        });
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -464,6 +474,16 @@ pub async fn unmark_favorite(
             &session.user,
         )
         .await?;
+    let _ = state
+        .ctx
+        .tracking_tx
+        .send(crate::tracking::TrackingEvent::Favorite {
+            user_id: session
+                .user
+                .id,
+            media_id: media.id,
+            is_favorite: false,
+        });
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -484,6 +504,16 @@ pub async fn mark_favorite_modern(
             &session.user,
         )
         .await?;
+    let _ = state
+        .ctx
+        .tracking_tx
+        .send(crate::tracking::TrackingEvent::Favorite {
+            user_id: session
+                .user
+                .id,
+            media_id: media.id,
+            is_favorite: true,
+        });
     Ok(Json(api::db_state_to_dto(s, &media)).into_response())
 }
 
@@ -504,6 +534,16 @@ pub async fn unmark_favorite_modern(
             &session.user,
         )
         .await?;
+    let _ = state
+        .ctx
+        .tracking_tx
+        .send(crate::tracking::TrackingEvent::Favorite {
+            user_id: session
+                .user
+                .id,
+            media_id: media.id,
+            is_favorite: false,
+        });
     Ok(Json(api::db_state_to_dto(s, &media)).into_response())
 }
 
@@ -533,6 +573,13 @@ pub async fn mark_played(
             server_config.release_date_threshold(),
         )
         .await?;
+    let _ = state
+        .ctx
+        .tracking_tx
+        .send(crate::tracking::TrackingEvent::MarkPlayed {
+            user_id: user.id,
+            media_id: media.id,
+        });
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -555,6 +602,13 @@ pub async fn unmark_played(
             true,
         )
         .await?;
+    let _ = state
+        .ctx
+        .tracking_tx
+        .send(crate::tracking::TrackingEvent::MarkUnplayed {
+            user_id: user.id,
+            media_id: media.id,
+        });
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -1307,6 +1361,142 @@ pub async fn get_password_reset_providers(
     _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     Ok(Json(Vec::<serde_json::Value>::new()))
+}
+
+// ── User ratings ────────────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct RatingQuery {
+    pub likes: Option<bool>,
+    pub rating: Option<f64>,
+}
+
+#[post("/users/{user_id}/items/{id}/userrating")]
+pub async fn set_user_item_rating(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path((_user_id, id)): Path<(Uuid, Uuid)>,
+    Query(q): Query<RatingQuery>,
+) -> Result<impl IntoResponse> {
+    let media = MediaResolveService::resolve_item(id, &state.ctx)
+        .await?
+        .context_not_found("not found")?;
+    let rating = q
+        .rating
+        .or_else(|| {
+            q.likes
+                .map(|l| if l { 10.0 } else { 0.0 })
+        });
+    let ms = db::UserMediaState::set_rating(
+        &state
+            .ctx
+            .db,
+        &session.user,
+        &media,
+        rating,
+    )
+    .await?;
+    let _ = state
+        .ctx
+        .tracking_tx
+        .send(crate::tracking::TrackingEvent::UserRating {
+            user_id: session
+                .user
+                .id,
+            media_id: media.id,
+            rating,
+        });
+    Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
+}
+
+#[delete("/users/{user_id}/items/{id}/userrating")]
+pub async fn delete_user_item_rating(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path((_user_id, id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    let media = MediaResolveService::resolve_item(id, &state.ctx)
+        .await?
+        .context_not_found("not found")?;
+    let ms = db::UserMediaState::set_rating(
+        &state
+            .ctx
+            .db,
+        &session.user,
+        &media,
+        None,
+    )
+    .await?;
+    let _ = state
+        .ctx
+        .tracking_tx
+        .send(crate::tracking::TrackingEvent::UserRating {
+            user_id: session
+                .user
+                .id,
+            media_id: media.id,
+            rating: None,
+        });
+    Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
+}
+
+// ── Per-user addon configuration ────────────────────────────────────────────
+
+#[get("/users/{user_id}/addonconfig/{addon_id}")]
+pub async fn get_user_addon_config(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path((user_id, addon_id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    require_self_or_admin(user_id, &session)?;
+    let config = crate::addons::addon::get_user_addon_config(
+        &state
+            .ctx
+            .db,
+        user_id,
+        addon_id,
+    )
+    .await?;
+    Ok(Json(config).into_response())
+}
+
+#[post("/users/{user_id}/addonconfig/{addon_id}")]
+pub async fn set_user_addon_config(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path((user_id, addon_id)): Path<(Uuid, Uuid)>,
+    Json(config): Json<serde_json::Value>,
+) -> Result<impl IntoResponse> {
+    require_self_or_admin(user_id, &session)?;
+    crate::addons::addon::set_user_addon_config(
+        &state
+            .ctx
+            .db,
+        user_id,
+        addon_id,
+        config,
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[delete("/users/{user_id}/addonconfig/{addon_id}")]
+pub async fn delete_user_addon_config(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path((user_id, addon_id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    require_self_or_admin(user_id, &session)?;
+    crate::addons::addon::clear_user_addon_config(
+        &state
+            .ctx
+            .db,
+        user_id,
+        addon_id,
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 #[cfg(test)]

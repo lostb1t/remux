@@ -63,6 +63,7 @@ impl AddonPreset for StremioPreset {
                 default: None,
                 kind: AddonOptionType::Url,
             }],
+            ..Default::default()
         }
     }
 

@@ -114,6 +114,7 @@ impl AddonPreset for MonochromePreset {
                 MediaKind::Artist,
             ],
             options: eclipse_preset_options(MONOCHROME_URL, MONOCHROME_GENERATE_URL),
+            ..Default::default()
         }
     }
 
@@ -164,6 +165,7 @@ impl AddonPreset for SpotiFLACPreset {
                 MediaKind::Artist,
             ],
             options: eclipse_preset_options(SPOTIFLAC_URL, SPOTIFLAC_GENERATE_URL),
+            ..Default::default()
         }
     }
 

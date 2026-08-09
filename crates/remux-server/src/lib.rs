@@ -64,6 +64,7 @@ pub mod services;
 pub mod stream;
 pub mod tasks;
 mod torrent;
+pub mod tracking;
 mod web_client;
 mod web_patches;
 mod web_transform;
@@ -247,6 +248,7 @@ pub async fn init_app(
     }
 
     let addons = addons::AddonService::from_db(&conn, &config).await?;
+    let tracking_tx = tokio::sync::broadcast::channel::<tracking::TrackingEvent>(256).0;
     let ctx = AppContext {
         config,
         db: conn.clone(),
@@ -254,6 +256,8 @@ pub async fn init_app(
         sessions: playback_session::PlaybackSessionManager::new("transcode_sessions"),
         torrent: Arc::new(torrent_mgr),
         ws_tx: tokio::sync::broadcast::channel(128).0,
+        tracking_tx,
+        progress_throttle: tracking::ProgressThrottle::default(),
         default_web_client: Arc::new(tokio::sync::RwLock::new(
             web_client::normalize_web_client(saved_config.default_web_client)
                 .as_str()
@@ -263,6 +267,13 @@ pub async fn init_app(
         addons,
         started_at: Utc::now(),
     };
+
+    // Spawn the tracking event consumer (fire-and-forget; errors are logged).
+    tokio::spawn(tracking::run_consumer(
+        ctx.tracking_tx
+            .subscribe(),
+        ctx.clone(),
+    ));
 
     // Sync intro items at startup (best-effort; errors are logged not fatal).
     if let Err(e) = intro::sync_intros(&ctx).await {
@@ -344,6 +355,8 @@ pub struct AppContext {
     pub sessions: playback_session::PlaybackSessionManager,
     pub torrent: Arc<torrent::TorrentManager>,
     pub ws_tx: tokio::sync::broadcast::Sender<ws::WsEvent>,
+    pub tracking_tx: tokio::sync::broadcast::Sender<tracking::TrackingEvent>,
+    pub progress_throttle: tracking::ProgressThrottle,
     pub default_web_client: Arc<tokio::sync::RwLock<String>>,
     /// Present in filesystem builds; `None` in desktop (assets are embedded).
     pub web_paths: Option<FilesystemPaths>,

@@ -2,10 +2,11 @@ use crate::{components::*, pages::streams::StreamFilterEditor, state::AppState};
 use dioxus::prelude::*;
 use remux_sdks::remux::{
     AddonDto, AdminSetPassword, CollectionFilter, CreateUser, DeleteUser, FilterGroup,
-    FilterMatchMode, GetUserAddons, GetUsers, ListAddons, SetUserAddons, StreamFilter,
-    StreamRule, SubtitleMode, UpdateUser, UpdateUserConfiguration, UpdateUserPolicy,
-    UserConfiguration, UserDto,
+    FilterMatchMode, GetUserAddonConfig, GetUserAddons, GetUsers, ListAddons,
+    SetUserAddonConfig, SetUserAddons, StreamFilter, StreamRule, SubtitleMode,
+    UpdateUser, UpdateUserConfiguration, UpdateUserPolicy, UserConfiguration, UserDto,
 };
+use std::collections::HashMap;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -302,6 +303,11 @@ pub fn UserForm(
     // None = no override (use default list).
     let mut all_addons: Signal<Vec<AddonDto>> = use_signal(Vec::new);
     let mut addon_override: Signal<Option<Vec<(Uuid, bool)>>> = use_signal(|| None);
+    // Per-user config for addons that have user_options (e.g. Yamtrack token).
+    // Keyed by addon_id. Edited in the Integrations section.
+    let mut tracking_configs: Signal<
+        HashMap<Uuid, serde_json::Map<String, serde_json::Value>>,
+    > = use_signal(HashMap::new);
     let edit_user_id = existing
         .as_ref()
         .map(|u| u.id);
@@ -320,6 +326,41 @@ pub fn UserForm(
             );
             if let Ok(ref a) = addons_res {
                 all_addons.set(a.clone());
+                // Load per-user config for addons that expose user_options.
+                let configurable: Vec<Uuid> = a
+                    .iter()
+                    .filter(|ad| {
+                        !ad.user_options
+                            .is_empty()
+                    })
+                    .map(|ad| ad.id)
+                    .collect();
+                let futs: Vec<_> = configurable
+                    .iter()
+                    .map(|&aid| {
+                        c.execute(GetUserAddonConfig {
+                            user_id: uid,
+                            addon_id: aid,
+                        })
+                    })
+                    .collect();
+                let results = futures::future::join_all(futs).await;
+                let mut configs = HashMap::new();
+                for (aid, res) in configurable
+                    .into_iter()
+                    .zip(results)
+                {
+                    if let Ok(v) = res {
+                        let map = v
+                            .as_object()
+                            .cloned()
+                            .unwrap_or_default();
+                        configs.insert(aid, map);
+                    } else {
+                        configs.insert(aid, serde_json::Map::new());
+                    }
+                }
+                tracking_configs.set(configs);
             }
             if let Ok(enabled_ids) = override_res {
                 if !enabled_ids.is_empty() {
@@ -398,6 +439,9 @@ pub fn UserForm(
         let max_sessions_snapshot = *max_active_sessions.peek();
         let video_transcoding_snapshot = *enable_video_transcoding.peek();
         let addon_override_snapshot = addon_override
+            .peek()
+            .clone();
+        let tracking_configs_snapshot = tracking_configs
             .peek()
             .clone();
         // Only save addon override when the addon list loaded successfully.
@@ -489,6 +533,16 @@ pub fn UserForm(
                             .execute(SetUserAddons {
                                 user_id: user.id,
                                 addon_ids: ids,
+                            })
+                            .await?;
+                    }
+                    // Save per-user addon configs (e.g. Yamtrack token).
+                    for (addon_id, cfg_map) in &tracking_configs_snapshot {
+                        client
+                            .execute(SetUserAddonConfig {
+                                user_id: user.id,
+                                addon_id: *addon_id,
+                                config: serde_json::Value::Object(cfg_map.clone()),
                             })
                             .await?;
                     }
@@ -828,6 +882,70 @@ pub fn UserForm(
                     oninput: move |e| subtitle_language.set(e.value()),
                 }
                 span { class: "field-hint", "ISO 639-2 language code. Leave blank to use server default." }
+            }
+
+            // Integrations: per-user config for addons with user_options (e.g. Yamtrack token).
+            {
+                let configurable: Vec<AddonDto> = all_addons
+                    .read()
+                    .iter()
+                    .filter(|a| !a.user_options.is_empty())
+                    .cloned()
+                    .collect();
+                if is_edit && !configurable.is_empty() {
+                    rsx! {
+                        div { class: "field-section-header", style: "margin-top:16px;margin-bottom:4px;font-size:.75rem;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:.06em",
+                            "Integrations"
+                        }
+                        for addon in configurable.iter() {
+                            {
+                                let addon = addon.clone();
+                                let addon_id = addon.id;
+                                rsx! {
+                                    div { class: "field", key: "{addon_id}",
+                                        label { class: "field-label", "{addon.name}" }
+                                        for opt in addon.user_options.iter() {
+                                            {
+                                                let opt = opt.clone();
+                                                let field_key = opt.id.clone();
+                                                let current_val = tracking_configs
+                                                    .read()
+                                                    .get(&addon_id)
+                                                    .and_then(|m| m.get(&field_key))
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("")
+                                                    .to_string();
+                                                let is_password = matches!(opt.kind, remux_sdks::remux::AddonOptionType::Password);
+                                                rsx! {
+                                                    div { style: "margin-bottom:6px",
+                                                        label { style: "font-size:.75rem;color:var(--text-dim);display:block;margin-bottom:2px",
+                                                            "{opt.name}"
+                                                            if opt.required { span { style: "color:var(--danger);margin-left:2px", " *" } }
+                                                        }
+                                                        input {
+                                                            r#type: if is_password { "password" } else { "text" },
+                                                            class: "field-input",
+                                                            placeholder: opt.description.as_deref().unwrap_or(""),
+                                                            value: "{current_val}",
+                                                            oninput: move |e| {
+                                                                let v = e.value();
+                                                                let mut cfgs = tracking_configs.write();
+                                                                let map = cfgs.entry(addon_id).or_default();
+                                                                map.insert(field_key.clone(), serde_json::Value::String(v));
+                                                            },
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    rsx! {}
+                }
             }
 
             FilterRuleEditor {

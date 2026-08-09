@@ -32,6 +32,14 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
                     .kind
         });
 
+    let user_options = preset
+        .as_ref()
+        .map(|p| {
+            p.metadata()
+                .user_options
+        })
+        .unwrap_or_default();
+
     let (
         supported_resources,
         supported_types,
@@ -128,6 +136,7 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
         supported_resources_user,
         supported_types_user,
         priority: addon.priority,
+        user_options,
         system: addon.system,
         is_default: addon.is_default,
         created_at: addon.created_at,

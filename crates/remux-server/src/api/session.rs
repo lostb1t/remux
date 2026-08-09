@@ -113,6 +113,21 @@ pub async fn report_playback_start(
         .ctx
         .ws_tx
         .send(crate::ws::WsEvent::SessionsChanged);
+    if let Some(psid) = &data.play_session_id {
+        let _ = state
+            .ctx
+            .tracking_tx
+            .send(crate::tracking::TrackingEvent::PlaybackStart {
+                user_id: session
+                    .user
+                    .id,
+                media_id: data.item_id,
+                session_id: psid.clone(),
+                position_ticks: data
+                    .position_ticks
+                    .unwrap_or(0),
+            });
+    }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -154,6 +169,26 @@ pub async fn report_playback_progress(
             .ctx
             .ws_tx
             .send(crate::ws::WsEvent::SessionsChanged);
+        if state
+            .ctx
+            .progress_throttle
+            .should_emit(psid)
+        {
+            let _ = state
+                .ctx
+                .tracking_tx
+                .send(crate::tracking::TrackingEvent::PlaybackProgress {
+                    user_id: session
+                        .user
+                        .id,
+                    media_id: data.item_id,
+                    session_id: psid.clone(),
+                    position_ticks: data
+                        .position_ticks
+                        .unwrap_or(0),
+                    is_paused: data.is_paused,
+                });
+        }
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -196,6 +231,23 @@ pub async fn report_playback_stopped(
             .ctx
             .ws_tx
             .send(crate::ws::WsEvent::SessionsChanged);
+        state
+            .ctx
+            .progress_throttle
+            .remove(psid);
+        let _ = state
+            .ctx
+            .tracking_tx
+            .send(crate::tracking::TrackingEvent::PlaybackStop {
+                user_id: session
+                    .user
+                    .id,
+                media_id: data.item_id,
+                session_id: psid.clone(),
+                position_ticks: data
+                    .position_ticks
+                    .unwrap_or(0),
+            });
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }

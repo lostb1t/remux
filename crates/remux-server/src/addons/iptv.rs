@@ -60,6 +60,7 @@ impl AddonPreset for IptvM3uPreset {
                     kind: AddonOptionType::Url,
                 },
             ],
+            ..Default::default()
         }
     }
 
@@ -169,6 +170,7 @@ impl AddonPreset for IptvXstreamPreset {
                     kind: AddonOptionType::Boolean,
                 },
             ],
+            ..Default::default()
         }
     }
 

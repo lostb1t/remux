@@ -14,6 +14,7 @@ pub mod stremio;
 pub mod tmdb;
 pub mod torznab;
 pub mod trakt;
+pub mod yamtrack;
 pub mod ytdlp;
 
 use anyhow::{Result, anyhow};
@@ -826,6 +827,39 @@ pub trait MetricsAddon: AddonKind + Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
+// TrackingAddon — scrobbling / watch-state synchronisation
+// ---------------------------------------------------------------------------
+
+/// Per-run context passed to `TrackingAddon::on_event`.
+#[derive(Clone)]
+pub struct TrackingCtx {
+    pub config: Arc<crate::Config>,
+    /// DB pool so addons can look up parent/ancestor records (e.g. series for an episode).
+    pub db: sqlx::SqlitePool,
+}
+
+#[async_trait]
+pub trait TrackingAddon: AddonKind + Send + Sync {
+    /// Handle a tracking event for one user.
+    ///
+    /// Called from a background task; must not block the playback path.
+    /// `user_config` is the per-user JSON blob from `addon_users.config`.
+    async fn on_event(
+        &self,
+        event: &crate::tracking::TrackingEvent,
+        user: &crate::db::User,
+        media: &crate::db::Media,
+        user_config: &serde_json::Value,
+        ctx: &TrackingCtx,
+    ) -> Result<()>;
+
+    /// Which event kinds this addon cares about. Return `None` to receive all.
+    fn event_filter(&self) -> Option<Vec<crate::tracking::TrackingEventKind>> {
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
 // AddonCapabilities — produced by AddonPreset::from_cfg
 // ---------------------------------------------------------------------------
 
@@ -843,6 +877,7 @@ pub struct AddonCapabilities {
     pub lyric: Option<Arc<dyn LyricAddon>>,
     pub index: Option<Arc<dyn IndexAddon>>,
     pub metrics: Option<Arc<dyn MetricsAddon>>,
+    pub tracking: Option<Arc<dyn TrackingAddon>>,
 }
 
 // ---------------------------------------------------------------------------

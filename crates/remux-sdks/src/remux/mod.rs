@@ -170,6 +170,10 @@ pub struct AddonMetadata {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub supported_types_user: Vec<MediaKind>,
     pub options: Vec<AddonOption>,
+    /// Options configured per-user (e.g. OAuth tokens, personal API keys).
+    /// Stored in addon_users.config rather than the global preset config.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub user_options: Vec<AddonOption>,
 }
 
 impl AddonMetadata {
@@ -217,6 +221,9 @@ pub struct AddonDto {
     #[serde(default)]
     pub supported_types_user: Vec<MediaKind>,
     pub priority: i64,
+    /// Per-user configuration options (e.g. webhook tokens). Empty for addons with no user options.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub user_options: Vec<AddonOption>,
     #[serde(default)]
     pub system: bool,
     /// Included in the default addon list (users with no override see this addon).
@@ -5776,6 +5783,44 @@ impl Endpoint for SetUserAddons {
     }
     fn body(&self) -> Body {
         Body::Json(serde_json::to_value(&self.addon_ids).unwrap_or_default())
+    }
+}
+
+// ── User addon config ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct GetUserAddonConfig {
+    pub user_id: Uuid,
+    pub addon_id: Uuid,
+}
+
+impl Endpoint for GetUserAddonConfig {
+    type Output = serde_json::Value;
+    fn path(&self) -> String {
+        format!("/users/{}/addonconfig/{}", self.user_id, self.addon_id)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SetUserAddonConfig {
+    pub user_id: Uuid,
+    pub addon_id: Uuid,
+    pub config: serde_json::Value,
+}
+
+impl Endpoint for SetUserAddonConfig {
+    type Output = ();
+    fn path(&self) -> String {
+        format!("/users/{}/addonconfig/{}", self.user_id, self.addon_id)
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn body(&self) -> Body {
+        Body::Json(
+            self.config
+                .clone(),
+        )
     }
 }
 

@@ -271,6 +271,7 @@ impl AddonPreset for SquidPreset {
             supported_resources_user: vec![ResourceType::Stream],
             supported_types_user: vec![MediaKind::Track],
             options: vec![],
+            ..Default::default()
         }
     }
 

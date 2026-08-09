@@ -52,6 +52,7 @@ impl AddonPreset for TmdbPreset {
                 MediaKind::Person,
             ],
             options: vec![],
+            ..Default::default()
         }
     }
 

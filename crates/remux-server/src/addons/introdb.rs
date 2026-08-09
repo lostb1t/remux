@@ -32,6 +32,7 @@ impl AddonPreset for IntroDbPreset {
             supported_resources_user: vec![],
             supported_types_user: vec![],
             options: vec![],
+            ..Default::default()
         }
     }
 

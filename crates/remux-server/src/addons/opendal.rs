@@ -137,6 +137,7 @@ impl AddonPreset for OpendalLocalPreset {
                     kind: AddonOptionType::StringList,
                 },
             ],
+            ..Default::default()
         }
     }
 
@@ -254,6 +255,7 @@ impl AddonPreset for OpendalWebdavPreset {
                     kind: AddonOptionType::StringList,
                 },
             ],
+            ..Default::default()
         }
     }
 

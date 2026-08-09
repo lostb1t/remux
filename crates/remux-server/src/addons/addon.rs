@@ -142,6 +142,66 @@ pub async fn user_addon_override(
     Ok(if ids.is_empty() { None } else { Some(ids) })
 }
 
+/// Fetch the per-user config blob for a specific addon.
+/// Returns an empty object if no config has been saved.
+pub async fn get_user_addon_config(
+    db: &SqlitePool,
+    user_id: Uuid,
+    addon_id: Uuid,
+) -> Result<serde_json::Value> {
+    let config: Option<String> = sqlx::query_scalar(
+        "SELECT config FROM addon_users WHERE user_id = ?1 AND addon_id = ?2",
+    )
+    .bind(user_id)
+    .bind(addon_id)
+    .fetch_optional(db)
+    .await?;
+
+    Ok(match config {
+        Some(s) => serde_json::from_str(&s).unwrap_or_default(),
+        None => serde_json::Value::Object(Default::default()),
+    })
+}
+
+/// Persist the per-user config blob for an addon. The user must already have
+/// an `addon_users` row (i.e. the addon must be in their override list).
+pub async fn set_user_addon_config(
+    db: &SqlitePool,
+    user_id: Uuid,
+    addon_id: Uuid,
+    config: serde_json::Value,
+) -> Result<()> {
+    let json = serde_json::to_string(&config)?;
+    sqlx::query(
+        "INSERT INTO addon_users (addon_id, user_id, priority, config) \
+         VALUES (?1, ?2, 0, ?3) \
+         ON CONFLICT(addon_id, user_id) DO UPDATE SET config = excluded.config",
+    )
+    .bind(addon_id)
+    .bind(user_id)
+    .bind(json)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// Clear the per-user config blob for an addon.
+pub async fn clear_user_addon_config(
+    db: &SqlitePool,
+    user_id: Uuid,
+    addon_id: Uuid,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE addon_users SET config = '{}' \
+         WHERE addon_id = ?1 AND user_id = ?2",
+    )
+    .bind(addon_id)
+    .bind(user_id)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
 /// Replace the addon override list for a user.
 /// Passing an empty slice removes the override (user falls back to the default list).
 pub async fn set_user_addon_override(
