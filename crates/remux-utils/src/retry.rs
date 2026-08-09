@@ -1,3 +1,21 @@
+/// `base_ms * 2^attempt` plus jitter in `[0, base_ms/2)`.
+///
+/// The one definition of the project's backoff curve, so [`retry!`] and the
+/// hand-rolled loops that cannot use it (webhook delivery retries only *some*
+/// failures) cannot drift apart.
+///
+/// `attempt` is 0-based; the exponent is capped and every step saturates.
+pub fn backoff(base_ms: u64, attempt: u32) -> ::std::time::Duration {
+    let exponential = base_ms.saturating_mul(1u64 << attempt.min(10));
+    // `SystemTime` nanos as cheap entropy — this only needs to de-correlate
+    // concurrent retriers, not resist prediction.
+    let jitter = ::std::time::SystemTime::now()
+        .duration_since(::std::time::UNIX_EPOCH)
+        .map(|since| since.subsec_nanos() as u64 % (base_ms / 2 + 1))
+        .unwrap_or(0);
+    ::std::time::Duration::from_millis(exponential.saturating_add(jitter))
+}
+
 /// Retry a fallible async expression with exponential backoff and jitter.
 ///
 /// # Parameters
@@ -33,17 +51,10 @@ macro_rules! retry {
                 Err(e) => {
                     __last_err = Some(e);
                     if __attempt + 1 < ($attempts as u32) {
-                        let __base_ms = $delay as u64;
-                        // Exponential: base * 2^attempt, capped to avoid overflow
-                        let __exp_ms = __base_ms.saturating_mul(1u64 << __attempt.min(10));
-                        // Jitter: [0, base/2) using SystemTime nanos as cheap entropy
-                        let __jitter_ms = ::std::time::SystemTime::now()
-                            .duration_since(::std::time::UNIX_EPOCH)
-                            .map(|d| d.subsec_nanos() as u64 % (__base_ms / 2 + 1))
-                            .unwrap_or(0);
-                        ::tokio::time::sleep(
-                            ::std::time::Duration::from_millis(__exp_ms + __jitter_ms),
-                        )
+                        ::tokio::time::sleep($crate::retry::backoff(
+                            $delay as u64,
+                            __attempt,
+                        ))
                         .await;
                     }
                 }

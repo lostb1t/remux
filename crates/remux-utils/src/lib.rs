@@ -3,7 +3,7 @@
 mod store;
 pub use store::Store;
 
-mod retry;
+pub mod retry;
 
 mod types;
 pub use types::NonEmptyString;
