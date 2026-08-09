@@ -157,6 +157,20 @@ pub(super) fn parse_manifest_info(
 
 #[nutype(
     sanitize(trim, with = |s: String| {
+        // Parse as a URL so we strip /manifest.json and /configure from the path
+        // even when a query string is present (a plain suffix match would miss
+        // "…/manifest.json?apikey=abc" because the string doesn't end with the suffix).
+        if let Ok(mut url) = url::Url::parse(s.trim()) {
+            let path = url
+                .path()
+                .trim_end_matches('/')
+                .trim_end_matches("/manifest.json")
+                .trim_end_matches("/configure")
+                .to_string();
+            url.set_path(&path);
+            return url.to_string();
+        }
+        // Fallback for bare paths / non-URL strings.
         let s = s.trim_end_matches('/');
         let s = s.strip_suffix("/manifest.json").unwrap_or(s);
         s.strip_suffix("/configure").unwrap_or(s).to_string()
@@ -1532,6 +1546,35 @@ async fn stremio_streams(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manifest_url_strips_manifest_json_with_query_string() {
+        let url = StremioManifestUrl::try_new(
+            "https://example.com/path/manifest.json?apikey=abc",
+        )
+        .unwrap();
+        assert!(
+            !url.as_str()
+                .contains("manifest.json"),
+            "manifest.json not stripped: {url}"
+        );
+        assert!(
+            url.as_str()
+                .contains("apikey=abc"),
+            "query string lost: {url}"
+        );
+    }
+
+    #[test]
+    fn manifest_url_strips_manifest_json_without_query_string() {
+        let url = StremioManifestUrl::try_new("https://example.com/path/manifest.json")
+            .unwrap();
+        assert!(
+            !url.as_str()
+                .contains("manifest.json"),
+            "manifest.json not stripped: {url}"
+        );
+    }
 
     fn mock_manifest(server: &httpmock::MockServer) {
         server.mock(|when, then| {
