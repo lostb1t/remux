@@ -2043,7 +2043,9 @@ impl Media {
                 )));
             }
             let expected = Uuid::from(&raw);
-            if expected != self.id {
+            if expected != self.id
+                && !Self::ext_id_uuid_candidates(self).contains(&self.id)
+            {
                 return Err(MediaError::ValidationError(format!(
                     "{:?} '{}' UUID mismatch: id={} expected={}",
                     self.kind, self.title, self.id, expected
