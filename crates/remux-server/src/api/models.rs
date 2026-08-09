@@ -4,8 +4,6 @@ use crate::{common, db};
 use anyhow::Result;
 use chrono::Datelike;
 
-use super::items::COLLECTIONS_ROOT_ID;
-
 pub fn inject_lyric_stream(source: &mut MediaSourceInfo) {
     let next_idx = source
         .media_streams
@@ -342,14 +340,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
         type_,
         parent_id: media
             .parent_id
-            .clone()
-            .or_else(|| {
-                matches!(
-                    media.kind,
-                    db::MediaKind::Collection | db::MediaKind::Folder
-                )
-                .then_some(COLLECTIONS_ROOT_ID)
-            }),
+            .clone(),
         remote_trailers: media
             .trailers
             .clone()

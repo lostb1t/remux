@@ -4637,40 +4637,6 @@ impl Media {
         })
     }
 
-    pub async fn get_smart_group_excluded_ids(db: &SqlitePool) -> Result<Vec<Uuid>> {
-        let groups: Vec<Self> = sqlx::query_as(
-            "SELECT * FROM media \
-             WHERE kind = 'collection' \
-             AND collection_media_kind = 'collection' \
-             AND collection_kind = 'smart' \
-             AND collection_smart_filter IS NOT NULL",
-        )
-        .fetch_all(db)
-        .await?;
-
-        let mut excluded = Vec::new();
-        for group in &groups {
-            let Some(sf) = group.parse_smart_filter() else {
-                continue;
-            };
-            let filter = MediaFilter {
-                kind: Some(vec![MediaKind::Collection]),
-                filter_rules: Some(sf.clone()),
-                ..Default::default()
-            };
-            let result = Self::get_by_filter(db, &filter).await?;
-            excluded.extend(
-                result
-                    .records
-                    .iter()
-                    .map(|m| m.id),
-            );
-        }
-        excluded.sort_unstable();
-        excluded.dedup();
-        Ok(excluded)
-    }
-
     pub async fn get_refreshable(
         db: &SqlitePool,
         limit: u32,
@@ -7009,6 +6975,16 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
             Some((sql, negated))
         }
         R::CollectionMember { .. } => None,
+        R::CollectionId { op, ids } if !ids.is_empty() => {
+            let in_clause = ids
+                .iter()
+                .map(|id| format!("X'{}'", id.simple()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
+            Some((format!("media.id IN ({in_clause})"), negated))
+        }
+        R::CollectionId { .. } => None,
     }
 }
 
@@ -8479,98 +8455,5 @@ mod tests {
 
         let filtered = fetch_titles(Some(vec![AlbumKind::Album])).await;
         assert_eq!(filtered, vec!["No Type", "Real Album"]);
-    }
-
-    #[tokio::test]
-    async fn get_smart_group_excluded_ids_returns_matched_collections() {
-        use remux_sdks::remux::{
-            CollectionFilter, FilterGroup, FilterMatchMode, FilterRule, SetOp,
-        };
-
-        let (_server, guard) = crate::integration_test::new_test_server()
-            .await
-            .unwrap();
-        let db = &guard
-            .0
-            .db;
-        let now = chrono::Utc::now().naive_utc();
-
-        // Create a smart group container with a tag filter.
-        let mut group = Media {
-            title: "Tagged Group".to_string(),
-            kind: MediaKind::Collection,
-            collection_kind: Some(CollectionKind::Smart),
-            collection_media_kind: Some(CollectionMediaKind::Collection),
-            collection_smart_filter: Some(CollectionFilter {
-                match_mode: FilterMatchMode::All,
-                groups: vec![FilterGroup {
-                    match_mode: FilterMatchMode::All,
-                    rules: vec![FilterRule::Tag {
-                        op: SetOp::In,
-                        values: vec!["smart-test".to_string()],
-                    }],
-                }],
-            }),
-            created_at: now,
-            updated_at: now,
-            ..Default::default()
-        };
-        group
-            .save(db)
-            .await
-            .unwrap();
-
-        // A collection tagged to match the filter.
-        let mut matched = Media {
-            title: "Matched Col".to_string(),
-            kind: MediaKind::Collection,
-            collection_kind: Some(CollectionKind::Smart),
-            collection_media_kind: Some(CollectionMediaKind::Movie),
-            created_at: now,
-            updated_at: now,
-            ..Default::default()
-        };
-        matched
-            .save(db)
-            .await
-            .unwrap();
-        sqlx::query("INSERT OR IGNORE INTO media_tags (media_id, tag) VALUES (?, ?)")
-            .bind(matched.id)
-            .bind("smart-test")
-            .execute(db)
-            .await
-            .unwrap();
-
-        // A collection without the tag.
-        let mut unmatched = Media {
-            title: "Unmatched Col".to_string(),
-            kind: MediaKind::Collection,
-            collection_kind: Some(CollectionKind::Smart),
-            collection_media_kind: Some(CollectionMediaKind::Movie),
-            created_at: now,
-            updated_at: now,
-            ..Default::default()
-        };
-        unmatched
-            .save(db)
-            .await
-            .unwrap();
-
-        let excluded = Media::get_smart_group_excluded_ids(db)
-            .await
-            .unwrap();
-
-        assert!(
-            excluded.contains(&matched.id),
-            "tagged collection must be in excluded IDs; got: {excluded:?}"
-        );
-        assert!(
-            !excluded.contains(&unmatched.id),
-            "untagged collection must not be in excluded IDs; got: {excluded:?}"
-        );
-        assert!(
-            !excluded.contains(&group.id),
-            "the group container itself must not be in excluded IDs; got: {excluded:?}"
-        );
     }
 }
