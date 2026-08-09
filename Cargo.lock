@@ -6596,6 +6596,7 @@ dependencies = [
  "remux-sdks",
  "serde",
  "serde_json",
+ "strum",
  "urlencoding",
  "uuid",
  "web-sys",

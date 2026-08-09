@@ -6380,6 +6380,9 @@ pub struct RefreshItemQuery {
     strum_macros::EnumString,
     strum_macros::Display,
     strum_macros::EnumCount,
+    // The dashboard builds its subscription checkboxes from this, so a variant
+    // added here reaches the UI without a second list to keep in step.
+    strum_macros::EnumIter,
 )]
 pub enum NotificationType {
     ItemAdded,

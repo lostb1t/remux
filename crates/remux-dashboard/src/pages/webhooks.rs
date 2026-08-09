@@ -22,6 +22,7 @@ use remux_sdks::remux::{
 };
 use remux_sdks::ClientError;
 use std::{collections::HashMap, str::FromStr};
+use strum::IntoEnumIterator;
 use uuid::Uuid;
 
 /// The colour the server injects when a Discord hook names none (`0x3399FF`),
@@ -34,25 +35,13 @@ const DEFAULT_EMBED_COLOR: &str = "#3399ff";
 
 /// Every [`NotificationType`], in the order the SDK declares them.
 ///
-/// Hand-written, so a variant added to the SDK must be added here too — the
-/// array's declared length is what pins the count.
-const NOTIFICATION_TYPES: [NotificationType; 15] = [
-    NotificationType::ItemAdded,
-    NotificationType::ItemDeleted,
-    NotificationType::Generic,
-    NotificationType::PlaybackStart,
-    NotificationType::PlaybackProgress,
-    NotificationType::PlaybackStop,
-    NotificationType::AuthenticationSuccess,
-    NotificationType::AuthenticationFailure,
-    NotificationType::SessionStart,
-    NotificationType::TaskCompleted,
-    NotificationType::UserCreated,
-    NotificationType::UserDeleted,
-    NotificationType::UserUpdated,
-    NotificationType::UserPasswordChanged,
-    NotificationType::UserDataSaved,
-];
+/// Derived from the enum rather than listed here: a variant added to the SDK
+/// reaches the checkbox list on its own, with no second list to fall out of
+/// step. `EnumIter` yields declaration order, which is the order the form and
+/// [`sorted_notification_types`] treat as canonical.
+fn notification_types() -> impl Iterator<Item = NotificationType> {
+    NotificationType::iter()
+}
 
 /// Labels for the seven [`WebhookItemTypes`] flags, indexed the same way as
 /// [`item_type_flag`] / [`set_item_type_flag`].
@@ -165,10 +154,8 @@ fn non_empty(value: &str) -> Option<String> {
 /// `selected` in the canonical order, de-duplicated, so the payload does not
 /// depend on the order the operator ticked the boxes.
 fn sorted_notification_types(selected: &[NotificationType]) -> Vec<NotificationType> {
-    NOTIFICATION_TYPES
-        .iter()
+    notification_types()
         .filter(|t| selected.contains(t))
-        .copied()
         .collect()
 }
 
@@ -903,7 +890,7 @@ fn WebhookFormModal(
                             }
                         }
                         div { class: "check-row-group",
-                            for notification in NOTIFICATION_TYPES {
+                            for notification in notification_types() {
                                 {
                                     let label = notification.to_string();
                                     let checked = f.notification_types.contains(&notification);
@@ -1278,32 +1265,36 @@ mod tests {
 
     #[test]
     fn every_notification_type_round_trips_through_its_label() {
-        let mut labels: Vec<String> = NOTIFICATION_TYPES
-            .iter()
+        let mut labels: Vec<String> = notification_types()
             .map(|t| t.to_string())
             .collect();
         for (label, expected) in labels
             .iter()
-            .zip(NOTIFICATION_TYPES.iter())
+            .zip(notification_types())
         {
             assert_eq!(
                 NotificationType::from_str(label).ok(),
-                Some(*expected),
+                Some(expected),
                 "label {label} did not parse back"
             );
         }
         labels.sort();
         labels.dedup();
-        assert_eq!(labels.len(), 15, "the list must have no duplicates");
+        assert_eq!(
+            labels.len(),
+            NotificationType::COUNT,
+            "the list must have no duplicates"
+        );
     }
 
-    /// The form's list is hand-written.
+    /// `EnumIter` is what keeps the form in step with the SDK; this pins that it
+    /// really does yield every variant.
     #[test]
     fn the_list_covers_every_variant_the_sdk_declares() {
         assert_eq!(
-            NOTIFICATION_TYPES.len(),
+            notification_types().count(),
             NotificationType::COUNT,
-            "a NotificationType variant is missing from NOTIFICATION_TYPES"
+            "EnumIter must yield every NotificationType variant"
         );
     }
 
