@@ -1,3 +1,10 @@
+## [0.24.1](https://github.com/lostb1t/remux/compare/v0.24.0...v0.24.1) (2026-08-10)
+
+
+### Bug Fixes
+
+* URL-decode path before embedded file lookup so %40 (@) filenames resolve ([544f7a9](https://github.com/lostb1t/remux/commit/544f7a99648e3737686ef74eda378b249c698f99))
+
 # [0.24.0](https://github.com/lostb1t/remux/compare/v0.23.1...v0.24.0) (2026-08-10)
 
 
