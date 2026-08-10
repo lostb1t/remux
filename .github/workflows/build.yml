@@ -216,6 +216,13 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
+      - name: Free disk space (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes/ || true
+          sudo rm -rf ~/Library/Developer/Xcode/iOS\ DeviceSupport/ || true
+          sudo rm -rf /Applications/Xcode_*.app || true
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
