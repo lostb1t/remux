@@ -276,12 +276,16 @@ jobs:
         if: runner.os != 'Windows'
         env:
           SQLX_OFFLINE: "true"
+          DASHBOARD_PATH: target/dx/remux-dashboard/release/web/public
+          WEB_PATH: jellyfin-web
         run: cargo bundle --release --target ${{ matrix.target }} -p remux-desktop
 
       - name: Build remux-desktop (Windows)
         if: runner.os == 'Windows'
         env:
           SQLX_OFFLINE: "true"
+          DASHBOARD_PATH: target/dx/remux-dashboard/release/web/public
+          WEB_PATH: jellyfin-web
         run: cargo build --release --target ${{ matrix.target }} -p remux-desktop
 
       - name: Sign and package bundle (macOS .dmg)

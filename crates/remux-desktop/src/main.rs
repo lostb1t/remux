@@ -180,9 +180,10 @@ async fn serve(config: remux_server::Config) -> anyhow::Result<()> {
     .into_admin_service();
 
     #[cfg(not(dashboard_built))]
-    let admin = remux_server::admin_from_filesystem(
-        &remux_server::FilesystemPaths::default().dashboard_path,
-    );
+    let admin = {
+        let paths = remux_server::FilesystemPaths::load_from_env();
+        remux_server::admin_from_filesystem(&paths.dashboard_path)
+    };
 
     let port = config.port;
     let (router, _) = remux_server::init_app(config, None, admin, |pool| {
@@ -193,7 +194,7 @@ async fn serve(config: remux_server::Config) -> anyhow::Result<()> {
 
         #[cfg(not(jellyfin_web_built))]
         {
-            let paths = remux_server::FilesystemPaths::default();
+            let paths = remux_server::FilesystemPaths::load_from_env();
             remux_server::WebClientService::from_filesystem(&paths.web_path, pool)
         }
     })
