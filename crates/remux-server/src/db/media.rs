@@ -4259,10 +4259,15 @@ impl Media {
                 }
             }
 
-            // For smart/catalog collections: run each collection's filter rules to
-            // get the true item count. This also powers exclude_childless filtering.
-            for media in records
-                .iter_mut()
+            // Batch child counts for smart/catalog collections in a single UNION ALL query
+            // instead of one COUNT per collection (N+1). Collect the needed data first so
+            // the immutable borrow on records is released before we write back.
+            let smart_coll_data: Vec<(
+                Uuid,
+                Option<Vec<MediaKind>>,
+                Option<remux_sdks::remux::CollectionFilter>,
+            )> = records
+                .iter()
                 .filter(|m| {
                     m.kind == MediaKind::Collection
                         && matches!(
@@ -4270,46 +4275,85 @@ impl Media {
                             Some(CollectionKind::Smart) | Some(CollectionKind::Catalog)
                         )
                 })
-            {
-                let kinds: Option<Vec<&'static str>> = media
-                    .collection_media_kind
-                    .as_ref()
-                    .map(|k| match k {
-                        CollectionMediaKind::Movie => vec!["movie"],
-                        CollectionMediaKind::Series => vec!["series"],
-                        CollectionMediaKind::Mixed => vec!["movie", "series"],
-                        CollectionMediaKind::Music => vec!["track", "album", "artist"],
-                        CollectionMediaKind::Playlist => vec!["playlist"],
-                        CollectionMediaKind::Collection => vec!["collection"],
-                    });
-                let mut qb =
-                    sqlx::QueryBuilder::new("SELECT COUNT(*) FROM media WHERE 1=1");
-                if let Some(ks) = &kinds {
-                    if !ks.is_empty() {
-                        qb.push(" AND kind IN (");
-                        let mut sep = qb.separated(", ");
-                        for k in ks {
-                            sep.push_bind(*k);
+                .map(|m| {
+                    let kinds = m
+                        .collection_media_kind
+                        .as_ref()
+                        .map(|k| match k {
+                            CollectionMediaKind::Movie => vec![MediaKind::Movie],
+                            CollectionMediaKind::Series => vec![MediaKind::Series],
+                            CollectionMediaKind::Mixed => {
+                                vec![MediaKind::Movie, MediaKind::Series]
+                            }
+                            CollectionMediaKind::Music => {
+                                vec![
+                                    MediaKind::Track,
+                                    MediaKind::Album,
+                                    MediaKind::Artist,
+                                ]
+                            }
+                            CollectionMediaKind::Playlist => vec![MediaKind::Playlist],
+                            CollectionMediaKind::Collection => {
+                                vec![MediaKind::Collection]
+                            }
+                        });
+                    (
+                        m.id,
+                        kinds,
+                        m.parse_smart_filter()
+                            .cloned(),
+                    )
+                })
+                .collect();
+
+            if !smart_coll_data.is_empty() {
+                let mut qb = sqlx::QueryBuilder::new("");
+                for (n, (id, kinds, sf)) in smart_coll_data
+                    .iter()
+                    .enumerate()
+                {
+                    if n > 0 {
+                        qb.push(" UNION ALL ");
+                    }
+                    qb.push("SELECT ");
+                    qb.push_bind(*id);
+                    qb.push(", COUNT(*) FROM media WHERE 1=1");
+                    if let Some(ks) = kinds {
+                        if !ks.is_empty() {
+                            qb.push(" AND kind IN (");
+                            let mut sep = qb.separated(", ");
+                            for k in ks {
+                                sep.push_bind(k.clone());
+                            }
+                            qb.push(")");
                         }
-                        qb.push(")");
+                    }
+                    if let Some(sf) = sf {
+                        apply_filter_rules(&mut qb, sf);
+                    }
+                    if let Some(pf) = child_policy_filter {
+                        apply_filter_rules(&mut qb, pf);
                     }
                 }
-                if let Some(sf) = media.parse_smart_filter() {
-                    apply_filter_rules(&mut qb, sf);
-                }
-                if let Some(pf) = child_policy_filter {
-                    apply_filter_rules(&mut qb, pf);
-                }
                 match qb
-                    .build_query_scalar()
-                    .fetch_one(db)
+                    .build()
+                    .fetch_all(db)
                     .await
                 {
-                    Ok(cnt) => media.child_count = Some(cnt),
-                    Err(e) => warn!(
-                        "failed to load child count for collection {}: {e}",
-                        media.id
-                    ),
+                    Ok(rows) => {
+                        let mut cc_map: HashMap<Uuid, i64> = HashMap::new();
+                        for row in &rows {
+                            cc_map.insert(row.get(0), row.get(1));
+                        }
+                        for media in &mut records {
+                            if let Some(&cnt) = cc_map.get(&media.id) {
+                                media.child_count = Some(cnt);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("failed to batch child counts for smart collections: {e}")
+                    }
                 }
             }
 
@@ -6623,9 +6667,9 @@ pub fn push_release_date_filter(
 ///
 /// # SQL strategy per field
 /// - `year` / `rating_*` / `certification` — direct column comparison
-/// - `tag` — EXISTS in `media_tags`
-/// - `genre` / `studio` — EXISTS in `media_relations` joining by title
-/// - `catalog` — EXISTS in `media_relations` with `role = 'catalog'` joining by title
+/// - `tag` — `media.id IN (SELECT media_id FROM media_tags WHERE ...)`
+/// - `genre` / `studio` / `country` / `person` — `media.id IN (SELECT left_media_id FROM media_relations JOIN media WHERE ...)`
+/// - `catalog` / `collection_member` — `media.id IN (SELECT right_media_id FROM media_relations WHERE ...)`
 /// - `has_trailer` — json_array_length check
 pub fn apply_filter_rules(
     qb: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
@@ -6835,13 +6879,13 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
                         .map(|s| s.as_str())
                         .unwrap_or(""));
                     format!(
-                        "EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND lower(mt.tag) = lower('{v}'))"
+                        "media.id IN (SELECT mt.media_id FROM media_tags mt WHERE lower(mt.tag) = lower('{v}'))"
                     )
                 }
                 SetOp::In | SetOp::NotIn => {
                     let list = in_list(values)?;
                     format!(
-                        "EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND lower(mt.tag) IN ({list}))"
+                        "media.id IN (SELECT mt.media_id FROM media_tags mt WHERE lower(mt.tag) IN ({list}))"
                     )
                 }
             };
@@ -6914,17 +6958,17 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
                         .map(|s| s.as_str())
                         .unwrap_or(""));
                     format!(
-                        "EXISTS (SELECT 1 FROM media_relations mr \
+                        "media.id IN (SELECT mr.left_media_id FROM media_relations mr \
                          JOIN media p ON p.id = mr.right_media_id \
-                         WHERE mr.left_media_id = media.id AND p.kind = 'person' AND lower(p.title) = lower('{v}'))"
+                         WHERE p.kind = 'person' AND lower(p.title) = lower('{v}'))"
                     )
                 }
                 SetOp::In | SetOp::NotIn => {
                     let list = in_list(values)?;
                     format!(
-                        "EXISTS (SELECT 1 FROM media_relations mr \
+                        "media.id IN (SELECT mr.left_media_id FROM media_relations mr \
                          JOIN media p ON p.id = mr.right_media_id \
-                         WHERE mr.left_media_id = media.id AND p.kind = 'person' AND lower(p.title) IN ({list}))"
+                         WHERE p.kind = 'person' AND lower(p.title) IN ({list}))"
                     )
                 }
             };
@@ -6937,9 +6981,8 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
                 .collect::<Vec<_>>()
                 .join(", ");
             let sql = format!(
-                "EXISTS (SELECT 1 FROM media_relations mr \
-                 WHERE mr.right_media_id = media.id AND mr.role = 'catalog' \
-                 AND mr.left_media_id IN ({in_clause}))"
+                "media.id IN (SELECT mr.right_media_id FROM media_relations mr \
+                 WHERE mr.role = 'catalog' AND mr.left_media_id IN ({in_clause}))"
             );
             let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
             Some((sql, negated))
@@ -6956,9 +6999,8 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
                 .collect::<Vec<_>>()
                 .join(", ");
             let sql = format!(
-                "EXISTS (SELECT 1 FROM media_relations mr \
-                 WHERE mr.right_media_id = media.id AND mr.role = 'collection' \
-                 AND mr.left_media_id IN ({in_clause}))"
+                "media.id IN (SELECT mr.right_media_id FROM media_relations mr \
+                 WHERE mr.role = 'collection' AND mr.left_media_id IN ({in_clause}))"
             );
             let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
             Some((sql, negated))
