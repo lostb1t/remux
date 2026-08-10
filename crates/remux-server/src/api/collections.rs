@@ -32,7 +32,7 @@ pub async fn get_collection_items(
     Path(id): Path<Uuid>,
     Query(q): Query<CollectionItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    db::Media::get_by_id(
+    let collection = db::Media::get_by_id(
         &state
             .ctx
             .db,
@@ -109,7 +109,7 @@ pub async fn add_collection_items(
     Path(id): Path<Uuid>,
     Query(q): Query<AddCollectionItemsQuery>,
 ) -> Result<StatusCode> {
-    db::Media::get_by_id(
+    let collection = db::Media::get_by_id(
         &state
             .ctx
             .db,
@@ -140,7 +140,7 @@ pub async fn add_collection_items(
 }
 
 // ---------------------------------------------------------------------------
-// DELETE /collections/{id}/items  (?ids=relation_id,...)
+// DELETE /collections/{id}/items  (?ids=media_id,...)
 // ---------------------------------------------------------------------------
 
 #[query]
@@ -156,17 +156,7 @@ pub async fn remove_collection_items(
     Path(id): Path<Uuid>,
     Query(q): Query<RemoveCollectionItemsQuery>,
 ) -> Result<StatusCode> {
-    db::Media::get_by_id(
-        &state
-            .ctx
-            .db,
-        &id,
-    )
-    .await?
-    .filter(|m| m.kind == db::MediaKind::Collection)
-    .context_not_found("Collection not found")?;
-
-    let relation_ids: Vec<Uuid> = q
+    let ids: Vec<Uuid> = q
         .ids
         .unwrap_or_default()
         .split(',')
@@ -177,7 +167,7 @@ pub async fn remove_collection_items(
         &state
             .ctx
             .db,
-        &relation_ids,
+        &ids,
     )
     .await
     .context_bad_request("failed to remove items")?;
