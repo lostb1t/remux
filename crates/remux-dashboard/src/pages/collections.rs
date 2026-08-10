@@ -1,10 +1,24 @@
 use crate::{components::*, state::AppState};
 use dioxus::prelude::*;
 use remux_sdks::remux::{
-    BaseItemDto, CollectionFilter, CreateVirtualFolder, CreateVirtualFolderPayload,
-    DeleteVirtualFolder, FilterGroup, FilterMatchMode, GetItems, GetItemsQuery,
-    ItemSortBy, MediaType, PatchItem, PatchItemPayload, SortOrder,
+    BaseItemDto, CollectionFilter, CollectionType, CreateVirtualFolder,
+    CreateVirtualFolderPayload, DeleteVirtualFolder, FilterGroup, FilterMatchMode,
+    GetItems, GetItemsQuery, ItemSortBy, MediaType, PatchItem, PatchItemPayload,
+    SortOrder,
 };
+
+fn is_group_container(item: &BaseItemDto) -> bool {
+    item.collection_type
+        .as_ref()
+        == Some(&CollectionType::Boxsets)
+}
+
+fn is_promoted(item: &BaseItemDto) -> bool {
+    item.remux
+        .as_ref()
+        .and_then(|r| r.promoted)
+        .unwrap_or(false)
+}
 
 /// Which collection is currently being edited (None = creating new).
 #[derive(Clone, Debug)]
@@ -114,8 +128,11 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                                     if !col_kind_label.is_empty() {
                                                         span { class: "session-client-badge", "{col_kind_label}" }
                                                     }
-                                                    if col.remux.as_ref().and_then(|r| r.promoted).unwrap_or(false) {
+                                                    if is_promoted(&col) {
                                                         span { class: "task-badge task-badge-running", "Library" }
+                                                    }
+                                                    if is_group_container(&col) && !is_promoted(&col) {
+                                                        span { class: "task-badge task-badge-idle", "Group" }
                                                     }
                                                 }
                                             }
@@ -463,6 +480,7 @@ pub fn CollectionForm(
         let ct = col_type
             .peek()
             .clone();
+        let is_group = ct == "collections";
         let ck = col_kind
             .peek()
             .clone();
@@ -527,8 +545,16 @@ pub fn CollectionForm(
                             promoted: Some(prm),
                             tags: Some(current_tags),
                             sort_order: None,
-                            latest_auto_unplayed: Some(auto_unplayed),
-                            latest_sort_digital: Some(sort_digital),
+                            latest_auto_unplayed: Some(if is_group {
+                                false
+                            } else {
+                                auto_unplayed
+                            }),
+                            latest_sort_digital: Some(if is_group {
+                                false
+                            } else {
+                                sort_digital
+                            }),
                             collection_default_sort: default_sort_payload,
                             collection_default_sort_order: default_sort_order_payload,
                         },
@@ -579,8 +605,16 @@ pub fn CollectionForm(
                             promoted: None,
                             tags: Some(current_tags),
                             sort_order: None,
-                            latest_auto_unplayed: Some(auto_unplayed),
-                            latest_sort_digital: Some(sort_digital),
+                            latest_auto_unplayed: Some(if is_group {
+                                false
+                            } else {
+                                auto_unplayed
+                            }),
+                            latest_sort_digital: Some(if is_group {
+                                false
+                            } else {
+                                sort_digital
+                            }),
                             collection_default_sort: default_sort_payload,
                             collection_default_sort_order: default_sort_order_payload,
                         },
@@ -638,7 +672,9 @@ pub fn CollectionForm(
                     id: "col-type",
                     class: "select-input",
                     value: "{col_type}",
-                    onchange: move |e| col_type.set(e.value()),
+                    onchange: move |e| {
+                        col_type.set(e.value());
+                    },
                     option { value: "movies",      "Movies"      }
                     option { value: "tvshows",     "TV Shows"    }
                     option { value: "mixed",       "Mixed (Movies & Shows)" }
@@ -648,17 +684,18 @@ pub fn CollectionForm(
                 }
             }
 
-            if col_type.read().as_str() != "collections" {
-                div { class: "field",
-                    label { class: "field-label", r#for: "col-kind", "Collection Kind" }
-                    select {
-                        id: "col-kind",
-                        class: "select-input",
-                        value: "{col_kind}",
-                        disabled: is_edit,
-                        onchange: move |e| col_kind.set(e.value()),
-                        option { value: "smart",  "Smart"  }
-                        option { value: "manual", "Manual" }
+            div { class: "field",
+                label { class: "field-label", r#for: "col-kind", "Collection Kind" }
+                select {
+                    id: "col-kind",
+                    class: "select-input",
+                    value: "{col_kind}",
+                    disabled: false,
+                    onchange: move |e| col_kind.set(e.value()),
+                    option { value: "smart",  "Smart"  }
+                    option { value: "manual", "Manual" }
+                    if col_type.read().as_str() != "collections" {
+                        option { value: "catalog", "Catalog" }
                     }
                 }
             }
@@ -755,55 +792,65 @@ pub fn CollectionForm(
                 on_change: move |v| promoted.set(v),
             }
 
-            ToggleRow {
-                label: "Latest: Unplayed Only",
-                checked: *latest_auto_unplayed.read(),
-                on_change: move |v| latest_auto_unplayed.set(v),
+            if col_type.read().as_str() != "collections" {
+                ToggleRow {
+                    label: "Latest: Unplayed Only",
+                    checked: *latest_auto_unplayed.read(),
+                    on_change: move |v| latest_auto_unplayed.set(v),
+                }
+
+                ToggleRow {
+                    label: "Latest: Sort by Digital Release",
+                    checked: *latest_sort_digital.read(),
+                    on_change: move |v| latest_sort_digital.set(v),
+                }
             }
 
-            ToggleRow {
-                label: "Latest: Sort by Digital Release",
-                checked: *latest_sort_digital.read(),
-                on_change: move |v| latest_sort_digital.set(v),
-            }
+            if col_kind.read().as_str() == "smart" || col_kind.read().as_str() == "catalog" {
+                if col_type.read().as_str() == "collections" {
+                    FilterRuleEditor {
+                        match_mode: sf_match,
+                        groups: sf_groups,
+                        allowed_fields: vec!["collection_id"],
+                    }
+                } else {
+                    FilterRuleEditor { match_mode: sf_match, groups: sf_groups }
 
-            if (col_kind.read().as_str() == "smart" || col_kind.read().as_str() == "catalog") && col_type.read().as_str() != "collections" {
-                FilterRuleEditor { match_mode: sf_match, groups: sf_groups }
-
-                div { class: "field",
-                    label { class: "field-label", "Default Sort Override" }
-                    p { class: "field-hint", "Overrides the sort order when the client sends no preference or its default (Sort Name). Note: the client UI may still show its own sort label." }
-                    div { style: "display:flex;gap:8px",
-                        select {
-                            class: "select-input",
-                            style: "flex:1;min-width:0",
-                            value: "{default_sort}",
-                            onchange: move |e| default_sort.set(e.value()),
-                            option { value: "", selected: default_sort.read().is_empty(), "— None —" }
-                            if sf_groups.read().iter().flat_map(|g| g.rules.iter()).any(|r| matches!(r, remux_sdks::remux::FilterRule::Catalog { .. })) {
-                                option { value: "CatalogOrder", selected: *default_sort.read() == "CatalogOrder", "Catalog Order" }
-                            }
-                            option { value: "SortName",           selected: *default_sort.read() == "SortName",           "Name" }
-                            option { value: "PremiereDate",       selected: *default_sort.read() == "PremiereDate",       "Release Date" }
-                            option { value: "DigitalReleaseDate", selected: *default_sort.read() == "DigitalReleaseDate", "Digital Release Date" }
-                            option { value: "DateCreated",        selected: *default_sort.read() == "DateCreated",        "Date Added" }
-                            option { value: "CommunityRating",    selected: *default_sort.read() == "CommunityRating",    "Community Rating" }
-                            option { value: "PopularityDay",      selected: *default_sort.read() == "PopularityDay",      "Popularity (Today)" }
-                            option { value: "PopularityWeek",     selected: *default_sort.read() == "PopularityWeek",     "Popularity (This Week)" }
-                            option { value: "PopularityMonth",    selected: *default_sort.read() == "PopularityMonth",    "Popularity (This Month)" }
-                            option { value: "PopularityAllTime",  selected: *default_sort.read() == "PopularityAllTime",  "Popularity (All Time)" }
-                            option { value: "TrendingWeek",       selected: *default_sort.read() == "TrendingWeek",       "Trending (7 days)" }
-                            option { value: "TrendingMonth",      selected: *default_sort.read() == "TrendingMonth",      "Trending (30 days)" }
-                            option { value: "Random",             selected: *default_sort.read() == "Random",             "Random" }
-                        }
-                        if !default_sort.read().is_empty() && *default_sort.read() != "Random" {
+                    div { class: "field",
+                        label { class: "field-label", "Default Sort Override" }
+                        p { class: "field-hint", "Overrides the sort order when the client sends no preference or its default (Sort Name). Note: the client UI may still show its own sort label." }
+                        div { style: "display:flex;gap:8px",
                             select {
                                 class: "select-input",
-                                style: "flex:0 0 auto;width:auto",
-                                value: "{default_sort_order}",
-                                onchange: move |e| default_sort_order.set(e.value()),
-                                option { value: "Ascending",  selected: *default_sort_order.read() == "Ascending",  "Asc" }
-                                option { value: "Descending", selected: *default_sort_order.read() == "Descending", "Desc" }
+                                style: "flex:1;min-width:0",
+                                value: "{default_sort}",
+                                onchange: move |e| default_sort.set(e.value()),
+                                option { value: "", selected: default_sort.read().is_empty(), "— None —" }
+                                if sf_groups.read().iter().flat_map(|g| g.rules.iter()).any(|r| matches!(r, remux_sdks::remux::FilterRule::Catalog { .. })) {
+                                    option { value: "CatalogOrder", selected: *default_sort.read() == "CatalogOrder", "Catalog Order" }
+                                }
+                                option { value: "SortName",           selected: *default_sort.read() == "SortName",           "Name" }
+                                option { value: "PremiereDate",       selected: *default_sort.read() == "PremiereDate",       "Release Date" }
+                                option { value: "DigitalReleaseDate", selected: *default_sort.read() == "DigitalReleaseDate", "Digital Release Date" }
+                                option { value: "DateCreated",        selected: *default_sort.read() == "DateCreated",        "Date Added" }
+                                option { value: "CommunityRating",    selected: *default_sort.read() == "CommunityRating",    "Community Rating" }
+                                option { value: "PopularityDay",      selected: *default_sort.read() == "PopularityDay",      "Popularity (Today)" }
+                                option { value: "PopularityWeek",     selected: *default_sort.read() == "PopularityWeek",     "Popularity (This Week)" }
+                                option { value: "PopularityMonth",    selected: *default_sort.read() == "PopularityMonth",    "Popularity (This Month)" }
+                                option { value: "PopularityAllTime",  selected: *default_sort.read() == "PopularityAllTime",  "Popularity (All Time)" }
+                                option { value: "TrendingWeek",       selected: *default_sort.read() == "TrendingWeek",       "Trending (7 days)" }
+                                option { value: "TrendingMonth",      selected: *default_sort.read() == "TrendingMonth",      "Trending (30 days)" }
+                                option { value: "Random",             selected: *default_sort.read() == "Random",             "Random" }
+                            }
+                            if !default_sort.read().is_empty() && *default_sort.read() != "Random" {
+                                select {
+                                    class: "select-input",
+                                    style: "flex:0 0 auto;width:auto",
+                                    value: "{default_sort_order}",
+                                    onchange: move |e| default_sort_order.set(e.value()),
+                                    option { value: "Ascending",  selected: *default_sort_order.read() == "Ascending",  "Asc" }
+                                    option { value: "Descending", selected: *default_sort_order.read() == "Descending", "Desc" }
+                                }
                             }
                         }
                     }

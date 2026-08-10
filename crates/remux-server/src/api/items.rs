@@ -176,7 +176,6 @@ pub async fn get_items(
     mut q: api::GetItemsQuery,
     want_count: bool,
 ) -> Result<ItemsQueryResultBuilder> {
-    //trace!(?q, "get_items");
     if !want_count {
         q.enable_total_record_count = Some(false);
     }
@@ -498,55 +497,61 @@ pub async fn get_items(
 
         // collection browse
         if parent.kind == db::MediaKind::Collection {
-            // "Collections index": any collection with collection_media_kind='collection'
-            // shows non-promoted collections regardless of collection_kind (manual/smart).
-            if parent.collection_media_kind == Some(db::CollectionMediaKind::Collection)
+            // Manual group container browse.
+            if parent.is_group_container()
+                && parent.collection_kind == Some(db::CollectionKind::Manual)
             {
-                let result = db::Media::get_by_filter(
+                q.parent_id = Some(parent.id);
+                q.include_item_types = Some(vec![api::MediaType::BoxSet]);
+                q.include_childless = Some(true);
+                q.user_id = Some(
+                    session
+                        .user
+                        .id,
+                );
+                let result = db::Media::get_by_jellyfin_filter(
                     &state
                         .ctx
                         .db,
-                    &db::MediaFilter {
-                        kind: Some(vec![db::MediaKind::Collection]),
-                        promoted: Some(false),
-                        limit: q.limit,
-                        offset: q.start_index,
-                        total_count: true,
-                        include_user_state: q
-                            .enable_user_data
-                            .unwrap_or(true),
-                        user_id: Some(
-                            session
-                                .user
-                                .id,
-                        ),
-                        include_child_count: q
-                            .fields
-                            .as_deref()
-                            .map(|f| f.contains(&api::ItemFields::ChildCount))
-                            .unwrap_or(false),
-                        sort_by: q
-                            .sort_by
-                            .clone()
-                            .unwrap_or_default(),
-                        sort_order: q
-                            .sort_order
-                            .clone()
-                            .unwrap_or_default(),
-                        exclude_childless: !q
-                            .include_childless
-                            .unwrap_or(false),
-                        policy_filter: session
-                            .user
-                            .policy
-                            .as_ref()
-                            .and_then(|p| {
-                                p.filter_rules
-                                    .as_ref()
-                            })
-                            .cloned(),
-                        ..Default::default()
-                    },
+                    &q,
+                    true,
+                    Some(&session.user),
+                    Some(&server_config),
+                    None,
+                    None,
+                )
+                .await?;
+                return Ok(ItemsQueryResultBuilder::with_items(
+                    session,
+                    result.records,
+                    result.total_count as i64,
+                ));
+            }
+
+            // Smart group container browse.
+            if parent.is_group_container()
+                && parent.collection_kind == Some(db::CollectionKind::Smart)
+            {
+                q.promoted = Some(false);
+                q.parent_id = None;
+                q.include_item_types = Some(vec![api::MediaType::BoxSet]);
+                q.include_childless = Some(true);
+                q.user_id = Some(
+                    session
+                        .user
+                        .id,
+                );
+                let smart_filter = parent.parse_smart_filter();
+                let result = db::Media::get_by_jellyfin_filter(
+                    &state
+                        .ctx
+                        .db,
+                    &q,
+                    true,
+                    Some(&session.user),
+                    Some(&server_config),
+                    smart_filter,
+                    None,
                 )
                 .await?;
                 return Ok(ItemsQueryResultBuilder::with_items(
@@ -893,7 +898,7 @@ pub async fn items(
 /// Return the virtual root folder
 #[get("/items/root")]
 pub async fn items_root(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     Ok(Json(api::BaseItemDto {
@@ -2159,6 +2164,8 @@ pub async fn create_virtual_folder(
         .and_then(|s| db::CollectionKind::try_from(s).ok())
         .unwrap_or(db::CollectionKind::Smart);
 
+    require_valid_group_kind(collection_media_kind.as_ref(), Some(&collection_kind))?;
+
     let promoted = payload
         .promoted
         .unwrap_or(false);
@@ -2225,6 +2232,8 @@ pub async fn update_virtual_folder(
         .collection_kind
         .as_deref()
         .and_then(|s| db::CollectionKind::try_from(s).ok());
+
+    require_valid_group_kind(collection_media_kind.as_ref(), collection_kind.as_ref())?;
 
     let promoted = payload
         .promoted
@@ -2299,6 +2308,26 @@ pub async fn delete_virtual_folder(
     .await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn require_valid_group_kind(
+    media_kind: Option<&db::CollectionMediaKind>,
+    collection_kind: Option<&db::CollectionKind>,
+) -> Result<()> {
+    if media_kind == Some(&db::CollectionMediaKind::Collection)
+        && !matches!(
+            collection_kind,
+            Some(&db::CollectionKind::Manual) | Some(&db::CollectionKind::Smart)
+        )
+    {
+        return Err(anyhow::anyhow!(
+            "collection_kind must be Manual or Smart when collection_type is collections"
+        ))
+        .context_bad_request(
+            "Group containers must use Manual or Smart collection kind",
+        );
+    }
+    Ok(())
 }
 
 fn parse_collection_type(s: &str) -> Option<db::CollectionMediaKind> {
@@ -3073,6 +3102,31 @@ pub async fn patch_item(
     Path(id): Path<Uuid>,
     Json(payload): Json<PatchItemRequest>,
 ) -> Result<StatusCode> {
+    if payload.latest_auto_unplayed == Some(true)
+        || payload.latest_sort_digital == Some(true)
+    {
+        let effective_kind = if let Some(ct) = &payload.collection_type {
+            parse_collection_type(ct)
+        } else {
+            let item = db::Media::get_by_id(
+                &state
+                    .ctx
+                    .db,
+                &id,
+            )
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("item not found"))
+            .context_not_found("Item not found")?;
+            item.collection_media_kind
+        };
+        if effective_kind == Some(db::CollectionMediaKind::Collection) {
+            return Err(anyhow::anyhow!(
+                "latest_auto_unplayed and latest_sort_digital are not valid for group containers"
+            ))
+            .context_bad_request("Latest settings cannot be applied to group containers");
+        }
+    }
+
     let updated_at = Utc::now().naive_utc();
     let mut qb = sqlx::QueryBuilder::new("UPDATE media SET updated_at = ");
     qb.push_bind(updated_at);
@@ -3083,6 +3137,13 @@ pub async fn patch_item(
     }
     if let Some(ct) = &payload.collection_type {
         let media_kind = parse_collection_type(ct);
+        {
+            let parsed_kind = payload
+                .collection_kind
+                .as_deref()
+                .and_then(|s| db::CollectionKind::try_from(s).ok());
+            require_valid_group_kind(media_kind.as_ref(), parsed_kind.as_ref())?;
+        }
         qb.push(", collection_media_kind = ")
             .push_bind(
                 media_kind
@@ -3147,6 +3208,24 @@ pub async fn patch_item(
         )
         .await
         .context_bad_request("Failed to update tags")?;
+    }
+
+    if payload
+        .name
+        .is_some()
+    {
+        let _ = ImageService::delete_image(
+            &state
+                .ctx
+                .config
+                .data_dir,
+            id,
+            db::ImageKind::Primary,
+            &state
+                .ctx
+                .db,
+        )
+        .await;
     }
 
     Ok(StatusCode::NO_CONTENT)
@@ -3276,9 +3355,6 @@ mod tests {
         db::{ExternalIds, MediaIdRaw, NonEmptyString},
         integration_test::{auth_header_with_token, authenticated_server},
     };
-
-    // The "Collections" container from seed data — shows non-promoted collections.
-    const COLLECTIONS_PARENT_ID: &str = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
 
     async fn get_user_id(server: &axum_test::TestServer, auth: &str) -> String {
         let resp: serde_json::Value = server
@@ -3551,103 +3627,6 @@ mod tests {
                 .unwrap_or(0)
                 > 0,
             "unfiltered query on series collection must return series"
-        );
-    }
-
-    // Browsing the Collections container must not return smart collections whose
-    // filter rules match nothing (e.g. Netflix tag with no Netflix content).
-    #[tokio::test]
-    async fn collections_parent_hides_empty_smart_collection() {
-        let (server, guard, token) = authenticated_server().await;
-        let auth = auth_header_with_token(&token);
-        let db = &guard
-            .0
-            .db;
-        let user_id = get_user_id(&server, &auth).await;
-
-        // A smart movie collection that requires a tag no movie in the DB has.
-        insert_smart_collection_with_filter(
-            db,
-            "Top Provider Movies",
-            db::CollectionMediaKind::Movie,
-            Some(tag_filter("provider:NonExistent")),
-        )
-        .await;
-
-        let body: serde_json::Value = server
-            .get(&format!("/users/{user_id}/items"))
-            .add_header(
-                http::header::AUTHORIZATION,
-                HeaderValue::from_str(&auth).unwrap(),
-            )
-            .add_query_params(&[("parentId", COLLECTIONS_PARENT_ID)])
-            .await
-            .json();
-
-        let empty = vec![];
-        let names: Vec<&str> = body["Items"]
-            .as_array()
-            .unwrap_or(&empty)
-            .iter()
-            .filter_map(|i| i["Name"].as_str())
-            .collect();
-
-        assert!(
-            !names.contains(&"Top Provider Movies"),
-            "empty smart collection must not appear in Collections browse; got: {names:?}"
-        );
-    }
-
-    // Browsing the Collections container must return smart collections that
-    // do have matching content.
-    #[tokio::test]
-    async fn collections_parent_shows_non_empty_smart_collection() {
-        let (server, guard, token) = authenticated_server().await;
-        let auth = auth_header_with_token(&token);
-        let db = &guard
-            .0
-            .db;
-        let user_id = get_user_id(&server, &auth).await;
-
-        // Insert a movie tagged so the collection below matches it.
-        let movie =
-            insert_media(db, "Tagged Movie", db::MediaKind::Movie, "tt9991234").await;
-        sqlx::query("INSERT OR IGNORE INTO media_tags (media_id, tag) VALUES (?, ?)")
-            .bind(movie.id)
-            .bind("provider:TestNet")
-            .execute(db)
-            .await
-            .unwrap();
-
-        insert_smart_collection_with_filter(
-            db,
-            "TestNet Movies",
-            db::CollectionMediaKind::Movie,
-            Some(tag_filter("provider:TestNet")),
-        )
-        .await;
-
-        let body: serde_json::Value = server
-            .get(&format!("/users/{user_id}/items"))
-            .add_header(
-                http::header::AUTHORIZATION,
-                HeaderValue::from_str(&auth).unwrap(),
-            )
-            .add_query_params(&[("parentId", COLLECTIONS_PARENT_ID)])
-            .await
-            .json();
-
-        let empty = vec![];
-        let names: Vec<&str> = body["Items"]
-            .as_array()
-            .unwrap_or(&empty)
-            .iter()
-            .filter_map(|i| i["Name"].as_str())
-            .collect();
-
-        assert!(
-            names.contains(&"TestNet Movies"),
-            "non-empty smart collection must appear in Collections browse; got: {names:?}"
         );
     }
 
@@ -4103,6 +4082,311 @@ mod tests {
             body["MediaSources"][0]["DefaultSubtitleStreamIndex"].as_i64(),
             Some(2),
             "detail page should fall back to server preferred_metadata_language 'fr' (French subtitle, index 2) when the user has no subtitle language preference"
+        );
+    }
+
+    async fn insert_group_container(
+        db: &sqlx::SqlitePool,
+        title: &str,
+        promoted: bool,
+    ) -> db::Media {
+        let now = Utc::now().naive_utc();
+        let mut c = db::Media {
+            title: title.to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Manual),
+            collection_media_kind: Some(db::CollectionMediaKind::Collection),
+            promoted,
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        c.save(db)
+            .await
+            .expect("insert_group_container failed");
+        c
+    }
+
+    #[tokio::test]
+    async fn group_container_returns_only_explicit_children() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(&server, &auth).await;
+
+        let group = insert_group_container(db, "TV Groups", false).await;
+        let child_a =
+            insert_smart_collection(db, "Netflix", db::CollectionMediaKind::Series)
+                .await;
+        let child_b =
+            insert_smart_collection(db, "HBO", db::CollectionMediaKind::Series).await;
+        let _unrelated =
+            insert_smart_collection(db, "Disney", db::CollectionMediaKind::Movie).await;
+
+        db::Media::set_parent_id(db, &[child_a.id, child_b.id], Some(group.id))
+            .await
+            .unwrap();
+
+        let body: serde_json::Value = server
+            .get(&format!("/users/{user_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[(
+                "parentId",
+                group
+                    .id
+                    .to_string()
+                    .as_str(),
+            )])
+            .await
+            .json();
+
+        let empty = vec![];
+        let names: Vec<&str> = body["Items"]
+            .as_array()
+            .unwrap_or(&empty)
+            .iter()
+            .filter_map(|i| i["Name"].as_str())
+            .collect();
+
+        assert!(
+            names.contains(&"Netflix"),
+            "child Netflix must appear; got: {names:?}"
+        );
+        assert!(
+            names.contains(&"HBO"),
+            "child HBO must appear; got: {names:?}"
+        );
+        assert!(
+            !names.contains(&"Disney"),
+            "unrelated Disney must not appear; got: {names:?}"
+        );
+        assert_eq!(
+            names.len(),
+            2,
+            "only explicit children should appear; got: {names:?}"
+        );
+    }
+
+    // patch_item must reject collection_type=collections when collection_kind is absent or non-manual.
+    #[tokio::test]
+    async fn patch_item_rejects_group_container_without_valid_kind() {
+        use serde_json::json;
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let now = Utc::now().naive_utc();
+
+        let mut col = db::Media {
+            title: "Test Col".to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Smart),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        col.save(db)
+            .await
+            .unwrap();
+
+        // No collection_kind → must 400
+        server
+            .patch(&format!("/items/{}", col.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({ "CollectionType": "collections" }))
+            .expect_failure()
+            .await
+            .assert_status(http::StatusCode::BAD_REQUEST);
+
+        // collection_kind=smart → allowed
+        server
+            .patch(&format!("/items/{}", col.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(
+                &json!({ "CollectionType": "collections", "CollectionKind": "smart" }),
+            )
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+
+        // collection_kind=manual → allowed
+        server
+            .patch(&format!("/items/{}", col.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(
+                &json!({ "CollectionType": "collections", "CollectionKind": "manual" }),
+            )
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+    }
+
+    // update_virtual_folder must reject collection_type=collections when collection_kind is absent.
+    #[tokio::test]
+    async fn update_virtual_folder_rejects_group_container_without_valid_kind() {
+        use serde_json::json;
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let now = Utc::now().naive_utc();
+
+        let mut col = db::Media {
+            title: "VF Test".to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Smart),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        col.save(db)
+            .await
+            .unwrap();
+
+        // No collection_kind → must 400 (was silently accepted before fix)
+        server
+            .post("/library/virtualfolders/LibraryOptions")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({ "Id": col.id, "Name": "VF Test", "CollectionType": "collections" }))
+            .expect_failure()
+            .await
+            .assert_status(http::StatusCode::BAD_REQUEST);
+
+        // collection_kind=manual → must succeed
+        server
+            .post("/library/virtualfolders/LibraryOptions")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({ "Id": col.id, "Name": "VF Test", "CollectionType": "collections", "CollectionKind": "manual" }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+    }
+
+    async fn insert_smart_group_container(
+        db: &sqlx::SqlitePool,
+        title: &str,
+        filter: CollectionFilter,
+    ) -> db::Media {
+        let now = Utc::now().naive_utc();
+        let mut c = db::Media {
+            title: title.to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Smart),
+            collection_media_kind: Some(db::CollectionMediaKind::Collection),
+            collection_smart_filter: Some(filter),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        c.save(db)
+            .await
+            .expect("insert_smart_group_container failed");
+        c
+    }
+
+    async fn tag_collection(db: &sqlx::SqlitePool, media_id: Uuid, tag: &str) {
+        sqlx::query("INSERT OR IGNORE INTO media_tags (media_id, tag) VALUES (?, ?)")
+            .bind(media_id)
+            .bind(tag)
+            .execute(db)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn smart_group_container_returns_tag_matched_children() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(&server, &auth).await;
+
+        let group = insert_smart_group_container(
+            db,
+            "Sci-Fi Collections",
+            tag_filter("genre:scifi"),
+        )
+        .await;
+
+        let tagged_col = insert_smart_collection(
+            db,
+            "Sci-Fi Movies",
+            db::CollectionMediaKind::Movie,
+        )
+        .await;
+        let untagged_col = insert_smart_collection(
+            db,
+            "Comedy Movies",
+            db::CollectionMediaKind::Movie,
+        )
+        .await;
+
+        // Give each collection a child so they're not excluded by childless filter.
+        let m1 = insert_media(db, "Alien", db::MediaKind::Movie, "tt0078748").await;
+        let m2 =
+            insert_media(db, "Dumb Movie", db::MediaKind::Movie, "tt0078749").await;
+        db::MediaRelation::add_collection_items(db, &tagged_col.id, &[m1.id])
+            .await
+            .unwrap();
+        db::MediaRelation::add_collection_items(db, &untagged_col.id, &[m2.id])
+            .await
+            .unwrap();
+
+        tag_collection(db, tagged_col.id, "genre:scifi").await;
+
+        let body: serde_json::Value = server
+            .get(&format!("/users/{user_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[(
+                "parentId",
+                group
+                    .id
+                    .to_string()
+                    .as_str(),
+            )])
+            .await
+            .json();
+
+        let empty = vec![];
+        let names: Vec<&str> = body["Items"]
+            .as_array()
+            .unwrap_or(&empty)
+            .iter()
+            .filter_map(|i| i["Name"].as_str())
+            .collect();
+
+        assert!(
+            names.contains(&"Sci-Fi Movies"),
+            "tagged collection must appear in smart group; got: {names:?}"
+        );
+        assert!(
+            !names.contains(&"Comedy Movies"),
+            "untagged collection must not appear in smart group; got: {names:?}"
         );
     }
 }
