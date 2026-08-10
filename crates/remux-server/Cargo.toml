@@ -50,6 +50,7 @@ tracing = "^0.1"
 tracing-log = "^0.2"
 tower = { version = "^0.5", features = ["tokio", "util"] }
 tower-http = { version = "^0.6", features = ["full"] }
+percent-encoding = "2"
 chrono = { version = "0.4", features = ["serde"] }
 serde_with = { version = "3", features = ["chrono", "macros"] }
 uuid = { version = "1.8", features = ["v4", "v5", "serde"] }

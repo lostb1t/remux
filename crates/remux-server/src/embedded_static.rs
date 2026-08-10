@@ -65,7 +65,10 @@ impl EmbeddedDir {
     }
 
     fn serve(&self, uri_path: &str) -> Response<Body> {
-        let path = uri_path.trim_start_matches('/');
+        let decoded = percent_encoding::percent_decode_str(uri_path)
+            .decode_utf8()
+            .unwrap_or(std::borrow::Cow::Borrowed(uri_path));
+        let path = decoded.trim_start_matches('/');
         let path = if path.is_empty() { "index.html" } else { path };
 
         if let Some(file) = self

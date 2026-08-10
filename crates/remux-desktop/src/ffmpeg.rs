@@ -44,7 +44,16 @@ pub async fn ensure_ffmpeg(data_dir: &Path) -> Result<()> {
 
     tracing::info!("ffmpeg not found — downloading jellyfin-ffmpeg");
     std::fs::create_dir_all(&bin_dir)?;
-    download(&bin_dir).await?;
+
+    if let Err(e) = download(&bin_dir).await {
+        tracing::warn!("jellyfin-ffmpeg download failed: {e:#}");
+        if let Some((ff, ffp)) = system_ffmpeg() {
+            tracing::info!(ffmpeg = %ff.display(), "falling back to system ffmpeg");
+            set_paths(&ff, &ffp);
+            return Ok(());
+        }
+        return Err(e);
+    }
 
     if !ffmpeg.exists() || !ffprobe.exists() {
         anyhow::bail!(
@@ -55,6 +64,25 @@ pub async fn ensure_ffmpeg(data_dir: &Path) -> Result<()> {
 
     set_paths(&ffmpeg, &ffprobe);
     Ok(())
+}
+
+fn system_ffmpeg() -> Option<(PathBuf, PathBuf)> {
+    let dirs: &[&str] = &[
+        #[cfg(target_os = "macos")]
+        "/opt/homebrew/bin",
+        #[cfg(target_os = "macos")]
+        "/usr/local/bin",
+        "/usr/bin",
+        "/usr/local/bin",
+    ];
+    for dir in dirs {
+        let ff = PathBuf::from(dir).join(FFMPEG_BIN);
+        let ffp = PathBuf::from(dir).join(FFPROBE_BIN);
+        if ff.exists() && ffp.exists() {
+            return Some((ff, ffp));
+        }
+    }
+    None
 }
 
 fn set_paths(ffmpeg: &Path, ffprobe: &Path) {
@@ -94,10 +122,7 @@ async fn download(bin_dir: &Path) -> Result<()> {
         .find(|a| {
             a["name"]
                 .as_str()
-                .map(|n| {
-                    n.contains(suffix)
-                        && (n.ends_with(".tar.gz") || n.ends_with(".zip"))
-                })
+                .map(|n| n.contains(suffix) && n.contains("portable"))
                 .unwrap_or(false)
         })
         .ok_or_else(|| {

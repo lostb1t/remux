@@ -75,6 +75,13 @@ async fn probe_hw_accel() -> HardwareAccelerationType {
         .await
     {
         Ok(out) => String::from_utf8_lossy(&out.stdout).to_string(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            warn!(
+                "ffmpeg not found — transcoding and hardware acceleration detection will not work. \
+                 Set the FFMPEG_PATH environment variable to the ffmpeg binary path."
+            );
+            String::new()
+        }
         Err(e) => {
             warn!("Could not run ffmpeg to detect hwaccels: {e}");
             String::new()

@@ -88,6 +88,19 @@ impl Default for FilesystemPaths {
     }
 }
 
+impl FilesystemPaths {
+    pub fn load_from_env() -> Self {
+        let mut paths = Self::default();
+        if let Ok(v) = std::env::var("WEB_PATH") {
+            paths.web_path = v;
+        }
+        if let Ok(v) = std::env::var("DASHBOARD_PATH") {
+            paths.dashboard_path = v;
+        }
+        paths
+    }
+}
+
 /// Opaque service type for the `/admin` static file handler.
 pub type AdminService = tower::util::BoxCloneSyncService<
     axum::extract::Request,

@@ -30,14 +30,7 @@ fn load_config(env: config::Environment) -> Result<Config, config::ConfigError> 
 }
 
 fn load_paths() -> FilesystemPaths {
-    let mut paths = FilesystemPaths::default();
-    if let Ok(v) = std::env::var("WEB_PATH") {
-        paths.web_path = v;
-    }
-    if let Ok(v) = std::env::var("DASHBOARD_PATH") {
-        paths.dashboard_path = v;
-    }
-    paths
+    FilesystemPaths::load_from_env()
 }
 
 #[tokio::main]
