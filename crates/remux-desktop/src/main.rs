@@ -16,7 +16,7 @@ use tray_icon::{
 #[cfg(dashboard_built)]
 include!(concat!(env!("OUT_DIR"), "/dashboard_embed.rs"));
 
-#[cfg(all(dashboard_built, jellyfin_web_built))]
+#[cfg(jellyfin_web_built)]
 include!(concat!(env!("OUT_DIR"), "/jellyfin_web_embed.rs"));
 
 fn data_dir() -> PathBuf {
@@ -97,7 +97,12 @@ fn main() -> Result<()> {
     std::thread::spawn(move || {
         rt.block_on(async move {
             if let Err(e) = ffmpeg::ensure_ffmpeg(&data_dir_for_ffmpeg).await {
-                tracing::warn!("ffmpeg setup failed: {e:#}");
+                tracing::warn!(
+                    "ffmpeg could not be downloaded and was not found on this system: {e:#}. \
+                     Transcoding will not work. Install ffmpeg manually \
+                     (e.g. via Homebrew: brew install ffmpeg) or set the FFMPEG_PATH \
+                     environment variable."
+                );
             }
             if let Err(e) = serve(server_config).await {
                 tracing::error!("server error: {e:#}");
