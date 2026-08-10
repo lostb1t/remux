@@ -1,3 +1,36 @@
+# [0.24.0](https://github.com/lostb1t/remux/compare/v0.23.1...v0.24.0) (2026-08-10)
+
+
+### Bug Fixes
+
+* accept any ext-id UUID candidate in media validate to fix [❌] stub collisions ([648d8c6](https://github.com/lostb1t/remux/commit/648d8c6cd658ed3016f8405f1d42c1489972e0d1))
+* downgrade fetch_subtitles log to debug ([1ae2e42](https://github.com/lostb1t/remux/commit/1ae2e4266aa451a97f66e35c0f8123a53574facc))
+* drive desktop asset embedding via DASHBOARD_PATH/WEB_PATH env vars ([2dc8618](https://github.com/lostb1t/remux/commit/2dc86183b5ff3d68b3babaec8199349d49ca66fe))
+* external-ID deduplication and tree-aware import ([#165](https://github.com/lostb1t/remux/issues/165)) ([a75295d](https://github.com/lostb1t/remux/commit/a75295d870e6341a9671e8009ac964c9bea01dcc))
+* free disk space before desktop build on macOS runners ([692c44e](https://github.com/lostb1t/remux/commit/692c44e509bba2c33eb875f881d4eb2c717547cb))
+* lazy subtitle extraction — only extract when subtitle URL is requested ([1cb906a](https://github.com/lostb1t/remux/commit/1cb906ab1e854158883548f2e1f3ba312fed405e))
+* log fetch_subtitles at info only for real fetches, debug for cached lookups ([266af94](https://github.com/lostb1t/remux/commit/266af94690cdd71f970d270f349ffaba240eb15d))
+* **playlists:** return all media kinds from playlist items endpoint ([#199](https://github.com/lostb1t/remux/issues/199)) ([ca67af4](https://github.com/lostb1t/remux/commit/ca67af4ca0267cb06c2910ec8b238013b6be5733))
+* restore portable jellyfin-ffmpeg asset filter and add system ffmpeg fallback ([6d34317](https://github.com/lostb1t/remux/commit/6d3431741df6007b64687c4b59cb3c4009ea9458))
+* route librqbit and yt-dlp cache writes to data_dir/cache (fixes [#200](https://github.com/lostb1t/remux/issues/200)) ([f01d3e6](https://github.com/lostb1t/remux/commit/f01d3e6754592c91f6529036e24c549173de1a89))
+* skip remuxdb submission when stream has no torrent hash or nzb (fixes [#202](https://github.com/lostb1t/remux/issues/202)) ([d795afa](https://github.com/lostb1t/remux/commit/d795afaac3c8749715a2226d43aa7ac213500be1))
+* skip stremio error stubs in catalog stream and search ([2340312](https://github.com/lostb1t/remux/commit/2340312797aa3e098204f8dde248eaf5245b415b))
+* strip manifest.json from StremioManifestUrl when query string is present (fixes [#203](https://github.com/lostb1t/remux/issues/203)) ([48377ee](https://github.com/lostb1t/remux/commit/48377eea5edce213a690e4dcbaf5fed8fab15d1b))
+* use absolute paths for DASHBOARD_PATH/WEB_PATH in desktop CI build ([b1da7be](https://github.com/lostb1t/remux/commit/b1da7be401da474251d8e25e9fe23aeb61118c09))
+* **web:** re-apply real track selections when core re-renders after playback ([408928d](https://github.com/lostb1t/remux/commit/408928d13119ce498fdb2e4c487ed133e67f1f15))
+
+
+### Features
+
+* add default ElegantFin CSS to BrandingOptions ([d66c92d](https://github.com/lostb1t/remux/commit/d66c92dbe87234e37055a963673eef30ce0f5e09))
+* allow JS injection on branding page (fixes [#190](https://github.com/lostb1t/remux/issues/190)) ([8e297d8](https://github.com/lostb1t/remux/commit/8e297d818a8f95cbbd2c24c30acffb03ea093db4))
+* forward manifest URL query params to all addon resource requests (fixes [#203](https://github.com/lostb1t/remux/issues/203)) ([7657629](https://github.com/lostb1t/remux/commit/765762953f968d2d19e7cecf1eb6adc8ed6b5beb))
+* idPrefixes-aware addon routing and stream ID selection ([#193](https://github.com/lostb1t/remux/issues/193)) ([e0638bf](https://github.com/lostb1t/remux/commit/e0638bfb410a55e17ab84db8144be98b9549c220))
+* implement PlayDefaultAudioTrack using original_language from DB ([7f991ab](https://github.com/lostb1t/remux/commit/7f991ab64426c607bceda50bd438e0d1f8d4b462))
+* nested collection browsing with smart group containers ([#205](https://github.com/lostb1t/remux/issues/205)) ([44af3a8](https://github.com/lostb1t/remux/commit/44af3a8951cc4bf560e73a2d4000038bb97ff96a))
+* **sessions:** admin session revocation and activity log ([#128](https://github.com/lostb1t/remux/issues/128)) ([15e4197](https://github.com/lostb1t/remux/commit/15e4197eb00a3660d2d72ac77ddfaf482330ed65))
+* support animated GIF images; preserve image format extension on save ([7b82965](https://github.com/lostb1t/remux/commit/7b82965650417211618167e55723ad111d32e49e))
+
 ## [0.23.1](https://github.com/lostb1t/remux/compare/v0.23.0...v0.23.1) (2026-08-05)
 
 
