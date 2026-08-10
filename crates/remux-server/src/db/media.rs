@@ -4090,7 +4090,6 @@ impl Media {
                         m.kind,
                         MediaKind::Series
                             | MediaKind::Season
-                            | MediaKind::Collection
                             | MediaKind::Folder
                             | MediaKind::Album
                             | MediaKind::Artist
@@ -4184,115 +4183,6 @@ impl Media {
                     Err(e) => {
                         warn!("failed to load playlist child counts: {e}");
                     }
-                }
-            }
-
-            // For manual collections (non-group): count members via media_relations.
-            // Group containers use parent_id (handled above).
-            let manual_coll_ids: Vec<Uuid> = records
-                .iter()
-                .filter(|m| {
-                    m.kind == MediaKind::Collection
-                        && m.collection_kind == Some(CollectionKind::Manual)
-                })
-                .map(|m| m.id)
-                .collect();
-            if !manual_coll_ids.is_empty() {
-                let mut mc_qb = sqlx::QueryBuilder::new(
-                    "SELECT left_media_id, COUNT(*) FROM media_relations \
-                     WHERE role = 'collection' AND left_media_id IN (",
-                );
-                let mut sep = mc_qb.separated(", ");
-                for id in &manual_coll_ids {
-                    sep.push_bind(id);
-                }
-                if let Some(pf) = child_policy_filter {
-                    mc_qb.push(
-                        ") AND right_media_id IN (SELECT id FROM media WHERE 1=1",
-                    );
-                    apply_filter_rules(&mut mc_qb, pf);
-                    mc_qb.push(")");
-                } else {
-                    mc_qb.push(")");
-                }
-                mc_qb.push(" GROUP BY left_media_id");
-                match mc_qb
-                    .build()
-                    .fetch_all(db)
-                    .await
-                {
-                    Ok(rows) => {
-                        let mut cc_map: HashMap<Uuid, i64> = HashMap::new();
-                        for row in rows {
-                            cc_map.insert(row.get(0), row.get(1));
-                        }
-                        for media in &mut records {
-                            if manual_coll_ids.contains(&media.id) {
-                                media.child_count = Some(
-                                    *cc_map
-                                        .get(&media.id)
-                                        .unwrap_or(&0),
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!("failed to load manual collection child counts: {e}")
-                    }
-                }
-            }
-
-            // For smart/catalog collections: run each collection's filter rules to
-            // get the true item count. This also powers exclude_childless filtering.
-            for media in records
-                .iter_mut()
-                .filter(|m| {
-                    m.kind == MediaKind::Collection
-                        && matches!(
-                            m.collection_kind,
-                            Some(CollectionKind::Smart) | Some(CollectionKind::Catalog)
-                        )
-                })
-            {
-                let kinds: Option<Vec<&'static str>> = media
-                    .collection_media_kind
-                    .as_ref()
-                    .map(|k| match k {
-                        CollectionMediaKind::Movie => vec!["movie"],
-                        CollectionMediaKind::Series => vec!["series"],
-                        CollectionMediaKind::Mixed => vec!["movie", "series"],
-                        CollectionMediaKind::Music => vec!["track", "album", "artist"],
-                        CollectionMediaKind::Playlist => vec!["playlist"],
-                        CollectionMediaKind::Collection => vec!["collection"],
-                    });
-                let mut qb =
-                    sqlx::QueryBuilder::new("SELECT COUNT(*) FROM media WHERE 1=1");
-                if let Some(ks) = &kinds {
-                    if !ks.is_empty() {
-                        qb.push(" AND kind IN (");
-                        let mut sep = qb.separated(", ");
-                        for k in ks {
-                            sep.push_bind(*k);
-                        }
-                        qb.push(")");
-                    }
-                }
-                if let Some(sf) = media.parse_smart_filter() {
-                    apply_filter_rules(&mut qb, sf);
-                }
-                if let Some(pf) = child_policy_filter {
-                    apply_filter_rules(&mut qb, pf);
-                }
-                match qb
-                    .build_query_scalar()
-                    .fetch_one(db)
-                    .await
-                {
-                    Ok(cnt) => media.child_count = Some(cnt),
-                    Err(e) => warn!(
-                        "failed to load child count for collection {}: {e}",
-                        media.id
-                    ),
                 }
             }
 
