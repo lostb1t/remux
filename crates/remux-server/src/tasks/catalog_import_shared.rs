@@ -105,6 +105,19 @@ where
                 .into_iter()
                 .collect()
         };
+        // Snapshot stream-order weights before partitioning — partition() does not
+        // preserve the original order across the two vecs, so new items would
+        // otherwise always get the lowest weights within a chunk regardless of where
+        // they actually appeared in the catalog.
+        let item_weights: Vec<(Uuid, i64)> = items
+            .iter()
+            .map(|item| {
+                let w = catalog_position;
+                catalog_position += 1;
+                (item.id, w)
+            })
+            .collect();
+
         let (new_items, existing_items): (Vec<db::Media>, Vec<db::Media>) = items
             .into_iter()
             .partition(|m| !existing_ids.contains(&m.id));
@@ -198,18 +211,11 @@ where
                     vec![]
                 };
 
-            let relation_rows: Vec<(Uuid, Uuid, i64, Uuid)> = new_items
+            let relation_rows: Vec<(Uuid, Uuid, i64, Uuid)> = item_weights
                 .iter()
-                .chain(existing_items.iter())
-                .map(|item| {
-                    let relation_id = Uuid::new_v5(
-                        &collection_id,
-                        item.id
-                            .as_bytes(),
-                    );
-                    let weight = catalog_position;
-                    catalog_position += 1;
-                    (relation_id, collection_id, weight, item.id)
+                .map(|(item_id, weight)| {
+                    let relation_id = Uuid::new_v5(&collection_id, item_id.as_bytes());
+                    (relation_id, collection_id, *weight, *item_id)
                 })
                 .collect();
 
