@@ -1,3 +1,10 @@
+## [0.24.2](https://github.com/lostb1t/remux/compare/v0.24.1...v0.24.2) (2026-08-11)
+
+
+### Bug Fixes
+
+* preserve catalog stream order when assigning weights to new items ([96fe01e](https://github.com/lostb1t/remux/commit/96fe01ee1faa28a7fda04792f1bb78cddd2af146))
+
 ## [0.24.1](https://github.com/lostb1t/remux/compare/v0.24.0...v0.24.1) (2026-08-10)
 
 
