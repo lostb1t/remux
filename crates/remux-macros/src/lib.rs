@@ -335,12 +335,117 @@ fn query_field_aliases(snake: &str) -> Vec<String> {
 /// Add extra derives (`PartialEq`, `Hash`, etc.) as a separate `#[derive(...)]` above `#[dto]`.
 #[proc_macro_attribute]
 pub fn dto(_args: TokenStream, input: TokenStream) -> TokenStream {
-    let input = proc_macro2::TokenStream::from(input);
+    let mut item = parse_macro_input!(input as ItemStruct);
+
+    // Inject #[serde(with = "remux_utils::uuid_serde[::opt|::vec|::opt_vec]")]
+    // on every field whose type is Uuid / Option<Uuid> / Vec<Uuid> / Option<Vec<Uuid>>.
+    if let Fields::Named(ref mut fields) = item.fields {
+        for field in &mut fields.named {
+            let with_path = match uuid_serde_path(&field.ty) {
+                Some(p) => p,
+                None => continue,
+            };
+            // Skip if the field already carries an explicit #[serde(with = ...)]
+            let already = field
+                .attrs
+                .iter()
+                .any(|a| {
+                    a.path()
+                        .is_ident("serde")
+                        && a.to_token_stream()
+                            .to_string()
+                            .contains("with")
+                });
+            if already {
+                continue;
+            }
+            let lit = LitStr::new(&with_path, Span::call_site());
+            field
+                .attrs
+                .push(syn::parse_quote!(#[serde(with = #lit)]));
+        }
+    }
+
     quote! {
         #[serde_with::skip_serializing_none]
         #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, default2::Default)]
         #[serde(rename_all = "PascalCase", default)]
-        #input
+        #item
     }
     .into()
+}
+
+/// Returns the `remux_utils::uuid_serde` sub-module path for a UUID-containing type,
+/// or `None` if the type is not UUID-based.
+fn uuid_serde_path(ty: &syn::Type) -> Option<String> {
+    match ty {
+        syn::Type::Path(p) => {
+            let seg = p
+                .path
+                .segments
+                .last()?;
+            if seg.ident == "Uuid" {
+                return Some("remux_utils::uuid_serde".into());
+            }
+            if seg.ident == "Option" {
+                let inner = first_generic_type(&seg.arguments)?;
+                if is_plain_uuid(inner) {
+                    return Some("remux_utils::uuid_serde::opt".into());
+                }
+                if is_vec_uuid(inner) {
+                    return Some("remux_utils::uuid_serde::opt_vec".into());
+                }
+            }
+            if seg.ident == "Vec" {
+                let inner = first_generic_type(&seg.arguments)?;
+                if is_plain_uuid(inner) {
+                    return Some("remux_utils::uuid_serde::vec".into());
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn is_plain_uuid(ty: &syn::Type) -> bool {
+    if let syn::Type::Path(p) = ty {
+        if let Some(seg) = p
+            .path
+            .segments
+            .last()
+        {
+            return seg.ident == "Uuid";
+        }
+    }
+    false
+}
+
+fn is_vec_uuid(ty: &syn::Type) -> bool {
+    if let syn::Type::Path(p) = ty {
+        if let Some(seg) = p
+            .path
+            .segments
+            .last()
+        {
+            if seg.ident == "Vec" {
+                if let Some(inner) = first_generic_type(&seg.arguments) {
+                    return is_plain_uuid(inner);
+                }
+            }
+        }
+    }
+    false
+}
+
+fn first_generic_type(args: &syn::PathArguments) -> Option<&syn::Type> {
+    if let syn::PathArguments::AngleBracketed(ab) = args {
+        if let Some(syn::GenericArgument::Type(ty)) = ab
+            .args
+            .first()
+        {
+            return Some(ty);
+        }
+    }
+    None
 }
