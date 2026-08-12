@@ -13,15 +13,15 @@ const FFPROBE_BIN: &str = "ffprobe";
 
 fn platform_suffix() -> Option<&'static str> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    return Some("osx-arm64");
+    return Some("macarm64");
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    return Some("osx-amd64");
+    return Some("mac64");
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    return Some("linux-amd64");
+    return Some("linux64");
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    return Some("linux-arm64");
+    return Some("linuxarm64");
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    return Some("win-x64");
+    return Some("win64");
     #[allow(unreachable_code)]
     None
 }
@@ -145,7 +145,9 @@ async fn download(bin_dir: &Path) -> Result<()> {
         .bytes()
         .await?;
 
-    if name.ends_with(".tar.gz") {
+    if name.ends_with(".tar.xz") {
+        extract_tar_xz(&bytes, bin_dir)?;
+    } else if name.ends_with(".tar.gz") {
         extract_tar_gz(&bytes, bin_dir)?;
     } else if name.ends_with(".zip") {
         extract_zip(&bytes, bin_dir)?;
@@ -157,6 +159,23 @@ async fn download(bin_dir: &Path) -> Result<()> {
     set_executable(bin_dir)?;
 
     tracing::info!(dir = %bin_dir.display(), "jellyfin-ffmpeg installed");
+    Ok(())
+}
+
+fn extract_tar_xz(data: &[u8], dest: &Path) -> Result<()> {
+    use tar::Archive;
+    use xz2::read::XzDecoder;
+
+    let mut archive = Archive::new(XzDecoder::new(data));
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?;
+        if let Some(name) = path.file_name() {
+            if name == "ffmpeg" || name == "ffprobe" {
+                entry.unpack(dest.join(name))?;
+            }
+        }
+    }
     Ok(())
 }
 
