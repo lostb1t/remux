@@ -282,11 +282,14 @@ pub async fn init_app(
     let web_client = make_web_client(conn.clone());
 
     let addons = addons::AddonService::from_db(&conn, &config).await?;
+    let transcode_sessions_dir = config
+        .data_dir
+        .join("transcode_sessions");
     let ctx = AppContext {
         config,
         db: conn.clone(),
         store: Store::new_weighted(128 * 1024 * 1024),
-        sessions: playback_session::PlaybackSessionManager::new("transcode_sessions"),
+        sessions: playback_session::PlaybackSessionManager::new(transcode_sessions_dir),
         torrent: Arc::new(torrent_mgr),
         ws_tx: tokio::sync::broadcast::channel(128).0,
         default_web_client: Arc::new(tokio::sync::RwLock::new(

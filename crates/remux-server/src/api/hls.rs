@@ -202,8 +202,11 @@ async fn create_hls_session(
             })
             .context_not_found("media source has no URL")?;
 
-        let output_dir =
-            std::path::PathBuf::from("transcode_sessions").join(&play_session_id);
+        let output_dir = state
+            .ctx
+            .sessions
+            .base_dir()
+            .join(&play_session_id);
         // Keep the API stable (no RunId in URLs) by reusing one on-disk path per
         // PlaySessionId and clearing stale segments when a transcode restarts.
         let _ = std::fs::remove_dir_all(&output_dir);
