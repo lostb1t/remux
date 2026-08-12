@@ -1656,6 +1656,7 @@ mod e2e_tests {
                 .unwrap(),
             newer
                 .id
+                .simple()
                 .to_string(),
             "most-recently-played item must be first"
         );
@@ -1665,6 +1666,7 @@ mod e2e_tests {
                 .unwrap(),
             older
                 .id
+                .simple()
                 .to_string(),
             "least-recently-played item must be second"
         );
@@ -1728,6 +1730,7 @@ mod e2e_tests {
                 .unwrap(),
             media
                 .id
+                .simple()
                 .to_string(),
         );
     }

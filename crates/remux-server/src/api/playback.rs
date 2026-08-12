@@ -1527,7 +1527,7 @@ mod tests {
         // so Android TV and other clients can resolve the stream from the path parameter.
         resp.assert_json_contains(&json!({
             "MediaSources": [{
-                "Id": media.id.to_string(),
+                "Id": media.id.simple().to_string(),
                 "SupportsTranscoding": true,
                 "SupportsDirectPlay": true,
             }]
@@ -1562,7 +1562,7 @@ mod tests {
         resp.assert_status_ok();
         resp.assert_json_contains(&json!({
             "MediaSources": [{
-                "Id": media.id.to_string(),
+                "Id": media.id.simple().to_string(),
                 "Container": "mp4",
                 "RunTimeTicks": 100000000,
                 "SupportsDirectPlay": true,
@@ -1610,7 +1610,7 @@ mod tests {
         // No MediaSourceId in request → source Id must equal the item id.
         resp.assert_json_contains(&json!({
             "MediaSources": [{
-                "Id": media.id.to_string(),
+                "Id": media.id.simple().to_string(),
                 "SupportsDirectPlay": true,
                 "SupportsTranscoding": true,
             }]
@@ -1866,7 +1866,7 @@ mod tests {
         resp.assert_status_ok();
         resp.assert_json_contains(&json!({
             "MediaSources": [{
-                "Id": media.id.to_string(),
+                "Id": media.id.simple().to_string(),
             }]
         }));
     }
@@ -1899,6 +1899,7 @@ mod tests {
                 .unwrap(),
             source
                 .id
+                .simple()
                 .to_string(),
             "source Id should equal item id when no MediaSourceId given"
         );
@@ -1920,6 +1921,7 @@ mod tests {
                 .unwrap(),
             source
                 .id
+                .simple()
                 .to_string(),
             "source Id must equal item id when MediaSourceId == item id (Android TV)"
         );
@@ -2060,6 +2062,7 @@ mod tests {
                 .unwrap(),
             source_a
                 .id
+                .simple()
                 .to_string(),
             "Id must equal the requested MediaSourceId, not source_b's id"
         );
@@ -2069,6 +2072,7 @@ mod tests {
                 .unwrap(),
             source_a
                 .id
+                .simple()
                 .to_string(),
             "ETag must equal the requested MediaSourceId"
         );
@@ -2090,6 +2094,7 @@ mod tests {
                 .unwrap(),
             movie
                 .id
+                .simple()
                 .to_string(),
             "without MediaSourceId, first source Id must equal the item id, not a stream's id"
         );
@@ -2099,6 +2104,7 @@ mod tests {
                 .unwrap(),
             movie
                 .id
+                .simple()
                 .to_string(),
             "without MediaSourceId, ETag must equal the item id"
         );
@@ -2730,6 +2736,7 @@ mod tests {
                 .unwrap(),
             movie
                 .id
+                .simple()
                 .to_string()
         );
         // Source[1] (Blu-ray group) must carry the StreamGroup UUID, not a stream UUID
@@ -2739,6 +2746,7 @@ mod tests {
                 .unwrap(),
             bluray_group
                 .id
+                .simple()
                 .to_string(),
             "blu-ray group source Id must be the StreamGroup UUID"
         );
@@ -2770,6 +2778,7 @@ mod tests {
                 .unwrap(),
             bluray_group
                 .id
+                .simple()
                 .to_string(),
             "source Id must be the Blu-ray group UUID"
         );

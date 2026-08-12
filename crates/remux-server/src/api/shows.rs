@@ -1067,9 +1067,11 @@ mod test {
 
         let ep_a2_str = eps_a[1]
             .id
+            .simple()
             .to_string();
         let ep_b2_str = ep_b2
             .id
+            .simple()
             .to_string();
 
         let pos_a = id_strs
@@ -1154,6 +1156,7 @@ mod test {
                 .unwrap(),
             episodes[1]
                 .id
+                .simple()
                 .to_string(),
             "NextUp should return episode 2, not {:?}",
             items[0]["Name"]
@@ -1214,6 +1217,7 @@ mod test {
                 .unwrap(),
             episodes[1]
                 .id
+                .simple()
                 .to_string(),
         );
     }
@@ -1274,6 +1278,7 @@ mod test {
                 .unwrap(),
             episodes[0]
                 .id
+                .simple()
                 .to_string(),
             "In-progress episode 1 should be returned as NextUp when EnableResumable=true"
         );
@@ -1341,6 +1346,7 @@ mod test {
                 .unwrap(),
             episodes[1]
                 .id
+                .simple()
                 .to_string()
         );
     }
