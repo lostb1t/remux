@@ -1742,6 +1742,25 @@ async fn item_for_user(
         .await?;
     let mut base_item = api::db_media_to_item(media.clone(), false);
 
+    // When streams were actually fetched but none found, replace the
+    // listing-style stubs with a single "No streams found" stub.
+    if needs_streams
+        && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode)
+        && media
+            .sources
+            .as_deref()
+            .map_or(false, |s| s.is_empty())
+    {
+        base_item.media_sources = Some(vec![api::MediaSourceInfo {
+            id: media.id,
+            e_tag: media.id,
+            name: Some("No streams found".to_string()),
+            protocol: api::MediaProtocol::File,
+            path: Some(format!("/remux/{}", media.id)),
+            ..Default::default()
+        }]);
+    }
+
     // For tracks, wrap the Source row(s) as HLS-transcoded MediaSources.
     // CDN URLs are IP-locked to the server; the client must go through the HLS pipeline.
     if media.kind == db::MediaKind::Track {

@@ -533,14 +533,69 @@ async fn items_playbackinfo_inner(
         }
     }
 
+    let error_code = if media_sources.is_empty() {
+        media_sources.push(api::MediaSourceInfo {
+            id,
+            e_tag: id,
+            name: Some("No streams found".to_string()),
+            protocol: api::MediaProtocol::File,
+            supports_direct_play: true,
+            supports_direct_stream: true,
+            supports_transcoding: true,
+            path: Some("/videos/no-streams".to_string()),
+            run_time_ticks: Some(20 * 10_000_000),
+            container: Some("mp4".to_string()),
+            bitrate: Some(50_000),
+            size: Some(NO_STREAMS_VIDEO.len() as i64),
+            formats: Some(vec![]),
+            required_http_headers: Some(std::collections::HashMap::new()),
+            default_audio_stream_index: Some(1),
+            media_streams: vec![
+                api::MediaStream {
+                    type_: Some(api::MediaStreamType::Video),
+                    codec: Some("h264".to_string()),
+                    is_default: Some(true),
+                    index: 0,
+                    width: Some(640),
+                    height: Some(360),
+                    ..Default::default()
+                },
+                api::MediaStream {
+                    type_: Some(api::MediaStreamType::Audio),
+                    codec: Some("aac".to_string()),
+                    channels: Some(2),
+                    is_default: Some(true),
+                    index: 1,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        });
+        Some(api::PlaybackErrorCode::NoCompatibleStream)
+    } else {
+        None
+    };
+
     let info = api::PlaybackInfoResponse {
         media_sources,
         play_session_id: Some(play_session_id),
+        // error_code,
         ..Default::default()
     };
 
     trace!(?info, "items_playbackinfo_result");
     Ok(Json(info))
+}
+
+static NO_STREAMS_VIDEO: &[u8] = include_bytes!("../../assets/no-streams.mp4");
+
+#[get("/videos/no-streams")]
+pub async fn videos_no_streams() -> impl IntoResponse {
+    http::Response::builder()
+        .header(http::header::CONTENT_TYPE, "video/mp4")
+        .header(http::header::CONTENT_LENGTH, NO_STREAMS_VIDEO.len())
+        .body(Body::from(NO_STREAMS_VIDEO))
+        .unwrap()
 }
 
 /// Starts a direct playback for the given media UUID.
@@ -699,11 +754,30 @@ async fn videos_stream_inner(
             .as_deref(),
         user_id,
     )
-    .await?;
+    .await;
 
-    let si = media
+    let media = match media {
+        Ok(m) => m,
+        Err(_) => {
+            return Ok(http::Response::builder()
+                .header(http::header::CONTENT_TYPE, "video/mp4")
+                .header(http::header::CONTENT_LENGTH, NO_STREAMS_VIDEO.len())
+                .body(Body::from(NO_STREAMS_VIDEO))
+                .unwrap()
+                .into_response());
+        }
+    };
+    let Some(si) = media
         .stream_info
-        .context_not_found("media source has no URL")?;
+        .clone()
+    else {
+        return Ok(http::Response::builder()
+            .header(http::header::CONTENT_TYPE, "video/mp4")
+            .header(http::header::CONTENT_LENGTH, NO_STREAMS_VIDEO.len())
+            .body(Body::from(NO_STREAMS_VIDEO))
+            .unwrap()
+            .into_response());
+    };
     let descriptor = si.descriptor;
 
     // Direct play: serve bytes directly through the StreamSource trait.
