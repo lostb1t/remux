@@ -13,6 +13,7 @@ pub mod squid;
 pub mod stremio;
 pub mod tmdb;
 pub mod torznab;
+pub mod tracking;
 pub mod trakt;
 pub mod ytdlp;
 
@@ -881,6 +882,7 @@ pub struct AddonCapabilities {
     pub lyric: Option<Arc<dyn LyricAddon>>,
     pub index: Option<Arc<dyn IndexAddon>>,
     pub metrics: Option<Arc<dyn MetricsAddon>>,
+    pub tracking: Option<Arc<dyn tracking::TrackingAddon>>,
 }
 
 // ---------------------------------------------------------------------------
