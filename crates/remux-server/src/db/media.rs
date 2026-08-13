@@ -2349,7 +2349,7 @@ impl Media {
                 rating_critic, rating_audience, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind,
                 external_ids, external_ratings, created_at, updated_at, certification, certification_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital,
-                collection_source, collection_default_sort, collection_default_sort_order,
+                collection_default_sort, collection_default_sort_order,
                 original_language, is_locked, locked_fields, album_kind
             )",
         );
