@@ -1751,12 +1751,21 @@ async fn item_for_user(
             .as_deref()
             .map_or(false, |s| s.is_empty())
     {
+        let media_streams = media
+            .probe_data
+            .as_ref()
+            .map(|p| {
+                p.media_streams
+                    .clone()
+            })
+            .unwrap_or_default();
         base_item.media_sources = Some(vec![api::MediaSourceInfo {
             id: media.id,
             e_tag: media.id,
             name: Some("No streams found".to_string()),
             protocol: api::MediaProtocol::File,
             path: Some(format!("/remux/{}", media.id)),
+            media_streams,
             ..Default::default()
         }]);
     }
