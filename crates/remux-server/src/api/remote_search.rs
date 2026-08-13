@@ -258,7 +258,7 @@ pub async fn search_remote_subtitles(
     Path((item_id, language)): Path<(Uuid, String)>,
     Query(_q): Query<SubtitleSearchQuery>,
 ) -> Result<impl IntoResponse> {
-    let media = db::Media::get_by_id(
+    let mut media = db::Media::get_by_id(
         &state
             .ctx
             .db,
@@ -271,7 +271,7 @@ pub async fn search_remote_subtitles(
         .ctx
         .addons
         .fetch_subtitles(
-            &media,
+            &mut media,
             &state
                 .ctx
                 .db,

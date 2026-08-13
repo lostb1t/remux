@@ -2375,11 +2375,17 @@ impl AddonService {
     #[tracing::instrument(skip_all, fields(title = %media.title, kind = %media.kind))]
     pub async fn fetch_subtitles(
         &self,
-        media: &db::Media,
+        media: &mut db::Media,
         db: &SqlitePool,
         background: bool,
         user_id: Option<Uuid>,
     ) -> Vec<SubtitleInfo> {
+        if media.kind == db::MediaKind::Episode {
+            media
+                .grandparent(db)
+                .await
+                .ok();
+        }
         let addons = self
             .addons_for::<dyn SubtitleAddon>(media, db, user_id)
             .await;

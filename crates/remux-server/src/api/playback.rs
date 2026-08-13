@@ -163,7 +163,7 @@ async fn items_playbackinfo_inner(
     // Load the top-level Movie/Episode for subtitle lookup.
     // `id` is always the movie/episode UUID; `media_source_id` may point to a
     // child Source, so we always resolve via `id` to get the IMDB fields.
-    let subtitle_media = db::Media::get_by_id(
+    let mut subtitle_media = db::Media::get_by_id(
         &state
             .ctx
             .db,
@@ -447,7 +447,7 @@ async fn items_playbackinfo_inner(
     }
 
     // Inject external subtitles from AIO (cache-backed)
-    if let Some(ref sub_media) = subtitle_media {
+    if let Some(ref mut sub_media) = subtitle_media {
         let sub_langs = probe_cfg
             .subtitle_languages
             .clone()

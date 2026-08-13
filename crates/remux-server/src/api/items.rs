@@ -3232,7 +3232,7 @@ fn warm_providers_cache(ctx: &crate::AppContext, media: &db::Media) {
     tokio::spawn(async move {
         let _ = ctx
             .addons
-            .fetch_subtitles(&media, &ctx.db, true, None)
+            .fetch_subtitles(&mut media, &ctx.db, true, None)
             .await;
         let _ = media
             .grandparent(&ctx.db)
