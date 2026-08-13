@@ -364,7 +364,6 @@ pub enum CollectionKind {
     #[default]
     Manual,
     Smart,
-    Catalog,
 }
 
 impl TryFrom<String> for CollectionKind {
@@ -1456,8 +1455,6 @@ pub struct Media {
     pub collection_max_items: Option<i64>,
     #[sqlx(json(nullable))]
     pub collection_smart_filter: Option<remux_sdks::remux::CollectionFilter>,
-    /// For CollectionKind::Catalog: "addon_uuid:local_catalog_id" of the source catalog.
-    pub collection_source: Option<String>,
     #[sqlx(json(nullable))]
     pub collection_default_sort: Option<Vec<sdks::remux::ItemSortBy>>,
     #[sqlx(json(nullable))]
@@ -2091,10 +2088,10 @@ impl Media {
             external_ids, external_ratings, created_at, updated_at, certification, certification_age, parent_idx,
             live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id,
             collection_smart_filter, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital,
-            collection_source, collection_default_sort, collection_default_sort_order,
+            collection_default_sort, collection_default_sort_order,
             original_language, is_locked, locked_fields, album_kind
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
@@ -2118,7 +2115,6 @@ impl Media {
             collection_smart_filter = excluded.collection_smart_filter,
             collection_latest_auto_unplayed = excluded.collection_latest_auto_unplayed,
             collection_latest_sort_digital = excluded.collection_latest_sort_digital,
-            collection_source = excluded.collection_source,
             collection_default_sort = excluded.collection_default_sort,
             collection_default_sort_order = excluded.collection_default_sort_order,
             country = COALESCE(excluded.country, media.country),
@@ -2182,7 +2178,6 @@ impl Media {
         .bind(&self.program_kind)
         .bind(self.collection_latest_auto_unplayed)
         .bind(self.collection_latest_sort_digital)
-        .bind(&self.collection_source)
         .bind(sqlx::types::Json(&self.collection_default_sort))
         .bind(sqlx::types::Json(&self.collection_default_sort_order))
         .bind(&self.original_language)
@@ -2240,7 +2235,7 @@ impl Media {
                 rating_critic, rating_audience, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind,
                 external_ids, external_ratings, created_at, updated_at, certification, certification_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, grandparent_id, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital,
-                collection_source, collection_default_sort, collection_default_sort_order,
+                collection_default_sort, collection_default_sort_order,
                 original_language, is_locked, locked_fields, album_kind
             )",
         );
@@ -2293,7 +2288,6 @@ impl Media {
                     .push_bind(&item.program_kind)
                     .push_bind(&item.collection_latest_auto_unplayed)
                     .push_bind(&item.collection_latest_sort_digital)
-                    .push_bind(&item.collection_source)
                     .push_bind(sqlx::types::Json(&item.collection_default_sort))
                     .push_bind(sqlx::types::Json(&item.collection_default_sort_order))
                     .push_bind(&item.original_language)
@@ -2407,7 +2401,6 @@ impl Media {
                     .push_bind(&item.program_kind)
                     .push_bind(&item.collection_latest_auto_unplayed)
                     .push_bind(&item.collection_latest_sort_digital)
-                    .push_bind(&item.collection_source)
                     .push_bind(sqlx::types::Json(&item.collection_default_sort))
                     .push_bind(sqlx::types::Json(&item.collection_default_sort_order))
                     .push_bind(&item.original_language)
@@ -2853,12 +2846,7 @@ impl Media {
         let is_smart_collection = filter
             .parent
             .as_ref()
-            .map(|p| {
-                matches!(
-                    p.collection_kind,
-                    Some(CollectionKind::Smart) | Some(CollectionKind::Catalog)
-                )
-            })
+            .map(|p| matches!(p.collection_kind, Some(CollectionKind::Smart)))
             .unwrap_or(false);
 
         let use_recursive = filter.recursive
@@ -4199,10 +4187,7 @@ impl Media {
                 .iter()
                 .filter(|m| {
                     m.kind == MediaKind::Collection
-                        && matches!(
-                            m.collection_kind,
-                            Some(CollectionKind::Smart) | Some(CollectionKind::Catalog)
-                        )
+                        && matches!(m.collection_kind, Some(CollectionKind::Smart))
                 })
                 .map(|m| {
                     let kinds = m

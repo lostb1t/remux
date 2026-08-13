@@ -3048,7 +3048,6 @@ pub enum RemuxCollectionKind {
     #[default]
     Manual,
     Smart,
-    Catalog,
 }
 
 #[derive(Default, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -3322,7 +3321,6 @@ pub struct RemuxInfo {
     pub digital_release_date: Option<DateTime<Utc>>,
     pub latest_auto_unplayed: Option<bool>,
     pub latest_sort_digital: Option<bool>,
-    pub collection_source: Option<String>,
     pub collection_default_sort: Option<Vec<ItemSortBy>>,
     pub collection_default_sort_order: Option<Vec<SortOrder>>,
 }

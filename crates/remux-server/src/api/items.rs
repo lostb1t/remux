@@ -657,14 +657,12 @@ pub async fn get_items(
 
             // Smart collection: extract stored filter rules so they are applied
             // alongside the Jellyfin query (sort, pagination, user-state, etc.).
-            let smart_filter = if matches!(
-                parent.collection_kind,
-                Some(db::CollectionKind::Smart) | Some(db::CollectionKind::Catalog)
-            ) {
-                parent.parse_smart_filter()
-            } else {
-                None
-            };
+            let smart_filter =
+                if matches!(parent.collection_kind, Some(db::CollectionKind::Smart)) {
+                    parent.parse_smart_filter()
+                } else {
+                    None
+                };
 
             let result = db::Media::get_by_jellyfin_filter(
                 &state
