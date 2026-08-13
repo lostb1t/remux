@@ -2758,9 +2758,6 @@ impl AddonService {
                 .collect()
         };
         info!(streams = deduped.len(), ?sources, elapsed = ?instant.elapsed(), "streams synced");
-        if deduped.is_empty() {
-            return Ok(());
-        }
 
         let now = chrono::Utc::now().naive_utc();
         sqlx::query("UPDATE media SET streams_refreshed_at = ? WHERE id = ?")
@@ -2769,6 +2766,10 @@ impl AddonService {
             .execute(&ctx.db)
             .await?;
         media.streams_refreshed_at = Some(now);
+
+        if deduped.is_empty() {
+            return Ok(());
+        }
         let mut sources: Vec<db::Media> = deduped
             .into_iter()
             .enumerate()
