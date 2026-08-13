@@ -589,13 +589,17 @@ async fn items_playbackinfo_inner(
 
 static NO_STREAMS_VIDEO: &[u8] = include_bytes!("../../assets/no-streams.mp4");
 
-#[get("/videos/no-streams")]
-pub async fn videos_no_streams() -> impl IntoResponse {
+fn no_streams_response() -> http::Response<Body> {
     http::Response::builder()
         .header(http::header::CONTENT_TYPE, "video/mp4")
         .header(http::header::CONTENT_LENGTH, NO_STREAMS_VIDEO.len())
         .body(Body::from(NO_STREAMS_VIDEO))
         .unwrap()
+}
+
+#[get("/videos/no-streams")]
+pub async fn videos_no_streams() -> impl IntoResponse {
+    no_streams_response()
 }
 
 /// Starts a direct playback for the given media UUID.
@@ -758,25 +762,13 @@ async fn videos_stream_inner(
 
     let media = match media {
         Ok(m) => m,
-        Err(_) => {
-            return Ok(http::Response::builder()
-                .header(http::header::CONTENT_TYPE, "video/mp4")
-                .header(http::header::CONTENT_LENGTH, NO_STREAMS_VIDEO.len())
-                .body(Body::from(NO_STREAMS_VIDEO))
-                .unwrap()
-                .into_response());
-        }
+        Err(_) => return Ok(no_streams_response().into_response()),
     };
     let Some(si) = media
         .stream_info
         .clone()
     else {
-        return Ok(http::Response::builder()
-            .header(http::header::CONTENT_TYPE, "video/mp4")
-            .header(http::header::CONTENT_LENGTH, NO_STREAMS_VIDEO.len())
-            .body(Body::from(NO_STREAMS_VIDEO))
-            .unwrap()
-            .into_response());
+        return Ok(no_streams_response().into_response());
     };
     let descriptor = si.descriptor;
 
