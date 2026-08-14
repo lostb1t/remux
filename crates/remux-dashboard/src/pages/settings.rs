@@ -348,6 +348,10 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
     let mut normalize_audio_loudness = use_signal(|| false);
     let mut enable_video_transcoding = use_signal(|| true);
     let mut subtitle_mode = use_signal(|| "Burn".to_string());
+    let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
+    let mut min_resume_pct = use_signal(|| 5_i64);
+    let mut max_resume_pct = use_signal(|| 90_i64);
+    let mut min_resume_duration_seconds = use_signal(|| 90_i64);
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(|| Option::<String>::None);
@@ -357,6 +361,24 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
     use_effect(move || {
         let client = app_state_load.clone();
         spawn(async move {
+            if let Ok(cfg) = client
+                .execute(GetSystemConfiguration)
+                .await
+            {
+                min_resume_pct.set(
+                    cfg.min_resume_pct
+                        .unwrap_or(5),
+                );
+                max_resume_pct.set(
+                    cfg.max_resume_pct
+                        .unwrap_or(90),
+                );
+                min_resume_duration_seconds.set(
+                    cfg.min_resume_duration_seconds
+                        .unwrap_or(90),
+                );
+                base_cfg.set(Some(cfg));
+            }
             match client
                 .execute(GetEncodingConfiguration)
                 .await
@@ -486,14 +508,28 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                 .parse::<EmbeddedSubtitleHandling>()
                 .ok(),
         };
+        let min_pct = *min_resume_pct.peek();
+        let max_pct = *max_resume_pct.peek();
+        let min_dur = *min_resume_duration_seconds.peek();
+        let mut server_cfg = base_cfg
+            .peek()
+            .clone()
+            .unwrap_or_default();
+        server_cfg.min_resume_pct = Some(min_pct);
+        server_cfg.max_resume_pct = Some(max_pct);
+        server_cfg.min_resume_duration_seconds = Some(min_dur);
+
         saving.set(true);
         error.set(None);
         saved.set(false);
         spawn(async move {
-            match client
+            let enc_result = client
                 .execute(UpdateEncodingConfiguration { config: opts })
-                .await
-            {
+                .await;
+            let srv_result = client
+                .execute(UpdateSystemConfiguration { config: server_cfg })
+                .await;
+            match enc_result.and(srv_result) {
                 Ok(_) => saved.set(true),
                 Err(e) => error.set(Some(e.user_message())),
             }
@@ -740,6 +776,65 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                                         }
                                     }
                                 }
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", r#for: "pb-min-resume-pct", "Min Resume %" }
+                            input {
+                                id: "pb-min-resume-pct",
+                                r#type: "number",
+                                class: "field-input",
+                                min: "0",
+                                max: "100",
+                                value: "{min_resume_pct}",
+                                oninput: move |e| {
+                                    if let Ok(n) = e.value().parse::<i64>() {
+                                        min_resume_pct.set(n);
+                                    }
+                                },
+                            }
+                            p { class: "field-hint",
+                                "Minimum playback position percentage to create a resume point. Below this the position resets to the start on stop. Default: 5."
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", r#for: "pb-max-resume-pct", "Max Resume %" }
+                            input {
+                                id: "pb-max-resume-pct",
+                                r#type: "number",
+                                class: "field-input",
+                                min: "0",
+                                max: "100",
+                                value: "{max_resume_pct}",
+                                oninput: move |e| {
+                                    if let Ok(n) = e.value().parse::<i64>() {
+                                        max_resume_pct.set(n);
+                                    }
+                                },
+                            }
+                            p { class: "field-hint",
+                                "Playback position percentage at which an item is marked as played. Default: 90."
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", r#for: "pb-min-resume-dur", "Min Resume Duration (seconds)" }
+                            input {
+                                id: "pb-min-resume-dur",
+                                r#type: "number",
+                                class: "field-input",
+                                min: "0",
+                                value: "{min_resume_duration_seconds}",
+                                oninput: move |e| {
+                                    if let Ok(n) = e.value().parse::<i64>() {
+                                        min_resume_duration_seconds.set(n);
+                                    }
+                                },
+                            }
+                            p { class: "field-hint",
+                                "Items shorter than this (in seconds) are never shown in continue-watching. Default: 90."
                             }
                         }
 
