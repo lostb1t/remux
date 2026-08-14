@@ -603,16 +603,28 @@ impl UserMediaState {
             ms.subtitle_idx = Some(idx);
         }
 
-        // Persist the position + stream preferences first.
-        ms.save(db)
-            .await?;
-
-        // Apply the "mark as watched" threshold only on stop events.
-        // Delegate to `media.mark_played` so that finishing an episode also
-        // propagates to the parent season / series.
+        // On stop events apply resume/played thresholds from server config.
         if let Some(runtime) = runtime_seconds {
-            if runtime > 0 && position_seconds >= (runtime * 90 / 100) {
-                let server_config = Settings::get_config_or_default(db).await;
+            let server_config = Settings::get_config_or_default(db).await;
+            let min_pct = server_config
+                .min_resume_pct
+                .unwrap_or(5);
+            let max_pct = server_config
+                .max_resume_pct
+                .unwrap_or(90);
+            let min_duration = server_config
+                .min_resume_duration_seconds
+                .unwrap_or(90);
+
+            let played = runtime > 0 && position_seconds >= runtime * max_pct / 100;
+            let no_resume = runtime > 0
+                && (runtime < min_duration
+                    || position_seconds < runtime * min_pct / 100);
+
+            if played {
+                ms.playback_position = 0;
+                ms.save(db)
+                    .await?;
                 media
                     .mark_played(db, user, true, server_config.release_date_threshold())
                     .await?;
@@ -624,7 +636,17 @@ impl UserMediaState {
                 .bind(media.id)
                 .execute(db)
                 .await?;
+            } else if no_resume {
+                ms.playback_position = 0;
+                ms.save(db)
+                    .await?;
+            } else {
+                ms.save(db)
+                    .await?;
             }
+        } else {
+            ms.save(db)
+                .await?;
         }
 
         Ok(())

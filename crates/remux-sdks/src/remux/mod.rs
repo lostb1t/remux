@@ -535,6 +535,17 @@ pub struct ServerConfiguration {
     pub remuxdb_enabled: Option<bool>,
     /// Bearer token for remuxdb submissions.
     pub remuxdb_token: Option<String>,
+    /// Minimum playback position percentage (of runtime) to create a resume point.
+    /// Below this threshold the position is reset to 0 on stop. Default: 5.
+    #[default(Some(5_i64))]
+    pub min_resume_pct: Option<i64>,
+    /// Playback position percentage (of runtime) at which an item is marked as played. Default: 90.
+    #[default(Some(90_i64))]
+    pub max_resume_pct: Option<i64>,
+    /// Minimum item runtime in seconds for resume to apply.
+    /// Items shorter than this are never shown in continue-watching. Default: 90.
+    #[default(Some(90_i64))]
+    pub min_resume_duration_seconds: Option<i64>,
 }
 
 #[derive(
