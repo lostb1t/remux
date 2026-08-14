@@ -738,15 +738,6 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         ]);
     }
 
-    // fMP4 (baseMediaDecodeTime) uses unsigned integers; negative DTS from HEVC
-    // B-frames wraps to a huge value and breaks all browsers. Shift timestamps
-    // to make DTS >= 0 for fMP4 sessions. TS segments handle negative DTS fine
-    // via the 33-bit PCR, so keep the existing "disabled" behaviour there.
-    let avoid_negative_ts = if is_hevc_copy {
-        "make_non_negative"
-    } else {
-        "disabled"
-    };
     args.extend([
         "-copyts".into(),
         "-i".into(),
@@ -754,7 +745,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             .input_url
             .clone(),
         "-avoid_negative_ts".into(),
-        avoid_negative_ts.into(),
+        "disabled".into(),
         "-max_muxing_queue_size".into(),
         "2048".into(),
     ]);
@@ -1080,11 +1071,18 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     if is_hevc_copy {
         // Apple HLS spec: HEVC must be delivered in fMP4/CMAF segments, not MPEG-TS.
         // Use just the filename for init; ffmpeg places it alongside the segments.
+        //
+        // -start_at_zero: shifts all timestamps so the first DTS = 0.
+        // movflags=+frag_discont: writes each fragment's actual decode time into
+        // MOOF::TRAF::TFDT so A/V sync is correct across discontinuities.
         args.extend([
             "-hls_segment_type".into(),
             "fmp4".into(),
             "-hls_fmp4_init_filename".into(),
             "init.mp4".into(),
+            "-start_at_zero".into(),
+            "-hls_segment_options".into(),
+            "movflags=+frag_discont".into(),
         ]);
     }
 
@@ -2409,10 +2407,11 @@ mod tests {
             Some("init.mp4")
         );
         assert_eq!(arg_after(&args, "-tag:v"), Some("hvc1"));
-        // fMP4 uses unsigned baseMediaDecodeTime; negative DTS must be shifted.
+        assert_eq!(arg_after(&args, "-avoid_negative_ts"), Some("disabled"));
+        assert!(args_contains(&args, "-start_at_zero"));
         assert_eq!(
-            arg_after(&args, "-avoid_negative_ts"),
-            Some("make_non_negative")
+            arg_after(&args, "-hls_segment_options"),
+            Some("movflags=+frag_discont")
         );
         // No DoVi range type → dovi_rpu must NOT be injected (would crash on non-HEVC/AV1)
         assert!(

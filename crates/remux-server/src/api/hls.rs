@@ -7,8 +7,9 @@ use axum::{
 };
 use axum_anyhow::ApiResult as Result;
 use axum_extra::extract::Query;
-use http::{Response, StatusCode};
+use http::{Response, StatusCode, header::HeaderMap};
 use remux_macros::get;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
@@ -792,9 +793,10 @@ pub async fn hls_segment(
     State(state): State<AppState>,
     Path((id, segment_file)): Path<(Uuid, String)>,
     Query(q): Query<api::HlsVideoQuery>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     let segment_id = strip_segment_extension(&segment_file);
-    hls_segment_inner(state, segment_id, q).await
+    hls_segment_inner(state, segment_id, q, headers).await
 }
 
 /// Segment route at the same level as main.m3u8 — browsers resolve bare
@@ -804,9 +806,10 @@ pub async fn hls_segment_flat(
     State(state): State<AppState>,
     Path((id, segment_file)): Path<(Uuid, String)>,
     Query(q): Query<api::HlsVideoQuery>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     let segment_id = strip_segment_extension(&segment_file);
-    hls_segment_inner(state, segment_id, q).await
+    hls_segment_inner(state, segment_id, q, headers).await
 }
 
 /// Jellyfin-compatible HLS segment route: /Videos/{id}/hls1/{playlistId}/{segmentFile}
@@ -815,73 +818,10 @@ pub async fn hls1_segment(
     State(state): State<AppState>,
     Path((id, _playlist_id, segment_file)): Path<(Uuid, String, String)>,
     Query(q): Query<api::HlsVideoQuery>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     let segment_id = strip_segment_extension(&segment_file);
-    hls_segment_inner(state, segment_id, q).await
-}
-
-/// Remove every `edts` box from the init.mp4 bytes.
-///
-/// ffmpeg copies the source file's edit list into the fMP4 init segment.  For
-/// HEVC content with B-frames the edit list typically starts with an ~83 ms
-/// empty edit (`media_time = -1`).  When the browser applies this edit the MSE
-/// SourceBuffer's `buffered` range begins at 83 ms instead of 0, so
-/// `video.currentTime = 0` falls before `buffered.start` and the browser fires
-/// a stall/error before playback ever starts.  Stripping the `edts` box lets
-/// the SourceBuffer report `buffered = [0, …]` so the player can seek to time 0
-/// without triggering a stall.
-fn strip_edts_from_init(mut data: Vec<u8>) -> Vec<u8> {
-    let mut out = Vec::with_capacity(data.len());
-    strip_edts_boxes(&data, 0, data.len(), &mut out, false);
-    out
-}
-
-fn strip_edts_boxes(
-    src: &[u8],
-    start: usize,
-    end: usize,
-    out: &mut Vec<u8>,
-    inside_trak: bool,
-) {
-    let mut o = start;
-    while o + 8 <= end {
-        if o + 4 > src.len() {
-            break;
-        }
-        let size =
-            u32::from_be_bytes([src[o], src[o + 1], src[o + 2], src[o + 3]]) as usize;
-        if size < 8 || o + size > src.len() {
-            break;
-        }
-        let name = &src[o + 4..o + 8];
-        if inside_trak && name == b"edts" {
-            // Drop the entire edts box (which contains the elst).
-            o += size;
-            // Also shrink the parent trak size accordingly — we do this by
-            // re-writing the trak size in `out` after recursion returns, so
-            // here we just skip and let the caller patch the size.
-            continue;
-        }
-        let containers: &[&[u8]] =
-            &[b"moov", b"trak", b"mdia", b"minf", b"stbl", b"mvex"];
-        let is_container = containers
-            .iter()
-            .any(|c| name == *c);
-        let is_trak = name == b"trak";
-        if is_container {
-            // Write placeholder size + name, then recurse, then patch size.
-            let header_start = out.len();
-            out.extend_from_slice(&src[o..o + 8]); // placeholder size + name
-            strip_edts_boxes(src, o + 8, o + size, out, inside_trak || is_trak);
-            // Patch the written size to reflect any dropped edts boxes.
-            let actual_size = (out.len() - header_start) as u32;
-            out[header_start..header_start + 4]
-                .copy_from_slice(&actual_size.to_be_bytes());
-        } else {
-            out.extend_from_slice(&src[o..o + size]);
-        }
-        o += size;
-    }
+    hls_segment_inner(state, segment_id, q, headers).await
 }
 
 fn strip_segment_extension(filename: &str) -> String {
@@ -915,10 +855,107 @@ fn get_current_transcoding_index(dir: &std::path::Path) -> Option<u32> {
     max_idx
 }
 
+/// Serve a complete on-disk file with `Content-Length` and HTTP Range support.
+///
+/// Jellyfin serves HLS init/fragments with `Content-Length` + `Accept-Ranges`.
+/// Serving them chunked without a length trips Safari's native HLS stack into
+/// `MEDIA_ERR_DECODE` on the first fMP4 segment, so we match Jellyfin's
+/// behaviour here.
+async fn serve_file_with_range(
+    path: &std::path::Path,
+    headers: &HeaderMap,
+    content_type: &str,
+) -> Result<Response<Body>> {
+    let file = tokio::fs::File::open(path).await?;
+    let file_size = file
+        .metadata()
+        .await?
+        .len();
+    let range_str = headers
+        .get(http::header::RANGE)
+        .and_then(|v| {
+            v.to_str()
+                .ok()
+        });
+
+    if let Some(range) = range_str {
+        let (start, end) = crate::stream::parse_range(range, file_size)
+            .context_bad_request("invalid Range header")?;
+        let length = end - start + 1;
+        let mut file = file;
+        file.seek(std::io::SeekFrom::Start(start))
+            .await
+            .context_bad_request("seek failed")?;
+        let body = Body::from_stream(ReaderStream::new(file.take(length)));
+        return Ok(Response::builder()
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header("Content-Type", content_type)
+            .header("Content-Length", length)
+            .header("Accept-Ranges", "bytes")
+            .header(
+                "Content-Range",
+                format!("bytes {}-{}/{}", start, end, file_size),
+            )
+            .header("Cache-Control", "public, max-age=86400")
+            .body(body)
+            .unwrap());
+    }
+
+    let body = Body::from_stream(ReaderStream::new(file));
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", content_type)
+        .header("Content-Length", file_size)
+        .header("Accept-Ranges", "bytes")
+        .header("Cache-Control", "public, max-age=86400")
+        .body(body)
+        .unwrap())
+}
+
+/// Poll until `path` exists with a non-zero size and stays unchanged across
+/// consecutive polls.
+///
+/// ffmpeg creates HLS init/segment files *before* flushing their content, so
+/// checking existence alone can serve a 0-byte init segment to the player —
+/// the browser's MSE/AVFoundation decoder can't initialize from an empty init
+/// and playback fails hard until the user re-enters (by which time the file is
+/// complete). Returns true once the file is ready (or already was).
+async fn wait_for_file_ready(
+    path: &std::path::Path,
+    timeout: std::time::Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut last_size: Option<u64> = None;
+    let mut stable = 0u32;
+    while tokio::time::Instant::now() < deadline {
+        match tokio::fs::metadata(path).await {
+            Ok(meta) if meta.len() > 0 => {
+                if Some(meta.len()) == last_size {
+                    stable += 1;
+                    if stable >= 2 {
+                        return true;
+                    }
+                } else {
+                    stable = 0;
+                }
+                last_size = Some(meta.len());
+            }
+            _ => {
+                last_size = None;
+                stable = 0;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    // Last chance: file exists and is non-empty right now.
+    matches!(tokio::fs::metadata(path).await, Ok(m) if m.len() > 0)
+}
+
 async fn hls_segment_inner(
     state: AppState,
     segment_id: String,
     q: api::HlsVideoQuery,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     let play_session_id = q
         .play_session_id
@@ -950,35 +987,25 @@ async fn hls_segment_inner(
                 .segment_path(&play_session_id, "init.mp4")
                 .with_extension("mp4"),
         };
-        // Wait briefly for ffmpeg to write the init segment.
+        // Wait for ffmpeg to write the init segment. Merely checking existence
+        // is not enough: ffmpeg creates init.mp4 before buffering its content
+        // out, so serving it in that window yields an empty init segment that
+        // breaks the browser's decoder. Wait until the file is non-empty and
+        // stable.
         if session.is_some() {
-            let mut attempts = 0;
-            while !init_path.exists() && attempts < 40 {
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                attempts += 1;
+            if !wait_for_file_ready(&init_path, std::time::Duration::from_secs(10))
+                .await
+            {
+                None::<()>.context_not_found("fMP4 init segment not ready")?;
             }
-        }
-        if !init_path.exists() {
+        } else if !init_path.exists() {
             None::<()>.context_not_found("fMP4 init segment not ready")?;
         }
         state
             .ctx
             .sessions
             .ping(&play_session_id);
-        let raw = tokio::fs::read(&init_path).await?;
-        // Strip `edts` boxes (which contain the empty-edit that shifts the
-        // presentation start to ~83 ms).  With the edit list present the MSE
-        // SourceBuffer's buffered range begins at 83 ms, so Jellyfin Web's
-        // video.currentTime = 0 falls before buffered.start and the browser
-        // reports a stall/error on the very first segment.  Without it the
-        // buffered range starts at 0 and currentTime = 0 works correctly.
-        let body = strip_edts_from_init(raw);
-        return Ok(Response::builder()
-            .status(StatusCode::OK)
-            .header("Content-Type", "video/mp4")
-            .header("Cache-Control", "public, max-age=86400")
-            .body(Body::from(body))
-            .unwrap());
+        return serve_file_with_range(&init_path, &headers, "video/mp4").await;
     }
 
     // Derive the segment path — either from the live session or from the base
@@ -1246,14 +1273,13 @@ async fn hls_segment_inner(
         }
     }
 
-    // Wait up to 60s for ffmpeg to produce the segment.
+    // Wait up to 60s for ffmpeg to produce the segment (also waiting until it
+    // is non-empty — same create-before-write race as the init segment).
     // If there's no live session (e.g. after server restart), only serve from disk.
-    if session.is_some() {
-        let mut attempts = 0;
-        while !segment_path.exists() && attempts < 120 {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            attempts += 1;
-        }
+    if session.is_some()
+        && !wait_for_file_ready(&segment_path, std::time::Duration::from_secs(60)).await
+    {
+        // fall through to the not-found error below
     }
 
     if !segment_path.exists() {
@@ -1275,10 +1301,6 @@ async fn hls_segment_inner(
         .sessions
         .ping(&play_session_id);
 
-    let file = tokio::fs::File::open(&segment_path).await?;
-    let stream = ReaderStream::new(file);
-    let body = Body::from_stream(stream);
-
     // fMP4 segments (.m4s) use video/mp4; MPEG-TS segments use video/mp2t.
     let content_type = if segment_path
         .extension()
@@ -1290,12 +1312,7 @@ async fn hls_segment_inner(
         "video/mp2t"
     };
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", content_type)
-        .header("Cache-Control", "public, max-age=86400")
-        .body(body)
-        .unwrap())
+    serve_file_with_range(&segment_path, &headers, content_type).await
 }
 
 #[cfg(test)]
