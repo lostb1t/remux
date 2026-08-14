@@ -24,6 +24,12 @@ use crate::{
     services::MediaResolveService,
 };
 
+/// How long to wait after a `playing/stopped` report before sweeping unused
+/// rqbit torrents, so a seek (which briefly detaches a session's transcode)
+/// or a quick rewatch of the same title isn't punished by an eviction that
+/// fired the instant the stop was reported.
+const TORRENT_CLEANUP_GRACE_PERIOD: Duration = Duration::from_secs(15 * 60);
+
 #[post("/sessions/logout")]
 pub async fn sessions_logout(
     State(state): State<AppState>,
@@ -199,12 +205,20 @@ pub async fn report_playback_stopped(
 
         // Sweep any rqbit torrent that was backing this session and is no
         // longer referenced by anything else, instead of waiting for the
-        // daily CleanTranscodeFolder task. Runs in the background so it
-        // doesn't delay the client's stop response.
+        // (now 4h, was 24h) CleanTranscodeFolder cron. Delayed and run in
+        // the background: a debounce grace period, not just a courtesy to
+        // the response time. `cleanup_unused` re-snapshots which torrents
+        // are active at the moment it *runs*, so firing it immediately
+        // would be able to delete a torrent that's still in use — a seek
+        // briefly detaches a session's transcode while ffmpeg restarts at
+        // the new offset, and without a delay that gap could line up with
+        // another session's stop-triggered sweep. The delay also means a
+        // quick rewatch of the same title doesn't force a full re-download.
         let ctx = state
             .ctx
             .clone();
         tokio::spawn(async move {
+            tokio::time::sleep(TORRENT_CLEANUP_GRACE_PERIOD).await;
             crate::torrent::cleanup_unused(&ctx).await;
         });
     }

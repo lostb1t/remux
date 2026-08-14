@@ -86,9 +86,10 @@ impl Task for CleanTranscodeFolderTask {
         progress.set(50.0);
 
         // Also sweep any torrents left over from sessions that ended without
-        // going through the normal stop path (e.g. a crash). The common case —
-        // cleanup right after a session stops — is handled eagerly in
-        // `api::session::report_playback_stopped`, so this is a safety net.
+        // going through the normal stop path (e.g. a crash). The common case
+        // — cleanup a while after a session stops — is handled eagerly (on a
+        // debounce delay) in `api::session::report_playback_stopped`, so
+        // this interval run is mostly a safety net.
         crate::torrent::cleanup_unused(&ctx).await;
 
         progress.set(100.0);
