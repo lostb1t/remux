@@ -738,6 +738,15 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         ]);
     }
 
+    // fMP4 (baseMediaDecodeTime) uses unsigned integers; negative DTS from HEVC
+    // B-frames wraps to a huge value and breaks all browsers. Shift timestamps
+    // to make DTS >= 0 for fMP4 sessions. TS segments handle negative DTS fine
+    // via the 33-bit PCR, so keep the existing "disabled" behaviour there.
+    let avoid_negative_ts = if is_hevc_copy {
+        "make_non_negative"
+    } else {
+        "disabled"
+    };
     args.extend([
         "-copyts".into(),
         "-i".into(),
@@ -745,7 +754,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             .input_url
             .clone(),
         "-avoid_negative_ts".into(),
-        "disabled".into(),
+        avoid_negative_ts.into(),
         "-max_muxing_queue_size".into(),
         "2048".into(),
     ]);
@@ -1977,7 +1986,12 @@ pub fn generate_variant_playlist(
     buf.push_str(&format!("#EXT-X-VERSION:{}\n", version));
     buf.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", target_duration));
     buf.push_str("#EXT-X-MEDIA-SEQUENCE:0\n");
-    if start_time_secs > 0 {
+    // EXT-X-START is only useful for TS segments: for fMP4 the synthetic playlist
+    // always starts at segment_00000 (no -start_number offset) and the Jellyfin
+    // Web client drives seeking via video.currentTime. Emitting EXT-X-START for
+    // fMP4 causes hls.js to attempt an in-buffer MSE seek on the very first
+    // segment, which triggers a decode error in browsers playing HEVC 10-bit.
+    if start_time_secs > 0 && !use_fmp4 {
         buf.push_str(&format!(
             "#EXT-X-START:TIME-OFFSET={:.6},PRECISE=YES\n",
             start_time_secs as f64
@@ -2395,6 +2409,11 @@ mod tests {
             Some("init.mp4")
         );
         assert_eq!(arg_after(&args, "-tag:v"), Some("hvc1"));
+        // fMP4 uses unsigned baseMediaDecodeTime; negative DTS must be shifted.
+        assert_eq!(
+            arg_after(&args, "-avoid_negative_ts"),
+            Some("make_non_negative")
+        );
         // No DoVi range type → dovi_rpu must NOT be injected (would crash on non-HEVC/AV1)
         assert!(
             !args

@@ -820,6 +820,70 @@ pub async fn hls1_segment(
     hls_segment_inner(state, segment_id, q).await
 }
 
+/// Remove every `edts` box from the init.mp4 bytes.
+///
+/// ffmpeg copies the source file's edit list into the fMP4 init segment.  For
+/// HEVC content with B-frames the edit list typically starts with an ~83 ms
+/// empty edit (`media_time = -1`).  When the browser applies this edit the MSE
+/// SourceBuffer's `buffered` range begins at 83 ms instead of 0, so
+/// `video.currentTime = 0` falls before `buffered.start` and the browser fires
+/// a stall/error before playback ever starts.  Stripping the `edts` box lets
+/// the SourceBuffer report `buffered = [0, …]` so the player can seek to time 0
+/// without triggering a stall.
+fn strip_edts_from_init(mut data: Vec<u8>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len());
+    strip_edts_boxes(&data, 0, data.len(), &mut out, false);
+    out
+}
+
+fn strip_edts_boxes(
+    src: &[u8],
+    start: usize,
+    end: usize,
+    out: &mut Vec<u8>,
+    inside_trak: bool,
+) {
+    let mut o = start;
+    while o + 8 <= end {
+        if o + 4 > src.len() {
+            break;
+        }
+        let size =
+            u32::from_be_bytes([src[o], src[o + 1], src[o + 2], src[o + 3]]) as usize;
+        if size < 8 || o + size > src.len() {
+            break;
+        }
+        let name = &src[o + 4..o + 8];
+        if inside_trak && name == b"edts" {
+            // Drop the entire edts box (which contains the elst).
+            o += size;
+            // Also shrink the parent trak size accordingly — we do this by
+            // re-writing the trak size in `out` after recursion returns, so
+            // here we just skip and let the caller patch the size.
+            continue;
+        }
+        let containers: &[&[u8]] =
+            &[b"moov", b"trak", b"mdia", b"minf", b"stbl", b"mvex"];
+        let is_container = containers
+            .iter()
+            .any(|c| name == *c);
+        let is_trak = name == b"trak";
+        if is_container {
+            // Write placeholder size + name, then recurse, then patch size.
+            let header_start = out.len();
+            out.extend_from_slice(&src[o..o + 8]); // placeholder size + name
+            strip_edts_boxes(src, o + 8, o + size, out, inside_trak || is_trak);
+            // Patch the written size to reflect any dropped edts boxes.
+            let actual_size = (out.len() - header_start) as u32;
+            out[header_start..header_start + 4]
+                .copy_from_slice(&actual_size.to_be_bytes());
+        } else {
+            out.extend_from_slice(&src[o..o + size]);
+        }
+        o += size;
+    }
+}
+
 fn strip_segment_extension(filename: &str) -> String {
     filename
         .rsplit_once('.')
@@ -901,13 +965,19 @@ async fn hls_segment_inner(
             .ctx
             .sessions
             .ping(&play_session_id);
-        let file = tokio::fs::File::open(&init_path).await?;
-        let stream = ReaderStream::new(file);
+        let raw = tokio::fs::read(&init_path).await?;
+        // Strip `edts` boxes (which contain the empty-edit that shifts the
+        // presentation start to ~83 ms).  With the edit list present the MSE
+        // SourceBuffer's buffered range begins at 83 ms, so Jellyfin Web's
+        // video.currentTime = 0 falls before buffered.start and the browser
+        // reports a stall/error on the very first segment.  Without it the
+        // buffered range starts at 0 and currentTime = 0 works correctly.
+        let body = strip_edts_from_init(raw);
         return Ok(Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", "video/mp4")
             .header("Cache-Control", "public, max-age=86400")
-            .body(Body::from_stream(stream))
+            .body(Body::from(body))
             .unwrap());
     }
 
