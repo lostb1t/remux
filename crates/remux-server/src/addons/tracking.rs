@@ -123,6 +123,7 @@ pub enum TrackingEventKind {
     MarkPlayed,
     MarkUnplayed,
     Favorite,
+    Rating,
 }
 
 /// One thing that happened to one item, for one user.
@@ -146,6 +147,11 @@ pub enum TrackingEvent {
     Favorite {
         is_favorite: bool,
     },
+    Rating {
+        /// The user's own 0-10 rating, or `None` when they cleared it.
+        /// Providers using a different scale rescale on the way out.
+        rating: Option<f32>,
+    },
 }
 
 impl TrackingEvent {
@@ -157,6 +163,7 @@ impl TrackingEvent {
             Self::MarkPlayed => TrackingEventKind::MarkPlayed,
             Self::MarkUnplayed => TrackingEventKind::MarkUnplayed,
             Self::Favorite { .. } => TrackingEventKind::Favorite,
+            Self::Rating { .. } => TrackingEventKind::Rating,
         }
     }
 
@@ -165,7 +172,10 @@ impl TrackingEvent {
             Self::PlaybackStart { position_ticks }
             | Self::PlaybackProgress { position_ticks, .. }
             | Self::PlaybackStop { position_ticks, .. } => Some(*position_ticks),
-            Self::MarkPlayed | Self::MarkUnplayed | Self::Favorite { .. } => None,
+            Self::MarkPlayed
+            | Self::MarkUnplayed
+            | Self::Favorite { .. }
+            | Self::Rating { .. } => None,
         }
     }
 }
@@ -297,6 +307,9 @@ pub struct TrackingCapabilities {
     pub progress_import: bool,
     pub watch_state_sync: SyncDirection,
     pub favorites: SyncDirection,
+    /// Personal 0-10 ratings. Separate from `favorites` because a provider can
+    /// take one without the other.
+    pub ratings: SyncDirection,
     pub watchlist: SyncDirection,
 }
 
@@ -313,6 +326,7 @@ impl Default for TrackingCapabilities {
             progress_import: false,
             watch_state_sync: SyncDirection::None,
             favorites: SyncDirection::None,
+            ratings: SyncDirection::None,
             watchlist: SyncDirection::None,
         }
     }
@@ -459,6 +473,9 @@ pub struct RemoteWatch {
     /// `None` when the provider does not report favourites. Without this a
     /// provider could declare `favorites: Pull` that core had no way to act on.
     pub favorite: Option<bool>,
+    /// The remote 0-10 rating, `None` when the provider does not report one.
+    /// Same reasoning as `favorite`: `ratings: Pull` needs somewhere to land.
+    pub rating: Option<f32>,
 }
 
 #[cfg(test)]
@@ -517,6 +534,7 @@ mod tests {
             TrackingEventKind::MarkPlayed,
             TrackingEventKind::MarkUnplayed,
             TrackingEventKind::Favorite,
+            TrackingEventKind::Rating,
         ] {
             let s = kind.to_string();
             assert_eq!(
@@ -562,6 +580,14 @@ mod tests {
                 TrackingEvent::Favorite { is_favorite: true },
                 TrackingEventKind::Favorite,
             ),
+            (
+                TrackingEvent::Rating { rating: Some(7.0) },
+                TrackingEventKind::Rating,
+            ),
+            (
+                TrackingEvent::Rating { rating: None },
+                TrackingEventKind::Rating,
+            ),
         ];
         for (event, want) in cases {
             assert_eq!(event.kind(), want, "wrong kind for {event:?}");
@@ -581,6 +607,10 @@ mod tests {
         assert_eq!(TrackingEvent::MarkPlayed.position_ticks(), None);
         assert_eq!(
             TrackingEvent::Favorite { is_favorite: false }.position_ticks(),
+            None
+        );
+        assert_eq!(
+            TrackingEvent::Rating { rating: Some(7.0) }.position_ticks(),
             None
         );
     }
@@ -631,6 +661,7 @@ mod tests {
         assert!(!caps.progress_import);
         assert_eq!(caps.watch_state_sync, SyncDirection::None);
         assert_eq!(caps.favorites, SyncDirection::None);
+        assert_eq!(caps.ratings, SyncDirection::None);
         assert_eq!(caps.watchlist, SyncDirection::None);
         assert!(!caps.supports(TrackingEventKind::PlaybackStop));
     }
@@ -650,8 +681,31 @@ mod tests {
             position_ticks: None,
             watched_at: None,
             favorite: Some(true),
+            rating: None,
         };
         assert_eq!(watch.favorite, Some(true));
+        assert!(!watch.watched);
+    }
+
+    /// Same reasoning for `ratings: Pull`: a rating is independent of both
+    /// watched state and favourite, so it has to survive on its own.
+    #[test]
+    fn remote_user_data_can_carry_a_rating_on_its_own() {
+        let watch = RemoteWatch {
+            ids: TrackingIds {
+                tmdb: Some(603),
+                ..Default::default()
+            },
+            season: None,
+            episode: None,
+            watched: false,
+            position_ticks: None,
+            watched_at: None,
+            favorite: None,
+            rating: Some(7.0),
+        };
+        assert_eq!(watch.rating, Some(7.0));
+        assert_eq!(watch.favorite, None);
         assert!(!watch.watched);
     }
 }
