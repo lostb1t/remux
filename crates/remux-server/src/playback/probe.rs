@@ -278,10 +278,24 @@ struct FfprobeStream {
     channels: Option<i64>,
     channel_layout: Option<String>,
     sample_rate: Option<String>,
+    pix_fmt: Option<String>,
+    bits_per_raw_sample: Option<String>,
     #[serde(default)]
     tags: HashMap<String, String>,
     #[serde(default)]
     disposition: FfprobeDisposition,
+}
+
+/// Derive bit depth from a pixel format string (e.g. "yuv420p10le" → 10, "yuv420p" → 8).
+fn bit_depth_from_pix_fmt(pix_fmt: &str) -> Option<i64> {
+    // Check for explicit bit-depth suffixes: 9, 10, 12, 14, 16
+    for depth in [16u8, 14, 12, 10, 9] {
+        if pix_fmt.contains(&depth.to_string()) {
+            return Some(depth as i64);
+        }
+    }
+    // Standard 8-bit formats have no numeric suffix
+    if !pix_fmt.is_empty() { Some(8) } else { None }
 }
 
 #[derive(Deserialize)]
@@ -614,6 +628,19 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     title: title.as_deref(),
                 };
 
+                let bit_depth = s
+                    .bits_per_raw_sample
+                    .as_deref()
+                    .and_then(|b| {
+                        b.parse::<i64>()
+                            .ok()
+                    })
+                    .filter(|&b| b > 0)
+                    .or_else(|| {
+                        s.pix_fmt
+                            .as_deref()
+                            .and_then(bit_depth_from_pix_fmt)
+                    });
                 streams.push(api::MediaStream {
                     type_: Some(api::MediaStreamType::Video),
                     index: s.index,
@@ -628,6 +655,7 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     width: meta.width,
                     height: meta.height,
                     bit_rate: bitrate,
+                    bit_depth,
                     average_frame_rate: fps
                         .map(|f| f as f32)
                         .and_then(nonzero),
@@ -1126,6 +1154,16 @@ where
 #[cfg(test)]
 mod probe_tests {
     use super::*;
+
+    #[test]
+    fn bit_depth_from_pix_fmt_known_formats() {
+        assert_eq!(bit_depth_from_pix_fmt("yuv420p10le"), Some(10));
+        assert_eq!(bit_depth_from_pix_fmt("yuv420p12le"), Some(12));
+        assert_eq!(bit_depth_from_pix_fmt("yuv444p16le"), Some(16));
+        assert_eq!(bit_depth_from_pix_fmt("yuv420p"), Some(8));
+        assert_eq!(bit_depth_from_pix_fmt("yuvj420p"), Some(8));
+        assert_eq!(bit_depth_from_pix_fmt(""), None);
+    }
     use crate::stream::{StreamDescriptor, StreamInfo};
     use remux_sdks::remux::{MediaSegments, MediaStream, MediaStreamType};
     use std::{

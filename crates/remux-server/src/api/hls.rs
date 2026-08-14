@@ -851,6 +851,69 @@ fn get_current_transcoding_index(dir: &std::path::Path) -> Option<u32> {
     max_idx
 }
 
+/// Serve a complete on-disk file with a `Content-Length` header.
+///
+/// HLS init/fragments are always fetched whole by players, so byte-range
+/// handling isn't needed — but the length header lets the browser size the
+/// response up front instead of reading a chunked stream.
+async fn serve_file_with_length(
+    path: &std::path::Path,
+    content_type: &str,
+) -> Result<Response<Body>> {
+    let file = tokio::fs::File::open(path).await?;
+    let file_size = file
+        .metadata()
+        .await?
+        .len();
+    let body = Body::from_stream(ReaderStream::new(file));
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", content_type)
+        .header("Content-Length", file_size)
+        .header("Cache-Control", "public, max-age=86400")
+        .body(body)
+        .unwrap())
+}
+
+/// Poll until `path` exists with a non-zero size and stays unchanged across
+/// consecutive polls.
+///
+/// ffmpeg creates HLS init/segment files *before* flushing their content, so
+/// checking existence alone can serve a 0-byte init segment to the player —
+/// the browser's MSE/AVFoundation decoder can't initialize from an empty init
+/// and playback fails hard until the user re-enters (by which time the file is
+/// complete). Returns true once the file is ready (or already was).
+async fn wait_for_file_ready(
+    path: &std::path::Path,
+    timeout: std::time::Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut last_size: Option<u64> = None;
+    let mut stable = 0u32;
+    while tokio::time::Instant::now() < deadline {
+        match tokio::fs::metadata(path).await {
+            Ok(meta) if meta.len() > 0 => {
+                if Some(meta.len()) == last_size {
+                    stable += 1;
+                    if stable >= 2 {
+                        return true;
+                    }
+                } else {
+                    stable = 0;
+                }
+                last_size = Some(meta.len());
+            }
+            _ => {
+                last_size = None;
+                stable = 0;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    // Last chance: file exists and is non-empty right now.
+    matches!(tokio::fs::metadata(path).await, Ok(m) if m.len() > 0)
+}
+
 async fn hls_segment_inner(
     state: AppState,
     segment_id: String,
@@ -886,29 +949,25 @@ async fn hls_segment_inner(
                 .segment_path(&play_session_id, "init.mp4")
                 .with_extension("mp4"),
         };
-        // Wait briefly for ffmpeg to write the init segment.
+        // Wait for ffmpeg to write the init segment. Merely checking existence
+        // is not enough: ffmpeg creates init.mp4 before buffering its content
+        // out, so serving it in that window yields an empty init segment that
+        // breaks the browser's decoder. Wait until the file is non-empty and
+        // stable.
         if session.is_some() {
-            let mut attempts = 0;
-            while !init_path.exists() && attempts < 40 {
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                attempts += 1;
+            if !wait_for_file_ready(&init_path, std::time::Duration::from_secs(10))
+                .await
+            {
+                None::<()>.context_not_found("fMP4 init segment not ready")?;
             }
-        }
-        if !init_path.exists() {
+        } else if !init_path.exists() {
             None::<()>.context_not_found("fMP4 init segment not ready")?;
         }
         state
             .ctx
             .sessions
             .ping(&play_session_id);
-        let file = tokio::fs::File::open(&init_path).await?;
-        let stream = ReaderStream::new(file);
-        return Ok(Response::builder()
-            .status(StatusCode::OK)
-            .header("Content-Type", "video/mp4")
-            .header("Cache-Control", "public, max-age=86400")
-            .body(Body::from_stream(stream))
-            .unwrap());
+        return serve_file_with_length(&init_path, "video/mp4").await;
     }
 
     // Derive the segment path — either from the live session or from the base
@@ -1176,14 +1235,13 @@ async fn hls_segment_inner(
         }
     }
 
-    // Wait up to 60s for ffmpeg to produce the segment.
+    // Wait up to 60s for ffmpeg to produce the segment (also waiting until it
+    // is non-empty — same create-before-write race as the init segment).
     // If there's no live session (e.g. after server restart), only serve from disk.
-    if session.is_some() {
-        let mut attempts = 0;
-        while !segment_path.exists() && attempts < 120 {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            attempts += 1;
-        }
+    if session.is_some()
+        && !wait_for_file_ready(&segment_path, std::time::Duration::from_secs(60)).await
+    {
+        // fall through to the not-found error below
     }
 
     if !segment_path.exists() {
@@ -1205,10 +1263,6 @@ async fn hls_segment_inner(
         .sessions
         .ping(&play_session_id);
 
-    let file = tokio::fs::File::open(&segment_path).await?;
-    let stream = ReaderStream::new(file);
-    let body = Body::from_stream(stream);
-
     // fMP4 segments (.m4s) use video/mp4; MPEG-TS segments use video/mp2t.
     let content_type = if segment_path
         .extension()
@@ -1220,12 +1274,7 @@ async fn hls_segment_inner(
         "video/mp2t"
     };
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", content_type)
-        .header("Cache-Control", "public, max-age=86400")
-        .body(body)
-        .unwrap())
+    serve_file_with_length(&segment_path, content_type).await
 }
 
 #[cfg(test)]
