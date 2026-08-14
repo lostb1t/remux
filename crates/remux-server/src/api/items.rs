@@ -658,14 +658,12 @@ pub async fn get_items(
 
             // Smart collection: extract stored filter rules so they are applied
             // alongside the Jellyfin query (sort, pagination, user-state, etc.).
-            let smart_filter = if matches!(
-                parent.collection_kind,
-                Some(db::CollectionKind::Smart) | Some(db::CollectionKind::Catalog)
-            ) {
-                parent.parse_smart_filter()
-            } else {
-                None
-            };
+            let smart_filter =
+                if matches!(parent.collection_kind, Some(db::CollectionKind::Smart)) {
+                    parent.parse_smart_filter()
+                } else {
+                    None
+                };
 
             let result = db::Media::get_by_jellyfin_filter(
                 &state
@@ -1774,6 +1772,34 @@ async fn item_for_user(
         )
         .await?;
     let mut base_item = api::db_media_to_item(media.clone(), false);
+
+    // When streams were actually fetched but none found, replace the
+    // listing-style stubs with a single "No streams found" stub.
+    if needs_streams
+        && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode)
+        && media
+            .sources
+            .as_deref()
+            .map_or(false, |s| s.is_empty())
+    {
+        let media_streams = media
+            .probe_data
+            .as_ref()
+            .map(|p| {
+                p.media_streams
+                    .clone()
+            })
+            .unwrap_or_default();
+        base_item.media_sources = Some(vec![api::MediaSourceInfo {
+            id: media.id,
+            e_tag: media.id,
+            name: Some("No streams found".to_string()),
+            protocol: api::MediaProtocol::File,
+            path: Some(format!("/remux/{}", media.id)),
+            media_streams,
+            ..Default::default()
+        }]);
+    }
 
     // For tracks, wrap the Source row(s) as HLS-transcoded MediaSources.
     // CDN URLs are IP-locked to the server; the client must go through the HLS pipeline.
@@ -3237,7 +3263,7 @@ fn warm_providers_cache(ctx: &crate::AppContext, media: &db::Media) {
     tokio::spawn(async move {
         let _ = ctx
             .addons
-            .fetch_subtitles(&media, &ctx.db, true, None)
+            .fetch_subtitles(&mut media, &ctx.db, true, None)
             .await;
         let _ = media
             .grandparent(&ctx.db)

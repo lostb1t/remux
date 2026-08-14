@@ -202,8 +202,11 @@ async fn create_hls_session(
             })
             .context_not_found("media source has no URL")?;
 
-        let output_dir =
-            std::path::PathBuf::from("transcode_sessions").join(&play_session_id);
+        let output_dir = state
+            .ctx
+            .sessions
+            .base_dir()
+            .join(&play_session_id);
         // Keep the API stable (no RunId in URLs) by reusing one on-disk path per
         // PlaySessionId and clearing stale segments when a transcode restarts.
         let _ = std::fs::remove_dir_all(&output_dir);
@@ -582,7 +585,13 @@ pub async fn master_hls_video(
     Query(q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     debug!("master_hls_video: item_id={}, q={:?}", id, q);
-    let (session, _) = create_hls_session(&state, &auth, id, &q).await?;
+    let (session, _) = match create_hls_session(&state, &auth, id, &q).await {
+        Ok(s) => s,
+        Err(_) => {
+            return Ok(axum::response::Redirect::temporary("/videos/no-streams")
+                .into_response());
+        }
+    };
     let session_read = session
         .read()
         .await;

@@ -1,3 +1,11 @@
+## [0.24.3](https://github.com/lostb1t/remux/compare/v0.24.2...v0.24.3) (2026-08-12)
+
+
+### Bug Fixes
+
+* serialize UUIDs without hyphens in all DTO responses for Infuse compatibility ([e293a58](https://github.com/lostb1t/remux/commit/e293a5828679d872a49d5ae808a26c1de12c98d5))
+* update test assertions to expect no-hyphen UUID format in API responses ([1f260f2](https://github.com/lostb1t/remux/commit/1f260f2d7b86a5cd4c4a3630a1e44c9f74fe3974))
+
 ## [0.24.2](https://github.com/lostb1t/remux/compare/v0.24.1...v0.24.2) (2026-08-11)
 
 

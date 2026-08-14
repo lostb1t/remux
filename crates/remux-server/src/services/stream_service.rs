@@ -170,10 +170,7 @@ impl StreamService {
         };
 
         if streams.is_empty() {
-            return Err(anyhow::anyhow!(
-                "no playable sources for {} (no streams from addon, or filtered out by grouping/stream policy)",
-                self.item_id
-            ));
+            return Ok(());
         }
         self.stream = streams
             .first()

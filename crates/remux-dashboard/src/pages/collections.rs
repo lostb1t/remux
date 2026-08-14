@@ -116,7 +116,6 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                     let col_kind_label = match col.remux.as_ref().and_then(|r| r.collection_kind.as_ref()) {
                                         Some(remux_sdks::remux::RemuxCollectionKind::Smart)   => "Smart",
                                         Some(remux_sdks::remux::RemuxCollectionKind::Manual)  => "Manual",
-                                        Some(remux_sdks::remux::RemuxCollectionKind::Catalog) => "Catalog",
                                         None => "",
                                     };
                                     rsx! {
@@ -490,7 +489,7 @@ pub fn CollectionForm(
         let current_tags = tags
             .peek()
             .clone();
-        let smart_filter_payload = if ck == "smart" || ck == "catalog" {
+        let smart_filter_payload = if ck == "smart" {
             Some(CollectionFilter {
                 match_mode: sf_match
                     .peek()
@@ -694,9 +693,6 @@ pub fn CollectionForm(
                     onchange: move |e| col_kind.set(e.value()),
                     option { value: "smart",  "Smart"  }
                     option { value: "manual", "Manual" }
-                    if col_type.read().as_str() != "collections" {
-                        option { value: "catalog", "Catalog" }
-                    }
                 }
             }
 
@@ -806,7 +802,7 @@ pub fn CollectionForm(
                 }
             }
 
-            if col_kind.read().as_str() == "smart" || col_kind.read().as_str() == "catalog" {
+            if col_kind.read().as_str() == "smart" {
                 if col_type.read().as_str() == "collections" {
                     FilterRuleEditor {
                         match_mode: sf_match,

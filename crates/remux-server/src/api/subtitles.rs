@@ -219,7 +219,7 @@ async fn subtitles_stream_inner(
 ) -> Result<impl IntoResponse> {
     // Try to resolve as an external subtitle injected during PlaybackInfo.
     // fetch_subtitles is cached (24h Stremio / SQLite Opendal) so this is cheap.
-    if let Some(item_media) = db::Media::get_by_id(
+    if let Some(mut item_media) = db::Media::get_by_id(
         &state
             .ctx
             .db,
@@ -272,7 +272,7 @@ async fn subtitles_stream_inner(
                     .ctx
                     .addons
                     .fetch_subtitles(
-                        &item_media,
+                        &mut item_media,
                         &state
                             .ctx
                             .db,
@@ -677,7 +677,7 @@ pub(crate) fn scored_external_subtitles<'a>(
 /// Inject external subtitles into a list of `MediaSourceInfo` entries.
 pub(crate) async fn inject_external_subtitles(
     ctx: &crate::AppContext,
-    subtitle_media: &crate::db::Media,
+    subtitle_media: &mut crate::db::Media,
     media_sources: &mut Vec<api::MediaSourceInfo>,
     item_id: Uuid,
     api_key: &str,

@@ -282,11 +282,14 @@ pub async fn init_app(
     let web_client = make_web_client(conn.clone());
 
     let addons = addons::AddonService::from_db(&conn, &config).await?;
+    let transcode_sessions_dir = config
+        .data_dir
+        .join("transcode_sessions");
     let ctx = AppContext {
         config,
         db: conn.clone(),
         store: Store::new_weighted(128 * 1024 * 1024),
-        sessions: playback_session::PlaybackSessionManager::new("transcode_sessions"),
+        sessions: playback_session::PlaybackSessionManager::new(transcode_sessions_dir),
         torrent: Arc::new(torrent_mgr),
         ws_tx: tokio::sync::broadcast::channel(128).0,
         default_web_client: Arc::new(tokio::sync::RwLock::new(
@@ -497,6 +500,12 @@ pub struct Config {
     pub public_url: Option<String>,
     #[serde(default = "default_activity_log_retention_days")]
     pub activity_log_retention_days: u32,
+    #[serde(default = "default_jellyfin_version")]
+    pub jellyfin_version: String,
+}
+
+fn default_jellyfin_version() -> String {
+    "10.11.8".to_string()
 }
 
 fn default_remuxdb_url() -> Option<String> {
@@ -577,6 +586,7 @@ impl Default for Config {
             remuxdb_url: Some("https://remuxdb.1632022.xyz".to_string()),
             public_url: None,
             activity_log_retention_days: default_activity_log_retention_days(),
+            jellyfin_version: default_jellyfin_version(),
         }
         .resolve()
     }
@@ -664,8 +674,8 @@ pub fn setup_logging(log_dir: Option<&std::path::Path>) {
     let file_layer = log_dir.map(|dir| {
         let appender = tracing_appender::rolling::Builder::new()
             .rotation(tracing_appender::rolling::Rotation::DAILY)
-            .filename_prefix("remux-")
-            .filename_suffix(".log")
+            .filename_prefix("remux")
+            .filename_suffix("log")
             .build(dir)
             .expect("failed to create log appender");
         fmt::layer()

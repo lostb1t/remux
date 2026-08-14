@@ -5,6 +5,7 @@ use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, Session, SessionOptions,
     SessionPersistenceConfig,
     api::{Api, TorrentIdOrHash},
+    dht::PersistentDhtConfig,
     http_api::HttpApi,
 };
 use tracing::{debug, warn};
@@ -30,6 +31,10 @@ impl TorrentManager {
                 listen_port_range: peer_port.map(|p| p..p + 10),
                 persistence: Some(SessionPersistenceConfig::Json {
                     folder: Some(cache_dir.join("rqbit")),
+                }),
+                dht_config: Some(PersistentDhtConfig {
+                    config_filename: Some(cache_dir.join("dht.json")),
+                    ..Default::default()
                 }),
                 ..Default::default()
             },
