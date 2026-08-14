@@ -7,9 +7,8 @@ use axum::{
 };
 use axum_anyhow::ApiResult as Result;
 use axum_extra::extract::Query;
-use http::{Response, StatusCode, header::HeaderMap};
+use http::{Response, StatusCode};
 use remux_macros::get;
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
@@ -793,10 +792,9 @@ pub async fn hls_segment(
     State(state): State<AppState>,
     Path((id, segment_file)): Path<(Uuid, String)>,
     Query(q): Query<api::HlsVideoQuery>,
-    headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     let segment_id = strip_segment_extension(&segment_file);
-    hls_segment_inner(state, segment_id, q, headers).await
+    hls_segment_inner(state, segment_id, q).await
 }
 
 /// Segment route at the same level as main.m3u8 — browsers resolve bare
@@ -806,10 +804,9 @@ pub async fn hls_segment_flat(
     State(state): State<AppState>,
     Path((id, segment_file)): Path<(Uuid, String)>,
     Query(q): Query<api::HlsVideoQuery>,
-    headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     let segment_id = strip_segment_extension(&segment_file);
-    hls_segment_inner(state, segment_id, q, headers).await
+    hls_segment_inner(state, segment_id, q).await
 }
 
 /// Jellyfin-compatible HLS segment route: /Videos/{id}/hls1/{playlistId}/{segmentFile}
@@ -818,10 +815,9 @@ pub async fn hls1_segment(
     State(state): State<AppState>,
     Path((id, _playlist_id, segment_file)): Path<(Uuid, String, String)>,
     Query(q): Query<api::HlsVideoQuery>,
-    headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     let segment_id = strip_segment_extension(&segment_file);
-    hls_segment_inner(state, segment_id, q, headers).await
+    hls_segment_inner(state, segment_id, q).await
 }
 
 fn strip_segment_extension(filename: &str) -> String {
@@ -855,15 +851,13 @@ fn get_current_transcoding_index(dir: &std::path::Path) -> Option<u32> {
     max_idx
 }
 
-/// Serve a complete on-disk file with `Content-Length` and HTTP Range support.
+/// Serve a complete on-disk file with a `Content-Length` header.
 ///
-/// Jellyfin serves HLS init/fragments with `Content-Length` + `Accept-Ranges`.
-/// Serving them chunked without a length trips Safari's native HLS stack into
-/// `MEDIA_ERR_DECODE` on the first fMP4 segment, so we match Jellyfin's
-/// behaviour here.
-async fn serve_file_with_range(
+/// HLS init/fragments are always fetched whole by players, so byte-range
+/// handling isn't needed — but the length header lets the browser size the
+/// response up front instead of reading a chunked stream.
+async fn serve_file_with_length(
     path: &std::path::Path,
-    headers: &HeaderMap,
     content_type: &str,
 ) -> Result<Response<Body>> {
     let file = tokio::fs::File::open(path).await?;
@@ -871,42 +865,11 @@ async fn serve_file_with_range(
         .metadata()
         .await?
         .len();
-    let range_str = headers
-        .get(http::header::RANGE)
-        .and_then(|v| {
-            v.to_str()
-                .ok()
-        });
-
-    if let Some(range) = range_str {
-        let (start, end) = crate::stream::parse_range(range, file_size)
-            .context_bad_request("invalid Range header")?;
-        let length = end - start + 1;
-        let mut file = file;
-        file.seek(std::io::SeekFrom::Start(start))
-            .await
-            .context_bad_request("seek failed")?;
-        let body = Body::from_stream(ReaderStream::new(file.take(length)));
-        return Ok(Response::builder()
-            .status(StatusCode::PARTIAL_CONTENT)
-            .header("Content-Type", content_type)
-            .header("Content-Length", length)
-            .header("Accept-Ranges", "bytes")
-            .header(
-                "Content-Range",
-                format!("bytes {}-{}/{}", start, end, file_size),
-            )
-            .header("Cache-Control", "public, max-age=86400")
-            .body(body)
-            .unwrap());
-    }
-
     let body = Body::from_stream(ReaderStream::new(file));
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", content_type)
         .header("Content-Length", file_size)
-        .header("Accept-Ranges", "bytes")
         .header("Cache-Control", "public, max-age=86400")
         .body(body)
         .unwrap())
@@ -955,7 +918,6 @@ async fn hls_segment_inner(
     state: AppState,
     segment_id: String,
     q: api::HlsVideoQuery,
-    headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     let play_session_id = q
         .play_session_id
@@ -1005,7 +967,7 @@ async fn hls_segment_inner(
             .ctx
             .sessions
             .ping(&play_session_id);
-        return serve_file_with_range(&init_path, &headers, "video/mp4").await;
+        return serve_file_with_length(&init_path, "video/mp4").await;
     }
 
     // Derive the segment path — either from the live session or from the base
@@ -1312,7 +1274,7 @@ async fn hls_segment_inner(
         "video/mp2t"
     };
 
-    serve_file_with_range(&segment_path, &headers, content_type).await
+    serve_file_with_length(&segment_path, content_type).await
 }
 
 #[cfg(test)]
