@@ -3010,7 +3010,9 @@ pub struct ProviderIds {
 
 #[dto]
 pub struct UserItemDataDto {
-    pub rating: Option<f32>,
+    /// Jellyfin's `UserItemData.Rating`: a 0-10 double, with `Likes` derived
+    /// from it rather than sent separately.
+    pub rating: Option<f64>,
     #[default(false)]
     pub played: bool,
     pub last_played_date: Option<DateTime<Utc>>,

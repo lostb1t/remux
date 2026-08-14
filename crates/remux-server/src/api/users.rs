@@ -10,7 +10,7 @@ use axum::{
 };
 use axum_extra::extract::Query;
 use http::StatusCode;
-use remux_macros::{delete, get, post};
+use remux_macros::{delete, get, post, query};
 use serde::Deserialize;
 use sqlx::Row;
 use uuid::Uuid;
@@ -556,6 +556,121 @@ pub async fn unmark_played(
             true,
         )
         .await?;
+    Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
+}
+
+#[query]
+pub struct RatingQuery {
+    /// Jellyfin's shorthand: true stores 10, false stores 1, absent clears it.
+    pub likes: Option<bool>,
+    /// Explicit 0-10 score. Wins over `likes` when both are given.
+    pub rating: Option<f64>,
+}
+
+impl RatingQuery {
+    /// The score to store, or `None` to clear.
+    fn parse(&self) -> Result<Option<db::UserRating>> {
+        match self.rating {
+            Some(r) => Ok(Some(
+                db::UserRating::try_from(r)
+                    .context_bad_request("rating must be between 0 and 10")?,
+            )),
+            None => Ok(self
+                .likes
+                .map(db::UserRating::from_likes)),
+        }
+    }
+}
+
+/// Jellyfin's /Rating endpoint is a shorthand over the 0-10 `Rating`, writing
+/// 10 or 1 rather than a separate field.
+#[post("/useritems/{id}/rating")]
+pub async fn update_item_rating(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path(id): Path<Uuid>,
+    Query(q): Query<RatingQuery>,
+) -> Result<impl IntoResponse> {
+    let media = MediaResolveService::resolve_item(id, &state.ctx)
+        .await?
+        .context_not_found("not found")?;
+    let ms = db::UserMediaState::set_rating(
+        &state
+            .ctx
+            .db,
+        &user,
+        &media,
+        q.parse()?,
+    )
+    .await?;
+    Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
+}
+
+#[delete("/useritems/{id}/rating")]
+pub async fn delete_item_rating(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    let media = MediaResolveService::resolve_item(id, &state.ctx)
+        .await?
+        .context_not_found("not found")?;
+    let ms = db::UserMediaState::set_rating(
+        &state
+            .ctx
+            .db,
+        &user,
+        &media,
+        None,
+    )
+    .await?;
+    Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
+}
+
+#[post("/users/{user_id}/items/{id}/rating")]
+pub async fn update_item_rating_legacy(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path((_, id)): Path<(Uuid, Uuid)>,
+    Query(q): Query<RatingQuery>,
+) -> Result<impl IntoResponse> {
+    let media = MediaResolveService::resolve_item(id, &state.ctx)
+        .await?
+        .context_not_found("not found")?;
+    let ms = db::UserMediaState::set_rating(
+        &state
+            .ctx
+            .db,
+        &user,
+        &media,
+        q.parse()?,
+    )
+    .await?;
+    Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
+}
+
+#[delete("/users/{user_id}/items/{id}/rating")]
+pub async fn delete_item_rating_legacy(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path((_, id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    let media = MediaResolveService::resolve_item(id, &state.ctx)
+        .await?
+        .context_not_found("not found")?;
+    let ms = db::UserMediaState::set_rating(
+        &state
+            .ctx
+            .db,
+        &user,
+        &media,
+        None,
+    )
+    .await?;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -2981,5 +3096,220 @@ mod e2e_tests {
         assert_eq!(body["Configuration"]["SubtitleLanguagePreference"], "jpn");
         assert_eq!(body["Configuration"]["SubtitleMode"], "Always");
         assert_eq!(body["Configuration"]["DisplayMissingEpisodes"], true);
+    }
+
+    #[tokio::test]
+    async fn rating_endpoint_stores_jellyfin_like_values_and_derives_likes() {
+        let (server, ctx, token) = authenticated_server().await;
+        let item = insert_test_source(&ctx.0).await;
+        let auth = || {
+            (
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+        };
+
+        // Jellyfin's /Rating endpoint is a shorthand over the 0-10 Rating: a
+        // like stores 10, a dislike stores 1, and Likes is derived at 6.5.
+        let resp = server
+            .post(&format!("/useritems/{}/rating?likes=true", item.id))
+            .add_header(auth().0, auth().1)
+            .await;
+        let body: serde_json::Value = resp.json();
+        assert_eq!(body["Rating"], 10.0);
+        assert_eq!(body["Likes"], true);
+
+        let resp = server
+            .post(&format!("/useritems/{}/rating?likes=false", item.id))
+            .add_header(auth().0, auth().1)
+            .await;
+        let body: serde_json::Value = resp.json();
+        assert_eq!(body["Rating"], 1.0);
+        assert_eq!(body["Likes"], false);
+    }
+
+    #[tokio::test]
+    async fn deleting_a_rating_clears_both_rating_and_likes() {
+        let (server, ctx, token) = authenticated_server().await;
+        let item = insert_test_source(&ctx.0).await;
+        let auth = || {
+            (
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+        };
+
+        server
+            .post(&format!("/useritems/{}/rating?likes=true", item.id))
+            .add_header(auth().0, auth().1)
+            .await;
+        let resp = server
+            .delete(&format!("/useritems/{}/rating", item.id))
+            .add_header(auth().0, auth().1)
+            .await;
+        let body: serde_json::Value = resp.json();
+        assert!(body["Rating"].is_null());
+        assert!(body["Likes"].is_null());
+    }
+
+    #[tokio::test]
+    async fn a_rating_survives_a_reload() {
+        let (server, ctx, token) = authenticated_server().await;
+        let item = insert_test_source(&ctx.0).await;
+        let auth = || {
+            (
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+        };
+
+        server
+            .post(&format!("/useritems/{}/rating?likes=true", item.id))
+            .add_header(auth().0, auth().1)
+            .await;
+
+        // Read it back through the item endpoint rather than the write's
+        // response, so a column that never persisted would be caught.
+        let resp = server
+            .get(&format!("/items/{}", item.id))
+            .add_header(auth().0, auth().1)
+            .await;
+        let body: serde_json::Value = resp.json();
+        assert_eq!(body["UserData"]["Rating"], 10.0);
+        assert_eq!(body["UserData"]["Likes"], true);
+    }
+
+    #[tokio::test]
+    async fn a_user_cannot_rate_another_users_item() {
+        let (server, _ctx, token) = authenticated_server().await;
+        let other = Uuid::new_v4();
+        let resp = server
+            .post(&format!(
+                "/users/{}/items/{}/rating?likes=true",
+                other,
+                Uuid::new_v4()
+            ))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+            .expect_failure()
+            .await;
+        assert_ne!(resp.status_code(), http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn an_explicit_rating_is_stored_and_beats_likes() {
+        let (server, ctx, token) = authenticated_server().await;
+        let item = insert_test_source(&ctx.0).await;
+        let auth = || {
+            (
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+        };
+
+        let resp = server
+            .post(&format!("/useritems/{}/rating?rating=7", item.id))
+            .add_header(auth().0, auth().1)
+            .await;
+        let body: serde_json::Value = resp.json();
+        assert_eq!(body["Rating"], 7.0);
+        // 7 is above the 6.5 threshold, so it reads as liked.
+        assert_eq!(body["Likes"], true);
+
+        // When both are given, rating wins.
+        let resp = server
+            .post(&format!(
+                "/useritems/{}/rating?likes=true&rating=3",
+                item.id
+            ))
+            .add_header(auth().0, auth().1)
+            .await;
+        let body: serde_json::Value = resp.json();
+        assert_eq!(body["Rating"], 3.0);
+        assert_eq!(body["Likes"], false);
+    }
+
+    /// Range and threshold boundaries are pinned as unit tests on
+    /// [`db::UserRating`]; this covers the endpoint rejecting rather than storing.
+    #[tokio::test]
+    async fn ratings_outside_the_range_are_rejected_with_400() {
+        let (server, ctx, token) = authenticated_server().await;
+        let item = insert_test_source(&ctx.0).await;
+
+        for bad in [
+            "-0.000000000000001",
+            "-1",
+            "10.000000000000002",
+            "11",
+            "NaN",
+            "inf",
+            "-inf",
+            "abc",
+        ] {
+            let resp = server
+                .post(&format!("/useritems/{}/rating?rating={bad}", item.id))
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+                )
+                .expect_failure()
+                .await;
+            assert_eq!(
+                resp.status_code(),
+                http::StatusCode::BAD_REQUEST,
+                "rating={bad} should be rejected"
+            );
+        }
+
+        // A rejected write must not have stored anything.
+        let resp = server
+            .get(&format!("/items/{}", item.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+            .await;
+        let body: serde_json::Value = resp.json();
+        assert!(body["UserData"]["Rating"].is_null());
+    }
+
+    #[tokio::test]
+    async fn the_boundary_rating_values_are_accepted() {
+        let (server, ctx, token) = authenticated_server().await;
+        let item = insert_test_source(&ctx.0).await;
+        let auth = || {
+            (
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+        };
+
+        for (value, expect_liked) in [
+            ("0", false),
+            ("6.499999999999999", false),
+            ("6.5", true),
+            ("10", true),
+        ] {
+            let resp = server
+                .post(&format!("/useritems/{}/rating?rating={value}", item.id))
+                .add_header(auth().0, auth().1)
+                .await;
+            let body: serde_json::Value = resp.json();
+            assert_eq!(
+                body["Rating"]
+                    .as_f64()
+                    .unwrap(),
+                value
+                    .parse::<f64>()
+                    .unwrap(),
+                "rating={value} was not stored as sent"
+            );
+            assert_eq!(
+                body["Likes"], expect_liked,
+                "rating={value} derived the wrong Likes"
+            );
+        }
     }
 }

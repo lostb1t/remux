@@ -273,6 +273,8 @@ pub fn db_state_to_dto(
             .unwrap_or(0),
         play_count: state.play_count as i32,
         is_favorite: state.favorite,
+        rating: state.rating,
+        likes: state.likes(),
         // Jellyfin omits PlayedPercentage when it is 0
         played_percentage: played_percentage.filter(|&p| p > 0.0),
         unplayed_item_count: media.unplayed_item_count,

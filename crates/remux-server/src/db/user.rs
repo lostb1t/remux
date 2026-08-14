@@ -419,6 +419,57 @@ pub struct UserMediaState {
     pub last_played_at: Option<NaiveDateTime>,
     pub subtitle_idx: Option<i64>,
     pub audio_idx: Option<i64>,
+    /// Set via [`UserMediaState::set_rating`] so it only holds parsed [`UserRating`]s.
+    pub rating: Option<f64>,
+}
+
+/// A personal rating on Jellyfin's 0-10 scale. Jellyfin stores no `Likes`
+/// field, deriving it from this at [`UserRating::LIKE_THRESHOLD`].
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct UserRating(f64);
+
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+pub enum UserRatingError {
+    #[error("rating must be a finite number")]
+    NotFinite,
+    #[error("rating must be between 0 and 10")]
+    OutOfRange(f64),
+}
+
+impl UserRating {
+    /// Jellyfin's `UserItemData.MinLikeValue`.
+    pub const LIKE_THRESHOLD: f64 = 6.5;
+    pub const MIN: f64 = 0.0;
+    pub const MAX: f64 = 10.0;
+
+    /// Jellyfin's `Likes` setter: a like is 10, a dislike is 1.
+    pub fn from_likes(likes: bool) -> Self {
+        Self(if likes { 10.0 } else { 1.0 })
+    }
+
+    pub fn value(self) -> f64 {
+        self.0
+    }
+
+    pub fn likes(self) -> bool {
+        self.0 >= Self::LIKE_THRESHOLD
+    }
+}
+
+impl TryFrom<f64> for UserRating {
+    type Error = UserRatingError;
+
+    fn try_from(value: f64) -> std::result::Result<Self, Self::Error> {
+        // NaN needs its own arm: every comparison against it is false, so a
+        // bare range check would pass it through to the database.
+        if !value.is_finite() {
+            return Err(UserRatingError::NotFinite);
+        }
+        if !(Self::MIN..=Self::MAX).contains(&value) {
+            return Err(UserRatingError::OutOfRange(value));
+        }
+        Ok(Self(value))
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -503,6 +554,26 @@ impl UserMediaState {
         })
     }
 
+    /// Set or clear the personal rating.
+    pub async fn set_rating(
+        db: &SqlitePool,
+        user: &User,
+        media: &super::Media,
+        rating: Option<UserRating>,
+    ) -> Result<Self> {
+        let mut ms = Self::get_or_new(db, user, media).await?;
+        ms.rating = rating.map(UserRating::value);
+        ms.save(db)
+            .await?;
+        Ok(ms)
+    }
+
+    /// Jellyfin does not persist `Likes`; it derives it from the rating.
+    pub fn likes(&self) -> Option<bool> {
+        self.rating
+            .map(|r| r >= UserRating::LIKE_THRESHOLD)
+    }
+
     /// Persist playback position (and optionally stream-selection preferences)
     /// for a user/media pair.
     ///
@@ -579,9 +650,10 @@ impl UserMediaState {
                 playback_position,
                 last_played_at,
                 subtitle_idx,
-                audio_idx
+                audio_idx,
+                rating
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
             ON CONFLICT(user_id, media_id)
             DO UPDATE SET
                 media_raw = excluded.media_raw,
@@ -592,7 +664,8 @@ impl UserMediaState {
                 playback_position = excluded.playback_position,
                 last_played_at = excluded.last_played_at,
                 subtitle_idx = excluded.subtitle_idx,
-                audio_idx = excluded.audio_idx
+                audio_idx = excluded.audio_idx,
+                rating = excluded.rating
             "#,
         )
         .bind(self.user_id)
@@ -606,6 +679,7 @@ impl UserMediaState {
         .bind(now)
         .bind(self.subtitle_idx)
         .bind(self.audio_idx)
+        .bind(self.rating)
         .execute(db)
         .await?;
 
@@ -884,5 +958,112 @@ impl FromRequestParts<crate::AppState> for User {
         .await
         .map_err(|e| anyhow!(e).context_internal("db error"))?
         .context_not_found("user not found")
+    }
+}
+
+#[cfg(test)]
+mod rating_tests {
+    use super::*;
+
+    /// The representable value immediately below the threshold, so the `>=`
+    /// is pinned rather than merely exercised.
+    fn just_under_threshold() -> f64 {
+        UserRating::LIKE_THRESHOLD.next_down()
+    }
+
+    #[test]
+    fn the_range_bounds_are_inclusive() {
+        for v in [
+            UserRating::MIN,
+            0.5,
+            UserRating::LIKE_THRESHOLD,
+            9.5,
+            UserRating::MAX,
+        ] {
+            assert_eq!(
+                UserRating::try_from(v).map(UserRating::value),
+                Ok(v),
+                "{v} should be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn values_outside_the_range_are_rejected() {
+        for v in [
+            UserRating::MIN.next_down(),
+            -1.0,
+            UserRating::MAX.next_up(),
+            11.0,
+            f64::MIN,
+            f64::MAX,
+        ] {
+            assert_eq!(
+                UserRating::try_from(v),
+                Err(UserRatingError::OutOfRange(v)),
+                "{v} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn non_finite_values_are_rejected() {
+        for v in [f64::NAN, -f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                UserRating::try_from(v),
+                Err(UserRatingError::NotFinite),
+                "{v} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn negative_zero_is_in_range() {
+        let r = UserRating::try_from(-0.0).unwrap();
+        assert_eq!(r.value(), 0.0);
+        assert!(!r.likes());
+    }
+
+    #[test]
+    fn likes_flips_at_the_threshold() {
+        assert!(
+            !UserRating::try_from(UserRating::MIN)
+                .unwrap()
+                .likes()
+        );
+        assert!(
+            !UserRating::try_from(just_under_threshold())
+                .unwrap()
+                .likes()
+        );
+        assert!(
+            UserRating::try_from(UserRating::LIKE_THRESHOLD)
+                .unwrap()
+                .likes()
+        );
+        assert!(
+            UserRating::try_from(UserRating::MAX)
+                .unwrap()
+                .likes()
+        );
+    }
+
+    #[test]
+    fn the_likes_shorthand_writes_jellyfins_values() {
+        assert_eq!(UserRating::from_likes(true).value(), 10.0);
+        assert_eq!(UserRating::from_likes(false).value(), 1.0);
+        assert!(UserRating::from_likes(true).likes());
+        assert!(!UserRating::from_likes(false).likes());
+    }
+
+    #[test]
+    fn likes_is_derived_from_the_stored_column() {
+        let state = |rating| UserMediaState {
+            rating,
+            ..Default::default()
+        };
+        assert_eq!(state(None).likes(), None);
+        assert_eq!(state(Some(just_under_threshold())).likes(), Some(false));
+        assert_eq!(state(Some(UserRating::LIKE_THRESHOLD)).likes(), Some(true));
     }
 }
