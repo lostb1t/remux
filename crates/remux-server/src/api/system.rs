@@ -45,7 +45,11 @@ pub async fn system_info_public(
             .is_startup_wizard_completed
             .unwrap_or(false),
         // some clients dont like adding a suffix like "-remux"
-        version: "10.11.8".to_string(),
+        version: state
+            .ctx
+            .config
+            .jellyfin_version
+            .clone(),
         remux_version: env!("CARGO_PKG_VERSION").to_string(),
         id: server_id(),
         remux_started_at: Some(
@@ -813,7 +817,11 @@ pub async fn system_info(
         id: Some(server_id()),
         server_name: config.server_name,
         product_name: "Jellyfin Server".to_string(),
-        version: "10.11.8".to_string(),
+        version: state
+            .ctx
+            .config
+            .jellyfin_version
+            .clone(),
         remux_version: env!("CARGO_PKG_VERSION").to_string(),
         can_self_restart: Some(true),
         has_pending_restart: false,
@@ -868,7 +876,7 @@ mod test {
             "LocalAddress": "",
             "ServerName": "Remux",
             "ProductName": "Jellyfin Server",
-            "Version": "10.11.8",
+            "Version": crate::default_jellyfin_version(),
             "RemuxVersion": env!("CARGO_PKG_VERSION"),
             "StartupWizardCompleted": true,
         }));

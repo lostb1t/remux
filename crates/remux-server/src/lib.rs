@@ -477,6 +477,12 @@ pub struct Config {
     pub remuxdb_url: Option<String>,
     #[serde(default = "default_activity_log_retention_days")]
     pub activity_log_retention_days: u32,
+    #[serde(default = "default_jellyfin_version")]
+    pub jellyfin_version: String,
+}
+
+fn default_jellyfin_version() -> String {
+    "10.11.8".to_string()
 }
 
 fn default_remuxdb_url() -> Option<String> {
@@ -556,6 +562,7 @@ impl Default for Config {
             trakt_base_url: default_trakt_base_url(),
             remuxdb_url: Some("https://remuxdb.1632022.xyz".to_string()),
             activity_log_retention_days: default_activity_log_retention_days(),
+            jellyfin_version: default_jellyfin_version(),
         }
         .resolve()
     }
@@ -643,8 +650,8 @@ pub fn setup_logging(log_dir: Option<&std::path::Path>) {
     let file_layer = log_dir.map(|dir| {
         let appender = tracing_appender::rolling::Builder::new()
             .rotation(tracing_appender::rolling::Rotation::DAILY)
-            .filename_prefix("remux-")
-            .filename_suffix(".log")
+            .filename_prefix("remux")
+            .filename_suffix("log")
             .build(dir)
             .expect("failed to create log appender");
         fmt::layer()
