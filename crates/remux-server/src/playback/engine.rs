@@ -1071,11 +1071,18 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     if is_hevc_copy {
         // Apple HLS spec: HEVC must be delivered in fMP4/CMAF segments, not MPEG-TS.
         // Use just the filename for init; ffmpeg places it alongside the segments.
+        //
+        // -start_at_zero: shifts all timestamps so the first DTS = 0.
+        // movflags=+frag_discont: writes each fragment's actual decode time into
+        // MOOF::TRAF::TFDT so A/V sync is correct across discontinuities.
         args.extend([
             "-hls_segment_type".into(),
             "fmp4".into(),
             "-hls_fmp4_init_filename".into(),
             "init.mp4".into(),
+            "-start_at_zero".into(),
+            "-hls_segment_options".into(),
+            "movflags=+frag_discont".into(),
         ]);
     }
 
@@ -1977,7 +1984,12 @@ pub fn generate_variant_playlist(
     buf.push_str(&format!("#EXT-X-VERSION:{}\n", version));
     buf.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", target_duration));
     buf.push_str("#EXT-X-MEDIA-SEQUENCE:0\n");
-    if start_time_secs > 0 {
+    // EXT-X-START is only useful for TS segments: for fMP4 the synthetic playlist
+    // always starts at segment_00000 (no -start_number offset) and the Jellyfin
+    // Web client drives seeking via video.currentTime. Emitting EXT-X-START for
+    // fMP4 causes hls.js to attempt an in-buffer MSE seek on the very first
+    // segment, which triggers a decode error in browsers playing HEVC 10-bit.
+    if start_time_secs > 0 && !use_fmp4 {
         buf.push_str(&format!(
             "#EXT-X-START:TIME-OFFSET={:.6},PRECISE=YES\n",
             start_time_secs as f64
@@ -2395,6 +2407,12 @@ mod tests {
             Some("init.mp4")
         );
         assert_eq!(arg_after(&args, "-tag:v"), Some("hvc1"));
+        assert_eq!(arg_after(&args, "-avoid_negative_ts"), Some("disabled"));
+        assert!(args_contains(&args, "-start_at_zero"));
+        assert_eq!(
+            arg_after(&args, "-hls_segment_options"),
+            Some("movflags=+frag_discont")
+        );
         // No DoVi range type → dovi_rpu must NOT be injected (would crash on non-HEVC/AV1)
         assert!(
             !args
