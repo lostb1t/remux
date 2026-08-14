@@ -1731,6 +1731,51 @@ impl AddonService {
             .await
             .ok();
 
+        // Central Deezer ID resolution for music: if a Track/Album has no Deezer
+        // id, search Deezer by artist + title/album and record the ids (mirroring
+        // IMDB resolution for movies). This is addon-agnostic — local music, yt-dlp
+        // imports, anything. Runs before addon dispatch so the Deezer meta addon
+        // (which requires deezer ids) can then enrich with artwork/genres. The
+        // artist name is looked up from the parent/grandparent row since it isn't
+        // preloaded here.
+        if matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
+            && (media
+                .external_ids
+                .deezer_track
+                .is_none()
+                || media
+                    .external_ids
+                    .deezer_album
+                    .is_none())
+        {
+            let artist_row_id = if media.kind == db::MediaKind::Track {
+                media.grandparent_id
+            } else {
+                media.parent_id
+            };
+            let artist_name: Option<String> = match artist_row_id {
+                Some(id) => sqlx::query_scalar("SELECT title FROM media WHERE id = ?")
+                    .bind(id)
+                    .fetch_optional(&ctx.db)
+                    .await
+                    .ok()
+                    .flatten(),
+                None => media
+                    .external_ids
+                    .artist_name
+                    .clone(),
+            };
+            if let Some(name) = artist_name {
+                // resolve_music_deezer's search query reads the artist from the
+                // in-memory grandparent stub.
+                let mut gp = db::Media::default();
+                gp.title = name;
+                media.grandparent = Some(Box::new(gp));
+            }
+            crate::services::resolve::MediaResolveService::resolve_music_deezer(media)
+                .await;
+        }
+
         let applicable = self
             .addons_for::<dyn MetaAddon>(media, &ctx.db, None)
             .await;
