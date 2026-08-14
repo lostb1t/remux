@@ -19,10 +19,10 @@ impl Task for CleanTranscodeFolderTask {
         "Clean Transcode Folder"
     }
     fn description(&self) -> &str {
-        "Deletes temporary files left over from transcoding sessions."
+        "Deletes temporary files left over from transcoding sessions, and orphaned Torznab/rqbit torrent downloads no longer referenced by an active session."
     }
     fn short_description(&self) -> &str {
-        "Deletes leftover temp transcode files"
+        "Deletes leftover transcode temp files and orphaned torrent downloads"
     }
     fn category(&self) -> TaskCategory {
         TaskCategory::Maintenance
@@ -85,36 +85,11 @@ impl Task for CleanTranscodeFolderTask {
 
         progress.set(50.0);
 
-        // Collect torrent IDs currently being streamed by active sessions so we
-        // don't pull the rug out from under an in-progress playback.
-        let mut active_torrent_ids = HashSet::new();
-        for session in ctx
-            .sessions
-            .get_all()
-        {
-            if let Some(tc) = session.transcode {
-                let input_url = tc
-                    .read()
-                    .await
-                    .input_url
-                    .clone();
-                if let Some(id) =
-                    crate::torrent::TorrentManager::torrent_id_from_url(&input_url)
-                {
-                    active_torrent_ids.insert(id);
-                }
-            }
-        }
-
-        let deleted = ctx
-            .torrent
-            .delete_unused_with_files(&active_torrent_ids)
-            .await
-            .unwrap_or_else(|e| {
-                warn!("failed to clean torrents: {e:#}");
-                0
-            });
-        info!(deleted, "cleaned torrent sessions");
+        // Also sweep any torrents left over from sessions that ended without
+        // going through the normal stop path (e.g. a crash). The common case —
+        // cleanup right after a session stops — is handled eagerly in
+        // `api::session::report_playback_stopped`, so this is a safety net.
+        crate::torrent::cleanup_unused(&ctx).await;
 
         progress.set(100.0);
         Ok(())

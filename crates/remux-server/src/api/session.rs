@@ -196,6 +196,17 @@ pub async fn report_playback_stopped(
             .ctx
             .ws_tx
             .send(crate::ws::WsEvent::SessionsChanged);
+
+        // Sweep any rqbit torrent that was backing this session and is no
+        // longer referenced by anything else, instead of waiting for the
+        // daily CleanTranscodeFolder task. Runs in the background so it
+        // doesn't delay the client's stop response.
+        let ctx = state
+            .ctx
+            .clone();
+        tokio::spawn(async move {
+            crate::torrent::cleanup_unused(&ctx).await;
+        });
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }

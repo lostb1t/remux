@@ -217,6 +217,40 @@ impl TorrentManager {
     }
 }
 
+/// Delete any rqbit-managed torrent that isn't backing a currently active
+/// playback session. Safe to call any time (e.g. right after a session ends,
+/// not just from the daily "Clean Transcode Folder" task) since it always
+/// recomputes the active set from live sessions first.
+pub async fn cleanup_unused(ctx: &crate::AppContext) -> usize {
+    let mut active_torrent_ids = std::collections::HashSet::new();
+    for session in ctx
+        .sessions
+        .get_all()
+    {
+        if let Some(tc) = session.transcode {
+            let input_url = tc
+                .read()
+                .await
+                .input_url
+                .clone();
+            if let Some(id) = TorrentManager::torrent_id_from_url(&input_url) {
+                active_torrent_ids.insert(id);
+            }
+        }
+    }
+
+    let deleted = ctx
+        .torrent
+        .delete_unused_with_files(&active_torrent_ids)
+        .await
+        .unwrap_or_else(|e| {
+            warn!("failed to clean torrents: {e:#}");
+            0
+        });
+    debug!(deleted, "cleaned torrent sessions");
+    deleted
+}
+
 /// Extract the `file=` query parameter we encode into our magnet URIs.
 fn parse_file_param(magnet: &str) -> Option<String> {
     let query = magnet
