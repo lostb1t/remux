@@ -107,6 +107,7 @@ async fn prepare_squash(pool: &SqlitePool) -> Result<()> {
 pub async fn migrate(pool: &SqlitePool) -> Result<()> {
     prepare_squash(pool).await?;
     sqlx::migrate!("./migrations")
+        .set_ignore_missing(true)
         .run(pool)
         .await?;
 
