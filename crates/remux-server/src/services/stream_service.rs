@@ -109,6 +109,9 @@ impl StreamService {
             .await
             .inspect_err(|e| tracing::error!("refresh_streams failed: {e:#}"));
 
+        let root_kind = root
+            .kind
+            .clone();
         let db_streams = root
             .streams(
                 &self
@@ -147,6 +150,9 @@ impl StreamService {
             .filter(|sf| {
                 !sf.rules
                     .is_empty()
+            })
+            .filter(|_| {
+                matches!(root_kind, db::MediaKind::Movie | db::MediaKind::Episode)
             }) {
             let before = streams.len();
             let filtered = db::apply_stream_filter(sf, streams);
