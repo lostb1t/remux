@@ -130,6 +130,8 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
         priority: addon.priority,
         system: addon.system,
         is_default: addon.is_default,
+        http_redirect_stream: addon.http_redirect_stream,
+        service_filter: addon.service_filter,
         created_at: addon.created_at,
         updated_at: addon.updated_at,
     }
@@ -328,6 +330,8 @@ pub async fn create_addon(
         updated_at: now,
         system: false,
         is_default: payload.is_default,
+        http_redirect_stream: false,
+        service_filter: vec![],
     };
 
     addon
@@ -418,6 +422,12 @@ pub async fn update_addon(
     }
     if let Some(is_default) = payload.is_default {
         addon.is_default = is_default;
+    }
+    if let Some(http_redirect_stream) = payload.http_redirect_stream {
+        addon.http_redirect_stream = http_redirect_stream;
+    }
+    if let Some(service_filter) = payload.service_filter {
+        addon.service_filter = service_filter;
     }
     addon.updated_at = Utc::now().naive_utc();
 

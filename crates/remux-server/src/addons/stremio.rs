@@ -1529,6 +1529,15 @@ async fn stremio_streams(
                 nzb_url,
                 torrent_info_hash,
                 torrent_file_idx,
+                service_id: sd
+                    .and_then(|d| {
+                        d.service
+                            .as_ref()
+                    })
+                    .and_then(|s| {
+                        s.id.as_deref()
+                    })
+                    .map(remux_sdks::remux::ServiceId::new),
                 probe_data: s
                     .behavior_hints
                     .as_ref()

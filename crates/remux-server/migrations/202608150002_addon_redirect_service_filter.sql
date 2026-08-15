@@ -1,0 +1,2 @@
+ALTER TABLE addons ADD COLUMN http_redirect_stream BOOLEAN NOT NULL DEFAULT 0;
+ALTER TABLE addons ADD COLUMN service_filter TEXT NOT NULL DEFAULT '[]';

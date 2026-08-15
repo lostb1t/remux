@@ -2456,6 +2456,15 @@ impl AddonService {
                         if streams.is_empty() {
                             debug!(addon = %name, ?elapsed, "addon: no streams");
                         } else {
+                            let sf = &r.row.service_filter;
+                            if !sf.is_empty() {
+                                streams.retain(|s| {
+                                    s.service_id
+                                        .as_ref()
+                                        .map(|id| sf.contains(id))
+                                        .unwrap_or(true)
+                                });
+                            }
                             debug!(addon = %name, count = streams.len(), ?elapsed, "addon: streams found");
                             let addon_id = r.row.id;
                             for s in &mut streams {

@@ -778,6 +778,23 @@ async fn videos_stream_inner(
     if q.static_
         .unwrap_or(false)
     {
+        // If the producing addon has http_redirect_stream enabled, issue a 302
+        // directly to the stream URL instead of proxying bytes through remux.
+        if let (Some(addon_id), Some(url)) = (si.addon_id, descriptor.as_http_url()) {
+            if state
+                .ctx
+                .addons
+                .get(addon_id)
+                .map(|a| {
+                    a.row
+                        .http_redirect_stream
+                })
+                .unwrap_or(false)
+            {
+                return Ok(axum::response::Redirect::temporary(url).into_response());
+            }
+        }
+
         let resp = if let Some(addon_id) = descriptor.addon_id() {
             let addon = state
                 .ctx
