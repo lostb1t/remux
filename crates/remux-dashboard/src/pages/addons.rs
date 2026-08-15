@@ -270,7 +270,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                             edit_types.set(type_set);
                                                             edit_is_default.set(a.is_default);
                                                             edit_http_redirect_stream.set(a.http_redirect_stream);
-                                                            edit_service_filter.set(a.service_filter.iter().map(|s| s.as_ref().to_string()).collect::<Vec<_>>().join(", "));
+                                                            edit_service_filter.set(a.service_filter.join(", "));
                                                             let has_catalog = a.resources.contains(&ResourceType::Catalog);
                                                             edit_catalogs.set(Vec::new());
                                                             edit_catalog_settings.set(std::collections::HashMap::new());
@@ -740,11 +740,11 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                             let c = client.clone();
                                             let is_default = *edit_is_default.peek();
                                             let http_redirect_stream = *edit_http_redirect_stream.peek();
-                                            let service_filter: Vec<remux_sdks::remux::ServiceId> = edit_service_filter
+                                            let service_filter: Vec<String> = edit_service_filter
                                                 .peek()
                                                 .split(',')
-                                                .map(|s| remux_sdks::remux::ServiceId::new(s.trim()))
-                                                .filter(|s| !s.as_ref().is_empty())
+                                                .map(|s| s.trim().to_lowercase())
+                                                .filter(|s| !s.is_empty())
                                                 .collect();
                                             spawn(async move {
                                                 let payload = UpdateAddonRequest {

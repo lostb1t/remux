@@ -167,7 +167,7 @@ pub struct StreamInfo {
     pub addon_id: Option<Uuid>,
     /// Lowercased service identifier from `streamData.service.id` (e.g. "real-debrid").
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub service_id: Option<remux_sdks::remux::ServiceId>,
+    pub service_id: Option<String>,
     pub seeders: Option<i64>,
     pub size: Option<i64>,
     pub duration: Option<i64>,

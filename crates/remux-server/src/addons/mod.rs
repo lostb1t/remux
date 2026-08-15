@@ -2461,7 +2461,10 @@ impl AddonService {
                                 streams.retain(|s| {
                                     s.service_id
                                         .as_ref()
-                                        .map(|id| sf.contains(id))
+                                        .map(|id| {
+                                            sf.iter()
+                                                .any(|f| f.to_lowercase() == id.to_lowercase())
+                                        })
                                         .unwrap_or(true)
                                 });
                             }

@@ -39,7 +39,7 @@ pub struct Addon {
     pub is_default: bool,
     pub http_redirect_stream: bool,
     #[sqlx(json)]
-    pub service_filter: Vec<remux_sdks::remux::ServiceId>,
+    pub service_filter: Vec<String>,
 }
 
 const ADDON_COLS: &str = "id, name, preset, resources, types, enabled, priority, created_at, updated_at, system, is_default, http_redirect_stream, service_filter";

@@ -1537,7 +1537,7 @@ async fn stremio_streams(
                     .and_then(|s| {
                         s.id.as_deref()
                     })
-                    .map(remux_sdks::remux::ServiceId::new),
+                    .map(|s| s.to_lowercase()),
                 probe_data: s
                     .behavior_hints
                     .as_ref()

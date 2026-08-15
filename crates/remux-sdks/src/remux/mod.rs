@@ -186,26 +186,6 @@ impl AddonMetadata {
     }
 }
 
-/// Lowercased service identifier (e.g. "real-debrid").
-/// Normalizes to lowercase on construction/deserialization so comparisons are always exact.
-#[nutype(
-    sanitize(lowercase),
-    default = "",
-    derive(
-        Debug,
-        Clone,
-        PartialEq,
-        Eq,
-        Hash,
-        Serialize,
-        Deserialize,
-        Default,
-        AsRef,
-        Display
-    )
-)]
-pub struct ServiceId(String);
-
 /// API representation of a stored addon instance.
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -245,7 +225,7 @@ pub struct AddonDto {
     #[serde(default)]
     pub http_redirect_stream: bool,
     #[serde(default)]
-    pub service_filter: Vec<ServiceId>,
+    pub service_filter: Vec<String>,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
@@ -279,7 +259,7 @@ pub struct UpdateAddonRequest {
     pub priority: Option<i64>,
     pub is_default: Option<bool>,
     pub http_redirect_stream: Option<bool>,
-    pub service_filter: Option<Vec<ServiceId>>,
+    pub service_filter: Option<Vec<String>>,
 }
 
 /// One catalog exposed by an addon, merged with its current config state.
