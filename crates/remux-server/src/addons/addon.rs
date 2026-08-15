@@ -37,9 +37,12 @@ pub struct Addon {
     /// Included in the default addon list (users with no override see this addon).
     /// Set to false for per-user-only addons that must be explicitly assigned.
     pub is_default: bool,
+    pub http_redirect_stream: bool,
+    #[sqlx(json)]
+    pub service_filter: Vec<remux_sdks::remux::ServiceId>,
 }
 
-const ADDON_COLS: &str = "id, name, preset, resources, types, enabled, priority, created_at, updated_at, system, is_default";
+const ADDON_COLS: &str = "id, name, preset, resources, types, enabled, priority, created_at, updated_at, system, is_default, http_redirect_stream, service_filter";
 
 impl Addon {
     pub async fn list(db: &SqlitePool) -> Result<Vec<Self>> {
@@ -64,8 +67,8 @@ impl Addon {
     pub async fn insert(&self, db: &SqlitePool) -> Result<()> {
         sqlx::query(
             "INSERT INTO addons \
-             (id, name, preset, resources, types, enabled, priority, created_at, updated_at, system, is_default) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             (id, name, preset, resources, types, enabled, priority, created_at, updated_at, system, is_default, http_redirect_stream, service_filter) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         )
         .bind(self.id)
         .bind(&self.name)
@@ -78,6 +81,8 @@ impl Addon {
         .bind(self.updated_at)
         .bind(self.system)
         .bind(self.is_default)
+        .bind(self.http_redirect_stream)
+        .bind(sqlx::types::Json(&self.service_filter))
         .execute(db)
         .await?;
         Ok(())
@@ -87,7 +92,8 @@ impl Addon {
         sqlx::query(
             "UPDATE addons \
              SET name = ?2, preset = ?3, resources = ?4, types = ?5, \
-                 enabled = ?6, priority = ?7, updated_at = ?8, is_default = ?9 \
+                 enabled = ?6, priority = ?7, updated_at = ?8, is_default = ?9, \
+                 http_redirect_stream = ?10, service_filter = ?11 \
              WHERE id = ?1",
         )
         .bind(self.id)
@@ -99,6 +105,8 @@ impl Addon {
         .bind(self.priority)
         .bind(self.updated_at)
         .bind(self.is_default)
+        .bind(self.http_redirect_stream)
+        .bind(sqlx::types::Json(&self.service_filter))
         .execute(db)
         .await?;
         Ok(())

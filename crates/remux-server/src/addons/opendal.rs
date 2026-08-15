@@ -1840,6 +1840,8 @@ mod tests {
             priority: 0,
             system: false,
             is_default: true,
+            http_redirect_stream: false,
+            service_filter: vec![],
             created_at: now,
             updated_at: now,
         };

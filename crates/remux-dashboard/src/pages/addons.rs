@@ -56,6 +56,9 @@ pub fn AddonsPage(app_state: AppState) -> Element {
         std::collections::HashMap<String, (bool, String, String)>,
     > = use_signal(std::collections::HashMap::new);
 
+    let mut edit_http_redirect_stream = use_signal(|| false);
+    let mut edit_service_filter = use_signal(String::new);
+
     // Confirm-delete state
     let mut id_to_delete: Signal<Option<Uuid>> = use_signal(|| None);
     let mut deleting = use_signal(|| false);
@@ -266,6 +269,8 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                             };
                                                             edit_types.set(type_set);
                                                             edit_is_default.set(a.is_default);
+                                                            edit_http_redirect_stream.set(a.http_redirect_stream);
+                                                            edit_service_filter.set(a.service_filter.iter().map(|s| s.as_ref().to_string()).collect::<Vec<_>>().join(", "));
                                                             let has_catalog = a.resources.contains(&ResourceType::Catalog);
                                                             edit_catalogs.set(Vec::new());
                                                             edit_catalog_settings.set(std::collections::HashMap::new());
@@ -583,6 +588,28 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                         rsx! {}
                                     }
                                 }
+                                // Stream options (only shown when stream resource is active)
+                                if edit_resources.read().contains("stream") {
+                                    div { class: "form-group",
+                                        label { class: "form-label", "Direct stream" }
+                                        input {
+                                            r#type: "checkbox",
+                                            checked: *edit_http_redirect_stream.read(),
+                                            onchange: move |e| edit_http_redirect_stream.set(e.checked()),
+                                        }
+                                        span { class: "field-hint", "Send the client directly to the source URL instead of proxying through remux. Only applies to HTTP streams and direct play — transcoding always routes through remux." }
+                                    }
+                                    div { class: "form-group",
+                                        label { class: "form-label", "Direct stream service filter" }
+                                        input {
+                                            class: "form-input",
+                                            placeholder: "real-debrid, alldebrid",
+                                            value: "{edit_service_filter}",
+                                            oninput: move |e| edit_service_filter.set(e.value()),
+                                        }
+                                        span { class: "field-hint", "Comma-separated list of service IDs to stream directly (from streamData.service.id). Leave empty to apply to all services." }
+                                    }
+                                }
                                 // Catalogs section (only shown for global addons with catalog resource active)
                                 if *edit_is_default.read() && edit_resources.read().contains("catalog") {
                                     div { class: "form-group",
@@ -712,6 +739,13 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                             editing.set(true);
                                             let c = client.clone();
                                             let is_default = *edit_is_default.peek();
+                                            let http_redirect_stream = *edit_http_redirect_stream.peek();
+                                            let service_filter: Vec<remux_sdks::remux::ServiceId> = edit_service_filter
+                                                .peek()
+                                                .split(',')
+                                                .map(|s| remux_sdks::remux::ServiceId::new(s.trim()))
+                                                .filter(|s| !s.as_ref().is_empty())
+                                                .collect();
                                             spawn(async move {
                                                 let payload = UpdateAddonRequest {
                                                     name: Some(name),
@@ -721,6 +755,8 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                     enabled: None,
                                                     priority: None,
                                                     is_default: Some(is_default),
+                                                    http_redirect_stream: Some(http_redirect_stream),
+                                                    service_filter: Some(service_filter),
                                                 };
                                                 let addon_res = c.execute(UpdateAddon { id: edit_id, payload }).await;
                                                 let cat_res = if !catalog_updates.is_empty() {
