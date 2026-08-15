@@ -897,7 +897,7 @@ mod tests {
     }
 
     #[test]
-    fn resolution_group_rejects_source_without_filename() {
+    fn resolution_group_passes_through_source_without_filename() {
         let group = StreamGroup {
             id: Uuid::nil(),
             name: "1080p".to_string(),
@@ -919,7 +919,7 @@ mod tests {
             name: None,
             ..Default::default()
         };
-        assert_eq!(group.match_outcome(&si, None), MatchOutcome::NoMatch);
+        assert_eq!(group.match_outcome(&si, None), MatchOutcome::PassThrough);
     }
 
     // Mixed filter (All): Resolution Match + AudioLanguage PassThrough → PassThrough.

@@ -368,7 +368,7 @@ async fn subtitles_stream_inner(
     )
     .await
     else {
-        return Ok(StatusCode::NOT_FOUND.into_response());
+        return Ok((StatusCode::NOT_FOUND, "stream not found").into_response());
     };
 
     let url = media
