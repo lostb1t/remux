@@ -780,7 +780,9 @@ async fn videos_stream_inner(
     {
         // If the producing addon has http_redirect_stream enabled, issue a 302
         // directly to the stream URL instead of proxying bytes through remux.
-        if let (Some(addon_id), Some(url)) = (si.addon_id, descriptor.as_http_url()) {
+        if let (Some(addon_id), crate::stream::StreamDescriptor::Http { url, .. }) =
+            (si.addon_id, &descriptor)
+        {
             if state
                 .ctx
                 .addons
