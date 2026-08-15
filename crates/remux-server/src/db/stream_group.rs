@@ -364,7 +364,7 @@ impl StreamGroup {
                 .as_deref())
         {
             Some(s) => s,
-            None => return MatchOutcome::NoMatch,
+            None => return MatchOutcome::PassThrough,
         };
 
         let candidates: Vec<&str> = if raw.contains('\n') {
@@ -390,7 +390,7 @@ impl StreamGroup {
 
         let parsed = match best {
             Some(p) => p,
-            None => return MatchOutcome::NoMatch,
+            None => return MatchOutcome::PassThrough,
         };
 
         let resolution = min_screen_size(&parsed)
@@ -421,10 +421,20 @@ impl StreamGroup {
                     bool_to_outcome(matches!(op, SetOp::In | SetOp::Is) == hit)
                 }
                 StreamRule::Quality { op, values } => {
+                    if source == StreamQuality::Unknown
+                        && !values.contains(&StreamQuality::Unknown)
+                    {
+                        return MatchOutcome::PassThrough;
+                    }
                     let hit = values.contains(&source);
                     bool_to_outcome(matches!(op, SetOp::In | SetOp::Is) == hit)
                 }
                 StreamRule::Codec { op, values } => {
+                    if codec == StreamCodec::Unknown
+                        && !values.contains(&StreamCodec::Unknown)
+                    {
+                        return MatchOutcome::PassThrough;
+                    }
                     let hit = values.contains(&codec);
                     bool_to_outcome(matches!(op, SetOp::In | SetOp::Is) == hit)
                 }

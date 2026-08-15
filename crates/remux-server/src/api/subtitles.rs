@@ -355,7 +355,7 @@ async fn subtitles_stream_inner(
         }
     }
 
-    let media = crate::services::StreamService::lookup(
+    let Ok(media) = crate::services::StreamService::lookup(
         &state.ctx,
         item_id,
         Some(media_source_id),
@@ -366,7 +366,10 @@ async fn subtitles_stream_inner(
                 .id,
         ),
     )
-    .await?;
+    .await
+    else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
 
     let url = media
         .stream_info
