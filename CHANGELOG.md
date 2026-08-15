@@ -1,3 +1,24 @@
+# [0.25.0](https://github.com/lostb1t/remux/compare/v0.24.3...v0.25.0) (2026-08-15)
+
+
+### Bug Fixes
+
+* carry probe_data streams in no-streams stub and skip streams_refreshed_at when refresh yields nothing ([4483821](https://github.com/lostb1t/remux/commit/4483821c81ecd18c233657f64da61658b10bbd77))
+* delete catalog collection_kind rows and ignore missing migrations ([41bfdbd](https://github.com/lostb1t/remux/commit/41bfdbd23018e324611b7df50105912a9207a437))
+* load grandparent before subtitle addon lookup for episodes ([ba6f152](https://github.com/lostb1t/remux/commit/ba6f1524832b4d053391de4ce79397bfe832d536))
+* never serve an empty fMP4 init segment (HEVC 10-bit browser playback) ([#228](https://github.com/lostb1t/remux/issues/228)) ([fc9242f](https://github.com/lostb1t/remux/commit/fc9242f4782f440d2f5ec6f3359ef2dd14c9ad9e))
+* redirect transcode and DHT cache paths under data_dir for non-root Docker (fixes [#200](https://github.com/lostb1t/remux/issues/200)) ([caa2def](https://github.com/lostb1t/remux/commit/caa2defcc8d63b4c610629659332e4f23cf580b4))
+* replace delete-catalog migration with update to smart ([1949908](https://github.com/lostb1t/remux/commit/1949908d1dc4f506e5d4af89da2206bbf59d1714))
+* update jellyfin-ffmpeg asset suffixes and add tar.xz extraction support ([3b95da5](https://github.com/lostb1t/remux/commit/3b95da56ca393332b370fef7d30f4a22c298aa55))
+
+
+### Features
+
+* add http_redirect_stream and service_filter per addon ([#233](https://github.com/lostb1t/remux/issues/233)) ([1319b94](https://github.com/lostb1t/remux/commit/1319b949db7d9050978343908fcc9a2119b40e24))
+* add jellyfin_version config option (fixes [#221](https://github.com/lostb1t/remux/issues/221)) ([949465f](https://github.com/lostb1t/remux/commit/949465f39dadc8250fa94e5fad1a70cab7d8549a))
+* return no-streams stub and video when item has no playable sources (fix [#212](https://github.com/lostb1t/remux/issues/212)) ([#219](https://github.com/lostb1t/remux/issues/219)) ([aa3c02f](https://github.com/lostb1t/remux/commit/aa3c02ff27ec9df3164317771f7f9b6ac5d771c2))
+* **users:** add Jellyfin personal rating endpoints ([#224](https://github.com/lostb1t/remux/issues/224)) ([817bce8](https://github.com/lostb1t/remux/commit/817bce8957db754da041b74013b43929c1b321e1))
+
 ## [0.25.1](https://github.com/lostb1t/remux/compare/v0.25.0...v0.25.1) (2026-08-15)
 
 
