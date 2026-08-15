@@ -1,3 +1,10 @@
+## [0.25.1](https://github.com/lostb1t/remux/compare/v0.25.0...v0.25.1) (2026-08-15)
+
+
+### Bug Fixes
+
+* delete catalog collection_kind rows and ignore missing migrations ([41bfdbd](https://github.com/lostb1t/remux/commit/41bfdbd23018e324611b7df50105912a9207a437))
+
 # [0.25.0](https://github.com/lostb1t/remux/compare/v0.24.3...v0.25.0) (2026-08-15)
 
 
