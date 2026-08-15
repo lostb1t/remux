@@ -222,8 +222,6 @@ jobs:
           sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes/ || true
           sudo rm -rf ~/Library/Developer/Xcode/iOS\ DeviceSupport/ || true
           sudo rm -rf /Applications/Xcode_*.app || true
-          sudo rm -rf /Applications/Xcode.app || true
-          sudo rm -rf /Library/Developer/Xcode || true
           sudo rm -rf /usr/local/lib/android || true
           sudo rm -rf /usr/local/share/dotnet || true
           sudo rm -rf /Library/Java/JavaVirtualMachines/ || true
