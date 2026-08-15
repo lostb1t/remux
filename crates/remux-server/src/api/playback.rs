@@ -1108,6 +1108,87 @@ mod tests {
     };
 
     #[tokio::test]
+    async fn http_redirect_stream_issues_302_to_source_url() {
+        use crate::{addons::addon::Addon, stream};
+        use chrono::Utc;
+        use remux_sdks::{remux::AddonPresetRef, stremio::ResourceType};
+        use uuid::Uuid;
+
+        let (server, guard, token) = authenticated_server().await;
+        let ctx = &guard.0;
+        let now = Utc::now().naive_utc();
+        let addon_id = Uuid::new_v4();
+        let stream_url = "https://cdn.example.com/movie.mp4";
+
+        // Insert an addon with http_redirect_stream enabled.
+        // The Stremio preset accepts any valid URL; the manifest fetch will fail but
+        // the addon still lands in the runtime (failure is just warned about).
+        let addon = Addon {
+            id: addon_id,
+            name: "redirect-test-addon".to_string(),
+            preset: AddonPresetRef {
+                kind: "stremio".to_string(),
+                config: serde_json::json!({
+                    "manifest_url": "https://example.com/addon/manifest.json"
+                }),
+            },
+            resources: vec![ResourceType::Stream],
+            types: vec![],
+            enabled: true,
+            priority: 0,
+            system: false,
+            is_default: false,
+            http_redirect_stream: true,
+            service_filter: vec![],
+            created_at: now,
+            updated_at: now,
+        };
+        addon
+            .insert(&ctx.db)
+            .await
+            .unwrap();
+
+        // Reload the in-memory addon list so our new addon is visible to handlers.
+        ctx.addons
+            .reload(&ctx.db, &ctx.config)
+            .await
+            .unwrap();
+
+        // Insert a media whose stream descriptor points at an HTTP URL and is
+        // tagged with the addon that produced it.
+        let mut media = crate::db::Media {
+            title: "Redirect Test".to_string(),
+            kind: crate::db::MediaKind::Stream,
+            stream_info: Some(stream::StreamInfo {
+                descriptor: stream::StreamDescriptor::http(stream_url),
+                addon_id: Some(addon_id),
+                ..Default::default()
+            }),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        media
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        // Expect a 3xx so axum-test doesn't reject it as non-2xx.
+        let resp = server
+            .get(&format!("/videos/{}/stream", media.id))
+            .add_query_params([("Static", "true"), ("ApiKey", &token)])
+            .expect_failure()
+            .await;
+
+        resp.assert_status(StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(
+            resp.header("location"),
+            stream_url,
+            "redirect Location must point directly to the source stream URL"
+        );
+    }
+
+    #[tokio::test]
     async fn test_playback_start() {
         let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);

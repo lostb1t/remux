@@ -591,23 +591,23 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                 // Stream options (only shown when stream resource is active)
                                 if edit_resources.read().contains("stream") {
                                     div { class: "form-group",
-                                        label { class: "form-label", "HTTP redirect stream" }
+                                        label { class: "form-label", "Direct stream" }
                                         input {
                                             r#type: "checkbox",
                                             checked: *edit_http_redirect_stream.read(),
                                             onchange: move |e| edit_http_redirect_stream.set(e.checked()),
                                         }
-                                        span { class: "field-hint", "Issue a 302 redirect to the stream URL instead of proxying bytes through remux." }
+                                        span { class: "field-hint", "Send the client directly to the source URL instead of proxying through remux. Only applies to HTTP streams and direct play — transcoding always routes through remux." }
                                     }
                                     div { class: "form-group",
-                                        label { class: "form-label", "HTTP redirect stream service filter" }
+                                        label { class: "form-label", "Direct stream service filter" }
                                         input {
                                             class: "form-input",
                                             placeholder: "real-debrid, alldebrid",
                                             value: "{edit_service_filter}",
                                             oninput: move |e| edit_service_filter.set(e.value()),
                                         }
-                                        span { class: "field-hint", "Comma-separated list of service IDs to redirect (from streamData.service.id). Leave empty to redirect all." }
+                                        span { class: "field-hint", "Comma-separated list of service IDs to stream directly (from streamData.service.id). Leave empty to apply to all services." }
                                     }
                                 }
                                 // Catalogs section (only shown for global addons with catalog resource active)
