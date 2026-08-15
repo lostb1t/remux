@@ -867,7 +867,7 @@ pub async fn items_flat(
     Ok(Json::<Vec<api::BaseItemDto>>(items.items))
 }
 
-#[get("/items")]
+#[get("/items", "/items/")]
 pub async fn items(
     State(state): State<AppState>,
     session: auth::AuthSession,
