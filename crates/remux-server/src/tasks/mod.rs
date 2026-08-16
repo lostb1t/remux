@@ -34,6 +34,7 @@ mod refresh_iptv;
 mod refresh_library;
 mod refresh_popularity;
 mod series_sync;
+mod tracking_sync;
 pub use crate::common::ProgressReporter;
 use clean_transcode_folder::CleanTranscodeFolderTask;
 use clear_cache::ClearCacheTask;
@@ -50,6 +51,7 @@ use refresh_iptv::RefreshIptvTask;
 use refresh_library::RefreshLibraryTask;
 use refresh_popularity::RefreshPopularityTask;
 use series_sync::SeriesSyncTask;
+pub use tracking_sync::{OutboxPayload, TrackingSyncTask};
 
 // --- Task category ---
 
@@ -294,6 +296,9 @@ impl TaskService {
 
         service
             .register_task(Arc::new(ClearCacheTask))
+            .await?;
+        service
+            .register_task(Arc::new(TrackingSyncTask))
             .await?;
         service
             .register_task(Arc::new(ClearImageCacheTask))

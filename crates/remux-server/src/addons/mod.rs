@@ -1240,6 +1240,30 @@ impl AddonService {
         out
     }
 
+    /// The tracking capability of one enabled addon, if it has one. Returns
+    /// `None` once an addon is disabled or deleted, which is why queued
+    /// deliveries treat that as permanent rather than retrying forever.
+    pub fn tracking_for(
+        &self,
+        addon_id: Uuid,
+    ) -> Option<Arc<dyn tracking::TrackingAddon>> {
+        self.inner
+            .load()
+            .iter()
+            .find(|r| {
+                r.row
+                    .id
+                    == addon_id
+                    && r.row
+                        .enabled
+            })
+            .and_then(|r| {
+                r.caps
+                    .tracking
+                    .clone()
+            })
+    }
+
     pub async fn list_for_user(
         &self,
         db: &SqlitePool,
