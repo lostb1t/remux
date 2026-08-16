@@ -242,7 +242,7 @@ impl TrackingCredentials {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthFlow {
     /// User pastes a value, described by `connect_fields`.
-    TokenPaste,
+    Token,
     /// User enters a code on the provider's site; server polls. Suits TV
     /// clients with no browser.
     OAuthDeviceCode,
@@ -295,7 +295,7 @@ impl SyncDirection {
 #[derive(Debug, Clone)]
 pub struct TrackingCapabilities {
     pub auth_flow: AuthFlow,
-    /// `TokenPaste` only. Reuses the addon option schema so the dashboard
+    /// `Token` only. Reuses the addon option schema so the dashboard
     /// renders it with the same generic form code as addon settings.
     pub connect_fields: Vec<remux_sdks::remux::AddonOption>,
     pub supported_events: Vec<TrackingEventKind>,
@@ -318,7 +318,7 @@ impl Default for TrackingCapabilities {
     /// existing addon.
     fn default() -> Self {
         Self {
-            auth_flow: AuthFlow::TokenPaste,
+            auth_flow: AuthFlow::Token,
             connect_fields: Vec::new(),
             supported_events: Vec::new(),
             default_event_filter: Vec::new(),
