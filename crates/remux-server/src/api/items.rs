@@ -1556,8 +1556,13 @@ async fn item_for_user(
     let show_ungrouped = server_config
         .stream_groups_show_ungrouped
         .unwrap_or(true);
+    // Clients that switch versions (Android TV) refetch the item by MediaSource id
+    // and then play MediaSources[0], so the requested group must end up first and
+    // keep its own UUID instead of the item id stamped by `db_media_to_item`.
+    let mut requested_group: Option<Uuid> = None;
     let resolved_id = match MediaResolveService::resolve_item(id, &state.ctx).await? {
         Some(m) if m.kind == db::MediaKind::StreamGroup => {
+            requested_group = Some(m.id);
             // Stream groups have no parent_id on the row (they're global). Look up the
             // group→item mapping written by the items pipeline and PlaybackInfo.
             StreamService::get_group_item(
@@ -1678,6 +1683,23 @@ async fn item_for_user(
                 );
             }
         }
+        // The other versions stay in the list so the version picker is complete.
+        let mut filtered = filtered;
+        if let Some(gid) = requested_group {
+            match filtered
+                .iter()
+                .position(|s| s.group_id == Some(gid))
+            {
+                Some(pos) => {
+                    let source = filtered.remove(pos);
+                    filtered.insert(0, source);
+                }
+                None => {
+                    warn!(%gid, item = %media.id, "requested stream group has no matching source");
+                    requested_group = None;
+                }
+            }
+        }
         media.sources = Some(filtered);
         media
             .user_state(
@@ -1741,6 +1763,28 @@ async fn item_for_user(
         )
         .await?;
     let mut base_item = api::db_media_to_item(media.clone(), false);
+
+    // `db_media_to_item` stamps MediaSources[0].Id with the item id (clients rely on
+    // that for auto-play). Undo it for a group request: the item id would resolve
+    // back to the highest-priority group on PlaybackInfo (issue #220).
+    let hoisted_group = requested_group.filter(|gid| {
+        media
+            .sources
+            .as_ref()
+            .and_then(|s| s.first())
+            .and_then(|s| s.group_id)
+            == Some(*gid)
+    });
+    if let Some(gid) = hoisted_group {
+        if let Some(source) = base_item
+            .media_sources
+            .as_mut()
+            .and_then(|s| s.first_mut())
+        {
+            source.id = gid;
+            source.e_tag = gid;
+        }
+    }
 
     // When streams were actually fetched but none found, replace the
     // listing-style stubs with a single "No streams found" stub.
@@ -4382,6 +4426,211 @@ mod tests {
         assert!(
             !names.contains(&"Comedy Movies"),
             "untagged collection must not appear in smart group; got: {names:?}"
+        );
+    }
+
+    /// Android TV refetches the item by MediaSource Id when the user picks a
+    /// version, then plays `mediaSources.get(0)` because no source Id equals the
+    /// item Id. The requested group's source must therefore come first.
+    /// Regression test for issue #220.
+    #[tokio::test]
+    async fn test_items_get_by_stream_group_id_puts_that_group_first() {
+        use crate::api;
+        use remux_sdks::remux::{
+            StreamFilter, StreamQuality, StreamResolution, StreamRule,
+        };
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let ctx = &guard.0;
+        let now = Utc::now().naive_utc();
+
+        let web_group = db::StreamGroup::create(
+            &ctx.db,
+            "1080p · WEB",
+            StreamFilter {
+                match_mode: FilterMatchMode::All,
+                rules: vec![
+                    StreamRule::Resolution {
+                        op: SetOp::In,
+                        values: vec![StreamResolution::R1080p],
+                    },
+                    StreamRule::Quality {
+                        op: SetOp::In,
+                        values: vec![StreamQuality::WebDl, StreamQuality::WebRip],
+                    },
+                ],
+            },
+            0,
+        )
+        .await
+        .unwrap();
+
+        let bluray_group = db::StreamGroup::create(
+            &ctx.db,
+            "1080p · Blu-ray",
+            StreamFilter {
+                match_mode: FilterMatchMode::All,
+                rules: vec![
+                    StreamRule::Resolution {
+                        op: SetOp::In,
+                        values: vec![StreamResolution::R1080p],
+                    },
+                    StreamRule::Quality {
+                        op: SetOp::In,
+                        values: vec![StreamQuality::BluRay, StreamQuality::BluRayRemux],
+                    },
+                ],
+            },
+            1,
+        )
+        .await
+        .unwrap();
+
+        let make_probe = || api::MediaSourceInfo {
+            container: Some("mkv".to_string()),
+            bitrate: Some(8_000_000),
+            run_time_ticks: Some(100_000_000),
+            media_streams: vec![
+                api::MediaStream {
+                    codec: Some("h264".to_string()),
+                    type_: Some(api::MediaStreamType::Video),
+                    index: 0,
+                    width: Some(1920),
+                    height: Some(1080),
+                    ..Default::default()
+                },
+                api::MediaStream {
+                    codec: Some("aac".to_string()),
+                    type_: Some(api::MediaStreamType::Audio),
+                    index: 1,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let movie =
+            insert_media(&ctx.db, "Test Movie", db::MediaKind::Movie, "tt8888888")
+                .await;
+        sqlx::query("UPDATE media SET streams_refreshed_at = ? WHERE id = ?")
+            .bind(now)
+            .bind(movie.id)
+            .execute(&ctx.db)
+            .await
+            .unwrap();
+
+        for (idx, filename) in [
+            (0, "TestMovie.2026.1080p.WEB-DL.H264.mkv"),
+            (1, "TestMovie.2026.1080p.BluRay.x264.mkv"),
+        ] {
+            let mut stream = db::Media {
+                title: filename.to_string(),
+                kind: db::MediaKind::Stream,
+                parent_id: Some(movie.id),
+                idx: Some(idx),
+                stream_info: Some(crate::stream::StreamInfo {
+                    descriptor: crate::stream::StreamDescriptor::Local(filename.into()),
+                    filename: Some(filename.to_string()),
+                    ..Default::default()
+                }),
+                probe_data: Some(make_probe()),
+                created_at: now,
+                updated_at: now,
+                ..Default::default()
+            };
+            stream
+                .save(&ctx.db)
+                .await
+                .unwrap();
+        }
+
+        // Loading the item first writes the `gitem:{user}:{group}` mapping that
+        // /items/{group} needs, exactly like the real client flow.
+        let resp = server
+            .get(&format!("/items/{}", movie.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let sources = body["MediaSources"]
+            .as_array()
+            .unwrap();
+        assert_eq!(sources.len(), 2, "expected one source per group");
+        assert_eq!(
+            sources[0]["Name"]
+                .as_str()
+                .unwrap(),
+            "1080p · WEB"
+        );
+        assert_eq!(
+            sources[0]["Id"]
+                .as_str()
+                .unwrap(),
+            movie
+                .id
+                .simple()
+                .to_string(),
+            "source[0] keeps the item id in the default listing"
+        );
+        assert_eq!(
+            sources[1]["Id"]
+                .as_str()
+                .unwrap(),
+            bluray_group
+                .id
+                .simple()
+                .to_string(),
+        );
+
+        let resp2 = server
+            .get(&format!("/items/{}", bluray_group.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp2.assert_status_ok();
+        let body2: serde_json::Value = resp2.json();
+        let sources2 = body2["MediaSources"]
+            .as_array()
+            .unwrap();
+
+        assert_eq!(
+            sources2.len(),
+            2,
+            "the full version list must stay available"
+        );
+        assert_eq!(
+            sources2[0]["Name"]
+                .as_str()
+                .unwrap(),
+            "1080p · Blu-ray",
+            "the requested group must be MediaSources[0] — Android TV plays get(0)"
+        );
+        assert_eq!(
+            sources2[0]["Id"]
+                .as_str()
+                .unwrap(),
+            bluray_group
+                .id
+                .simple()
+                .to_string(),
+            "the hoisted source must keep its group UUID, not the item id, so the \
+             client sends the group back on PlaybackInfo"
+        );
+        assert_eq!(
+            body2["Id"]
+                .as_str()
+                .unwrap(),
+            movie
+                .id
+                .simple()
+                .to_string(),
+            "the item itself is still the parent movie"
         );
     }
 }
