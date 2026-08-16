@@ -154,8 +154,11 @@ impl ImageService {
         ))
     }
 
-    /// Generate the library placeholder image, write it to disk, save the path
-    /// to `media_images` in the DB, and return the JPEG bytes.
+    /// Return the generated library placeholder for `id`, creating it if needed.
+    ///
+    /// A `media_images` row is guaranteed to exist on return: its UUID is the
+    /// client-facing image tag, and without one the item DTO falls back to a
+    /// constant synthetic tag that clients can never bust their cache on.
     pub async fn library_image(
         data_dir: &std::path::Path,
         id: Uuid,
@@ -164,12 +167,14 @@ impl ImageService {
     ) -> anyhow::Result<Vec<u8>> {
         let path = Self::image_path(data_dir, id, "primary", "jpg");
 
-        if path.exists() {
-            return Ok(tokio::fs::read(&path).await?);
-        }
+        let bytes = if path.exists() {
+            tokio::fs::read(&path).await?
+        } else {
+            let bytes = Self::generate(id, name, db).await?;
+            Self::write_image_to_disk(&path, &bytes).await?;
+            bytes
+        };
 
-        let bytes = Self::generate(id, name, db).await?;
-        Self::write_image_to_disk(&path, &bytes).await?;
         // INSERT OR IGNORE — don't replace if already exists (stable UUID for cache)
         sqlx::query(
             "INSERT OR IGNORE INTO media_images (id, media_id, image_type, image_index, path, width, height) VALUES (?, ?, 'primary', 0, ?, ?, ?)"
@@ -183,6 +188,35 @@ impl ImageService {
         .await?;
 
         Ok(bytes)
+    }
+
+    /// Rebuild the generated placeholder for a Collection/Folder, returning
+    /// `false` for any other media kind.
+    ///
+    /// Deleting the current Primary first is what mints a **new** row UUID —
+    /// that UUID is the `ImageTags.Primary` clients cache on, and reusing it
+    /// leaves browsers on the old picture for the full `max-age=86400`.
+    ///
+    /// May fetch a child backdrop over HTTP (15 s timeout), so this is reserved
+    /// for admin-triggered writes. Callers should discard errors: a failed
+    /// regeneration must not fail the surrounding request.
+    pub async fn regenerate_library_image(
+        data_dir: &std::path::Path,
+        id: Uuid,
+        db: &sqlx::SqlitePool,
+    ) -> anyhow::Result<bool> {
+        let Some(media) = db::Media::get_by_id(db, &id).await? else {
+            return Ok(false);
+        };
+        if !matches!(
+            media.kind,
+            db::MediaKind::Collection | db::MediaKind::Folder
+        ) {
+            return Ok(false);
+        }
+        Self::delete_image(data_dir, id, ImageKind::Primary, db).await?;
+        Self::library_image(data_dir, id, &media.title, db).await?;
+        Ok(true)
     }
 
     /// Save an uploaded image for `id`/`image_type`, write to disk, update DB.
@@ -214,9 +248,14 @@ impl ImageService {
         Ok(())
     }
 
+    /// Every extension `save_image`/`library_image` may have written for a kind.
+    /// Uploading a PNG over a generated JPEG leaves the JPEG orphaned on disk;
+    /// `library_image`'s existence check would then serve the stale file forever.
+    const IMAGE_EXTS: [&'static str; 4] = ["jpg", "png", "gif", "webp"];
+
     /// Delete the local image for `id`/`kind` and remove from media_images.
     pub async fn delete_image(
-        _data_dir: &std::path::Path,
+        data_dir: &std::path::Path,
         id: Uuid,
         kind: ImageKind,
         db: &sqlx::SqlitePool,
@@ -234,6 +273,12 @@ impl ImageService {
                         tokio::fs::remove_file(&path).await?;
                     }
                 }
+            }
+        }
+        for ext in Self::IMAGE_EXTS {
+            let path = Self::image_path(data_dir, id, &kind.to_string(), ext);
+            if path.exists() {
+                tokio::fs::remove_file(&path).await?;
             }
         }
         db::MediaImage::delete_for_type(db, id, kind)
@@ -634,4 +679,192 @@ fn apply_sizing(img: DynamicImage, opts: &ImageProcessOptions) -> DynamicImage {
     }
 
     img
+}
+
+#[cfg(test)]
+mod tests {
+    use sqlx::SqlitePool;
+
+    use super::*;
+
+    async fn test_db() -> SqlitePool {
+        let db = crate::db::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        crate::db::migrate(&db)
+            .await
+            .unwrap();
+        db
+    }
+
+    async fn insert_collection(db: &SqlitePool, title: &str) -> Uuid {
+        let mut media = db::Media {
+            id: Uuid::new_v4(),
+            title: title.to_string(),
+            kind: db::MediaKind::Collection,
+            ..Default::default()
+        };
+        media
+            .save(db)
+            .await
+            .unwrap();
+        media.id
+    }
+
+    fn scratch_dir() -> PathBuf {
+        std::env::temp_dir().join(format!("remux-img-test-{}", Uuid::new_v4()))
+    }
+
+    #[tokio::test]
+    async fn delete_image_removes_orphaned_extension_variants() {
+        let db = test_db().await;
+        let data_dir = scratch_dir();
+        let id = insert_collection(&db, "Movies").await;
+
+        // A generated primary.jpg later shadowed by a PNG upload: only the PNG
+        // is recorded in the DB, so the JPEG is unreachable from the row alone.
+        let jpg = ImageService::image_path(&data_dir, id, "primary", "jpg");
+        let png = ImageService::image_path(&data_dir, id, "primary", "png");
+        ImageService::write_image_to_disk(&jpg, b"stale-generated")
+            .await
+            .unwrap();
+        ImageService::write_image_to_disk(&png, b"user-upload")
+            .await
+            .unwrap();
+        db::MediaImage::save(
+            &db,
+            id,
+            ImageKind::Primary,
+            png.to_string_lossy()
+                .as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        ImageService::delete_image(&data_dir, id, ImageKind::Primary, &db)
+            .await
+            .unwrap();
+
+        assert!(!png.exists(), "recorded upload must be deleted");
+        assert!(!jpg.exists(), "orphaned generated file must be deleted too");
+        let images = db::MediaImage::get_for_media(&db, &id)
+            .await
+            .unwrap();
+        assert!(
+            images
+                .get(ImageKind::Primary)
+                .is_none()
+        );
+
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    #[tokio::test]
+    async fn library_image_inserts_row_even_when_file_already_exists() {
+        let db = test_db().await;
+        let data_dir = scratch_dir();
+        let id = insert_collection(&db, "Movies").await;
+
+        // File on disk with no DB row — the state older builds left behind.
+        let jpg = ImageService::image_path(&data_dir, id, "primary", "jpg");
+        ImageService::write_image_to_disk(&jpg, b"already-generated")
+            .await
+            .unwrap();
+
+        let bytes = ImageService::library_image(&data_dir, id, "Movies", &db)
+            .await
+            .unwrap();
+        assert_eq!(bytes, b"already-generated");
+
+        let images = db::MediaImage::get_for_media(&db, &id)
+            .await
+            .unwrap();
+        let row = images
+            .get(ImageKind::Primary)
+            .expect("primary row must exist after library_image");
+        assert_eq!(
+            row.path,
+            jpg.to_string_lossy()
+                .to_string()
+        );
+
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    #[tokio::test]
+    async fn regenerate_library_image_rebuilds_with_a_fresh_tag() {
+        let db = test_db().await;
+        let data_dir = scratch_dir();
+        let id = insert_collection(&db, "Movies").await;
+
+        ImageService::library_image(&data_dir, id, "Movies", &db)
+            .await
+            .unwrap();
+        let tag_before = db::MediaImage::get_for_media(&db, &id)
+            .await
+            .unwrap()
+            .get(ImageKind::Primary)
+            .unwrap()
+            .id;
+
+        let regenerated = ImageService::regenerate_library_image(&data_dir, id, &db)
+            .await
+            .unwrap();
+        assert!(regenerated);
+
+        let after = db::MediaImage::get_for_media(&db, &id)
+            .await
+            .unwrap();
+        let row = after
+            .get(ImageKind::Primary)
+            .expect("placeholder row must be rebuilt");
+        assert_ne!(row.id, tag_before, "tag must change so clients refetch");
+        assert!(ImageService::image_path(&data_dir, id, "primary", "jpg").exists());
+
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    #[tokio::test]
+    async fn regenerate_library_image_ignores_non_container_media() {
+        let db = test_db().await;
+        let data_dir = scratch_dir();
+        let external_ids = db::ExternalIds {
+            imdb: db::NonEmptyString::try_new("tt0000001".to_string()).ok(),
+            ..Default::default()
+        };
+        let mut movie = db::Media {
+            id: Uuid::from(&db::MediaIdRaw {
+                kind: db::MediaKind::Movie,
+                external_ids: external_ids.clone(),
+                season: None,
+                episode: None,
+            }),
+            title: "A Movie".to_string(),
+            kind: db::MediaKind::Movie,
+            external_ids,
+            ..Default::default()
+        };
+        movie
+            .save(&db)
+            .await
+            .unwrap();
+        let id = movie.id;
+
+        let regenerated = ImageService::regenerate_library_image(&data_dir, id, &db)
+            .await
+            .unwrap();
+        assert!(!regenerated);
+        let images = db::MediaImage::get_for_media(&db, &id)
+            .await
+            .unwrap();
+        assert!(
+            images
+                .get(ImageKind::Primary)
+                .is_none()
+        );
+
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
 }

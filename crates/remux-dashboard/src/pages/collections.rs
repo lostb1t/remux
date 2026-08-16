@@ -448,13 +448,19 @@ pub fn CollectionForm(
         .server
         .manual_address
         .clone();
-    let current_image_url = existing_item_id
+    let existing_uuid = existing
+        .as_ref()
+        .map(|f| f.id);
+    let initial_image_url = existing_item_id
         .as_ref()
         .zip(existing_image_tag.as_ref())
         .map(|(id, tag)| format!("{server_base}/Items/{id}/Images/Primary?tag={tag}"));
+    let mut current_image_url: Signal<Option<String>> =
+        use_signal(|| initial_image_url.clone());
     let mut pending_image_bytes: Signal<Option<Vec<u8>>> = use_signal(|| None);
     let mut pending_image_preview: Signal<Option<String>> = use_signal(|| None);
     let mut has_image = use_signal(|| existing_image_tag.is_some());
+    let server_base_delete = server_base.clone();
     let client_for_delete = app_state.clone();
     let app_state_delete = app_state.clone();
     let delete_name = existing
@@ -711,7 +717,7 @@ pub fn CollectionForm(
                                 src: "{preview}",
                                 style: "width:100%;max-height:180px;object-fit:cover;border-radius:6px;border:1px solid var(--border)",
                             }
-                        } else if let Some(url) = &current_image_url {
+                        } else if let Some(url) = current_image_url.read().as_ref() {
                             if *has_image.read() {
                                 img {
                                     src: "{url}",
@@ -757,20 +763,47 @@ pub fn CollectionForm(
                                     style: "height:30px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error)",
                                     onclick: {
                                         let item_id = existing_item_id.clone();
+                                        let uuid = existing_uuid;
                                         let client = client_for_delete.clone();
+                                        let base = server_base_delete.clone();
                                         move |_| {
                                             let item_id = item_id.clone();
                                             let client = client.clone();
+                                            let base = base.clone();
                                             spawn(async move {
-                                                if let Some(id) = item_id {
-                                                    let _ = client.execute(remux_sdks::remux::DeleteItemImage {
-                                                        item_id: id,
-                                                        image_type: "Primary".to_string(),
-                                                    }).await;
-                                                }
+                                                let Some(id) = item_id else { return };
+                                                let _ = client.execute(remux_sdks::remux::DeleteItemImage {
+                                                    item_id: id.clone(),
+                                                    image_type: "Primary".to_string(),
+                                                }).await;
                                                 pending_image_bytes.set(None);
                                                 pending_image_preview.set(None);
-                                                has_image.set(false);
+                                                // The delete regenerates the placeholder server-side
+                                                // under a new tag; reusing the old one would hit the
+                                                // browser cache and show what we just removed.
+                                                let refreshed = client
+                                                    .execute(GetItems(GetItemsQuery {
+                                                        ids: uuid.map(|u| vec![u]),
+                                                        include_childless: Some(true),
+                                                        ..Default::default()
+                                                    }))
+                                                    .await
+                                                    .ok()
+                                                    .and_then(|r| r.items.into_iter().next())
+                                                    .and_then(|i| i.image_tags)
+                                                    .and_then(|t| t.primary);
+                                                match refreshed {
+                                                    Some(tag) => {
+                                                        current_image_url.set(Some(format!(
+                                                            "{base}/Items/{id}/Images/Primary?tag={tag}"
+                                                        )));
+                                                        has_image.set(true);
+                                                    }
+                                                    None => {
+                                                        current_image_url.set(None);
+                                                        has_image.set(false);
+                                                    }
+                                                }
                                             });
                                         }
                                     },

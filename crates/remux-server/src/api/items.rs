@@ -2249,14 +2249,13 @@ pub async fn update_virtual_folder(
     .execute(&state.ctx.db)
     .await?;
 
-    // Library name is baked into the generated placeholder — clear it so it regenerates.
-    let _ = ImageService::delete_image(
+    // Library name is baked into the generated placeholder — rebuild it.
+    let _ = ImageService::regenerate_library_image(
         &state
             .ctx
             .config
             .data_dir,
         payload.id,
-        db::ImageKind::Primary,
         &state
             .ctx
             .db,
@@ -3209,13 +3208,13 @@ pub async fn patch_item(
         .name
         .is_some()
     {
-        let _ = ImageService::delete_image(
+        // Title is baked into the generated placeholder — rebuild it.
+        let _ = ImageService::regenerate_library_image(
             &state
                 .ctx
                 .config
                 .data_dir,
             id,
-            db::ImageKind::Primary,
             &state
                 .ctx
                 .db,

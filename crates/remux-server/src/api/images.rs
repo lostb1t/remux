@@ -395,6 +395,23 @@ async fn delete_item_image_inner(
     )
     .await
     .context_internal("failed to delete image")?;
+
+    // Rebuild now rather than on the next GET, so the item DTO carries a fresh
+    // ImageTag immediately — clients cache images by tag for a day.
+    if kind == ImageKind::Primary {
+        let _ = ImageService::regenerate_library_image(
+            &state
+                .ctx
+                .config
+                .data_dir,
+            id,
+            &state
+                .ctx
+                .db,
+        )
+        .await;
+    }
+
     Ok(StatusCode::NO_CONTENT)
 }
 
