@@ -47,9 +47,10 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
             .clone();
         match p.from_cfg(
             addon.id,
-            &addon
+            addon
                 .preset
-                .config,
+                .config
+                .expose(),
             config,
         ) {
             Ok(caps) => {
@@ -114,7 +115,8 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
         name: addon.name,
         config: addon
             .preset
-            .config,
+            .config
+            .into_inner(),
         resources: addon.resources,
         types: addon
             .types
@@ -237,7 +239,8 @@ pub async fn create_addon(
         .normalize_cfg(
             payload
                 .preset
-                .config,
+                .config
+                .into_inner(),
             &state
                 .ctx
                 .config,
@@ -245,13 +248,14 @@ pub async fn create_addon(
         .context_bad_request("Invalid addon configuration")?;
     payload
         .preset
-        .config = normalized_config;
+        .config = normalized_config.into();
     let caps = preset
         .from_cfg(
             addon_id,
-            &payload
+            payload
                 .preset
-                .config,
+                .config
+                .expose(),
             &state
                 .ctx
                 .config,
@@ -459,7 +463,8 @@ pub async fn update_addon(
                     .ctx
                     .config,
             )
-            .context_bad_request("Invalid addon configuration")?;
+            .context_bad_request("Invalid addon configuration")?
+            .into();
     }
     preset
         .from_cfg(

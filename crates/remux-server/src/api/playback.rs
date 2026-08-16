@@ -1130,7 +1130,8 @@ mod tests {
                 kind: "stremio".to_string(),
                 config: serde_json::json!({
                     "manifest_url": "https://example.com/addon/manifest.json"
-                }),
+                })
+                .into(),
             },
             resources: vec![ResourceType::Stream],
             types: vec![],

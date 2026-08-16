@@ -105,7 +105,12 @@ pub fn device_info_from(
                 .remote_ip
                 .clone(),
             user_id: Some(device.user_id),
-            is_current_session: Some(device.access_token == caller_token),
+            is_current_session: Some(
+                device
+                    .access_token
+                    .expose()
+                    == caller_token,
+            ),
         }),
     }
 }

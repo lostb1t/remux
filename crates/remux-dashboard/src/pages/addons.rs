@@ -442,7 +442,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                         let c = client.clone();
                                         spawn(async move {
                                             let payload = CreateAddonRequest {
-                                                preset: AddonPresetRef { kind, config },
+                                                preset: AddonPresetRef { kind, config: config.into() },
                                                 name,
                                                 resources: Vec::new(),
                                                 types: Vec::new(),

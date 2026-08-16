@@ -140,3 +140,5 @@ pub fn normalize_container(raw: &str) -> String {
         other => other.to_string(),
     }
 }
+pub mod secret;
+pub use secret::Secret;

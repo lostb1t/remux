@@ -1832,7 +1832,8 @@ mod tests {
                 config: serde_json::json!({
                     "media_kind": media_kind,
                     "paths": [root],
-                }),
+                })
+                .into(),
             },
             resources: vec![ResourceType::Stream, ResourceType::Catalog],
             types: vec![],

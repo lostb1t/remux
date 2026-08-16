@@ -145,8 +145,9 @@ pub struct AddonSelectOption {
 #[serde(rename_all = "camelCase")]
 pub struct AddonPresetRef {
     pub kind: String,
+    /// Holds every `Password`-kind option value.
     #[serde(default)]
-    pub config: serde_json::Value,
+    pub config: remux_utils::Secret<serde_json::Value>,
 }
 
 /// Static metadata describing one kind of addon. Returned by `GET /addon-kinds`

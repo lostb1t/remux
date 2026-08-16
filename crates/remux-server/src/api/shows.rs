@@ -690,7 +690,9 @@ mod test {
     async fn insert_user(db: &SqlitePool, username: &str) -> db::User {
         let mut user = db::User {
             username: username.to_string(),
-            password_hash: "test".to_string(),
+            password_hash: "test"
+                .to_string()
+                .into(),
             ..Default::default()
         };
         user.save(db)

@@ -220,22 +220,7 @@ impl TrackingIds {
 }
 
 /// Opaque to core: a static webhook token and an OAuth triple look the same.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct TrackingCredentials(pub serde_json::Value);
-
-impl TrackingCredentials {
-    pub fn new(value: serde_json::Value) -> Self {
-        Self(value)
-    }
-
-    pub fn get_str(&self, key: &str) -> Option<&str> {
-        self.0
-            .get(key)
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-    }
-}
+pub type TrackingCredentials = remux_utils::Secret<serde_json::Value>;
 
 /// Drives which connect UI the dashboard renders, without it knowing the
 /// provider.

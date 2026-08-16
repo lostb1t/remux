@@ -42,7 +42,7 @@ use crate::{AppState, common::get_uuid, db};
 #[serde(rename_all = "PascalCase")]
 pub struct Device {
     pub id: String,
-    pub access_token: String,
+    pub access_token: remux_utils::Secret<String>,
     pub user_id: Uuid,
     pub name: String,
     pub app_name: String,
@@ -101,7 +101,9 @@ impl Device {
             user_id: user
                 .id
                 .clone(),
-            access_token: get_uuid().to_string(),
+            access_token: get_uuid()
+                .to_string()
+                .into(),
             ..Default::default()
         })
     }
@@ -753,7 +755,9 @@ mod tests {
     async fn insert_device(db: &SqlitePool, user_id: Uuid, token: &str) {
         Device {
             id: Uuid::new_v4().to_string(),
-            access_token: token.to_string(),
+            access_token: token
+                .to_string()
+                .into(),
             user_id,
             name: "Test Device".to_string(),
             app_name: "Test".to_string(),
