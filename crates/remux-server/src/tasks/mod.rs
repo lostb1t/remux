@@ -22,6 +22,7 @@ mod clean_transcode_folder;
 mod clear_cache;
 mod clear_image_cache;
 mod jellyfin_import;
+mod media_tracker_sync;
 mod purge_iptv;
 mod purge_media;
 mod purge_metrics;
@@ -34,12 +35,12 @@ mod refresh_iptv;
 mod refresh_library;
 mod refresh_popularity;
 mod series_sync;
-mod tracking_sync;
 pub use crate::common::ProgressReporter;
 use clean_transcode_folder::CleanTranscodeFolderTask;
 use clear_cache::ClearCacheTask;
 use clear_image_cache::ClearImageCacheTask;
 use jellyfin_import::JellyfinImportTask;
+pub use media_tracker_sync::{MediaTrackerOutboxPayload, MediaTrackerSyncTask};
 use purge_iptv::PurgeIptvTask;
 use purge_media::PurgeMediaTask;
 use purge_metrics::PurgeMetricsTask;
@@ -51,7 +52,6 @@ use refresh_iptv::RefreshIptvTask;
 use refresh_library::RefreshLibraryTask;
 use refresh_popularity::RefreshPopularityTask;
 use series_sync::SeriesSyncTask;
-pub use tracking_sync::{OutboxPayload, TrackingSyncTask};
 
 // --- Task category ---
 
@@ -298,7 +298,7 @@ impl TaskService {
             .register_task(Arc::new(ClearCacheTask))
             .await?;
         service
-            .register_task(Arc::new(TrackingSyncTask))
+            .register_task(Arc::new(MediaTrackerSyncTask))
             .await?;
         service
             .register_task(Arc::new(ClearImageCacheTask))

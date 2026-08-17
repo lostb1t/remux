@@ -23,20 +23,20 @@ const KEEP_DELIVERED_DAYS: i64 = 7;
 /// What one outbox row carries: the event plus the item it was about, resolved
 /// at enqueue time so delivery never has to look anything up.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct OutboxPayload {
+pub struct MediaTrackerOutboxPayload {
     pub event: TrackingEvent,
     pub target: TrackingTarget,
 }
 
-pub struct TrackingSyncTask;
+pub struct MediaTrackerSyncTask;
 
 #[async_trait]
-impl Task for TrackingSyncTask {
+impl Task for MediaTrackerSyncTask {
     fn key(&self) -> &str {
-        "TrackingSync"
+        "MediaTrackerSync"
     }
     fn name(&self) -> &str {
-        "Tracking Sync"
+        "Media Tracker Sync"
     }
     fn description(&self) -> &str {
         "Delivers pending watch activity to connected tracking services, retrying \
@@ -56,9 +56,10 @@ impl Task for TrackingSyncTask {
         progress: ProgressReporter,
     ) -> Result<()> {
         let delivered = drain(&ctx, &progress).await?;
-        let purged = db::TrackingOutbox::purge_delivered(&ctx.db, KEEP_DELIVERED_DAYS)
-            .await
-            .unwrap_or(0);
+        let purged =
+            db::MediaTrackerOutbox::purge_delivered(&ctx.db, KEEP_DELIVERED_DAYS)
+                .await
+                .unwrap_or(0);
         debug!(delivered, purged, "tracking sync pass complete");
         progress.set(100.0);
         Ok(())
@@ -70,7 +71,7 @@ impl Task for TrackingSyncTask {
 /// Failures are recorded per row and never abort the pass: one dead provider
 /// must not stop another user's scrobbles from going out.
 pub async fn drain(ctx: &AppContext, progress: &ProgressReporter) -> Result<usize> {
-    let due = db::TrackingOutbox::due(&ctx.db, BATCH).await?;
+    let due = db::MediaTrackerOutbox::due(&ctx.db, BATCH).await?;
     if due.is_empty() {
         return Ok(0);
     }
@@ -84,13 +85,13 @@ pub async fn drain(ctx: &AppContext, progress: &ProgressReporter) -> Result<usiz
     {
         match deliver(ctx, &row).await {
             Ok(()) => {
-                db::TrackingOutbox::mark_delivered(&ctx.db, row.id).await?;
+                db::MediaTrackerOutbox::mark_delivered(&ctx.db, row.id).await?;
                 db::UserMediaTracker::mark_success(&ctx.db, row.user_media_tracker_id)
                     .await?;
                 delivered += 1;
             }
             Err(err) => {
-                let status = db::TrackingOutbox::record_failure(
+                let status = db::MediaTrackerOutbox::record_failure(
                     &ctx.db,
                     row.id,
                     row.attempts,
@@ -98,8 +99,8 @@ pub async fn drain(ctx: &AppContext, progress: &ProgressReporter) -> Result<usiz
                 )
                 .await?;
                 // A retryable blip is the worker's business, not the user's, so
-                // only a terminal outcome touches the connection's health.
-                if status != db::OutboxStatus::Pending {
+                // only a terminal outcome touches the media tracker's health.
+                if status != db::MediaTrackerOutboxStatus::Pending {
                     db::UserMediaTracker::mark_failure(
                         &ctx.db,
                         row.user_media_tracker_id,
@@ -122,11 +123,11 @@ pub async fn drain(ctx: &AppContext, progress: &ProgressReporter) -> Result<usiz
     Ok(delivered)
 }
 
-async fn deliver(ctx: &AppContext, row: &db::TrackingOutbox) -> TrackingResult<()> {
+async fn deliver(ctx: &AppContext, row: &db::MediaTrackerOutbox) -> TrackingResult<()> {
     let conn = db::UserMediaTracker::get(&ctx.db, row.user_media_tracker_id)
         .await
-        .map_err(|e| TrackingError::retryable(format!("loading connection: {e}")))?
-        .ok_or_else(|| TrackingError::permanent("connection no longer exists"))?;
+        .map_err(|e| TrackingError::retryable(format!("loading media tracker: {e}")))?
+        .ok_or_else(|| TrackingError::permanent("media tracker no longer exists"))?;
 
     let addon = ctx
         .addons
@@ -136,7 +137,7 @@ async fn deliver(ctx: &AppContext, row: &db::TrackingOutbox) -> TrackingResult<(
             TrackingError::permanent("tracking addon is not enabled")
         })?;
 
-    let payload: OutboxPayload = serde_json::from_str(&row.payload)
+    let payload: MediaTrackerOutboxPayload = serde_json::from_str(&row.payload)
         .map_err(|e| TrackingError::permanent(format!("unreadable payload: {e}")))?;
 
     let tctx = TrackingCtx {

@@ -31,7 +31,7 @@ const MAX_BACKOFF_SECS: i64 = 6 * 60 * 60;
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 #[sqlx(type_name = "TEXT", rename_all = "snake_case")]
-pub enum OutboxStatus {
+pub enum MediaTrackerOutboxStatus {
     #[default]
     Pending,
     Delivered,
@@ -42,12 +42,12 @@ pub enum OutboxStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-pub struct TrackingOutbox {
+pub struct MediaTrackerOutbox {
     pub id: Uuid,
     pub user_media_tracker_id: Uuid,
     pub event_kind: TrackingEventKind,
     pub payload: String,
-    pub status: OutboxStatus,
+    pub status: MediaTrackerOutboxStatus,
     pub attempts: i64,
     pub next_attempt_at: NaiveDateTime,
     pub last_error: Option<String>,
@@ -74,7 +74,7 @@ pub fn backoff(attempts: i64, retry_after: Option<Duration>) -> Duration {
     }
 }
 
-impl TrackingOutbox {
+impl MediaTrackerOutbox {
     pub fn new(
         user_media_tracker_id: Uuid,
         event_kind: TrackingEventKind,
@@ -86,7 +86,7 @@ impl TrackingOutbox {
             user_media_tracker_id,
             event_kind,
             payload,
-            status: OutboxStatus::Pending,
+            status: MediaTrackerOutboxStatus::Pending,
             attempts: 0,
             // Due immediately; the worker is also poked directly on enqueue.
             next_attempt_at: now,
@@ -99,7 +99,7 @@ impl TrackingOutbox {
 
     pub async fn insert(&self, db: &SqlitePool) -> Result<()> {
         sqlx::query(
-            "INSERT INTO tracking_outbox \
+            "INSERT INTO media_tracker_outbox \
              (id, user_media_tracker_id, event_kind, payload, status, attempts, \
               next_attempt_at, last_error, created_at, updated_at, delivered_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
@@ -122,7 +122,7 @@ impl TrackingOutbox {
 
     pub async fn get(db: &SqlitePool, id: Uuid) -> Result<Option<Self>> {
         Ok(sqlx::query_as::<_, Self>(&format!(
-            "SELECT {COLS} FROM tracking_outbox WHERE id = ?1"
+            "SELECT {COLS} FROM media_tracker_outbox WHERE id = ?1"
         ))
         .bind(id)
         .fetch_optional(db)
@@ -131,7 +131,7 @@ impl TrackingOutbox {
 
     pub async fn due(db: &SqlitePool, limit: i64) -> Result<Vec<Self>> {
         Ok(sqlx::query_as::<_, Self>(&format!(
-            "SELECT {COLS} FROM tracking_outbox \
+            "SELECT {COLS} FROM media_tracker_outbox \
              WHERE status = 'pending' AND next_attempt_at <= ?1 \
              ORDER BY next_attempt_at ASC LIMIT ?2"
         ))
@@ -141,13 +141,13 @@ impl TrackingOutbox {
         .await?)
     }
 
-    pub async fn list_for_connection(
+    pub async fn list_for_media_tracker(
         db: &SqlitePool,
         user_media_tracker_id: Uuid,
         limit: i64,
     ) -> Result<Vec<Self>> {
         Ok(sqlx::query_as::<_, Self>(&format!(
-            "SELECT {COLS} FROM tracking_outbox WHERE user_media_tracker_id = ?1 \
+            "SELECT {COLS} FROM media_tracker_outbox WHERE user_media_tracker_id = ?1 \
              ORDER BY created_at DESC LIMIT ?2"
         ))
         .bind(user_media_tracker_id)
@@ -159,7 +159,7 @@ impl TrackingOutbox {
     pub async fn mark_delivered(db: &SqlitePool, id: Uuid) -> Result<()> {
         let now = Utc::now().naive_utc();
         sqlx::query(
-            "UPDATE tracking_outbox \
+            "UPDATE media_tracker_outbox \
              SET status = 'delivered', delivered_at = ?2, last_error = NULL, \
                  updated_at = ?2 \
              WHERE id = ?1",
@@ -181,28 +181,30 @@ impl TrackingOutbox {
         id: Uuid,
         attempts: i64,
         err: &TrackingError,
-    ) -> Result<OutboxStatus> {
+    ) -> Result<MediaTrackerOutboxStatus> {
         let now = Utc::now().naive_utc();
         let attempts = attempts + 1;
 
         let (status, next_attempt_at) = match err {
-            TrackingError::Permanent { .. } => (OutboxStatus::FailedPermanent, now),
+            TrackingError::Permanent { .. } => {
+                (MediaTrackerOutboxStatus::FailedPermanent, now)
+            }
             TrackingError::Retryable { retry_after, .. } => {
                 if attempts >= MAX_ATTEMPTS {
-                    (OutboxStatus::FailedRetryable, now)
+                    (MediaTrackerOutboxStatus::FailedRetryable, now)
                 } else {
                     let wait = backoff(attempts, *retry_after);
                     let next = now
                         + chrono::Duration::from_std(wait).unwrap_or_else(|_| {
                             chrono::Duration::seconds(MAX_BACKOFF_SECS)
                         });
-                    (OutboxStatus::Pending, next)
+                    (MediaTrackerOutboxStatus::Pending, next)
                 }
             }
         };
 
         sqlx::query(
-            "UPDATE tracking_outbox \
+            "UPDATE media_tracker_outbox \
              SET status = ?2, attempts = ?3, next_attempt_at = ?4, \
                  last_error = ?5, updated_at = ?6 \
              WHERE id = ?1",
@@ -223,7 +225,7 @@ impl TrackingOutbox {
     pub async fn purge_delivered(db: &SqlitePool, keep_days: i64) -> Result<u64> {
         let cutoff = Utc::now().naive_utc() - chrono::Duration::days(keep_days);
         let res = sqlx::query(
-            "DELETE FROM tracking_outbox \
+            "DELETE FROM media_tracker_outbox \
              WHERE status = 'delivered' AND delivered_at < ?1",
         )
         .bind(cutoff)
@@ -304,9 +306,9 @@ mod tests {
         conn.id
     }
 
-    async fn queue(db: &SqlitePool, conn: Uuid) -> TrackingOutbox {
+    async fn queue(db: &SqlitePool, conn: Uuid) -> MediaTrackerOutbox {
         let row =
-            TrackingOutbox::new(conn, TrackingEventKind::PlaybackStop, "{}".into());
+            MediaTrackerOutbox::new(conn, TrackingEventKind::PlaybackStop, "{}".into());
         row.insert(db)
             .await
             .unwrap();
@@ -325,7 +327,7 @@ mod tests {
         let row = queue(db, conn).await;
 
         assert_eq!(
-            TrackingOutbox::due(db, 10)
+            MediaTrackerOutbox::due(db, 10)
                 .await
                 .unwrap()
                 .len(),
@@ -333,7 +335,7 @@ mod tests {
             "a fresh row is due immediately"
         );
 
-        let status = TrackingOutbox::record_failure(
+        let status = MediaTrackerOutbox::record_failure(
             db,
             row.id,
             0,
@@ -341,9 +343,9 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(status, OutboxStatus::Pending);
+        assert_eq!(status, MediaTrackerOutboxStatus::Pending);
 
-        let got = TrackingOutbox::get(db, row.id)
+        let got = MediaTrackerOutbox::get(db, row.id)
             .await
             .unwrap()
             .unwrap();
@@ -353,7 +355,7 @@ mod tests {
             "should have been pushed into the future"
         );
         assert!(
-            TrackingOutbox::due(db, 10)
+            MediaTrackerOutbox::due(db, 10)
                 .await
                 .unwrap()
                 .is_empty(),
@@ -372,7 +374,7 @@ mod tests {
         let conn = seed(db).await;
         let row = queue(db, conn).await;
 
-        let status = TrackingOutbox::record_failure(
+        let status = MediaTrackerOutbox::record_failure(
             db,
             row.id,
             0,
@@ -380,9 +382,9 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(status, OutboxStatus::FailedPermanent);
+        assert_eq!(status, MediaTrackerOutboxStatus::FailedPermanent);
         assert!(
-            TrackingOutbox::due(db, 10)
+            MediaTrackerOutbox::due(db, 10)
                 .await
                 .unwrap()
                 .is_empty(),
@@ -401,9 +403,9 @@ mod tests {
         let conn = seed(db).await;
         let row = queue(db, conn).await;
 
-        let mut status = OutboxStatus::Pending;
+        let mut status = MediaTrackerOutboxStatus::Pending;
         for attempt in 0..MAX_ATTEMPTS {
-            status = TrackingOutbox::record_failure(
+            status = MediaTrackerOutbox::record_failure(
                 db,
                 row.id,
                 attempt,
@@ -414,12 +416,12 @@ mod tests {
         }
         assert_eq!(
             status,
-            OutboxStatus::FailedRetryable,
+            MediaTrackerOutboxStatus::FailedRetryable,
             "should stop rather than retry forever"
         );
 
         // Kept, not deleted: this is what the activity view shows.
-        let got = TrackingOutbox::get(db, row.id)
+        let got = MediaTrackerOutbox::get(db, row.id)
             .await
             .unwrap()
             .unwrap();
@@ -442,18 +444,23 @@ mod tests {
         let conn = seed(db).await;
         let row = queue(db, conn).await;
 
-        TrackingOutbox::record_failure(db, row.id, 0, &TrackingError::retryable("503"))
-            .await
-            .unwrap();
-        TrackingOutbox::mark_delivered(db, row.id)
+        MediaTrackerOutbox::record_failure(
+            db,
+            row.id,
+            0,
+            &TrackingError::retryable("503"),
+        )
+        .await
+        .unwrap();
+        MediaTrackerOutbox::mark_delivered(db, row.id)
             .await
             .unwrap();
 
-        let got = TrackingOutbox::get(db, row.id)
+        let got = MediaTrackerOutbox::get(db, row.id)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(got.status, OutboxStatus::Delivered);
+        assert_eq!(got.status, MediaTrackerOutboxStatus::Delivered);
         assert!(
             got.last_error
                 .is_none()
@@ -463,7 +470,7 @@ mod tests {
                 .is_some()
         );
         assert!(
-            TrackingOutbox::due(db, 10)
+            MediaTrackerOutbox::due(db, 10)
                 .await
                 .unwrap()
                 .is_empty()
@@ -482,10 +489,10 @@ mod tests {
         let delivered = queue(db, conn).await;
         let failed = queue(db, conn).await;
 
-        TrackingOutbox::mark_delivered(db, delivered.id)
+        MediaTrackerOutbox::mark_delivered(db, delivered.id)
             .await
             .unwrap();
-        TrackingOutbox::record_failure(
+        MediaTrackerOutbox::record_failure(
             db,
             failed.id,
             0,
@@ -494,19 +501,19 @@ mod tests {
         .await
         .unwrap();
         // Backdate the delivered row past the retention window.
-        sqlx::query("UPDATE tracking_outbox SET delivered_at = ?2 WHERE id = ?1")
+        sqlx::query("UPDATE media_tracker_outbox SET delivered_at = ?2 WHERE id = ?1")
             .bind(delivered.id)
             .bind(Utc::now().naive_utc() - chrono::Duration::days(30))
             .execute(db)
             .await
             .unwrap();
 
-        let purged = TrackingOutbox::purge_delivered(db, 7)
+        let purged = MediaTrackerOutbox::purge_delivered(db, 7)
             .await
             .unwrap();
         assert_eq!(purged, 1);
         assert!(
-            TrackingOutbox::get(db, failed.id)
+            MediaTrackerOutbox::get(db, failed.id)
                 .await
                 .unwrap()
                 .is_some(),
@@ -515,7 +522,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deleting_a_connection_takes_its_queue_with_it() {
+    async fn deleting_a_media_tracker_takes_its_queue_with_it() {
         let (_s, guard) = new_test_server()
             .await
             .unwrap();
@@ -530,11 +537,11 @@ mod tests {
             .unwrap();
 
         assert!(
-            TrackingOutbox::get(db, row.id)
+            MediaTrackerOutbox::get(db, row.id)
                 .await
                 .unwrap()
                 .is_none(),
-            "disconnecting must not leave deliveries queued for a dead connection"
+            "disconnecting must not leave deliveries queued for a dead media tracker"
         );
     }
 
@@ -546,7 +553,7 @@ mod tests {
             .await
             .unwrap();
         let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM task_triggers WHERE task_id = 'TrackingSync'",
+            "SELECT COUNT(*) FROM task_triggers WHERE task_id = 'MediaTrackerSync'",
         )
         .fetch_one(
             &guard
@@ -555,6 +562,6 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(count, 1, "TrackingSync has no schedule");
+        assert_eq!(count, 1, "MediaTrackerSync has no schedule");
     }
 }
