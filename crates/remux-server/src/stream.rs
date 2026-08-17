@@ -189,6 +189,10 @@ pub struct StreamInfo {
     /// Raw NZB URL (from AIOStreams streamData). Used for RemuxDB matching via indexer_guid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nzb_url: Option<String>,
+    /// Binge group from `behaviorHints.bingeGroup` (e.g. "real-debrid|1080p").
+    /// Used as part of the stable dedup key for HTTP streams.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binge_group: Option<String>,
     /// Torrent info-hash for the source release (from AIOStreams streamData).
     /// Stored independently of the descriptor so debrid Http streams can match by hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]

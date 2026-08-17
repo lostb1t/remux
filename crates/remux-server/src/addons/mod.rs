@@ -2496,20 +2496,53 @@ impl AddonService {
     }
 
     fn stream_dedup_key(s: &db::Media) -> Option<String> {
-        match &s
+        let si = s
             .stream_info
-            .as_ref()?
-            .descriptor
-        {
+            .as_ref()?;
+        match &si.descriptor {
             crate::stream::StreamDescriptor::Torrent { info_hash, .. } => {
                 Some(format!("torrent:{}", info_hash.to_lowercase()))
             }
             crate::stream::StreamDescriptor::Http { url, .. } => {
-                let stable = url
-                    .split('?')
-                    .next()
-                    .unwrap_or(url.as_str());
-                Some(format!("http:{stable}"))
+                let filename = si
+                    .filename
+                    .as_deref()
+                    .unwrap_or("");
+                let size = si
+                    .size
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+                let binge_group = si
+                    .binge_group
+                    .as_deref()
+                    .unwrap_or("");
+                let service_id = si
+                    .service_id
+                    .as_deref()
+                    .unwrap_or("");
+                let addon_id = si
+                    .addon_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_default();
+
+                if filename.is_empty()
+                    && size.is_empty()
+                    && binge_group.is_empty()
+                    && service_id.is_empty()
+                    && addon_id.is_empty()
+                {
+                    // Plain HTTP with no stable metadata — fall back to URL path.
+                    let stable = url
+                        .split('?')
+                        .next()
+                        .unwrap_or(url.as_str());
+                    return Some(format!("http:{stable}"));
+                }
+
+                Some(format!(
+                    "http:{}:{}:{}:{}:{}",
+                    filename, size, binge_group, service_id, addon_id
+                ))
             }
             crate::stream::StreamDescriptor::Local(path) => {
                 Some(format!("local:{}", path.display()))
@@ -2826,7 +2859,7 @@ impl AddonService {
 
         // delete stale items
         sqlx::query(
-            "DELETE FROM media WHERE kind = 'stream' AND parent_id = ? AND updated_at < datetime('now', '-7 days')",
+            "DELETE FROM media WHERE kind = 'stream' AND parent_id = ? AND updated_at < datetime('now', '-1 days')",
         )
         .bind(media.id)
         .execute(&ctx.db)
