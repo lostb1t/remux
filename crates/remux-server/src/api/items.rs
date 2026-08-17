@@ -355,7 +355,6 @@ pub async fn get_items(
                     Ok(results) => {
                         let items: Vec<_> = results
                             .into_iter()
-                            .filter(|m| !m.is_single_or_ep_album())
                             .map(|m| api::db_media_to_item(m, hide_sources))
                             .filter(|item| {
                                 q.media_types
@@ -410,7 +409,6 @@ pub async fn get_items(
                         all_items.extend(
                             r.records
                                 .into_iter()
-                                .filter(|m| !m.is_single_or_ep_album())
                                 .map(|m| api::db_media_to_item(m, hide_sources)),
                         );
                     }
