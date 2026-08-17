@@ -883,24 +883,15 @@ async fn tmdb_season_episodes(
         .into_iter()
         .map(|ep| {
             let mut stub = db::Media::from(&ep);
-            let key = if let Some(ref imdb) = series_imdb {
-                format!("{}:{}:{}", imdb, ep.season_number, ep.episode_number)
-            } else {
-                format!(
-                    "{}:{}:{}",
-                    series_tmdb_id, ep.season_number, ep.episode_number
-                )
+            // Keep the established anchor (imdb id when present, else the bare
+            // tmdb id) but derive the UUIDs through the shared helpers.
+            let anchor = match &series_imdb {
+                Some(imdb) => imdb.to_string(),
+                None => series_tmdb_id.to_string(),
             };
-            stub.id = common::stable_media_uuid(&db::MediaKind::Episode, &key);
-            let season_key = if let Some(ref imdb) = series_imdb {
-                format!("{}:{}", imdb, ep.season_number)
-            } else {
-                format!("{}:{}", series_tmdb_id, ep.season_number)
-            };
-            stub.parent_id = Some(common::stable_media_uuid(
-                &db::MediaKind::Season,
-                &season_key,
-            ));
+            stub.id =
+                db::Media::episode_id(&anchor, ep.season_number, ep.episode_number);
+            stub.parent_id = Some(db::Media::season_id(&anchor, ep.season_number));
             stub.grandparent_id = season.parent_id;
             stub
         })

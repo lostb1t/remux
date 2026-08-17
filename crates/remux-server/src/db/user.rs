@@ -511,6 +511,27 @@ impl UserMediaState {
         let mut all_ids: Vec<Uuid> = Vec::with_capacity(6);
         all_ids.push(media.id);
         all_ids.extend(super::Media::ext_id_uuid_candidates(media));
+        // For episodes/seasons the flat candidates are derived from the grandparent
+        // series' external IDs, which are usually not preloaded on the media row.
+        // Load them so a purged+repopulated library can still find old state rows.
+        if matches!(
+            media.kind,
+            super::MediaKind::Season | super::MediaKind::Episode
+        ) && media
+            .grandparent
+            .is_none()
+        {
+            if let Some(gp_id) = media
+                .grandparent_id
+                .or(media.parent_id)
+            {
+                if let Ok(Some(gp)) = super::Media::get_by_id(db, &gp_id).await {
+                    let mut with_gp = media.clone();
+                    with_gp.grandparent = Some(Box::new(gp));
+                    all_ids.extend(super::Media::ext_id_uuid_candidates(&with_gp));
+                }
+            }
+        }
 
         let placeholders = all_ids
             .iter()
