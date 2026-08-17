@@ -4253,6 +4253,7 @@ pub struct AuthenticationInfo {
 
 #[dto]
 pub struct SearchHint {
+    pub id: Uuid,
     pub item_id: Uuid,
     pub name: Option<String>,
     pub matched_term: Option<String>,
@@ -4271,6 +4272,10 @@ pub struct SearchHint {
     pub media_type: Option<String>,
     pub series_id: Option<Uuid>,
     pub series_name: Option<String>,
+    pub album: Option<String>,
+    pub album_id: Option<String>,
+    pub album_artist: Option<String>,
+    pub artists: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -4329,6 +4334,21 @@ pub struct SearchHintsQuery {
     pub user_id: Option<Uuid>,
     #[serde(deserialize_with = "deserialize_separated_str", default)]
     pub include_item_types: Option<Vec<MediaType>>,
+    #[serde(deserialize_with = "deserialize_separated_str", default)]
+    pub exclude_item_types: Option<Vec<MediaType>>,
+    #[serde(deserialize_with = "deserialize_separated_str", default)]
+    pub media_types: Option<Vec<MediaType>>,
+    pub parent_id: Option<Uuid>,
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
+    pub is_movie: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
+    pub is_series: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
+    pub is_news: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
+    pub is_kids: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
+    pub is_sports: Option<bool>,
 }
 
 #[dto]
