@@ -220,11 +220,15 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes/ || true
+          sudo rm -rf /Library/Developer/CoreSimulator || true
+          sudo rm -rf ~/Library/Developer/CoreSimulator || true
           sudo rm -rf ~/Library/Developer/Xcode/iOS\ DeviceSupport/ || true
           sudo rm -rf /Applications/Xcode_*.app || true
           sudo rm -rf /usr/local/lib/android || true
           sudo rm -rf /usr/local/share/dotnet || true
           sudo rm -rf /Library/Java/JavaVirtualMachines/ || true
+          sudo rm -rf /usr/local/lib/node_modules || true
+          sudo rm -rf "$HOME/.cache" || true
           df -h /
 
       - name: Install Rust toolchain
@@ -234,11 +238,6 @@ jobs:
 
       - name: Set up sccache
         uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: desktop-${{ runner.os }}-${{ matrix.target }}
 
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@main
@@ -295,8 +294,16 @@ jobs:
       - name: Sign and package bundle (macOS .dmg)
         if: runner.os == 'macOS'
         run: |
+          set -euo pipefail
           APP=$(ls -d target/${{ matrix.target }}/release/bundle/osx/*.app | head -1)
           codesign --deep --force --sign - "$APP"
+          df -h /
+          # The dashboard and jellyfin-web are already embedded in the binary at
+          # compile time; drop the downloaded copies so hdiutil has headroom.
+          rm -rf jellyfin-web
+          rm -rf target/dx/remux-dashboard/release/web/public
+          # Cargo incremental artifacts are dead weight after a successful link.
+          rm -rf target/${{ matrix.target }}/release/incremental
           hdiutil create -volname "Remux" -srcfolder "$APP" -ov -format UDZO ${{ matrix.artifact }}.dmg
 
       - name: Package bundle (Linux .deb)
