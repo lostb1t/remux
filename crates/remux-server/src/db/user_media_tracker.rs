@@ -24,7 +24,7 @@ use crate::addons::tracking::{TrackingCredentials, TrackingError, TrackingEventK
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 #[sqlx(type_name = "TEXT", rename_all = "snake_case")]
-pub enum TrackingStatus {
+pub enum MediaTrackerStatus {
     #[default]
     Disconnected,
     Connected,
@@ -51,12 +51,12 @@ pub enum TrackingStatus {
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 #[sqlx(type_name = "TEXT", rename_all = "snake_case")]
-pub enum TrackingErrorKind {
+pub enum MediaTrackerErrorKind {
     Retryable,
     Permanent,
 }
 
-impl From<&TrackingError> for TrackingErrorKind {
+impl From<&TrackingError> for MediaTrackerErrorKind {
     fn from(err: &TrackingError) -> Self {
         if err.is_retryable() {
             Self::Retryable
@@ -67,11 +67,11 @@ impl From<&TrackingError> for TrackingErrorKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-pub struct TrackingConnection {
+pub struct UserMediaTracker {
     pub id: Uuid,
     pub addon_id: Uuid,
     pub user_id: Uuid,
-    pub status: TrackingStatus,
+    pub status: MediaTrackerStatus,
     #[sqlx(json)]
     #[serde(skip_serializing)]
     pub credentials: TrackingCredentials,
@@ -80,7 +80,7 @@ pub struct TrackingConnection {
     pub last_success_at: Option<NaiveDateTime>,
     pub last_error_at: Option<NaiveDateTime>,
     pub last_error: Option<String>,
-    pub last_error_kind: Option<TrackingErrorKind>,
+    pub last_error_kind: Option<MediaTrackerErrorKind>,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
@@ -88,7 +88,7 @@ pub struct TrackingConnection {
 const COLS: &str = "id, addon_id, user_id, status, credentials, event_filters, \
      last_success_at, last_error_at, last_error, last_error_kind, created_at, updated_at";
 
-impl TrackingConnection {
+impl UserMediaTracker {
     pub fn new(
         user_id: Uuid,
         addon_id: Uuid,
@@ -100,7 +100,7 @@ impl TrackingConnection {
             id: crate::common::get_uuid(),
             addon_id,
             user_id,
-            status: TrackingStatus::Connected,
+            status: MediaTrackerStatus::Connected,
             credentials,
             event_filters,
             last_success_at: None,
@@ -114,7 +114,7 @@ impl TrackingConnection {
 
     /// Whether this connection should receive `kind`.
     pub fn wants(&self, kind: TrackingEventKind) -> bool {
-        self.status == TrackingStatus::Connected
+        self.status == MediaTrackerStatus::Connected
             && self
                 .event_filters
                 .contains(&kind)
@@ -122,7 +122,7 @@ impl TrackingConnection {
 
     pub async fn get(db: &SqlitePool, id: Uuid) -> Result<Option<Self>> {
         Ok(sqlx::query_as::<_, Self>(&format!(
-            "SELECT {COLS} FROM tracking_connections WHERE id = ?1"
+            "SELECT {COLS} FROM user_media_trackers WHERE id = ?1"
         ))
         .bind(id)
         .fetch_optional(db)
@@ -135,7 +135,7 @@ impl TrackingConnection {
         addon_id: Uuid,
     ) -> Result<Option<Self>> {
         Ok(sqlx::query_as::<_, Self>(&format!(
-            "SELECT {COLS} FROM tracking_connections WHERE user_id = ?1 AND addon_id = ?2"
+            "SELECT {COLS} FROM user_media_trackers WHERE user_id = ?1 AND addon_id = ?2"
         ))
         .bind(user_id)
         .bind(addon_id)
@@ -145,7 +145,7 @@ impl TrackingConnection {
 
     pub async fn list_for_user(db: &SqlitePool, user_id: Uuid) -> Result<Vec<Self>> {
         Ok(sqlx::query_as::<_, Self>(&format!(
-            "SELECT {COLS} FROM tracking_connections WHERE user_id = ?1 \
+            "SELECT {COLS} FROM user_media_trackers WHERE user_id = ?1 \
              ORDER BY created_at ASC"
         ))
         .bind(user_id)
@@ -155,7 +155,7 @@ impl TrackingConnection {
 
     pub async fn list_for_addon(db: &SqlitePool, addon_id: Uuid) -> Result<Vec<Self>> {
         Ok(sqlx::query_as::<_, Self>(&format!(
-            "SELECT {COLS} FROM tracking_connections WHERE addon_id = ?1 \
+            "SELECT {COLS} FROM user_media_trackers WHERE addon_id = ?1 \
              ORDER BY created_at ASC"
         ))
         .bind(addon_id)
@@ -182,7 +182,7 @@ impl TrackingConnection {
     /// anything referencing it.
     pub async fn upsert(&self, db: &SqlitePool) -> Result<()> {
         sqlx::query(
-            "INSERT INTO tracking_connections \
+            "INSERT INTO user_media_trackers \
              (id, addon_id, user_id, status, credentials, event_filters, \
               last_success_at, last_error_at, last_error, last_error_kind, \
               created_at, updated_at) \
@@ -218,7 +218,7 @@ impl TrackingConnection {
         filters: &[TrackingEventKind],
     ) -> Result<()> {
         sqlx::query(
-            "UPDATE tracking_connections SET event_filters = ?2, updated_at = ?3 \
+            "UPDATE user_media_trackers SET event_filters = ?2, updated_at = ?3 \
              WHERE id = ?1",
         )
         .bind(id)
@@ -232,7 +232,7 @@ impl TrackingConnection {
     pub async fn mark_success(db: &SqlitePool, id: Uuid) -> Result<()> {
         let now = Utc::now().naive_utc();
         sqlx::query(
-            "UPDATE tracking_connections \
+            "UPDATE user_media_trackers \
              SET status = 'connected', last_success_at = ?2, \
                  last_error = NULL, last_error_at = NULL, last_error_kind = NULL, \
                  updated_at = ?2 \
@@ -252,17 +252,17 @@ impl TrackingConnection {
         id: Uuid,
         err: &TrackingError,
     ) -> Result<()> {
-        let kind = TrackingErrorKind::from(err);
+        let kind = MediaTrackerErrorKind::from(err);
         let status = match kind {
-            TrackingErrorKind::Retryable => None,
-            TrackingErrorKind::Permanent if err.requires_reauth() => {
-                Some(TrackingStatus::AuthExpired)
+            MediaTrackerErrorKind::Retryable => None,
+            MediaTrackerErrorKind::Permanent if err.requires_reauth() => {
+                Some(MediaTrackerStatus::AuthExpired)
             }
-            TrackingErrorKind::Permanent => Some(TrackingStatus::Error),
+            MediaTrackerErrorKind::Permanent => Some(MediaTrackerStatus::Error),
         };
         let now = Utc::now().naive_utc();
         sqlx::query(
-            "UPDATE tracking_connections \
+            "UPDATE user_media_trackers \
              SET status = COALESCE(?2, status), last_error = ?3, \
                  last_error_at = ?4, last_error_kind = ?5, updated_at = ?4 \
              WHERE id = ?1",
@@ -278,7 +278,7 @@ impl TrackingConnection {
     }
 
     pub async fn delete(db: &SqlitePool, id: Uuid) -> Result<()> {
-        sqlx::query("DELETE FROM tracking_connections WHERE id = ?1")
+        sqlx::query("DELETE FROM user_media_trackers WHERE id = ?1")
             .bind(id)
             .execute(db)
             .await?;
@@ -331,7 +331,7 @@ mod tests {
         let addon = seed_addon(db).await;
         let user = seed_user(db, "alice").await;
 
-        let row = TrackingConnection::new(
+        let row = UserMediaTracker::new(
             user,
             addon,
             creds("abc"),
@@ -341,12 +341,12 @@ mod tests {
             .await
             .unwrap();
 
-        let got = TrackingConnection::get_for_user_and_addon(db, user, addon)
+        let got = UserMediaTracker::get_for_user_and_addon(db, user, addon)
             .await
             .unwrap()
             .expect("row should exist");
         assert_eq!(got.id, row.id);
-        assert_eq!(got.status, TrackingStatus::Connected);
+        assert_eq!(got.status, MediaTrackerStatus::Connected);
         assert_eq!(
             got.credentials
                 .get_str("token"),
@@ -366,13 +366,13 @@ mod tests {
         let addon = seed_addon(db).await;
         let user = seed_user(db, "alice").await;
 
-        let first = TrackingConnection::new(user, addon, creds("old"), vec![]);
+        let first = UserMediaTracker::new(user, addon, creds("old"), vec![]);
         first
             .upsert(db)
             .await
             .unwrap();
 
-        let second = TrackingConnection::new(
+        let second = UserMediaTracker::new(
             user,
             addon,
             creds("new"),
@@ -383,7 +383,7 @@ mod tests {
             .await
             .unwrap();
 
-        let rows = TrackingConnection::list_for_user(db, user)
+        let rows = UserMediaTracker::list_for_user(db, user)
             .await
             .unwrap();
         assert_eq!(rows.len(), 1, "the unique constraint should collapse these");
@@ -411,16 +411,16 @@ mod tests {
         let alice = seed_user(db, "alice").await;
         let bob = seed_user(db, "bob").await;
 
-        TrackingConnection::new(alice, addon, creds("a"), vec![])
+        UserMediaTracker::new(alice, addon, creds("a"), vec![])
             .upsert(db)
             .await
             .unwrap();
-        TrackingConnection::new(bob, addon, creds("b"), vec![])
+        UserMediaTracker::new(bob, addon, creds("b"), vec![])
             .upsert(db)
             .await
             .unwrap();
 
-        let for_alice = TrackingConnection::list_for_user(db, alice)
+        let for_alice = UserMediaTracker::list_for_user(db, alice)
             .await
             .unwrap();
         assert_eq!(for_alice.len(), 1);
@@ -431,7 +431,7 @@ mod tests {
             Some("a")
         );
         assert_eq!(
-            TrackingConnection::list_for_addon(db, addon)
+            UserMediaTracker::list_for_addon(db, addon)
                 .await
                 .unwrap()
                 .len(),
@@ -452,7 +452,7 @@ mod tests {
         let unsubscribed = seed_user(db, "unsubscribed").await;
         let broken = seed_user(db, "broken").await;
 
-        TrackingConnection::new(
+        UserMediaTracker::new(
             subscribed,
             addon,
             creds("a"),
@@ -461,7 +461,7 @@ mod tests {
         .upsert(db)
         .await
         .unwrap();
-        TrackingConnection::new(
+        UserMediaTracker::new(
             unsubscribed,
             addon,
             creds("b"),
@@ -470,7 +470,7 @@ mod tests {
         .upsert(db)
         .await
         .unwrap();
-        let broken_row = TrackingConnection::new(
+        let broken_row = UserMediaTracker::new(
             broken,
             addon,
             creds("c"),
@@ -480,7 +480,7 @@ mod tests {
             .upsert(db)
             .await
             .unwrap();
-        TrackingConnection::mark_failure(
+        UserMediaTracker::mark_failure(
             db,
             broken_row.id,
             &TrackingError::reauth("401"),
@@ -488,7 +488,7 @@ mod tests {
         .await
         .unwrap();
 
-        let got = TrackingConnection::list_subscribed(
+        let got = UserMediaTracker::list_subscribed(
             db,
             addon,
             TrackingEventKind::PlaybackStop,
@@ -513,7 +513,7 @@ mod tests {
             .db;
         let addon = seed_addon(db).await;
         let user = seed_user(db, "alice").await;
-        let row = TrackingConnection::new(
+        let row = UserMediaTracker::new(
             user,
             addon,
             creds("a"),
@@ -523,20 +523,20 @@ mod tests {
             .await
             .unwrap();
 
-        TrackingConnection::mark_failure(db, row.id, &TrackingError::retryable("503"))
+        UserMediaTracker::mark_failure(db, row.id, &TrackingError::retryable("503"))
             .await
             .unwrap();
 
-        let got = TrackingConnection::get(db, row.id)
+        let got = UserMediaTracker::get(db, row.id)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(
             got.status,
-            TrackingStatus::Connected,
+            MediaTrackerStatus::Connected,
             "a blip must not nag the user"
         );
-        assert_eq!(got.last_error_kind, Some(TrackingErrorKind::Retryable));
+        assert_eq!(got.last_error_kind, Some(MediaTrackerErrorKind::Retryable));
         assert!(
             got.wants(TrackingEventKind::PlaybackStop),
             "still dispatched to while retrying"
@@ -555,42 +555,38 @@ mod tests {
         let alice = seed_user(db, "alice").await;
         let bob = seed_user(db, "bob").await;
 
-        let auth = TrackingConnection::new(alice, addon, creds("a"), vec![]);
+        let auth = UserMediaTracker::new(alice, addon, creds("a"), vec![]);
         auth.upsert(db)
             .await
             .unwrap();
-        TrackingConnection::mark_failure(db, auth.id, &TrackingError::reauth("401"))
+        UserMediaTracker::mark_failure(db, auth.id, &TrackingError::reauth("401"))
             .await
             .unwrap();
 
-        let other = TrackingConnection::new(bob, addon, creds("b"), vec![]);
+        let other = UserMediaTracker::new(bob, addon, creds("b"), vec![]);
         other
             .upsert(db)
             .await
             .unwrap();
-        TrackingConnection::mark_failure(
-            db,
-            other.id,
-            &TrackingError::permanent("400"),
-        )
-        .await
-        .unwrap();
+        UserMediaTracker::mark_failure(db, other.id, &TrackingError::permanent("400"))
+            .await
+            .unwrap();
 
         assert_eq!(
-            TrackingConnection::get(db, auth.id)
+            UserMediaTracker::get(db, auth.id)
                 .await
                 .unwrap()
                 .unwrap()
                 .status,
-            TrackingStatus::AuthExpired
+            MediaTrackerStatus::AuthExpired
         );
         assert_eq!(
-            TrackingConnection::get(db, other.id)
+            UserMediaTracker::get(db, other.id)
                 .await
                 .unwrap()
                 .unwrap()
                 .status,
-            TrackingStatus::Error
+            MediaTrackerStatus::Error
         );
     }
 
@@ -604,23 +600,23 @@ mod tests {
             .db;
         let addon = seed_addon(db).await;
         let user = seed_user(db, "alice").await;
-        let row = TrackingConnection::new(user, addon, creds("a"), vec![]);
+        let row = UserMediaTracker::new(user, addon, creds("a"), vec![]);
         row.upsert(db)
             .await
             .unwrap();
 
-        TrackingConnection::mark_failure(db, row.id, &TrackingError::reauth("401"))
+        UserMediaTracker::mark_failure(db, row.id, &TrackingError::reauth("401"))
             .await
             .unwrap();
-        TrackingConnection::mark_success(db, row.id)
+        UserMediaTracker::mark_success(db, row.id)
             .await
             .unwrap();
 
-        let got = TrackingConnection::get(db, row.id)
+        let got = UserMediaTracker::get(db, row.id)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(got.status, TrackingStatus::Connected);
+        assert_eq!(got.status, MediaTrackerStatus::Connected);
         assert!(
             got.last_error
                 .is_none()
@@ -645,7 +641,7 @@ mod tests {
             .db;
         let addon = seed_addon(db).await;
         let user = seed_user(db, "alice").await;
-        let row = TrackingConnection::new(
+        let row = UserMediaTracker::new(
             user,
             addon,
             creds("secret"),
@@ -655,7 +651,7 @@ mod tests {
             .await
             .unwrap();
 
-        TrackingConnection::set_event_filters(
+        UserMediaTracker::set_event_filters(
             db,
             row.id,
             &[TrackingEventKind::MarkPlayed, TrackingEventKind::Favorite],
@@ -663,7 +659,7 @@ mod tests {
         .await
         .unwrap();
 
-        let got = TrackingConnection::get(db, row.id)
+        let got = UserMediaTracker::get(db, row.id)
             .await
             .unwrap()
             .unwrap();
@@ -689,7 +685,7 @@ mod tests {
             .db;
         let addon = seed_addon(db).await;
         let user = seed_user(db, "alice").await;
-        TrackingConnection::new(user, addon, creds("a"), vec![])
+        UserMediaTracker::new(user, addon, creds("a"), vec![])
             .upsert(db)
             .await
             .unwrap();
@@ -699,7 +695,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            TrackingConnection::list_for_user(db, user)
+            UserMediaTracker::list_for_user(db, user)
                 .await
                 .unwrap()
                 .is_empty(),
@@ -710,7 +706,7 @@ mod tests {
     #[tokio::test]
     async fn credentials_are_never_serialised_outward() {
         // The API returns this struct; the blob must not ride along.
-        let row = TrackingConnection::new(
+        let row = UserMediaTracker::new(
             Uuid::from_u128(1),
             Uuid::from_u128(2),
             creds("super-secret"),

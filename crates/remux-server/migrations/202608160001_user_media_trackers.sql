@@ -3,7 +3,7 @@
 -- Deliberately not addon_users: that table is the per-user addon *source
 -- override* list, so a row there restricts which addons the user can play
 -- from, and replacing the override set would drop the credentials with it.
-CREATE TABLE tracking_connections (
+CREATE TABLE user_media_trackers (
     id              BLOB PRIMARY KEY NOT NULL,
     addon_id        BLOB NOT NULL REFERENCES addons(id) ON DELETE CASCADE,
     user_id         BLOB NOT NULL REFERENCES users(id)  ON DELETE CASCADE,
@@ -23,5 +23,5 @@ CREATE TABLE tracking_connections (
     UNIQUE (addon_id, user_id)
 );
 
-CREATE INDEX idx_tracking_connections_user_id ON tracking_connections(user_id);
-CREATE INDEX idx_tracking_connections_addon_id ON tracking_connections(addon_id);
+CREATE INDEX idx_user_media_trackers_user_id ON user_media_trackers(user_id);
+CREATE INDEX idx_user_media_trackers_addon_id ON user_media_trackers(addon_id);
