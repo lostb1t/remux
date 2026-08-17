@@ -18,6 +18,8 @@ js-sys = "0.3"
 serde_json = "1"
 base64 = "0.22"
 urlencoding = "2.1.3"
+# `IntoEnumIterator`, for the `EnumIter` the SDK derives on `NotificationType`.
+strum = "0.27"
 
 [profile.release]
 opt-level = "z"

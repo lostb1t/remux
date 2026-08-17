@@ -68,7 +68,12 @@ pub async fn new_test_server() -> Result<(TestServer, TestGuard)> {
     new_test_server_with_config(Config {
         database_url: Some("sqlite::memory:".into()),
         torrent_http_port: None, // OS picks a free ephemeral port
-        disable_dht: true,       // no DHT needed in tests; avoids socket conflicts
+        // Defaults to `Some(6881)`, which becomes the ten-port peer listen range
+        // `6881..6891` — a process-wide cap of ~10 concurrent test servers, and
+        // the reason the suite used to need `--test-threads=1`. `None` leaves the
+        // range unset so no fixed peer port is claimed.
+        torrent_peer_port: None,
+        disable_dht: true, // no DHT needed in tests; avoids socket conflicts
         ..Default::default()
     })
     .await

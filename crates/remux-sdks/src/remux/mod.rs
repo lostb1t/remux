@@ -6419,6 +6419,316 @@ pub struct RefreshItemQuery {
     pub regenerate_trickplay: bool,
 }
 
+// ---------------------------------------------------------------------------
+// Webhooks
+// ---------------------------------------------------------------------------
+
+/// Server-side event a webhook can subscribe to.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::Display,
+    strum_macros::EnumCount,
+    // The dashboard builds its subscription checkboxes from this, so a variant
+    // added here reaches the UI without a second list to keep in step.
+    strum_macros::EnumIter,
+)]
+pub enum NotificationType {
+    ItemAdded,
+    ItemDeleted,
+    Generic,
+    PlaybackStart,
+    PlaybackProgress,
+    PlaybackStop,
+    AuthenticationSuccess,
+    AuthenticationFailure,
+    SessionStart,
+    TaskCompleted,
+    UserCreated,
+    UserDeleted,
+    UserUpdated,
+    UserPasswordChanged,
+    UserDataSaved,
+}
+
+/// Who a Discord webhook message pings.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::Display,
+)]
+pub enum DiscordMentionType {
+    #[default]
+    None,
+    Here,
+    Everyone,
+}
+
+/// The Jellyfin webhook plugin's stock `Templates/Discord.handlebars` (its
+/// UTF-8 BOM stripped), verbatim **except** for the plugin's triple-brace
+/// interpolations, which are double braces here.
+///
+/// The plugin needs `{{{X}}}` because its Handlebars escapes for *HTML*. remux
+/// escapes for a JSON string instead, which makes the triple brace unsafe: it
+/// defeats the escaping, and a title containing `"` or `\` then renders a body
+/// Discord rejects, fatally and without a retry.
+///
+/// For a Discord destination the operator's template renders the **entire**
+/// Discord JSON payload, with the destination's options injected as the
+/// variables `MentionType`, `EmbedColor`, `AvatarUrl`, `Username` and
+/// `BotUsername` — so an empty template POSTs an empty body, which is why the
+/// dashboard pre-fills this when Discord is picked.
+///
+/// It lives in the SDK because the dashboard that ships it is a WASM crate and
+/// the Handlebars registry that renders it lives in the server; both depend on
+/// the SDK, so this is the only place both can reach.
+///
+/// `{{ServerUrl}}` comes from the server's `public_url` setting. Unset, it
+/// renders empty and the `thumbnail` URL below is relative, which Discord
+/// refuses.
+pub const DISCORD_TEMPLATE: &str = r##"{
+    "content": "{{MentionType}}",
+    "avatar_url": "{{AvatarUrl}}",
+    "username": "{{BotUsername}}",
+    "embeds": [
+        {
+            "color": "{{EmbedColor}}",
+            "footer": {
+                "text": "From {{ServerName}}",
+                "icon_url": "{{AvatarUrl}}"
+            },
+            {{#if_equals ItemType 'Season'}}
+                "title": "{{SeriesName}} {{Name}} has been added to {{ServerName}}",
+            {{else}}
+                {{#if_equals ItemType 'Episode'}}
+                    "title": "{{SeriesName}} S{{SeasonNumber00}}E{{EpisodeNumber00}} {{Name}} has been added to {{ServerName}}",
+                {{else}}
+                    "title": "{{Name}} ({{Year}}) has been added to {{ServerName}}",
+                {{/if_equals}}
+            {{/if_equals}}
+            "thumbnail":{
+                "url": "{{ServerUrl}}/Items/{{ItemId}}/Images/Primary"
+            },
+            "description": "External Links:\n
+            {{~#if_exist Provider_imdb~}}
+            [IMDb](https://www.imdb.com/title/{{Provider_imdb}}/)\n
+            {{~/if_exist~}}
+            {{~#if_exist Provider_tmdb~}}
+                {{~#if_equals ItemType 'Movie'~}}
+                    [TMDb](https://www.themoviedb.org/movie/{{Provider_tmdb}})\n
+                {{~else~}}
+                    [TMDb](https://www.themoviedb.org/tv/{{Provider_tmdb}})\n
+                {{~/if_equals~}}
+            {{~/if_exist~}}
+            {{~#if_exist Provider_musicbrainzartist~}}
+                [MusicBrainz](https://musicbrainz.org/artist/{{Provider_musicbrainzartist}})\n
+            {{~/if_exist~}}
+            {{~#if_exist Provider_audiodbartist~}}
+                [AudioDb](https://theaudiodb.com/artist/{{Provider_audiodbartist}})\n
+            {{~/if_exist~}}
+            {{~#if_exist Provider_musicbrainztrack~}}
+                [MusicBrainz Track](https://musicbrainz.org/track/{{Provider_musicbrainztrack}})\n
+            {{~/if_exist~}}
+            {{~#if_exist Provider_musicbrainzalbum~}}
+                [MusicBrainz Album](https://musicbrainz.org/release/{{Provider_musicbrainzalbum}})\n
+            {{~/if_exist~}}
+            {{~#if_exist Provider_theaudiodbalbum~}}
+                [TADb Album](https://theaudiodb.com/album/{{Provider_theaudiodbalbum}})\n
+            {{~/if_exist~}}
+            {{~#if_exist Provider_tvmaze~}}
+                {{~#if_equals ItemType 'Episode'~}}
+                    [TVMaze](https://www.tvmaze.com/episodes/{{Provider_tvmaze}})\n
+                {{~/if_equals~}}
+                {{~#if_equals ItemType 'Series'~}}
+                    [TVMaze](https://www.tvmaze.com/shows/{{Provider_tvmaze}})\n
+                {{~/if_equals~}}
+            {{~/if_exist~}}
+            [Jellyfin]({{ServerUrl}}/web/index.html#!/details?id={{ItemId}}&serverId={{ServerId}})"
+        }
+    ]
+}
+"##;
+
+/// A user-defined header or template field attached to a generic webhook.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct WebhookKeyValue {
+    pub key: String,
+    pub value: String,
+}
+
+/// Destination-specific webhook settings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "Type")]
+pub enum WebhookDestination {
+    Generic {
+        headers: Vec<WebhookKeyValue>,
+        fields: Vec<WebhookKeyValue>,
+    },
+    Discord {
+        avatar_url: Option<String>,
+        bot_username: Option<String>,
+        /// Hex color used for the Discord embed, e.g. `#AA5CC3`.
+        embed_color: Option<String>,
+        mention_type: DiscordMentionType,
+    },
+}
+
+/// Item kinds a webhook reacts to. Everything is enabled by default.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WebhookItemTypes {
+    pub movies: bool,
+    pub episodes: bool,
+    pub series: bool,
+    pub seasons: bool,
+    pub albums: bool,
+    pub songs: bool,
+    pub videos: bool,
+}
+
+impl Default for WebhookItemTypes {
+    fn default() -> Self {
+        Self {
+            movies: true,
+            episodes: true,
+            series: true,
+            seasons: true,
+            albums: true,
+            songs: true,
+            videos: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookDto {
+    /// Ignored on create — the server assigns a fresh id.
+    pub id: Uuid,
+    pub name: String,
+    pub enabled: bool,
+    pub url: String,
+    pub template: String,
+    pub destination: WebhookDestination,
+    /// Empty matches nothing, mirroring the Jellyfin webhook plugin.
+    pub notification_types: Vec<NotificationType>,
+    /// Empty means every user.
+    pub user_filter: Vec<Uuid>,
+    pub item_types: WebhookItemTypes,
+    pub send_all_properties: bool,
+    pub trim_whitespace: bool,
+    pub skip_empty_message_body: bool,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookTestResult {
+    pub success: bool,
+    pub status_code: Option<u16>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GetWebhooks;
+
+impl Endpoint for GetWebhooks {
+    type Output = Vec<WebhookDto>;
+    fn path(&self) -> String {
+        "/remux/webhooks".into()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GetWebhook {
+    pub id: Uuid,
+}
+
+impl Endpoint for GetWebhook {
+    type Output = WebhookDto;
+    fn path(&self) -> String {
+        format!("/remux/webhooks/{}", self.id)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateWebhook {
+    pub webhook: WebhookDto,
+}
+
+impl Endpoint for CreateWebhook {
+    type Output = WebhookDto;
+    fn path(&self) -> String {
+        "/remux/webhooks".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.webhook).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateWebhook {
+    pub id: Uuid,
+    pub webhook: WebhookDto,
+}
+
+impl Endpoint for UpdateWebhook {
+    type Output = WebhookDto;
+    fn path(&self) -> String {
+        format!("/remux/webhooks/{}", self.id)
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.webhook).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeleteWebhook {
+    pub id: Uuid,
+}
+
+impl Endpoint for DeleteWebhook {
+    type Output = ();
+    fn path(&self) -> String {
+        format!("/remux/webhooks/{}", self.id)
+    }
+    fn method(&self) -> Method {
+        Method::DELETE
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TestWebhook {
+    pub id: Uuid,
+}
+
+impl Endpoint for TestWebhook {
+    type Output = WebhookTestResult;
+    fn path(&self) -> String {
+        format!("/remux/webhooks/{}/test", self.id)
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6879,5 +7189,197 @@ mod tests {
             .map(|s| s.is_default)
             .collect();
         assert_eq!(flags_before, flags_after);
+    }
+
+    // ── Webhooks ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn webhook_destination_generic_round_trips() {
+        let dest = WebhookDestination::Generic {
+            headers: vec![WebhookKeyValue {
+                key: "X-Token".to_string(),
+                value: "secret".to_string(),
+            }],
+            fields: vec![WebhookKeyValue {
+                key: "channel".to_string(),
+                value: "media".to_string(),
+            }],
+        };
+        let json = serde_json::to_value(&dest).unwrap();
+        assert_eq!(json["Type"], "Generic");
+        assert_eq!(json["headers"][0]["key"], "X-Token");
+        let back: WebhookDestination = serde_json::from_value(json).unwrap();
+        assert_eq!(back, dest);
+    }
+
+    #[test]
+    fn webhook_destination_discord_round_trips() {
+        let dest = WebhookDestination::Discord {
+            avatar_url: Some("https://example.test/a.png".to_string()),
+            bot_username: None,
+            embed_color: Some("#AA5CC3".to_string()),
+            mention_type: DiscordMentionType::Here,
+        };
+        let json = serde_json::to_value(&dest).unwrap();
+        assert_eq!(json["Type"], "Discord");
+        assert_eq!(json["embed_color"], "#AA5CC3");
+        assert_eq!(json["mention_type"], "Here");
+        let back: WebhookDestination = serde_json::from_value(json).unwrap();
+        assert_eq!(back, dest);
+    }
+
+    #[test]
+    fn discord_mention_type_defaults_to_none() {
+        assert_eq!(DiscordMentionType::default(), DiscordMentionType::None);
+    }
+
+    #[test]
+    fn notification_type_parses_and_displays() {
+        for (variant, expected) in [
+            (NotificationType::ItemAdded, "ItemAdded"),
+            (NotificationType::PlaybackStart, "PlaybackStart"),
+            (NotificationType::UserPasswordChanged, "UserPasswordChanged"),
+        ] {
+            assert_eq!(variant.to_string(), expected);
+            assert_eq!(
+                expected
+                    .parse::<NotificationType>()
+                    .unwrap(),
+                variant
+            );
+        }
+        assert!(
+            "NotAThing"
+                .parse::<NotificationType>()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn webhook_item_types_default_is_all_true() {
+        let t = WebhookItemTypes::default();
+        assert!(t.movies);
+        assert!(t.episodes);
+        assert!(t.series);
+        assert!(t.seasons);
+        assert!(t.albums);
+        assert!(t.songs);
+        assert!(t.videos);
+    }
+
+    fn sample_webhook() -> WebhookDto {
+        WebhookDto {
+            id: Uuid::nil(),
+            name: "on new movie".to_string(),
+            enabled: true,
+            url: "https://example.test/hook".to_string(),
+            template: "{{Name}}".to_string(),
+            destination: WebhookDestination::Discord {
+                avatar_url: None,
+                bot_username: Some("remux".to_string()),
+                embed_color: Some("#AA5CC3".to_string()),
+                mention_type: DiscordMentionType::Everyone,
+            },
+            notification_types: vec![NotificationType::ItemAdded],
+            user_filter: vec![],
+            item_types: WebhookItemTypes::default(),
+            send_all_properties: false,
+            trim_whitespace: true,
+            skip_empty_message_body: true,
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    fn json_body(body: Body) -> serde_json::Value {
+        match body {
+            Body::Json(value) => value,
+            _ => panic!("expected Body::Json"),
+        }
+    }
+
+    #[test]
+    fn webhook_endpoints_use_lowercase_remux_paths_and_methods() {
+        let id = Uuid::nil();
+
+        assert_eq!(GetWebhooks.path(), "/remux/webhooks");
+        assert_eq!(GetWebhooks.method(), Method::GET);
+
+        assert_eq!(GetWebhook { id }.path(), format!("/remux/webhooks/{id}"));
+        assert_eq!(GetWebhook { id }.method(), Method::GET);
+
+        let create = CreateWebhook {
+            webhook: sample_webhook(),
+        };
+        assert_eq!(create.path(), "/remux/webhooks");
+        assert_eq!(create.method(), Method::POST);
+
+        let update = UpdateWebhook {
+            id,
+            webhook: sample_webhook(),
+        };
+        assert_eq!(update.path(), format!("/remux/webhooks/{id}"));
+        assert_eq!(update.method(), Method::POST);
+
+        assert_eq!(DeleteWebhook { id }.path(), format!("/remux/webhooks/{id}"));
+        assert_eq!(DeleteWebhook { id }.method(), Method::DELETE);
+
+        assert_eq!(
+            TestWebhook { id }.path(),
+            format!("/remux/webhooks/{id}/test")
+        );
+        assert_eq!(TestWebhook { id }.method(), Method::POST);
+    }
+
+    #[test]
+    fn create_webhook_body_carries_the_serialized_dto() {
+        let webhook = sample_webhook();
+        let body = json_body(
+            CreateWebhook {
+                webhook: webhook.clone(),
+            }
+            .body(),
+        );
+
+        assert_eq!(body["name"], "on new movie");
+        assert_eq!(body["enabled"], true);
+        assert_eq!(body["url"], "https://example.test/hook");
+        assert_eq!(body["template"], "{{Name}}");
+        assert_eq!(body["destination"]["Type"], "Discord");
+        assert_eq!(body["destination"]["mention_type"], "Everyone");
+        assert_eq!(body["notification_types"][0], "ItemAdded");
+        assert_eq!(body["item_types"]["movies"], true);
+        assert_eq!(body["skip_empty_message_body"], true);
+
+        let back: WebhookDto = serde_json::from_value(body).unwrap();
+        assert_eq!(back.name, webhook.name);
+        assert_eq!(back.url, webhook.url);
+        assert_eq!(back.destination, webhook.destination);
+        assert_eq!(back.notification_types, webhook.notification_types);
+        assert_eq!(back.item_types, webhook.item_types);
+    }
+
+    #[test]
+    fn update_webhook_body_carries_the_serialized_dto() {
+        let id = Uuid::from_u128(42);
+        let mut webhook = sample_webhook();
+        webhook.name = "renamed".to_string();
+        webhook.enabled = false;
+
+        let endpoint = UpdateWebhook {
+            id,
+            webhook: webhook.clone(),
+        };
+        assert_eq!(endpoint.path(), format!("/remux/webhooks/{id}"));
+
+        let body = json_body(endpoint.body());
+        assert_eq!(body["name"], "renamed");
+        assert_eq!(body["enabled"], false);
+        assert_eq!(body["destination"]["Type"], "Discord");
+
+        let back: WebhookDto = serde_json::from_value(body).unwrap();
+        assert_eq!(back.name, webhook.name);
+        assert_eq!(back.enabled, webhook.enabled);
+        assert_eq!(back.destination, webhook.destination);
     }
 }

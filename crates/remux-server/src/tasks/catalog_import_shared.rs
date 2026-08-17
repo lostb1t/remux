@@ -6,7 +6,10 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use super::ProgressReporter;
-use crate::{AppContext, addons::ResolvedCatalog, db};
+use crate::{
+    AppContext, addons::ResolvedCatalog, db, services::webhooks::WebhookEvent,
+};
+use remux_sdks::remux::NotificationType;
 
 /// Consume `stream`, fetching metadata + full tree for new items and upserting everything.
 ///
@@ -39,6 +42,11 @@ where
             .unwrap_or(Uuid::nil()),
         None => Uuid::nil(),
     };
+
+    // One pacer for the whole scan, not one per chunk — see `webhooks::Pacer`.
+    let mut pacer = ctx
+        .webhooks
+        .pacer();
 
     while let Some(items) = chunks
         .next()
@@ -142,6 +150,24 @@ where
         {
             error!(catalog = media_id, error = %e, "failed to process new items chunk");
             continue;
+        }
+
+        // The partition above is the only place that knows which of these rows
+        // are new. A scan can produce tens of thousands of them, so the whole
+        // loop is skipped — at the cost of one atomic load per chunk — when no
+        // webhook subscribes.
+        //
+        // Through the pacer, not `emit`: a scan outruns the dispatcher and would
+        // overflow the event channel. See `webhooks::Pacer`.
+        if ctx
+            .webhooks
+            .wants(NotificationType::ItemAdded)
+        {
+            for item in new_items.iter() {
+                pacer
+                    .emit(WebhookEvent::ItemAdded { item_id: item.id })
+                    .await;
+            }
         }
 
         for id in new_series_ids {

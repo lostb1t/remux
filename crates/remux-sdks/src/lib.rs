@@ -9,6 +9,11 @@ pub mod stremio;
 pub mod tmdb;
 pub mod trakt;
 
+/// Re-exported so a consumer can assert against a `strum`-derived `COUNT`
+/// (e.g. that a hand-written list covers every variant of an SDK enum) without
+/// taking a direct dependency on `strum`.
+pub use strum::EnumCount;
+
 use http::{HeaderMap, HeaderValue, Method, header};
 use itertools::Itertools;
 use md5;

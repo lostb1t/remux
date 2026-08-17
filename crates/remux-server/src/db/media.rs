@@ -2728,6 +2728,21 @@ impl Media {
             .await?)
     }
 
+    /// Genre titles linked to `id` through `media_relations`, both `Genre` and
+    /// `MusicGenre` rows, in relation order.
+    pub async fn genre_names(db: &SqlitePool, id: &Uuid) -> Result<Vec<String>> {
+        let names = sqlx::query_scalar::<_, String>(
+            "SELECT g.title FROM media_relations mr \
+             JOIN media g ON g.id = mr.right_media_id \
+             WHERE mr.left_media_id = ? AND g.kind IN ('genre', 'music_genre') \
+             ORDER BY COALESCE(mr.weight, 0) ASC, g.title ASC",
+        )
+        .bind(id)
+        .fetch_all(db)
+        .await?;
+        Ok(names)
+    }
+
     pub async fn get_by_id(
         db: &SqlitePool,
         id: &Uuid,
@@ -4165,6 +4180,62 @@ impl Media {
                 }
             }
 
+            // For manual collections: count members via media_relations (role='collection').
+            // The parent_id branch above never covers these — they store membership in
+            // media_relations, and Collection is not in the parent_id kind list.
+            let manual_coll_ids: Vec<Uuid> = records
+                .iter()
+                .filter(|m| {
+                    m.kind == MediaKind::Collection
+                        && m.collection_kind == Some(CollectionKind::Manual)
+                })
+                .map(|m| m.id)
+                .collect();
+            if !manual_coll_ids.is_empty() {
+                let mut mc_qb = sqlx::QueryBuilder::new(
+                    "SELECT left_media_id, COUNT(*) FROM media_relations \
+                     WHERE role = 'collection' AND left_media_id IN (",
+                );
+                let mut sep = mc_qb.separated(", ");
+                for id in &manual_coll_ids {
+                    sep.push_bind(id);
+                }
+                if let Some(pf) = child_policy_filter {
+                    mc_qb.push(
+                        ") AND right_media_id IN (SELECT id FROM media WHERE 1=1",
+                    );
+                    apply_filter_rules(&mut mc_qb, pf);
+                    mc_qb.push(")");
+                } else {
+                    mc_qb.push(")");
+                }
+                mc_qb.push(" GROUP BY left_media_id");
+                match mc_qb
+                    .build()
+                    .fetch_all(db)
+                    .await
+                {
+                    Ok(rows) => {
+                        let mut cc_map: HashMap<Uuid, i64> = HashMap::new();
+                        for row in rows {
+                            cc_map.insert(row.get(0), row.get(1));
+                        }
+                        for media in &mut records {
+                            if manual_coll_ids.contains(&media.id) {
+                                media.child_count = Some(
+                                    *cc_map
+                                        .get(&media.id)
+                                        .unwrap_or(&0),
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("failed to load manual collection child counts: {e}")
+                    }
+                }
+            }
+
             // Batch child counts for smart/catalog collections in a single UNION ALL query
             // instead of one COUNT per collection (N+1). Collect the needed data first so
             // the immutable borrow on records is released before we write back.
@@ -4540,8 +4611,9 @@ impl Media {
             }
         }
 
-        // Drop empty containers when requested. child_count is already populated
-        // for all container kinds (including smart/catalog) by the branches above.
+        // Drop empty containers when requested. child_count is populated above:
+        // Folder/Playlist by the parent_id and media_relations branches, Collection
+        // by the manual and smart/catalog branches.
         // Structural "collection of collections" containers always show.
         let sql_total = count?;
 
@@ -7572,6 +7644,99 @@ mod tests {
         assert!(
             ids.tmdb
                 .is_none()
+        );
+    }
+
+    /// `genre_names` walks `media_relations` and keeps only genre rows, in
+    /// relation order. Other related rows (cast, studios…) must not leak in.
+    #[tokio::test]
+    async fn genre_names_reads_genre_rows_through_media_relations() {
+        let db = crate::db::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        crate::db::migrate(&db)
+            .await
+            .unwrap();
+
+        // `save` requires a movie to carry an imdb id and an id derived from it.
+        let movie_ids = ExternalIds {
+            imdb: Some(NonEmptyString::try_new("tt9000001".to_string()).unwrap()),
+            ..Default::default()
+        };
+        let movie_id = uuid::Uuid::from(&MediaIdRaw {
+            kind: MediaKind::Movie,
+            external_ids: movie_ids.clone(),
+            season: None,
+            episode: None,
+        });
+        let mut rows = vec![
+            Media {
+                id: movie_id,
+                title: "A Movie".to_string(),
+                kind: MediaKind::Movie,
+                external_ids: movie_ids,
+                ..Default::default()
+            },
+            Media {
+                id: uuid::Uuid::from_u128(2),
+                title: "Drama".to_string(),
+                kind: MediaKind::Genre,
+                ..Default::default()
+            },
+            Media {
+                id: uuid::Uuid::from_u128(3),
+                title: "Electro".to_string(),
+                kind: MediaKind::MusicGenre,
+                ..Default::default()
+            },
+            Media {
+                id: uuid::Uuid::from_u128(4),
+                title: "Someone".to_string(),
+                kind: MediaKind::Person,
+                ..Default::default()
+            },
+        ];
+        for row in rows.iter_mut() {
+            row.save(&db)
+                .await
+                .unwrap();
+        }
+        let (movie, drama, electro, person) = (&rows[0], &rows[1], &rows[2], &rows[3]);
+
+        // Weights are deliberately out of title order: the relation order wins.
+        let relations = [
+            (electro, 0, None),
+            (drama, 1, None),
+            (person, 2, Some(RelationRole::Actor)),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, (right, weight, role))| MediaRelation {
+            relation_id: uuid::Uuid::from_u128(i as u128 + 100),
+            left_media_id: movie.id,
+            right_media_id: right.id,
+            weight: Some(weight),
+            role,
+            character: None,
+        })
+        .collect::<Vec<_>>();
+        MediaRelation::upsert(&db, &relations)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            Media::genre_names(&db, &movie.id)
+                .await
+                .unwrap(),
+            vec!["Electro".to_string(), "Drama".to_string()],
+            "both genre kinds, in relation order, and nothing else"
+        );
+        // Relations are directional: the genre row itself has none.
+        assert!(
+            Media::genre_names(&db, &drama.id)
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 

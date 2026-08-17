@@ -5,8 +5,15 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::{common, db, db::auth, playback::session::TranscodeSession};
-use remux_sdks::remux::{PlayMethod, PlaybackInfo, QueueItem};
+use crate::{
+    common, db,
+    db::auth,
+    playback::session::TranscodeSession,
+    services::webhooks::{
+        DeviceEventData, PlaybackEventData, UserEventData, WebhookEvent, WebhookService,
+    },
+};
+use remux_sdks::remux::{NotificationType, PlayMethod, PlaybackInfo, QueueItem};
 
 #[derive(Clone)]
 pub struct PlaybackSession {
@@ -35,6 +42,19 @@ pub struct PlaybackSession {
     pub group_id: Option<Uuid>,
     /// Kind of the item being played, used to populate NowPlayingItem in session broadcasts.
     pub item_kind: Option<db::MediaKind>,
+}
+
+/// What a stop report actually persisted.
+///
+/// [`PlaybackSessionManager::stopped`] answers `None` when it wrote nothing:
+/// no session to close and no usable item id, or an id that resolves to no row
+/// in the library. The endpoint answers 204 either way, so this is the only
+/// thing that distinguishes a real stop from a report that named an item the
+/// server knows nothing about.
+#[derive(Debug, Clone, Copy)]
+pub struct StoppedPlayback {
+    pub item_id: Uuid,
+    pub position_ticks: i64,
 }
 
 #[derive(Clone)]
@@ -420,13 +440,16 @@ impl PlaybackSessionManager {
     /// Removes the playback session (stopping any active transcode), persists
     /// the final position to the DB (with the 90 % watched-mark check), and
     /// emits a debug log line.
+    ///
+    /// Returns what was actually written, so callers can tell a real stop from
+    /// a report that resolved to nothing — see [`StoppedPlayback`].
     pub async fn stopped(
         &self,
         db: &sqlx::SqlitePool,
         user: &db::User,
         psid: &str,
         data: &PlaybackInfo,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<StoppedPlayback>> {
         let ps = self
             .stop(psid)
             .await;
@@ -437,30 +460,36 @@ impl PlaybackSessionManager {
                 ps.as_ref()
                     .map(|s| s.item_id)
             });
-        let final_ticks = data
+        let position_ticks = data
             .position_ticks
             .or_else(|| {
                 ps.as_ref()
                     .map(|s| s.position_ticks)
-            });
+            })
+            .unwrap_or(0);
 
+        let mut recorded = None;
         if let Some(item_id) = item_id {
             if let Ok(Some(media)) = db::Media::get_by_id(db, &item_id).await {
                 db::UserMediaState::update_playback(
                     db,
                     user,
                     &media,
-                    final_ticks.unwrap_or(0),
+                    position_ticks,
                     None, // don't overwrite stream selections on stop
                     None,
                     media.runtime, // Some(runtime) triggers watched-threshold check
                 )
                 .await?;
+                recorded = Some(StoppedPlayback {
+                    item_id,
+                    position_ticks,
+                });
             }
         }
 
         debug!(play_session_id = psid, "Playback stopped");
-        Ok(())
+        Ok(recorded)
     }
 
     /// Insert (or replace) a playback session, preserving any transcode that was
@@ -754,10 +783,15 @@ impl PlaybackSessionManager {
     }
 
     /// Spawn a background task that reaps sessions idle longer than `max_age`.
+    ///
+    /// A reaped session emits `PlaybackStop` just like an explicit stop does:
+    /// a client that dies mid-playback would otherwise never produce one.
     pub fn spawn_cleanup_task(
         self,
         interval: Duration,
         max_age: Duration,
+        db: sqlx::SqlitePool,
+        webhooks: WebhookService,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
@@ -782,11 +816,80 @@ impl PlaybackSessionManager {
                     .collect();
                 for id in stale {
                     info!("Cleaning up idle session: {}", id);
-                    self.stop(&id)
+                    let stopped = self
+                        .stop(&id)
                         .await;
+                    // Only past this point is the session really gone, and only
+                    // here are the two identity lookups below worth running.
+                    if let Some(ps) = stopped
+                        && !ps
+                            .item_id
+                            .is_nil()
+                        && webhooks.wants(NotificationType::PlaybackStop)
+                    {
+                        webhooks.emit(WebhookEvent::PlaybackStop {
+                            playback: reaped_playback_event(&db, &ps).await,
+                        });
+                    }
                 }
             }
         })
+    }
+}
+
+/// Rebuild the identity a reaped session no longer carries.
+///
+/// The in-memory session only holds ids, so the username and the device's
+/// display name come from the database. Both are best-effort: a webhook with a
+/// blank username is better than no stop event at all.
+async fn reaped_playback_event(
+    db: &sqlx::SqlitePool,
+    ps: &PlaybackSession,
+) -> PlaybackEventData {
+    let username = db::User::get_by_id(db, &ps.user_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.username)
+        .unwrap_or_default();
+    let device = auth::Device::get_by_id(db, &ps.device_id)
+        .await
+        .ok()
+        .flatten();
+    PlaybackEventData {
+        user: UserEventData {
+            id: ps.user_id,
+            username,
+        },
+        item_id: ps.item_id,
+        device: DeviceEventData {
+            id: ps
+                .device_id
+                .clone(),
+            name: device
+                .as_ref()
+                .map(|d| {
+                    d.name
+                        .clone()
+                })
+                .unwrap_or_default(),
+            client_name: ps
+                .client_name
+                .clone(),
+            remote_ip: device.and_then(|d| d.remote_ip),
+        },
+        position_ticks: ps.position_ticks,
+        // The last state the client reported. A reap says the client stopped
+        // reporting, which tells us nothing about whether it was paused when it
+        // did — so the last known value is the honest answer.
+        is_paused: ps.is_paused,
+        play_method: ps
+            .play_method
+            .as_deref()
+            .and_then(|m| {
+                m.parse()
+                    .ok()
+            }),
     }
 }
 
