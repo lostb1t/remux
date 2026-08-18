@@ -774,6 +774,62 @@ mod tests {
         .unwrap();
     }
 
+    /// An API key authenticates without a row in `devices`, so its session gets
+    /// a device built here, with an id derived from the token. The id has to
+    /// carry the real token: two keys that derive the same id share one playback
+    /// session, and each overwrites the other's progress.
+    #[tokio::test]
+    async fn each_api_key_gets_its_own_synthetic_device_id() {
+        use crate::integration_test::{auth_header_with_token, authenticated_server};
+        use http::header::{AUTHORIZATION, HeaderValue};
+
+        let (server, guard, admin_token) = authenticated_server().await;
+        let admin_auth = auth_header_with_token(&admin_token);
+
+        let mut keys = Vec::new();
+        for app in ["first", "second"] {
+            let resp = server
+                .post(&format!("/auth/keys?app={app}"))
+                .add_header(AUTHORIZATION, HeaderValue::from_str(&admin_auth).unwrap())
+                .await;
+            resp.assert_status_ok();
+            let info: crate::api::AuthenticationInfo = resp.json();
+            keys.push(
+                info.access_token
+                    .expect("a new key returns its token"),
+            );
+        }
+
+        for (i, key) in keys
+            .iter()
+            .enumerate()
+        {
+            server
+                .post("/sessions/playing")
+                .add_header("X-Emby-Token", HeaderValue::from_str(key).unwrap())
+                .json(&serde_json::json!({
+                    "ItemId": Uuid::new_v4().simple().to_string(),
+                    "PlaySessionId": format!("api-key-session-{i}"),
+                }))
+                .await
+                .assert_status(http::StatusCode::NO_CONTENT);
+        }
+
+        let device_ids: std::collections::HashSet<String> = guard
+            .0
+            .sessions
+            .get_all()
+            .into_iter()
+            .map(|s| s.device_id)
+            .collect();
+        for key in &keys {
+            assert!(
+                device_ids.contains(&format!("apikey-{key}")),
+                "each key should own a session under its own device id: {device_ids:?}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn delete_all_removes_every_device_for_user() {
         let db = test_db().await;

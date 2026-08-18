@@ -103,6 +103,15 @@ pub async fn authenticated_server() -> (TestServer, TestGuard, String) {
 /// fields are set directly so playbackinfo tests behave identically in CI and
 /// locally.
 pub async fn insert_test_source(ctx: &AppContext) -> db::Media {
+    insert_test_source_of_kind(ctx, db::MediaKind::Stream).await
+}
+
+/// [`insert_test_source`] for a specific kind. Playbackinfo branches on it:
+/// `TvChannel` is live, `Track` goes down the HLS-only path.
+pub async fn insert_test_source_of_kind(
+    ctx: &AppContext,
+    kind: db::MediaKind,
+) -> db::Media {
     let now = Utc::now().naive_utc();
 
     // Build minimal probe_data so playbackinfo can make transcode decisions
@@ -131,9 +140,20 @@ pub async fn insert_test_source(ctx: &AppContext) -> db::Media {
         ..Default::default()
     };
 
+    // Tracks are rejected without a music provider id.
+    let external_ids = if kind == db::MediaKind::Track {
+        db::ExternalIds {
+            deezer_track: Some(1),
+            ..Default::default()
+        }
+    } else {
+        db::ExternalIds::default()
+    };
+
     let mut media = db::Media {
         title: "Test Source".to_string(),
-        kind: db::MediaKind::Stream,
+        kind,
+        external_ids,
         stream_info: Some(crate::stream::StreamInfo {
             descriptor: crate::stream::StreamDescriptor::Local(
                 "test-fixture.mp4".into(),
@@ -150,4 +170,46 @@ pub async fn insert_test_source(ctx: &AppContext) -> db::Media {
         .await
         .expect("insert_test_source failed");
     media
+}
+
+/// Every `ApiKey=` a response hands back must carry the caller's real token.
+/// The token is a `Secret`, so one formatting slip redacts it for every client
+/// at once; that is worth checking over the whole body rather than the one
+/// field a test happens to know about.
+pub fn assert_api_keys_are_real(value: &serde_json::Value, token: &str) {
+    fn walk(v: &serde_json::Value, token: &str, seen: &mut usize) {
+        match v {
+            serde_json::Value::String(s) => {
+                for tail in s
+                    .split("ApiKey=")
+                    .skip(1)
+                {
+                    *seen += 1;
+                    let got = tail
+                        .split('&')
+                        .next()
+                        .unwrap_or_default();
+                    assert_eq!(got, token, "ApiKey should be the caller's token: {s}");
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for v in items {
+                    walk(v, token, seen);
+                }
+            }
+            serde_json::Value::Object(fields) => {
+                for v in fields.values() {
+                    walk(v, token, seen);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut seen = 0;
+    walk(value, token, &mut seen);
+    assert!(
+        seen > 0,
+        "expected the response to carry an ApiKey: {value}"
+    );
 }

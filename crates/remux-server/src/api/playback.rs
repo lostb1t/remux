@@ -1107,7 +1107,8 @@ mod tests {
     use serde_json::json;
 
     use crate::integration_test::{
-        AUTH_HEADER, auth_header_with_token, authenticated_server, insert_test_source,
+        AUTH_HEADER, assert_api_keys_are_real, auth_header_with_token,
+        authenticated_server, insert_test_source, insert_test_source_of_kind,
         new_test_server,
     };
 
@@ -1845,6 +1846,59 @@ mod tests {
             url.contains(&format!("ApiKey={}", token)),
             "TranscodingUrl should carry the session token: {}",
             url
+        );
+        // Subtitle delivery URLs and any other URL in the body carry it too.
+        assert_api_keys_are_real(&body, &token);
+    }
+
+    /// Live TV takes its own branch and builds its own URL.
+    #[tokio::test]
+    async fn test_playbackinfo_live_url_carries_the_real_token() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media =
+            insert_test_source_of_kind(&guard.0, crate::db::MediaKind::TvChannel).await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({ "MaxStreamingBitrate": 1_000_000 }))
+            .await;
+
+        resp.assert_status_ok();
+        assert_api_keys_are_real(&resp.json::<serde_json::Value>(), &token);
+    }
+
+    /// The audio redirect hands the client a URL it must fetch with the token
+    /// already in it, so a redacted one 401s on the very next request.
+    #[tokio::test]
+    async fn test_audio_universal_redirect_carries_the_real_token() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media =
+            insert_test_source_of_kind(&guard.0, crate::db::MediaKind::Track).await;
+
+        let resp = server
+            .get(&format!("/audio/{}/universal", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .expect_failure()
+            .await;
+
+        resp.assert_status(StatusCode::TEMPORARY_REDIRECT);
+        let location = resp
+            .header("location")
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            location.contains(&format!("ApiKey={}", token)),
+            "redirect should carry the session token: {location}"
         );
     }
 
