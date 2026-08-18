@@ -16,12 +16,14 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use crate::{
-    AppState, IntoApiError, OptionExt, ResultExt, api,
+    AppState, IntoApiError, OptionExt, ResultExt,
+    addons::tracking::TrackingEvent,
+    api,
     api::system::QuickConnectEntry,
     common::{get_uuid, server_id},
     db,
     db::{auth, user::User},
-    services::MediaResolveService,
+    services::{self, MediaResolveService},
     ws::WsEvent,
 };
 use axum_anyhow::ApiResult as Result;
@@ -452,6 +454,13 @@ pub async fn mark_favorite(
             &user,
         )
         .await?;
+    services::tracking::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        TrackingEvent::Favorite { is_favorite: true },
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -473,6 +482,13 @@ pub async fn unmark_favorite(
             &user,
         )
         .await?;
+    services::tracking::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        TrackingEvent::Favorite { is_favorite: false },
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -494,6 +510,13 @@ pub async fn mark_favorite_modern(
             &user,
         )
         .await?;
+    services::tracking::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        TrackingEvent::Favorite { is_favorite: true },
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(s, &media)).into_response())
 }
 
@@ -515,6 +538,13 @@ pub async fn unmark_favorite_modern(
             &user,
         )
         .await?;
+    services::tracking::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        TrackingEvent::Favorite { is_favorite: false },
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(s, &media)).into_response())
 }
 
@@ -544,6 +574,13 @@ pub async fn mark_played(
             server_config.release_date_threshold(),
         )
         .await?;
+    services::tracking::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        TrackingEvent::MarkPlayed,
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -566,6 +603,13 @@ pub async fn unmark_played(
             true,
         )
         .await?;
+    services::tracking::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        TrackingEvent::MarkUnplayed,
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 

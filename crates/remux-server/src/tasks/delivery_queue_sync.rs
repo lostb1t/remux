@@ -19,12 +19,15 @@ const BATCH: i64 = 200;
 /// they are what the activity views read.
 const KEEP_DELIVERED_DAYS: i64 = 7;
 
+/// Also the lookup key for waking the worker after an enqueue.
+pub const DELIVERY_QUEUE_SYNC_KEY: &str = "DeliveryQueueSync";
+
 pub struct DeliveryQueueSyncTask;
 
 #[async_trait]
 impl Task for DeliveryQueueSyncTask {
     fn key(&self) -> &str {
-        "DeliveryQueueSync"
+        DELIVERY_QUEUE_SYNC_KEY
     }
     fn name(&self) -> &str {
         "Delivery Queue Sync"

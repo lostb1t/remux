@@ -16,12 +16,14 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::{
-    AppState, IntoApiError, OptionExt, ResultExt, api, common,
+    AppState, IntoApiError, OptionExt, ResultExt,
+    addons::tracking::TrackingEvent,
+    api, common,
     common::{TickUnit, ToRunTimeTicks},
     db,
     db::auth,
     playback::session::TranscodeSession,
-    services::MediaResolveService,
+    services::{self, MediaResolveService},
 };
 
 #[post("/sessions/logout")]
@@ -83,6 +85,30 @@ pub async fn sessions_capabilities_by_id(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Queue a playback event for the acting user's media trackers. Resolving the
+/// item costs a lookup, so callers only reach here once they have an event
+/// worth queueing.
+async fn track(
+    state: &AppState,
+    session: &auth::AuthSession,
+    item_id: Uuid,
+    event: TrackingEvent,
+) {
+    if let Ok(Some(media)) =
+        MediaResolveService::resolve_item(item_id, &state.ctx).await
+    {
+        services::tracking::enqueue_and_wake(
+            state,
+            session
+                .user
+                .id,
+            &media,
+            event,
+        )
+        .await;
+    }
+}
+
 #[post("/sessions/playing")]
 pub async fn report_playback_start(
     State(state): State<AppState>,
@@ -114,6 +140,17 @@ pub async fn report_playback_start(
         .ctx
         .ws_tx
         .send(crate::ws::WsEvent::SessionsChanged);
+    track(
+        &state,
+        &session,
+        data.item_id,
+        TrackingEvent::PlaybackStart {
+            position_ticks: data
+                .position_ticks
+                .unwrap_or(0),
+        },
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -123,6 +160,17 @@ pub async fn report_playback_progress(
     session: auth::AuthSession,
     Json(data): Json<api::PlaybackInfo>,
 ) -> Result<impl IntoResponse> {
+    // Jellyfin clients keep reporting while paused, so the transition is what
+    // marks a real pause; the position is read before the session is updated.
+    let was_paused = state
+        .ctx
+        .sessions
+        .get_by_device(
+            &session
+                .device
+                .id,
+        )
+        .is_some_and(|s| s.is_paused);
     let effective_psid = data
         .play_session_id
         .clone()
@@ -155,6 +203,20 @@ pub async fn report_playback_progress(
             .ctx
             .ws_tx
             .send(crate::ws::WsEvent::SessionsChanged);
+        if data.is_paused && !was_paused {
+            track(
+                &state,
+                &session,
+                data.item_id,
+                TrackingEvent::PlaybackProgress {
+                    position_ticks: data
+                        .position_ticks
+                        .unwrap_or(0),
+                    is_paused: true,
+                },
+            )
+            .await;
+        }
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -197,6 +259,39 @@ pub async fn report_playback_stopped(
             .ctx
             .ws_tx
             .send(crate::ws::WsEvent::SessionsChanged);
+        if let Ok(Some(media)) =
+            MediaResolveService::resolve_item(data.item_id, &state.ctx).await
+        {
+            // Whether this counted as a watch is decided by the threshold check
+            // inside `stopped`, so it is read back rather than recomputed.
+            let played = db::UserMediaState::get_or_new(
+                &state
+                    .ctx
+                    .db,
+                &session.user,
+                &media,
+            )
+            .await
+            .map(|s| {
+                s.played_at
+                    .is_some()
+            })
+            .unwrap_or(false);
+            services::tracking::enqueue_and_wake(
+                &state,
+                session
+                    .user
+                    .id,
+                &media,
+                TrackingEvent::PlaybackStop {
+                    position_ticks: data
+                        .position_ticks
+                        .unwrap_or(0),
+                    played,
+                },
+            )
+            .await;
+        }
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }

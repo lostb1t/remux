@@ -39,7 +39,7 @@ pub use crate::common::ProgressReporter;
 use clean_transcode_folder::CleanTranscodeFolderTask;
 use clear_cache::ClearCacheTask;
 use clear_image_cache::ClearImageCacheTask;
-pub use delivery_queue_sync::DeliveryQueueSyncTask;
+pub use delivery_queue_sync::{DELIVERY_QUEUE_SYNC_KEY, DeliveryQueueSyncTask};
 use jellyfin_import::JellyfinImportTask;
 use purge_iptv::PurgeIptvTask;
 use purge_media::PurgeMediaTask;
