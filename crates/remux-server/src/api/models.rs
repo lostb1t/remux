@@ -964,6 +964,17 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             db::ImageKind::Backdrop,
         )
         .map(|b| vec![b]);
+        
+        // Backdrop: prefer episode backdrop when it exists;
+        // fall back to series backdrop for strict clients (Infuse) so the field is never empty.
+        let needs_fallback = match &item.backdrop_image_tags {
+            Some(tags) => tags.is_empty(),
+            None => true,
+        };
+        if needs_fallback {
+            item.backdrop_image_tags = item.parent_backdrop_image_tags.clone();
+        }
+
         // Thumb: prefer season (direct parent) when it has a thumb image;
         // fall back to series thumb/backdrop so the field is never empty.
         let season_thumb = (media.kind == db::MediaKind::Episode)
