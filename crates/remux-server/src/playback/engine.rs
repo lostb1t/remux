@@ -12,6 +12,9 @@ use std::{
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
+#[cfg(target_os = "macos")]
+use std::sync::OnceLock;
+
 use crate::{
     common::{HideConsole, TickUnit, ToRunTimeTicks},
     device_profile::{AudioCodec, VideoCodec},
@@ -439,6 +442,58 @@ fn hw_input_args(
     }
 }
 
+fn videotoolbox_requires_software_decode(
+    source_video_codec: Option<&str>,
+    hdr: bool,
+    av1_hardware_decode_supported: bool,
+) -> bool {
+    hdr || (source_video_codec.is_some_and(|codec| codec.eq_ignore_ascii_case("av1"))
+        && !av1_hardware_decode_supported)
+}
+
+#[cfg(target_os = "macos")]
+const AV1_VIDEO_CODEC_TYPE: u32 = u32::from_be_bytes(*b"av01");
+
+#[cfg(target_os = "macos")]
+#[link(name = "VideoToolbox", kind = "framework")]
+unsafe extern "C" {
+    fn VTIsHardwareDecodeSupported(codec_type: u32) -> u8;
+}
+
+#[cfg(target_os = "macos")]
+fn videotoolbox_av1_hardware_decode_supported() -> bool {
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        // `ffmpeg -hwaccels` reports the VideoToolbox framework, not whether
+        // this Mac implements a particular codec in hardware. Query the host
+        // capability directly so newer Macs can use AV1 hardware decode while
+        // older models retain the software-decode fallback.
+        let supported =
+            unsafe { VTIsHardwareDecodeSupported(AV1_VIDEO_CODEC_TYPE) != 0 };
+        debug!(supported, "VideoToolbox AV1 hardware decode capability");
+        supported
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn videotoolbox_av1_hardware_decode_supported() -> bool {
+    false
+}
+
+fn videotoolbox_uses_software_decode(
+    source_video_codec: Option<&str>,
+    hdr: bool,
+) -> bool {
+    let av1_hardware_decode_supported = !hdr
+        && source_video_codec.is_some_and(|codec| codec.eq_ignore_ascii_case("av1"))
+        && videotoolbox_av1_hardware_decode_supported();
+    videotoolbox_requires_software_decode(
+        source_video_codec,
+        hdr,
+        av1_hardware_decode_supported,
+    )
+}
+
 /// Map a software encoder name to the equivalent hardware encoder name.
 /// Returns the original name unchanged if the codec should not be re-mapped
 /// (e.g. "copy", "libvpx-vp9") or if `accel` is None.
@@ -708,8 +763,17 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             &params.vaapi_device,
             &params.vaapi_driver,
         ));
-    } else if matches!(accel, HardwareAccelerationType::VideoToolbox) && hdr {
-        // No hw input args — SW decode so tonemapx filter has CPU frames to work with.
+    } else if matches!(accel, HardwareAccelerationType::VideoToolbox)
+        && videotoolbox_uses_software_decode(
+            params
+                .source_video_codec
+                .as_deref(),
+            hdr,
+        )
+    {
+        // HDR needs CPU frames for tonemapx. AV1 hardware decode is not
+        // available on every supported Mac, so software decode avoids a failed
+        // VideoToolbox input while still allowing hardware H.264 encoding.
     } else {
         args.extend(hw_input_args(
             accel,
@@ -1546,8 +1610,15 @@ pub(crate) fn build_progressive_args(
             &params.vaapi_device,
             &params.vaapi_driver,
         ));
-    } else if matches!(accel, HardwareAccelerationType::VideoToolbox) && hdr {
-        // No hw input args — SW decode so tonemapx filter has CPU frames to work with.
+    } else if matches!(accel, HardwareAccelerationType::VideoToolbox)
+        && videotoolbox_uses_software_decode(
+            params
+                .source_video_codec
+                .as_deref(),
+            hdr,
+        )
+    {
+        // No hw input args; see the HLS path above.
     } else {
         args.extend(hw_input_args(
             accel,
@@ -2750,6 +2821,56 @@ mod tests {
         assert_eq!(args[hwaccel_pos + 1], "cuda");
         // Encoder remapped
         assert_eq!(arg_after(&args, "-c:v"), Some("h264_nvenc"));
+    }
+
+    #[test]
+    fn videotoolbox_decode_decision_uses_av1_hardware_capability() {
+        assert!(videotoolbox_requires_software_decode(
+            Some("av1"),
+            false,
+            false,
+        ));
+        assert!(!videotoolbox_requires_software_decode(
+            Some("av1"),
+            false,
+            true,
+        ));
+        assert!(videotoolbox_requires_software_decode(
+            Some("h264"),
+            true,
+            true,
+        ));
+        assert!(!videotoolbox_requires_software_decode(
+            Some("h264"),
+            false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn hls_videotoolbox_software_decode_keeps_hardware_encode() {
+        let dir = PathBuf::from("/tmp/test_videotoolbox_hdr");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "h264".into(),
+            source_video_codec: Some("hevc".into()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            hardware_acceleration_type: HardwareAccelerationType::VideoToolbox,
+            ..default_hls(dir)
+        });
+
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg == "-hwaccel"),
+            "HDR input must stay in system memory for CPU tone mapping: {args:?}"
+        );
+        assert_eq!(arg_after(&args, "-c:v"), Some("h264_videotoolbox"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn videotoolbox_av1_capability_query_is_available() {
+        let _ = videotoolbox_av1_hardware_decode_supported();
     }
 
     #[test]
