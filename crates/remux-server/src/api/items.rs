@@ -95,17 +95,12 @@ impl ItemsQueryResultBuilder {
     }
 
     pub fn with_client_patches(mut self) -> Self {
-        let client = &self
+        let client = self
             .session
             .device
-            .app_name;
-        self.hide_sources = client == "Plezy";
-        self.mixed_collection_type = if client.contains("Swiftfin") {
-            // Swiftfin's SDK has no "mixed" case; homevideos is accepted and shows a home row.
-            Some(api::CollectionType::Homevideos)
-        } else {
-            None
-        };
+            .jellyfin_client();
+        self.hide_sources = client.hide_sources();
+        self.mixed_collection_type = client.mixed_collection_type();
         self
     }
 
@@ -180,10 +175,10 @@ pub async fn get_items(
     }
     // Used only by pre-converting paths (search, playlist) that use with_dtos().
     // Raw-media paths delegate hide_sources to with_client_patches() on the builder.
-    let hide_sources = session
+    let client = session
         .device
-        .app_name
-        == "Plezy";
+        .jellyfin_client();
+    let hide_sources = client.hide_sources();
 
     let parent = if let Some(parent_id) = q
         .parent_id
@@ -201,12 +196,11 @@ pub async fn get_items(
     };
 
     // Apply the collection's default sort override when the client sends no sort
-    // preference or sends SortName as the primary sort (Jellyfin clients use
-    // SortName as their generic default, so we treat it as "no preference").
+    // preference or its built-in default sort (treated as "no preference").
     if let Some(ref p) = parent {
         if let Some(ref default_sort) = p.collection_default_sort {
             if !default_sort.is_empty() {
-                if q.is_default_sort() {
+                if client.is_default_sort(&q) {
                     q.sort_by = Some(default_sort.clone());
                     q.sort_order = p
                         .collection_default_sort_order
@@ -788,6 +782,9 @@ pub async fn items_flat(
     // Jellyfin ignores the MediaTypes query parameter for this request.
     // Without this, supplying a value (e.g. Video) would exclude Series collections.
     q.media_types = None;
+    let client = session
+        .device
+        .jellyfin_client();
     if let Some(parent_id) = q
         .parent_id
         .clone()
@@ -818,7 +815,7 @@ pub async fn items_flat(
                 q.sort_order = Some(vec![api::SortOrder::Descending]);
             } else if let Some(ref default_sort) = parent.collection_default_sort {
                 if !default_sort.is_empty() {
-                    if q.is_default_sort() {
+                    if client.is_default_sort(&q) {
                         q.sort_by = Some(default_sort.clone());
                         q.sort_order = parent
                             .collection_default_sort_order
