@@ -462,7 +462,7 @@ pub(crate) fn apply_title_format(media: &mut db::Media) {
     if media.kind == db::MediaKind::Episode {
         if let Some(ep) = media.idx {
             let prefix = match media.parent_idx {
-                Some(s) => format!("S{}E{} - ", s, ep),
+                Some(_) => String::new(),
                 None => format!("E{} - ", ep),
             };
             if !media

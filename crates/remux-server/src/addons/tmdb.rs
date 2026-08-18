@@ -690,7 +690,7 @@ impl From<&sdks::tmdb::Episode> for db::Media {
         };
         let mut media = db::Media {
             kind: db::MediaKind::Episode,
-            title: format!("S{}E{} - {}", ep.season_number, ep.episode_number, ep.name),
+            title: ep.name.clone(),
             description: ep
                 .overview
                 .clone()

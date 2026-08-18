@@ -1821,11 +1821,11 @@ impl Media {
                     .unwrap_or_default();
                 match (show.is_empty(), self.parent_idx, self.idx) {
                     (false, Some(s), Some(e)) => {
-                        format!("{} S{:02}E{:02} - {}", show, s, e, self.title)
+                        format!("{} - {}", show, self.title)
                     }
                     (false, _, _) => format!("{} - {}", show, self.title),
                     (true, Some(s), Some(e)) => {
-                        format!("S{:02}E{:02} - {}", s, e, self.title)
+                        self.title.clone()
                     }
                     _ => self
                         .title
