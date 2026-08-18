@@ -10,7 +10,10 @@ use remux_macros::get;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::{AppState, IntoApiError, OptionExt, ResultExt, api, db, db::auth};
+use crate::{
+    AppState, IntoApiError, OptionExt, ResultExt, api, common::HideConsole, db,
+    db::auth,
+};
 
 fn ffmpeg_bin() -> String {
     std::env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".into())
@@ -99,6 +102,7 @@ async fn extract_subtitle_to_cache(
     let ffmpeg_codec = subtitle_cache_ffmpeg_codec(&cache_codec, source_codec);
     let ffmpeg_format = cache_codec.to_string();
     let mut cmd = tokio::process::Command::new(ffmpeg_bin());
+    cmd.hide_console();
     cmd.kill_on_drop(true);
     cmd.args([
         "-y",
@@ -453,6 +457,7 @@ async fn subtitles_stream_inner(
     // Binary formats (PGS/SUP): extract on-the-fly as raw bytes.
     if is_binary {
         let mut cmd = tokio::process::Command::new(ffmpeg_bin());
+        cmd.hide_console();
         cmd.kill_on_drop(true);
         cmd.args([
             "-copyts",
