@@ -52,9 +52,9 @@ pub struct User {
     pub id: Uuid,
     pub username: String,
     #[serde(skip_serializing)]
-    pub password_hash: String,
+    pub password_hash: remux_utils::Secret<String>,
     #[serde(skip_serializing)]
-    pub aio_url: Option<String>,
+    pub aio_url: Option<remux_utils::Secret<String>>,
     pub configuration: Option<sqlx::types::Json<crate::api::UserConfiguration>>,
     pub is_admin: bool,
     pub policy: Option<sqlx::types::Json<crate::api::UserPolicy>>,
@@ -202,8 +202,8 @@ impl User {
         Ok(Self {
             id: get_uuid(),
             username,
-            password_hash,
-            aio_url,
+            password_hash: password_hash.into(),
+            aio_url: aio_url.map(Into::into),
             ..Default::default()
         })
     }
@@ -261,13 +261,16 @@ impl User {
     }
 
     pub fn set_password(&mut self, password: &str) -> Result<()> {
-        self.password_hash = Self::hash_password(password)?;
+        self.password_hash = Self::hash_password(password)?.into();
         Ok(())
     }
 
     pub fn verify_password(&self, password: &str) -> Result<bool> {
-        let parsed = PasswordHash::new(&self.password_hash)
-            .map_err(|e| anyhow!("invalid stored password hash: {e}"))?;
+        let parsed = PasswordHash::new(
+            self.password_hash
+                .expose(),
+        )
+        .map_err(|e| anyhow!("invalid stored password hash: {e}"))?;
 
         Ok(Argon2::default()
             .verify_password(password.as_bytes(), &parsed)

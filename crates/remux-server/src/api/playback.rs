@@ -427,9 +427,10 @@ async fn items_playbackinfo_inner(
         apply_subtitle_delivery(
             &mut source,
             id,
-            &session
+            session
                 .device
-                .access_token,
+                .access_token
+                .expose(),
             &cfg.device_profile,
             cfg.subtitle_mode,
         );
@@ -457,9 +458,10 @@ async fn items_playbackinfo_inner(
             sub_media,
             &mut media_sources,
             id,
-            &session
+            session
                 .device
-                .access_token,
+                .access_token
+                .expose(),
             sub_langs,
             Some(
                 session
@@ -527,7 +529,8 @@ async fn items_playbackinfo_inner(
                     source.id,
                     session
                         .device
-                        .access_token,
+                        .access_token
+                        .expose(),
                 ));
             }
         }
@@ -1069,6 +1072,7 @@ pub async fn audio_universal(
         session
             .device
             .access_token
+            .expose()
     );
 
     Ok(axum::response::Redirect::temporary(&transcoding_url).into_response())
@@ -1103,8 +1107,9 @@ mod tests {
     use serde_json::json;
 
     use crate::integration_test::{
-        AUTH_HEADER, auth_header_with_token, authenticated_server, insert_test_source,
-        new_test_server,
+        AUTH_HEADER, assert_api_keys_are_real, auth_header_with_token,
+        authenticated_server, insert_test_source, insert_test_source_of_kind,
+        insert_test_source_with_external_subtitle, new_test_server,
     };
 
     #[tokio::test]
@@ -1130,7 +1135,8 @@ mod tests {
                 kind: "stremio".to_string(),
                 config: serde_json::json!({
                     "manifest_url": "https://example.com/addon/manifest.json"
-                }),
+                })
+                .into(),
             },
             resources: vec![ResourceType::Stream],
             types: vec![],
@@ -1810,6 +1816,121 @@ mod tests {
             url.contains(&format!("MaxStreamingBitrate={}", max_bitrate)),
             "TranscodingUrl should contain MaxStreamingBitrate: {}",
             url
+        );
+    }
+
+    /// The session token is carried in the URL the client is told to fetch, so
+    /// it has to be the real one. It is wrapped in a `Secret`, which only ever
+    /// prints as `<redacted>`.
+    #[tokio::test]
+    async fn test_playbackinfo_transcoding_url_carries_the_real_token() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_test_source(&guard.0).await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({ "MaxStreamingBitrate": 1_000_000 }))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let url = body["MediaSources"][0]["TranscodingUrl"]
+            .as_str()
+            .expect("TranscodingUrl should be present");
+        assert!(
+            url.contains(&format!("ApiKey={}", token)),
+            "TranscodingUrl should carry the session token: {}",
+            url
+        );
+        // Subtitle delivery URLs and any other URL in the body carry it too.
+        assert_api_keys_are_real(&body, &token);
+    }
+
+    /// An external subtitle is delivered by URL, and that URL is built apart
+    /// from the transcode one.
+    #[tokio::test]
+    async fn test_playbackinfo_subtitle_delivery_url_carries_the_real_token() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_test_source_with_external_subtitle(&guard.0).await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({ "MaxStreamingBitrate": 1_000_000 }))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let delivery = body["MediaSources"][0]["MediaStreams"]
+            .as_array()
+            .expect("media streams")
+            .iter()
+            .find_map(|s| s["DeliveryUrl"].as_str())
+            .expect("an external subtitle is delivered by URL");
+        assert!(
+            delivery.contains(&format!("ApiKey={}", token)),
+            "subtitle delivery URL should carry the session token: {delivery}"
+        );
+        assert_api_keys_are_real(&body, &token);
+    }
+
+    /// Live TV takes its own branch and builds its own URL.
+    #[tokio::test]
+    async fn test_playbackinfo_live_url_carries_the_real_token() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media =
+            insert_test_source_of_kind(&guard.0, crate::db::MediaKind::TvChannel).await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({ "MaxStreamingBitrate": 1_000_000 }))
+            .await;
+
+        resp.assert_status_ok();
+        assert_api_keys_are_real(&resp.json::<serde_json::Value>(), &token);
+    }
+
+    /// The audio redirect hands the client a URL it must fetch with the token
+    /// already in it, so a redacted one 401s on the very next request.
+    #[tokio::test]
+    async fn test_audio_universal_redirect_carries_the_real_token() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media =
+            insert_test_source_of_kind(&guard.0, crate::db::MediaKind::Track).await;
+
+        let resp = server
+            .get(&format!("/audio/{}/universal", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .expect_failure()
+            .await;
+
+        resp.assert_status(StatusCode::TEMPORARY_REDIRECT);
+        let location = resp
+            .header("location")
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            location.contains(&format!("ApiKey={}", token)),
+            "redirect should carry the session token: {location}"
         );
     }
 

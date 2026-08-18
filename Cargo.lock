@@ -6740,6 +6740,8 @@ dependencies = [
  "moka",
  "nutype",
  "serde",
+ "serde_json",
+ "sqlx",
  "uuid",
 ]
 

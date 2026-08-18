@@ -1313,9 +1313,10 @@ impl AddonService {
             };
             match preset.from_cfg(
                 addon.id,
-                &addon
+                addon
                     .preset
-                    .config,
+                    .config
+                    .expose(),
                 config,
             ) {
                 Ok(mut caps) => {

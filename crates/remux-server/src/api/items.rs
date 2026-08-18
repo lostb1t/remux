@@ -1794,6 +1794,7 @@ async fn item_for_user(
             session
                 .device
                 .access_token
+                .expose()
         );
         let sources = media
             .sources
@@ -3362,7 +3363,10 @@ mod tests {
     use crate::{
         db,
         db::{ExternalIds, MediaIdRaw, NonEmptyString},
-        integration_test::{auth_header_with_token, authenticated_server},
+        integration_test::{
+            assert_api_keys_are_real, auth_header_with_token, authenticated_server,
+            insert_test_source_of_kind,
+        },
     };
 
     async fn get_user_id(server: &axum_test::TestServer, auth: &str) -> String {
@@ -4602,5 +4606,26 @@ mod tests {
                 .to_string(),
             "the item itself is still the parent movie"
         );
+    }
+
+    /// Tracks are wrapped as HLS sources here rather than in the playback layer,
+    /// so this URL is built in its own place and needs its own check: it carries
+    /// the session token the client must play with.
+    #[tokio::test]
+    async fn track_media_source_url_carries_the_real_token() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_test_source_of_kind(&guard.0, db::MediaKind::Track).await;
+
+        let resp = server
+            .get(&format!("/items/{}", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+
+        resp.assert_status_ok();
+        assert_api_keys_are_real(&resp.json::<serde_json::Value>(), &token);
     }
 }

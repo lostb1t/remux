@@ -1064,9 +1064,10 @@ async fn scan_addon(
     tmdb: &Option<sdks::RestClient<sdks::BearerAuth>>,
     addon: &Addon,
 ) -> Result<()> {
-    let cfg = &addon
+    let cfg = addon
         .preset
-        .config;
+        .config
+        .expose();
     let media_kind = cfg["media_kind"]
         .as_str()
         .unwrap_or("movie")
@@ -1832,7 +1833,8 @@ mod tests {
                 config: serde_json::json!({
                     "media_kind": media_kind,
                     "paths": [root],
-                }),
+                })
+                .into(),
             },
             resources: vec![ResourceType::Stream, ResourceType::Catalog],
             types: vec![],
