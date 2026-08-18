@@ -194,12 +194,70 @@ pub async fn bind_and_serve(router: Router, port: u16) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+const TARGET_OPEN_FILE_LIMIT: libc::rlim_t = 8192;
+
+#[cfg(unix)]
+fn desired_open_file_limit(
+    current_soft: libc::rlim_t,
+    current_hard: libc::rlim_t,
+) -> Option<libc::rlim_t> {
+    let desired = TARGET_OPEN_FILE_LIMIT.min(current_hard);
+    (current_soft < desired).then_some(desired)
+}
+
+#[cfg(unix)]
+fn raise_open_file_limit() {
+    // Torrent peers, tracker sockets, HTTP clients, and transcoders all share
+    // the process descriptor table. Some desktop launch environments provide a
+    // soft limit too small for concurrent playback, so raise only the soft
+    // limit while preserving the administrator-controlled hard limit.
+    unsafe {
+        let mut limits = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+        if libc::getrlimit(libc::RLIMIT_NOFILE, limits.as_mut_ptr()) != 0 {
+            warn!(
+                error = %std::io::Error::last_os_error(),
+                "failed to read open-file limit"
+            );
+            return;
+        }
+
+        let mut limits = limits.assume_init();
+        let Some(desired) = desired_open_file_limit(limits.rlim_cur, limits.rlim_max)
+        else {
+            return;
+        };
+        let previous = limits.rlim_cur;
+        limits.rlim_cur = desired;
+        if libc::setrlimit(libc::RLIMIT_NOFILE, &limits) != 0 {
+            warn!(
+                previous,
+                desired,
+                hard = limits.rlim_max,
+                error = %std::io::Error::last_os_error(),
+                "failed to raise open-file limit"
+            );
+        } else {
+            info!(
+                previous,
+                desired,
+                hard = limits.rlim_max,
+                "raised open-file limit"
+            );
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn raise_open_file_limit() {}
+
 pub async fn init_app(
     config: Config,
     web_paths: Option<FilesystemPaths>,
     admin: AdminService,
     make_web_client: impl FnOnce(sqlx::SqlitePool) -> WebClientService,
 ) -> Result<(Router, AppContext)> {
+    raise_open_file_limit();
     info!("starting remux {}", env!("CARGO_PKG_VERSION"));
     info!("config: {}", serde_json::to_string_pretty(&config).unwrap());
 
@@ -775,5 +833,28 @@ mod rewrite_uri_tests {
         let rewritten = rewrite(path);
         assert!(rewritten.starts_with("/sessions/play/"));
         assert!(rewritten.contains("YWJjMTIz%7Cabc"));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod open_file_limit_tests {
+    use super::{TARGET_OPEN_FILE_LIMIT, desired_open_file_limit};
+
+    #[test]
+    fn raises_soft_limit_to_target_without_changing_hard_limit() {
+        assert_eq!(
+            desired_open_file_limit(256, libc::RLIM_INFINITY),
+            Some(TARGET_OPEN_FILE_LIMIT)
+        );
+        assert_eq!(
+            desired_open_file_limit(TARGET_OPEN_FILE_LIMIT, libc::RLIM_INFINITY),
+            None
+        );
+    }
+
+    #[test]
+    fn clamps_soft_limit_to_the_existing_hard_limit() {
+        assert_eq!(desired_open_file_limit(256, 4096), Some(4096));
+        assert_eq!(desired_open_file_limit(4096, 4096), None);
     }
 }
