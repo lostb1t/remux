@@ -95,12 +95,10 @@ impl ItemsQueryResultBuilder {
     }
 
     pub fn with_client_patches(mut self) -> Self {
-        let client = crate::jellyfin_client::from_app_name(
-            &self
-                .session
-                .device
-                .app_name,
-        );
+        let client = self
+            .session
+            .device
+            .jellyfin_client();
         self.hide_sources = client.hide_sources();
         self.mixed_collection_type = client.mixed_collection_type();
         self
@@ -177,11 +175,9 @@ pub async fn get_items(
     }
     // Used only by pre-converting paths (search, playlist) that use with_dtos().
     // Raw-media paths delegate hide_sources to with_client_patches() on the builder.
-    let client = crate::jellyfin_client::from_app_name(
-        &session
-            .device
-            .app_name,
-    );
+    let client = session
+        .device
+        .jellyfin_client();
     let hide_sources = client.hide_sources();
 
     let parent = if let Some(parent_id) = q
@@ -786,11 +782,9 @@ pub async fn items_flat(
     // Jellyfin ignores the MediaTypes query parameter for this request.
     // Without this, supplying a value (e.g. Video) would exclude Series collections.
     q.media_types = None;
-    let client = crate::jellyfin_client::from_app_name(
-        &session
-            .device
-            .app_name,
-    );
+    let client = session
+        .device
+        .jellyfin_client();
     if let Some(parent_id) = q
         .parent_id
         .clone()

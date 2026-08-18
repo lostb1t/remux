@@ -1,4 +1,7 @@
-use crate::api::{CollectionType, GetItemsQuery, ItemSortBy, SortOrder};
+use crate::{
+    api::{CollectionType, GetItemsQuery, ItemSortBy, SortOrder},
+    db::auth::Device,
+};
 
 pub trait JellyfinClient: Send {
     fn hide_sources(&self) -> bool {
@@ -75,8 +78,11 @@ impl JellyfinClient for SenPlayer {
 
 impl JellyfinClient for GenericClient {}
 
-pub fn from_app_name(name: &str) -> Box<dyn JellyfinClient> {
-    match name {
+pub fn from_device(device: &Device) -> Box<dyn JellyfinClient> {
+    match device
+        .app_name
+        .as_str()
+    {
         "Plezy" => Box::new(Plezy),
         s if s.contains("Swiftfin") => Box::new(Swiftfin),
         "SenPlayer" => Box::new(SenPlayer),
