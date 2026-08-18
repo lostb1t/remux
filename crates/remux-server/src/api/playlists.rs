@@ -220,22 +220,33 @@ pub async fn get_playlist_items(
         None => &relations[start.min(relations.len())..],
     };
 
+    let item_ids: Vec<Uuid> = slice
+        .iter()
+        .map(|r| r.right_media_id)
+        .collect();
     let mut items = Vec::with_capacity(slice.len());
-    for rel in slice {
-        if let Some(media) = db::Media::get_by_id(
-            &state
-                .ctx
-                .db,
-            &rel.right_media_id,
+    if !item_ids.is_empty() {
+        let mut by_id: std::collections::HashMap<Uuid, db::Media> = db::Media::get_by_filter(
+            &state.ctx.db,
+            &db::MediaFilter {
+                id: Some(item_ids),
+                ..Default::default()
+            },
         )
         .await?
-        {
-            let mut dto = api::db_media_to_item(media, false);
-            dto.playlist_item_id = Some(
-                rel.relation_id
-                    .to_string(),
-            );
-            items.push(dto);
+        .records
+        .into_iter()
+        .map(|m| (m.id, m))
+        .collect();
+        for rel in slice {
+            if let Some(media) = by_id.remove(&rel.right_media_id) {
+                let mut dto = api::db_media_to_item(media, false);
+                dto.playlist_item_id = Some(
+                    rel.relation_id
+                        .to_string(),
+                );
+                items.push(dto);
+            }
         }
     }
 

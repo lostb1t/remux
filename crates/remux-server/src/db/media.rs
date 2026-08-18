@@ -1752,6 +1752,57 @@ impl Media {
         }
     }
 
+    /// Fill `runtime` for Playlist rows from the summed runtime of their
+    /// member items. Jellyfin reports playlist duration (`RunTimeTicks`)
+    /// computed from child items; Remux stores no runtime of its own on
+    /// playlist rows, so clients like Feishin end up with NaN when the
+    /// field is absent from the serialized DTO.
+    pub async fn preload_playlist_runtimes(db: &SqlitePool, records: &mut [Self]) {
+        let playlist_ids: Vec<Uuid> = records
+            .iter()
+            .filter(|m| m.kind == MediaKind::Playlist && m.runtime.is_none())
+            .map(|m| m.id)
+            .collect();
+        if playlist_ids.is_empty() {
+            return;
+        }
+
+        let mut qb = sqlx::QueryBuilder::new(
+            "SELECT mr.left_media_id, SUM(m.runtime) FROM media_relations mr JOIN media m ON m.id = mr.right_media_id WHERE mr.role = 'playlist' AND mr.left_media_id IN (",
+        );
+        let mut sep = qb.separated(", ");
+        for id in &playlist_ids {
+            sep.push_bind(id);
+        }
+        qb.push(") GROUP BY mr.left_media_id");
+
+        let mut runtime_map: std::collections::HashMap<Uuid, i64> = Default::default();
+        match qb
+            .build()
+            .fetch_all(db)
+            .await
+        {
+            Ok(rows) => {
+                for row in rows {
+                    let pid: Uuid = row.get(0);
+                    let total: Option<i64> = row.get(1);
+                    if let Some(runtime) = total {
+                        runtime_map.insert(pid, runtime);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("failed to preload playlist runtimes: {e}");
+            }
+        }
+
+        for media in records.iter_mut() {
+            if let Some(runtime) = runtime_map.get(&media.id) {
+                media.runtime = Some(*runtime);
+            }
+        }
+    }
+
     /// Build a minimal Media stub with just id and title — used when preloaded
     /// parent/grandparent data is constructed inline rather than fetched from DB.
     pub fn stub(id: Uuid, title: impl Into<String>) -> Box<Self> {
