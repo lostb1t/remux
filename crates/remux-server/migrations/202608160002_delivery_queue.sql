@@ -1,8 +1,9 @@
 -- Outbound deliveries waiting to leave the server, one row per attempt target.
 --
--- Written synchronously by the request handler before it returns, so a
--- scrobble survives a crash, a restart, or the provider being down. An
--- in-memory channel would drop these on lag.
+-- A producer writes its row synchronously before returning, so a scrobble
+-- survives a crash, a restart, or the provider being down; an in-memory
+-- channel would drop these on lag. The playback handlers that produce them
+-- come with the next change, so until then only tests fill this table.
 --
 -- `kind` says who delivers the row and how `payload` is read; the retry state
 -- machine below it is shared. Tracking is the first kind, webhooks the next.
@@ -41,9 +42,8 @@ CREATE INDEX idx_delivery_queue_user_media_tracker_id
     ON delivery_queue(user_media_tracker_id);
 
 -- Without a trigger the task only ever runs when an admin presses the button,
--- so a retryable failure would never actually be retried. Handlers also poke
--- the worker on enqueue; this sweep is what catches backoffs coming due and
--- anything left queued across a restart.
+-- so a retryable failure would never actually be retried. This sweep catches
+-- backoffs coming due and anything left queued across a restart.
 INSERT OR IGNORE INTO task_triggers (id, task_id, kind, time_limit_hours, cron)
 VALUES ('default-deliveryqueuesync-interval', 'DeliveryQueueSync',
         'IntervalTrigger', NULL, '0 */5 * * * *');

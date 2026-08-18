@@ -198,7 +198,7 @@ impl DeliveryQueue {
             kind,
             status: DeliveryStatus::Pending,
             attempts: 0,
-            // Due immediately; the worker is also poked directly on enqueue.
+            // Due immediately, for the next sweep to pick up.
             next_attempt_at: now,
             last_error: None,
             created_at: now,
