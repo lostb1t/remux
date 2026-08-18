@@ -106,11 +106,37 @@ pub async fn insert_test_source(ctx: &AppContext) -> db::Media {
     insert_test_source_of_kind(ctx, db::MediaKind::Stream).await
 }
 
+/// [`insert_test_source`] with an external subtitle stream, which is delivered
+/// by URL rather than embedded.
+pub async fn insert_test_source_with_external_subtitle(ctx: &AppContext) -> db::Media {
+    insert_source(
+        ctx,
+        db::MediaKind::Stream,
+        vec![MediaStream {
+            codec: Some("subrip".to_string()),
+            type_: Some(MediaStreamType::Subtitle),
+            index: 2,
+            is_external: true,
+            language: Some("eng".to_string()),
+            ..Default::default()
+        }],
+    )
+    .await
+}
+
 /// [`insert_test_source`] for a specific kind. Playbackinfo branches on it:
 /// `TvChannel` is live, `Track` goes down the HLS-only path.
 pub async fn insert_test_source_of_kind(
     ctx: &AppContext,
     kind: db::MediaKind,
+) -> db::Media {
+    insert_source(ctx, kind, vec![]).await
+}
+
+async fn insert_source(
+    ctx: &AppContext,
+    kind: db::MediaKind,
+    extra_streams: Vec<MediaStream>,
 ) -> db::Media {
     let now = Utc::now().naive_utc();
 
@@ -136,7 +162,10 @@ pub async fn insert_test_source_of_kind(
                 index: 1,
                 ..Default::default()
             },
-        ],
+        ]
+        .into_iter()
+        .chain(extra_streams)
+        .collect(),
         ..Default::default()
     };
 

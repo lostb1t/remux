@@ -424,3 +424,67 @@ pub(crate) fn apply_subtitle_delivery(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A source with no video stream routes to its own transcode branch, which
+    /// builds its own URL. That URL is what the client fetches next, so it has
+    /// to carry the real session token rather than the `Secret`'s redaction.
+    #[test]
+    fn audio_only_transcode_url_carries_the_real_token() {
+        let session = db::auth::AuthSession {
+            device: db::auth::Device {
+                access_token: "real-token"
+                    .to_string()
+                    .into(),
+                ..Default::default()
+            },
+            user: db::User::default(),
+        };
+        let source = api::MediaSourceInfo {
+            id: Uuid::new_v4(),
+            media_streams: vec![api::MediaStream {
+                codec: Some("flac".to_string()),
+                type_: Some(api::MediaStreamType::Audio),
+                index: 0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let cfg = PlaybackConfig {
+            encoding_cfg: EncodingOptions::default(),
+            device_profile: None,
+            max_bitrate: None,
+            play_session_id: "play-session".to_string(),
+            item_id: Uuid::new_v4(),
+            subtitle_mode: EmbeddedSubtitleHandling::default(),
+        };
+        // Direct play off is what forces the decision down a transcode branch.
+        let q = api::PlaybackInfoQuery {
+            enable_direct_play: Some(false),
+            ..Default::default()
+        };
+
+        let decision = build_transcode_decision(
+            &source,
+            &api::TranscodeReasons::default(),
+            None,
+            &q,
+            &session,
+            &cfg,
+        );
+
+        let TranscodeDecision::Transcode(outcome) = decision else {
+            panic!("a source with no video stream should transcode");
+        };
+        assert!(
+            outcome
+                .url
+                .contains("ApiKey=real-token"),
+            "audio transcode URL should carry the session token: {}",
+            outcome.url
+        );
+    }
+}

@@ -1109,7 +1109,7 @@ mod tests {
     use crate::integration_test::{
         AUTH_HEADER, assert_api_keys_are_real, auth_header_with_token,
         authenticated_server, insert_test_source, insert_test_source_of_kind,
-        new_test_server,
+        insert_test_source_with_external_subtitle, new_test_server,
     };
 
     #[tokio::test]
@@ -1848,6 +1848,38 @@ mod tests {
             url
         );
         // Subtitle delivery URLs and any other URL in the body carry it too.
+        assert_api_keys_are_real(&body, &token);
+    }
+
+    /// An external subtitle is delivered by URL, and that URL is built apart
+    /// from the transcode one.
+    #[tokio::test]
+    async fn test_playbackinfo_subtitle_delivery_url_carries_the_real_token() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_test_source_with_external_subtitle(&guard.0).await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({ "MaxStreamingBitrate": 1_000_000 }))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let delivery = body["MediaSources"][0]["MediaStreams"]
+            .as_array()
+            .expect("media streams")
+            .iter()
+            .find_map(|s| s["DeliveryUrl"].as_str())
+            .expect("an external subtitle is delivered by URL");
+        assert!(
+            delivery.contains(&format!("ApiKey={}", token)),
+            "subtitle delivery URL should carry the session token: {delivery}"
+        );
         assert_api_keys_are_real(&body, &token);
     }
 
