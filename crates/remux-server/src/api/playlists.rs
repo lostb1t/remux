@@ -7,6 +7,7 @@ use axum_extra::extract::Query;
 use http::StatusCode;
 use remux_macros::{delete, get, post, query};
 use remux_sdks::CommaSeparatedList;
+use remux_sdks::remux::deserialize_separated_str;
 use uuid::Uuid;
 
 use crate::{
@@ -178,6 +179,12 @@ pub async fn update_playlist(
 pub struct PlaylistItemsQuery {
     pub start_index: Option<u32>,
     pub limit: Option<u32>,
+    /// Jellyfin `IncludeItemTypes` filter, applied before pagination.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_separated_str"
+    )]
+    pub include_item_types: Option<Vec<api::MediaType>>,
 }
 
 #[get("/playlists/{id}/items")]
@@ -205,28 +212,15 @@ pub async fn get_playlist_items(
         &id,
     )
     .await?;
-    let total = relations.len() as i64;
 
-    let start = q
-        .start_index
-        .unwrap_or(0) as usize;
-    let remaining = relations
-        .len()
-        .saturating_sub(start);
-    let slice = match q.limit {
-        Some(limit) => {
-            &relations[start.min(relations.len())..][..(limit as usize).min(remaining)]
-        }
-        None => &relations[start.min(relations.len())..],
-    };
-
-    let item_ids: Vec<Uuid> = slice
+    let item_ids: Vec<Uuid> = relations
         .iter()
         .map(|r| r.right_media_id)
         .collect();
-    let mut items = Vec::with_capacity(slice.len());
-    if !item_ids.is_empty() {
-        let mut by_id: std::collections::HashMap<Uuid, db::Media> = db::Media::get_by_filter(
+    let mut by_id: std::collections::HashMap<Uuid, db::Media> = if item_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        db::Media::get_by_filter(
             &state.ctx.db,
             &db::MediaFilter {
                 id: Some(item_ids),
@@ -237,18 +231,53 @@ pub async fn get_playlist_items(
         .records
         .into_iter()
         .map(|m| (m.id, m))
+        .collect()
+    };
+
+    let mut ordered: Vec<(Uuid, db::Media)> = relations
+        .into_iter()
+        .filter_map(|rel| {
+            by_id
+                .remove(&rel.right_media_id)
+                .map(|m| (rel.relation_id, m))
+        })
         .collect();
-        for rel in slice {
-            if let Some(media) = by_id.remove(&rel.right_media_id) {
-                let mut dto = api::db_media_to_item(media, false);
-                dto.playlist_item_id = Some(
-                    rel.relation_id
-                        .to_string(),
-                );
-                items.push(dto);
-            }
-        }
+
+    if let Some(types) = &q.include_item_types {
+        let kinds: Vec<db::MediaKind> = types
+            .iter()
+            .filter_map(|t| db::MediaKind::try_from(t.clone()).ok())
+            .collect();
+        ordered.retain(|(_, m)| kinds.contains(&m.kind));
     }
+
+    let total = ordered.len() as i64;
+
+    let start = q
+        .start_index
+        .unwrap_or(0) as usize;
+    let start = start.min(ordered.len());
+    let slice = match q.limit {
+        Some(limit) => {
+            &ordered[start..][..(limit as usize).min(ordered.len() - start)]
+        }
+        None => &ordered[start..],
+    };
+
+    let items: Vec<api::BaseItemDto> = slice
+        .iter()
+        .map(|(relation_id, media)| {
+            let mut dto = api::db_media_to_item(
+                media.clone(),
+                false,
+            );
+            dto.playlist_item_id = Some(
+                relation_id
+                    .to_string(),
+            );
+            dto
+        })
+        .collect();
 
     Ok(Json(api::BaseItemDtoQueryResult {
         items,
