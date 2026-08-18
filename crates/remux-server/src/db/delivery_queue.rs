@@ -1,11 +1,11 @@
 use anyhow::Result;
 use chrono::{NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::{FromRow, Row, SqlitePool, sqlite::SqliteRow};
 use std::time::Duration;
 use uuid::Uuid;
 
-use crate::addons::tracking::{TrackingError, TrackingEventKind};
+use crate::addons::tracking::{TrackingError, TrackingEvent, TrackingTarget};
 
 /// Attempts before a row is parked as `failed_retryable` and stops being
 /// retried. Roughly a day of backoff, so a provider outage is ridden out but a
@@ -31,7 +31,7 @@ const MAX_BACKOFF_SECS: i64 = 6 * 60 * 60;
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 #[sqlx(type_name = "TEXT", rename_all = "snake_case")]
-pub enum MediaTrackerOutboxStatus {
+pub enum DeliveryStatus {
     #[default]
     Pending,
     Delivered,
@@ -41,13 +41,108 @@ pub enum MediaTrackerOutboxStatus {
     FailedPermanent,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-pub struct MediaTrackerOutbox {
+/// Which deliverer a queued row belongs to. Stored in its own column so the
+/// worker can tell what a row is without parsing its payload first.
+#[derive(
+    strum_macros::EnumString,
+    strum_macros::Display,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    sqlx::Type,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+#[sqlx(type_name = "TEXT", rename_all = "snake_case")]
+pub enum DeliveryKind {
+    Tracker,
+}
+
+/// What one tracking delivery carries: the event, plus the item it was about
+/// resolved at enqueue time so delivery never has to look anything up.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TrackerPayload {
+    pub event: TrackingEvent,
+    pub target: TrackingTarget,
+}
+
+/// A queued delivery and everything its deliverer needs to make it.
+///
+/// The retry machinery wrapped around this is kind-agnostic; only the sync
+/// task's dispatch cares which variant it holds. Webhooks are the next kind.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum QueueKind {
+    /// Watch activity headed for one of a user's connected media trackers.
+    Tracker {
+        user_media_tracker_id: Uuid,
+        payload: TrackerPayload,
+    },
+}
+
+impl QueueKind {
+    pub fn kind(&self) -> DeliveryKind {
+        match self {
+            Self::Tracker { .. } => DeliveryKind::Tracker,
+        }
+    }
+
+    /// The owner column for this variant, which is what makes a disconnect
+    /// take the backlog with it.
+    fn user_media_tracker_id(&self) -> Option<Uuid> {
+        match self {
+            Self::Tracker {
+                user_media_tracker_id,
+                ..
+            } => Some(*user_media_tracker_id),
+        }
+    }
+
+    /// The variant's body, minus whatever already has its own column.
+    fn body(&self) -> Result<String> {
+        Ok(match self {
+            Self::Tracker { payload, .. } => serde_json::to_string(payload)?,
+        })
+    }
+
+    /// Rebuild a variant from the three columns that hold it. Anything a row
+    /// cannot be read back into is a decode error, not a half-built value.
+    fn parse(
+        kind: DeliveryKind,
+        user_media_tracker_id: Option<Uuid>,
+        body: &str,
+    ) -> Result<Self, sqlx::Error> {
+        let decode =
+            |col: &'static str, e: Box<dyn std::error::Error + Send + Sync>| {
+                sqlx::Error::ColumnDecode {
+                    index: col.into(),
+                    source: e,
+                }
+            };
+        match kind {
+            DeliveryKind::Tracker => Ok(Self::Tracker {
+                user_media_tracker_id: user_media_tracker_id.ok_or_else(|| {
+                    decode(
+                        "user_media_tracker_id",
+                        "a tracker row without an owner".into(),
+                    )
+                })?,
+                payload: serde_json::from_str(body)
+                    .map_err(|e| decode("payload", Box::new(e)))?,
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeliveryQueue {
     pub id: Uuid,
-    pub user_media_tracker_id: Uuid,
-    pub event_kind: TrackingEventKind,
-    pub payload: String,
-    pub status: MediaTrackerOutboxStatus,
+    pub kind: QueueKind,
+    pub status: DeliveryStatus,
     pub attempts: i64,
     pub next_attempt_at: NaiveDateTime,
     pub last_error: Option<String>,
@@ -56,7 +151,28 @@ pub struct MediaTrackerOutbox {
     pub delivered_at: Option<NaiveDateTime>,
 }
 
-const COLS: &str = "id, user_media_tracker_id, event_kind, payload, status, attempts, \
+impl FromRow<'_, SqliteRow> for DeliveryQueue {
+    fn from_row(row: &SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            id: row.try_get("id")?,
+            kind: QueueKind::parse(
+                row.try_get("kind")?,
+                row.try_get("user_media_tracker_id")?,
+                row.try_get::<String, _>("payload")?
+                    .as_str(),
+            )?,
+            status: row.try_get("status")?,
+            attempts: row.try_get("attempts")?,
+            next_attempt_at: row.try_get("next_attempt_at")?,
+            last_error: row.try_get("last_error")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+            delivered_at: row.try_get("delivered_at")?,
+        })
+    }
+}
+
+const COLS: &str = "id, kind, user_media_tracker_id, payload, status, attempts, \
      next_attempt_at, last_error, created_at, updated_at, delivered_at";
 
 /// Delay before attempt `attempts + 1`, doubling from 30s and capped at 6h.
@@ -74,19 +190,13 @@ pub fn backoff(attempts: i64, retry_after: Option<Duration>) -> Duration {
     }
 }
 
-impl MediaTrackerOutbox {
-    pub fn new(
-        user_media_tracker_id: Uuid,
-        event_kind: TrackingEventKind,
-        payload: String,
-    ) -> Self {
+impl DeliveryQueue {
+    pub fn new(kind: QueueKind) -> Self {
         let now = Utc::now().naive_utc();
         Self {
             id: crate::common::get_uuid(),
-            user_media_tracker_id,
-            event_kind,
-            payload,
-            status: MediaTrackerOutboxStatus::Pending,
+            kind,
+            status: DeliveryStatus::Pending,
             attempts: 0,
             // Due immediately; the worker is also poked directly on enqueue.
             next_attempt_at: now,
@@ -99,15 +209,24 @@ impl MediaTrackerOutbox {
 
     pub async fn insert(&self, db: &SqlitePool) -> Result<()> {
         sqlx::query(
-            "INSERT INTO media_tracker_outbox \
-             (id, user_media_tracker_id, event_kind, payload, status, attempts, \
+            "INSERT INTO delivery_queue \
+             (id, kind, user_media_tracker_id, payload, status, attempts, \
               next_attempt_at, last_error, created_at, updated_at, delivered_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         )
         .bind(self.id)
-        .bind(self.user_media_tracker_id)
-        .bind(self.event_kind)
-        .bind(&self.payload)
+        .bind(
+            self.kind
+                .kind(),
+        )
+        .bind(
+            self.kind
+                .user_media_tracker_id(),
+        )
+        .bind(
+            self.kind
+                .body()?,
+        )
         .bind(self.status)
         .bind(self.attempts)
         .bind(self.next_attempt_at)
@@ -122,7 +241,7 @@ impl MediaTrackerOutbox {
 
     pub async fn get(db: &SqlitePool, id: Uuid) -> Result<Option<Self>> {
         Ok(sqlx::query_as::<_, Self>(&format!(
-            "SELECT {COLS} FROM media_tracker_outbox WHERE id = ?1"
+            "SELECT {COLS} FROM delivery_queue WHERE id = ?1"
         ))
         .bind(id)
         .fetch_optional(db)
@@ -131,7 +250,7 @@ impl MediaTrackerOutbox {
 
     pub async fn due(db: &SqlitePool, limit: i64) -> Result<Vec<Self>> {
         Ok(sqlx::query_as::<_, Self>(&format!(
-            "SELECT {COLS} FROM media_tracker_outbox \
+            "SELECT {COLS} FROM delivery_queue \
              WHERE status = 'pending' AND next_attempt_at <= ?1 \
              ORDER BY next_attempt_at ASC LIMIT ?2"
         ))
@@ -147,7 +266,7 @@ impl MediaTrackerOutbox {
         limit: i64,
     ) -> Result<Vec<Self>> {
         Ok(sqlx::query_as::<_, Self>(&format!(
-            "SELECT {COLS} FROM media_tracker_outbox WHERE user_media_tracker_id = ?1 \
+            "SELECT {COLS} FROM delivery_queue WHERE user_media_tracker_id = ?1 \
              ORDER BY created_at DESC LIMIT ?2"
         ))
         .bind(user_media_tracker_id)
@@ -159,7 +278,7 @@ impl MediaTrackerOutbox {
     pub async fn mark_delivered(db: &SqlitePool, id: Uuid) -> Result<()> {
         let now = Utc::now().naive_utc();
         sqlx::query(
-            "UPDATE media_tracker_outbox \
+            "UPDATE delivery_queue \
              SET status = 'delivered', delivered_at = ?2, last_error = NULL, \
                  updated_at = ?2 \
              WHERE id = ?1",
@@ -181,7 +300,7 @@ impl MediaTrackerOutbox {
         id: Uuid,
         attempts: i64,
         err: &TrackingError,
-    ) -> Result<MediaTrackerOutboxStatus> {
+    ) -> Result<DeliveryStatus> {
         let now = Utc::now().naive_utc();
         // `attempts` is the count *before* this failure, which is also the
         // number of waits already served: the first failure backs off by the
@@ -189,25 +308,23 @@ impl MediaTrackerOutbox {
         let attempted = attempts + 1;
 
         let (status, next_attempt_at) = match err {
-            TrackingError::Permanent { .. } => {
-                (MediaTrackerOutboxStatus::FailedPermanent, now)
-            }
+            TrackingError::Permanent { .. } => (DeliveryStatus::FailedPermanent, now),
             TrackingError::Retryable { retry_after, .. } => {
                 if attempted >= MAX_ATTEMPTS {
-                    (MediaTrackerOutboxStatus::FailedRetryable, now)
+                    (DeliveryStatus::FailedRetryable, now)
                 } else {
                     let wait = backoff(attempts, *retry_after);
                     let next = now
                         + chrono::Duration::from_std(wait).unwrap_or_else(|_| {
                             chrono::Duration::seconds(MAX_BACKOFF_SECS)
                         });
-                    (MediaTrackerOutboxStatus::Pending, next)
+                    (DeliveryStatus::Pending, next)
                 }
             }
         };
 
         sqlx::query(
-            "UPDATE media_tracker_outbox \
+            "UPDATE delivery_queue \
              SET status = ?2, attempts = ?3, next_attempt_at = ?4, \
                  last_error = ?5, updated_at = ?6 \
              WHERE id = ?1",
@@ -228,7 +345,7 @@ impl MediaTrackerOutbox {
     pub async fn purge_delivered(db: &SqlitePool, keep_days: i64) -> Result<u64> {
         let cutoff = Utc::now().naive_utc() - chrono::Duration::days(keep_days);
         let res = sqlx::query(
-            "DELETE FROM media_tracker_outbox \
+            "DELETE FROM delivery_queue \
              WHERE status = 'delivered' AND delivered_at < ?1",
         )
         .bind(cutoff)
@@ -270,7 +387,10 @@ mod tests {
 
     // --- state machine, against a real database ---
 
-    use crate::integration_test::new_test_server;
+    use crate::{
+        addons::tracking::{TrackingEventKind, TrackingIds},
+        integration_test::new_test_server,
+    };
     use sqlx::SqlitePool;
 
     async fn seed(db: &SqlitePool) -> Uuid {
@@ -309,13 +429,98 @@ mod tests {
         conn.id
     }
 
-    async fn queue(db: &SqlitePool, conn: Uuid) -> MediaTrackerOutbox {
-        let row =
-            MediaTrackerOutbox::new(conn, TrackingEventKind::PlaybackStop, "{}".into());
+    pub(crate) fn tracker_payload() -> TrackerPayload {
+        TrackerPayload {
+            event: TrackingEvent::PlaybackStop {
+                position_ticks: 42,
+                played: true,
+            },
+            target: TrackingTarget {
+                kind: crate::db::MediaKind::Movie,
+                title: "Arrival".into(),
+                year: Some(2016),
+                ids: TrackingIds {
+                    tmdb: Some(329865),
+                    ..Default::default()
+                },
+                series: None,
+                season: None,
+                episode: None,
+            },
+        }
+    }
+
+    async fn queue(db: &SqlitePool, conn: Uuid) -> DeliveryQueue {
+        let row = DeliveryQueue::new(QueueKind::Tracker {
+            user_media_tracker_id: conn,
+            payload: tracker_payload(),
+        });
         row.insert(db)
             .await
             .unwrap();
         row
+    }
+
+    #[tokio::test]
+    async fn a_row_round_trips_through_its_columns() {
+        // The payload is split across `kind`, the owner column and JSON on the
+        // way in, so reading one back is the only proof the split is lossless.
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let conn = seed(db).await;
+        let row = queue(db, conn).await;
+
+        let got = DeliveryQueue::get(db, row.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            got.kind,
+            QueueKind::Tracker {
+                user_media_tracker_id: conn,
+                payload: tracker_payload(),
+            }
+        );
+        assert_eq!(
+            got.kind
+                .kind(),
+            DeliveryKind::Tracker
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tracker_row_cannot_be_stored_without_its_owner() {
+        // Nothing would ever cascade it away, and delivery has nowhere to send
+        // it. The database refuses rather than leaving it to the worker.
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        seed(db).await;
+
+        let err = sqlx::query(
+            "INSERT INTO delivery_queue \
+             (id, kind, user_media_tracker_id, payload, status, attempts, \
+              next_attempt_at, created_at, updated_at) \
+             VALUES (?1, 'tracker', NULL, '{}', 'pending', 0, datetime('now'), \
+                     datetime('now'), datetime('now'))",
+        )
+        .bind(crate::common::get_uuid())
+        .execute(db)
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .to_lowercase()
+                .contains("constraint"),
+            "expected the CHECK to reject it, got: {err}"
+        );
     }
 
     #[tokio::test]
@@ -330,7 +535,7 @@ mod tests {
         let row = queue(db, conn).await;
 
         assert_eq!(
-            MediaTrackerOutbox::due(db, 10)
+            DeliveryQueue::due(db, 10)
                 .await
                 .unwrap()
                 .len(),
@@ -338,7 +543,7 @@ mod tests {
             "a fresh row is due immediately"
         );
 
-        let status = MediaTrackerOutbox::record_failure(
+        let status = DeliveryQueue::record_failure(
             db,
             row.id,
             0,
@@ -346,9 +551,9 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(status, MediaTrackerOutboxStatus::Pending);
+        assert_eq!(status, DeliveryStatus::Pending);
 
-        let got = MediaTrackerOutbox::get(db, row.id)
+        let got = DeliveryQueue::get(db, row.id)
             .await
             .unwrap()
             .unwrap();
@@ -359,7 +564,7 @@ mod tests {
             "the first retry waits the base delay, not a doubled one"
         );
         assert!(
-            MediaTrackerOutbox::due(db, 10)
+            DeliveryQueue::due(db, 10)
                 .await
                 .unwrap()
                 .is_empty(),
@@ -378,17 +583,13 @@ mod tests {
         let conn = seed(db).await;
         let row = queue(db, conn).await;
 
-        let status = MediaTrackerOutbox::record_failure(
-            db,
-            row.id,
-            0,
-            &TrackingError::reauth("401"),
-        )
-        .await
-        .unwrap();
-        assert_eq!(status, MediaTrackerOutboxStatus::FailedPermanent);
+        let status =
+            DeliveryQueue::record_failure(db, row.id, 0, &TrackingError::reauth("401"))
+                .await
+                .unwrap();
+        assert_eq!(status, DeliveryStatus::FailedPermanent);
         assert!(
-            MediaTrackerOutbox::due(db, 10)
+            DeliveryQueue::due(db, 10)
                 .await
                 .unwrap()
                 .is_empty(),
@@ -407,9 +608,9 @@ mod tests {
         let conn = seed(db).await;
         let row = queue(db, conn).await;
 
-        let mut status = MediaTrackerOutboxStatus::Pending;
+        let mut status = DeliveryStatus::Pending;
         for attempt in 0..MAX_ATTEMPTS {
-            status = MediaTrackerOutbox::record_failure(
+            status = DeliveryQueue::record_failure(
                 db,
                 row.id,
                 attempt,
@@ -420,12 +621,12 @@ mod tests {
         }
         assert_eq!(
             status,
-            MediaTrackerOutboxStatus::FailedRetryable,
+            DeliveryStatus::FailedRetryable,
             "should stop rather than retry forever"
         );
 
         // Kept, not deleted: this is what the activity view shows.
-        let got = MediaTrackerOutbox::get(db, row.id)
+        let got = DeliveryQueue::get(db, row.id)
             .await
             .unwrap()
             .unwrap();
@@ -448,23 +649,18 @@ mod tests {
         let conn = seed(db).await;
         let row = queue(db, conn).await;
 
-        MediaTrackerOutbox::record_failure(
-            db,
-            row.id,
-            0,
-            &TrackingError::retryable("503"),
-        )
-        .await
-        .unwrap();
-        MediaTrackerOutbox::mark_delivered(db, row.id)
+        DeliveryQueue::record_failure(db, row.id, 0, &TrackingError::retryable("503"))
+            .await
+            .unwrap();
+        DeliveryQueue::mark_delivered(db, row.id)
             .await
             .unwrap();
 
-        let got = MediaTrackerOutbox::get(db, row.id)
+        let got = DeliveryQueue::get(db, row.id)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(got.status, MediaTrackerOutboxStatus::Delivered);
+        assert_eq!(got.status, DeliveryStatus::Delivered);
         assert!(
             got.last_error
                 .is_none()
@@ -474,7 +670,7 @@ mod tests {
                 .is_some()
         );
         assert!(
-            MediaTrackerOutbox::due(db, 10)
+            DeliveryQueue::due(db, 10)
                 .await
                 .unwrap()
                 .is_empty()
@@ -493,10 +689,10 @@ mod tests {
         let delivered = queue(db, conn).await;
         let failed = queue(db, conn).await;
 
-        MediaTrackerOutbox::mark_delivered(db, delivered.id)
+        DeliveryQueue::mark_delivered(db, delivered.id)
             .await
             .unwrap();
-        MediaTrackerOutbox::record_failure(
+        DeliveryQueue::record_failure(
             db,
             failed.id,
             0,
@@ -505,19 +701,19 @@ mod tests {
         .await
         .unwrap();
         // Backdate the delivered row past the retention window.
-        sqlx::query("UPDATE media_tracker_outbox SET delivered_at = ?2 WHERE id = ?1")
+        sqlx::query("UPDATE delivery_queue SET delivered_at = ?2 WHERE id = ?1")
             .bind(delivered.id)
             .bind(Utc::now().naive_utc() - chrono::Duration::days(30))
             .execute(db)
             .await
             .unwrap();
 
-        let purged = MediaTrackerOutbox::purge_delivered(db, 7)
+        let purged = DeliveryQueue::purge_delivered(db, 7)
             .await
             .unwrap();
         assert_eq!(purged, 1);
         assert!(
-            MediaTrackerOutbox::get(db, failed.id)
+            DeliveryQueue::get(db, failed.id)
                 .await
                 .unwrap()
                 .is_some(),
@@ -541,7 +737,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            MediaTrackerOutbox::get(db, row.id)
+            DeliveryQueue::get(db, row.id)
                 .await
                 .unwrap()
                 .is_none(),
@@ -557,7 +753,7 @@ mod tests {
             .await
             .unwrap();
         let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM task_triggers WHERE task_id = 'MediaTrackerSync'",
+            "SELECT COUNT(*) FROM task_triggers WHERE task_id = 'DeliveryQueueSync'",
         )
         .fetch_one(
             &guard
@@ -566,6 +762,6 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(count, 1, "MediaTrackerSync has no schedule");
+        assert_eq!(count, 1, "DeliveryQueueSync has no schedule");
     }
 }

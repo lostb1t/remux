@@ -113,11 +113,9 @@ pub type TrackingResult<T> = std::result::Result<T, TrackingError>;
     Hash,
     Serialize,
     Deserialize,
-    sqlx::Type,
 )]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
-#[sqlx(type_name = "TEXT", rename_all = "snake_case")]
 pub enum TrackingEventKind {
     PlaybackStart,
     PlaybackProgress,
@@ -129,7 +127,7 @@ pub enum TrackingEventKind {
 }
 
 /// One thing that happened to one item, for one user.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TrackingEvent {
     PlaybackStart {
         position_ticks: i64,
@@ -185,7 +183,7 @@ impl TrackingEvent {
 /// A media item resolved into what a provider needs to identify it remotely.
 /// Core walks to the series via `Media::get_ancestors` once so addons never
 /// need a DB handle. No `Default`: there is no meaningful default `MediaKind`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrackingTarget {
     pub kind: db::MediaKind,
     pub title: String,

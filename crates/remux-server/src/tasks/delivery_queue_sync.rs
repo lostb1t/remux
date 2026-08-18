@@ -6,11 +6,10 @@ use tracing::{debug, warn};
 use super::{ProgressReporter, Task, TaskCategory, TaskService};
 use crate::{
     AppContext,
-    addons::tracking::{
-        TrackingCtx, TrackingError, TrackingEvent, TrackingResult, TrackingTarget,
-    },
+    addons::tracking::{TrackingCtx, TrackingError, TrackingResult},
     db,
 };
+use uuid::Uuid;
 
 /// How many due rows one pass claims. Bounded so a large backlog does not hold
 /// the task open indefinitely; the next pass picks up the rest.
@@ -20,30 +19,22 @@ const BATCH: i64 = 200;
 /// they are what the activity views read.
 const KEEP_DELIVERED_DAYS: i64 = 7;
 
-/// What one outbox row carries: the event plus the item it was about, resolved
-/// at enqueue time so delivery never has to look anything up.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct MediaTrackerOutboxPayload {
-    pub event: TrackingEvent,
-    pub target: TrackingTarget,
-}
-
-pub struct MediaTrackerSyncTask;
+pub struct DeliveryQueueSyncTask;
 
 #[async_trait]
-impl Task for MediaTrackerSyncTask {
+impl Task for DeliveryQueueSyncTask {
     fn key(&self) -> &str {
-        "MediaTrackerSync"
+        "DeliveryQueueSync"
     }
     fn name(&self) -> &str {
-        "Media Tracker Sync"
+        "Delivery Queue Sync"
     }
     fn description(&self) -> &str {
-        "Delivers pending watch activity to connected tracking services, retrying \
-         transient failures with backoff."
+        "Delivers queued outbound events, currently watch activity headed for \
+         connected tracking services, retrying transient failures with backoff."
     }
     fn short_description(&self) -> &str {
-        "Delivers pending tracking activity"
+        "Delivers queued outbound events"
     }
     fn category(&self) -> TaskCategory {
         TaskCategory::Maintenance
@@ -58,17 +49,19 @@ impl Task for MediaTrackerSyncTask {
         let delivered = drain(&ctx, &progress).await?;
         // Trimming is housekeeping: a failure here should be visible but must
         // not fail a pass that already delivered.
-        let purged =
-            match db::MediaTrackerOutbox::purge_delivered(&ctx.db, KEEP_DELIVERED_DAYS)
-                .await
-            {
-                Ok(n) => n,
-                Err(e) => {
-                    warn!(error = %e, "failed to trim delivered outbox rows");
-                    0
-                }
-            };
-        debug!(delivered, purged, "tracking sync pass complete");
+        let purged = match db::DeliveryQueue::purge_delivered(
+            &ctx.db,
+            KEEP_DELIVERED_DAYS,
+        )
+        .await
+        {
+            Ok(n) => n,
+            Err(e) => {
+                warn!(error = %e, "failed to trim delivered queue rows");
+                0
+            }
+        };
+        debug!(delivered, purged, "delivery queue pass complete");
         progress.set(100.0);
         Ok(())
     }
@@ -77,9 +70,9 @@ impl Task for MediaTrackerSyncTask {
 /// Attempt every due row once. Returns how many were delivered.
 ///
 /// Failures are recorded per row and never abort the pass: one dead provider
-/// must not stop another user's scrobbles from going out.
+/// must not stop another user's deliveries from going out.
 pub async fn drain(ctx: &AppContext, progress: &ProgressReporter) -> Result<usize> {
-    let due = db::MediaTrackerOutbox::due(&ctx.db, BATCH).await?;
+    let due = db::DeliveryQueue::due(&ctx.db, BATCH).await?;
     if due.is_empty() {
         return Ok(0);
     }
@@ -91,15 +84,14 @@ pub async fn drain(ctx: &AppContext, progress: &ProgressReporter) -> Result<usiz
         .into_iter()
         .enumerate()
     {
-        match deliver(ctx, &row).await {
+        match deliver(ctx, &row.kind).await {
             Ok(()) => {
-                db::MediaTrackerOutbox::mark_delivered(&ctx.db, row.id).await?;
-                db::UserMediaTracker::mark_success(&ctx.db, row.user_media_tracker_id)
-                    .await?;
+                db::DeliveryQueue::mark_delivered(&ctx.db, row.id).await?;
+                record_outcome(ctx, &row.kind, None).await?;
                 delivered += 1;
             }
             Err(err) => {
-                let status = db::MediaTrackerOutbox::record_failure(
+                let status = db::DeliveryQueue::record_failure(
                     &ctx.db,
                     row.id,
                     row.attempts,
@@ -107,21 +99,17 @@ pub async fn drain(ctx: &AppContext, progress: &ProgressReporter) -> Result<usiz
                 )
                 .await?;
                 // A retryable blip is the worker's business, not the user's, so
-                // only a terminal outcome touches the media tracker's health.
-                if status != db::MediaTrackerOutboxStatus::Pending {
-                    db::UserMediaTracker::mark_failure(
-                        &ctx.db,
-                        row.user_media_tracker_id,
-                        &err,
-                    )
-                    .await?;
+                // only a terminal outcome touches the deliverer's health.
+                if status != db::DeliveryStatus::Pending {
+                    record_outcome(ctx, &row.kind, Some(&err)).await?;
                 }
                 warn!(
-                    outbox_id = %row.id,
+                    delivery_id = %row.id,
+                    kind = %row.kind.kind(),
                     attempts = row.attempts + 1,
                     ?status,
                     error = %err,
-                    "tracking delivery failed"
+                    "delivery failed"
                 );
             }
         }
@@ -131,8 +119,47 @@ pub async fn drain(ctx: &AppContext, progress: &ProgressReporter) -> Result<usiz
     Ok(delivered)
 }
 
-async fn deliver(ctx: &AppContext, row: &db::MediaTrackerOutbox) -> TrackingResult<()> {
-    let conn = db::UserMediaTracker::get(&ctx.db, row.user_media_tracker_id)
+/// Hand one row to whatever its kind talks to. Adding a kind means adding an
+/// arm here and nothing else: the retry state machine above is shared.
+async fn deliver(ctx: &AppContext, kind: &db::QueueKind) -> TrackingResult<()> {
+    match kind {
+        db::QueueKind::Tracker {
+            user_media_tracker_id,
+            payload,
+        } => deliver_tracker(ctx, *user_media_tracker_id, payload).await,
+    }
+}
+
+/// Reflect a settled delivery onto whatever owns it, so the UI can show a
+/// connection as healthy or broken. Only terminal outcomes reach here.
+async fn record_outcome(
+    ctx: &AppContext,
+    kind: &db::QueueKind,
+    err: Option<&TrackingError>,
+) -> Result<()> {
+    match kind {
+        db::QueueKind::Tracker {
+            user_media_tracker_id,
+            ..
+        } => match err {
+            None => {
+                db::UserMediaTracker::mark_success(&ctx.db, *user_media_tracker_id)
+                    .await
+            }
+            Some(err) => {
+                db::UserMediaTracker::mark_failure(&ctx.db, *user_media_tracker_id, err)
+                    .await
+            }
+        },
+    }
+}
+
+async fn deliver_tracker(
+    ctx: &AppContext,
+    user_media_tracker_id: Uuid,
+    payload: &db::TrackerPayload,
+) -> TrackingResult<()> {
+    let conn = db::UserMediaTracker::get(&ctx.db, user_media_tracker_id)
         .await
         .map_err(|e| TrackingError::retryable(format!("loading media tracker: {e}")))?
         .ok_or_else(|| TrackingError::permanent("media tracker no longer exists"))?;
@@ -144,9 +171,6 @@ async fn deliver(ctx: &AppContext, row: &db::MediaTrackerOutbox) -> TrackingResu
             // The addon was disabled or removed since the row was queued.
             TrackingError::permanent("tracking addon is not enabled")
         })?;
-
-    let payload: MediaTrackerOutboxPayload = serde_json::from_str(&row.payload)
-        .map_err(|e| TrackingError::permanent(format!("unreadable payload: {e}")))?;
 
     let tctx = TrackingCtx {
         config: Arc::new(
@@ -167,12 +191,12 @@ mod tests {
             AddonCapabilities, AddonKind, AddonPresetRef, AddonRuntime,
             tracking::{
                 TrackingAddon, TrackingCapabilities, TrackingCredentials,
-                TrackingEventKind, TrackingIds,
+                TrackingEvent, TrackingEventKind, TrackingIds, TrackingTarget,
             },
         },
         db::{
-            MediaTrackerOutbox, MediaTrackerOutboxStatus, MediaTrackerStatus,
-            UserMediaTracker,
+            DeliveryQueue, DeliveryStatus, MediaTrackerStatus, QueueKind,
+            TrackerPayload, UserMediaTracker,
         },
         integration_test::new_test_server,
     };
@@ -313,8 +337,8 @@ mod tests {
         (conn.id, row)
     }
 
-    fn payload(title: &str) -> String {
-        serde_json::to_string(&MediaTrackerOutboxPayload {
+    fn payload(title: &str) -> TrackerPayload {
+        TrackerPayload {
             event: TrackingEvent::PlaybackStop {
                 position_ticks: 42,
                 played: true,
@@ -331,16 +355,14 @@ mod tests {
                 season: None,
                 episode: None,
             },
-        })
-        .unwrap()
+        }
     }
 
     async fn queue(db: &SqlitePool, conn: Uuid, title: &str) -> Uuid {
-        let row = MediaTrackerOutbox::new(
-            conn,
-            TrackingEventKind::PlaybackStop,
-            payload(title),
-        );
+        let row = DeliveryQueue::new(QueueKind::Tracker {
+            user_media_tracker_id: conn,
+            payload: payload(title),
+        });
         row.insert(db)
             .await
             .unwrap();
@@ -374,11 +396,11 @@ mod tests {
             "the payload must round-trip to the provider intact"
         );
 
-        let got = MediaTrackerOutbox::get(&ctx.db, row)
+        let got = DeliveryQueue::get(&ctx.db, row)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(got.status, MediaTrackerOutboxStatus::Delivered);
+        assert_eq!(got.status, DeliveryStatus::Delivered);
         assert!(
             got.delivered_at
                 .is_some()
@@ -414,11 +436,11 @@ mod tests {
             0
         );
 
-        let got = MediaTrackerOutbox::get(&ctx.db, row)
+        let got = DeliveryQueue::get(&ctx.db, row)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(got.status, MediaTrackerOutboxStatus::Pending);
+        assert_eq!(got.status, DeliveryStatus::Pending);
         assert_eq!(got.attempts, 1);
 
         let tracker = UserMediaTracker::get(&ctx.db, conn)
@@ -451,11 +473,11 @@ mod tests {
             .await
             .unwrap();
 
-        let got = MediaTrackerOutbox::get(&ctx.db, row)
+        let got = DeliveryQueue::get(&ctx.db, row)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(got.status, MediaTrackerOutboxStatus::FailedPermanent);
+        assert_eq!(got.status, DeliveryStatus::FailedPermanent);
 
         let tracker = UserMediaTracker::get(&ctx.db, conn)
             .await
@@ -504,13 +526,13 @@ mod tests {
                 .is_empty(),
             "must not deliver through an addon the admin has turned off"
         );
-        let got = MediaTrackerOutbox::get(&ctx.db, queued)
+        let got = DeliveryQueue::get(&ctx.db, queued)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(
             got.status,
-            MediaTrackerOutboxStatus::FailedPermanent,
+            DeliveryStatus::FailedPermanent,
             "retrying cannot re-enable an addon, so this must not sit pending forever"
         );
     }
@@ -537,20 +559,20 @@ mod tests {
         );
 
         assert_eq!(
-            MediaTrackerOutbox::get(&ctx.db, first)
+            DeliveryQueue::get(&ctx.db, first)
                 .await
                 .unwrap()
                 .unwrap()
                 .status,
-            MediaTrackerOutboxStatus::Pending
+            DeliveryStatus::Pending
         );
         assert_eq!(
-            MediaTrackerOutbox::get(&ctx.db, second)
+            DeliveryQueue::get(&ctx.db, second)
                 .await
                 .unwrap()
                 .unwrap()
                 .status,
-            MediaTrackerOutboxStatus::Delivered
+            DeliveryStatus::Delivered
         );
         assert_eq!(
             working

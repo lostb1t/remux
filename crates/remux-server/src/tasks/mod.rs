@@ -21,8 +21,8 @@ mod catalog_import_shared;
 mod clean_transcode_folder;
 mod clear_cache;
 mod clear_image_cache;
+mod delivery_queue_sync;
 mod jellyfin_import;
-mod media_tracker_sync;
 mod purge_iptv;
 mod purge_media;
 mod purge_metrics;
@@ -39,8 +39,8 @@ pub use crate::common::ProgressReporter;
 use clean_transcode_folder::CleanTranscodeFolderTask;
 use clear_cache::ClearCacheTask;
 use clear_image_cache::ClearImageCacheTask;
+pub use delivery_queue_sync::DeliveryQueueSyncTask;
 use jellyfin_import::JellyfinImportTask;
-pub use media_tracker_sync::{MediaTrackerOutboxPayload, MediaTrackerSyncTask};
 use purge_iptv::PurgeIptvTask;
 use purge_media::PurgeMediaTask;
 use purge_metrics::PurgeMetricsTask;
@@ -298,7 +298,7 @@ impl TaskService {
             .register_task(Arc::new(ClearCacheTask))
             .await?;
         service
-            .register_task(Arc::new(MediaTrackerSyncTask))
+            .register_task(Arc::new(DeliveryQueueSyncTask))
             .await?;
         service
             .register_task(Arc::new(ClearImageCacheTask))
