@@ -206,18 +206,7 @@ pub async fn get_items(
     if let Some(ref p) = parent {
         if let Some(ref default_sort) = p.collection_default_sort {
             if !default_sort.is_empty() {
-                let is_client_default = q
-                    .sort_by
-                    .as_deref()
-                    .map(|s| {
-                        s.is_empty()
-                            || matches!(
-                                s.first(),
-                                Some(api::ItemSortBy::SortName | api::ItemSortBy::Name)
-                            )
-                    })
-                    .unwrap_or(true);
-                if is_client_default {
+                if q.is_default_sort() {
                     q.sort_by = Some(default_sort.clone());
                     q.sort_order = p
                         .collection_default_sort_order
@@ -829,21 +818,7 @@ pub async fn items_flat(
                 q.sort_order = Some(vec![api::SortOrder::Descending]);
             } else if let Some(ref default_sort) = parent.collection_default_sort {
                 if !default_sort.is_empty() {
-                    let is_client_default = q
-                        .sort_by
-                        .as_deref()
-                        .map(|s| {
-                            s.is_empty()
-                                || matches!(
-                                    s.first(),
-                                    Some(
-                                        api::ItemSortBy::SortName
-                                            | api::ItemSortBy::Name
-                                    )
-                                )
-                        })
-                        .unwrap_or(true);
-                    if is_client_default {
+                    if q.is_default_sort() {
                         q.sort_by = Some(default_sort.clone());
                         q.sort_order = parent
                             .collection_default_sort_order

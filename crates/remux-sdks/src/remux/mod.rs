@@ -1491,6 +1491,19 @@ impl GetItemsQuery {
 
         requested
     }
+
+    pub fn is_default_sort(&self) -> bool {
+        self.sort_by
+            .as_deref()
+            .map(|s| {
+                s.is_empty()
+                    || matches!(
+                        s.first(),
+                        Some(ItemSortBy::SortName | ItemSortBy::Name)
+                    )
+            })
+            .unwrap_or(true)
+    }
 }
 
 fn bool_true() -> bool {
