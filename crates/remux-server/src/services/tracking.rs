@@ -379,4 +379,72 @@ mod tests {
         let db::QueueKind::Tracker { payload, .. } = &rows[0].kind;
         assert_eq!(payload.event, TrackingEvent::Favorite { is_favorite: true });
     }
+
+    /// One request per test: the enqueue wakes the worker, which with no
+    /// provider registered fails the row permanently and takes the tracker out
+    /// of `Connected`, so a second request in the same test would find nothing
+    /// to queue for.
+    async fn rate(path_suffix: &str, delete: bool) -> Vec<TrackingEvent> {
+        let (server, guard, token) =
+            crate::integration_test::authenticated_server().await;
+        let ctx = &guard.0;
+        let tracker = connect(
+            ctx,
+            "a",
+            MediaTrackerStatus::Connected,
+            vec![TrackingEventKind::Rating],
+        )
+        .await;
+        let media = movie(ctx).await;
+        let url = format!("/useritems/{}/rating{path_suffix}", media.id);
+        let header = (
+            http::header::AUTHORIZATION,
+            http::header::HeaderValue::from_str(
+                &crate::integration_test::auth_header_with_token(&token),
+            )
+            .unwrap(),
+        );
+
+        if delete {
+            server
+                .delete(&url)
+                .add_header(header.0, header.1)
+                .await
+                .assert_status_ok();
+        } else {
+            server
+                .post(&url)
+                .add_header(header.0, header.1)
+                .await
+                .assert_status_ok();
+        }
+
+        queued(ctx, tracker)
+            .await
+            .iter()
+            .map(|row| {
+                let db::QueueKind::Tracker { payload, .. } = &row.kind;
+                payload
+                    .event
+                    .clone()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn rating_an_item_queues_the_score() {
+        assert_eq!(
+            rate("?rating=7", false).await,
+            vec![TrackingEvent::Rating { rating: Some(7.0) }]
+        );
+    }
+
+    #[tokio::test]
+    async fn clearing_a_rating_queues_the_removal() {
+        assert_eq!(
+            rate("", true).await,
+            vec![TrackingEvent::Rating { rating: None }],
+            "a cleared rating is itself the update a provider needs"
+        );
+    }
 }
