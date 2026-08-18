@@ -14,6 +14,44 @@ use crate::{
     AppState, IntoApiError, OptionExt, ResultExt, api, common::get_uuid, db, db::auth,
 };
 use axum_anyhow::ApiResult as Result;
+use tracing::warn;
+
+/// Restrict playlist membership to music tracks: drop any media that isn't a
+/// track (artists, albums, movies, ...) so they never end up as playlist items.
+async fn retain_playlist_tracks(
+    db: &sqlx::SqlitePool,
+    resolved: Vec<Uuid>,
+) -> Result<Vec<Uuid>> {
+    if resolved.is_empty() {
+        return Ok(resolved);
+    }
+    let by_kind: std::collections::HashMap<Uuid, db::MediaKind> = db::Media::get_by_filter(
+        db,
+        &db::MediaFilter {
+            id: Some(resolved.clone()),
+            ..Default::default()
+        },
+    )
+    .await?
+    .records
+    .into_iter()
+    .map(|m| (m.id, m.kind))
+    .collect();
+    Ok(resolved
+        .into_iter()
+        .filter(|id| match by_kind.get(id) {
+            Some(db::MediaKind::Track) => true,
+            Some(kind) => {
+                warn!(?id, ?kind, "rejecting non-track media in playlist");
+                false
+            }
+            None => {
+                warn!(?id, "playlist add: media not found, dropping");
+                false
+            }
+        })
+        .collect())
+}
 
 #[query]
 pub struct CreatePlaylistQuery {
@@ -65,6 +103,7 @@ pub async fn create_playlist(
     if !ids.is_empty() {
         let resolved =
             crate::services::MediaResolveService::resolve_ids(&ids, &state.ctx).await;
+        let resolved = retain_playlist_tracks(&state.ctx.db, resolved).await?;
         if !resolved.is_empty() {
             db::MediaRelation::add_playlist_items(
                 &state
@@ -314,6 +353,7 @@ pub async fn add_playlist_items(
 
     let resolved =
         crate::services::MediaResolveService::resolve_ids(&q.ids, &state.ctx).await;
+    let resolved = retain_playlist_tracks(&state.ctx.db, resolved).await?;
     db::MediaRelation::add_playlist_items(
         &state
             .ctx
