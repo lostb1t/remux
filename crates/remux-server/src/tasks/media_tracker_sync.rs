@@ -150,3 +150,405 @@ async fn deliver(ctx: &AppContext, row: &db::MediaTrackerOutbox) -> TrackingResu
         .on_event(&payload.event, &payload.target, &conn.credentials, &tctx)
         .await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        addons::{
+            AddonCapabilities, AddonKind, AddonPresetRef, AddonRuntime,
+            tracking::{
+                TrackingAddon, TrackingCapabilities, TrackingCredentials,
+                TrackingEventKind, TrackingIds,
+            },
+        },
+        db::{
+            MediaTrackerOutbox, MediaTrackerOutboxStatus, MediaTrackerStatus,
+            UserMediaTracker,
+        },
+        integration_test::new_test_server,
+    };
+    use chrono::Utc;
+    use sqlx::SqlitePool;
+    use std::{
+        collections::VecDeque,
+        sync::{Mutex, atomic::AtomicU64},
+    };
+    use uuid::Uuid;
+
+    /// A provider that answers with whatever the test scripted, and records
+    /// what it was handed. Standing in for a real addon is the only way to
+    /// exercise the delivery loop before one exists.
+    struct ScriptedAddon {
+        script: Mutex<VecDeque<TrackingResult<()>>>,
+        seen: Mutex<Vec<(TrackingEventKind, String)>>,
+    }
+
+    impl ScriptedAddon {
+        /// Runs out of script -> succeeds, so the common case needs no setup.
+        fn new(script: Vec<TrackingResult<()>>) -> Arc<Self> {
+            Arc::new(Self {
+                script: Mutex::new(script.into()),
+                seen: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn seen(&self) -> Vec<(TrackingEventKind, String)> {
+            self.seen
+                .lock()
+                .unwrap()
+                .clone()
+        }
+    }
+
+    impl AddonKind for ScriptedAddon {
+        fn id(&self) -> &'static str {
+            "scripted"
+        }
+    }
+
+    #[async_trait]
+    impl TrackingAddon for ScriptedAddon {
+        fn capabilities(&self) -> TrackingCapabilities {
+            TrackingCapabilities::default()
+        }
+
+        async fn on_event(
+            &self,
+            event: &TrackingEvent,
+            target: &TrackingTarget,
+            _creds: &TrackingCredentials,
+            _ctx: &TrackingCtx,
+        ) -> TrackingResult<()> {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((
+                    event.kind(),
+                    target
+                        .title
+                        .clone(),
+                ));
+            self.script
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(Ok(()))
+        }
+    }
+
+    fn addon_row(name: &str) -> crate::addons::Addon {
+        let now = Utc::now().naive_utc();
+        crate::addons::Addon {
+            id: crate::common::get_uuid(),
+            name: name.into(),
+            preset: AddonPresetRef {
+                kind: "scripted".into(),
+                config: serde_json::Value::Null,
+            },
+            resources: vec![],
+            types: vec![],
+            enabled: true,
+            priority: 0,
+            created_at: now,
+            updated_at: now,
+            system: false,
+            is_default: true,
+            http_redirect_stream: false,
+            service_filter: vec![],
+        }
+    }
+
+    /// Installs `addon` as the tracking capability of a stored addon row and
+    /// connects `user` to it. Returns the media tracker's id.
+    async fn connect(
+        ctx: &AppContext,
+        user: &str,
+        addon: Arc<ScriptedAddon>,
+    ) -> (Uuid, crate::addons::Addon) {
+        let row = addon_row(user);
+        row.insert(&ctx.db)
+            .await
+            .unwrap();
+
+        let mut u =
+            crate::db::User::new_with_password(String::new(), user.into(), "pw", None)
+                .unwrap();
+        u.save(&ctx.db)
+            .await
+            .unwrap();
+
+        let conn = UserMediaTracker::new(
+            u.id,
+            row.id,
+            TrackingCredentials(serde_json::json!({ "token": "t" })),
+            vec![TrackingEventKind::PlaybackStop],
+        );
+        conn.upsert(&ctx.db)
+            .await
+            .unwrap();
+
+        let mut runtimes: Vec<AddonRuntime> = ctx
+            .addons
+            .list_for_user(&ctx.db, None)
+            .await;
+        runtimes.push(AddonRuntime {
+            row: row.clone(),
+            caps: AddonCapabilities {
+                tracking: Some(addon),
+                ..Default::default()
+            },
+        });
+        ctx.addons
+            .replace_runtimes_for_test(runtimes);
+
+        (conn.id, row)
+    }
+
+    fn payload(title: &str) -> String {
+        serde_json::to_string(&MediaTrackerOutboxPayload {
+            event: TrackingEvent::PlaybackStop {
+                position_ticks: 42,
+                played: true,
+            },
+            target: TrackingTarget {
+                kind: crate::db::MediaKind::Movie,
+                title: title.into(),
+                year: Some(1999),
+                ids: TrackingIds {
+                    imdb: Some("tt0133093".into()),
+                    ..Default::default()
+                },
+                series: None,
+                season: None,
+                episode: None,
+            },
+        })
+        .unwrap()
+    }
+
+    async fn queue(db: &SqlitePool, conn: Uuid, title: &str) -> Uuid {
+        let row = MediaTrackerOutbox::new(
+            conn,
+            TrackingEventKind::PlaybackStop,
+            payload(title),
+        );
+        row.insert(db)
+            .await
+            .unwrap();
+        row.id
+    }
+
+    fn reporter() -> ProgressReporter {
+        ProgressReporter::new(Arc::new(AtomicU64::new(0)))
+    }
+
+    #[tokio::test]
+    async fn a_delivered_row_reaches_the_provider_and_marks_the_tracker_healthy() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let addon = ScriptedAddon::new(vec![]);
+        let (conn, _) = connect(ctx, "alice", addon.clone()).await;
+        let row = queue(&ctx.db, conn, "The Matrix").await;
+
+        assert_eq!(
+            drain(ctx, &reporter())
+                .await
+                .unwrap(),
+            1
+        );
+
+        assert_eq!(
+            addon.seen(),
+            vec![(TrackingEventKind::PlaybackStop, "The Matrix".to_string())],
+            "the payload must round-trip to the provider intact"
+        );
+
+        let got = MediaTrackerOutbox::get(&ctx.db, row)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.status, MediaTrackerOutboxStatus::Delivered);
+        assert!(
+            got.delivered_at
+                .is_some()
+        );
+
+        let tracker = UserMediaTracker::get(&ctx.db, conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(tracker.status, MediaTrackerStatus::Connected);
+        assert!(
+            tracker
+                .last_success_at
+                .is_some(),
+            "a delivery is what the health indicator reads"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_retryable_failure_leaves_the_tracker_health_untouched() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let addon = ScriptedAddon::new(vec![Err(TrackingError::retryable("503"))]);
+        let (conn, _) = connect(ctx, "bob", addon).await;
+        let row = queue(&ctx.db, conn, "Heat").await;
+
+        assert_eq!(
+            drain(ctx, &reporter())
+                .await
+                .unwrap(),
+            0
+        );
+
+        let got = MediaTrackerOutbox::get(&ctx.db, row)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.status, MediaTrackerOutboxStatus::Pending);
+        assert_eq!(got.attempts, 1);
+
+        let tracker = UserMediaTracker::get(&ctx.db, conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            tracker.status,
+            MediaTrackerStatus::Connected,
+            "a blip the worker will ride out is not the user's problem"
+        );
+        assert!(
+            tracker
+                .last_error
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rejected_token_flips_the_tracker_to_auth_expired() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let addon = ScriptedAddon::new(vec![Err(TrackingError::reauth("401"))]);
+        let (conn, _) = connect(ctx, "carol", addon).await;
+        let row = queue(&ctx.db, conn, "Ronin").await;
+
+        drain(ctx, &reporter())
+            .await
+            .unwrap();
+
+        let got = MediaTrackerOutbox::get(&ctx.db, row)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.status, MediaTrackerOutboxStatus::FailedPermanent);
+
+        let tracker = UserMediaTracker::get(&ctx.db, conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            tracker.status,
+            MediaTrackerStatus::AuthExpired,
+            "this is what makes the UI offer a reconnect instead of an error"
+        );
+        assert!(
+            tracker
+                .last_error
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_addon_disabled_since_enqueue_fails_permanently() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let addon = ScriptedAddon::new(vec![]);
+        let (conn, mut row) = connect(ctx, "dave", addon.clone()).await;
+        let queued = queue(&ctx.db, conn, "Collateral").await;
+
+        // Admin turns the addon off between enqueue and delivery.
+        row.enabled = false;
+        ctx.addons
+            .replace_runtimes_for_test(vec![AddonRuntime {
+                row,
+                caps: AddonCapabilities {
+                    tracking: Some(addon.clone()),
+                    ..Default::default()
+                },
+            }]);
+
+        drain(ctx, &reporter())
+            .await
+            .unwrap();
+
+        assert!(
+            addon
+                .seen()
+                .is_empty(),
+            "must not deliver through an addon the admin has turned off"
+        );
+        let got = MediaTrackerOutbox::get(&ctx.db, queued)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            got.status,
+            MediaTrackerOutboxStatus::FailedPermanent,
+            "retrying cannot re-enable an addon, so this must not sit pending forever"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_failing_provider_does_not_hold_up_another() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let broken = ScriptedAddon::new(vec![Err(TrackingError::retryable("down"))]);
+        let working = ScriptedAddon::new(vec![]);
+        let (a, _) = connect(ctx, "erin", broken).await;
+        let (b, _) = connect(ctx, "frank", working.clone()).await;
+        let first = queue(&ctx.db, a, "Sicario").await;
+        let second = queue(&ctx.db, b, "Arrival").await;
+
+        assert_eq!(
+            drain(ctx, &reporter())
+                .await
+                .unwrap(),
+            1,
+            "the pass must continue past a failure"
+        );
+
+        assert_eq!(
+            MediaTrackerOutbox::get(&ctx.db, first)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            MediaTrackerOutboxStatus::Pending
+        );
+        assert_eq!(
+            MediaTrackerOutbox::get(&ctx.db, second)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            MediaTrackerOutboxStatus::Delivered
+        );
+        assert_eq!(
+            working
+                .seen()
+                .len(),
+            1
+        );
+    }
+}

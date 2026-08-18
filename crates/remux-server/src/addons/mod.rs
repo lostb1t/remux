@@ -1264,6 +1264,16 @@ impl AddonService {
             })
     }
 
+    /// Swaps the live runtime list. Test-only: the real list is built from
+    /// `registered_presets()`, which has no way to carry a stub addon, so
+    /// without this seam the delivery path can only be exercised by shipping a
+    /// provider.
+    #[cfg(test)]
+    pub fn replace_runtimes_for_test(&self, runtimes: Vec<AddonRuntime>) {
+        self.inner
+            .store(Arc::new(runtimes));
+    }
+
     pub async fn list_for_user(
         &self,
         db: &SqlitePool,
