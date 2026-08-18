@@ -56,10 +56,18 @@ impl Task for MediaTrackerSyncTask {
         progress: ProgressReporter,
     ) -> Result<()> {
         let delivered = drain(&ctx, &progress).await?;
+        // Trimming is housekeeping: a failure here should be visible but must
+        // not fail a pass that already delivered.
         let purged =
-            db::MediaTrackerOutbox::purge_delivered(&ctx.db, KEEP_DELIVERED_DAYS)
+            match db::MediaTrackerOutbox::purge_delivered(&ctx.db, KEEP_DELIVERED_DAYS)
                 .await
-                .unwrap_or(0);
+            {
+                Ok(n) => n,
+                Err(e) => {
+                    warn!(error = %e, "failed to trim delivered outbox rows");
+                    0
+                }
+            };
         debug!(delivered, purged, "tracking sync pass complete");
         progress.set(100.0);
         Ok(())

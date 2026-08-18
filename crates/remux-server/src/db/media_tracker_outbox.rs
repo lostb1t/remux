@@ -183,14 +183,17 @@ impl MediaTrackerOutbox {
         err: &TrackingError,
     ) -> Result<MediaTrackerOutboxStatus> {
         let now = Utc::now().naive_utc();
-        let attempts = attempts + 1;
+        // `attempts` is the count *before* this failure, which is also the
+        // number of waits already served: the first failure backs off by the
+        // base delay, not double it.
+        let attempted = attempts + 1;
 
         let (status, next_attempt_at) = match err {
             TrackingError::Permanent { .. } => {
                 (MediaTrackerOutboxStatus::FailedPermanent, now)
             }
             TrackingError::Retryable { retry_after, .. } => {
-                if attempts >= MAX_ATTEMPTS {
+                if attempted >= MAX_ATTEMPTS {
                     (MediaTrackerOutboxStatus::FailedRetryable, now)
                 } else {
                     let wait = backoff(attempts, *retry_after);
@@ -211,7 +214,7 @@ impl MediaTrackerOutbox {
         )
         .bind(id)
         .bind(status)
-        .bind(attempts)
+        .bind(attempted)
         .bind(next_attempt_at)
         .bind(err.to_string())
         .bind(now)
@@ -350,9 +353,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(got.attempts, 1);
-        assert!(
-            got.next_attempt_at > got.created_at,
-            "should have been pushed into the future"
+        assert_eq!(
+            (got.next_attempt_at - got.updated_at).num_seconds(),
+            BASE_BACKOFF_SECS,
+            "the first retry waits the base delay, not a doubled one"
         );
         assert!(
             MediaTrackerOutbox::due(db, 10)
