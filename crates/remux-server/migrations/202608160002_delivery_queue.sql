@@ -8,7 +8,7 @@
 -- machine below it is shared. Tracking is the first kind, webhooks the next.
 CREATE TABLE delivery_queue (
     id                    BLOB PRIMARY KEY NOT NULL,
-    -- tracker (more to come: webhook)
+    -- tracker
     kind                  TEXT NOT NULL,
     -- The owner a 'tracker' row belongs to, so disconnecting takes its backlog
     -- with it. Each kind gets its own nullable owner column: SQLite foreign

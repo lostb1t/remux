@@ -120,7 +120,7 @@ pub async fn drain(ctx: &AppContext, progress: &ProgressReporter) -> Result<usiz
 }
 
 /// Hand one row to whatever its kind talks to. Adding a kind means adding an
-/// arm here and nothing else: the retry state machine above is shared.
+/// arm here.
 async fn deliver(ctx: &AppContext, kind: &db::QueueKind) -> TrackingResult<()> {
     match kind {
         db::QueueKind::Tracker {

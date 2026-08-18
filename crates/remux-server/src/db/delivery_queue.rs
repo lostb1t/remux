@@ -73,7 +73,7 @@ pub struct TrackerPayload {
 /// A queued delivery and everything its deliverer needs to make it.
 ///
 /// The retry machinery wrapped around this is kind-agnostic; only the sync
-/// task's dispatch cares which variant it holds. Webhooks are the next kind.
+/// task's dispatch cares which variant it holds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum QueueKind {
@@ -109,8 +109,8 @@ impl QueueKind {
         })
     }
 
-    /// Rebuild a variant from the three columns that hold it. Anything a row
-    /// cannot be read back into is a decode error, not a half-built value.
+    /// Rebuild a variant from the three columns that hold it. A row that will
+    /// not read back is a decode error.
     fn parse(
         kind: DeliveryKind,
         user_media_tracker_id: Option<Uuid>,
@@ -364,7 +364,6 @@ mod tests {
         assert_eq!(backoff(0, None), Duration::from_secs(30));
         assert_eq!(backoff(1, None), Duration::from_secs(60));
         assert_eq!(backoff(4, None), Duration::from_secs(480));
-        // Capped rather than growing without bound.
         assert_eq!(
             backoff(30, None),
             Duration::from_secs(MAX_BACKOFF_SECS as u64)
@@ -373,8 +372,6 @@ mod tests {
 
     #[test]
     fn a_longer_provider_hint_wins_but_a_shorter_one_does_not() {
-        // Honouring a shorter Retry-After than our own backoff would defeat the
-        // point of backing off.
         assert_eq!(
             backoff(0, Some(Duration::from_secs(300))),
             Duration::from_secs(300)
@@ -463,8 +460,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_row_round_trips_through_its_columns() {
-        // The payload is split across `kind`, the owner column and JSON on the
-        // way in, so reading one back is the only proof the split is lossless.
+        // Insert splits the payload across three columns; only a read-back
+        // shows that is lossless.
         let (_s, guard) = new_test_server()
             .await
             .unwrap();
@@ -494,8 +491,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_tracker_row_cannot_be_stored_without_its_owner() {
-        // Nothing would ever cascade it away, and delivery has nowhere to send
-        // it. The database refuses rather than leaving it to the worker.
+        // Nothing would cascade it away, and delivery would have nowhere to
+        // send it.
         let (_s, guard) = new_test_server()
             .await
             .unwrap();
