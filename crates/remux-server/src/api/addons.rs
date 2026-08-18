@@ -469,9 +469,10 @@ pub async fn update_addon(
     preset
         .from_cfg(
             addon.id,
-            &addon
+            addon
                 .preset
-                .config,
+                .config
+                .expose(),
             &state
                 .ctx
                 .config,

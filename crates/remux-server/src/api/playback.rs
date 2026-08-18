@@ -427,9 +427,10 @@ async fn items_playbackinfo_inner(
         apply_subtitle_delivery(
             &mut source,
             id,
-            &session
+            session
                 .device
-                .access_token,
+                .access_token
+                .expose(),
             &cfg.device_profile,
             cfg.subtitle_mode,
         );
@@ -457,9 +458,10 @@ async fn items_playbackinfo_inner(
             sub_media,
             &mut media_sources,
             id,
-            &session
+            session
                 .device
-                .access_token,
+                .access_token
+                .expose(),
             sub_langs,
             Some(
                 session
@@ -527,7 +529,8 @@ async fn items_playbackinfo_inner(
                     source.id,
                     session
                         .device
-                        .access_token,
+                        .access_token
+                        .expose(),
                 ));
             }
         }
@@ -1069,6 +1072,7 @@ pub async fn audio_universal(
         session
             .device
             .access_token
+            .expose()
     );
 
     Ok(axum::response::Redirect::temporary(&transcoding_url).into_response())
@@ -1810,6 +1814,36 @@ mod tests {
         assert!(
             url.contains(&format!("MaxStreamingBitrate={}", max_bitrate)),
             "TranscodingUrl should contain MaxStreamingBitrate: {}",
+            url
+        );
+    }
+
+    /// The session token is carried in the URL the client is told to fetch, so
+    /// it has to be the real one. It is wrapped in a `Secret`, which only ever
+    /// prints as `<redacted>`.
+    #[tokio::test]
+    async fn test_playbackinfo_transcoding_url_carries_the_real_token() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_test_source(&guard.0).await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({ "MaxStreamingBitrate": 1_000_000 }))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let url = body["MediaSources"][0]["TranscodingUrl"]
+            .as_str()
+            .expect("TranscodingUrl should be present");
+        assert!(
+            url.contains(&format!("ApiKey={}", token)),
+            "TranscodingUrl should carry the session token: {}",
             url
         );
     }

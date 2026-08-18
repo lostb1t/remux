@@ -815,9 +815,10 @@ pub async fn change_password(
             .db,
         &user_id,
         Some(
-            &session
+            session
                 .device
-                .access_token,
+                .access_token
+                .expose(),
         ),
     )
     .await?;

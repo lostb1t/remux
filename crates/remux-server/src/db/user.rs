@@ -266,8 +266,11 @@ impl User {
     }
 
     pub fn verify_password(&self, password: &str) -> Result<bool> {
-        let parsed = PasswordHash::new(&self.password_hash)
-            .map_err(|e| anyhow!("invalid stored password hash: {e}"))?;
+        let parsed = PasswordHash::new(
+            self.password_hash
+                .expose(),
+        )
+        .map_err(|e| anyhow!("invalid stored password hash: {e}"))?;
 
         Ok(Argon2::default()
             .verify_password(password.as_bytes(), &parsed)

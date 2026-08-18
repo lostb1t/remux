@@ -484,7 +484,12 @@ impl FromRequestParts<AppState> for AuthSession {
         .context_unauthorized("forbidden")?;
 
         let synthetic_device = Device {
-            id: format!("apikey-{}", api_key.access_token),
+            id: format!(
+                "apikey-{}",
+                api_key
+                    .access_token
+                    .expose()
+            ),
             access_token: api_key.access_token,
             user_id: user.id,
             name: api_key

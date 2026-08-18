@@ -33,9 +33,10 @@ pub async fn sessions_logout(
         &state
             .ctx
             .db,
-        &session
+        session
             .device
-            .access_token,
+            .access_token
+            .expose(),
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)

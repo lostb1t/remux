@@ -164,10 +164,11 @@ impl Task for RefreshIptvTask {
                 .row
                 .preset
                 .kind;
-            let config = &runtime
+            let config = runtime
                 .row
                 .preset
-                .config;
+                .config
+                .expose();
 
             let epg_url = if kind == "iptv-xtream" {
                 let server_url = config["server_url"]

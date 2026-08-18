@@ -1,15 +1,20 @@
 //! Values that must never reach logs. Redaction lives on the value, so
 //! anything holding one can still `#[derive(Debug)]`.
 //!
+//! Deliberately no `Display` and no `Deref`: with either one, `{}` and `&secret`
+//! keep compiling everywhere they used to, and the value silently turns into
+//! `<redacted>` or slips out unmarked. Without them the compiler points at every
+//! site, and each one has to say `expose()` or `into_inner()` out loud.
+//!
 //! This is about logs only. The sqlx impls pass the value straight through, so
 //! it is stored unencrypted exactly as before. Encryption at rest is a separate
 //! problem: it needs a key, a migration, and an answer for what happens when
 //! the key is lost.
 
 use serde::{Deserialize, Serialize};
-use std::{fmt, ops::Deref};
+use std::fmt;
 
-/// Prints as `<redacted>` however it is formatted.
+/// Debug-prints as `<redacted>`; there is no other way to format it.
 #[derive(Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Secret<T>(T);
@@ -43,20 +48,6 @@ impl Secret<serde_json::Value> {
 impl<T> fmt::Debug for Secret<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("<redacted>")
-    }
-}
-
-/// Also redacted: `{}` reaches logs as readily as `{:?}`.
-impl<T> fmt::Display for Secret<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("<redacted>")
-    }
-}
-
-impl<T> Deref for Secret<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        &self.0
     }
 }
 
@@ -118,10 +109,9 @@ mod tests {
     /// Redaction must not depend on the `sqlx` feature, so this holds in every
     /// build configuration.
     #[test]
-    fn both_debug_and_display_are_redacted() {
+    fn debug_is_redacted_but_the_value_is_still_readable() {
         let s = Secret::new("hunter2".to_string());
         assert_eq!(format!("{s:?}"), "<redacted>");
-        assert_eq!(format!("{s}"), "<redacted>");
         assert_eq!(s.expose(), "hunter2");
     }
 

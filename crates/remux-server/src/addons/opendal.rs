@@ -1064,9 +1064,10 @@ async fn scan_addon(
     tmdb: &Option<sdks::RestClient<sdks::BearerAuth>>,
     addon: &Addon,
 ) -> Result<()> {
-    let cfg = &addon
+    let cfg = addon
         .preset
-        .config;
+        .config
+        .expose();
     let media_kind = cfg["media_kind"]
         .as_str()
         .unwrap_or("movie")
