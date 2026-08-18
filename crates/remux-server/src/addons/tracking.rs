@@ -101,7 +101,7 @@ impl std::error::Error for TrackingError {}
 pub type TrackingResult<T> = std::result::Result<T, TrackingError>;
 
 /// Unit a per-user event filter is expressed in. Serialised into
-/// `user_integrations.event_filters`, so renaming a variant is a migration.
+/// `user_media_trackers.event_filters`, so renaming a variant is a migration.
 #[derive(
     strum_macros::EnumString,
     strum_macros::Display,

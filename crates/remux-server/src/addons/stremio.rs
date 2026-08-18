@@ -1516,6 +1516,13 @@ async fn stremio_streams(
                 subtitles: s
                     .subtitles
                     .clone(),
+                binge_group: s
+                    .behavior_hints
+                    .as_ref()
+                    .and_then(|bh| {
+                        bh.binge_group
+                            .clone()
+                    }),
                 usenet_guid,
                 usenet_indexer: sd
                     .and_then(|d| {

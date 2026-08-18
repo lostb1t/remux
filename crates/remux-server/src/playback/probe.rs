@@ -1,6 +1,6 @@
 use crate::{
     IntoApiError, ResultExt, api,
-    common::{TickUnit, ToRunTimeTicks},
+    common::{HideConsole, TickUnit, ToRunTimeTicks},
     db,
     device_profile::{AudioCodec, SubtitleCodec, VideoCodec},
 };
@@ -476,6 +476,7 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
             "-show_format",
             url,
         ])
+        .hide_console()
         .output()
         .map_err(|e| anyhow!("Failed to run ffprobe: {}", e))?;
 

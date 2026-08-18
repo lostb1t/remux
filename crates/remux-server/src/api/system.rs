@@ -750,6 +750,7 @@ async fn restart_server() -> Result<()> {
 
     // Spawn the new process
     let mut command = std::process::Command::new(current_exe);
+    common::HideConsole::hide_console(&mut command);
     command.args(&args[1..]); // Skip the first argument (program name)
 
     // Set environment variables from current process

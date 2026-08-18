@@ -7,10 +7,13 @@ use axum::{
 use axum_anyhow::ApiResult as Result;
 use http::{Response, StatusCode};
 use remux_macros::get;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::{AppState, IntoApiError, OptionExt, ResultExt, api, db, db::auth};
+use crate::{
+    AppState, IntoApiError, OptionExt, ResultExt, api, common::HideConsole, db,
+    db::auth,
+};
 
 fn ffmpeg_bin() -> String {
     std::env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".into())
@@ -99,6 +102,7 @@ async fn extract_subtitle_to_cache(
     let ffmpeg_codec = subtitle_cache_ffmpeg_codec(&cache_codec, source_codec);
     let ffmpeg_format = cache_codec.to_string();
     let mut cmd = tokio::process::Command::new(ffmpeg_bin());
+    cmd.hide_console();
     cmd.kill_on_drop(true);
     cmd.args([
         "-y",
@@ -209,6 +213,42 @@ pub async fn subtitles_stream_tickless(
     .await
 }
 
+/// Fetch the raw bytes of an external subtitle URL through our stream proxy.
+/// A refused/corrupt upstream response (flaky subtitle CDN) is treated as
+/// "subtitle unavailable", not a server error: the caller logs it and answers
+/// 404 to the client instead of aborting the request with a 500.
+async fn fetch_external_subtitle_bytes(
+    state: &AppState,
+    descriptor: &crate::stream::StreamDescriptor,
+) -> anyhow::Result<axum::body::Bytes> {
+    let resp = match descriptor {
+        crate::stream::StreamDescriptor::Opendal { addon_id, .. } => {
+            let addon = state
+                .ctx
+                .addons
+                .get(*addon_id)
+                .ok_or_else(|| anyhow!("addon not found for subtitle"))?;
+            let stream_cap = addon
+                .stream
+                .as_ref()
+                .ok_or_else(|| anyhow!("addon has no stream capability"))?;
+            stream_cap
+                .serve_stream(descriptor, &axum::http::HeaderMap::new())
+                .await
+                .map_err(|e| anyhow!("upstream serve failed: {e:?}"))?
+        }
+        _ => descriptor
+            .clone()
+            .into_source()
+            .serve(state, &axum::http::HeaderMap::new())
+            .await
+            .map_err(|e| anyhow!("upstream serve failed: {e:?}"))?,
+    };
+    axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .map_err(|e| anyhow!("read subtitle bytes: {e}"))
+}
+
 async fn subtitles_stream_inner(
     state: AppState,
     session: auth::AuthSession,
@@ -294,61 +334,40 @@ async fn subtitles_stream_inner(
                 if let Some(sub) = scored.get(i as usize) {
                     if let Some(ref descriptor) = sub.url {
                         let output_format = format.to_ascii_lowercase();
-                        let resp = match descriptor {
-                            crate::stream::StreamDescriptor::Opendal {
-                                addon_id,
-                                ..
-                            } => {
-                                let addon = state
-                                    .ctx
-                                    .addons
-                                    .get(*addon_id)
-                                    .ok_or_else(|| {
-                                        anyhow!("addon not found for subtitle")
-                                    })?;
-                                let stream_cap = addon
-                                    .stream
-                                    .as_ref()
-                                    .ok_or_else(|| {
-                                        anyhow!("addon has no stream capability")
-                                    })?;
-                                stream_cap
-                                    .serve_stream(
-                                        descriptor,
-                                        &axum::http::HeaderMap::new(),
-                                    )
-                                    .await
-                                    .map_err(|e| anyhow!("{e:?}"))?
+                        match fetch_external_subtitle_bytes(&state, descriptor).await {
+                            Ok(bytes) => {
+                                let body = String::from_utf8_lossy(&bytes).into_owned();
+                                let (converted, content_type) = match output_format
+                                    .as_str()
+                                {
+                                    "vtt" | "webvtt" => (
+                                        crate::conversions::srt_to_vtt(&body),
+                                        "text/vtt; charset=utf-8",
+                                    ),
+                                    "js" => (
+                                        crate::conversions::srt_to_jellyfin_json(&body),
+                                        "application/json",
+                                    ),
+                                    _ => (body, "text/plain; charset=utf-8"),
+                                };
+                                return Ok(Response::builder()
+                                    .status(StatusCode::OK)
+                                    .header("Content-Type", content_type)
+                                    .header("Cache-Control", "public, max-age=3600")
+                                    .header("Access-Control-Allow-Origin", "*")
+                                    .body(Body::from(converted))
+                                    .unwrap());
                             }
-                            _ => descriptor
-                                .clone()
-                                .into_source()
-                                .serve(&state, &axum::http::HeaderMap::new())
-                                .await
-                                .map_err(|e| anyhow!("{e:?}"))?,
-                        };
-                        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-                            .await
-                            .map_err(|e| anyhow!("read subtitle bytes: {e}"))?;
-                        let body = String::from_utf8_lossy(&bytes).into_owned();
-                        let (converted, content_type) = match output_format.as_str() {
-                            "vtt" | "webvtt" => (
-                                crate::conversions::srt_to_vtt(&body),
-                                "text/vtt; charset=utf-8",
-                            ),
-                            "js" => (
-                                crate::conversions::srt_to_jellyfin_json(&body),
-                                "application/json",
-                            ),
-                            _ => (body, "text/plain; charset=utf-8"),
-                        };
-                        return Ok(Response::builder()
-                            .status(StatusCode::OK)
-                            .header("Content-Type", content_type)
-                            .header("Cache-Control", "public, max-age=3600")
-                            .header("Access-Control-Allow-Origin", "*")
-                            .body(Body::from(converted))
-                            .unwrap());
+                            Err(e) => {
+                                warn!(error = %e, item_id = %item_id, stream_index,
+                                    "external subtitle unavailable");
+                                return Ok((
+                                    StatusCode::NOT_FOUND,
+                                    "subtitle unavailable",
+                                )
+                                    .into_response());
+                            }
+                        }
                     }
                 }
             }
@@ -438,6 +457,7 @@ async fn subtitles_stream_inner(
     // Binary formats (PGS/SUP): extract on-the-fly as raw bytes.
     if is_binary {
         let mut cmd = tokio::process::Command::new(ffmpeg_bin());
+        cmd.hide_console();
         cmd.kill_on_drop(true);
         cmd.args([
             "-copyts",

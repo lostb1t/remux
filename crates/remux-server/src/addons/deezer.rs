@@ -928,8 +928,6 @@ impl DeezerAddon {
         let results: Vec<_> = data
             .into_iter()
             .map(album_to_result)
-            // Singles/EPs belong under Tracks, not Albums.
-            .filter(|m| !m.is_single_or_ep_album())
             .take(limit)
             .collect();
         debug!(

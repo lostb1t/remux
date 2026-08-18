@@ -54,6 +54,10 @@ pub struct Device {
 }
 
 impl Device {
+    pub fn jellyfin_client(&self) -> Box<dyn crate::jellyfin_client::JellyfinClient> {
+        crate::jellyfin_client::from_device(self)
+    }
+
     pub async fn save(&self, db: &SqlitePool) -> Result<()> {
         sqlx::query(
             r#"

@@ -13,7 +13,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    common::{TickUnit, ToRunTimeTicks},
+    common::{HideConsole, TickUnit, ToRunTimeTicks},
     device_profile::{AudioCodec, VideoCodec},
 };
 use remux_sdks::remux::{EncodingPreset, HardwareAccelerationType, VideoRangeType};
@@ -48,6 +48,7 @@ pub async fn detect_vaapi_driver(vaapi_device: &str) -> String {
             "-init_hw_device",
             &format!("vaapi=va:{device}"),
         ])
+        .hide_console()
         .output()
         .await;
 
@@ -71,6 +72,7 @@ pub async fn detect_vaapi_driver(vaapi_device: &str) -> String {
 async fn probe_hw_accel() -> HardwareAccelerationType {
     let supported = match tokio::process::Command::new(ffmpeg_bin())
         .args(["-hide_banner", "-hwaccels"])
+        .hide_console()
         .output()
         .await
     {
@@ -1135,6 +1137,7 @@ async fn run_ffmpeg(
     String,
 ) {
     let mut cmd = tokio::process::Command::new(ffmpeg_bin());
+    cmd.hide_console();
     cmd.args(&args)
         .stderr(Stdio::piped());
     for (k, v) in env_overrides {
@@ -1856,6 +1859,7 @@ pub fn start_progressive_transcode(
     let env_overrides =
         ffmpeg_env_overrides(params.hardware_acceleration_type, &params.vaapi_driver);
     let mut cmd = tokio::process::Command::new(ffmpeg_bin());
+    cmd.hide_console();
     cmd.args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

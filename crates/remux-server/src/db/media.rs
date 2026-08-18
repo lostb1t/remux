@@ -1512,17 +1512,6 @@ impl Media {
         )
     }
 
-    /// Whether this is an Album row that is really a single or EP (Deezer
-    /// `album_kind`). Such rows are kept under Tracks, not shown in the Albums
-    /// view or album search results.
-    pub fn is_single_or_ep_album(&self) -> bool {
-        matches!(self.kind, MediaKind::Album)
-            && matches!(
-                self.album_kind,
-                Some(AlbumKind::Single) | Some(AlbumKind::Ep)
-            )
-    }
-
     /// Best-effort album name for a music item: the loaded parent row
     /// (`self.parent`, set by [`Self::preload_parents`]), then the flat
     /// `external_ids.album_title` (playlist imports have no album row).
@@ -4911,18 +4900,15 @@ impl Media {
                 .as_ref()
         });
 
-        // Album queries never want singles/EPs (Jellyfin MusicAlbum type): whenever
-        // the request asks for Album rows, restrict to real albums. Untyped albums
-        // (NULL album_kind) still show.
-        let album_kinds = kinds
-            .contains(&MediaKind::Album)
-            .then(|| vec![AlbumKind::Album]);
-
+        // Revert of #178: singles/EPs show in the Albums section again (they were
+        // hidden, leaving artist pages empty for single-only artists — #208). The
+        // album_kinds column/filter machinery stays for compatibility but is not
+        // applied here.
         let mut result = Self::get_by_filter(
             db,
             &MediaFilter {
                 kind: Some(kinds),
-                album_kinds,
+                album_kinds: None,
                 enabled: has_tv_channel.then_some(true),
                 promoted: filter.promoted,
                 limit: filter
@@ -5876,6 +5862,7 @@ impl From<sdks::stremio::Stream> for Media {
             usenet_guid: None,
             usenet_indexer: None,
             nzb_url: None,
+            binge_group: None,
             torrent_info_hash: None,
             torrent_file_idx: None,
             service_id: None,
