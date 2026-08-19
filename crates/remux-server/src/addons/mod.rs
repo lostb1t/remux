@@ -1240,6 +1240,40 @@ impl AddonService {
         out
     }
 
+    /// The tracking capability of one enabled addon, if it has one. Returns
+    /// `None` once an addon is disabled or deleted, which is why queued
+    /// deliveries treat that as permanent rather than retrying forever.
+    pub fn tracking_for(
+        &self,
+        addon_id: Uuid,
+    ) -> Option<Arc<dyn tracking::TrackingAddon>> {
+        self.inner
+            .load()
+            .iter()
+            .find(|r| {
+                r.row
+                    .id
+                    == addon_id
+                    && r.row
+                        .enabled
+            })
+            .and_then(|r| {
+                r.caps
+                    .tracking
+                    .clone()
+            })
+    }
+
+    /// Swaps the live runtime list. Test-only: the real list is built from
+    /// `registered_presets()`, which has no way to carry a stub addon, so
+    /// without this seam the delivery path can only be exercised by shipping a
+    /// provider.
+    #[cfg(test)]
+    pub fn replace_runtimes_for_test(&self, runtimes: Vec<AddonRuntime>) {
+        self.inner
+            .store(Arc::new(runtimes));
+    }
+
     pub async fn list_for_user(
         &self,
         db: &SqlitePool,
