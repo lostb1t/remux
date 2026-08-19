@@ -6,14 +6,18 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use super::ProgressReporter;
-use crate::{AppContext, addons::ResolvedCatalog, db};
+use crate::{
+    AppContext,
+    addons::{CatalogKind, ResolvedCatalog},
+    db,
+};
 
 /// Consume `stream`, fetching metadata + full tree for new items and upserting everything.
 ///
 /// Returns a map of `kind -> count` for top-level items imported.
 pub async fn import_catalog_items<S>(
     ctx: &AppContext,
-    _catalog: &ResolvedCatalog,
+    catalog: &ResolvedCatalog,
     media_id: &str,
     max: usize,
     stream: S,
@@ -32,6 +36,10 @@ where
     let mut total = 0usize;
     let mut catalog_position = 0i64;
     let membership = catalog_membership(media_id);
+    // Channels are RefreshIptv's, and its `prune_stale_iptv_channels` deletes any
+    // `tv_channel` older than its own run whatever the source — a channel taken
+    // from a wildcard catalog would flap in and out on every pair of refreshes.
+    let allow_tv_channels = catalog.media_kind != CatalogKind::ItemDefined;
 
     let collection_id: Uuid = match membership {
         Some((addon_str, local_id)) => Uuid::parse_str(addon_str)
@@ -66,11 +74,10 @@ where
                 db::MediaKind::Movie
                     | db::MediaKind::Series
                     | db::MediaKind::Artist
-                    | db::MediaKind::TvChannel
                     | db::MediaKind::Album
                     | db::MediaKind::Track
                     | db::MediaKind::Playlist
-            )
+            ) || (allow_tv_channels && m.kind == db::MediaKind::TvChannel)
         });
 
         // A playlist carries its tracks in `relations`, which take(max) above

@@ -51,6 +51,33 @@ pub use remux_sdks::{
     stremio::ResourceType,
 };
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum CatalogKind {
+    Single(db::MediaKind),
+    /// Heterogeneous catalog: each item's own type decides its kind at import.
+    ItemDefined,
+    #[default]
+    Unspecified,
+}
+
+/// Wildcard catalogs are heterogeneous, so exactly one refresh task may own
+/// them, or both would import the same movies and series.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WildcardCatalogs {
+    Include,
+    Exclude,
+}
+
+impl CatalogKind {
+    fn admitted(&self, kinds: &[db::MediaKind], wildcards: WildcardCatalogs) -> bool {
+        match self {
+            Self::Single(k) => kinds.contains(k),
+            Self::ItemDefined => wildcards == WildcardCatalogs::Include,
+            Self::Unspecified => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CatalogInfo {
     pub provider_catalog_id: String,
@@ -61,8 +88,7 @@ pub struct CatalogInfo {
     pub default_max_items: Option<i64>,
     /// Media kind for auto-created collections backed by this catalog.
     pub collection_media_kind: Option<db::CollectionMediaKind>,
-    /// The MediaKind of items this specific catalog yields.
-    pub media_kind: Option<db::MediaKind>,
+    pub media_kind: CatalogKind,
 }
 
 impl CatalogInfo {
@@ -76,7 +102,7 @@ impl CatalogInfo {
             default_enabled: false,
             default_max_items: None,
             collection_media_kind: None,
-            media_kind: None,
+            media_kind: CatalogKind::default(),
         }
     }
 }
@@ -93,7 +119,7 @@ pub struct ResolvedCatalog {
     /// Deterministic collection id for this catalog's `media_relations` membership.
     pub collection_id: Uuid,
     pub name: String,
-    pub media_kind: Option<db::MediaKind>,
+    pub media_kind: CatalogKind,
     pub collection_media_kind: Option<db::CollectionMediaKind>,
     pub enabled: bool,
     pub max_items: Option<i64>,
@@ -1628,6 +1654,7 @@ impl AddonService {
         &self,
         ctx: &AppContext,
         kinds: &[db::MediaKind],
+        wildcards: WildcardCatalogs,
     ) -> Vec<(AddonRuntime, Vec<ResolvedCatalog>)> {
         let mut out = Vec::new();
         for runtime in self
@@ -1655,9 +1682,19 @@ impl AddonService {
             let resolved: Vec<_> = resolved
                 .into_iter()
                 .filter(|c| {
-                    c.media_kind
-                        .as_ref()
-                        .map_or(false, |k| kinds.contains(k))
+                    let admitted = c
+                        .media_kind
+                        .admitted(kinds, wildcards);
+                    // A kind mismatch is the normal case and stays quiet; an
+                    // unmappable type is a dead end the operator can't see.
+                    if !admitted && c.enabled && c.media_kind == CatalogKind::Unspecified {
+                        warn!(
+                            addon = %addon_id,
+                            catalog = %c.provider_catalog_id,
+                            "enabled catalog skipped: addon declares a media type remux cannot map"
+                        );
+                    }
+                    admitted
                 })
                 .collect();
             if resolved.is_empty() {
@@ -3508,6 +3545,121 @@ mod tests {
                 "episode".to_string()
             )),
             Some(sdks::remux::MediaKind::Episode)
+        );
+    }
+
+    const LIBRARY_KINDS: &[db::MediaKind] =
+        &[db::MediaKind::Movie, db::MediaKind::Series];
+
+    #[test]
+    fn single_kind_catalog_admitted_only_for_its_own_kind() {
+        let cat = CatalogKind::Single(db::MediaKind::Movie);
+        assert!(cat.admitted(LIBRARY_KINDS, WildcardCatalogs::Include));
+        assert!(cat.admitted(LIBRARY_KINDS, WildcardCatalogs::Exclude));
+        assert!(
+            !cat.admitted(&[db::MediaKind::TvChannel], WildcardCatalogs::Include),
+            "a movie catalog must never be imported by the IPTV refresh"
+        );
+    }
+
+    #[test]
+    fn wildcard_catalog_admitted_only_when_caller_claims_wildcards() {
+        assert!(
+            CatalogKind::ItemDefined.admitted(LIBRARY_KINDS, WildcardCatalogs::Include),
+            "RefreshLibrary claims wildcard catalogs"
+        );
+        assert!(
+            !CatalogKind::ItemDefined
+                .admitted(&[db::MediaKind::TvChannel], WildcardCatalogs::Exclude),
+            "RefreshIptv must not double-import a wildcard catalog's movies"
+        );
+    }
+
+    #[test]
+    fn unspecified_catalog_never_admitted() {
+        for wildcards in [WildcardCatalogs::Include, WildcardCatalogs::Exclude] {
+            assert!(
+                !CatalogKind::Unspecified.admitted(LIBRARY_KINDS, wildcards),
+                "a catalog with no usable declared type stays out ({wildcards:?})"
+            );
+        }
+    }
+
+    fn runtime_with_manifest_types(raw: &[&str]) -> AddonRuntime {
+        // Mirrors the live-manifest upgrade in `load_runtimes`.
+        let supported_types: Vec<sdks::remux::MediaKind> = raw
+            .iter()
+            .map(|t| {
+                serde_json::from_value::<sdks::stremio::MediaType>(
+                    serde_json::Value::String((*t).to_string()),
+                )
+                .unwrap_or_else(|_| sdks::stremio::MediaType::Unknown((*t).to_string()))
+            })
+            .filter_map(recognized_manifest_media_kind)
+            .collect();
+        let now = chrono::Utc::now().naive_utc();
+        AddonRuntime {
+            row: Addon {
+                id: Uuid::nil(),
+                name: "test".to_string(),
+                preset: AddonPresetRef {
+                    kind: "stremio".to_string(),
+                    ..Default::default()
+                },
+                resources: vec![ResourceType::Catalog],
+                // Empty = every type enabled.
+                types: vec![],
+                enabled: true,
+                priority: 0,
+                created_at: now,
+                updated_at: now,
+                system: false,
+                is_default: true,
+                http_redirect_stream: false,
+                service_filter: vec![],
+            },
+            caps: AddonCapabilities {
+                metadata: sdks::remux::AddonMetadata {
+                    supported_types,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        }
+    }
+
+    // Guards the upstream precondition: if the addon-level pre-filter rejected
+    // such an addon, no catalog of it would ever be looked at.
+    #[test]
+    fn addon_declaring_only_wildcard_type_is_not_pre_filtered_out() {
+        let runtime = runtime_with_manifest_types(&["all"]);
+        assert!(
+            runtime
+                .caps
+                .metadata
+                .supported_types
+                .is_empty(),
+            "`all` has no MediaKind equivalent, so the list filters down to nothing"
+        );
+        for kind in LIBRARY_KINDS {
+            assert!(
+                runtime.supports_type(kind),
+                "an empty supported_types list must stay permissive for {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn addon_declaring_recognized_types_still_gates_on_them() {
+        let runtime = runtime_with_manifest_types(&["all", "series"]);
+        assert!(runtime.supports_type(&db::MediaKind::Series));
+        assert!(
+            runtime.supports_type(&db::MediaKind::Episode),
+            "Series in a type list covers Episode (Stremio model)"
+        );
+        assert!(
+            !runtime.supports_type(&db::MediaKind::Album),
+            "a recognized type in the manifest is still an upper bound"
         );
     }
 }

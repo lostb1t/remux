@@ -16,9 +16,9 @@ use uuid::Uuid;
 
 use super::{
     AddonCapabilities, AddonKind, AddonMetadata, AddonOption, AddonOptionType,
-    AddonPreset, AddonPresetRegistration, CatalogAddon, CatalogInfo, MediaKind,
-    MetaAddon, ResourceType, SearchAddon, StreamAddon, SubtitleAddon, SubtitleInfo,
-    TreeAddon, addon,
+    AddonPreset, AddonPresetRegistration, CatalogAddon, CatalogInfo, CatalogKind,
+    MediaKind, MetaAddon, ResourceType, SearchAddon, StreamAddon, SubtitleAddon,
+    SubtitleInfo, TreeAddon, addon,
 };
 use crate::{
     AppContext, common, db, sdks,
@@ -229,6 +229,25 @@ impl AddonKind for StremioAddon {
     }
 }
 
+const WILDCARD_CATALOG_TYPE: &str = "all";
+
+/// Only `all` fans out: its items carry real types. Any other unmapped type
+/// (`collection`, `anime`, …) is also the type of its own items, which
+/// `TryFrom<stremio::Meta>` would then collapse to `Movie`.
+fn catalog_kind(raw: &str, parsed: remux_sdks::stremio::MediaType) -> CatalogKind {
+    match db::MediaKind::try_from(parsed) {
+        Ok(k) => CatalogKind::Single(k),
+        Err(_)
+            if raw
+                .trim()
+                .eq_ignore_ascii_case(WILDCARD_CATALOG_TYPE) =>
+        {
+            CatalogKind::ItemDefined
+        }
+        Err(_) => CatalogKind::Unspecified,
+    }
+}
+
 #[async_trait]
 impl CatalogAddon for StremioAddon {
     async fn catalog_list(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
@@ -283,7 +302,7 @@ impl CatalogAddon for StremioAddon {
                             .as_str()
                             .into()
                     }),
-                    media_kind: db::MediaKind::try_from(stremio_kind).ok(),
+                    media_kind: catalog_kind(&c.kind, stremio_kind),
                     ..CatalogInfo::new(
                         format!("{}:{}", c.kind, c.id),
                         format!(
@@ -1846,5 +1865,44 @@ mod tests {
             Vec::<TrackerUrl>::new()
         );
         assert_eq!(extract_trackers(&[]), Vec::<TrackerUrl>::new());
+    }
+
+    /// Classifies a raw manifest type string the way `catalog_list` does.
+    fn classify(raw: &str) -> CatalogKind {
+        let parsed: remux_sdks::stremio::MediaType =
+            serde_json::from_value(serde_json::Value::String(raw.to_string()))
+                .unwrap_or_else(|_| {
+                    remux_sdks::stremio::MediaType::Unknown(raw.to_string())
+                });
+        catalog_kind(raw, parsed)
+    }
+
+    #[test]
+    fn known_catalog_type_maps_to_a_single_kind() {
+        assert_eq!(classify("movie"), CatalogKind::Single(db::MediaKind::Movie));
+        assert_eq!(
+            classify("series"),
+            CatalogKind::Single(db::MediaKind::Series)
+        );
+        assert_eq!(
+            classify("tv"),
+            CatalogKind::Single(db::MediaKind::TvChannel)
+        );
+    }
+
+    #[test]
+    fn wildcard_catalog_type_fans_out_to_item_kinds() {
+        assert_eq!(classify("all"), CatalogKind::ItemDefined);
+        assert_eq!(
+            classify(" ALL "),
+            CatalogKind::ItemDefined,
+            "manifest strings are not normalized, so match loosely"
+        );
+    }
+
+    #[test]
+    fn other_unmappable_catalog_types_stay_unspecified() {
+        assert_eq!(classify("anime"), CatalogKind::Unspecified);
+        assert_eq!(classify("collection"), CatalogKind::Unspecified);
     }
 }

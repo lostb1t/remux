@@ -11,8 +11,8 @@ use uuid::Uuid;
 
 use super::{
     AddonCapabilities, AddonKind, AddonMetadata, AddonOption, AddonOptionType,
-    AddonPreset, AddonPresetRegistration, CatalogAddon, CatalogInfo, MediaKind,
-    MetaAddon, ResourceType, SearchAddon, TreeAddon,
+    AddonPreset, AddonPresetRegistration, CatalogAddon, CatalogInfo, CatalogKind,
+    MediaKind, MetaAddon, ResourceType, SearchAddon, TreeAddon,
 };
 use crate::{
     AppContext, common, db,
@@ -1047,7 +1047,7 @@ impl CatalogAddon for DeezerAddon {
                     _ => default_playlist_name(&id),
                 };
                 CatalogInfo {
-                    media_kind: Some(db::MediaKind::Playlist),
+                    media_kind: CatalogKind::Single(db::MediaKind::Playlist),
                     ..CatalogInfo::new(id, name)
                 }
             }

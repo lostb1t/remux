@@ -235,11 +235,11 @@ impl TryFrom<sdks::stremio::MediaType> for MediaKind {
 /// Extracts the addon's raw Stremio type string when it's a non-standard type
 /// (e.g. "anime") that `MediaKind` cannot represent and would otherwise collapse
 /// to a generic `Movie`/`Series`. Structural keywords (`episode`/`season`/`person`)
-/// are not content types and are excluded.
+/// are not content types and are excluded, as is the wildcard `all`.
 fn custom_stremio_type(media_type: &sdks::stremio::MediaType) -> Option<String> {
     match media_type {
         sdks::stremio::MediaType::Unknown(s)
-            if !matches!(s.as_str(), "episode" | "season" | "person") =>
+            if !matches!(s.as_str(), "episode" | "season" | "person" | "all") =>
         {
             Some(s.clone())
         }
@@ -7095,6 +7095,11 @@ mod tests {
                 "episode".to_string()
             )),
             None
+        );
+        assert_eq!(
+            custom_stremio_type(&sdks::stremio::MediaType::Unknown("all".to_string())),
+            None,
+            "the wildcard type names no content type, so it cannot stand in for one"
         );
     }
 

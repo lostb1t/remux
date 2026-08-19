@@ -11,7 +11,7 @@ use super::{
         remove_stale_catalog_memberships,
     },
 };
-use crate::{AppContext, db};
+use crate::{AppContext, addons, db};
 use remux_sdks::stremio::ResourceType;
 
 pub struct RefreshLibraryTask;
@@ -62,7 +62,7 @@ impl Task for RefreshLibraryTask {
         ];
         let addons = ctx
             .addons
-            .catalogs_for_kinds(&ctx, LIBRARY_KINDS)
+            .catalogs_for_kinds(&ctx, LIBRARY_KINDS, addons::WildcardCatalogs::Include)
             .await;
         let total_work = addons
             .len()

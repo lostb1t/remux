@@ -12,7 +12,7 @@ use super::{
         remove_stale_catalog_memberships,
     },
 };
-use crate::{AppContext, db};
+use crate::{AppContext, addons, db};
 
 pub struct RefreshIptvTask;
 
@@ -42,7 +42,11 @@ impl Task for RefreshIptvTask {
     ) -> Result<()> {
         let iptv_runtimes = ctx
             .addons
-            .catalogs_for_kinds(&ctx, &[db::MediaKind::TvChannel])
+            .catalogs_for_kinds(
+                &ctx,
+                &[db::MediaKind::TvChannel],
+                addons::WildcardCatalogs::Exclude,
+            )
             .await;
 
         let global_max = db::Settings::get_config_or_default(&ctx.db)

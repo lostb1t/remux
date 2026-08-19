@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use super::{
     AddonCapabilities, AddonKind, AddonMetadata, AddonOption, AddonOptionType,
-    AddonPreset, AddonPresetRegistration, CatalogAddon, CatalogInfo, MediaKind,
-    ProgressReporter, ResourceType, StreamAddon,
+    AddonPreset, AddonPresetRegistration, CatalogAddon, CatalogInfo, CatalogKind,
+    MediaKind, ProgressReporter, ResourceType, StreamAddon,
 };
 use crate::{AppContext, db, iptv};
 
@@ -335,7 +335,7 @@ impl CatalogAddon for IptvAddon {
             default_enabled: true,
             default_max_items: Some(999999999),
             collection_media_kind: None,
-            media_kind: Some(db::MediaKind::TvChannel),
+            media_kind: CatalogKind::Single(db::MediaKind::TvChannel),
         }])
     }
 

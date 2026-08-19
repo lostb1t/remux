@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use super::{
     AddonCapabilities, AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration,
-    CatalogAddon, CatalogInfo, MediaKind, MetaAddon, MetricSnapshot, MetricValue,
-    MetricsAddon, MetricsCtx, ResourceType, SearchAddon, TreeAddon,
+    CatalogAddon, CatalogInfo, CatalogKind, MediaKind, MetaAddon, MetricSnapshot,
+    MetricValue, MetricsAddon, MetricsCtx, ResourceType, SearchAddon, TreeAddon,
 };
 use crate::{
     AppContext, api, common, db, sdks,
@@ -271,7 +271,7 @@ impl CatalogAddon for TmdbAddon {
         Ok(TMDB_CATALOGS
             .iter()
             .map(|c| CatalogInfo {
-                media_kind: Some(
+                media_kind: CatalogKind::Single(
                     c.kind
                         .clone(),
                 ),

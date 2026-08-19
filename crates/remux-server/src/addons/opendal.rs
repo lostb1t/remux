@@ -14,8 +14,8 @@ use tracing::{debug, info, warn};
 use super::{
     AddonCapabilities, AddonKind, AddonMetadata, AddonOption, AddonOptionType,
     AddonPreset, AddonPresetRegistration, AddonSelectOption, CatalogAddon, CatalogInfo,
-    IndexAddon, MediaKind, ProgressReporter, ResourceType, StreamAddon, SubtitleAddon,
-    SubtitleInfo, TreeAddon,
+    CatalogKind, IndexAddon, MediaKind, ProgressReporter, ResourceType, StreamAddon,
+    SubtitleAddon, SubtitleInfo, TreeAddon,
 };
 use crate::{AppContext, addons::Addon, common, db, sdks, sdks::CachedEndpoint};
 
@@ -386,10 +386,11 @@ impl CatalogAddon for OpendalAddon {
                 .as_str()
             {
                 // episode files are grouped into Series catalog items
-                "episode" => Some(db::MediaKind::Series),
+                "episode" => CatalogKind::Single(db::MediaKind::Series),
                 other => other
                     .parse()
-                    .ok(),
+                    .map(CatalogKind::Single)
+                    .unwrap_or_default(),
             },
         }])
     }
@@ -2448,7 +2449,11 @@ mod tests {
         {
             let admitted = ctx
                 .addons
-                .catalogs_for_kinds(ctx, &[requested.clone()])
+                .catalogs_for_kinds(
+                    ctx,
+                    &[requested.clone()],
+                    crate::addons::WildcardCatalogs::Exclude,
+                )
                 .await
                 .into_iter()
                 .find(|(rt, _)| {
