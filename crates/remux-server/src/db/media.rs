@@ -1753,10 +1753,10 @@ impl Media {
     }
 
     /// Fill `runtime` for Playlist rows from the summed runtime of their
-    /// member items, and for Album rows from the summed runtime of their
-    /// child tracks. Jellyfin reports playlist/album duration (`RunTimeTicks`)
-    /// computed from child items; Remux stores no runtime of its own on
-    /// those rows, so clients like Feishin end up with NaN when the
+    /// member items, and for Album/Artist rows from the summed runtime of
+    /// their child tracks. Jellyfin reports playlist/album/artist duration
+    /// (`RunTimeTicks`) computed from child items; Remux stores no runtime of
+    /// its own on those rows, so clients like Feishin end up with NaN when the
     /// field is absent from the serialized DTO ("0 seconds" headers).
     pub async fn preload_playlist_runtimes(db: &SqlitePool, records: &mut [Self]) {
         let playlist_ids: Vec<Uuid> = records
@@ -1769,7 +1769,12 @@ impl Media {
             .filter(|m| m.kind == MediaKind::Album && m.runtime.is_none())
             .map(|m| m.id)
             .collect();
-        if playlist_ids.is_empty() && album_ids.is_empty() {
+        let artist_ids: Vec<Uuid> = records
+            .iter()
+            .filter(|m| m.kind == MediaKind::Artist && m.runtime.is_none())
+            .map(|m| m.id)
+            .collect();
+        if playlist_ids.is_empty() && album_ids.is_empty() && artist_ids.is_empty() {
             return;
         }
 
@@ -1831,6 +1836,36 @@ impl Media {
                 }
                 Err(e) => {
                     warn!("failed to preload album runtimes: {e}");
+                }
+            }
+        }
+
+        for chunk in artist_ids.chunks(SQLITE_VAR_LIMIT) {
+            let mut qb = sqlx::QueryBuilder::new(
+                "SELECT grandparent_id, SUM(runtime) FROM media WHERE kind = 'track' AND grandparent_id IN (",
+            );
+            let mut sep = qb.separated(", ");
+            for id in chunk {
+                sep.push_bind(id);
+            }
+            qb.push(") GROUP BY grandparent_id");
+
+            match qb
+                .build()
+                .fetch_all(db)
+                .await
+            {
+                Ok(rows) => {
+                    for row in rows {
+                        let pid: Uuid = row.get(0);
+                        let total: Option<i64> = row.get(1);
+                        if let Some(runtime) = total {
+                            runtime_map.insert(pid, runtime);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("failed to preload artist runtimes: {e}");
                 }
             }
         }
