@@ -870,7 +870,7 @@ impl ExternalRatings {
 pub use remux_utils::NonEmptyString;
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExternalIds {
     pub imdb: Option<NonEmptyString>,
     pub tmdb: Option<i64>,

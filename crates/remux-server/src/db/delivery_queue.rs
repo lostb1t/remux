@@ -5,7 +5,7 @@ use sqlx::{FromRow, Row, SqlitePool, sqlite::SqliteRow};
 use std::time::Duration;
 use uuid::Uuid;
 
-use crate::addons::tracking::{TrackingError, TrackingEvent, TrackingTarget};
+use crate::addons::tracking::{TrackingError, TrackingEvent};
 
 /// Attempts before a row is parked as `failed_retryable` and stops being
 /// retried. Roughly a day of backoff, so a provider outage is ridden out but a
@@ -62,12 +62,17 @@ pub enum DeliveryKind {
     Tracker,
 }
 
-/// What one tracking delivery carries: the event, plus the item it was about
-/// resolved at enqueue time so delivery never has to look anything up.
+/// What one tracking delivery carries: the event, and the item it was about by
+/// reference.
+///
+/// The item is a reference rather than a snapshot so that the target is built
+/// in one place, at delivery, where its external ids can still be completed.
+/// Rebuilding it costs a row read; a provider that cannot identify the item is
+/// worth more than saving one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrackerPayload {
+    pub media_id: Uuid,
     pub event: TrackingEvent,
-    pub target: TrackingTarget,
 }
 
 /// A queued delivery and everything its deliverer needs to make it.
@@ -385,8 +390,7 @@ mod tests {
     // --- state machine, against a real database ---
 
     use crate::{
-        addons::tracking::{TrackingEventKind, TrackingIds},
-        integration_test::new_test_server,
+        addons::tracking::TrackingEventKind, integration_test::new_test_server,
     };
     use sqlx::SqlitePool;
 
@@ -428,21 +432,10 @@ mod tests {
 
     pub(crate) fn tracker_payload() -> TrackerPayload {
         TrackerPayload {
+            media_id: crate::common::get_uuid(),
             event: TrackingEvent::PlaybackStop {
                 position_ticks: 42,
                 played: true,
-            },
-            target: TrackingTarget {
-                kind: crate::db::MediaKind::Movie,
-                title: "Arrival".into(),
-                year: Some(2016),
-                ids: TrackingIds {
-                    tmdb: Some(329865),
-                    ..Default::default()
-                },
-                series: None,
-                season: None,
-                episode: None,
             },
         }
     }
@@ -475,13 +468,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(
-            got.kind,
-            QueueKind::Tracker {
-                user_media_tracker_id: conn,
-                payload: tracker_payload(),
-            }
-        );
+        assert_eq!(got.kind, row.kind);
         assert_eq!(
             got.kind
                 .kind(),
