@@ -64,6 +64,13 @@ pub async fn enqueue(
     media: &db::Media,
     event: TrackingEvent,
 ) -> Result<usize> {
+    if !ctx
+        .addons
+        .has_tracking()
+    {
+        return Ok(0);
+    }
+
     let wanted: Vec<db::UserMediaTracker> =
         db::UserMediaTracker::list_for_user(&ctx.db, user_id)
             .await?
@@ -114,11 +121,47 @@ pub async fn enqueue_and_wake(
 mod tests {
     use super::*;
     use crate::{
-        addons::{Addon, AddonPresetRef, tracking::TrackingEventKind},
+        addons::{
+            Addon, AddonCapabilities, AddonKind, AddonPresetRef, AddonRuntime,
+            tracking::{
+                TrackingAddon, TrackingCapabilities, TrackingCredentials, TrackingCtx,
+                TrackingEventKind, TrackingResult,
+            },
+        },
         db::{DeliveryQueue, MediaTrackerStatus, UserMediaTracker},
         integration_test::new_test_server,
     };
+    use async_trait::async_trait;
     use chrono::Utc;
+    use std::sync::Arc;
+
+    /// Enough of a provider for the registry to report that tracking is
+    /// installed. What it does with an event is the sync task's business, and
+    /// is covered there.
+    struct StubTracker;
+
+    impl AddonKind for StubTracker {
+        fn id(&self) -> &'static str {
+            "scripted"
+        }
+    }
+
+    #[async_trait]
+    impl TrackingAddon for StubTracker {
+        fn capabilities(&self) -> TrackingCapabilities {
+            TrackingCapabilities::default()
+        }
+
+        async fn on_event(
+            &self,
+            _event: &TrackingEvent,
+            _target: &TrackingTarget,
+            _creds: &TrackingCredentials,
+            _ctx: &TrackingCtx,
+        ) -> TrackingResult<()> {
+            Ok(())
+        }
+    }
 
     async fn connect(
         ctx: &AppContext,
@@ -149,6 +192,20 @@ mod tests {
             .insert(&ctx.db)
             .await
             .unwrap();
+
+        let mut runtimes: Vec<AddonRuntime> = ctx
+            .addons
+            .list_for_user(&ctx.db, None)
+            .await;
+        runtimes.push(AddonRuntime {
+            row: addon.clone(),
+            caps: AddonCapabilities {
+                tracking: Some(Arc::new(StubTracker)),
+                ..Default::default()
+            },
+        });
+        ctx.addons
+            .replace_runtimes_for_test(runtimes);
 
         let mut tracker = UserMediaTracker::new(
             user_id(ctx).await,
@@ -321,6 +378,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn nothing_is_queued_when_no_addon_can_track() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let tracker = connect(
+            ctx,
+            "a",
+            MediaTrackerStatus::Connected,
+            vec![TrackingEventKind::MarkPlayed],
+        )
+        .await;
+        let media = movie(ctx).await;
+        ctx.addons
+            .replace_runtimes_for_test(Vec::new());
+
+        let n = enqueue(ctx, user_id(ctx).await, &media, TrackingEvent::MarkPlayed)
+            .await
+            .unwrap();
+
+        assert_eq!(n, 0, "an uninstalled addon has nothing to deliver to");
+        assert!(
+            queued(ctx, tracker)
+                .await
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn a_tracker_that_is_not_connected_is_skipped() {
         let (_s, guard) = new_test_server()
             .await
@@ -380,10 +466,8 @@ mod tests {
         assert_eq!(payload.event, TrackingEvent::Favorite { is_favorite: true });
     }
 
-    /// One request per test: the enqueue wakes the worker, which with no
-    /// provider registered fails the row permanently and takes the tracker out
-    /// of `Connected`, so a second request in the same test would find nothing
-    /// to queue for.
+    /// Rates `movie` over the API and returns the events that were queued for
+    /// it.
     async fn rate(path_suffix: &str, delete: bool) -> Vec<TrackingEvent> {
         let (server, guard, token) =
             crate::integration_test::authenticated_server().await;

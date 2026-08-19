@@ -1298,6 +1298,21 @@ impl AddonService {
             })
     }
 
+    /// Whether any enabled addon can track at all. Nothing can be connected to
+    /// an addon that is not installed, so this answers without a query.
+    pub fn has_tracking(&self) -> bool {
+        self.inner
+            .load()
+            .iter()
+            .any(|r| {
+                r.row
+                    .enabled
+                    && r.caps
+                        .tracking
+                        .is_some()
+            })
+    }
+
     /// Swaps the live runtime list. Test-only: the real list is built from
     /// `registered_presets()`, which has no way to carry a stub addon, so
     /// without this seam the delivery path can only be exercised by shipping a

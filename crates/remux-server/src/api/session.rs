@@ -85,15 +85,22 @@ pub async fn sessions_capabilities_by_id(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Queue a playback event for the acting user's media trackers. Resolving the
-/// item costs a lookup, so callers only reach here once they have an event
-/// worth queueing.
+/// Queue a playback event for the acting user's media trackers. The lookup
+/// costs a query, so callers only reach here with an event worth queueing.
 async fn track(
     state: &AppState,
     session: &auth::AuthSession,
     item_id: Uuid,
     event: TrackingEvent,
 ) {
+    if !state
+        .ctx
+        .addons
+        .has_tracking()
+    {
+        return;
+    }
+
     if let Ok(Some(media)) =
         MediaResolveService::resolve_item(item_id, &state.ctx).await
     {
@@ -259,8 +266,12 @@ pub async fn report_playback_stopped(
             .ctx
             .ws_tx
             .send(crate::ws::WsEvent::SessionsChanged);
-        if let Ok(Some(media)) =
-            MediaResolveService::resolve_item(data.item_id, &state.ctx).await
+        if state
+            .ctx
+            .addons
+            .has_tracking()
+            && let Ok(Some(media)) =
+                MediaResolveService::resolve_item(data.item_id, &state.ctx).await
         {
             // Whether this counted as a watch is decided by the threshold check
             // inside `stopped`, so it is read back rather than recomputed.
