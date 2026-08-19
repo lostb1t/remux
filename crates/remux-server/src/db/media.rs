@@ -3300,12 +3300,20 @@ impl Media {
 
             if let Some(genre_ids) = &filter.genre_ids {
                 if !genre_ids.is_empty() {
-                    qb.push(" AND EXISTS (SELECT 1 FROM media_relations mr WHERE mr.left_media_id = media.id AND mr.right_media_id IN (");
+                    // Direct relation (album/artist/movie → genre), plus a
+                    // fallback for tracks: music genres are persisted at
+                    // album level only, so inherit them from the parent album.
+                    qb.push(" AND (EXISTS (SELECT 1 FROM media_relations mr WHERE mr.left_media_id = media.id AND mr.right_media_id IN (");
                     let mut sep = qb.separated(", ");
                     for id in genre_ids {
                         sep.push_bind(id);
                     }
-                    qb.push("))");
+                    qb.push(")) OR (media.kind = 'track' AND EXISTS (SELECT 1 FROM media_relations mr2 JOIN media p ON p.id = mr2.left_media_id WHERE mr2.right_media_id IN (");
+                    let mut sep = qb.separated(", ");
+                    for id in genre_ids {
+                        sep.push_bind(id);
+                    }
+                    qb.push(") AND p.kind = 'album' AND p.id = media.parent_id)))");
                 }
             }
 
