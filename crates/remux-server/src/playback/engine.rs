@@ -12,14 +12,14 @@ use std::{
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-#[cfg(target_os = "macos")]
-use std::sync::OnceLock;
-
 use crate::{
     common::{HideConsole, TickUnit, ToRunTimeTicks},
     device_profile::{AudioCodec, VideoCodec},
+    playback::hw_accel::{Accelerator, NoAccel},
 };
-use remux_sdks::remux::{EncodingPreset, HardwareAccelerationType, VideoRangeType};
+use remux_sdks::remux::{
+    EncodingOptions, EncodingPreset, HardwareAccelerationType, VideoRangeType,
+};
 
 use super::session::{TranscodeSession, TranscodeState};
 
@@ -265,7 +265,6 @@ fn count_segments(dir: &PathBuf) -> u32 {
 }
 
 /// Parameters for starting a new HLS transcode job.
-#[derive(Debug, Clone)]
 pub struct TranscodeParams {
     pub input_url: String,
     pub output_dir: PathBuf,
@@ -292,11 +291,7 @@ pub struct TranscodeParams {
     /// Codec of the source audio stream (e.g. "aac", "ac3"), used to apply
     /// codec-specific bitstream filters such as `aac_adtstoasc` when copying.
     pub source_audio_codec: Option<String>,
-    pub hardware_acceleration_type: HardwareAccelerationType,
-    /// VAAPI render device path.
-    pub vaapi_device: String,
-    /// VAAPI driver name (e.g. "iHD" for Intel). Empty string means auto-detect.
-    pub vaapi_driver: String,
+    pub accelerator: Box<dyn Accelerator>,
     /// HDR type of the source video, used to decide whether tone-mapping or
     /// SDR colour-space override is needed.
     pub source_video_range_type: Option<VideoRangeType>,
@@ -347,9 +342,7 @@ impl Default for TranscodeParams {
             encoding_preset: None,
             source_video_codec: None,
             source_audio_codec: None,
-            hardware_acceleration_type: HardwareAccelerationType::None,
-            vaapi_device: "/dev/dri/renderD128".to_string(),
-            vaapi_driver: String::new(),
+            accelerator: Box::new(NoAccel),
             source_video_range_type: None,
             enable_tonemapping: false,
             enable_vpp_tonemapping: false,
@@ -369,166 +362,6 @@ impl Default for TranscodeParams {
 /// Return the expected output video dimensions based on transcode params.
 fn output_dimensions(params: &TranscodeParams) -> (Option<u32>, Option<u32>) {
     (params.max_width, params.max_height)
-}
-
-/// Return the ffmpeg input args that enable hardware-accelerated decoding.
-/// These are placed **before** the `-i` flag.
-fn hw_input_args(
-    accel: HardwareAccelerationType,
-    vaapi_device: &str,
-    vaapi_driver: &str,
-) -> Vec<String> {
-    // Build the vaapi init_hw_device string, appending ",driver=X" when known.
-    // For QSV we always fall back to "iHD" because QSV is Intel-only.
-    let effective_driver = |fallback: &'static str| -> String {
-        if vaapi_driver.is_empty() {
-            fallback.to_string()
-        } else {
-            vaapi_driver.to_string()
-        }
-    };
-    let vaapi_init = |alias: &str, driver: &str| {
-        let driver_opt = if driver.is_empty() {
-            String::new()
-        } else {
-            format!(",driver={driver}")
-        };
-        format!("vaapi={alias}:{vaapi_device}{driver_opt}")
-    };
-
-    match accel {
-        HardwareAccelerationType::Nvenc => vec!["-hwaccel".into(), "cuda".into()],
-        HardwareAccelerationType::Vaapi => {
-            // Initialise the VAAPI device via init_hw_device so that the
-            // driver= option takes effect (fixes iHD resolution on Intel).
-            // Frames are decoded in software; hwupload in the filter chain
-            // uploads the scaled frame to the VAAPI device for encoding.
-            let driver = effective_driver("");
-            vec![
-                "-init_hw_device".into(),
-                vaapi_init("va", &driver),
-                "-filter_hw_device".into(),
-                "va".into(),
-            ]
-        }
-        HardwareAccelerationType::Qsv => {
-            // QSV is Intel-only, so always use iHD as the VAAPI driver.
-            // On Linux, QSV is derived from a VAAPI device.  We initialise the
-            // VAAPI device first (with an explicit driver so iHD is found on
-            // Intel), derive a QSV device from it, then use VAAPI for hardware-
-            // assisted decoding.  Frames stay in GPU memory; scale_vaapi +
-            // hwmap map them to a QSV surface for the QSV encoder.
-            let driver = effective_driver("iHD");
-            vec![
-                "-init_hw_device".into(),
-                vaapi_init("va", &driver),
-                "-init_hw_device".into(),
-                "qsv=qs@va".into(),
-                "-filter_hw_device".into(),
-                "qs".into(),
-                "-hwaccel".into(),
-                "vaapi".into(),
-                "-hwaccel_output_format".into(),
-                "vaapi".into(),
-            ]
-        }
-        HardwareAccelerationType::VideoToolbox => {
-            vec!["-hwaccel".into(), "videotoolbox".into()]
-        }
-        HardwareAccelerationType::Amf => vec!["-hwaccel".into(), "d3d11va".into()],
-        HardwareAccelerationType::Rkmpp => vec!["-hwaccel".into(), "rkmpp".into()],
-        // v4l2m2m and None: software decode
-        _ => vec![],
-    }
-}
-
-fn videotoolbox_requires_software_decode(
-    source_video_codec: Option<&str>,
-    hdr: bool,
-    av1_hardware_decode_supported: bool,
-) -> bool {
-    hdr || (source_video_codec.is_some_and(|codec| codec.eq_ignore_ascii_case("av1"))
-        && !av1_hardware_decode_supported)
-}
-
-#[cfg(target_os = "macos")]
-const AV1_VIDEO_CODEC_TYPE: u32 = u32::from_be_bytes(*b"av01");
-
-#[cfg(target_os = "macos")]
-#[link(name = "VideoToolbox", kind = "framework")]
-unsafe extern "C" {
-    fn VTIsHardwareDecodeSupported(codec_type: u32) -> u8;
-}
-
-#[cfg(target_os = "macos")]
-fn videotoolbox_av1_hardware_decode_supported() -> bool {
-    static SUPPORTED: OnceLock<bool> = OnceLock::new();
-    *SUPPORTED.get_or_init(|| {
-        // `ffmpeg -hwaccels` reports the VideoToolbox framework, not whether
-        // this Mac implements a particular codec in hardware. Query the host
-        // capability directly so newer Macs can use AV1 hardware decode while
-        // older models retain the software-decode fallback.
-        let supported =
-            unsafe { VTIsHardwareDecodeSupported(AV1_VIDEO_CODEC_TYPE) != 0 };
-        debug!(supported, "VideoToolbox AV1 hardware decode capability");
-        supported
-    })
-}
-
-#[cfg(not(target_os = "macos"))]
-fn videotoolbox_av1_hardware_decode_supported() -> bool {
-    false
-}
-
-fn videotoolbox_uses_software_decode(
-    source_video_codec: Option<&str>,
-    hdr: bool,
-) -> bool {
-    let av1_hardware_decode_supported = !hdr
-        && source_video_codec.is_some_and(|codec| codec.eq_ignore_ascii_case("av1"))
-        && videotoolbox_av1_hardware_decode_supported();
-    videotoolbox_requires_software_decode(
-        source_video_codec,
-        hdr,
-        av1_hardware_decode_supported,
-    )
-}
-
-/// Map a software encoder name to the equivalent hardware encoder name.
-/// Returns the original name unchanged if the codec should not be re-mapped
-/// (e.g. "copy", "libvpx-vp9") or if `accel` is None.
-fn hw_encoder_name(base: &str, accel: HardwareAccelerationType) -> String {
-    let suffix = match accel {
-        HardwareAccelerationType::Nvenc => "_nvenc",
-        HardwareAccelerationType::Vaapi => "_vaapi",
-        HardwareAccelerationType::Qsv => "_qsv",
-        HardwareAccelerationType::Amf => "_amf",
-        HardwareAccelerationType::VideoToolbox => "_videotoolbox",
-        HardwareAccelerationType::V4l2m2m => "_v4l2m2m",
-        HardwareAccelerationType::Rkmpp => "_rkmpp",
-        _ => return base.to_string(),
-    };
-    match base {
-        "libx264" => format!("h264{suffix}"),
-        "libx265" => format!("hevc{suffix}"),
-        other => other.to_string(),
-    }
-}
-
-/// Append any filter steps required by the hardware encoder after the
-/// scale/video filter chain (e.g. hwupload for VAAPI).
-fn hw_filter_suffix(accel: HardwareAccelerationType) -> Option<String> {
-    match accel {
-        // VAAPI encoder requires frames in VAAPI memory; upload them after scaling.
-        HardwareAccelerationType::Vaapi => Some("format=nv12,hwupload".to_string()),
-        // QSV: frames are in VAAPI memory after decode; map them to a QSV surface
-        // for the QSV encoder.  scale_vaapi (the scale step) already converted the
-        // pixel format, so we only need the device remap here.
-        HardwareAccelerationType::Qsv => {
-            Some("hwmap=derive_device=qsv,format=qsv".to_string())
-        }
-        _ => None,
-    }
 }
 
 /// Build a scale filter string for FFmpeg, if needed.
@@ -644,35 +477,12 @@ fn is_hdr(range_type: Option<&VideoRangeType>) -> bool {
     )
 }
 
-/// QSV device-init args without hardware-decode flags.
-/// Used when the source is HDR: we keep the VAAPI+QSV device setup so the
-/// QSV encoder is available, but decode in software so CPU filters like
-/// `setparams` can run before the encoder.
-fn qsv_init_only_args(vaapi_device: &str, vaapi_driver: &str) -> Vec<String> {
-    let driver = if vaapi_driver.is_empty() {
-        "iHD".to_string()
-    } else {
-        vaapi_driver.to_string()
-    };
-    let driver_opt = if driver.is_empty() {
-        String::new()
-    } else {
-        format!(",driver={driver}")
-    };
-    vec![
-        "-init_hw_device".into(),
-        format!("vaapi=va:{vaapi_device}{driver_opt}"),
-        "-init_hw_device".into(),
-        "qsv=qs@va".into(),
-        "-filter_hw_device".into(),
-        "qs".into(),
-    ]
-}
-
 /// Build the ffmpeg CLI args for an HLS transcode.
 pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
-    let accel = params.hardware_acceleration_type;
-    let is_hw = !matches!(accel, HardwareAccelerationType::None);
+    let accel = params
+        .accelerator
+        .as_ref();
+    let is_hw = accel.is_hw();
     let hdr = is_hdr(
         params
             .source_video_range_type
@@ -680,16 +490,10 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     );
 
     // Tone-map decisions (only apply to HDR + transcode, never to copy).
-    let do_vpp_tonemap = hdr
-        && params.enable_vpp_tonemapping
-        && matches!(
-            accel,
-            HardwareAccelerationType::Vaapi | HardwareAccelerationType::Qsv
-        );
-    // VideoToolbox has no HW tone mapping — always use CPU tonemapx for HDR.
+    let do_vpp_tonemap =
+        hdr && params.enable_vpp_tonemapping && accel.supports_vpp_tonemap();
     let do_sw_tonemap = hdr
-        && (params.enable_tonemapping
-            || matches!(accel, HardwareAccelerationType::VideoToolbox))
+        && (params.enable_tonemapping || accel.prefers_sw_tonemap())
         && !do_vpp_tonemap;
 
     let ffmpeg_video_codec = {
@@ -712,7 +516,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             base
         };
         if base != "copy" && is_hw {
-            hw_encoder_name(base, accel)
+            accel.encoder_name(base)
         } else {
             base.to_string()
         }
@@ -753,34 +557,15 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             .subtitle_stream_index
             .is_some();
 
-    // Hardware acceleration input flags (before -ss and -i).
-    // For QSV+HDR without VPP tonemapping: SW-decode so CPU filters can run.
-    // For QSV+HDR with VPP tonemapping: keep VAAPI hw-decode (tonemap_vaapi needs GPU frames).
-    // QSV+burn_subtitle (non-HDR) keeps VAAPI hw-decode — overlay_qsv handles compositing on-GPU.
-    // VideoToolbox+HDR: SW-decode so tonemapx can run on CPU (VT encoder accepts yuv420p).
-    if matches!(accel, HardwareAccelerationType::Qsv) && hdr && !do_vpp_tonemap {
-        args.extend(qsv_init_only_args(
-            &params.vaapi_device,
-            &params.vaapi_driver,
-        ));
-    } else if matches!(accel, HardwareAccelerationType::VideoToolbox)
-        && videotoolbox_uses_software_decode(
+    args.extend(
+        accel.decode_input_args(
             params
                 .source_video_codec
                 .as_deref(),
             hdr,
-        )
-    {
-        // HDR needs CPU frames for tonemapx. AV1 hardware decode is not
-        // available on every supported Mac, so software decode avoids a failed
-        // VideoToolbox input while still allowing hardware H.264 encoding.
-    } else {
-        args.extend(hw_input_args(
-            accel,
-            &params.vaapi_device,
-            &params.vaapi_driver,
-        ));
-    }
+            do_vpp_tonemap,
+        ),
+    );
 
     // Input seek (fast, before -i) — not applicable to live streams
     if !params.is_live {
@@ -816,21 +601,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         "2048".into(),
     ]);
 
-    // HW filter suffix appended after scale.
-    // QSV+VPP: tonemap_vaapi in VAAPI memory then hwmap to QSV surface.
-    // QSV+HDR (SW decode, no VPP): frames in CPU memory — format=nv12 for the QSV encoder.
-    // QSV+burn_subtitle: hw_suffix is not used — overlay_qsv path builds its own filter chain.
-    // Otherwise: standard hw_filter_suffix (e.g. format=nv12,hwupload for VAAPI).
-    let hw_suffix = if do_vpp_tonemap && matches!(accel, HardwareAccelerationType::Qsv)
-    {
-        let vpp =
-            "tonemap_vaapi=format=nv12:p=bt709:t=bt709:m=bt709:extra_hw_frames=32";
-        Some(format!("{vpp},hwmap=derive_device=qsv,format=qsv"))
-    } else if matches!(accel, HardwareAccelerationType::Qsv) && hdr && !do_vpp_tonemap {
-        Some("format=nv12".to_string())
-    } else {
-        hw_filter_suffix(accel)
-    };
+    let hw_suffix = accel.hw_filter_suffix(hdr, do_vpp_tonemap);
 
     // Stream mapping
     if params.burn_subtitle {
@@ -855,7 +626,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             };
 
             let filter = if is_hw
-                && matches!(accel, HardwareAccelerationType::Qsv)
+                && accel.as_type() == HardwareAccelerationType::Qsv
                 && !hdr
                 && !do_vpp_tonemap
             {
@@ -909,7 +680,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         // (frames already in VAAPI memory from hw decode). SW tonemap + HDR always
         // uses CPU scale regardless of hw type.
         let scale_filter = if ffmpeg_video_codec != "copy" {
-            if matches!(accel, HardwareAccelerationType::Qsv)
+            if accel.as_type() == HardwareAccelerationType::Qsv
                 && (!hdr || do_vpp_tonemap)
             {
                 Some(build_qsv_scale_filter(params.max_width, params.max_height))
@@ -926,7 +697,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             _ => None,
         };
         let vf = if hdr && ffmpeg_video_codec != "copy" {
-            if do_vpp_tonemap && matches!(accel, HardwareAccelerationType::Vaapi) {
+            if do_vpp_tonemap && accel.as_type() == HardwareAccelerationType::Vaapi {
                 // VAAPI VPP: frames are in VAAPI memory after hwupload; append tonemap_vaapi.
                 let vpp = "tonemap_vaapi=format=nv12:p=bt709:t=bt709:m=bt709:extra_hw_frames=32";
                 let base = vf.unwrap_or_default();
@@ -945,10 +716,9 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
                 let algo = &params.tonemapping_algorithm;
                 let desat = params.tonemapping_desat;
                 let peak = params.tonemapping_peak;
-                let out_fmt = if matches!(
-                    accel,
-                    HardwareAccelerationType::None | HardwareAccelerationType::V4l2m2m
-                ) {
+                let out_fmt = if !accel.is_hw()
+                    || accel.as_type() == HardwareAccelerationType::V4l2m2m
+                {
                     "yuv420p"
                 } else {
                     "nv12"
@@ -956,7 +726,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
                 let tonemapx = format!(
                     "tonemapx=tonemap={algo}:desat={desat:.1}:peak={peak:.1}:t=bt709:m=bt709:p=bt709:format={out_fmt}"
                 );
-                let upload = if matches!(accel, HardwareAccelerationType::Vaapi) {
+                let upload = if accel.as_type() == HardwareAccelerationType::Vaapi {
                     ",hwupload"
                 } else {
                     ""
@@ -1161,31 +931,6 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     args
 }
 
-/// Build environment variable overrides needed for the ffmpeg process.
-///
-/// Mirrors Jellyfin's rule: only set LIBVA_DRIVER_NAME for "i965" because
-/// i965 has *lower* priority than iHD in libva's lookup order — without the
-/// env var, libva would pick iHD first and ignore i965.  For iHD the
-/// `driver=iHD` option inside `-init_hw_device` is sufficient and no env
-/// override is needed.
-fn ffmpeg_env_overrides(
-    accel: HardwareAccelerationType,
-    vaapi_driver: &str,
-) -> Vec<(String, String)> {
-    match accel {
-        HardwareAccelerationType::Vaapi | HardwareAccelerationType::Qsv => {
-            if vaapi_driver == "i965" {
-                // Force i965 via env so libva doesn't prefer iHD over it.
-                vec![("LIBVA_DRIVER_NAME".to_string(), "i965".to_string())]
-            } else {
-                // iHD (and unknown): driver= in init_hw_device is enough.
-                vec![]
-            }
-        }
-        _ => vec![],
-    }
-}
-
 /// Spawn an ffmpeg process, drain its stderr to DEBUG logs, and wait for it
 /// to finish (or be killed via `kill_rx`).  Returns the exit result and the
 /// accumulated stderr text for error reporting.
@@ -1329,10 +1074,12 @@ pub async fn start_transcode(
                     .clone()
             };
 
-            let env_overrides = ffmpeg_env_overrides(
-                params.hardware_acceleration_type,
-                &params.vaapi_driver,
-            );
+            let env_overrides: Vec<(String, String)> = params
+                .accelerator
+                .env_overrides()
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
             let (result, stderr_out) = run_ffmpeg(
                 args,
                 env_overrides,
@@ -1343,10 +1090,9 @@ pub async fn start_transcode(
             )
             .await;
 
-            let using_hw = !matches!(
-                params.hardware_acceleration_type,
-                HardwareAccelerationType::None
-            );
+            let using_hw = params
+                .accelerator
+                .is_hw();
 
             // If HW accel caused the failure, retry once with software encoding.
             if !sw_fallback
@@ -1354,14 +1100,14 @@ pub async fn start_transcode(
                 && matches!(&result, Some(Ok(s)) if !s.success())
             {
                 warn!(
-                    accel = ?params.hardware_acceleration_type,
+                    accel = ?params.accelerator.as_type(),
                     stderr = stderr_out.trim(),
                     "HW-accelerated transcode failed — retrying with software encoding"
                 );
                 // Clean partial output so the retry starts fresh.
                 let _ = std::fs::remove_dir_all(&params.output_dir);
                 let _ = std::fs::create_dir_all(&params.output_dir);
-                params.hardware_acceleration_type = HardwareAccelerationType::None;
+                params.accelerator = Box::new(NoAccel);
                 sw_fallback = true;
                 continue;
             }
@@ -1463,7 +1209,6 @@ pub async fn start_transcode(
 }
 
 /// Parameters for a progressive (non-HLS) transcode that streams to stdout.
-#[derive(Debug, Clone)]
 pub struct ProgressiveTranscodeParams {
     pub input_url: String,
     pub container: String,   // "mp4", "ts", "mkv", "webm"
@@ -1483,10 +1228,7 @@ pub struct ProgressiveTranscodeParams {
     pub encoding_preset: Option<EncodingPreset>,
     pub source_video_codec: Option<String>,
     pub source_audio_codec: Option<String>,
-    pub hardware_acceleration_type: HardwareAccelerationType,
-    pub vaapi_device: String,
-    /// VAAPI driver name (e.g. "iHD" for Intel). Empty string means auto-detect.
-    pub vaapi_driver: String,
+    pub accelerator: Box<dyn Accelerator>,
     pub source_video_range_type: Option<VideoRangeType>,
     pub enable_tonemapping: bool,
     pub enable_vpp_tonemapping: bool,
@@ -1506,24 +1248,20 @@ pub struct ProgressiveTranscodeParams {
 pub(crate) fn build_progressive_args(
     params: &ProgressiveTranscodeParams,
 ) -> Vec<String> {
-    let accel = params.hardware_acceleration_type;
-    let is_hw = !matches!(accel, HardwareAccelerationType::None);
+    let accel = params
+        .accelerator
+        .as_ref();
+    let is_hw = accel.is_hw();
     let hdr = is_hdr(
         params
             .source_video_range_type
             .as_ref(),
     );
 
-    let do_vpp_tonemap = hdr
-        && params.enable_vpp_tonemapping
-        && matches!(
-            accel,
-            HardwareAccelerationType::Vaapi | HardwareAccelerationType::Qsv
-        );
-    // VideoToolbox has no HW tone mapping — always use CPU tonemapx for HDR.
+    let do_vpp_tonemap =
+        hdr && params.enable_vpp_tonemapping && accel.supports_vpp_tonemap();
     let do_sw_tonemap = hdr
-        && (params.enable_tonemapping
-            || matches!(accel, HardwareAccelerationType::VideoToolbox))
+        && (params.enable_tonemapping || accel.prefers_sw_tonemap())
         && !do_vpp_tonemap;
 
     let ffmpeg_video_codec = {
@@ -1545,7 +1283,7 @@ pub(crate) fn build_progressive_args(
             base
         };
         if base != "copy" && is_hw {
-            hw_encoder_name(base, accel)
+            accel.encoder_name(base)
         } else {
             base.to_string()
         }
@@ -1601,31 +1339,15 @@ pub(crate) fn build_progressive_args(
             .subtitle_stream_index
             .is_some();
 
-    // Hardware acceleration input flags (before -ss and -i).
-    // QSV+HDR without VPP: SW-decode so CPU filters can run.
-    // QSV+burn_subtitle (non-HDR): keeps VAAPI hw-decode — overlay_qsv handles on-GPU.
-    // VideoToolbox+HDR: SW-decode so tonemapx can run on CPU (VT encoder accepts yuv420p).
-    if matches!(accel, HardwareAccelerationType::Qsv) && hdr && !do_vpp_tonemap {
-        args.extend(qsv_init_only_args(
-            &params.vaapi_device,
-            &params.vaapi_driver,
-        ));
-    } else if matches!(accel, HardwareAccelerationType::VideoToolbox)
-        && videotoolbox_uses_software_decode(
+    args.extend(
+        accel.decode_input_args(
             params
                 .source_video_codec
                 .as_deref(),
             hdr,
-        )
-    {
-        // No hw input args; see the HLS path above.
-    } else {
-        args.extend(hw_input_args(
-            accel,
-            &params.vaapi_device,
-            &params.vaapi_driver,
-        ));
-    }
+            do_vpp_tonemap,
+        ),
+    );
 
     // Input seek (fast, before -i)
     if let Some(ticks) = params.start_time_ticks {
@@ -1640,20 +1362,12 @@ pub(crate) fn build_progressive_args(
             .clone(),
     ]);
 
-    let hw_suffix = if do_vpp_tonemap && matches!(accel, HardwareAccelerationType::Qsv)
-    {
-        let vpp =
-            "tonemap_vaapi=format=nv12:p=bt709:t=bt709:m=bt709:extra_hw_frames=32";
-        Some(format!("{vpp},hwmap=derive_device=qsv,format=qsv"))
-    } else if matches!(accel, HardwareAccelerationType::Qsv) && hdr && !do_vpp_tonemap {
-        Some("format=nv12".to_string())
-    } else {
-        hw_filter_suffix(accel)
-    };
+    let hw_suffix = accel.hw_filter_suffix(hdr, do_vpp_tonemap);
 
     // Stream mapping
     let scale_filter = if ffmpeg_video_codec != "copy" {
-        if matches!(accel, HardwareAccelerationType::Qsv) && (!hdr || do_vpp_tonemap) {
+        if accel.as_type() == HardwareAccelerationType::Qsv && (!hdr || do_vpp_tonemap)
+        {
             Some(build_qsv_scale_filter(params.max_width, params.max_height))
         } else {
             let tp = TranscodeParams {
@@ -1684,7 +1398,7 @@ pub(crate) fn build_progressive_args(
             };
 
             let filter = if is_hw
-                && matches!(accel, HardwareAccelerationType::Qsv)
+                && accel.as_type() == HardwareAccelerationType::Qsv
                 && !hdr
                 && !do_vpp_tonemap
             {
@@ -1735,7 +1449,7 @@ pub(crate) fn build_progressive_args(
             _ => None,
         };
         let vf = if hdr && ffmpeg_video_codec != "copy" {
-            if do_vpp_tonemap && matches!(accel, HardwareAccelerationType::Vaapi) {
+            if do_vpp_tonemap && accel.as_type() == HardwareAccelerationType::Vaapi {
                 let vpp = "tonemap_vaapi=format=nv12:p=bt709:t=bt709:m=bt709:extra_hw_frames=32";
                 let base = vf.unwrap_or_default();
                 Some(if base.is_empty() {
@@ -1749,10 +1463,9 @@ pub(crate) fn build_progressive_args(
                 let algo = &params.tonemapping_algorithm;
                 let desat = params.tonemapping_desat;
                 let peak = params.tonemapping_peak;
-                let out_fmt = if matches!(
-                    accel,
-                    HardwareAccelerationType::None | HardwareAccelerationType::V4l2m2m
-                ) {
+                let out_fmt = if !accel.is_hw()
+                    || accel.as_type() == HardwareAccelerationType::V4l2m2m
+                {
                     "yuv420p"
                 } else {
                     "nv12"
@@ -1760,7 +1473,7 @@ pub(crate) fn build_progressive_args(
                 let tonemapx = format!(
                     "tonemapx=tonemap={algo}:desat={desat:.1}:peak={peak:.1}:t=bt709:m=bt709:p=bt709:format={out_fmt}"
                 );
-                let upload = if matches!(accel, HardwareAccelerationType::Vaapi) {
+                let upload = if accel.as_type() == HardwareAccelerationType::Vaapi {
                     ",hwupload"
                 } else {
                     ""
@@ -1927,8 +1640,9 @@ pub fn start_progressive_transcode(
     let args = build_progressive_args(&params);
     debug!("ffmpeg progressive args: {:?}", args);
 
-    let env_overrides =
-        ffmpeg_env_overrides(params.hardware_acceleration_type, &params.vaapi_driver);
+    let env_overrides = params
+        .accelerator
+        .env_overrides();
     let mut cmd = tokio::process::Command::new(ffmpeg_bin());
     cmd.hide_console();
     cmd.args(&args)
@@ -2238,6 +1952,7 @@ pub fn generate_master_playlist(session: &TranscodeSession) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::playback::hw_accel;
     use remux_sdks::remux::TranscodeReasons;
     use std::path::PathBuf;
     use uuid::Uuid;
@@ -2427,9 +2142,7 @@ mod tests {
             encoding_preset: None,
             source_video_codec: None,
             source_audio_codec: None,
-            hardware_acceleration_type: HardwareAccelerationType::None,
-            vaapi_device: "/dev/dri/renderD128".into(),
-            vaapi_driver: String::new(),
+            accelerator: Box::new(NoAccel),
             source_video_range_type: None,
             enable_tonemapping: false,
             enable_vpp_tonemapping: false,
@@ -2804,7 +2517,7 @@ mod tests {
         let dir = PathBuf::from("/tmp/test_nvenc");
         let args = build_hls_args(&TranscodeParams {
             video_codec: "libx264".into(),
-            hardware_acceleration_type: HardwareAccelerationType::Nvenc,
+            accelerator: Box::new(hw_accel::Nvenc),
             ..default_hls(dir)
         });
 
@@ -2825,26 +2538,21 @@ mod tests {
 
     #[test]
     fn videotoolbox_decode_decision_uses_av1_hardware_capability() {
-        assert!(videotoolbox_requires_software_decode(
-            Some("av1"),
-            false,
-            false,
-        ));
-        assert!(!videotoolbox_requires_software_decode(
-            Some("av1"),
-            false,
-            true,
-        ));
-        assert!(videotoolbox_requires_software_decode(
-            Some("h264"),
-            true,
-            true,
-        ));
-        assert!(!videotoolbox_requires_software_decode(
-            Some("h264"),
-            false,
-            false,
-        ));
+        let vt_no_av1 = hw_accel::VideoToolbox {
+            av1_hw_decode: false,
+        };
+        let vt_av1 = hw_accel::VideoToolbox {
+            av1_hw_decode: true,
+        };
+
+        // AV1 without hw decode → sw decode
+        assert!(vt_no_av1.requires_software_decode(Some("av1"), false));
+        // AV1 with hw decode → hw decode ok
+        assert!(!vt_av1.requires_software_decode(Some("av1"), false));
+        // HDR always forces sw decode regardless of av1 hw cap
+        assert!(vt_av1.requires_software_decode(Some("h264"), true));
+        // Non-HDR h264 with no av1 cap → hw decode ok
+        assert!(!vt_no_av1.requires_software_decode(Some("h264"), false));
     }
 
     #[test]
@@ -2854,7 +2562,9 @@ mod tests {
             video_codec: "h264".into(),
             source_video_codec: Some("hevc".into()),
             source_video_range_type: Some(VideoRangeType::Hdr10),
-            hardware_acceleration_type: HardwareAccelerationType::VideoToolbox,
+            accelerator: Box::new(hw_accel::VideoToolbox {
+                av1_hw_decode: false,
+            }),
             ..default_hls(dir)
         });
 
@@ -2867,20 +2577,15 @@ mod tests {
         assert_eq!(arg_after(&args, "-c:v"), Some("h264_videotoolbox"));
     }
 
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn videotoolbox_av1_capability_query_is_available() {
-        let _ = videotoolbox_av1_hardware_decode_supported();
-    }
-
     #[test]
     fn hls_vaapi_hardware_accel() {
         let dir = PathBuf::from("/tmp/test_vaapi");
         let args = build_hls_args(&TranscodeParams {
             video_codec: "libx264".into(),
-            hardware_acceleration_type: HardwareAccelerationType::Vaapi,
-            vaapi_device: "/dev/dri/renderD128".into(),
-            vaapi_driver: "iHD".into(),
+            accelerator: Box::new(hw_accel::Vaapi {
+                device: "/dev/dri/renderD128".into(),
+                driver: "iHD".into(),
+            }),
             ..default_hls(dir)
         });
 
@@ -2923,9 +2628,10 @@ mod tests {
         let dir = PathBuf::from("/tmp/test_vaapi_amd");
         let args = build_hls_args(&TranscodeParams {
             video_codec: "libx264".into(),
-            hardware_acceleration_type: HardwareAccelerationType::Vaapi,
-            vaapi_device: "/dev/dri/renderD128".into(),
-            vaapi_driver: String::new(), // AMD / unknown: no driver=
+            accelerator: Box::new(hw_accel::Vaapi {
+                device: "/dev/dri/renderD128".into(),
+                driver: String::new(), // AMD / unknown: no driver=
+            }),
             ..default_hls(dir)
         });
 
@@ -2946,9 +2652,10 @@ mod tests {
         let dir = PathBuf::from("/tmp/test_qsv");
         let args = build_hls_args(&TranscodeParams {
             video_codec: "libx264".into(),
-            hardware_acceleration_type: HardwareAccelerationType::Qsv,
-            vaapi_device: "/dev/dri/renderD128".into(),
-            vaapi_driver: "iHD".into(),
+            accelerator: Box::new(hw_accel::Qsv {
+                vaapi_device: "/dev/dri/renderD128".into(),
+                vaapi_driver: "iHD".into(),
+            }),
             ..default_hls(dir)
         });
 
@@ -3066,7 +2773,7 @@ mod tests {
         let args = build_progressive_args(&ProgressiveTranscodeParams {
             video_codec: "libx264".into(),
             container: "mp4".into(),
-            hardware_acceleration_type: HardwareAccelerationType::Nvenc,
+            accelerator: Box::new(hw_accel::Nvenc),
             ..default_progressive()
         });
         assert_eq!(arg_after(&args, "-c:v"), Some("h264_nvenc"));
