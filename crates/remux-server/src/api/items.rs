@@ -97,6 +97,7 @@ impl ItemsQueryResultBuilder {
     /// Fill `run_time_ticks` for Playlist rows in the payload before DTO
     /// serialization. Playlists carry no runtime of their own in Remux;
     /// Jellyfin clients expect the summed runtime of the member items.
+    /// Also fills Album rows from their child tracks.
     pub async fn preload_playlist_runtimes(mut self, db: &sqlx::SqlitePool) -> Self {
         if let ItemsSource::Raw(ref mut media) = self.items {
             db::Media::preload_playlist_runtimes(db, media).await;
@@ -471,18 +472,11 @@ pub async fn get_items(
             let mut items = Vec::with_capacity(slice.len());
             if !item_ids.is_empty() {
                 let mut by_id: std::collections::HashMap<Uuid, db::Media> =
-                    db::Media::get_by_filter(
-                        &state.ctx.db,
-                        &db::MediaFilter {
-                            id: Some(item_ids),
-                            ..Default::default()
-                        },
-                    )
-                    .await?
-                    .records
-                    .into_iter()
-                    .map(|m| (m.id, m))
-                    .collect();
+                    db::Media::get_by_ids(&state.ctx.db, &item_ids)
+                        .await?
+                        .into_iter()
+                        .map(|m| (m.id, m))
+                        .collect();
                 for rel in slice {
                     if let Some(media) = by_id.remove(&rel.right_media_id) {
                         let mut dto = api::db_media_to_item(media, hide_sources);

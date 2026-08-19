@@ -1775,12 +1775,12 @@ impl Media {
 
         let mut runtime_map: std::collections::HashMap<Uuid, i64> = Default::default();
 
-        if !playlist_ids.is_empty() {
+        for chunk in playlist_ids.chunks(SQLITE_VAR_LIMIT) {
             let mut qb = sqlx::QueryBuilder::new(
                 "SELECT mr.left_media_id, SUM(m.runtime) FROM media_relations mr JOIN media m ON m.id = mr.right_media_id WHERE mr.role = 'playlist' AND mr.left_media_id IN (",
             );
             let mut sep = qb.separated(", ");
-            for id in &playlist_ids {
+            for id in chunk {
                 sep.push_bind(id);
             }
             qb.push(") GROUP BY mr.left_media_id");
@@ -1805,12 +1805,12 @@ impl Media {
             }
         }
 
-        if !album_ids.is_empty() {
+        for chunk in album_ids.chunks(SQLITE_VAR_LIMIT) {
             let mut qb = sqlx::QueryBuilder::new(
                 "SELECT parent_id, SUM(runtime) FROM media WHERE kind = 'track' AND parent_id IN (",
             );
             let mut sep = qb.separated(", ");
-            for id in &album_ids {
+            for id in chunk {
                 sep.push_bind(id);
             }
             qb.push(") GROUP BY parent_id");
@@ -2910,6 +2910,29 @@ impl Media {
                 .await?;
         }
         Ok(())
+    }
+
+    /// Fetch media rows by id, chunking the `IN (...)` clause so queries stay
+    /// under SQLite's 999-variable limit (SQLITE_VAR_LIMIT).
+    pub async fn get_by_ids(db: &SqlitePool, ids: &[Uuid]) -> Result<Vec<Self>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut out = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(SQLITE_VAR_LIMIT) {
+            out.extend(
+                Self::get_by_filter(
+                    db,
+                    &MediaFilter {
+                        id: Some(chunk.to_vec()),
+                        ..Default::default()
+                    },
+                )
+                .await?
+                .records,
+            );
+        }
+        Ok(out)
     }
 
     pub async fn get_by_filter(

@@ -25,18 +25,12 @@ async fn retain_playlist_tracks(
     if resolved.is_empty() {
         return Ok(resolved);
     }
-    let by_kind: std::collections::HashMap<Uuid, db::MediaKind> = db::Media::get_by_filter(
-        db,
-        &db::MediaFilter {
-            id: Some(resolved.clone()),
-            ..Default::default()
-        },
-    )
-    .await?
-    .records
-    .into_iter()
-    .map(|m| (m.id, m.kind))
-    .collect();
+    let by_kind: std::collections::HashMap<Uuid, db::MediaKind> =
+        db::Media::get_by_ids(db, &resolved)
+            .await?
+            .into_iter()
+            .map(|m| (m.id, m.kind))
+            .collect();
     Ok(resolved
         .into_iter()
         .filter(|id| match by_kind.get(id) {
@@ -259,18 +253,11 @@ pub async fn get_playlist_items(
     let mut by_id: std::collections::HashMap<Uuid, db::Media> = if item_ids.is_empty() {
         std::collections::HashMap::new()
     } else {
-        db::Media::get_by_filter(
-            &state.ctx.db,
-            &db::MediaFilter {
-                id: Some(item_ids),
-                ..Default::default()
-            },
-        )
-        .await?
-        .records
-        .into_iter()
-        .map(|m| (m.id, m))
-        .collect()
+        db::Media::get_by_ids(&state.ctx.db, &item_ids)
+            .await?
+            .into_iter()
+            .map(|m| (m.id, m))
+            .collect()
     };
 
     let mut ordered: Vec<(Uuid, db::Media)> = relations
