@@ -4,7 +4,7 @@ use axum::{
     http::header,
     response::{IntoResponse, Response},
 };
-use http::StatusCode;
+use http::{HeaderMap, StatusCode};
 use remux_macros::{get, post, query, route};
 use serde::Deserialize;
 use serde_json::json;
@@ -24,9 +24,53 @@ use remux_sdks::remux::IntroOptions;
 
 use super::mock_items;
 
+fn request_local_address(headers: &HeaderMap, fallback_port: u16) -> String {
+    let scheme = headers
+        .get("x-forwarded-proto")
+        .and_then(|value| {
+            value
+                .to_str()
+                .ok()
+        })
+        .and_then(|value| {
+            value
+                .split(',')
+                .next()
+        })
+        .map(str::trim)
+        .filter(|value| matches!(*value, "http" | "https"))
+        .unwrap_or("http");
+
+    let authority = [headers.get("x-forwarded-host"), headers.get(header::HOST)]
+        .into_iter()
+        .flatten()
+        .filter_map(|value| {
+            value
+                .to_str()
+                .ok()
+        })
+        .filter_map(|value| {
+            value
+                .split(',')
+                .next()
+        })
+        .map(str::trim)
+        .find_map(|value| {
+            value
+                .parse::<http::uri::Authority>()
+                .ok()
+        });
+
+    authority.map_or_else(
+        || format!("http://127.0.0.1:{fallback_port}"),
+        |authority| format!("{scheme}://{authority}"),
+    )
+}
+
 #[get("/system/info/public")]
 pub async fn system_info_public(
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     let config = crate::db::Settings::get_config(
         &state
@@ -35,8 +79,16 @@ pub async fn system_info_public(
     )
     .await?;
     Ok(Json(api::PublicSystemInfo {
-        // todo
-        local_address: String::new(),
+        // Jellyfin clients persist LocalAddress as part of the server identity.
+        // Report the request authority so saved authentication state remains
+        // associated with the endpoint the client actually reached.
+        local_address: request_local_address(
+            &headers,
+            state
+                .ctx
+                .config
+                .port,
+        ),
         server_name: config
             .server_name
             .unwrap_or_default(),
@@ -869,12 +921,13 @@ mod test {
 
         let resp = server
             .get("/system/info/public")
+            .add_header(header::HOST, HeaderValue::from_static("192.168.1.2:3000"))
             .await;
 
         resp.assert_status_ok();
         resp.assert_json_contains(&json!({
             "Id": expect_json::uuid(),
-            "LocalAddress": "",
+            "LocalAddress": "http://192.168.1.2:3000",
             "ServerName": "Remux",
             "ProductName": "Jellyfin Server",
             "Version": crate::default_jellyfin_version(),

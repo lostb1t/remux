@@ -54,9 +54,21 @@ pub async fn items_playbackinfo(
     State(state): State<AppState>,
     session: auth::AuthSession,
     Path(id): Path<Uuid>,
+    Query(query): Query<api::PlaybackInfoQuery>,
     Json(payload): Json<api::PlaybackInfoQuery>,
 ) -> Result<impl IntoResponse> {
-    items_playbackinfo_inner(state, session, id, payload).await
+    // Jellyfin web sends MediaSourceId as query param even for POST; merge query and body
+    let mut q = payload;
+    q.media_source_id = q
+        .media_source_id
+        .or(query.media_source_id);
+    q.user_id = q
+        .user_id
+        .or(query.user_id);
+    q.device_profile = q
+        .device_profile
+        .or(query.device_profile);
+    items_playbackinfo_inner(state, session, id, q).await
 }
 
 #[get("/items/{id}/playbackinfo")]

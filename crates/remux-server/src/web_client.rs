@@ -14,7 +14,7 @@ use tower_http::services::ServeDir;
 use crate::embedded_static::EmbeddedDir;
 use crate::web_transform::TransformLayer;
 
-const JELLYFIN_ALIAS_PREFIX: &str = "/jellyfin";
+const JELLYFIN_ALIAS_PREFIXES: [&str; 2] = ["/jellyfin", "/web"];
 
 const UNREGISTER_SW_SCRIPT: &str = r#"self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => {
@@ -52,6 +52,12 @@ fn strip_prefixed_path(path: &str, prefix: &str) -> Option<String> {
     }
 
     None
+}
+
+fn strip_client_alias(path: &str) -> Option<String> {
+    JELLYFIN_ALIAS_PREFIXES
+        .iter()
+        .find_map(|prefix| strip_prefixed_path(path, prefix))
 }
 
 fn normalize_spa_inner_path(path: &str) -> String {
@@ -168,7 +174,7 @@ impl Service<Request<Body>> for WebClientService {
             .map(str::to_owned);
 
         let is_service_worker_path = path.eq_ignore_ascii_case("/serviceworker.js");
-        let jellyfin_inner = strip_prefixed_path(&path, JELLYFIN_ALIAS_PREFIX);
+        let jellyfin_inner = strip_client_alias(&path);
         let mut jellyfin = self
             .jellyfin
             .clone();
@@ -186,5 +192,28 @@ impl Service<Request<Body>> for WebClientService {
                 .call(req)
                 .await
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_jellyfin_and_web_aliases() {
+        assert_eq!(
+            strip_client_alias("/jellyfin/index.html"),
+            Some("/index.html".to_string())
+        );
+        assert_eq!(
+            strip_client_alias("/web/index.html"),
+            Some("/index.html".to_string())
+        );
+        assert_eq!(
+            strip_client_alias("/WEB/assets/app.js"),
+            Some("/assets/app.js".to_string())
+        );
+        assert_eq!(strip_client_alias("/web"), Some("/".to_string()));
+        assert_eq!(strip_client_alias("/websocket"), None);
     }
 }
