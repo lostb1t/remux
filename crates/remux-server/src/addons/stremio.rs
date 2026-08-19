@@ -474,13 +474,6 @@ impl TreeAddon for StremioAddon {
                 )?;
                 let now = chrono::Utc::now().naive_utc();
                 for ep in &mut episodes {
-                    if let Some(ep_num) = ep.idx {
-                        if let Some(s_num) = ep.parent_idx {
-                            ep.title = format!("S{}E{} - {}", s_num, ep_num, ep.title);
-                        } else {
-                            ep.title = format!("E{} - {}", ep_num, ep.title);
-                        }
-                    }
                     // Mark refreshed so TMDB isn't called per-episode during tree sync.
                     ep.refreshed_at = Some(now);
                 }
