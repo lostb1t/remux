@@ -64,13 +64,7 @@ fn item_to_hint(item: api::BaseItemDto) -> api::SearchHint {
             item.parent_thumb_image_tag
                 .clone()
         });
-    let thumb_item_id = item
-        .parent_thumb_item_id
-        .as_deref()
-        .and_then(|s| {
-            s.parse()
-                .ok()
-        });
+    let thumb_item_id = item.parent_thumb_item_id;
 
     let backdrop_tag = item
         .backdrop_image_tags
@@ -84,13 +78,7 @@ fn item_to_hint(item: api::BaseItemDto) -> api::SearchHint {
                         .cloned()
                 })
         });
-    let backdrop_item_id = item
-        .parent_backdrop_item_id
-        .as_deref()
-        .and_then(|s| {
-            s.parse()
-                .ok()
-        });
+    let backdrop_item_id = item.parent_backdrop_item_id;
 
     let primary_image_tag = item
         .image_tags

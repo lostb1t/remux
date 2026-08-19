@@ -705,11 +705,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             })
             .flatten(),
         album_id: (media.kind == db::MediaKind::Track)
-            .then(|| {
-                media
-                    .parent_id
-                    .map(|id| id.to_string())
-            })
+            .then(|| media.parent_id)
             .flatten(),
         album_primary_image_tag: (media.kind == db::MediaKind::Track)
             .then(|| {
@@ -961,7 +957,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
         } else {
             media.parent_id // season's parent is the series
         };
-        item.parent_backdrop_item_id = series_uuid.map(|id| id.to_string());
+        item.parent_backdrop_item_id = series_uuid;
         item.parent_backdrop_image_tags = parent_image_tag(
             media
                 .grandparent
@@ -982,12 +978,10 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             })
             .flatten();
         if season_thumb.is_some() {
-            item.parent_thumb_item_id = media
-                .parent_id
-                .map(|id| id.to_string());
+            item.parent_thumb_item_id = media.parent_id;
             item.parent_thumb_image_tag = season_thumb;
         } else {
-            item.parent_thumb_item_id = series_uuid.map(|id| id.to_string());
+            item.parent_thumb_item_id = series_uuid;
             item.parent_thumb_image_tag = parent_image_tag(
                 media
                     .grandparent
@@ -1073,9 +1067,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
     }
 
     if media.kind == db::MediaKind::TvProgram {
-        item.channel_id = media
-            .parent_id
-            .map(|id| id.to_string());
+        item.channel_id = media.parent_id;
         item.channel_name = media
             .parent
             .as_ref()

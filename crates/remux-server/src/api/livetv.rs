@@ -355,7 +355,8 @@ pub async fn livetv_programs(
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct GetProgramsBody {
-    pub channel_ids: Option<Vec<Uuid>>,
+    #[serde(rename = "channelIds", alias = "ChannelIds", default)]
+    pub channel_ids: remux_sdks::CommaSeparatedList<Uuid>,
     pub start_index: Option<u32>,
     pub limit: Option<u32>,
     pub has_aired: Option<bool>,
@@ -396,12 +397,18 @@ pub async fn livetv_programs_post(
         ..Default::default()
     };
 
-    if let Some(ids) = body.channel_ids {
-        match ids.len() {
-            1 => filter.parent_id = Some(ids[0]),
-            n if n > 1 => filter.parent_ids = Some(ids),
-            _ => {}
+    match body
+        .channel_ids
+        .len()
+    {
+        1 => filter.parent_id = Some(body.channel_ids[0]),
+        n if n > 1 => {
+            filter.parent_ids = Some(
+                body.channel_ids
+                    .to_vec(),
+            )
         }
+        _ => {}
     }
 
     let result = db::Media::get_by_filter(

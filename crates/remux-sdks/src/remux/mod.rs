@@ -3385,7 +3385,7 @@ pub struct BaseItemDto {
     pub path: Option<String>,
     pub official_rating: Option<String>,
     pub custom_rating: Option<String>,
-    pub channel_id: Option<String>,
+    pub channel_id: Option<Uuid>,
     pub channel_name: Option<String>,
     pub overview: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -3416,8 +3416,8 @@ pub struct BaseItemDto {
     pub studios: Vec<NameIdPair>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub genre_items: Vec<NameIdPair>,
-    pub parent_logo_item_id: Option<String>,
-    pub parent_backdrop_item_id: Option<String>,
+    pub parent_logo_item_id: Option<Uuid>,
+    pub parent_backdrop_item_id: Option<Uuid>,
     pub parent_backdrop_image_tags: Option<Vec<String>>,
     pub local_trailer_count: Option<i64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -3447,7 +3447,7 @@ pub struct BaseItemDto {
     pub album: Option<String>,
     pub collection_type: Option<CollectionType>,
     pub display_order: Option<String>,
-    pub album_id: Option<String>,
+    pub album_id: Option<Uuid>,
     pub album_primary_image_tag: Option<String>,
     pub series_primary_image_tag: Option<String>,
     pub album_artist: Option<String>,
@@ -3463,9 +3463,9 @@ pub struct BaseItemDto {
     pub backdrop_image_tags: Vec<String>,
     pub image_blur_hashes: Option<ImageBlurHashes>,
     pub screenshot_image_tags: Option<Vec<String>>,
-    pub parent_thumb_item_id: Option<String>,
+    pub parent_thumb_item_id: Option<Uuid>,
     pub parent_thumb_image_tag: Option<String>,
-    pub parent_primary_image_item_id: Option<String>,
+    pub parent_primary_image_item_id: Option<Uuid>,
     pub parent_primary_image_tag: Option<String>,
     //pub chapters: Option<Vec<ChapterInfo>>,
     #[default(LocationType::FileSystem)]
@@ -4274,7 +4274,7 @@ pub struct SearchHint {
     pub series_id: Option<Uuid>,
     pub series_name: Option<String>,
     pub album: Option<String>,
-    pub album_id: Option<String>,
+    pub album_id: Option<Uuid>,
     pub album_artist: Option<String>,
     pub artists: Vec<String>,
 }
