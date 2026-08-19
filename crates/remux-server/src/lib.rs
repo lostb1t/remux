@@ -341,9 +341,7 @@ pub async fn init_app(
     let web_client = make_web_client(conn.clone());
 
     let addons = addons::AddonService::from_db(&conn, &config).await?;
-    let transcode_sessions_dir = config
-        .data_dir
-        .join("transcode_sessions");
+    let transcode_sessions_dir = resolve_transcode_dir(&config.data_dir);
     let ctx = AppContext {
         config,
         db: conn.clone(),
@@ -566,6 +564,51 @@ fn default_bgutil_script_path() -> std::path::PathBuf {
 
 fn default_slow_query_threshold_ms() -> u64 {
     10_000
+}
+
+fn ensure_writable_directory(path: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(path)?;
+    let _probe = tempfile::NamedTempFile::new_in(path)?;
+    Ok(())
+}
+
+fn select_transcode_dir(
+    primary: std::path::PathBuf,
+    fallback: std::path::PathBuf,
+) -> std::path::PathBuf {
+    let primary_error = match ensure_writable_directory(&primary) {
+        Ok(()) => return primary,
+        Err(error) => error,
+    };
+
+    match ensure_writable_directory(&fallback) {
+        Ok(()) => {
+            warn!(
+                primary = %primary.display(),
+                fallback = %fallback.display(),
+                error = %primary_error,
+                "transcode directory is not writable; using temporary storage"
+            );
+            fallback
+        }
+        Err(fallback_error) => {
+            warn!(
+                primary = %primary.display(),
+                fallback = %fallback.display(),
+                primary_error = %primary_error,
+                fallback_error = %fallback_error,
+                "transcode and fallback directories are not writable"
+            );
+            primary
+        }
+    }
+}
+
+fn resolve_transcode_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
+    select_transcode_dir(
+        data_dir.join("transcode_sessions"),
+        std::env::temp_dir().join("remux-transcode"),
+    )
 }
 
 fn default_torrent_http_port_opt() -> Option<u16> {
@@ -833,6 +876,39 @@ mod rewrite_uri_tests {
         let rewritten = rewrite(path);
         assert!(rewritten.starts_with("/sessions/play/"));
         assert!(rewritten.contains("YWJjMTIz%7Cabc"));
+    }
+}
+
+#[cfg(test)]
+mod transcode_dir_tests {
+    use super::select_transcode_dir;
+
+    #[test]
+    fn uses_writable_primary_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let primary = temp
+            .path()
+            .join("primary");
+        let fallback = temp
+            .path()
+            .join("fallback");
+
+        assert_eq!(select_transcode_dir(primary.clone(), fallback), primary);
+    }
+
+    #[test]
+    fn falls_back_when_primary_directory_cannot_be_created() {
+        let temp = tempfile::tempdir().unwrap();
+        let blocking_file = temp
+            .path()
+            .join("not-a-directory");
+        std::fs::write(&blocking_file, b"blocked").unwrap();
+        let primary = blocking_file.join("transcode_sessions");
+        let fallback = temp
+            .path()
+            .join("fallback");
+
+        assert_eq!(select_transcode_dir(primary, fallback.clone()), fallback);
     }
 }
 
