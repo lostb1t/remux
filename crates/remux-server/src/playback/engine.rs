@@ -17,9 +17,7 @@ use crate::{
     device_profile::{AudioCodec, VideoCodec},
     playback::hw_accel::{Accelerator, NoAccel},
 };
-use remux_sdks::remux::{
-    EncodingOptions, EncodingPreset, HardwareAccelerationType, VideoRangeType,
-};
+use remux_sdks::remux::{EncodingPreset, HardwareAccelerationType, VideoRangeType};
 
 use super::session::{TranscodeSession, TranscodeState};
 

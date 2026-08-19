@@ -374,8 +374,10 @@ async fn create_hls_session(
         let session_hw_accel = if video_codec == "copy" {
             None
         } else {
-            let hw_type = hw_accel::from_encoding_opts(&encoding_opts_hls).as_type();
-            match hw_type {
+            match encoding_opts_hls
+                .hardware_acceleration_type
+                .unwrap_or_default()
+            {
                 HardwareAccelerationType::None => None,
                 hw => Some(hw.to_string()),
             }
