@@ -811,7 +811,6 @@ pub async fn user_unmark_played(
 
 /// Jellyfin-compatible master HLS playlist endpoint.
 /// Creates a transcode session and returns a master.m3u8 playlist.
-// ── Session remote control ──────────────────────────────────────────────────
 
 #[query]
 #[derive(Default)]

@@ -30,6 +30,7 @@ use crate::{
     common::{TickUnit, ToRunTimeTicks},
     db,
     db::auth,
+    playback::hw_accel,
 };
 
 use crate::{
@@ -948,15 +949,7 @@ async fn videos_stream_inner(
         encoding_preset: encoding_opts.encoding_preset,
         source_video_codec,
         source_audio_codec,
-        hardware_acceleration_type: encoding_opts
-            .hardware_acceleration_type
-            .unwrap_or_default(),
-        vaapi_device: encoding_opts
-            .vaapi_device
-            .unwrap_or_else(|| "/dev/dri/renderD128".to_string()),
-        vaapi_driver: encoding_opts
-            .vaapi_driver
-            .unwrap_or_default(),
+        accelerator: hw_accel::from_encoding_opts(&encoding_opts),
         source_video_range_type,
         enable_tonemapping: encoding_opts
             .enable_tonemapping
@@ -2446,8 +2439,6 @@ mod tests {
         resp.assert_status(StatusCode::NO_CONTENT);
     }
 
-    // ── User preference tests ──────────────────────────────────────────────────
-
     /// Full UserConfiguration JSON with sensible defaults. Merge in per-test
     /// overrides before posting to `/users/{id}/configuration`.
     fn default_user_config() -> serde_json::Value {
@@ -3000,7 +2991,6 @@ mod tests {
             .await
             .unwrap();
 
-        // ── Initial PlaybackInfo: no MediaSourceId ────────────────────────────
         let resp = server
             .post(&format!("/items/{}/playbackinfo", movie.id))
             .add_header(
@@ -3038,7 +3028,6 @@ mod tests {
             "blu-ray group source Id must be the StreamGroup UUID"
         );
 
-        // ── Select Blu-ray group by its UUID ─────────────────────────────────
         let resp2 = server
             .post(&format!("/items/{}/playbackinfo", movie.id))
             .add_header(

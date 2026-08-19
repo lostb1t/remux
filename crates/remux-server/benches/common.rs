@@ -3,7 +3,6 @@ use serde_json::json;
 use std::sync::OnceLock;
 use uuid::Uuid;
 
-// ── series dataset ────────────────────────────────────────────────────────────
 //
 // 20 000 series, 1 season × 12 episodes each → ~280 000 rows.
 // 5 000 user_media_state rows:
@@ -18,7 +17,6 @@ const OLD_ACTIVE: usize = 2_500;
 const IN_PROGRESS_START: usize = 3_750;
 const EPISODES: i64 = 12;
 
-// ── movie dataset ─────────────────────────────────────────────────────────────
 //
 // 10 000 movies, created_at spread over the last 730 days.
 // 2 000 in-progress (playback_position = 300, play_count = 0)

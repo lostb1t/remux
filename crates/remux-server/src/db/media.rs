@@ -7783,8 +7783,6 @@ mod tests {
         );
     }
 
-    // ── Sort arms ────────────────────────────────────────────────────────────
-
     async fn sort_titles(
         db: &sqlx::SqlitePool,
         kind: MediaKind,

@@ -20,7 +20,10 @@ use crate::{
     common::{TickUnit, ToRunTimeTicks},
     db,
     db::auth,
-    playback::session::{TranscodeSession, TranscodeState},
+    playback::{
+        hw_accel,
+        session::{TranscodeSession, TranscodeState},
+    },
 };
 
 /// Serializes the lookup-or-create-transcode sequence per play_session_id so
@@ -478,15 +481,7 @@ async fn create_hls_session(
                 .await
                 .source_audio_codec
                 .clone(),
-            hardware_acceleration_type: encoding_opts
-                .hardware_acceleration_type
-                .unwrap_or_default(),
-            vaapi_device: encoding_opts
-                .vaapi_device
-                .unwrap_or_else(|| "/dev/dri/renderD128".to_string()),
-            vaapi_driver: encoding_opts
-                .vaapi_driver
-                .unwrap_or_default(),
+            accelerator: hw_accel::from_encoding_opts(&encoding_opts),
             source_video_range_type,
             enable_tonemapping: encoding_opts
                 .enable_tonemapping
@@ -559,7 +554,7 @@ async fn create_hls_session(
                 audio_codec = %params.audio_codec,
                 resolution,
                 video_bitrate = ?params.video_bitrate,
-                hw_accel = ?params.hardware_acceleration_type,
+                hw_accel = ?params.accelerator.as_type(),
                 transcode_reasons = ?transcode_reasons_for_log,
                 start_secs,
                 "▶ Playback started (transcode)"
@@ -1156,15 +1151,7 @@ async fn hls_segment_inner(
                             .await
                             .source_audio_codec
                             .clone(),
-                        hardware_acceleration_type: encoding_opts
-                            .hardware_acceleration_type
-                            .unwrap_or_default(),
-                        vaapi_device: encoding_opts
-                            .vaapi_device
-                            .unwrap_or_else(|| "/dev/dri/renderD128".to_string()),
-                        vaapi_driver: encoding_opts
-                            .vaapi_driver
-                            .unwrap_or_default(),
+                        accelerator: hw_accel::from_encoding_opts(&encoding_opts),
                         source_video_range_type: session
                             .read()
                             .await
