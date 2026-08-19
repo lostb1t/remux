@@ -42,6 +42,18 @@ struct OutboundMessage<T: Serialize> {
     data: Option<T>,
 }
 
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct LibraryUpdateInfo {
+    folders_added_to: Vec<String>,
+    folders_removed_from: Vec<String>,
+    items_added: Vec<String>,
+    items_removed: Vec<String>,
+    items_updated: Vec<String>,
+    collection_folders: Vec<String>,
+    is_empty: bool,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct InboundMessage {
@@ -154,7 +166,14 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, session: AuthSess
                         }
                     }
                     Ok(WsEvent::LibraryChanged) => {
-                        if !send_msg::<()>(&mut socket, SessionMessageType::LibraryChanged, None).await {
+                        if !send_msg(
+                            &mut socket,
+                            SessionMessageType::LibraryChanged,
+                            Some(LibraryUpdateInfo {
+                                is_empty: true,
+                                ..Default::default()
+                            }),
+                        ).await {
                             return;
                         }
                     }
@@ -243,4 +262,26 @@ async fn build_sessions(state: &AppState) -> Vec<api::SessionInfoDto> {
     build_session_list(state, Some(Duration::from_secs(120)), None)
         .await
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn library_update_info_uses_jellyfin_message_shape() {
+        let value = serde_json::to_value(LibraryUpdateInfo {
+            is_empty: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(value["ItemsAdded"], serde_json::json!([]));
+        assert_eq!(value["ItemsRemoved"], serde_json::json!([]));
+        assert_eq!(value["ItemsUpdated"], serde_json::json!([]));
+        assert_eq!(value["FoldersAddedTo"], serde_json::json!([]));
+        assert_eq!(value["FoldersRemovedFrom"], serde_json::json!([]));
+        assert_eq!(value["CollectionFolders"], serde_json::json!([]));
+        assert_eq!(value["IsEmpty"], true);
+    }
 }

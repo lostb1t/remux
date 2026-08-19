@@ -831,6 +831,22 @@ struct RemotePlaystateQuery {
     controlling_user_id: Option<String>,
 }
 
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, strum_macros::Display, strum_macros::EnumString,
+)]
+#[strum(serialize_all = "PascalCase", ascii_case_insensitive)]
+enum PlaystateCommand {
+    Stop,
+    Pause,
+    Unpause,
+    NextTrack,
+    PreviousTrack,
+    Seek,
+    Rewind,
+    FastForward,
+    PlayPause,
+}
+
 #[query]
 #[derive(Default)]
 struct RemoteViewingQuery {
@@ -938,8 +954,11 @@ pub async fn remote_playstate_command(
         return Err(anyhow::anyhow!("Forbidden")
             .context_forbidden("cannot control other users' sessions"));
     }
+    let command = command
+        .parse::<PlaystateCommand>()
+        .context_bad_request("invalid playstate command")?;
     let data = serde_json::json!({
-        "Command": command,
+        "Command": command.to_string(),
         "SeekPositionTicks": q.seek_position_ticks,
         "ControllingUserId": q.controlling_user_id,
     });
@@ -1207,4 +1226,35 @@ pub async fn delete_transcoding(
             .send(crate::ws::WsEvent::SessionsChanged);
     }
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PlaystateCommand;
+
+    #[test]
+    fn playstate_commands_keep_jellyfin_enum_casing() {
+        for (request_path, protocol_value) in [
+            ("stop", "Stop"),
+            ("PAUSE", "Pause"),
+            ("unpause", "Unpause"),
+            ("nexttrack", "NextTrack"),
+            ("previoustrack", "PreviousTrack"),
+            ("seek", "Seek"),
+            ("rewind", "Rewind"),
+            ("fastforward", "FastForward"),
+            ("playpause", "PlayPause"),
+        ] {
+            let command = request_path
+                .parse::<PlaystateCommand>()
+                .unwrap();
+            assert_eq!(command.to_string(), protocol_value);
+        }
+
+        assert!(
+            "invalid"
+                .parse::<PlaystateCommand>()
+                .is_err()
+        );
+    }
 }
