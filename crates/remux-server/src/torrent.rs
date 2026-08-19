@@ -3,12 +3,18 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use anyhow::{Context, Result};
 use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, Session, SessionOptions,
-    SessionPersistenceConfig,
+    SessionPersistenceConfig, TorrentStatsState,
     api::{Api, TorrentIdOrHash},
     dht::PersistentDhtConfig,
     http_api::HttpApi,
 };
 use tracing::{debug, warn};
+
+#[derive(Debug)]
+struct TorrentFile {
+    name: String,
+    length: u64,
+}
 
 pub struct TorrentManager {
     session: Arc<Session>,
@@ -82,19 +88,9 @@ impl TorrentManager {
             "resolving torrent"
         );
 
-        let opts = wanted_file
-            .as_deref()
-            .map(|name| AddTorrentOptions {
-                // Ask librqbit to download only the matching file so we don't pull the
-                // whole torrent.  The regex is anchored at the end so "Movie.mkv" doesn't
-                // match "Movie.mkv.nfo".
-                only_files_regex: Some(format!("(?i){}$", regex::escape(name))),
-                ..Default::default()
-            });
-
         let response = self
             .session
-            .add_torrent(AddTorrent::from_url(magnet), opts)
+            .add_torrent(AddTorrent::from_url(magnet), Some(stream_only_options()))
             .await
             .context("failed to add torrent")?;
 
@@ -111,31 +107,69 @@ impl TorrentManager {
             .context("timed out waiting for torrent metadata")?
             .context("torrent initialization failed")?;
 
-        // file_idx from the magnet params takes precedence; fall back to name search.
-        let file_idx = if let Some(idx) = file_idx_override {
-            idx
-        } else {
-            handle
-                .with_metadata(|meta| {
-                    if let Some(name) = wanted_file.as_deref() {
-                        meta.file_infos
-                            .iter()
-                            .enumerate()
-                            .find(|(_, fi)| {
-                                fi.relative_filename
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .map(|n| n.eq_ignore_ascii_case(name))
-                                    .unwrap_or(false)
-                            })
-                            .map(|(idx, _)| idx)
-                            .unwrap_or(0)
-                    } else {
-                        0
-                    }
+        let files = handle.with_metadata(|metadata| {
+            metadata
+                .file_infos
+                .iter()
+                .map(|file| TorrentFile {
+                    name: file
+                        .relative_filename
+                        .to_string_lossy()
+                        .into_owned(),
+                    length: file.len,
                 })
-                .unwrap_or(0)
-        };
+                .collect::<Vec<_>>()
+        })?;
+        let file_idx =
+            select_file_index(&files, file_idx_override, wanted_file.as_deref())?;
+
+        // Existing persisted torrents may have been created with every file
+        // selected. Clear that natural queue as well; active FileStreams keep
+        // requesting their own pieces independently.
+        let api = Api::new(
+            self.session
+                .clone(),
+            None,
+            None,
+        );
+        api.api_torrent_action_update_only_files(
+            TorrentIdOrHash::Id(torrent_id),
+            &std::collections::HashSet::new(),
+        )
+        .await
+        .context("failed to clear torrent file selection")?;
+        if !matches!(
+            handle
+                .stats()
+                .state,
+            TorrentStatsState::Live
+        ) {
+            if let Err(error) = api
+                .api_torrent_action_start(TorrentIdOrHash::Id(torrent_id))
+                .await
+            {
+                // Another request may have started the torrent between the
+                // state check and this action. Only suppress that race.
+                if matches!(
+                    handle
+                        .stats()
+                        .state,
+                    TorrentStatsState::Live
+                ) {
+                    debug!(torrent_id, "torrent was started concurrently");
+                } else {
+                    return Err(error).context("failed to start torrent");
+                }
+            }
+        }
+
+        debug!(
+            torrent_id,
+            file_idx,
+            file = %files[file_idx].name,
+            file_count = files.len(),
+            "selected torrent stream file"
+        );
 
         Ok(format!(
             "http://127.0.0.1:{}/torrents/{}/stream/{}",
@@ -217,6 +251,101 @@ impl TorrentManager {
     }
 }
 
+fn stream_only_options() -> AddTorrentOptions {
+    AddTorrentOptions {
+        // An empty selection leaves piece ownership to librqbit's HTTP
+        // FileStream. Metadata lookup therefore cannot start downloading or
+        // allocating every file in a bundle.
+        only_files: Some(Vec::new()),
+        ..Default::default()
+    }
+}
+
+fn is_video_file(name: &str) -> bool {
+    let extension = std::path::Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default();
+    matches!(
+        extension
+            .to_ascii_lowercase()
+            .as_str(),
+        "mkv" | "mp4" | "m4v" | "avi" | "mov" | "webm" | "ts" | "m2ts" | "mpg" | "mpeg"
+    )
+}
+
+fn select_file_index(
+    files: &[TorrentFile],
+    requested_idx: Option<usize>,
+    wanted_file: Option<&str>,
+) -> Result<usize> {
+    if files.is_empty() {
+        anyhow::bail!("torrent contains no files");
+    }
+
+    if let Some(wanted) = wanted_file {
+        if let Some((index, _)) = files
+            .iter()
+            .enumerate()
+            .find(|(_, file)| {
+                is_video_file(&file.name)
+                    && (file
+                        .name
+                        .eq_ignore_ascii_case(wanted)
+                        || std::path::Path::new(&file.name)
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| name.eq_ignore_ascii_case(wanted)))
+            })
+        {
+            return Ok(index);
+        }
+    }
+
+    if let Some(index) = requested_idx.filter(|index| {
+        files
+            .get(*index)
+            .is_some_and(|file| is_video_file(&file.name))
+    }) {
+        return Ok(index);
+    }
+
+    let mut videos: Vec<(usize, &TorrentFile)> = files
+        .iter()
+        .enumerate()
+        .filter(|(_, file)| is_video_file(&file.name))
+        .collect();
+    if videos.len() == 1 {
+        return Ok(videos[0].0);
+    }
+
+    videos.sort_by_key(|(_, file)| std::cmp::Reverse(file.length));
+    if let [largest, second, ..] = videos.as_slice() {
+        // Samples and extras are common, but similarly sized videos indicate
+        // a real bundle and require an exact provider hint.
+        if largest
+            .1
+            .length
+            >= second
+                .1
+                .length
+                .saturating_mul(2)
+        {
+            return Ok(largest.0);
+        }
+    }
+
+    match requested_idx {
+        Some(index) => anyhow::bail!(
+            "torrent file index {index} does not identify a video and no unique video could be selected"
+        ),
+        None => anyhow::bail!(
+            "torrent contains {} video files; a valid file index or filename is required",
+            videos.len()
+        ),
+    }
+}
+
 /// Extract the `file=` query parameter we encode into our magnet URIs.
 fn parse_file_param(magnet: &str) -> Option<String> {
     let query = magnet
@@ -238,4 +367,60 @@ fn parse_file_idx_param(magnet: &str) -> Option<usize> {
             v.parse()
                 .ok()
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(name: &str, length: u64) -> TorrentFile {
+        TorrentFile {
+            name: name.to_string(),
+            length,
+        }
+    }
+
+    #[test]
+    fn bundle_uses_exact_requested_file() {
+        let files = vec![
+            file("Bundle/Movie.One.mkv", 2_000),
+            file("Bundle/Movie.Two.mkv", 2_100),
+            file("Bundle/Movie.Three.mkv", 1_900),
+        ];
+
+        assert_eq!(
+            select_file_index(&files, Some(0), Some("Movie.Two.mkv")).unwrap(),
+            1
+        );
+        assert_eq!(select_file_index(&files, Some(2), None).unwrap(), 2);
+    }
+
+    #[test]
+    fn bundle_rejects_ambiguous_or_non_video_indexes() {
+        let files = vec![
+            file("Bundle/Movie.One.mkv", 2_000),
+            file("Bundle/release.nfo", 1),
+            file("Bundle/Movie.Two.mkv", 2_100),
+        ];
+
+        assert!(select_file_index(&files, Some(1), None).is_err());
+        assert!(select_file_index(&files, Some(99), None).is_err());
+        assert!(select_file_index(&files, None, None).is_err());
+    }
+
+    #[test]
+    fn single_feature_release_ignores_samples() {
+        let files = vec![
+            file("Release/sample.mkv", 100),
+            file("Release/Movie.mkv", 2_000),
+            file("Release/subtitles.srt", 2),
+        ];
+
+        assert_eq!(select_file_index(&files, None, None).unwrap(), 1);
+    }
+
+    #[test]
+    fn metadata_lookup_selects_no_files_for_download() {
+        assert_eq!(stream_only_options().only_files, Some(Vec::new()));
+    }
 }
