@@ -1316,6 +1316,29 @@ async fn stremio_subtitles(
 /// Rewrite a URL whose host is `aiostreams` to use the stremio addon's origin.
 /// AIO running in Docker uses this internal hostname; we remap it at descriptor
 /// construction time so callers never see the unresolvable internal address.
+/// Extract tracker URLs from a Stremio stream's `sources` array.
+///
+/// Tracker entries are conventionally `"tracker:udp://…/announce"`, but some
+/// addons (notably private-tracker addons) emit the bare URL without the
+/// `tracker:` prefix. Accept both and run each through [`TrackerUrl`]
+/// validation so unrelated `sources` entries are dropped; de-duplicate.
+fn extract_trackers(sources: &[String]) -> Vec<crate::stream::TrackerUrl> {
+    let mut seen = std::collections::HashSet::new();
+    let mut trackers = Vec::new();
+    for src in sources {
+        let url = src
+            .strip_prefix("tracker:")
+            .unwrap_or(src.as_str())
+            .trim();
+        if let Ok(url) = crate::stream::TrackerUrl::try_new(url.to_string()) {
+            if seen.insert(url.clone()) {
+                trackers.push(url);
+            }
+        }
+    }
+    trackers
+}
+
 fn rewrite_aio_url(url: &str, manifest_url: &StremioManifestUrl) -> String {
     let Ok(mut parsed) = url::Url::parse(url) else {
         return url.to_string();
@@ -1392,6 +1415,16 @@ async fn stremio_streams(
         .filter(|s| s.is_valid())
         .filter_map(|s| {
             let descriptor = if s.is_torrent() {
+                let trackers = extract_trackers(
+                    s.sources
+                        .as_deref()
+                        .unwrap_or_default(),
+                );
+                debug!(
+                    info_hash = ?s.info_hash(),
+                    ?trackers,
+                    "torrent stream trackers"
+                );
                 crate::stream::StreamDescriptor::Torrent {
                     info_hash: s
                         .info_hash()?
@@ -1402,14 +1435,7 @@ async fn stremio_streams(
                     file_idx: s
                         .file_idx
                         .map(|i| i as usize),
-                    trackers: s
-                        .sources
-                        .as_deref()
-                        .unwrap_or_default()
-                        .iter()
-                        .filter_map(|src| src.strip_prefix("tracker:"))
-                        .map(String::from)
-                        .collect(),
+                    trackers,
                 }
             } else {
                 let url = s
@@ -1780,5 +1806,45 @@ mod tests {
 
         assert_eq!(streams.len(), 1);
         reconstructed.assert();
+    }
+
+    #[test]
+    fn extract_trackers_accepts_prefixed_bare_and_dedupes() {
+        use crate::stream::TrackerUrl;
+        let sources = vec![
+            "tracker:udp://tracker.opentrackr.org:1337/announce".to_string(),
+            "https://private-tracker.example/announce".to_string(),
+            "tracker:https://private-tracker.example/announce".to_string(),
+            "not-a-tracker".to_string(),
+            "udp://open.demonii.com:1337/announce".to_string(),
+        ];
+        let trackers = extract_trackers(&sources);
+        let inner = |t: &TrackerUrl| {
+            t.as_ref()
+                .to_string()
+        };
+        assert_eq!(
+            trackers
+                .iter()
+                .map(inner)
+                .collect::<Vec<_>>(),
+            vec![
+                "udp://tracker.opentrackr.org:1337/announce",
+                "https://private-tracker.example/announce",
+                "udp://open.demonii.com:1337/announce",
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_trackers_ignores_non_urls() {
+        use crate::stream::TrackerUrl;
+        let empty: Vec<TrackerUrl> = Vec::new();
+        assert_eq!(extract_trackers(&["foo".to_string()]), empty);
+        assert_eq!(
+            extract_trackers(&["https://tracker.example".to_string()]),
+            Vec::<TrackerUrl>::new()
+        );
+        assert_eq!(extract_trackers(&[]), Vec::<TrackerUrl>::new());
     }
 }

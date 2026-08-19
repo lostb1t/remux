@@ -3,12 +3,34 @@ use async_trait::async_trait;
 use axum::{body::Body, http::HeaderMap, response::Response};
 use axum_anyhow::ApiResult as Result;
 use futures_util::TryStreamExt;
+use nutype::nutype;
 use std::{io, path::PathBuf};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
 use crate::AppState;
+
+/// A BitTorrent tracker announce URL: an absolute `udp://`/`http(s)://` URI with
+/// a path. Rejects bare hosts and non-URL `sources` entries, so random addon
+/// metadata is never mistaken for a tracker.
+#[nutype(
+    validate(predicate = is_tracker_url),
+    derive(Clone, Debug, PartialEq, Eq, Hash, AsRef, Serialize, Deserialize)
+)]
+pub struct TrackerUrl(String);
+
+/// Whether `s` looks like a tracker announce URL (absolute http/https/udp + path).
+pub fn is_tracker_url(s: &str) -> bool {
+    let lower = s
+        .trim()
+        .to_ascii_lowercase();
+    let rest = lower
+        .strip_prefix("udp://")
+        .or_else(|| lower.strip_prefix("http://"))
+        .or_else(|| lower.strip_prefix("https://"));
+    matches!(rest, Some(rest) if rest.contains('/'))
+}
 
 /// Typed representation of how a stream is accessed (transport mechanism).
 ///
@@ -37,7 +59,7 @@ pub enum StreamDescriptor {
         file_idx: Option<usize>,
         /// Tracker announce URLs (populated from the stream's `sources`).
         #[serde(default)]
-        trackers: Vec<String>,
+        trackers: Vec<TrackerUrl>,
     },
     Opendal {
         addon_id: Uuid,
@@ -269,19 +291,20 @@ pub struct TorrentSource {
     pub info_hash: String,
     pub file_hint: Option<String>,
     pub file_idx: Option<usize>,
-    pub trackers: Vec<String>,
+    pub trackers: Vec<TrackerUrl>,
 }
 
 impl TorrentSource {
     fn to_magnet(&self) -> String {
         let mut m = format!("magnet:?xt=urn:btih:{}", self.info_hash);
-        let trackers: &[String] = &self.trackers;
+        let trackers = &self.trackers;
         if trackers.is_empty() {
             for t in DEFAULT_TRACKERS {
                 m.push_str(&format!("&tr={}", urlencoding::encode(t)));
             }
         } else {
             for t in trackers {
+                let t: &str = t.as_ref();
                 m.push_str(&format!("&tr={}", urlencoding::encode(t)));
             }
         }
@@ -495,7 +518,27 @@ fn extract_query_param(url: &str, param: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::STREAM_PROXY_CLIENT;
+    use super::{STREAM_PROXY_CLIENT, TrackerUrl, is_tracker_url};
+
+    #[test]
+    fn tracker_url_validates_absolute_urls() {
+        assert!(is_tracker_url("udp://tracker.opentrackr.org:1337/announce"));
+        assert!(is_tracker_url("https://private.example/announce"));
+        assert!(is_tracker_url("http://tracker.example:8080/announce"));
+
+        // bare host, relative path, and non-URLs are rejected
+        assert!(!is_tracker_url("https://tracker.example"));
+        assert!(!is_tracker_url("/announce"));
+        assert!(!is_tracker_url("tracker:udp://x/announce"));
+        assert!(!is_tracker_url("not-a-tracker"));
+        assert!(
+            TrackerUrl::try_new(
+                "udp://tracker.opentrackr.org:1337/announce".to_string()
+            )
+            .is_ok()
+        );
+        assert!(TrackerUrl::try_new("not-a-tracker".to_string()).is_err());
+    }
 
     #[test]
     fn stream_proxy_client_builds_without_panic() {
