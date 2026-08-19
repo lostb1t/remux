@@ -188,34 +188,39 @@ pub struct TrackingTarget {
     pub kind: db::MediaKind,
     pub title: String,
     pub year: Option<i32>,
-    pub ids: TrackingIds,
+    pub ids: db::ExternalIds,
     /// Set for episodes: the parent series' title, year and ids.
     pub series: Option<Box<TrackingTarget>>,
     pub season: Option<i64>,
     pub episode: Option<i64>,
 }
 
-/// The ids tracking services key on — narrower than `db::ExternalIds`, which
-/// also carries Deezer/Kitsu/IPTV/Stremio ids none of them understand.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrackingIds {
-    pub imdb: Option<String>,
-    pub tmdb: Option<i64>,
-    pub tvdb: Option<i64>,
+/// Whether any id here is one a tracking service could key on. `ExternalIds`
+/// also carries Deezer, IPTV and Stremio ids, which identify nothing to them.
+fn has_tracking_ids(ids: &db::ExternalIds) -> bool {
+    ids.imdb
+        .is_some()
+        || ids
+            .tmdb
+            .is_some()
+        || ids
+            .tvdb
+            .is_some()
+        || ids
+            .kitsu
+            .is_some()
 }
 
-impl TrackingIds {
-    /// Nothing to match on. Core drops the action rather than queueing
-    /// something no provider can act on.
-    pub fn is_empty(&self) -> bool {
-        self.imdb
-            .is_none()
-            && self
-                .tmdb
-                .is_none()
-            && self
-                .tvdb
-                .is_none()
+impl TrackingTarget {
+    /// Whether a provider could find this item at all. An episode counts when
+    /// its series does, since every service can key on the show plus season
+    /// and episode numbers.
+    pub fn is_matchable(&self) -> bool {
+        has_tracking_ids(&self.ids)
+            || self
+                .series
+                .as_ref()
+                .is_some_and(|s| has_tracking_ids(&s.ids))
     }
 }
 
@@ -429,7 +434,7 @@ pub trait TrackingAddon: AddonKind + Send + Sync {
         &self,
         _creds: &TrackingCredentials,
         _ctx: &TrackingCtx,
-    ) -> TrackingResult<Vec<TrackingIds>> {
+    ) -> TrackingResult<Vec<db::ExternalIds>> {
         Err(TrackingError::unsupported("watchlist sync"))
     }
 
@@ -448,7 +453,7 @@ pub trait TrackingAddon: AddonKind + Send + Sync {
 /// `pull_changes`.
 #[derive(Debug, Clone)]
 pub struct RemoteWatch {
-    pub ids: TrackingIds,
+    pub ids: db::ExternalIds,
     pub season: Option<i64>,
     pub episode: Option<i64>,
     pub watched: bool,
@@ -600,29 +605,75 @@ mod tests {
         );
     }
 
+    fn target(kind: db::MediaKind, ids: db::ExternalIds) -> TrackingTarget {
+        TrackingTarget {
+            kind,
+            title: "Heat".into(),
+            year: None,
+            ids,
+            series: None,
+            season: None,
+            episode: None,
+        }
+    }
+
     #[test]
-    fn ids_are_empty_only_when_nothing_is_matchable() {
-        assert!(TrackingIds::default().is_empty());
+    fn an_item_is_matchable_on_any_id_a_service_reads() {
         assert!(
-            !TrackingIds {
-                imdb: Some("tt123".into()),
-                ..Default::default()
-            }
-            .is_empty()
+            !target(db::MediaKind::Movie, db::ExternalIds::default()).is_matchable()
         );
-        assert!(
-            !TrackingIds {
+        for ids in [
+            db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt123".to_string()).ok(),
+                ..Default::default()
+            },
+            db::ExternalIds {
                 tmdb: Some(603),
                 ..Default::default()
-            }
-            .is_empty()
-        );
-        assert!(
-            !TrackingIds {
+            },
+            db::ExternalIds {
                 tvdb: Some(1),
                 ..Default::default()
-            }
-            .is_empty()
+            },
+            db::ExternalIds {
+                kitsu: Some(1),
+                ..Default::default()
+            },
+        ] {
+            assert!(target(db::MediaKind::Movie, ids).is_matchable());
+        }
+    }
+
+    /// An episode is keyed on its show, so one carrying no ids of its own is
+    /// still worth delivering.
+    #[test]
+    fn an_episode_is_matchable_through_its_series() {
+        let mut episode = target(db::MediaKind::Episode, db::ExternalIds::default());
+        assert!(!episode.is_matchable());
+
+        episode.series = Some(Box::new(target(
+            db::MediaKind::Series,
+            db::ExternalIds {
+                tvdb: Some(79126),
+                ..Default::default()
+            },
+        )));
+        assert!(episode.is_matchable());
+    }
+
+    /// A music id identifies nothing to a tracking service, so it must not
+    /// stand in for one.
+    #[test]
+    fn a_non_tracking_id_does_not_make_an_item_matchable() {
+        assert!(
+            !target(
+                db::MediaKind::Movie,
+                db::ExternalIds {
+                    deezer_album: Some(1),
+                    ..Default::default()
+                }
+            )
+            .is_matchable()
         );
     }
 
@@ -656,7 +707,7 @@ mod tests {
     #[test]
     fn remote_user_data_can_carry_a_favourite_on_its_own() {
         let watch = RemoteWatch {
-            ids: TrackingIds {
+            ids: db::ExternalIds {
                 tmdb: Some(603),
                 ..Default::default()
             },
@@ -677,7 +728,7 @@ mod tests {
     #[test]
     fn remote_user_data_can_carry_a_rating_on_its_own() {
         let watch = RemoteWatch {
-            ids: TrackingIds {
+            ids: db::ExternalIds {
                 tmdb: Some(603),
                 ..Default::default()
             },

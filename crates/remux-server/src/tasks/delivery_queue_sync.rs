@@ -172,6 +172,18 @@ async fn deliver_tracker(
             TrackingError::permanent("tracking addon is not enabled")
         })?;
 
+    let media = db::Media::get_by_id(&ctx.db, &payload.media_id)
+        .await
+        .map_err(|e| TrackingError::retryable(format!("loading item: {e}")))?
+        .ok_or_else(|| TrackingError::permanent("item no longer exists"))?;
+
+    let target = crate::services::tracking::resolve_target(&ctx.db, &media)
+        .await
+        .map_err(|e| TrackingError::retryable(format!("describing item: {e}")))?
+        .ok_or_else(|| {
+            TrackingError::permanent("no external id a tracking service could match")
+        })?;
+
     let tctx = TrackingCtx {
         config: Arc::new(
             ctx.config
@@ -179,7 +191,7 @@ async fn deliver_tracker(
         ),
     };
     addon
-        .on_event(&payload.event, &payload.target, &conn.credentials, &tctx)
+        .on_event(&payload.event, &target, &conn.credentials, &tctx)
         .await
 }
 
@@ -191,7 +203,7 @@ mod tests {
             AddonCapabilities, AddonKind, AddonPresetRef, AddonRuntime,
             tracking::{
                 TrackingAddon, TrackingCapabilities, TrackingCredentials,
-                TrackingEvent, TrackingEventKind, TrackingIds, TrackingTarget,
+                TrackingEvent, TrackingEventKind, TrackingTarget,
             },
         },
         db::{
@@ -214,6 +226,7 @@ mod tests {
     struct ScriptedAddon {
         script: Mutex<VecDeque<TrackingResult<()>>>,
         seen: Mutex<Vec<(TrackingEventKind, String)>>,
+        targets: Mutex<Vec<TrackingTarget>>,
     }
 
     impl ScriptedAddon {
@@ -222,11 +235,20 @@ mod tests {
             Arc::new(Self {
                 script: Mutex::new(script.into()),
                 seen: Mutex::new(Vec::new()),
+                targets: Mutex::new(Vec::new()),
             })
         }
 
         fn seen(&self) -> Vec<(TrackingEventKind, String)> {
             self.seen
+                .lock()
+                .unwrap()
+                .clone()
+        }
+
+        /// The items as they reached the provider.
+        fn targets(&self) -> Vec<TrackingTarget> {
+            self.targets
                 .lock()
                 .unwrap()
                 .clone()
@@ -261,6 +283,10 @@ mod tests {
                         .title
                         .clone(),
                 ));
+            self.targets
+                .lock()
+                .unwrap()
+                .push(target.clone());
             self.script
                 .lock()
                 .unwrap()
@@ -337,31 +363,46 @@ mod tests {
         (conn.id, row)
     }
 
-    fn payload(title: &str) -> TrackerPayload {
-        TrackerPayload {
-            event: TrackingEvent::PlaybackStop {
-                position_ticks: 42,
-                played: true,
-            },
-            target: TrackingTarget {
+    /// A delivery names an item, so one has to exist. `imdb` is what makes it
+    /// matchable.
+    async fn movie(db: &SqlitePool, title: &str, imdb: &str) -> Uuid {
+        let external_ids = crate::db::ExternalIds {
+            imdb: crate::db::NonEmptyString::try_new(imdb.to_string()).ok(),
+            ..Default::default()
+        };
+        let mut media = crate::db::Media {
+            id: Uuid::from(&crate::db::MediaIdRaw {
                 kind: crate::db::MediaKind::Movie,
-                title: title.into(),
-                year: Some(1999),
-                ids: TrackingIds {
-                    imdb: Some("tt0133093".into()),
-                    ..Default::default()
-                },
-                series: None,
+                external_ids: external_ids.clone(),
                 season: None,
                 episode: None,
-            },
-        }
+            }),
+            title: title.into(),
+            kind: crate::db::MediaKind::Movie,
+            external_ids,
+            ..Default::default()
+        };
+        media
+            .save(db)
+            .await
+            .unwrap();
+        media.id
     }
 
     async fn queue(db: &SqlitePool, conn: Uuid, title: &str) -> Uuid {
+        queue_item(db, conn, movie(db, title, "tt0133093").await).await
+    }
+
+    async fn queue_item(db: &SqlitePool, conn: Uuid, media_id: Uuid) -> Uuid {
         let row = DeliveryQueue::new(QueueKind::Tracker {
             user_media_tracker_id: conn,
-            payload: payload(title),
+            payload: TrackerPayload {
+                media_id,
+                event: TrackingEvent::PlaybackStop {
+                    position_ticks: 42,
+                    played: true,
+                },
+            },
         });
         row.insert(db)
             .await
@@ -534,6 +575,117 @@ mod tests {
             got.status,
             DeliveryStatus::FailedPermanent,
             "retrying cannot re-enable an addon, so this must not sit pending forever"
+        );
+    }
+
+    /// Providers key an episode on its show, so the delivery path owes the
+    /// series to every one of them.
+    #[tokio::test]
+    async fn an_episode_reaches_the_provider_with_its_series_attached() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let addon = ScriptedAddon::new(vec![]);
+        let (conn, _) = connect(ctx, "hana", addon.clone()).await;
+
+        let series_ids = crate::db::ExternalIds {
+            imdb: crate::db::NonEmptyString::try_new("tt0306414".to_string()).ok(),
+            tvdb: Some(79126),
+            ..Default::default()
+        };
+        let mut series = crate::db::Media {
+            id: Uuid::from(&crate::db::MediaIdRaw {
+                kind: crate::db::MediaKind::Series,
+                external_ids: series_ids.clone(),
+                season: None,
+                episode: None,
+            }),
+            title: "The Wire".into(),
+            kind: crate::db::MediaKind::Series,
+            external_ids: series_ids,
+            ..Default::default()
+        };
+        series
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        let mut season = crate::db::Media {
+            title: "Season 1".into(),
+            kind: crate::db::MediaKind::Season,
+            parent_id: Some(series.id),
+            grandparent_id: Some(series.id),
+            idx: Some(1),
+            ..Default::default()
+        };
+        season
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        let mut episode = crate::db::Media {
+            title: "The Target".into(),
+            kind: crate::db::MediaKind::Episode,
+            parent_id: Some(season.id),
+            grandparent_id: Some(series.id),
+            idx: Some(1),
+            parent_idx: Some(1),
+            ..Default::default()
+        };
+        episode
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        queue_item(&ctx.db, conn, episode.id).await;
+        drain(ctx, &reporter())
+            .await
+            .unwrap();
+
+        let targets = addon.targets();
+        assert_eq!(targets.len(), 1);
+        let target = &targets[0];
+        assert_eq!(target.season, Some(1));
+        assert_eq!(target.episode, Some(1));
+        assert_eq!(
+            target
+                .series
+                .as_ref()
+                .expect("an episode alone identifies nothing")
+                .ids
+                .tvdb,
+            Some(79126)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unmatchable_item_fails_the_row_rather_than_retrying_forever() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let addon = ScriptedAddon::new(vec![]);
+        let (conn, _) = connect(ctx, "gina", addon.clone()).await;
+        let media = crate::integration_test::insert_test_source(ctx).await;
+        let queued = queue_item(&ctx.db, conn, media.id).await;
+
+        drain(ctx, &reporter())
+            .await
+            .unwrap();
+
+        assert!(
+            addon
+                .seen()
+                .is_empty(),
+            "there is no id to hand a provider"
+        );
+        assert_eq!(
+            DeliveryQueue::get(&ctx.db, queued)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            DeliveryStatus::FailedPermanent,
+            "no amount of retrying gives the item an id"
         );
     }
 
