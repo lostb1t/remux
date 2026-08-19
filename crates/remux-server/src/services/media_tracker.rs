@@ -1,4 +1,4 @@
-//! Turning a stored media row into what a tracking provider needs to see.
+//! Turning a stored media row into what a media tracker needs to see.
 //!
 //! A queued delivery names the item rather than describing it, so this runs
 //! once per delivery instead of once per request. That is what keeps the walk

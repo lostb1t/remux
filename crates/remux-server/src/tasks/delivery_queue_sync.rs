@@ -179,7 +179,7 @@ async fn deliver_tracker(
 
     // Built here rather than at enqueue so every provider sees the item
     // described the same way, from whatever ids the row carries by now.
-    let target = crate::services::tracking::resolve_target(&ctx.db, &media)
+    let target = crate::services::media_tracker::resolve_target(&ctx.db, &media)
         .await
         .map_err(|e| TrackingError::retryable(format!("describing item: {e}")))?
         .ok_or_else(|| {
