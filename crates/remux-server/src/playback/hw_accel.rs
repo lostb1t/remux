@@ -1,8 +1,6 @@
 use remux_sdks::remux::{EncodingOptions, HardwareAccelerationType};
 
 pub trait Accelerator: Send {
-    // ── Capabilities ────────────────────────────────────────────────────────
-
     fn has_av1_decode(&self) -> bool {
         false
     }
@@ -23,8 +21,6 @@ pub trait Accelerator: Send {
     fn is_hw(&self) -> bool {
         true
     }
-
-    // ── ffmpeg args ──────────────────────────────────────────────────────────
 
     /// Short encoder suffix, e.g. `"_nvenc"`.  `None` means software encode.
     fn encoder_suffix(&self) -> Option<&str> {
@@ -61,8 +57,6 @@ pub trait Accelerator: Send {
     fn env_overrides(&self) -> Vec<(&'static str, String)> {
         vec![]
     }
-
-    // ── Context-aware helpers ────────────────────────────────────────────────
 
     /// True when the codec/HDR combination requires software decode even though
     /// hardware encoding is still used.
@@ -102,12 +96,8 @@ pub trait Accelerator: Send {
         self.filter_suffix()
     }
 
-    // ── Identity ─────────────────────────────────────────────────────────────
-
     fn as_type(&self) -> HardwareAccelerationType;
 }
-
-// ── Per-accelerator structs ──────────────────────────────────────────────────
 
 pub struct NoAccel;
 pub struct Nvenc;
@@ -125,8 +115,6 @@ pub struct VideoToolbox {
 pub struct Amf;
 pub struct V4l2m2m;
 pub struct Rkmpp;
-
-// ── Implementations ──────────────────────────────────────────────────────────
 
 impl Accelerator for NoAccel {
     fn is_hw(&self) -> bool {
@@ -355,8 +343,6 @@ impl Accelerator for Rkmpp {
         HardwareAccelerationType::Rkmpp
     }
 }
-
-// ── Factory ──────────────────────────────────────────────────────────────────
 
 /// Query whether this Mac's VideoToolbox hardware can decode AV1.
 /// Result is cached after the first call — hardware doesn't change at runtime.

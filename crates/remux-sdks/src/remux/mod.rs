@@ -6005,8 +6005,6 @@ impl Endpoint for SetUserAddons {
     }
 }
 
-// ── Stream Groups ─────────────────────────────────────────────────────────────
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StreamResolution {
@@ -6634,8 +6632,6 @@ mod tests {
         let v = 500 * 1024 * 1024;
         assert_eq!(format_size_rule(NumericOp::Gt, v), "> 500.00 MiB");
     }
-
-    // ── MediaSourceInfo::resolve_default_streams ──────────────────────────────
 
     fn source_with_subs() -> MediaSourceInfo {
         MediaSourceInfo {

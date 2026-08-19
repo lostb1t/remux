@@ -336,7 +336,6 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                     }
                     div { class: "modal-body",
                         if *create_step.read() == 0 {
-                            // ── Step 1: kind picker ──
                             div { class: "addon-kind-list",
                                 for k in kinds.read().clone().into_iter().filter(|k| {
                                     if *active_tab.read() == "user" { !k.supported_resources_user.is_empty() } else { true }
@@ -389,7 +388,6 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                 }
                             }
                         } else {
-                            // ── Step 2: name + options ──
                             if let Some(meta) = &selected_kind_meta {
                                 div { class: "field-hint", style: "margin-bottom:4px", "{meta.description}" }
                             }

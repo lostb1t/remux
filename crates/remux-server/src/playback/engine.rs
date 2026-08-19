@@ -1957,8 +1957,6 @@ mod tests {
     use std::path::PathBuf;
     use uuid::Uuid;
 
-    // ── helpers ──────────────────────────────────────────────────────────────
-
     fn args_contains(args: &[String], flag: &str) -> bool {
         args.iter()
             .any(|a| a == flag)
@@ -1969,8 +1967,6 @@ mod tests {
             .find(|w| w[0] == flag)
             .map(|w| w[1].as_str())
     }
-
-    // ── select_hw_accel tests ─────────────────────────────────────────────────
 
     fn no_devices(_: &str) -> bool {
         false
@@ -2156,8 +2152,6 @@ mod tests {
             normalize_audio_loudness: false,
         }
     }
-
-    // ── HLS tests ────────────────────────────────────────────────────────────
 
     #[test]
     fn hls_basic_copy() {
@@ -2705,8 +2699,6 @@ mod tests {
         assert!(vf.contains("format=qsv"), "expected format=qsv in vf: {vf}");
     }
 
-    // ── progressive tests ────────────────────────────────────────────────────
-
     #[test]
     fn progressive_basic_copy() {
         let args = build_progressive_args(&default_progressive());
@@ -2812,8 +2804,6 @@ mod tests {
         assert!(args_contains(&args, "-reconnect_at_eof"));
         assert!(args_contains(&args, "-reconnect_streamed"));
     }
-
-    // ── Loudness normalisation tests ─────────────────────────────────────────
 
     #[test]
     fn hls_loudnorm_added_when_transcoding_audio() {

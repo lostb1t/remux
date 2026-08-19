@@ -1158,8 +1158,6 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
     item
 }
 
-// ── Remote Search DTOs ──────────────────────────────────────────────────────
-
 #[remux_macros::query]
 #[derive(Debug, Clone, Default)]
 pub struct ItemLookupInfo {
