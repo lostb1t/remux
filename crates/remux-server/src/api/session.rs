@@ -104,7 +104,7 @@ async fn track(
     if let Ok(Some(media)) =
         MediaResolveService::resolve_item(item_id, &state.ctx).await
     {
-        services::tracking::enqueue_and_wake(
+        services::media_tracker::enqueue_and_wake(
             state,
             session
                 .user
@@ -288,7 +288,7 @@ pub async fn report_playback_stopped(
                     .is_some()
             })
             .unwrap_or(false);
-            services::tracking::enqueue_and_wake(
+            services::media_tracker::enqueue_and_wake(
                 &state,
                 session
                     .user

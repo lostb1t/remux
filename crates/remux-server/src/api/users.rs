@@ -454,7 +454,7 @@ pub async fn mark_favorite(
             &user,
         )
         .await?;
-    services::tracking::enqueue_and_wake(
+    services::media_tracker::enqueue_and_wake(
         &state,
         user.id,
         &media,
@@ -482,7 +482,7 @@ pub async fn unmark_favorite(
             &user,
         )
         .await?;
-    services::tracking::enqueue_and_wake(
+    services::media_tracker::enqueue_and_wake(
         &state,
         user.id,
         &media,
@@ -510,7 +510,7 @@ pub async fn mark_favorite_modern(
             &user,
         )
         .await?;
-    services::tracking::enqueue_and_wake(
+    services::media_tracker::enqueue_and_wake(
         &state,
         user.id,
         &media,
@@ -538,7 +538,7 @@ pub async fn unmark_favorite_modern(
             &user,
         )
         .await?;
-    services::tracking::enqueue_and_wake(
+    services::media_tracker::enqueue_and_wake(
         &state,
         user.id,
         &media,
@@ -574,7 +574,7 @@ pub async fn mark_played(
             server_config.release_date_threshold(),
         )
         .await?;
-    services::tracking::enqueue_and_wake(
+    services::media_tracker::enqueue_and_wake(
         &state,
         user.id,
         &media,
@@ -603,7 +603,7 @@ pub async fn unmark_played(
             true,
         )
         .await?;
-    services::tracking::enqueue_and_wake(
+    services::media_tracker::enqueue_and_wake(
         &state,
         user.id,
         &media,
@@ -659,7 +659,7 @@ pub async fn update_item_rating(
         rating,
     )
     .await?;
-    services::tracking::enqueue_and_wake(
+    services::media_tracker::enqueue_and_wake(
         &state,
         user.id,
         &media,
@@ -690,7 +690,7 @@ pub async fn delete_item_rating(
         None,
     )
     .await?;
-    services::tracking::enqueue_and_wake(
+    services::media_tracker::enqueue_and_wake(
         &state,
         user.id,
         &media,
@@ -721,7 +721,7 @@ pub async fn update_item_rating_legacy(
         rating,
     )
     .await?;
-    services::tracking::enqueue_and_wake(
+    services::media_tracker::enqueue_and_wake(
         &state,
         user.id,
         &media,
@@ -752,7 +752,7 @@ pub async fn delete_item_rating_legacy(
         None,
     )
     .await?;
-    services::tracking::enqueue_and_wake(
+    services::media_tracker::enqueue_and_wake(
         &state,
         user.id,
         &media,

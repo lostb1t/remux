@@ -180,7 +180,7 @@ async fn deliver_tracker(
         .map_err(|e| TrackingError::retryable(format!("loading item: {e}")))?
         .ok_or_else(|| TrackingError::permanent("item no longer exists"))?;
 
-    let target = crate::services::tracking::resolve_target(&ctx.db, &media)
+    let target = crate::services::media_tracker::resolve_target(&ctx.db, &media)
         .await
         .map_err(|e| TrackingError::retryable(format!("describing item: {e}")))?
         .ok_or_else(|| {
