@@ -108,6 +108,22 @@ async fn load_saved_selections(
     }
 }
 
+fn apply_item_runtime_fallback(
+    source: &mut api::MediaSourceInfo,
+    item_runtime_seconds: Option<i64>,
+) {
+    if source
+        .run_time_ticks
+        .is_some_and(|ticks| ticks > 0)
+    {
+        return;
+    }
+
+    source.run_time_ticks = item_runtime_seconds
+        .filter(|seconds| *seconds > 0)
+        .and_then(|seconds| seconds.to_ticks(TickUnit::Seconds));
+}
+
 async fn items_playbackinfo_inner(
     state: AppState,
     session: auth::AuthSession,
@@ -185,6 +201,9 @@ async fn items_playbackinfo_inner(
     .await
     .ok()
     .flatten();
+    let item_runtime_seconds = subtitle_media
+        .as_ref()
+        .and_then(|item| item.runtime);
 
     let is_track = is_track_item
         || subtitle_media
@@ -262,6 +281,11 @@ async fn items_playbackinfo_inner(
         effective_stream,
     } in probed.results
     {
+        // Metadata-only torrent probes may not know the container duration yet.
+        // Keep the authoritative Movie/Episode duration in PlaybackInfo so
+        // clients do not treat a normal VOD source as an indefinite stream.
+        apply_item_runtime_fallback(&mut source, item_runtime_seconds);
+
         if has_lyrics {
             api::inject_lyric_stream(&mut source);
         }
@@ -1116,6 +1140,27 @@ mod tests {
         authenticated_server, insert_test_source, insert_test_source_of_kind,
         insert_test_source_with_external_subtitle, new_test_server,
     };
+
+    #[test]
+    fn item_runtime_fills_missing_source_duration() {
+        let mut source = crate::api::MediaSourceInfo::default();
+
+        super::apply_item_runtime_fallback(&mut source, Some(142));
+
+        assert_eq!(source.run_time_ticks, Some(1_420_000_000));
+    }
+
+    #[test]
+    fn item_runtime_does_not_replace_probed_duration() {
+        let mut source = crate::api::MediaSourceInfo {
+            run_time_ticks: Some(900_000_000),
+            ..Default::default()
+        };
+
+        super::apply_item_runtime_fallback(&mut source, Some(142));
+
+        assert_eq!(source.run_time_ticks, Some(900_000_000));
+    }
 
     #[tokio::test]
     async fn http_redirect_stream_issues_302_to_source_url() {
