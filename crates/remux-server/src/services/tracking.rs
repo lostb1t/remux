@@ -71,12 +71,21 @@ pub async fn enqueue(
         return Ok(0);
     }
 
+    let kind = event.kind();
+    // Both filters have to hold: the user asked for it, and the provider said
+    // it can take it. Queueing past either only produces permanent failures.
     let wanted: Vec<db::UserMediaTracker> =
         db::UserMediaTracker::list_for_user(&ctx.db, user_id)
             .await?
             .into_iter()
+            .filter(|t| t.status == db::MediaTrackerStatus::Connected && t.wants(kind))
             .filter(|t| {
-                t.status == db::MediaTrackerStatus::Connected && t.wants(event.kind())
+                ctx.addons
+                    .tracking_for(t.addon_id)
+                    .is_some_and(|a| {
+                        a.capabilities()
+                            .supports(kind)
+                    })
             })
             .collect();
     if wanted.is_empty() {
@@ -136,9 +145,24 @@ mod tests {
     use std::sync::Arc;
 
     /// Enough of a provider for the registry to report that tracking is
-    /// installed. What it does with an event is the sync task's business, and
-    /// is covered there.
-    struct StubTracker;
+    /// installed. What it does with an event is the sync task's business.
+    struct StubTracker(Vec<TrackingEventKind>);
+
+    impl StubTracker {
+        /// Takes everything, so a test only names events when the point is
+        /// that one of them is refused.
+        fn everything() -> Self {
+            Self(vec![
+                TrackingEventKind::PlaybackStart,
+                TrackingEventKind::PlaybackProgress,
+                TrackingEventKind::PlaybackStop,
+                TrackingEventKind::MarkPlayed,
+                TrackingEventKind::MarkUnplayed,
+                TrackingEventKind::Favorite,
+                TrackingEventKind::Rating,
+            ])
+        }
+    }
 
     impl AddonKind for StubTracker {
         fn id(&self) -> &'static str {
@@ -149,7 +173,12 @@ mod tests {
     #[async_trait]
     impl TrackingAddon for StubTracker {
         fn capabilities(&self) -> TrackingCapabilities {
-            TrackingCapabilities::default()
+            TrackingCapabilities {
+                supported_events: self
+                    .0
+                    .clone(),
+                ..Default::default()
+            }
         }
 
         async fn on_event(
@@ -168,6 +197,17 @@ mod tests {
         name: &str,
         status: MediaTrackerStatus,
         filters: Vec<TrackingEventKind>,
+    ) -> Uuid {
+        connect_to(ctx, name, status, filters, StubTracker::everything()).await
+    }
+
+    /// As `connect`, but against a provider that only declares some events.
+    async fn connect_to(
+        ctx: &AppContext,
+        name: &str,
+        status: MediaTrackerStatus,
+        filters: Vec<TrackingEventKind>,
+        provider: StubTracker,
     ) -> Uuid {
         let now = Utc::now().naive_utc();
         let addon = Addon {
@@ -200,7 +240,7 @@ mod tests {
         runtimes.push(AddonRuntime {
             row: addon.clone(),
             caps: AddonCapabilities {
-                tracking: Some(Arc::new(StubTracker)),
+                tracking: Some(Arc::new(provider)),
                 ..Default::default()
             },
         });
@@ -374,6 +414,42 @@ mod tests {
                 .await
                 .len(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn an_event_the_provider_does_not_take_is_not_queued() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let tracker = connect_to(
+            ctx,
+            "a",
+            MediaTrackerStatus::Connected,
+            vec![TrackingEventKind::MarkPlayed, TrackingEventKind::Rating],
+            StubTracker(vec![TrackingEventKind::MarkPlayed]),
+        )
+        .await;
+        let media = movie(ctx).await;
+
+        let n = enqueue(
+            ctx,
+            user_id(ctx).await,
+            &media,
+            TrackingEvent::Rating { rating: Some(7.0) },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            n, 0,
+            "delivering it would fail permanently and take the connection down"
+        );
+        assert!(
+            queued(ctx, tracker)
+                .await
+                .is_empty()
         );
     }
 
