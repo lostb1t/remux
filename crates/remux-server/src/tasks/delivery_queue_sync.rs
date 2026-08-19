@@ -276,7 +276,7 @@ mod tests {
             name: name.into(),
             preset: AddonPresetRef {
                 kind: "scripted".into(),
-                config: serde_json::Value::Null,
+                config: serde_json::Value::Null.into(),
             },
             resources: vec![],
             types: vec![],
@@ -313,7 +313,7 @@ mod tests {
         let conn = UserMediaTracker::new(
             u.id,
             row.id,
-            TrackingCredentials(serde_json::json!({ "token": "t" })),
+            TrackingCredentials::new(serde_json::json!({ "token": "t" })),
             vec![TrackingEventKind::PlaybackStop],
         );
         conn.upsert(&ctx.db)
