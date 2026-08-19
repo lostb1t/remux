@@ -662,7 +662,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unmatchable_item_fails_the_row_rather_than_retrying_forever() {
+    async fn an_unmatchable_item_fails_the_row_and_leaves_the_connection_alone() {
         let (_s, guard) = new_test_server()
             .await
             .unwrap();
@@ -690,6 +690,15 @@ mod tests {
                 .status,
             DeliveryStatus::FailedPermanent,
             "no amount of retrying gives the item an id"
+        );
+        assert_eq!(
+            UserMediaTracker::get(&ctx.db, conn)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            MediaTrackerStatus::Connected,
+            "one item nobody can match must not cost the user the connection"
         );
     }
 
