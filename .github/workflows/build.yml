@@ -307,11 +307,7 @@ jobs:
           # Cargo incremental artifacts are dead weight after a successful link.
           rm -rf target/${{ matrix.target }}/release/incremental
           df -h /
-          # Force macOS to reclaim APFS purgeable space before hdiutil needs it,
-          # and route hdiutil's temp files to the workspace (on the main volume)
-          # rather than the default $TMPDIR which may be on a smaller partition.
-          sudo purge || true
-          TMPDIR="$PWD" hdiutil create -volname "Remux" -srcfolder "$APP" -ov -format UDZO ${{ matrix.artifact }}.dmg
+          hdiutil create -volname "Remux" -srcfolder "$APP" -fs HFS+ -ov -format UDZO ${{ matrix.artifact }}.dmg
 
       - name: Package bundle (Linux .deb)
         if: runner.os == 'Linux'
