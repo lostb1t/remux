@@ -450,14 +450,6 @@ async fn items_playbackinfo_inner(
                 source.supports_transcoding = true;
                 source.supports_direct_play = true;
             }
-            TranscodeDecision::Skip => {
-                info!(
-                    user = %session.user.username,
-                    stream_id = %stream.id,
-                    "video transcoding required but not allowed — marking source as not transcodable"
-                );
-                continue;
-            }
             TranscodeDecision::Transcode(outcome) => outcome.apply_to(&mut source),
         }
 

@@ -36,8 +36,6 @@ impl TranscodeOutcome {
 pub(crate) enum TranscodeDecision {
     /// Client can play directly; no transcode URL needed.
     DirectPlay,
-    /// Video transcode is required but the user/config disallows it; drop this source.
-    Skip,
     /// Transcode URL built; apply to the source.
     Transcode(TranscodeOutcome),
 }
@@ -161,26 +159,21 @@ fn build_video_transcode(
             String::new(),
         ));
 
-    // User policy: blocks video transcoding entirely — drop this source.
-    let user_transcode_allowed = session
-        .user
-        .policy
-        .as_ref()
-        .map(|p| p.enable_video_playback_transcoding)
-        .unwrap_or(true);
-    if needs_video_transcode && !user_transcode_allowed {
-        return TranscodeDecision::Skip;
-    }
-
-    // Server setting: "disable video transcoding" means no re-encoding, not no
-    // transcoding at all. Fall through with video=copy so the container can
-    // still be remuxed and audio transcoded as needed.
-    let server_video_transcode_allowed = cfg
+    // When video re-encoding is not allowed (server setting or user policy),
+    // fall through with video=copy — remux the container and transcode audio
+    // as needed rather than dropping the source entirely.
+    let video_transcode_allowed = cfg
         .encoding_cfg
         .enable_video_transcoding
-        .unwrap_or(true);
+        .unwrap_or(true)
+        && session
+            .user
+            .policy
+            .as_ref()
+            .map(|p| p.enable_video_playback_transcoding)
+            .unwrap_or(true);
 
-    let mut video_codec = if needs_video_transcode && server_video_transcode_allowed {
+    let mut video_codec = if needs_video_transcode && video_transcode_allowed {
         "h264"
     } else {
         "copy"
@@ -197,7 +190,7 @@ fn build_video_transcode(
         &cfg.device_profile,
     );
     if subtitle_method == Some(api::SubtitleDeliveryMethod::Encode)
-        && server_video_transcode_allowed
+        && video_transcode_allowed
     {
         video_codec = "h264".to_string();
     }
