@@ -18,7 +18,7 @@ pub mod uuid_serde {
 
     pub fn serialize<S: Serializer>(v: &Uuid, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(
-            &v.hyphenated()
+            &v.simple()
                 .to_string(),
         )
     }
@@ -37,7 +37,7 @@ pub mod uuid_serde {
         ) -> Result<S::Ok, S::Error> {
             match v {
                 Some(u) => s.serialize_some(
-                    &u.hyphenated()
+                    &u.simple()
                         .to_string(),
                 ),
                 None => s.serialize_none(),
