@@ -896,14 +896,6 @@ async fn videos_stream_inner(
     // Keep a copy before the video_codec is moved into params (needed for Content-Type logic)
     let is_copy_video = video_codec == "copy";
 
-    let encoding_opts = crate::db::Settings::get_encoding_config(
-        &state
-            .ctx
-            .db,
-    )
-    .await
-    .unwrap_or_default();
-
     info!(
         "starting progressive transcode for: {:?} (container={}, vcodec={}, acodec={}, start_ticks={:?}, bitrate={:?}, video_transcoding={})",
         &media.title,

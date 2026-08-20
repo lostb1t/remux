@@ -183,17 +183,25 @@ fn build_video_transcode(
         reasons.contains(&api::TranscodeReason::AudioCodecNotSupported(String::new()));
     let audio_codec = if needs_audio_transcode { "aac" } else { "copy" }.to_string();
 
-    let subtitle_method = subtitle_burn_method(
-        source,
-        effective_sub_idx,
-        &cfg.subtitle_mode,
-        &cfg.device_profile,
-    );
-    if subtitle_method == Some(api::SubtitleDeliveryMethod::Encode)
-        && video_transcode_allowed
-    {
-        video_codec = "h264".to_string();
-    }
+    let subtitle_method = {
+        let method = subtitle_burn_method(
+            source,
+            effective_sub_idx,
+            &cfg.subtitle_mode,
+            &cfg.device_profile,
+        );
+        if method == Some(api::SubtitleDeliveryMethod::Encode) {
+            if video_transcode_allowed {
+                video_codec = "h264".to_string();
+                method
+            } else {
+                // Burn-in requires video re-encoding; drop it when encoding is disabled.
+                None
+            }
+        } else {
+            method
+        }
+    };
 
     let bitrate = cfg
         .max_bitrate
