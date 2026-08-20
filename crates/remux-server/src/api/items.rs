@@ -2285,20 +2285,6 @@ pub async fn update_virtual_folder(
     .execute(&state.ctx.db)
     .await?;
 
-    // Library name is baked into the generated placeholder — clear it so it regenerates.
-    let _ = ImageService::delete_image(
-        &state
-            .ctx
-            .config
-            .data_dir,
-        payload.id,
-        db::ImageKind::Primary,
-        &state
-            .ctx
-            .db,
-    )
-    .await;
-
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -3239,24 +3225,6 @@ pub async fn patch_item(
         )
         .await
         .context_bad_request("Failed to update tags")?;
-    }
-
-    if payload
-        .name
-        .is_some()
-    {
-        let _ = ImageService::delete_image(
-            &state
-                .ctx
-                .config
-                .data_dir,
-            id,
-            db::ImageKind::Primary,
-            &state
-                .ctx
-                .db,
-        )
-        .await;
     }
 
     Ok(StatusCode::NO_CONTENT)
