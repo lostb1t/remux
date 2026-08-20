@@ -532,6 +532,58 @@ mod tests {
         );
     }
 
+    /// A client may report a stop carrying no item id, which is why the
+    /// handler falls back to the session's. The scrobble has to use the same
+    /// fallback, or the finish is the one event that goes missing.
+    #[tokio::test]
+    async fn a_stop_without_an_item_id_still_queues_the_watch() {
+        let (server, guard, token) =
+            crate::integration_test::authenticated_server().await;
+        let ctx = &guard.0;
+        let tracker = connect(
+            ctx,
+            "a",
+            MediaTrackerStatus::Connected,
+            vec![MediaTrackerEventKind::PlaybackStop],
+        )
+        .await;
+        let media = movie(ctx).await;
+        let auth = crate::integration_test::auth_header_with_token(&token);
+
+        server
+            .post("/sessions/playing")
+            .add_header(
+                http::header::AUTHORIZATION,
+                http::header::HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&crate::api::PlaybackInfo {
+                item_id: media.id,
+                play_session_id: Some("ps1".into()),
+                ..Default::default()
+            })
+            .await
+            .assert_status_success();
+
+        server
+            .post("/sessions/playing/stopped")
+            .add_header(
+                http::header::AUTHORIZATION,
+                http::header::HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&crate::api::PlaybackInfo {
+                play_session_id: Some("ps1".into()),
+                position_ticks: Some(1),
+                ..Default::default()
+            })
+            .await
+            .assert_status_success();
+
+        let rows = queued(ctx, tracker).await;
+        assert_eq!(rows.len(), 1, "the session knew what was playing");
+        let db::QueueKind::MediaTracker { payload, .. } = &rows[0].kind;
+        assert_eq!(payload.media_id, media.id);
+    }
+
     #[tokio::test]
     async fn favouriting_through_the_api_queues_a_delivery() {
         let (server, guard, token) =
