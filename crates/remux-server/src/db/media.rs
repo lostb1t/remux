@@ -199,6 +199,12 @@ impl MediaKind {
                 | Self::Artist
         )
     }
+
+    /// Whether the kind is a directly-playable leaf item, as opposed to a
+    /// container that only groups other media (albums, artists, series, ...).
+    pub fn is_playable_leaf(&self) -> bool {
+        matches!(self, Self::Movie | Self::Episode | Self::Track | Self::TvChannel)
+    }
 }
 
 impl TryFrom<String> for MediaKind {

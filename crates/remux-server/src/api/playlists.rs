@@ -16,9 +16,11 @@ use crate::{
 use axum_anyhow::ApiResult as Result;
 use tracing::warn;
 
-/// Restrict playlist membership to music tracks: drop any media that isn't a
-/// track (artists, albums, movies, ...) so they never end up as playlist items.
-async fn retain_playlist_tracks(
+/// Restrict playlist membership to directly-playable leaf items: tracks,
+/// movies, episodes and TV channels. Containers (albums, artists, series,
+/// seasons, collections, ...) have no playable content of their own and would
+/// otherwise be stored as empty playlist items.
+async fn retain_playlist_items(
     db: &sqlx::SqlitePool,
     resolved: Vec<Uuid>,
 ) -> Result<Vec<Uuid>> {
@@ -34,9 +36,9 @@ async fn retain_playlist_tracks(
     Ok(resolved
         .into_iter()
         .filter(|id| match by_kind.get(id) {
-            Some(db::MediaKind::Track) => true,
+            Some(kind) if kind.is_playable_leaf() => true,
             Some(kind) => {
-                warn!(?id, ?kind, "rejecting non-track media in playlist");
+                warn!(?id, ?kind, "rejecting non-playable media in playlist");
                 false
             }
             None => {
@@ -97,7 +99,7 @@ pub async fn create_playlist(
     if !ids.is_empty() {
         let resolved =
             crate::services::MediaResolveService::resolve_ids(&ids, &state.ctx).await;
-        let resolved = retain_playlist_tracks(&state.ctx.db, resolved).await?;
+        let resolved = retain_playlist_items(&state.ctx.db, resolved).await?;
         if !resolved.is_empty() {
             db::MediaRelation::add_playlist_items(
                 &state
@@ -340,7 +342,7 @@ pub async fn add_playlist_items(
 
     let resolved =
         crate::services::MediaResolveService::resolve_ids(&q.ids, &state.ctx).await;
-    let resolved = retain_playlist_tracks(&state.ctx.db, resolved).await?;
+    let resolved = retain_playlist_items(&state.ctx.db, resolved).await?;
     db::MediaRelation::add_playlist_items(
         &state
             .ctx
