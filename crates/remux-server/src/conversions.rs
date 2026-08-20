@@ -34,15 +34,13 @@ fn infer_container_from_url(url: &str) -> Option<String> {
         .rsplit('.')
         .next()?
         .to_ascii_lowercase();
-    match ext.as_str() {
-        "matroska" | "mkv" => Some("mkv".to_string()),
-        "mp4" | "m4v" | "mov" => Some("mp4".to_string()),
-        "webm" => Some("webm".to_string()),
-        "avi" => Some("avi".to_string()),
-        "m2ts" | "ts" => Some("ts".to_string()),
-        "m3u8" => Some("ts".to_string()),
-        _ => None,
+    if ext == "m3u8" {
+        return Some("ts".to_string());
     }
+    remux_sdks::remux::VideoContainer::parse_known(&ext).map(|c| {
+        c.canonical()
+            .to_string()
+    })
 }
 
 fn infer_video_codec(text: &str) -> Option<String> {

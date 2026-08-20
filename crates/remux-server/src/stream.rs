@@ -570,25 +570,17 @@ pub fn parse_range(range: &str, file_size: u64) -> anyhow::Result<(u64, u64)> {
 }
 
 pub fn mime_from_path(path: &std::path::Path) -> &'static str {
-    match path
+    let ext = path
         .extension()
         .and_then(|e| e.to_str())
-    {
-        Some("mp4") | Some("m4v") => "video/mp4",
-        Some("mkv") => "video/x-matroska",
-        Some("avi") => "video/x-msvideo",
-        Some("mov") => "video/quicktime",
-        Some("webm") => "video/webm",
-        Some("ts") => "video/mp2t",
-        Some("mp3") => "audio/mpeg",
-        Some("flac") => "audio/flac",
-        Some("aac") => "audio/aac",
-        Some("ogg") => "audio/ogg",
-        Some("opus") => "audio/opus",
-        Some("m4a") => "audio/mp4",
-        Some("wav") => "audio/wav",
-        _ => "application/octet-stream",
+        .unwrap_or("");
+    if let Some(c) = remux_sdks::remux::VideoContainer::parse_known(ext) {
+        return c.mime_type();
     }
+    if let Some(c) = remux_sdks::remux::AudioContainer::parse_known(ext) {
+        return c.mime_type();
+    }
+    "application/octet-stream"
 }
 
 /// Extract the `urn:btih:` info-hash from a magnet URI.
@@ -613,7 +605,49 @@ fn extract_query_param(url: &str, param: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{HttpSource, STREAM_PROXY_CLIENT, TrackerUrl, is_tracker_url};
+    use super::{
+        HttpSource, STREAM_PROXY_CLIENT, TrackerUrl, is_tracker_url, mime_from_path,
+    };
+    use std::path::Path;
+
+    #[test]
+    fn mime_from_path_video() {
+        assert_eq!(mime_from_path(Path::new("movie.mkv")), "video/x-matroska");
+        assert_eq!(mime_from_path(Path::new("movie.mp4")), "video/mp4");
+        assert_eq!(mime_from_path(Path::new("movie.m4v")), "video/mp4");
+        assert_eq!(mime_from_path(Path::new("movie.mov")), "video/quicktime");
+        assert_eq!(mime_from_path(Path::new("movie.avi")), "video/x-msvideo");
+        assert_eq!(mime_from_path(Path::new("movie.webm")), "video/webm");
+        assert_eq!(mime_from_path(Path::new("movie.ts")), "video/mp2t");
+        assert_eq!(mime_from_path(Path::new("movie.MKV")), "video/x-matroska");
+    }
+
+    #[test]
+    fn mime_from_path_audio() {
+        assert_eq!(mime_from_path(Path::new("track.mp3")), "audio/mpeg");
+        assert_eq!(mime_from_path(Path::new("track.flac")), "audio/flac");
+        assert_eq!(mime_from_path(Path::new("track.m4a")), "audio/mp4");
+        assert_eq!(mime_from_path(Path::new("track.ogg")), "audio/ogg");
+        assert_eq!(mime_from_path(Path::new("track.opus")), "audio/opus");
+        assert_eq!(mime_from_path(Path::new("track.wav")), "audio/wav");
+        assert_eq!(mime_from_path(Path::new("track.aac")), "audio/aac");
+    }
+
+    #[test]
+    fn mime_from_path_fallback() {
+        assert_eq!(
+            mime_from_path(Path::new("file.m3u8")),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            mime_from_path(Path::new("file.txt")),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            mime_from_path(Path::new("noextension")),
+            "application/octet-stream"
+        );
+    }
 
     #[test]
     fn tracker_url_validates_absolute_urls() {
