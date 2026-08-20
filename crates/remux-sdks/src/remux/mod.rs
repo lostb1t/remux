@@ -1,5 +1,5 @@
 pub mod codecs;
-pub use codecs::{AudioCodec, SubtitleCodec, VideoCodec};
+pub use codecs::{AudioCodec, SubtitleCodec, VideoCodec, VideoContainer};
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use http::{HeaderValue, Method};

@@ -570,23 +570,21 @@ pub fn parse_range(range: &str, file_size: u64) -> anyhow::Result<(u64, u64)> {
 }
 
 pub fn mime_from_path(path: &std::path::Path) -> &'static str {
-    match path
+    let ext = path
         .extension()
         .and_then(|e| e.to_str())
-    {
-        Some("mp4") | Some("m4v") => "video/mp4",
-        Some("mkv") => "video/x-matroska",
-        Some("avi") => "video/x-msvideo",
-        Some("mov") => "video/quicktime",
-        Some("webm") => "video/webm",
-        Some("ts") => "video/mp2t",
-        Some("mp3") => "audio/mpeg",
-        Some("flac") => "audio/flac",
-        Some("aac") => "audio/aac",
-        Some("ogg") => "audio/ogg",
-        Some("opus") => "audio/opus",
-        Some("m4a") => "audio/mp4",
-        Some("wav") => "audio/wav",
+        .unwrap_or("");
+    if let Some(container) = remux_sdks::remux::VideoContainer::parse_known(ext) {
+        return container.mime_type();
+    }
+    match ext {
+        "mp3" => "audio/mpeg",
+        "flac" => "audio/flac",
+        "aac" => "audio/aac",
+        "ogg" => "audio/ogg",
+        "opus" => "audio/opus",
+        "m4a" => "audio/mp4",
+        "wav" => "audio/wav",
         _ => "application/octet-stream",
     }
 }

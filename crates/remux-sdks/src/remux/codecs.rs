@@ -139,6 +139,78 @@ pub enum AudioCodec {
     Unknown(String),
 }
 
+#[derive(
+    Debug, Clone, PartialEq, Eq, strum_macros::EnumString, strum_macros::Display,
+)]
+#[strum(ascii_case_insensitive)]
+pub enum VideoContainer {
+    #[strum(to_string = "mkv", serialize = "mkv", serialize = "matroska")]
+    Mkv,
+    #[strum(to_string = "mp4", serialize = "mp4")]
+    Mp4,
+    #[strum(to_string = "m4v", serialize = "m4v")]
+    M4v,
+    #[strum(to_string = "mov", serialize = "mov")]
+    Mov,
+    #[strum(to_string = "avi", serialize = "avi")]
+    Avi,
+    #[strum(to_string = "webm", serialize = "webm")]
+    Webm,
+    #[strum(
+        to_string = "ts",
+        serialize = "ts",
+        serialize = "m2ts",
+        serialize = "mpegts",
+        serialize = "m3u8"
+    )]
+    Ts,
+    #[strum(to_string = "wmv", serialize = "wmv")]
+    Wmv,
+    #[strum(
+        to_string = "mpeg",
+        serialize = "mpeg",
+        serialize = "mpg",
+        serialize = "mpeg2"
+    )]
+    Mpeg,
+    #[strum(default)]
+    Unknown(String),
+}
+
+impl VideoContainer {
+    pub fn mime_type(&self) -> &'static str {
+        match self {
+            Self::Mp4 | Self::M4v => "video/mp4",
+            Self::Mkv => "video/x-matroska",
+            Self::Avi => "video/x-msvideo",
+            Self::Mov => "video/quicktime",
+            Self::Webm => "video/webm",
+            Self::Ts => "video/mp2t",
+            Self::Wmv => "video/x-ms-wmv",
+            Self::Mpeg => "video/mpeg",
+            Self::Unknown(_) => "video/octet-stream",
+        }
+    }
+
+    pub fn canonical(&self) -> Self {
+        match self {
+            Self::M4v | Self::Mov => Self::Mp4,
+            other => other.clone(),
+        }
+    }
+
+    pub fn is_known(&self) -> bool {
+        !matches!(self, Self::Unknown(_))
+    }
+
+    /// Parse a file extension and return `Some` only for known variants.
+    pub fn parse_known(ext: &str) -> Option<Self> {
+        <Self as std::str::FromStr>::from_str(ext)
+            .ok()
+            .filter(|c| c.is_known())
+    }
+}
+
 impl AudioCodec {
     pub fn friendly_name(&self) -> &str {
         match self {

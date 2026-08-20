@@ -2628,7 +2628,7 @@ impl AddonService {
 
 fn strip_video_ext(name: &str) -> &str {
     if let Some((stem, ext)) = name.rsplit_once('.') {
-        if opendal::VIDEO_EXTENSIONS.contains(&ext) {
+        if remux_sdks::remux::VideoContainer::parse_known(ext).is_some() {
             return stem;
         }
     }

@@ -986,10 +986,6 @@ impl TreeAddon for OpendalAddon {
 // Opendal file index scanning (backing refresh_index)
 // ---------------------------------------------------------------------------
 
-pub(crate) const VIDEO_EXTENSIONS: &[&str] = &[
-    "mkv", "mp4", "avi", "mov", "m4v", "ts", "wmv", "webm", "strm",
-];
-
 const AUDIO_EXTENSIONS: &[&str] = &[
     "mp3", "flac", "m4a", "ogg", "opus", "wav", "aac", "wv", "strm",
 ];
@@ -1079,10 +1075,13 @@ async fn scan_addon(
 
     info!(addon = %addon.name, kind = %addon.preset.kind, media_kind, "opendal: scanning");
 
-    let extensions: &[&str] = if media_kind == "track" {
-        AUDIO_EXTENSIONS
+    let is_media_ext: fn(&str) -> bool = if media_kind == "track" {
+        |ext| AUDIO_EXTENSIONS.contains(&ext)
     } else {
-        VIDEO_EXTENSIONS
+        |ext| {
+            ext == "strm"
+                || remux_sdks::remux::VideoContainer::parse_known(ext).is_some()
+        }
     };
 
     let track_num_re = Regex::new(r"^(\d{1,3})[.\s\-_\[\]]+").unwrap();
@@ -1270,7 +1269,7 @@ async fn scan_addon(
                 continue;
             }
 
-            if !extensions.contains(&ext.as_str()) {
+            if !is_media_ext(ext.as_str()) {
                 continue;
             }
 

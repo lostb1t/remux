@@ -262,16 +262,12 @@ fn stream_only_options() -> AddTorrentOptions {
 }
 
 fn is_video_file(name: &str) -> bool {
-    let extension = std::path::Path::new(name)
+    let ext = std::path::Path::new(name)
         .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or_default();
-    matches!(
-        extension
-            .to_ascii_lowercase()
-            .as_str(),
-        "mkv" | "mp4" | "m4v" | "avi" | "mov" | "webm" | "ts" | "m2ts" | "mpg" | "mpeg"
-    )
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    remux_sdks::remux::VideoContainer::parse_known(&ext).is_some()
 }
 
 fn select_file_index(
