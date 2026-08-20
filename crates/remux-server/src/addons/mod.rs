@@ -1652,14 +1652,6 @@ impl AddonService {
                     continue;
                 }
             };
-            let resolved: Vec<_> = resolved
-                .into_iter()
-                .filter(|c| {
-                    c.media_kind
-                        .as_ref()
-                        .map_or(false, |k| kinds.contains(k))
-                })
-                .collect();
             if resolved.is_empty() {
                 continue;
             }
