@@ -269,28 +269,18 @@ pub async fn report_playback_stopped(
             .ctx
             .ws_tx
             .send(crate::ws::WsEvent::SessionsChanged);
-        if state
-            .ctx
-            .addons
-            .has_media_tracker()
-            && let Ok(Some(media)) =
-                MediaResolveService::resolve_item(data.item_id, &state.ctx).await
-        {
-            services::media_tracker::enqueue_and_wake(
-                &state,
-                session
-                    .user
-                    .id,
-                &media,
-                MediaTrackerEvent::PlaybackStop {
-                    position_ticks: data
-                        .position_ticks
-                        .unwrap_or(0),
-                    played,
-                },
-            )
-            .await;
-        }
+        track(
+            &state,
+            &session,
+            data.item_id,
+            MediaTrackerEvent::PlaybackStop {
+                position_ticks: data
+                    .position_ticks
+                    .unwrap_or(0),
+                played,
+            },
+        )
+        .await;
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
