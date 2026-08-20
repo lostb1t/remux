@@ -36,8 +36,6 @@ impl TranscodeOutcome {
 pub(crate) enum TranscodeDecision {
     /// Client can play directly; no transcode URL needed.
     DirectPlay,
-    /// Video transcode is required but the user/config disallows it; drop this source.
-    Skip,
     /// Transcode URL built; apply to the source.
     Transcode(TranscodeOutcome),
 }
@@ -161,6 +159,9 @@ fn build_video_transcode(
             String::new(),
         ));
 
+    // When video re-encoding is not allowed (server setting or user policy),
+    // fall through with video=copy — remux the container and transcode audio
+    // as needed rather than dropping the source entirely.
     let video_transcode_allowed = cfg
         .encoding_cfg
         .enable_video_transcoding
@@ -172,11 +173,7 @@ fn build_video_transcode(
             .map(|p| p.enable_video_playback_transcoding)
             .unwrap_or(true);
 
-    if needs_video_transcode && !video_transcode_allowed {
-        return TranscodeDecision::Skip;
-    }
-
-    let mut video_codec = if needs_video_transcode {
+    let mut video_codec = if needs_video_transcode && video_transcode_allowed {
         "h264"
     } else {
         "copy"
@@ -186,15 +183,25 @@ fn build_video_transcode(
         reasons.contains(&api::TranscodeReason::AudioCodecNotSupported(String::new()));
     let audio_codec = if needs_audio_transcode { "aac" } else { "copy" }.to_string();
 
-    let subtitle_method = subtitle_burn_method(
-        source,
-        effective_sub_idx,
-        &cfg.subtitle_mode,
-        &cfg.device_profile,
-    );
-    if subtitle_method == Some(api::SubtitleDeliveryMethod::Encode) {
-        video_codec = "h264".to_string();
-    }
+    let subtitle_method = {
+        let method = subtitle_burn_method(
+            source,
+            effective_sub_idx,
+            &cfg.subtitle_mode,
+            &cfg.device_profile,
+        );
+        if method == Some(api::SubtitleDeliveryMethod::Encode) {
+            if video_transcode_allowed {
+                video_codec = "h264".to_string();
+                method
+            } else {
+                // Burn-in requires video re-encoding; drop it when encoding is disabled.
+                None
+            }
+        } else {
+            method
+        }
+    };
 
     let bitrate = cfg
         .max_bitrate

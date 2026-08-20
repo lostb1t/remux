@@ -229,6 +229,8 @@ jobs:
           sudo rm -rf /Library/Java/JavaVirtualMachines/ || true
           sudo rm -rf /usr/local/lib/node_modules || true
           sudo rm -rf "$HOME/.cache" || true
+          # GH Actions installs Python/Ruby/Node runtimes here (~10-15 GB on macOS)
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY" || true
           df -h /
 
       - name: Install Rust toolchain
@@ -304,7 +306,8 @@ jobs:
           rm -rf target/dx/remux-dashboard/release/web/public
           # Cargo incremental artifacts are dead weight after a successful link.
           rm -rf target/${{ matrix.target }}/release/incremental
-          hdiutil create -volname "Remux" -srcfolder "$APP" -ov -format UDZO ${{ matrix.artifact }}.dmg
+          df -h /
+          hdiutil create -volname "Remux" -srcfolder "$APP" -fs HFS+ -ov -format UDZO ${{ matrix.artifact }}.dmg
 
       - name: Package bundle (Linux .deb)
         if: runner.os == 'Linux'

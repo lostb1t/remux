@@ -13,8 +13,6 @@ use remux_sdks::remux::IntroOrder;
 
 const INTRO_IDX_KEY: &str = "intro:sequential_idx";
 
-static VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "mov", "avi", "m4v"];
-
 /// Scan `intro_dir`, upsert each video file as a `MediaKind::Intro` item,
 /// and remove stale Intro items whose files no longer exist.
 /// Resets `intro_idx` to 0 on every call.
@@ -60,7 +58,7 @@ pub async fn sync_intros(ctx: &AppContext) -> Result<()> {
             .and_then(|e| e.to_str())
             .map(str::to_lowercase)
             .unwrap_or_default();
-        if !VIDEO_EXTENSIONS.contains(&ext.as_str()) {
+        if remux_sdks::remux::VideoContainer::parse_known(&ext).is_none() {
             continue;
         }
 

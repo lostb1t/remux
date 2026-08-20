@@ -450,14 +450,6 @@ async fn items_playbackinfo_inner(
                 source.supports_transcoding = true;
                 source.supports_direct_play = true;
             }
-            TranscodeDecision::Skip => {
-                info!(
-                    user = %session.user.username,
-                    stream_id = %stream.id,
-                    "video transcoding required but not allowed — marking source as not transcodable"
-                );
-                continue;
-            }
             TranscodeDecision::Transcode(outcome) => outcome.apply_to(&mut source),
         }
 
@@ -905,22 +897,17 @@ async fn videos_stream_inner(
     let is_copy_video = video_codec == "copy";
 
     info!(
-        "starting progressive transcode for: {:?} (container={}, vcodec={}, acodec={}, start_ticks={:?}, bitrate={:?})",
+        "starting progressive transcode for: {:?} (container={}, vcodec={}, acodec={}, start_ticks={:?}, bitrate={:?}, video_transcoding={})",
         &media.title,
         container,
         video_codec,
         audio_codec,
         q.start_time_ticks,
-        q.video_bit_rate
+        q.video_bit_rate,
+        encoding_opts
+            .enable_video_transcoding
+            .unwrap_or(true)
     );
-
-    let encoding_opts = crate::db::Settings::get_encoding_config(
-        &state
-            .ctx
-            .db,
-    )
-    .await
-    .unwrap_or_default();
     let source_video_stream = media
         .probe_data
         .as_ref()
@@ -1375,6 +1362,63 @@ mod tests {
             .await;
 
         resp.assert_status(StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn playback_stop_notifies_clients_that_user_data_changed() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_test_source(&guard.0).await;
+        let play_session_id = "test-user-data-changed";
+        let mut events = guard
+            .0
+            .ws_tx
+            .subscribe();
+
+        server
+            .post("/sessions/playing")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": media.id,
+                "PlaySessionId": play_session_id,
+                "PositionTicks": 0
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        server
+            .post("/sessions/playing/stopped")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": media.id,
+                "PlaySessionId": play_session_id,
+                "PositionTicks": 30_000_000i64
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        let changed_item_id =
+            tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                loop {
+                    if let crate::ws::WsEvent::UserDataChanged { item_id, .. } = events
+                        .recv()
+                        .await
+                        .unwrap()
+                    {
+                        break item_id;
+                    }
+                }
+            })
+            .await
+            .expect("playback stop should broadcast UserDataChanged");
+
+        assert_eq!(changed_item_id, media.id);
     }
 
     #[tokio::test]

@@ -249,6 +249,20 @@ pub async fn report_playback_stopped(
                 .map(|s| s.play_session_id)
         });
     if let Some(ref psid) = effective_psid {
+        // Read before `stopped` clears the session, and the only id a client
+        // is guaranteed to have given us: a stop report may carry none.
+        let changed_item_id = (!data
+            .item_id
+            .is_nil())
+        .then_some(data.item_id)
+        .or_else(|| {
+            state
+                .ctx
+                .sessions
+                .get(psid)
+                .map(|playback| playback.item_id)
+                .filter(|item_id| !item_id.is_nil())
+        });
         // Whether this counted as a watch is decided by the threshold check
         // inside `stopped`, so its answer is carried out rather than inferred
         // from `played_at`, which stays set from every earlier watch.
@@ -269,18 +283,29 @@ pub async fn report_playback_stopped(
             .ctx
             .ws_tx
             .send(crate::ws::WsEvent::SessionsChanged);
-        track(
-            &state,
-            &session,
-            data.item_id,
-            MediaTrackerEvent::PlaybackStop {
-                position_ticks: data
-                    .position_ticks
-                    .unwrap_or(0),
-                played,
-            },
-        )
-        .await;
+        if let Some(item_id) = changed_item_id {
+            let _ = state
+                .ctx
+                .ws_tx
+                .send(crate::ws::WsEvent::UserDataChanged {
+                    user_id: session
+                        .user
+                        .id,
+                    item_id,
+                });
+            track(
+                &state,
+                &session,
+                item_id,
+                MediaTrackerEvent::PlaybackStop {
+                    position_ticks: data
+                        .position_ticks
+                        .unwrap_or(0),
+                    played,
+                },
+            )
+            .await;
+        }
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }

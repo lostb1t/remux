@@ -1667,14 +1667,6 @@ impl AddonService {
                     continue;
                 }
             };
-            let resolved: Vec<_> = resolved
-                .into_iter()
-                .filter(|c| {
-                    c.media_kind
-                        .as_ref()
-                        .map_or(false, |k| kinds.contains(k))
-                })
-                .collect();
             if resolved.is_empty() {
                 continue;
             }
@@ -2643,7 +2635,7 @@ impl AddonService {
 
 fn strip_video_ext(name: &str) -> &str {
     if let Some((stem, ext)) = name.rsplit_once('.') {
-        if opendal::VIDEO_EXTENSIONS.contains(&ext) {
+        if remux_sdks::remux::VideoContainer::parse_known(ext).is_some() {
             return stem;
         }
     }
