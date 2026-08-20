@@ -34,6 +34,9 @@ fn infer_container_from_url(url: &str) -> Option<String> {
         .rsplit('.')
         .next()?
         .to_ascii_lowercase();
+    if ext == "m3u8" {
+        return Some("ts".to_string());
+    }
     remux_sdks::remux::VideoContainer::parse_known(&ext).map(|c| {
         c.canonical()
             .to_string()

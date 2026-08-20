@@ -211,8 +211,7 @@ pub enum VideoContainer {
         to_string = "ts",
         serialize = "ts",
         serialize = "m2ts",
-        serialize = "mpegts",
-        serialize = "m3u8"
+        serialize = "mpegts"
     )]
     Ts,
     #[strum(to_string = "wmv", serialize = "wmv")]
