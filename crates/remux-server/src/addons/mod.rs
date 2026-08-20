@@ -460,19 +460,53 @@ pub(crate) fn apply_title_format(media: &mut db::Media) {
         );
     }
     if media.kind == db::MediaKind::Episode {
-        if let Some(ep) = media.idx {
-            let prefix = match media.parent_idx {
-                Some(s) => format!("S{}E{} - ", s, ep),
-                None => format!("E{} - ", ep),
-            };
-            if !media
-                .title
-                .starts_with(&prefix)
-            {
-                media.title = format!("{}{}", prefix, media.title);
-            }
+        // Stored episode titles are kept clean: Jellyfin clients render the
+        // season/episode from IndexNumber/ParentIndexNumber, so embedding a
+        // "SxxExx - " prefix here double-prints it. Any prefix that slipped in
+        // from a raw source is stripped so this stays the single invariant for
+        // episode titles.
+        if let Some(stripped) = strip_episode_title_prefix(&media.title) {
+            media.title = stripped;
         }
     }
+}
+
+/// Remove a leading `S<season>E<episode> - ` / `E<episode> - ` prefix (optionally
+/// space-separated, e.g. `S01 E07`) from an episode title. Returns `None` when
+/// there's nothing to strip.
+fn strip_episode_title_prefix(title: &str) -> Option<String> {
+    let t = title.trim_start();
+    let mut after = t;
+
+    if after.starts_with('S') {
+        after = take_digits(&after[1..]);
+        after = after.trim_start();
+        if !after.starts_with('E') {
+            return None;
+        }
+    } else if !after.starts_with('E') {
+        return None;
+    }
+    after = take_digits(&after[1..]);
+    after = after.trim_start();
+
+    match after.strip_prefix('-') {
+        Some(rest) => {
+            let rest = rest.trim_start();
+            (!rest.is_empty()).then(|| rest.to_string())
+        }
+        None => None,
+    }
+}
+
+/// The leading run of ASCII digits.
+fn take_digits(s: &str) -> &str {
+    let n = s
+        .as_bytes()
+        .iter()
+        .take_while(|b| b.is_ascii_digit())
+        .count();
+    &s[n..]
 }
 
 fn series_is_active(status: &Option<db::MediaStatus>) -> bool {
@@ -1240,6 +1274,40 @@ impl AddonService {
         out
     }
 
+    /// The tracking capability of one enabled addon, if it has one. Returns
+    /// `None` once an addon is disabled or deleted, which is why queued
+    /// deliveries treat that as permanent rather than retrying forever.
+    pub fn tracking_for(
+        &self,
+        addon_id: Uuid,
+    ) -> Option<Arc<dyn tracking::TrackingAddon>> {
+        self.inner
+            .load()
+            .iter()
+            .find(|r| {
+                r.row
+                    .id
+                    == addon_id
+                    && r.row
+                        .enabled
+            })
+            .and_then(|r| {
+                r.caps
+                    .tracking
+                    .clone()
+            })
+    }
+
+    /// Swaps the live runtime list. Test-only: the real list is built from
+    /// `registered_presets()`, which has no way to carry a stub addon, so
+    /// without this seam the delivery path can only be exercised by shipping a
+    /// provider.
+    #[cfg(test)]
+    pub fn replace_runtimes_for_test(&self, runtimes: Vec<AddonRuntime>) {
+        self.inner
+            .store(Arc::new(runtimes));
+    }
+
     pub async fn list_for_user(
         &self,
         db: &SqlitePool,
@@ -1584,14 +1652,6 @@ impl AddonService {
                     continue;
                 }
             };
-            let resolved: Vec<_> = resolved
-                .into_iter()
-                .filter(|c| {
-                    c.media_kind
-                        .as_ref()
-                        .map_or(false, |k| kinds.contains(k))
-                })
-                .collect();
             if resolved.is_empty() {
                 continue;
             }
@@ -2560,7 +2620,7 @@ impl AddonService {
 
 fn strip_video_ext(name: &str) -> &str {
     if let Some((stem, ext)) = name.rsplit_once('.') {
-        if opendal::VIDEO_EXTENSIONS.contains(&ext) {
+        if remux_sdks::remux::VideoContainer::parse_known(ext).is_some() {
             return stem;
         }
     }
@@ -3337,7 +3397,7 @@ mod tests {
     // --- apply_title_format idempotency ---
 
     #[test]
-    fn apply_title_format_does_not_double_prefix_episode() {
+    fn apply_title_format_strips_episode_prefix() {
         let mut media = db::Media {
             kind: db::MediaKind::Episode,
             title: "S3E4 - Tumbleton".into(),
@@ -3346,11 +3406,11 @@ mod tests {
             ..Default::default()
         };
         apply_title_format(&mut media);
-        assert_eq!(media.title, "S3E4 - Tumbleton");
+        assert_eq!(media.title, "Tumbleton");
     }
 
     #[test]
-    fn apply_title_format_adds_prefix_to_raw_episode_title() {
+    fn apply_title_format_keeps_clean_episode_title() {
         let mut media = db::Media {
             kind: db::MediaKind::Episode,
             title: "Tumbleton".into(),
@@ -3359,7 +3419,7 @@ mod tests {
             ..Default::default()
         };
         apply_title_format(&mut media);
-        assert_eq!(media.title, "S3E4 - Tumbleton");
+        assert_eq!(media.title, "Tumbleton");
     }
 
     #[test]

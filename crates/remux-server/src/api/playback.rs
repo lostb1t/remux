@@ -30,6 +30,7 @@ use crate::{
     common::{TickUnit, ToRunTimeTicks},
     db,
     db::auth,
+    playback::hw_accel,
 };
 
 use crate::{
@@ -53,9 +54,21 @@ pub async fn items_playbackinfo(
     State(state): State<AppState>,
     session: auth::AuthSession,
     Path(id): Path<Uuid>,
+    Query(query): Query<api::PlaybackInfoQuery>,
     Json(payload): Json<api::PlaybackInfoQuery>,
 ) -> Result<impl IntoResponse> {
-    items_playbackinfo_inner(state, session, id, payload).await
+    // Jellyfin web sends MediaSourceId as query param even for POST; merge query and body
+    let mut q = payload;
+    q.media_source_id = q
+        .media_source_id
+        .or(query.media_source_id);
+    q.user_id = q
+        .user_id
+        .or(query.user_id);
+    q.device_profile = q
+        .device_profile
+        .or(query.device_profile);
+    items_playbackinfo_inner(state, session, id, q).await
 }
 
 #[get("/items/{id}/playbackinfo")]
@@ -93,6 +106,22 @@ async fn load_saved_selections(
         Ok(Some(state)) => (state.audio_idx, state.subtitle_idx),
         _ => (None, None),
     }
+}
+
+fn apply_item_runtime_fallback(
+    source: &mut api::MediaSourceInfo,
+    item_runtime_seconds: Option<i64>,
+) {
+    if source
+        .run_time_ticks
+        .is_some_and(|ticks| ticks > 0)
+    {
+        return;
+    }
+
+    source.run_time_ticks = item_runtime_seconds
+        .filter(|seconds| *seconds > 0)
+        .and_then(|seconds| seconds.to_ticks(TickUnit::Seconds));
 }
 
 async fn items_playbackinfo_inner(
@@ -172,6 +201,9 @@ async fn items_playbackinfo_inner(
     .await
     .ok()
     .flatten();
+    let item_runtime_seconds = subtitle_media
+        .as_ref()
+        .and_then(|item| item.runtime);
 
     let is_track = is_track_item
         || subtitle_media
@@ -249,6 +281,11 @@ async fn items_playbackinfo_inner(
         effective_stream,
     } in probed.results
     {
+        // Metadata-only torrent probes may not know the container duration yet.
+        // Keep the authoritative Movie/Episode duration in PlaybackInfo so
+        // clients do not treat a normal VOD source as an indefinite stream.
+        apply_item_runtime_fallback(&mut source, item_runtime_seconds);
+
         if has_lyrics {
             api::inject_lyric_stream(&mut source);
         }
@@ -412,14 +449,6 @@ async fn items_playbackinfo_inner(
                 // index (e.g. PGS burn-in) even when direct-play is otherwise fine.
                 source.supports_transcoding = true;
                 source.supports_direct_play = true;
-            }
-            TranscodeDecision::Skip => {
-                info!(
-                    user = %session.user.username,
-                    stream_id = %stream.id,
-                    "video transcoding required but not allowed — marking source as not transcodable"
-                );
-                continue;
             }
             TranscodeDecision::Transcode(outcome) => outcome.apply_to(&mut source),
         }
@@ -868,22 +897,17 @@ async fn videos_stream_inner(
     let is_copy_video = video_codec == "copy";
 
     info!(
-        "starting progressive transcode for: {:?} (container={}, vcodec={}, acodec={}, start_ticks={:?}, bitrate={:?})",
+        "starting progressive transcode for: {:?} (container={}, vcodec={}, acodec={}, start_ticks={:?}, bitrate={:?}, video_transcoding={})",
         &media.title,
         container,
         video_codec,
         audio_codec,
         q.start_time_ticks,
-        q.video_bit_rate
+        q.video_bit_rate,
+        encoding_opts
+            .enable_video_transcoding
+            .unwrap_or(true)
     );
-
-    let encoding_opts = crate::db::Settings::get_encoding_config(
-        &state
-            .ctx
-            .db,
-    )
-    .await
-    .unwrap_or_default();
     let source_video_stream = media
         .probe_data
         .as_ref()
@@ -948,15 +972,7 @@ async fn videos_stream_inner(
         encoding_preset: encoding_opts.encoding_preset,
         source_video_codec,
         source_audio_codec,
-        hardware_acceleration_type: encoding_opts
-            .hardware_acceleration_type
-            .unwrap_or_default(),
-        vaapi_device: encoding_opts
-            .vaapi_device
-            .unwrap_or_else(|| "/dev/dri/renderD128".to_string()),
-        vaapi_driver: encoding_opts
-            .vaapi_driver
-            .unwrap_or_default(),
+        accelerator: hw_accel::from_encoding_opts(&encoding_opts),
         source_video_range_type,
         enable_tonemapping: encoding_opts
             .enable_tonemapping
@@ -1111,6 +1127,27 @@ mod tests {
         authenticated_server, insert_test_source, insert_test_source_of_kind,
         insert_test_source_with_external_subtitle, new_test_server,
     };
+
+    #[test]
+    fn item_runtime_fills_missing_source_duration() {
+        let mut source = crate::api::MediaSourceInfo::default();
+
+        super::apply_item_runtime_fallback(&mut source, Some(142));
+
+        assert_eq!(source.run_time_ticks, Some(1_420_000_000));
+    }
+
+    #[test]
+    fn item_runtime_does_not_replace_probed_duration() {
+        let mut source = crate::api::MediaSourceInfo {
+            run_time_ticks: Some(900_000_000),
+            ..Default::default()
+        };
+
+        super::apply_item_runtime_fallback(&mut source, Some(142));
+
+        assert_eq!(source.run_time_ticks, Some(900_000_000));
+    }
 
     #[tokio::test]
     async fn http_redirect_stream_issues_302_to_source_url() {
@@ -1325,6 +1362,63 @@ mod tests {
             .await;
 
         resp.assert_status(StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn playback_stop_notifies_clients_that_user_data_changed() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_test_source(&guard.0).await;
+        let play_session_id = "test-user-data-changed";
+        let mut events = guard
+            .0
+            .ws_tx
+            .subscribe();
+
+        server
+            .post("/sessions/playing")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": media.id,
+                "PlaySessionId": play_session_id,
+                "PositionTicks": 0
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        server
+            .post("/sessions/playing/stopped")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": media.id,
+                "PlaySessionId": play_session_id,
+                "PositionTicks": 30_000_000i64
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        let changed_item_id =
+            tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                loop {
+                    if let crate::ws::WsEvent::UserDataChanged { item_id, .. } = events
+                        .recv()
+                        .await
+                        .unwrap()
+                    {
+                        break item_id;
+                    }
+                }
+            })
+            .await
+            .expect("playback stop should broadcast UserDataChanged");
+
+        assert_eq!(changed_item_id, media.id);
     }
 
     #[tokio::test]
@@ -2446,8 +2540,6 @@ mod tests {
         resp.assert_status(StatusCode::NO_CONTENT);
     }
 
-    // ── User preference tests ──────────────────────────────────────────────────
-
     /// Full UserConfiguration JSON with sensible defaults. Merge in per-test
     /// overrides before posting to `/users/{id}/configuration`.
     fn default_user_config() -> serde_json::Value {
@@ -3000,7 +3092,6 @@ mod tests {
             .await
             .unwrap();
 
-        // ── Initial PlaybackInfo: no MediaSourceId ────────────────────────────
         let resp = server
             .post(&format!("/items/{}/playbackinfo", movie.id))
             .add_header(
@@ -3038,7 +3129,6 @@ mod tests {
             "blu-ray group source Id must be the StreamGroup UUID"
         );
 
-        // ── Select Blu-ray group by its UUID ─────────────────────────────────
         let resp2 = server
             .post(&format!("/items/{}/playbackinfo", movie.id))
             .add_header(

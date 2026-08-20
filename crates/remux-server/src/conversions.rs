@@ -34,15 +34,13 @@ fn infer_container_from_url(url: &str) -> Option<String> {
         .rsplit('.')
         .next()?
         .to_ascii_lowercase();
-    match ext.as_str() {
-        "matroska" | "mkv" => Some("mkv".to_string()),
-        "mp4" | "m4v" | "mov" => Some("mp4".to_string()),
-        "webm" => Some("webm".to_string()),
-        "avi" => Some("avi".to_string()),
-        "m2ts" | "ts" => Some("ts".to_string()),
-        "m3u8" => Some("ts".to_string()),
-        _ => None,
+    if ext == "m3u8" {
+        return Some("ts".to_string());
     }
+    remux_sdks::remux::VideoContainer::parse_known(&ext).map(|c| {
+        c.canonical()
+            .to_string()
+    })
 }
 
 fn infer_video_codec(text: &str) -> Option<String> {
@@ -443,6 +441,10 @@ fn to_option_bool(flag: i64) -> Option<bool> {
 /// Convert SRT to WebVTT. Already-valid VTT is passed through unchanged.
 pub fn srt_to_vtt(input: &str) -> String {
     let input = input.trim_start_matches('\u{FEFF}');
+    let normalized = input
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+    let input = normalized.as_str();
     if input
         .trim_start()
         .starts_with("WEBVTT")
@@ -500,8 +502,11 @@ pub fn srt_to_vtt(input: &str) -> String {
 
 /// Convert SRT to Jellyfin JSON TrackEvents format (1 tick = 100 ns).
 pub fn srt_to_jellyfin_json(input: &str) -> String {
+    let normalized = input
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
     let mut events: Vec<serde_json::Value> = Vec::new();
-    for block in input
+    for block in normalized
         .trim()
         .split("\n\n")
     {
@@ -573,4 +578,37 @@ fn srt_timestamp_to_ticks(ts: &str) -> Option<i64> {
         0
     };
     Some(((h * 3600 + m * 60 + s) * 1000 + ms) * 10_000)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn srt_to_vtt_converts_crlf_separated_cues() {
+        let input = "1\r\n00:00:47,791 --> 00:00:49,791\r\nHello\r\n\r\n2\r\n00:00:50,000 --> 00:00:52,000\r\nWorld\r\n";
+
+        let output = srt_to_vtt(input);
+
+        assert!(output.contains("00:00:47.791 --> 00:00:49.791"));
+        assert!(output.contains("00:00:50.000 --> 00:00:52.000"));
+        assert!(!output.contains("00:00:47,791"));
+    }
+
+    #[test]
+    fn srt_to_jellyfin_json_converts_crlf_separated_cues() {
+        let input = "1\r\n00:00:01,000 --> 00:00:02,000\r\nHello\r\n\r\n2\r\n00:00:03,000 --> 00:00:04,000\r\nWorld\r\n";
+
+        let output: serde_json::Value =
+            serde_json::from_str(&srt_to_jellyfin_json(input)).unwrap();
+
+        assert_eq!(
+            output["TrackEvents"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(output["TrackEvents"][1]["Text"], "World");
+    }
 }

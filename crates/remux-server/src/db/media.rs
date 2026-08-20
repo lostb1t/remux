@@ -5978,7 +5978,9 @@ impl From<sdks::stremio::Stream> for Media {
                     .unwrap_or_default()
                     .iter()
                     .filter_map(|src| src.strip_prefix("tracker:"))
-                    .map(String::from)
+                    .filter_map(|url| {
+                        crate::stream::TrackerUrl::try_new(url.to_string()).ok()
+                    })
                     .collect(),
             }
         } else if let Some(url) = source
@@ -7942,8 +7944,6 @@ mod tests {
             titles
         );
     }
-
-    // ── Sort arms ────────────────────────────────────────────────────────────
 
     async fn sort_titles(
         db: &sqlx::SqlitePool,

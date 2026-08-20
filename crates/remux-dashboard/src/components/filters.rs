@@ -970,8 +970,6 @@ pub fn FilterRuleRow(
     }
 }
 
-// ── Group editor ─────────────────────────────────────────────────────────────
-
 #[component]
 fn FilterGroupRow(
     group_idx: usize,
@@ -1087,8 +1085,6 @@ fn FilterGroupRow(
         }
     }
 }
-
-// ── Top-level editor ──────────────────────────────────────────────────────────
 
 #[component]
 pub fn FilterRuleEditor(

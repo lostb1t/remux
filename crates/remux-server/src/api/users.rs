@@ -1465,8 +1465,6 @@ pub async fn delete_user_image_indexed(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-// ── Auth providers (stubs) ──────────────────────────────────────────────────
-
 #[get("/auth/providers")]
 pub async fn get_auth_providers(
     State(_state): State<AppState>,

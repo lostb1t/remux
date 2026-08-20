@@ -20,7 +20,10 @@ use crate::{
     common::{TickUnit, ToRunTimeTicks},
     db,
     db::auth,
-    playback::session::{TranscodeSession, TranscodeState},
+    playback::{
+        hw_accel,
+        session::{TranscodeSession, TranscodeState},
+    },
 };
 
 /// Serializes the lookup-or-create-transcode sequence per play_session_id so
@@ -478,15 +481,7 @@ async fn create_hls_session(
                 .await
                 .source_audio_codec
                 .clone(),
-            hardware_acceleration_type: encoding_opts
-                .hardware_acceleration_type
-                .unwrap_or_default(),
-            vaapi_device: encoding_opts
-                .vaapi_device
-                .unwrap_or_else(|| "/dev/dri/renderD128".to_string()),
-            vaapi_driver: encoding_opts
-                .vaapi_driver
-                .unwrap_or_default(),
+            accelerator: hw_accel::from_encoding_opts(&encoding_opts),
             source_video_range_type,
             enable_tonemapping: encoding_opts
                 .enable_tonemapping
@@ -537,6 +532,9 @@ async fn create_hls_session(
             .app_name
             .clone();
         let play_session_id_for_log = play_session_id.clone();
+        let video_transcoding_enabled = encoding_opts
+            .enable_video_transcoding
+            .unwrap_or(true);
         let session_clone = session.clone();
         tokio::spawn(async move {
             let play_session_id = play_session_id_for_log;
@@ -559,9 +557,10 @@ async fn create_hls_session(
                 audio_codec = %params.audio_codec,
                 resolution,
                 video_bitrate = ?params.video_bitrate,
-                hw_accel = ?params.hardware_acceleration_type,
+                hw_accel = ?params.accelerator.as_type(),
                 transcode_reasons = ?transcode_reasons_for_log,
                 start_secs,
+                video_transcoding_enabled,
                 "▶ Playback started (transcode)"
             );
             if let Err(e) =
@@ -1156,15 +1155,7 @@ async fn hls_segment_inner(
                             .await
                             .source_audio_codec
                             .clone(),
-                        hardware_acceleration_type: encoding_opts
-                            .hardware_acceleration_type
-                            .unwrap_or_default(),
-                        vaapi_device: encoding_opts
-                            .vaapi_device
-                            .unwrap_or_else(|| "/dev/dri/renderD128".to_string()),
-                        vaapi_driver: encoding_opts
-                            .vaapi_driver
-                            .unwrap_or_default(),
+                        accelerator: hw_accel::from_encoding_opts(&encoding_opts),
                         source_video_range_type: session
                             .read()
                             .await

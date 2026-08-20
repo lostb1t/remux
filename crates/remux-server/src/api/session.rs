@@ -180,6 +180,18 @@ pub async fn report_playback_stopped(
                 .map(|s| s.play_session_id)
         });
     if let Some(ref psid) = effective_psid {
+        let changed_item_id = (!data
+            .item_id
+            .is_nil())
+        .then_some(data.item_id)
+        .or_else(|| {
+            state
+                .ctx
+                .sessions
+                .get(psid)
+                .map(|playback| playback.item_id)
+                .filter(|item_id| !item_id.is_nil())
+        });
         state
             .ctx
             .sessions
@@ -197,6 +209,17 @@ pub async fn report_playback_stopped(
             .ctx
             .ws_tx
             .send(crate::ws::WsEvent::SessionsChanged);
+        if let Some(item_id) = changed_item_id {
+            let _ = state
+                .ctx
+                .ws_tx
+                .send(crate::ws::WsEvent::UserDataChanged {
+                    user_id: session
+                        .user
+                        .id,
+                    item_id,
+                });
+        }
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -811,7 +834,6 @@ pub async fn user_unmark_played(
 
 /// Jellyfin-compatible master HLS playlist endpoint.
 /// Creates a transcode session and returns a master.m3u8 playlist.
-// ── Session remote control ──────────────────────────────────────────────────
 
 #[query]
 #[derive(Default)]
@@ -830,6 +852,22 @@ struct RemotePlayQuery {
 struct RemotePlaystateQuery {
     seek_position_ticks: Option<i64>,
     controlling_user_id: Option<String>,
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, strum_macros::Display, strum_macros::EnumString,
+)]
+#[strum(serialize_all = "PascalCase", ascii_case_insensitive)]
+enum PlaystateCommand {
+    Stop,
+    Pause,
+    Unpause,
+    NextTrack,
+    PreviousTrack,
+    Seek,
+    Rewind,
+    FastForward,
+    PlayPause,
 }
 
 #[query]
@@ -939,8 +977,11 @@ pub async fn remote_playstate_command(
         return Err(anyhow::anyhow!("Forbidden")
             .context_forbidden("cannot control other users' sessions"));
     }
+    let command = command
+        .parse::<PlaystateCommand>()
+        .context_bad_request("invalid playstate command")?;
     let data = serde_json::json!({
-        "Command": command,
+        "Command": command.to_string(),
         "SeekPositionTicks": q.seek_position_ticks,
         "ControllingUserId": q.controlling_user_id,
     });
@@ -1208,4 +1249,35 @@ pub async fn delete_transcoding(
             .send(crate::ws::WsEvent::SessionsChanged);
     }
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PlaystateCommand;
+
+    #[test]
+    fn playstate_commands_keep_jellyfin_enum_casing() {
+        for (request_path, protocol_value) in [
+            ("stop", "Stop"),
+            ("PAUSE", "Pause"),
+            ("unpause", "Unpause"),
+            ("nexttrack", "NextTrack"),
+            ("previoustrack", "PreviousTrack"),
+            ("seek", "Seek"),
+            ("rewind", "Rewind"),
+            ("fastforward", "FastForward"),
+            ("playpause", "PlayPause"),
+        ] {
+            let command = request_path
+                .parse::<PlaystateCommand>()
+                .unwrap();
+            assert_eq!(command.to_string(), protocol_value);
+        }
+
+        assert!(
+            "invalid"
+                .parse::<PlaystateCommand>()
+                .is_err()
+        );
+    }
 }

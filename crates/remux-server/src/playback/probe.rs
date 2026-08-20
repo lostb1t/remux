@@ -1246,8 +1246,6 @@ mod probe_tests {
         db
     }
 
-    // ── select_candidates ─────────────────────────────────────────────────────
-
     #[test]
     fn no_fallback_when_auto_next_stream_false() {
         let primary = http_media("http://a.example.com");
@@ -1332,8 +1330,6 @@ mod probe_tests {
         let result = select_candidates(&primary, &all, true, 1, false, 3000);
         assert_eq!(result.len(), 5);
     }
-
-    // ── probe_with_fallback ───────────────────────────────────────────────────
 
     #[tokio::test]
     async fn primary_success() {
@@ -1548,7 +1544,6 @@ mod probe_tests {
         );
     }
 
-    // ── resolve_stream_root ───────────────────────────────────────────────────
     // Regression coverage for "tried 1 of 1 streams" when media_source_id is
     // a stream UUID: resolver.stream resolves to a Stream child record, not the
     // episode, so all_streams was built from the wrong starting point.

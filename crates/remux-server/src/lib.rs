@@ -194,12 +194,70 @@ pub async fn bind_and_serve(router: Router, port: u16) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+const TARGET_OPEN_FILE_LIMIT: libc::rlim_t = 8192;
+
+#[cfg(unix)]
+fn desired_open_file_limit(
+    current_soft: libc::rlim_t,
+    current_hard: libc::rlim_t,
+) -> Option<libc::rlim_t> {
+    let desired = TARGET_OPEN_FILE_LIMIT.min(current_hard);
+    (current_soft < desired).then_some(desired)
+}
+
+#[cfg(unix)]
+fn raise_open_file_limit() {
+    // Torrent peers, tracker sockets, HTTP clients, and transcoders all share
+    // the process descriptor table. Some desktop launch environments provide a
+    // soft limit too small for concurrent playback, so raise only the soft
+    // limit while preserving the administrator-controlled hard limit.
+    unsafe {
+        let mut limits = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+        if libc::getrlimit(libc::RLIMIT_NOFILE, limits.as_mut_ptr()) != 0 {
+            warn!(
+                error = %std::io::Error::last_os_error(),
+                "failed to read open-file limit"
+            );
+            return;
+        }
+
+        let mut limits = limits.assume_init();
+        let Some(desired) = desired_open_file_limit(limits.rlim_cur, limits.rlim_max)
+        else {
+            return;
+        };
+        let previous = limits.rlim_cur;
+        limits.rlim_cur = desired;
+        if libc::setrlimit(libc::RLIMIT_NOFILE, &limits) != 0 {
+            warn!(
+                previous,
+                desired,
+                hard = limits.rlim_max,
+                error = %std::io::Error::last_os_error(),
+                "failed to raise open-file limit"
+            );
+        } else {
+            info!(
+                previous,
+                desired,
+                hard = limits.rlim_max,
+                "raised open-file limit"
+            );
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn raise_open_file_limit() {}
+
 pub async fn init_app(
     config: Config,
     web_paths: Option<FilesystemPaths>,
     admin: AdminService,
     make_web_client: impl FnOnce(sqlx::SqlitePool) -> WebClientService,
 ) -> Result<(Router, AppContext)> {
+    raise_open_file_limit();
     info!("starting remux {}", env!("CARGO_PKG_VERSION"));
     info!("config: {}", serde_json::to_string_pretty(&config).unwrap());
 
@@ -283,9 +341,7 @@ pub async fn init_app(
     let web_client = make_web_client(conn.clone());
 
     let addons = addons::AddonService::from_db(&conn, &config).await?;
-    let transcode_sessions_dir = config
-        .data_dir
-        .join("transcode_sessions");
+    let transcode_sessions_dir = resolve_transcode_dir(&config.data_dir);
     let ctx = AppContext {
         config,
         db: conn.clone(),
@@ -508,6 +564,51 @@ fn default_bgutil_script_path() -> std::path::PathBuf {
 
 fn default_slow_query_threshold_ms() -> u64 {
     10_000
+}
+
+fn ensure_writable_directory(path: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(path)?;
+    let _probe = tempfile::NamedTempFile::new_in(path)?;
+    Ok(())
+}
+
+fn select_transcode_dir(
+    primary: std::path::PathBuf,
+    fallback: std::path::PathBuf,
+) -> std::path::PathBuf {
+    let primary_error = match ensure_writable_directory(&primary) {
+        Ok(()) => return primary,
+        Err(error) => error,
+    };
+
+    match ensure_writable_directory(&fallback) {
+        Ok(()) => {
+            warn!(
+                primary = %primary.display(),
+                fallback = %fallback.display(),
+                error = %primary_error,
+                "transcode directory is not writable; using temporary storage"
+            );
+            fallback
+        }
+        Err(fallback_error) => {
+            warn!(
+                primary = %primary.display(),
+                fallback = %fallback.display(),
+                primary_error = %primary_error,
+                fallback_error = %fallback_error,
+                "transcode and fallback directories are not writable"
+            );
+            primary
+        }
+    }
+}
+
+fn resolve_transcode_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
+    select_transcode_dir(
+        data_dir.join("transcode_sessions"),
+        std::env::temp_dir().join("remux-transcode"),
+    )
 }
 
 fn default_torrent_http_port_opt() -> Option<u16> {
@@ -775,5 +876,61 @@ mod rewrite_uri_tests {
         let rewritten = rewrite(path);
         assert!(rewritten.starts_with("/sessions/play/"));
         assert!(rewritten.contains("YWJjMTIz%7Cabc"));
+    }
+}
+
+#[cfg(test)]
+mod transcode_dir_tests {
+    use super::select_transcode_dir;
+
+    #[test]
+    fn uses_writable_primary_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let primary = temp
+            .path()
+            .join("primary");
+        let fallback = temp
+            .path()
+            .join("fallback");
+
+        assert_eq!(select_transcode_dir(primary.clone(), fallback), primary);
+    }
+
+    #[test]
+    fn falls_back_when_primary_directory_cannot_be_created() {
+        let temp = tempfile::tempdir().unwrap();
+        let blocking_file = temp
+            .path()
+            .join("not-a-directory");
+        std::fs::write(&blocking_file, b"blocked").unwrap();
+        let primary = blocking_file.join("transcode_sessions");
+        let fallback = temp
+            .path()
+            .join("fallback");
+
+        assert_eq!(select_transcode_dir(primary, fallback.clone()), fallback);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod open_file_limit_tests {
+    use super::{TARGET_OPEN_FILE_LIMIT, desired_open_file_limit};
+
+    #[test]
+    fn raises_soft_limit_to_target_without_changing_hard_limit() {
+        assert_eq!(
+            desired_open_file_limit(256, libc::RLIM_INFINITY),
+            Some(TARGET_OPEN_FILE_LIMIT)
+        );
+        assert_eq!(
+            desired_open_file_limit(TARGET_OPEN_FILE_LIMIT, libc::RLIM_INFINITY),
+            None
+        );
+    }
+
+    #[test]
+    fn clamps_soft_limit_to_the_existing_hard_limit() {
+        assert_eq!(desired_open_file_limit(256, 4096), Some(4096));
+        assert_eq!(desired_open_file_limit(4096, 4096), None);
     }
 }

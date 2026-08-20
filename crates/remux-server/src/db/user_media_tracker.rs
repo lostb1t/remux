@@ -253,13 +253,13 @@ impl UserMediaTracker {
         err: &TrackingError,
     ) -> Result<()> {
         let kind = MediaTrackerErrorKind::from(err);
-        let status = match kind {
-            MediaTrackerErrorKind::Retryable => None,
-            MediaTrackerErrorKind::Permanent if err.requires_reauth() => {
-                Some(MediaTrackerStatus::AuthExpired)
-            }
-            MediaTrackerErrorKind::Permanent => Some(MediaTrackerStatus::Error),
-        };
+        // `status` is about the connection, `last_error` is about the last
+        // delivery. Only a rejected credential is the connection's fault, and
+        // a status change stops every later event, so one item a provider
+        // could not match must not cost the user the whole connection.
+        let status = err
+            .requires_reauth()
+            .then_some(MediaTrackerStatus::AuthExpired);
         let now = Utc::now().naive_utc();
         sqlx::query(
             "UPDATE user_media_trackers \
@@ -580,13 +580,19 @@ mod tests {
                 .status,
             MediaTrackerStatus::AuthExpired
         );
+        let other = UserMediaTracker::get(db, other.id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            UserMediaTracker::get(db, other.id)
-                .await
-                .unwrap()
-                .unwrap()
-                .status,
-            MediaTrackerStatus::Error
+            other.status,
+            MediaTrackerStatus::Connected,
+            "one undeliverable item is not a broken connection"
+        );
+        assert_eq!(
+            other.last_error,
+            Some("400".to_string()),
+            "it is still the last thing that went wrong"
         );
     }
 
