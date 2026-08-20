@@ -708,7 +708,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             .then(|| {
                 media
                     .parent_id
-                    .map(|id| id.to_string())
+                    .map(|id| id.simple().to_string())
             })
             .flatten(),
         album_primary_image_tag: (media.kind == db::MediaKind::Track)
