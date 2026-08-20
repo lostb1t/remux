@@ -986,10 +986,6 @@ impl TreeAddon for OpendalAddon {
 // Opendal file index scanning (backing refresh_index)
 // ---------------------------------------------------------------------------
 
-const AUDIO_EXTENSIONS: &[&str] = &[
-    "mp3", "flac", "m4a", "ogg", "opus", "wav", "aac", "wv", "strm",
-];
-
 const SUBTITLE_EXTENSIONS: &[&str] = &["srt", "ass", "ssa", "vtt", "sub", "sup"];
 
 /// Extract the file stem (filename without the last extension).
@@ -1076,7 +1072,10 @@ async fn scan_addon(
     info!(addon = %addon.name, kind = %addon.preset.kind, media_kind, "opendal: scanning");
 
     let is_media_ext: fn(&str) -> bool = if media_kind == "track" {
-        |ext| AUDIO_EXTENSIONS.contains(&ext)
+        |ext| {
+            ext == "strm"
+                || remux_sdks::remux::AudioContainer::parse_known(ext).is_some()
+        }
     } else {
         |ext| {
             ext == "strm"

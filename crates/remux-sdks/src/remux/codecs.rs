@@ -143,6 +143,57 @@ pub enum AudioCodec {
     Debug, Clone, PartialEq, Eq, strum_macros::EnumString, strum_macros::Display,
 )]
 #[strum(ascii_case_insensitive)]
+pub enum AudioContainer {
+    #[strum(to_string = "mp3", serialize = "mp3")]
+    Mp3,
+    #[strum(to_string = "flac", serialize = "flac")]
+    Flac,
+    #[strum(to_string = "m4a", serialize = "m4a")]
+    M4a,
+    #[strum(to_string = "ogg", serialize = "ogg")]
+    Ogg,
+    #[strum(to_string = "opus", serialize = "opus")]
+    Opus,
+    #[strum(to_string = "wav", serialize = "wav")]
+    Wav,
+    #[strum(to_string = "aac", serialize = "aac")]
+    Aac,
+    #[strum(to_string = "wv", serialize = "wv")]
+    Wv,
+    #[strum(default)]
+    Unknown(String),
+}
+
+impl AudioContainer {
+    pub fn mime_type(&self) -> &'static str {
+        match self {
+            Self::Mp3 => "audio/mpeg",
+            Self::Flac => "audio/flac",
+            Self::M4a => "audio/mp4",
+            Self::Ogg => "audio/ogg",
+            Self::Opus => "audio/opus",
+            Self::Wav => "audio/wav",
+            Self::Aac => "audio/aac",
+            Self::Wv => "audio/x-wavpack",
+            Self::Unknown(_) => "audio/octet-stream",
+        }
+    }
+
+    pub fn is_known(&self) -> bool {
+        !matches!(self, Self::Unknown(_))
+    }
+
+    pub fn parse_known(ext: &str) -> Option<Self> {
+        <Self as std::str::FromStr>::from_str(ext)
+            .ok()
+            .filter(|c| c.is_known())
+    }
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, strum_macros::EnumString, strum_macros::Display,
+)]
+#[strum(ascii_case_insensitive)]
 pub enum VideoContainer {
     #[strum(to_string = "mkv", serialize = "mkv", serialize = "matroska")]
     Mkv,

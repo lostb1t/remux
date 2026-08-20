@@ -574,19 +574,13 @@ pub fn mime_from_path(path: &std::path::Path) -> &'static str {
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("");
-    if let Some(container) = remux_sdks::remux::VideoContainer::parse_known(ext) {
-        return container.mime_type();
+    if let Some(c) = remux_sdks::remux::VideoContainer::parse_known(ext) {
+        return c.mime_type();
     }
-    match ext {
-        "mp3" => "audio/mpeg",
-        "flac" => "audio/flac",
-        "aac" => "audio/aac",
-        "ogg" => "audio/ogg",
-        "opus" => "audio/opus",
-        "m4a" => "audio/mp4",
-        "wav" => "audio/wav",
-        _ => "application/octet-stream",
+    if let Some(c) = remux_sdks::remux::AudioContainer::parse_known(ext) {
+        return c.mime_type();
     }
+    "application/octet-stream"
 }
 
 /// Extract the `urn:btih:` info-hash from a magnet URI.
