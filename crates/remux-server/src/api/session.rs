@@ -85,9 +85,10 @@ pub async fn sessions_capabilities_by_id(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Queue a playback event for the acting user's media trackers. The lookup
-/// costs a query, so callers only reach here with an event worth queueing.
-async fn track(
+/// Queue a playback event for the acting user's media trackers, resolving the
+/// item first. Handlers already holding the row call `enqueue_and_wake`
+/// directly rather than paying for a second lookup.
+async fn track_by_id(
     state: &AppState,
     session: &auth::AuthSession,
     item_id: Uuid,
@@ -147,7 +148,7 @@ pub async fn report_playback_start(
         .ctx
         .ws_tx
         .send(crate::ws::WsEvent::SessionsChanged);
-    track(
+    track_by_id(
         &state,
         &session,
         data.item_id,
@@ -211,7 +212,7 @@ pub async fn report_playback_progress(
             .ws_tx
             .send(crate::ws::WsEvent::SessionsChanged);
         if data.is_paused && !was_paused {
-            track(
+            track_by_id(
                 &state,
                 &session,
                 data.item_id,
@@ -293,7 +294,7 @@ pub async fn report_playback_stopped(
                         .id,
                     item_id,
                 });
-            track(
+            track_by_id(
                 &state,
                 &session,
                 item_id,
