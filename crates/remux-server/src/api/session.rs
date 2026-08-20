@@ -249,7 +249,10 @@ pub async fn report_playback_stopped(
                 .map(|s| s.play_session_id)
         });
     if let Some(ref psid) = effective_psid {
-        state
+        // Whether this counted as a watch is decided by the threshold check
+        // inside `stopped`, so its answer is carried out rather than inferred
+        // from `played_at`, which stays set from every earlier watch.
+        let played = state
             .ctx
             .sessions
             .stopped(
@@ -273,21 +276,6 @@ pub async fn report_playback_stopped(
             && let Ok(Some(media)) =
                 MediaResolveService::resolve_item(data.item_id, &state.ctx).await
         {
-            // Whether this counted as a watch is decided by the threshold check
-            // inside `stopped`, so it is read back rather than recomputed.
-            let played = db::UserMediaState::get_or_new(
-                &state
-                    .ctx
-                    .db,
-                &session.user,
-                &media,
-            )
-            .await
-            .map(|s| {
-                s.played_at
-                    .is_some()
-            })
-            .unwrap_or(false);
             services::media_tracker::enqueue_and_wake(
                 &state,
                 session

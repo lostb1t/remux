@@ -420,13 +420,16 @@ impl PlaybackSessionManager {
     /// Removes the playback session (stopping any active transcode), persists
     /// the final position to the DB (with the 90 % watched-mark check), and
     /// emits a debug log line.
+    ///
+    /// Returns whether this stop crossed the watched threshold, so callers get
+    /// the answer the check already produced instead of inferring one.
     pub async fn stopped(
         &self,
         db: &sqlx::SqlitePool,
         user: &db::User,
         psid: &str,
         data: &PlaybackInfo,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<bool> {
         let ps = self
             .stop(psid)
             .await;
@@ -444,9 +447,10 @@ impl PlaybackSessionManager {
                     .map(|s| s.position_ticks)
             });
 
+        let mut played = false;
         if let Some(item_id) = item_id {
             if let Ok(Some(media)) = db::Media::get_by_id(db, &item_id).await {
-                db::UserMediaState::update_playback(
+                played = db::UserMediaState::update_playback(
                     db,
                     user,
                     &media,
@@ -460,7 +464,7 @@ impl PlaybackSessionManager {
         }
 
         debug!(play_session_id = psid, "Playback stopped");
-        Ok(())
+        Ok(played)
     }
 
     /// Insert (or replace) a playback session, preserving any transcode that was
