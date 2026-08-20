@@ -454,11 +454,16 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                 ) {
                     // For collections/folders with no poster image, set a synthetic
                     // tag so clients know to request the generated placeholder.
-                    Some(
+                    // Include updated_at so deleting an image (which touches it)
+                    // produces a new tag and busts the client cache.
+                    Some(format!(
+                        "{}-{}",
+                        media.id,
                         media
-                            .id
-                            .to_string(),
-                    )
+                            .updated_at
+                            .and_utc()
+                            .timestamp()
+                    ))
                 } else {
                     None
                 }
