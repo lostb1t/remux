@@ -71,6 +71,130 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
         });
     });
 
+    let app_state_sort = app_state.clone();
+    use_effect(move || {
+        let client = app_state_sort.clone();
+
+        spawn(async move {
+            let mut eval = document::eval(r#"
+                const element = document.getElementById("collections-sortable");
+
+                if (!element) {
+                    console.error("collections-sortable element not found");
+                    return;
+                }
+
+                if (typeof Sortable === "undefined") {
+                    console.error("SortableJS not loaded");
+                    return;
+                }
+
+                if (element._remuxSortable) {
+                    element._remuxSortable.destroy();
+                }
+
+                let originalOrder = [];
+
+                const sortable = Sortable.create(element, {
+                    animation: 150,
+                    handle: ".collection-drag-handle",
+                    draggable: ".collection-sortable-row",
+                    dataIdAttr: "data-id",
+                    ghostClass: "collection-sortable-ghost",
+                    chosenClass: "collection-sortable-chosen",
+                    dragClass: "collection-sortable-drag",
+
+                    onStart: function () {
+                        originalOrder = sortable.toArray();
+                    },
+
+                    onEnd: function () {
+                        const newOrder = sortable.toArray();
+
+                        const changed =
+                            newOrder.length === originalOrder.length &&
+                            newOrder.some((id, index) => id !== originalOrder[index]);
+
+                        if (!changed) {
+                            return;
+                        }
+
+                        sortable.sort(originalOrder, false);
+                        dioxus.send(newOrder);
+                    }
+                });
+
+                element._remuxSortable = sortable;
+
+                while (true) {
+                    const message = await dioxus.recv();
+
+                    if (message === "destroy") {
+                        sortable.destroy();
+
+                        if (element._remuxSortable === sortable) {
+                            delete element._remuxSortable;
+                        }
+
+                        break;
+                    }
+                }
+            "#);
+
+            while let Ok(new_order) = eval.recv::<Vec<String>>().await {
+                let current = collections.peek().clone();
+                let mut reordered = Vec::with_capacity(current.len());
+
+                for id in &new_order {
+                    if let Some(item) = current
+                        .iter()
+                        .find(|item| item.id.to_string() == *id)
+                    {
+                        reordered.push(item.clone());
+                    }
+                }
+
+                if reordered.len() != current.len() {
+                    error.set(Some("Failed to reorder collections: invalid SortableJS order".to_string()));
+                    continue;
+                }
+
+                collections.set(reordered.clone());
+
+                let updates: Vec<(String, i64)> = reordered
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, col)| {
+                        let new_sort_order = i as i64 * 10;
+
+                        if col.index_number != Some(new_sort_order) {
+                            Some((col.id.to_string(), new_sort_order))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                for (id, sort_order) in updates {
+                    if let Err(e) = client
+                        .execute(PatchItem {
+                            item_id: id,
+                            payload: PatchItemPayload {
+                                sort_order: Some(sort_order),
+                                ..Default::default()
+                            },
+                        })
+                        .await
+                    {
+                        error.set(Some(format!("Failed to reorder collections: {e}")));
+                        refresh.with_mut(|v| *v = v.wrapping_add(1));
+                        break;
+                    }
+                }
+            }
+        });
+    });
+
     rsx! {
         div { class: "card",
             div { class: "card-header",
@@ -89,16 +213,17 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                     span { class: "loading-text", style: "color:var(--error)", "{err}" }
                 } else if collections.read().is_empty() {
                     EmptyState { message: "No collections yet" }
-                } else {
-                    div { class: "data-table-container",
-                        div { class: "row-list",
-                            {
-                                let col_count = collections.read().len();
-                                rsx! {
-                                for (col_idx, col) in collections.read().clone().into_iter().enumerate() {
+                }
+
+                div { class: "data-table-container",
+                    div {
+                        id: "collections-sortable",
+                        class: "row-list",
+
+                        if !*loading.read() && error.read().is_none() {
+                            for col in collections.read().clone() {
                                 {
                                     let col_edit = col.clone();
-                                    let client_sort = app_state.clone();
                                     let col_id_str = col.id.to_string();
                                     let name = col.name.clone().unwrap_or_default();
                                     let col_type_label = match col.collection_type.as_ref() {
@@ -119,7 +244,18 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                         None => "",
                                     };
                                     rsx! {
-                                        div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]", key: "{col_id_str}",
+                                        div {
+                                            class: "collection-sortable-row flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]",
+                                            key: "{col_id_str}",
+                                            "data-id": "{col_id_str}",
+
+                                            div { class: "shrink-0 pl-3 py-[10px]",
+                                                div {
+                                                    class: "collection-drag-handle addon-card-sort",
+                                                    title: "Drag to reorder",
+                                                    "⠿"
+                                                }
+                                            }
                                             div { class: "flex-1 min-w-0 px-3 py-[10px]",
                                                 div { class: "catalog-name", "{name}" }
                                                 div { class: "catalog-meta",
@@ -136,76 +272,6 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                                 }
                                             }
                                             div { class: "shrink-0 px-3 py-[10px] flex items-center gap-2",
-                                                div { class: "addon-card-sort",
-                                                    button {
-                                                        class: "btn btn-ghost addon-sort-btn",
-                                                        disabled: col_idx == 0,
-                                                        title: "Move up",
-                                                        onclick: {
-                                                            let c = client_sort.clone();
-                                                            move |_| {
-                                                                let current = collections.read().clone();
-                                                                if col_idx == 0 { return; }
-                                                                let mut new_order = current.clone();
-                                                                new_order.swap(col_idx, col_idx - 1);
-                                                                let updates: Vec<(String, i64)> = new_order.iter().enumerate()
-                                                                    .filter_map(|(i, col)| {
-                                                                        let new_so = i as i64 * 10;
-                                                                        if col.index_number != Some(new_so) {
-                                                                            Some((col.id.to_string(), new_so))
-                                                                        } else { None }
-                                                                    })
-                                                                    .collect();
-                                                                let c = c.clone();
-                                                                spawn(async move {
-                                                                    for (id, so) in updates {
-                                                                        let _ = c.execute(PatchItem {
-                                                                            item_id: id,
-                                                                            payload: PatchItemPayload { sort_order: Some(so), ..Default::default() },
-                                                                        }).await;
-                                                                    }
-                                                                    let v = *refresh.peek() + 1;
-                                                                    refresh.set(v);
-                                                                });
-                                                            }
-                                                        },
-                                                        "↑"
-                                                    }
-                                                    button {
-                                                        class: "btn btn-ghost addon-sort-btn",
-                                                        disabled: col_idx + 1 >= col_count,
-                                                        title: "Move down",
-                                                        onclick: {
-                                                            let c = client_sort.clone();
-                                                            move |_| {
-                                                                let current = collections.read().clone();
-                                                                if col_idx + 1 >= current.len() { return; }
-                                                                let mut new_order = current.clone();
-                                                                new_order.swap(col_idx, col_idx + 1);
-                                                                let updates: Vec<(String, i64)> = new_order.iter().enumerate()
-                                                                    .filter_map(|(i, col)| {
-                                                                        let new_so = i as i64 * 10;
-                                                                        if col.index_number != Some(new_so) {
-                                                                            Some((col.id.to_string(), new_so))
-                                                                        } else { None }
-                                                                    })
-                                                                    .collect();
-                                                                let c = c.clone();
-                                                                spawn(async move {
-                                                                    for (id, so) in updates {
-                                                                        let _ = c.execute(PatchItem {
-                                                                            item_id: id,
-                                                                            payload: PatchItemPayload { sort_order: Some(so), ..Default::default() },
-                                                                        }).await;
-                                                                    }
-                                                                    let v = *refresh.peek() + 1;
-                                                                    refresh.set(v);
-                                                                });
-                                                            }
-                                                        },
-                                                        "↓"
-                                                    }
-                                                }
                                                 button {
                                                     class: "btn btn-ghost",
                                                     style: "height:30px;font-size:.68rem;padding:0 10px",
@@ -215,8 +281,6 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                             }
                                         }
                                     }
-                                }
-                                }
                                 }
                             }
                         }
