@@ -1365,6 +1365,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn playback_stop_notifies_clients_that_user_data_changed() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_test_source(&guard.0).await;
+        let play_session_id = "test-user-data-changed";
+        let mut events = guard
+            .0
+            .ws_tx
+            .subscribe();
+
+        server
+            .post("/sessions/playing")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": media.id,
+                "PlaySessionId": play_session_id,
+                "PositionTicks": 0
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        server
+            .post("/sessions/playing/stopped")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": media.id,
+                "PlaySessionId": play_session_id,
+                "PositionTicks": 30_000_000i64
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        let changed_item_id =
+            tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                loop {
+                    if let crate::ws::WsEvent::UserDataChanged { item_id, .. } = events
+                        .recv()
+                        .await
+                        .unwrap()
+                    {
+                        break item_id;
+                    }
+                }
+            })
+            .await
+            .expect("playback stop should broadcast UserDataChanged");
+
+        assert_eq!(changed_item_id, media.id);
+    }
+
+    #[tokio::test]
     async fn test_playback_full_lifecycle() {
         let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);

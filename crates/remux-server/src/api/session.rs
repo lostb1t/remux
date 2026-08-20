@@ -180,6 +180,18 @@ pub async fn report_playback_stopped(
                 .map(|s| s.play_session_id)
         });
     if let Some(ref psid) = effective_psid {
+        let changed_item_id = (!data
+            .item_id
+            .is_nil())
+        .then_some(data.item_id)
+        .or_else(|| {
+            state
+                .ctx
+                .sessions
+                .get(psid)
+                .map(|playback| playback.item_id)
+                .filter(|item_id| !item_id.is_nil())
+        });
         state
             .ctx
             .sessions
@@ -197,6 +209,17 @@ pub async fn report_playback_stopped(
             .ctx
             .ws_tx
             .send(crate::ws::WsEvent::SessionsChanged);
+        if let Some(item_id) = changed_item_id {
+            let _ = state
+                .ctx
+                .ws_tx
+                .send(crate::ws::WsEvent::UserDataChanged {
+                    user_id: session
+                        .user
+                        .id,
+                    item_id,
+                });
+        }
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
