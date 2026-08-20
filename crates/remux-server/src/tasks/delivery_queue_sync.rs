@@ -302,39 +302,13 @@ mod tests {
         }
     }
 
-    fn addon_row(name: &str) -> crate::addons::Addon {
-        let now = Utc::now().naive_utc();
-        crate::addons::Addon {
-            id: crate::common::get_uuid(),
-            name: name.into(),
-            preset: AddonPresetRef {
-                kind: "scripted".into(),
-                config: serde_json::Value::Null.into(),
-            },
-            resources: vec![],
-            types: vec![],
-            enabled: true,
-            priority: 0,
-            created_at: now,
-            updated_at: now,
-            system: false,
-            is_default: true,
-            http_redirect_stream: false,
-            service_filter: vec![],
-        }
-    }
-
-    /// Installs `addon` as the media tracker capability of a stored addon row and
-    /// connects `user` to it. Returns the media tracker's id.
     async fn connect(
         ctx: &AppContext,
         user: &str,
         addon: Arc<ScriptedAddon>,
     ) -> (Uuid, crate::addons::Addon) {
-        let row = addon_row(user);
-        row.insert(&ctx.db)
-            .await
-            .unwrap();
+        let row =
+            crate::integration_test::register_media_tracker(ctx, user, addon).await;
 
         let mut u =
             crate::db::User::new_with_password(String::new(), user.into(), "pw", None)
@@ -352,21 +326,6 @@ mod tests {
         conn.upsert(&ctx.db)
             .await
             .unwrap();
-
-        let mut runtimes: Vec<AddonRuntime> = ctx
-            .addons
-            .list_for_user(&ctx.db, None)
-            .await;
-        runtimes.push(AddonRuntime {
-            row: row.clone(),
-            caps: AddonCapabilities {
-                media_tracker: Some(addon),
-                ..Default::default()
-            },
-        });
-        ctx.addons
-            .replace_runtimes_for_test(runtimes);
-
         (conn.id, row)
     }
 
@@ -599,52 +558,7 @@ mod tests {
         let addon = ScriptedAddon::new(vec![]);
         let (conn, _) = connect(ctx, "hana", addon.clone()).await;
 
-        let series_ids = crate::db::ExternalIds {
-            imdb: crate::db::NonEmptyString::try_new("tt0306414".to_string()).ok(),
-            tvdb: Some(79126),
-            ..Default::default()
-        };
-        let mut series = crate::db::Media {
-            id: Uuid::from(&crate::db::MediaIdRaw {
-                kind: crate::db::MediaKind::Series,
-                external_ids: series_ids.clone(),
-                season: None,
-                episode: None,
-            }),
-            title: "The Wire".into(),
-            kind: crate::db::MediaKind::Series,
-            external_ids: series_ids,
-            ..Default::default()
-        };
-        series
-            .save(&ctx.db)
-            .await
-            .unwrap();
-        let mut season = crate::db::Media {
-            title: "Season 1".into(),
-            kind: crate::db::MediaKind::Season,
-            parent_id: Some(series.id),
-            grandparent_id: Some(series.id),
-            idx: Some(1),
-            ..Default::default()
-        };
-        season
-            .save(&ctx.db)
-            .await
-            .unwrap();
-        let mut episode = crate::db::Media {
-            title: "The Target".into(),
-            kind: crate::db::MediaKind::Episode,
-            parent_id: Some(season.id),
-            grandparent_id: Some(series.id),
-            idx: Some(1),
-            parent_idx: Some(1),
-            ..Default::default()
-        };
-        episode
-            .save(&ctx.db)
-            .await
-            .unwrap();
+        let episode = crate::integration_test::seed_episode(ctx).await;
 
         queue_item(&ctx.db, conn, episode.id).await;
         drain(ctx, &reporter())

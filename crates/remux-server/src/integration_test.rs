@@ -242,3 +242,137 @@ pub fn assert_api_keys_are_real(value: &serde_json::Value, token: &str) {
         "expected the response to carry an ApiKey: {value}"
     );
 }
+
+/// Long enough that a percentage of it lands on a whole second, so a test can
+/// say "stopped at 95%" without the threshold turning on a rounding.
+pub const MOVIE_RUNTIME_SECONDS: i64 = 6_000;
+
+fn stable_id(kind: db::MediaKind, external_ids: &db::ExternalIds) -> Uuid {
+    Uuid::from(&db::MediaIdRaw {
+        kind,
+        external_ids: external_ids.clone(),
+        season: None,
+        episode: None,
+    })
+}
+
+/// A movie carrying the ids a tracking service keys on. Shared so the ids only
+/// have to agree with themselves: a test asserting on `tmdb` is otherwise
+/// asserting against a literal three modules away.
+pub async fn seed_movie(ctx: &AppContext) -> db::Media {
+    let external_ids = db::ExternalIds {
+        imdb: db::NonEmptyString::try_new("tt0113277".to_string()).ok(),
+        tmdb: Some(949),
+        ..Default::default()
+    };
+    let mut media = db::Media {
+        id: stable_id(db::MediaKind::Movie, &external_ids),
+        title: "Heat".into(),
+        kind: db::MediaKind::Movie,
+        runtime: Some(MOVIE_RUNTIME_SECONDS),
+        external_ids,
+        ..Default::default()
+    };
+    media
+        .save(&ctx.db)
+        .await
+        .unwrap();
+    media
+}
+
+/// The first episode of a series, with the season and series rows it hangs
+/// off. Only the series carries ids, which is what makes it the fixture for
+/// "an episode is matched through its series".
+pub async fn seed_episode(ctx: &AppContext) -> db::Media {
+    let external_ids = db::ExternalIds {
+        imdb: db::NonEmptyString::try_new("tt0306414".to_string()).ok(),
+        tvdb: Some(79126),
+        ..Default::default()
+    };
+    let mut series = db::Media {
+        id: stable_id(db::MediaKind::Series, &external_ids),
+        title: "The Wire".into(),
+        kind: db::MediaKind::Series,
+        external_ids,
+        ..Default::default()
+    };
+    series
+        .save(&ctx.db)
+        .await
+        .unwrap();
+
+    let mut season = db::Media {
+        title: "Season 1".into(),
+        kind: db::MediaKind::Season,
+        parent_id: Some(series.id),
+        grandparent_id: Some(series.id),
+        idx: Some(1),
+        ..Default::default()
+    };
+    season
+        .save(&ctx.db)
+        .await
+        .unwrap();
+
+    let mut episode = db::Media {
+        title: "The Target".into(),
+        kind: db::MediaKind::Episode,
+        parent_id: Some(season.id),
+        grandparent_id: Some(series.id),
+        idx: Some(1),
+        parent_idx: Some(1),
+        ..Default::default()
+    };
+    episode
+        .save(&ctx.db)
+        .await
+        .unwrap();
+    episode
+}
+
+/// Stores an addon row and installs `provider` as its media-tracker
+/// capability. The runtime list has to be rebuilt wholesale because the real
+/// one is built from registered presets, which have no way to carry a stub.
+pub async fn register_media_tracker(
+    ctx: &AppContext,
+    name: &str,
+    provider: std::sync::Arc<dyn crate::addons::media_tracker::MediaTrackerAddon>,
+) -> crate::addons::Addon {
+    let now = Utc::now().naive_utc();
+    let row = crate::addons::Addon {
+        id: crate::common::get_uuid(),
+        name: name.into(),
+        preset: crate::addons::AddonPresetRef {
+            kind: "scripted".into(),
+            config: serde_json::Value::Null.into(),
+        },
+        resources: vec![],
+        types: vec![],
+        enabled: true,
+        priority: 0,
+        created_at: now,
+        updated_at: now,
+        system: false,
+        is_default: true,
+        http_redirect_stream: false,
+        service_filter: vec![],
+    };
+    row.insert(&ctx.db)
+        .await
+        .unwrap();
+
+    let mut runtimes = ctx
+        .addons
+        .list_for_user(&ctx.db, None)
+        .await;
+    runtimes.push(crate::addons::AddonRuntime {
+        row: row.clone(),
+        caps: crate::addons::AddonCapabilities {
+            media_tracker: Some(provider),
+            ..Default::default()
+        },
+    });
+    ctx.addons
+        .replace_runtimes_for_test(runtimes);
+    row
+}
