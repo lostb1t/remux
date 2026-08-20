@@ -1526,6 +1526,16 @@ async fn item_for_user(
     let show_ungrouped = server_config
         .stream_groups_show_ungrouped
         .unwrap_or(true);
+    let encoding_cfg = db::Settings::get_encoding_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await
+    .unwrap_or_default();
+    let transcoding_enabled = encoding_cfg
+        .enable_video_transcoding
+        .unwrap_or(true);
     // Clients that switch versions (Android TV) refetch the item by MediaSource id
     // and then play MediaSources[0], so the requested group must end up first and
     // keep its own UUID instead of the item id stamped by `db_media_to_item`.
@@ -1734,6 +1744,17 @@ async fn item_for_user(
         .await?;
     let mut base_item = api::db_media_to_item(media.clone(), false);
 
+    if !transcoding_enabled {
+        if let Some(sources) = base_item
+            .media_sources
+            .as_mut()
+        {
+            for source in sources.iter_mut() {
+                source.supports_transcoding = false;
+            }
+        }
+    }
+
     // `db_media_to_item` stamps MediaSources[0].Id with the item id (clients rely on
     // that for auto-play). Undo it for a group request: the item id would resolve
     // back to the highest-priority group on PlaybackInfo (issue #220).
@@ -1841,7 +1862,7 @@ async fn item_for_user(
             is_remote: true,
             supports_direct_play: true,
             supports_direct_stream: true,
-            supports_transcoding: true,
+            supports_transcoding: transcoding_enabled,
             transcoding_url: Some(transcoding_url),
             transcoding_sub_protocol: "hls".to_string(),
             transcoding_container: Some("ts".to_string()),

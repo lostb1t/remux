@@ -450,14 +450,6 @@ async fn items_playbackinfo_inner(
                 source.supports_transcoding = true;
                 source.supports_direct_play = true;
             }
-            TranscodeDecision::Skip => {
-                info!(
-                    user = %session.user.username,
-                    stream_id = %stream.id,
-                    "video transcoding required but not allowed — marking source as not transcodable"
-                );
-                continue;
-            }
             TranscodeDecision::Transcode(outcome) => outcome.apply_to(&mut source),
         }
 
@@ -905,22 +897,17 @@ async fn videos_stream_inner(
     let is_copy_video = video_codec == "copy";
 
     info!(
-        "starting progressive transcode for: {:?} (container={}, vcodec={}, acodec={}, start_ticks={:?}, bitrate={:?})",
+        "starting progressive transcode for: {:?} (container={}, vcodec={}, acodec={}, start_ticks={:?}, bitrate={:?}, video_transcoding={})",
         &media.title,
         container,
         video_codec,
         audio_codec,
         q.start_time_ticks,
-        q.video_bit_rate
+        q.video_bit_rate,
+        encoding_opts
+            .enable_video_transcoding
+            .unwrap_or(true)
     );
-
-    let encoding_opts = crate::db::Settings::get_encoding_config(
-        &state
-            .ctx
-            .db,
-    )
-    .await
-    .unwrap_or_default();
     let source_video_stream = media
         .probe_data
         .as_ref()

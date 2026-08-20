@@ -532,6 +532,9 @@ async fn create_hls_session(
             .app_name
             .clone();
         let play_session_id_for_log = play_session_id.clone();
+        let video_transcoding_enabled = encoding_opts
+            .enable_video_transcoding
+            .unwrap_or(true);
         let session_clone = session.clone();
         tokio::spawn(async move {
             let play_session_id = play_session_id_for_log;
@@ -557,6 +560,7 @@ async fn create_hls_session(
                 hw_accel = ?params.accelerator.as_type(),
                 transcode_reasons = ?transcode_reasons_for_log,
                 start_secs,
+                video_transcoding_enabled,
                 "▶ Playback started (transcode)"
             );
             if let Err(e) =
