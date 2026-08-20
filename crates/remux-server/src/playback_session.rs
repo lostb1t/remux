@@ -421,8 +421,7 @@ impl PlaybackSessionManager {
     /// the final position to the DB (with the 90 % watched-mark check), and
     /// emits a debug log line.
     ///
-    /// Returns whether this stop crossed the watched threshold, so callers get
-    /// the answer the check already produced instead of inferring one.
+    /// Returns whether this stop crossed the watched threshold.
     pub async fn stopped(
         &self,
         db: &sqlx::SqlitePool,
