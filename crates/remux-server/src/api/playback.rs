@@ -124,6 +124,18 @@ fn apply_item_runtime_fallback(
         .and_then(|seconds| seconds.to_ticks(TickUnit::Seconds));
 }
 
+fn playback_original_language(
+    item: Option<&db::Media>,
+    selected_source_language: Option<String>,
+) -> Option<String> {
+    item.and_then(|media| {
+        media
+            .original_language
+            .clone()
+    })
+    .or(selected_source_language)
+}
+
 async fn items_playbackinfo_inner(
     state: AppState,
     session: auth::AuthSession,
@@ -183,7 +195,7 @@ async fn items_playbackinfo_inner(
     });
     let is_live = media.is_live();
     let is_track_item = media.is_track();
-    let original_language = media
+    let selected_source_language = media
         .original_language
         .clone();
     service
@@ -204,6 +216,8 @@ async fn items_playbackinfo_inner(
     let item_runtime_seconds = subtitle_media
         .as_ref()
         .and_then(|item| item.runtime);
+    let original_language =
+        playback_original_language(subtitle_media.as_ref(), selected_source_language);
 
     let is_track = is_track_item
         || subtitle_media
@@ -1147,6 +1161,27 @@ mod tests {
         super::apply_item_runtime_fallback(&mut source, Some(142));
 
         assert_eq!(source.run_time_ticks, Some(900_000_000));
+    }
+
+    #[test]
+    fn parent_item_language_overrides_missing_or_stale_source_language() {
+        let parent = crate::db::Media {
+            original_language: Some("en".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            super::playback_original_language(Some(&parent), None),
+            Some("en".to_string())
+        );
+        assert_eq!(
+            super::playback_original_language(Some(&parent), Some("ru".to_string())),
+            Some("en".to_string())
+        );
+        assert_eq!(
+            super::playback_original_language(None, Some("fr".to_string())),
+            Some("fr".to_string())
+        );
     }
 
     #[tokio::test]
