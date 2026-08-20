@@ -10,12 +10,12 @@ use uuid::Uuid;
 
 use crate::{
     AppContext,
-    addons::tracking::{TrackingEvent, TrackingTarget},
+    addons::media_tracker::{MediaTrackerEvent, MediaTrackerTarget},
     db,
 };
 
-fn describe(media: &db::Media, series: Option<&db::Media>) -> TrackingTarget {
-    TrackingTarget {
+fn describe(media: &db::Media, series: Option<&db::Media>) -> MediaTrackerTarget {
+    MediaTrackerTarget {
         kind: media
             .kind
             .clone(),
@@ -40,7 +40,7 @@ fn describe(media: &db::Media, series: Option<&db::Media>) -> TrackingTarget {
 pub async fn resolve_target(
     db: &SqlitePool,
     media: &db::Media,
-) -> Result<Option<TrackingTarget>> {
+) -> Result<Option<MediaTrackerTarget>> {
     let series = if media.kind == db::MediaKind::Episode {
         db::Media::get_ancestors(db, &media.id)
             .await?
@@ -62,11 +62,11 @@ pub async fn enqueue(
     ctx: &AppContext,
     user_id: Uuid,
     media: &db::Media,
-    event: TrackingEvent,
+    event: MediaTrackerEvent,
 ) -> Result<usize> {
     if !ctx
         .addons
-        .has_tracking()
+        .has_media_tracker()
     {
         return Ok(0);
     }
@@ -81,7 +81,7 @@ pub async fn enqueue(
             .filter(|t| t.status == db::MediaTrackerStatus::Connected && t.wants(kind))
             .filter(|t| {
                 ctx.addons
-                    .tracking_for(t.addon_id)
+                    .media_tracker_for(t.addon_id)
                     .is_some_and(|a| {
                         a.capabilities()
                             .supports(kind)
@@ -93,9 +93,9 @@ pub async fn enqueue(
     }
 
     for tracker in &wanted {
-        db::DeliveryQueue::new(db::QueueKind::Tracker {
+        db::DeliveryQueue::new(db::QueueKind::MediaTracker {
             user_media_tracker_id: tracker.id,
-            payload: db::TrackerPayload {
+            payload: db::MediaTrackerPayload {
                 media_id: media.id,
                 event: event.clone(),
             },
@@ -112,7 +112,7 @@ pub async fn enqueue_and_wake(
     state: &crate::AppState,
     user_id: Uuid,
     media: &db::Media,
-    event: TrackingEvent,
+    event: MediaTrackerEvent,
 ) {
     match enqueue(&state.ctx, user_id, media, event).await {
         Ok(0) => {}
@@ -122,7 +122,7 @@ pub async fn enqueue_and_wake(
                 .run_task(crate::tasks::DELIVERY_QUEUE_SYNC_KEY)
                 .await;
         }
-        Err(e) => warn!(error = %e, "could not queue tracking delivery"),
+        Err(e) => warn!(error = %e, "could not queue media tracker delivery"),
     }
 }
 
@@ -132,9 +132,9 @@ mod tests {
     use crate::{
         addons::{
             Addon, AddonCapabilities, AddonKind, AddonPresetRef, AddonRuntime,
-            tracking::{
-                TrackingAddon, TrackingCapabilities, TrackingCredentials, TrackingCtx,
-                TrackingEventKind, TrackingResult,
+            media_tracker::{
+                MediaTrackerAddon, MediaTrackerCapabilities, MediaTrackerCredentials,
+                MediaTrackerCtx, MediaTrackerEventKind, MediaTrackerResult,
             },
         },
         db::{DeliveryQueue, MediaTrackerStatus, UserMediaTracker},
@@ -144,36 +144,36 @@ mod tests {
     use chrono::Utc;
     use std::sync::Arc;
 
-    /// Enough of a provider for the registry to report that tracking is
+    /// Enough of a provider for the registry to report that media tracking is
     /// installed. What it does with an event is the sync task's business.
-    struct StubTracker(Vec<TrackingEventKind>);
+    struct StubMediaTracker(Vec<MediaTrackerEventKind>);
 
-    impl StubTracker {
+    impl StubMediaTracker {
         /// Takes everything, so a test only names events when the point is
         /// that one of them is refused.
         fn everything() -> Self {
             Self(vec![
-                TrackingEventKind::PlaybackStart,
-                TrackingEventKind::PlaybackProgress,
-                TrackingEventKind::PlaybackStop,
-                TrackingEventKind::MarkPlayed,
-                TrackingEventKind::MarkUnplayed,
-                TrackingEventKind::Favorite,
-                TrackingEventKind::Rating,
+                MediaTrackerEventKind::PlaybackStart,
+                MediaTrackerEventKind::PlaybackProgress,
+                MediaTrackerEventKind::PlaybackStop,
+                MediaTrackerEventKind::MarkPlayed,
+                MediaTrackerEventKind::MarkUnplayed,
+                MediaTrackerEventKind::Favorite,
+                MediaTrackerEventKind::Rating,
             ])
         }
     }
 
-    impl AddonKind for StubTracker {
+    impl AddonKind for StubMediaTracker {
         fn id(&self) -> &'static str {
             "scripted"
         }
     }
 
     #[async_trait]
-    impl TrackingAddon for StubTracker {
-        fn capabilities(&self) -> TrackingCapabilities {
-            TrackingCapabilities {
+    impl MediaTrackerAddon for StubMediaTracker {
+        fn capabilities(&self) -> MediaTrackerCapabilities {
+            MediaTrackerCapabilities {
                 supported_events: self
                     .0
                     .clone(),
@@ -183,11 +183,11 @@ mod tests {
 
         async fn on_event(
             &self,
-            _event: &TrackingEvent,
-            _target: &TrackingTarget,
-            _creds: &TrackingCredentials,
-            _ctx: &TrackingCtx,
-        ) -> TrackingResult<()> {
+            _event: &MediaTrackerEvent,
+            _target: &MediaTrackerTarget,
+            _creds: &MediaTrackerCredentials,
+            _ctx: &MediaTrackerCtx,
+        ) -> MediaTrackerResult<()> {
             Ok(())
         }
     }
@@ -196,9 +196,9 @@ mod tests {
         ctx: &AppContext,
         name: &str,
         status: MediaTrackerStatus,
-        filters: Vec<TrackingEventKind>,
+        filters: Vec<MediaTrackerEventKind>,
     ) -> Uuid {
-        connect_to(ctx, name, status, filters, StubTracker::everything()).await
+        connect_to(ctx, name, status, filters, StubMediaTracker::everything()).await
     }
 
     /// As `connect`, but against a provider that only declares some events.
@@ -206,8 +206,8 @@ mod tests {
         ctx: &AppContext,
         name: &str,
         status: MediaTrackerStatus,
-        filters: Vec<TrackingEventKind>,
-        provider: StubTracker,
+        filters: Vec<MediaTrackerEventKind>,
+        provider: StubMediaTracker,
     ) -> Uuid {
         let now = Utc::now().naive_utc();
         let addon = Addon {
@@ -240,7 +240,7 @@ mod tests {
         runtimes.push(AddonRuntime {
             row: addon.clone(),
             caps: AddonCapabilities {
-                tracking: Some(Arc::new(provider)),
+                media_tracker: Some(Arc::new(provider)),
                 ..Default::default()
             },
         });
@@ -362,18 +362,23 @@ mod tests {
             ctx,
             "a",
             MediaTrackerStatus::Connected,
-            vec![TrackingEventKind::MarkPlayed],
+            vec![MediaTrackerEventKind::MarkPlayed],
         )
         .await;
         let media = episode(ctx).await;
 
-        enqueue(ctx, user_id(ctx).await, &media, TrackingEvent::MarkPlayed)
-            .await
-            .unwrap();
+        enqueue(
+            ctx,
+            user_id(ctx).await,
+            &media,
+            MediaTrackerEvent::MarkPlayed,
+        )
+        .await
+        .unwrap();
 
         let rows = queued(ctx, tracker).await;
         assert_eq!(rows.len(), 1);
-        let db::QueueKind::Tracker { payload, .. } = &rows[0].kind;
+        let db::QueueKind::MediaTracker { payload, .. } = &rows[0].kind;
         assert_eq!(payload.media_id, media.id);
     }
 
@@ -387,21 +392,26 @@ mod tests {
             ctx,
             "stops",
             MediaTrackerStatus::Connected,
-            vec![TrackingEventKind::PlaybackStop],
+            vec![MediaTrackerEventKind::PlaybackStop],
         )
         .await;
         let played = connect(
             ctx,
             "played",
             MediaTrackerStatus::Connected,
-            vec![TrackingEventKind::MarkPlayed],
+            vec![MediaTrackerEventKind::MarkPlayed],
         )
         .await;
         let media = movie(ctx).await;
 
-        let n = enqueue(ctx, user_id(ctx).await, &media, TrackingEvent::MarkPlayed)
-            .await
-            .unwrap();
+        let n = enqueue(
+            ctx,
+            user_id(ctx).await,
+            &media,
+            MediaTrackerEvent::MarkPlayed,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(n, 1);
         assert!(
@@ -427,8 +437,11 @@ mod tests {
             ctx,
             "a",
             MediaTrackerStatus::Connected,
-            vec![TrackingEventKind::MarkPlayed, TrackingEventKind::Rating],
-            StubTracker(vec![TrackingEventKind::MarkPlayed]),
+            vec![
+                MediaTrackerEventKind::MarkPlayed,
+                MediaTrackerEventKind::Rating,
+            ],
+            StubMediaTracker(vec![MediaTrackerEventKind::MarkPlayed]),
         )
         .await;
         let media = movie(ctx).await;
@@ -437,7 +450,7 @@ mod tests {
             ctx,
             user_id(ctx).await,
             &media,
-            TrackingEvent::Rating { rating: Some(7.0) },
+            MediaTrackerEvent::Rating { rating: Some(7.0) },
         )
         .await
         .unwrap();
@@ -463,16 +476,21 @@ mod tests {
             ctx,
             "a",
             MediaTrackerStatus::Connected,
-            vec![TrackingEventKind::MarkPlayed],
+            vec![MediaTrackerEventKind::MarkPlayed],
         )
         .await;
         let media = movie(ctx).await;
         ctx.addons
             .replace_runtimes_for_test(Vec::new());
 
-        let n = enqueue(ctx, user_id(ctx).await, &media, TrackingEvent::MarkPlayed)
-            .await
-            .unwrap();
+        let n = enqueue(
+            ctx,
+            user_id(ctx).await,
+            &media,
+            MediaTrackerEvent::MarkPlayed,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(n, 0, "an uninstalled addon has nothing to deliver to");
         assert!(
@@ -492,14 +510,19 @@ mod tests {
             ctx,
             "expired",
             MediaTrackerStatus::AuthExpired,
-            vec![TrackingEventKind::MarkPlayed],
+            vec![MediaTrackerEventKind::MarkPlayed],
         )
         .await;
         let media = movie(ctx).await;
 
-        let n = enqueue(ctx, user_id(ctx).await, &media, TrackingEvent::MarkPlayed)
-            .await
-            .unwrap();
+        let n = enqueue(
+            ctx,
+            user_id(ctx).await,
+            &media,
+            MediaTrackerEvent::MarkPlayed,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(n, 0, "queueing for it would only pile up failures");
         assert!(
@@ -518,7 +541,7 @@ mod tests {
             ctx,
             "a",
             MediaTrackerStatus::Connected,
-            vec![TrackingEventKind::Favorite],
+            vec![MediaTrackerEventKind::Favorite],
         )
         .await;
         let media = movie(ctx).await;
@@ -538,13 +561,16 @@ mod tests {
 
         let rows = queued(ctx, tracker).await;
         assert_eq!(rows.len(), 1);
-        let db::QueueKind::Tracker { payload, .. } = &rows[0].kind;
-        assert_eq!(payload.event, TrackingEvent::Favorite { is_favorite: true });
+        let db::QueueKind::MediaTracker { payload, .. } = &rows[0].kind;
+        assert_eq!(
+            payload.event,
+            MediaTrackerEvent::Favorite { is_favorite: true }
+        );
     }
 
     /// Rates `movie` over the API and returns the events that were queued for
     /// it.
-    async fn rate(path_suffix: &str, delete: bool) -> Vec<TrackingEvent> {
+    async fn rate(path_suffix: &str, delete: bool) -> Vec<MediaTrackerEvent> {
         let (server, guard, token) =
             crate::integration_test::authenticated_server().await;
         let ctx = &guard.0;
@@ -552,7 +578,7 @@ mod tests {
             ctx,
             "a",
             MediaTrackerStatus::Connected,
-            vec![TrackingEventKind::Rating],
+            vec![MediaTrackerEventKind::Rating],
         )
         .await;
         let media = movie(ctx).await;
@@ -583,7 +609,7 @@ mod tests {
             .await
             .iter()
             .map(|row| {
-                let db::QueueKind::Tracker { payload, .. } = &row.kind;
+                let db::QueueKind::MediaTracker { payload, .. } = &row.kind;
                 payload
                     .event
                     .clone()
@@ -595,7 +621,7 @@ mod tests {
     async fn rating_an_item_queues_the_score() {
         assert_eq!(
             rate("?rating=7", false).await,
-            vec![TrackingEvent::Rating { rating: Some(7.0) }]
+            vec![MediaTrackerEvent::Rating { rating: Some(7.0) }]
         );
     }
 
@@ -603,7 +629,7 @@ mod tests {
     async fn clearing_a_rating_queues_the_removal() {
         assert_eq!(
             rate("", true).await,
-            vec![TrackingEvent::Rating { rating: None }],
+            vec![MediaTrackerEvent::Rating { rating: None }],
             "a cleared rating is itself the update a provider needs"
         );
     }

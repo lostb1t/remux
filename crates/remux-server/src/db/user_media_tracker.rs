@@ -4,9 +4,11 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
-use crate::addons::tracking::{TrackingCredentials, TrackingError, TrackingEventKind};
+use crate::addons::media_tracker::{
+    MediaTrackerCredentials, MediaTrackerError, MediaTrackerEventKind,
+};
 
-/// Health of one user's connection to a tracking service, as shown on their
+/// Health of one user's connection to a media tracker, as shown on their
 /// connected services page.
 #[derive(
     strum_macros::EnumString,
@@ -34,7 +36,7 @@ pub enum MediaTrackerStatus {
     AuthExpired,
 }
 
-/// Which half of `TrackingError` the last failure was, so the UI can tell a
+/// Which half of `MediaTrackerError` the last failure was, so the UI can tell a
 /// blip from something needing attention.
 #[derive(
     strum_macros::EnumString,
@@ -56,8 +58,8 @@ pub enum MediaTrackerErrorKind {
     Permanent,
 }
 
-impl From<&TrackingError> for MediaTrackerErrorKind {
-    fn from(err: &TrackingError) -> Self {
+impl From<&MediaTrackerError> for MediaTrackerErrorKind {
+    fn from(err: &MediaTrackerError) -> Self {
         if err.is_retryable() {
             Self::Retryable
         } else {
@@ -74,9 +76,9 @@ pub struct UserMediaTracker {
     pub status: MediaTrackerStatus,
     #[sqlx(json)]
     #[serde(skip_serializing)]
-    pub credentials: TrackingCredentials,
+    pub credentials: MediaTrackerCredentials,
     #[sqlx(json)]
-    pub event_filters: Vec<TrackingEventKind>,
+    pub event_filters: Vec<MediaTrackerEventKind>,
     pub last_success_at: Option<NaiveDateTime>,
     pub last_error_at: Option<NaiveDateTime>,
     pub last_error: Option<String>,
@@ -92,8 +94,8 @@ impl UserMediaTracker {
     pub fn new(
         user_id: Uuid,
         addon_id: Uuid,
-        credentials: TrackingCredentials,
-        event_filters: Vec<TrackingEventKind>,
+        credentials: MediaTrackerCredentials,
+        event_filters: Vec<MediaTrackerEventKind>,
     ) -> Self {
         let now = Utc::now().naive_utc();
         Self {
@@ -113,7 +115,7 @@ impl UserMediaTracker {
     }
 
     /// Whether this connection should receive `kind`.
-    pub fn wants(&self, kind: TrackingEventKind) -> bool {
+    pub fn wants(&self, kind: MediaTrackerEventKind) -> bool {
         self.status == MediaTrackerStatus::Connected
             && self
                 .event_filters
@@ -168,7 +170,7 @@ impl UserMediaTracker {
     pub async fn list_subscribed(
         db: &SqlitePool,
         addon_id: Uuid,
-        kind: TrackingEventKind,
+        kind: MediaTrackerEventKind,
     ) -> Result<Vec<Self>> {
         let rows = Self::list_for_addon(db, addon_id).await?;
         Ok(rows
@@ -215,7 +217,7 @@ impl UserMediaTracker {
     pub async fn set_event_filters(
         db: &SqlitePool,
         id: Uuid,
-        filters: &[TrackingEventKind],
+        filters: &[MediaTrackerEventKind],
     ) -> Result<()> {
         sqlx::query(
             "UPDATE user_media_trackers SET event_filters = ?2, updated_at = ?3 \
@@ -250,7 +252,7 @@ impl UserMediaTracker {
     pub async fn mark_failure(
         db: &SqlitePool,
         id: Uuid,
-        err: &TrackingError,
+        err: &MediaTrackerError,
     ) -> Result<()> {
         let kind = MediaTrackerErrorKind::from(err);
         let status = match kind {
@@ -316,8 +318,8 @@ mod tests {
         user.id
     }
 
-    fn creds(token: &str) -> TrackingCredentials {
-        TrackingCredentials::new(serde_json::json!({ "token": token }))
+    fn creds(token: &str) -> MediaTrackerCredentials {
+        MediaTrackerCredentials::new(serde_json::json!({ "token": token }))
     }
 
     #[tokio::test]
@@ -335,7 +337,7 @@ mod tests {
             user,
             addon,
             creds("abc"),
-            vec![TrackingEventKind::PlaybackStop],
+            vec![MediaTrackerEventKind::PlaybackStop],
         );
         row.upsert(db)
             .await
@@ -352,7 +354,7 @@ mod tests {
                 .get_str("token"),
             Some("abc")
         );
-        assert_eq!(got.event_filters, vec![TrackingEventKind::PlaybackStop]);
+        assert_eq!(got.event_filters, vec![MediaTrackerEventKind::PlaybackStop]);
     }
 
     #[tokio::test]
@@ -376,7 +378,7 @@ mod tests {
             user,
             addon,
             creds("new"),
-            vec![TrackingEventKind::MarkPlayed],
+            vec![MediaTrackerEventKind::MarkPlayed],
         );
         second
             .upsert(db)
@@ -456,7 +458,7 @@ mod tests {
             subscribed,
             addon,
             creds("a"),
-            vec![TrackingEventKind::PlaybackStop],
+            vec![MediaTrackerEventKind::PlaybackStop],
         )
         .upsert(db)
         .await
@@ -465,7 +467,7 @@ mod tests {
             unsubscribed,
             addon,
             creds("b"),
-            vec![TrackingEventKind::MarkPlayed],
+            vec![MediaTrackerEventKind::MarkPlayed],
         )
         .upsert(db)
         .await
@@ -474,7 +476,7 @@ mod tests {
             broken,
             addon,
             creds("c"),
-            vec![TrackingEventKind::PlaybackStop],
+            vec![MediaTrackerEventKind::PlaybackStop],
         );
         broken_row
             .upsert(db)
@@ -483,7 +485,7 @@ mod tests {
         UserMediaTracker::mark_failure(
             db,
             broken_row.id,
-            &TrackingError::reauth("401"),
+            &MediaTrackerError::reauth("401"),
         )
         .await
         .unwrap();
@@ -491,7 +493,7 @@ mod tests {
         let got = UserMediaTracker::list_subscribed(
             db,
             addon,
-            TrackingEventKind::PlaybackStop,
+            MediaTrackerEventKind::PlaybackStop,
         )
         .await
         .unwrap();
@@ -517,15 +519,19 @@ mod tests {
             user,
             addon,
             creds("a"),
-            vec![TrackingEventKind::PlaybackStop],
+            vec![MediaTrackerEventKind::PlaybackStop],
         );
         row.upsert(db)
             .await
             .unwrap();
 
-        UserMediaTracker::mark_failure(db, row.id, &TrackingError::retryable("503"))
-            .await
-            .unwrap();
+        UserMediaTracker::mark_failure(
+            db,
+            row.id,
+            &MediaTrackerError::retryable("503"),
+        )
+        .await
+        .unwrap();
 
         let got = UserMediaTracker::get(db, row.id)
             .await
@@ -538,7 +544,7 @@ mod tests {
         );
         assert_eq!(got.last_error_kind, Some(MediaTrackerErrorKind::Retryable));
         assert!(
-            got.wants(TrackingEventKind::PlaybackStop),
+            got.wants(MediaTrackerEventKind::PlaybackStop),
             "still dispatched to while retrying"
         );
     }
@@ -559,7 +565,7 @@ mod tests {
         auth.upsert(db)
             .await
             .unwrap();
-        UserMediaTracker::mark_failure(db, auth.id, &TrackingError::reauth("401"))
+        UserMediaTracker::mark_failure(db, auth.id, &MediaTrackerError::reauth("401"))
             .await
             .unwrap();
 
@@ -568,9 +574,13 @@ mod tests {
             .upsert(db)
             .await
             .unwrap();
-        UserMediaTracker::mark_failure(db, other.id, &TrackingError::permanent("400"))
-            .await
-            .unwrap();
+        UserMediaTracker::mark_failure(
+            db,
+            other.id,
+            &MediaTrackerError::permanent("400"),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             UserMediaTracker::get(db, auth.id)
@@ -605,7 +615,7 @@ mod tests {
             .await
             .unwrap();
 
-        UserMediaTracker::mark_failure(db, row.id, &TrackingError::reauth("401"))
+        UserMediaTracker::mark_failure(db, row.id, &MediaTrackerError::reauth("401"))
             .await
             .unwrap();
         UserMediaTracker::mark_success(db, row.id)
@@ -645,7 +655,7 @@ mod tests {
             user,
             addon,
             creds("secret"),
-            vec![TrackingEventKind::PlaybackStop],
+            vec![MediaTrackerEventKind::PlaybackStop],
         );
         row.upsert(db)
             .await
@@ -654,7 +664,10 @@ mod tests {
         UserMediaTracker::set_event_filters(
             db,
             row.id,
-            &[TrackingEventKind::MarkPlayed, TrackingEventKind::Favorite],
+            &[
+                MediaTrackerEventKind::MarkPlayed,
+                MediaTrackerEventKind::Favorite,
+            ],
         )
         .await
         .unwrap();
@@ -665,7 +678,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             got.event_filters,
-            vec![TrackingEventKind::MarkPlayed, TrackingEventKind::Favorite]
+            vec![
+                MediaTrackerEventKind::MarkPlayed,
+                MediaTrackerEventKind::Favorite
+            ]
         );
         assert_eq!(
             got.credentials

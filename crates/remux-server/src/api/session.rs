@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::{
     AppState, IntoApiError, OptionExt, ResultExt,
-    addons::tracking::TrackingEvent,
+    addons::media_tracker::MediaTrackerEvent,
     api, common,
     common::{TickUnit, ToRunTimeTicks},
     db,
@@ -91,12 +91,12 @@ async fn track(
     state: &AppState,
     session: &auth::AuthSession,
     item_id: Uuid,
-    event: TrackingEvent,
+    event: MediaTrackerEvent,
 ) {
     if !state
         .ctx
         .addons
-        .has_tracking()
+        .has_media_tracker()
     {
         return;
     }
@@ -151,7 +151,7 @@ pub async fn report_playback_start(
         &state,
         &session,
         data.item_id,
-        TrackingEvent::PlaybackStart {
+        MediaTrackerEvent::PlaybackStart {
             position_ticks: data
                 .position_ticks
                 .unwrap_or(0),
@@ -215,7 +215,7 @@ pub async fn report_playback_progress(
                 &state,
                 &session,
                 data.item_id,
-                TrackingEvent::PlaybackProgress {
+                MediaTrackerEvent::PlaybackProgress {
                     position_ticks: data
                         .position_ticks
                         .unwrap_or(0),
@@ -272,7 +272,7 @@ pub async fn report_playback_stopped(
         if state
             .ctx
             .addons
-            .has_tracking()
+            .has_media_tracker()
             && let Ok(Some(media)) =
                 MediaResolveService::resolve_item(data.item_id, &state.ctx).await
         {
@@ -282,7 +282,7 @@ pub async fn report_playback_stopped(
                     .user
                     .id,
                 &media,
-                TrackingEvent::PlaybackStop {
+                MediaTrackerEvent::PlaybackStop {
                     position_ticks: data
                         .position_ticks
                         .unwrap_or(0),

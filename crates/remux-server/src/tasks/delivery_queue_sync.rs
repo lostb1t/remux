@@ -6,7 +6,7 @@ use tracing::{debug, warn};
 use super::{ProgressReporter, Task, TaskCategory, TaskService};
 use crate::{
     AppContext,
-    addons::tracking::{TrackingCtx, TrackingError, TrackingResult},
+    addons::media_tracker::{MediaTrackerCtx, MediaTrackerError, MediaTrackerResult},
     db,
 };
 use uuid::Uuid;
@@ -34,7 +34,7 @@ impl Task for DeliveryQueueSyncTask {
     }
     fn description(&self) -> &str {
         "Delivers queued outbound events, currently watch activity headed for \
-         connected tracking services, retrying transient failures with backoff."
+         connected media trackers, retrying transient failures with backoff."
     }
     fn short_description(&self) -> &str {
         "Delivers queued outbound events"
@@ -124,12 +124,12 @@ pub async fn drain(ctx: &AppContext, progress: &ProgressReporter) -> Result<usiz
 
 /// Hand one row to whatever its kind talks to. Adding a kind means adding an
 /// arm here.
-async fn deliver(ctx: &AppContext, kind: &db::QueueKind) -> TrackingResult<()> {
+async fn deliver(ctx: &AppContext, kind: &db::QueueKind) -> MediaTrackerResult<()> {
     match kind {
-        db::QueueKind::Tracker {
+        db::QueueKind::MediaTracker {
             user_media_tracker_id,
             payload,
-        } => deliver_tracker(ctx, *user_media_tracker_id, payload).await,
+        } => deliver_media_tracker(ctx, *user_media_tracker_id, payload).await,
     }
 }
 
@@ -138,10 +138,10 @@ async fn deliver(ctx: &AppContext, kind: &db::QueueKind) -> TrackingResult<()> {
 async fn record_outcome(
     ctx: &AppContext,
     kind: &db::QueueKind,
-    err: Option<&TrackingError>,
+    err: Option<&MediaTrackerError>,
 ) -> Result<()> {
     match kind {
-        db::QueueKind::Tracker {
+        db::QueueKind::MediaTracker {
             user_media_tracker_id,
             ..
         } => match err {
@@ -157,37 +157,41 @@ async fn record_outcome(
     }
 }
 
-async fn deliver_tracker(
+async fn deliver_media_tracker(
     ctx: &AppContext,
     user_media_tracker_id: Uuid,
-    payload: &db::TrackerPayload,
-) -> TrackingResult<()> {
+    payload: &db::MediaTrackerPayload,
+) -> MediaTrackerResult<()> {
     let conn = db::UserMediaTracker::get(&ctx.db, user_media_tracker_id)
         .await
-        .map_err(|e| TrackingError::retryable(format!("loading media tracker: {e}")))?
-        .ok_or_else(|| TrackingError::permanent("media tracker no longer exists"))?;
+        .map_err(|e| {
+            MediaTrackerError::retryable(format!("loading media tracker: {e}"))
+        })?
+        .ok_or_else(|| {
+            MediaTrackerError::permanent("media tracker no longer exists")
+        })?;
 
     let addon = ctx
         .addons
-        .tracking_for(conn.addon_id)
+        .media_tracker_for(conn.addon_id)
         .ok_or_else(|| {
             // The addon was disabled or removed since the row was queued.
-            TrackingError::permanent("tracking addon is not enabled")
+            MediaTrackerError::permanent("media tracker addon is not enabled")
         })?;
 
     let media = db::Media::get_by_id(&ctx.db, &payload.media_id)
         .await
-        .map_err(|e| TrackingError::retryable(format!("loading item: {e}")))?
-        .ok_or_else(|| TrackingError::permanent("item no longer exists"))?;
+        .map_err(|e| MediaTrackerError::retryable(format!("loading item: {e}")))?
+        .ok_or_else(|| MediaTrackerError::permanent("item no longer exists"))?;
 
     let target = crate::services::media_tracker::resolve_target(&ctx.db, &media)
         .await
-        .map_err(|e| TrackingError::retryable(format!("describing item: {e}")))?
+        .map_err(|e| MediaTrackerError::retryable(format!("describing item: {e}")))?
         .ok_or_else(|| {
-            TrackingError::permanent("no external id a tracking service could match")
+            MediaTrackerError::permanent("no external id a media tracker could match")
         })?;
 
-    let tctx = TrackingCtx {
+    let tctx = MediaTrackerCtx {
         config: Arc::new(
             ctx.config
                 .clone(),
@@ -204,14 +208,14 @@ mod tests {
     use crate::{
         addons::{
             AddonCapabilities, AddonKind, AddonPresetRef, AddonRuntime,
-            tracking::{
-                TrackingAddon, TrackingCapabilities, TrackingCredentials,
-                TrackingEvent, TrackingEventKind, TrackingTarget,
+            media_tracker::{
+                MediaTrackerAddon, MediaTrackerCapabilities, MediaTrackerCredentials,
+                MediaTrackerEvent, MediaTrackerEventKind, MediaTrackerTarget,
             },
         },
         db::{
-            DeliveryQueue, DeliveryStatus, MediaTrackerStatus, QueueKind,
-            TrackerPayload, UserMediaTracker,
+            DeliveryQueue, DeliveryStatus, MediaTrackerPayload, MediaTrackerStatus,
+            QueueKind, UserMediaTracker,
         },
         integration_test::new_test_server,
     };
@@ -227,14 +231,14 @@ mod tests {
     /// what it was handed. Standing in for a real addon is the only way to
     /// exercise the delivery loop before one exists.
     struct ScriptedAddon {
-        script: Mutex<VecDeque<TrackingResult<()>>>,
-        seen: Mutex<Vec<(TrackingEventKind, String)>>,
-        targets: Mutex<Vec<TrackingTarget>>,
+        script: Mutex<VecDeque<MediaTrackerResult<()>>>,
+        seen: Mutex<Vec<(MediaTrackerEventKind, String)>>,
+        targets: Mutex<Vec<MediaTrackerTarget>>,
     }
 
     impl ScriptedAddon {
         /// Runs out of script -> succeeds, so the common case needs no setup.
-        fn new(script: Vec<TrackingResult<()>>) -> Arc<Self> {
+        fn new(script: Vec<MediaTrackerResult<()>>) -> Arc<Self> {
             Arc::new(Self {
                 script: Mutex::new(script.into()),
                 seen: Mutex::new(Vec::new()),
@@ -242,7 +246,7 @@ mod tests {
             })
         }
 
-        fn seen(&self) -> Vec<(TrackingEventKind, String)> {
+        fn seen(&self) -> Vec<(MediaTrackerEventKind, String)> {
             self.seen
                 .lock()
                 .unwrap()
@@ -250,7 +254,7 @@ mod tests {
         }
 
         /// The items as they reached the provider.
-        fn targets(&self) -> Vec<TrackingTarget> {
+        fn targets(&self) -> Vec<MediaTrackerTarget> {
             self.targets
                 .lock()
                 .unwrap()
@@ -265,18 +269,18 @@ mod tests {
     }
 
     #[async_trait]
-    impl TrackingAddon for ScriptedAddon {
-        fn capabilities(&self) -> TrackingCapabilities {
-            TrackingCapabilities::default()
+    impl MediaTrackerAddon for ScriptedAddon {
+        fn capabilities(&self) -> MediaTrackerCapabilities {
+            MediaTrackerCapabilities::default()
         }
 
         async fn on_event(
             &self,
-            event: &TrackingEvent,
-            target: &TrackingTarget,
-            _creds: &TrackingCredentials,
-            _ctx: &TrackingCtx,
-        ) -> TrackingResult<()> {
+            event: &MediaTrackerEvent,
+            target: &MediaTrackerTarget,
+            _creds: &MediaTrackerCredentials,
+            _ctx: &MediaTrackerCtx,
+        ) -> MediaTrackerResult<()> {
             self.seen
                 .lock()
                 .unwrap()
@@ -320,7 +324,7 @@ mod tests {
         }
     }
 
-    /// Installs `addon` as the tracking capability of a stored addon row and
+    /// Installs `addon` as the media tracker capability of a stored addon row and
     /// connects `user` to it. Returns the media tracker's id.
     async fn connect(
         ctx: &AppContext,
@@ -342,8 +346,8 @@ mod tests {
         let conn = UserMediaTracker::new(
             u.id,
             row.id,
-            TrackingCredentials::new(serde_json::json!({ "token": "t" })),
-            vec![TrackingEventKind::PlaybackStop],
+            MediaTrackerCredentials::new(serde_json::json!({ "token": "t" })),
+            vec![MediaTrackerEventKind::PlaybackStop],
         );
         conn.upsert(&ctx.db)
             .await
@@ -356,7 +360,7 @@ mod tests {
         runtimes.push(AddonRuntime {
             row: row.clone(),
             caps: AddonCapabilities {
-                tracking: Some(addon),
+                media_tracker: Some(addon),
                 ..Default::default()
             },
         });
@@ -397,11 +401,11 @@ mod tests {
     }
 
     async fn queue_item(db: &SqlitePool, conn: Uuid, media_id: Uuid) -> Uuid {
-        let row = DeliveryQueue::new(QueueKind::Tracker {
+        let row = DeliveryQueue::new(QueueKind::MediaTracker {
             user_media_tracker_id: conn,
-            payload: TrackerPayload {
+            payload: MediaTrackerPayload {
                 media_id,
-                event: TrackingEvent::PlaybackStop {
+                event: MediaTrackerEvent::PlaybackStop {
                     position_ticks: 42,
                     played: true,
                 },
@@ -436,7 +440,10 @@ mod tests {
 
         assert_eq!(
             addon.seen(),
-            vec![(TrackingEventKind::PlaybackStop, "The Matrix".to_string())],
+            vec![(
+                MediaTrackerEventKind::PlaybackStop,
+                "The Matrix".to_string()
+            )],
             "the payload must round-trip to the provider intact"
         );
 
@@ -469,7 +476,7 @@ mod tests {
             .await
             .unwrap();
         let ctx = &guard.0;
-        let addon = ScriptedAddon::new(vec![Err(TrackingError::retryable("503"))]);
+        let addon = ScriptedAddon::new(vec![Err(MediaTrackerError::retryable("503"))]);
         let (conn, _) = connect(ctx, "bob", addon).await;
         let row = queue(&ctx.db, conn, "Heat").await;
 
@@ -509,7 +516,7 @@ mod tests {
             .await
             .unwrap();
         let ctx = &guard.0;
-        let addon = ScriptedAddon::new(vec![Err(TrackingError::reauth("401"))]);
+        let addon = ScriptedAddon::new(vec![Err(MediaTrackerError::reauth("401"))]);
         let (conn, _) = connect(ctx, "carol", addon).await;
         let row = queue(&ctx.db, conn, "Ronin").await;
 
@@ -555,7 +562,7 @@ mod tests {
             .replace_runtimes_for_test(vec![AddonRuntime {
                 row,
                 caps: AddonCapabilities {
-                    tracking: Some(addon.clone()),
+                    media_tracker: Some(addon.clone()),
                     ..Default::default()
                 },
             }]);
@@ -698,7 +705,8 @@ mod tests {
             .await
             .unwrap();
         let ctx = &guard.0;
-        let broken = ScriptedAddon::new(vec![Err(TrackingError::retryable("down"))]);
+        let broken =
+            ScriptedAddon::new(vec![Err(MediaTrackerError::retryable("down"))]);
         let working = ScriptedAddon::new(vec![]);
         let (a, _) = connect(ctx, "erin", broken).await;
         let (b, _) = connect(ctx, "frank", working.clone()).await;

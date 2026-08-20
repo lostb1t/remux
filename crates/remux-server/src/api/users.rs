@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::{
     AppState, IntoApiError, OptionExt, ResultExt,
-    addons::tracking::TrackingEvent,
+    addons::media_tracker::MediaTrackerEvent,
     api,
     api::system::QuickConnectEntry,
     common::{get_uuid, server_id},
@@ -458,7 +458,7 @@ pub async fn mark_favorite(
         &state,
         user.id,
         &media,
-        TrackingEvent::Favorite { is_favorite: true },
+        MediaTrackerEvent::Favorite { is_favorite: true },
     )
     .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
@@ -486,7 +486,7 @@ pub async fn unmark_favorite(
         &state,
         user.id,
         &media,
-        TrackingEvent::Favorite { is_favorite: false },
+        MediaTrackerEvent::Favorite { is_favorite: false },
     )
     .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
@@ -514,7 +514,7 @@ pub async fn mark_favorite_modern(
         &state,
         user.id,
         &media,
-        TrackingEvent::Favorite { is_favorite: true },
+        MediaTrackerEvent::Favorite { is_favorite: true },
     )
     .await;
     Ok(Json(api::db_state_to_dto(s, &media)).into_response())
@@ -542,7 +542,7 @@ pub async fn unmark_favorite_modern(
         &state,
         user.id,
         &media,
-        TrackingEvent::Favorite { is_favorite: false },
+        MediaTrackerEvent::Favorite { is_favorite: false },
     )
     .await;
     Ok(Json(api::db_state_to_dto(s, &media)).into_response())
@@ -578,7 +578,7 @@ pub async fn mark_played(
         &state,
         user.id,
         &media,
-        TrackingEvent::MarkPlayed,
+        MediaTrackerEvent::MarkPlayed,
     )
     .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
@@ -607,7 +607,7 @@ pub async fn unmark_played(
         &state,
         user.id,
         &media,
-        TrackingEvent::MarkUnplayed,
+        MediaTrackerEvent::MarkUnplayed,
     )
     .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
@@ -663,7 +663,7 @@ pub async fn update_item_rating(
         &state,
         user.id,
         &media,
-        TrackingEvent::Rating {
+        MediaTrackerEvent::Rating {
             rating: rating.map(|r| r.value() as f32),
         },
     )
@@ -694,7 +694,7 @@ pub async fn delete_item_rating(
         &state,
         user.id,
         &media,
-        TrackingEvent::Rating { rating: None },
+        MediaTrackerEvent::Rating { rating: None },
     )
     .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
@@ -725,7 +725,7 @@ pub async fn update_item_rating_legacy(
         &state,
         user.id,
         &media,
-        TrackingEvent::Rating {
+        MediaTrackerEvent::Rating {
             rating: rating.map(|r| r.value() as f32),
         },
     )
@@ -756,7 +756,7 @@ pub async fn delete_item_rating_legacy(
         &state,
         user.id,
         &media,
-        TrackingEvent::Rating { rating: None },
+        MediaTrackerEvent::Rating { rating: None },
     )
     .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())

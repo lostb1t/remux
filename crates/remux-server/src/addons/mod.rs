@@ -7,13 +7,13 @@ pub mod eclipse;
 pub mod introdb;
 pub mod iptv;
 pub mod lrclib;
+pub mod media_tracker;
 pub mod opendal;
 pub mod probe;
 pub mod squid;
 pub mod stremio;
 pub mod tmdb;
 pub mod torznab;
-pub mod tracking;
 pub mod trakt;
 pub mod ytdlp;
 
@@ -916,7 +916,7 @@ pub struct AddonCapabilities {
     pub lyric: Option<Arc<dyn LyricAddon>>,
     pub index: Option<Arc<dyn IndexAddon>>,
     pub metrics: Option<Arc<dyn MetricsAddon>>,
-    pub tracking: Option<Arc<dyn tracking::TrackingAddon>>,
+    pub media_tracker: Option<Arc<dyn media_tracker::MediaTrackerAddon>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1274,13 +1274,13 @@ impl AddonService {
         out
     }
 
-    /// The tracking capability of one enabled addon, if it has one. Returns
+    /// The media tracker capability of one enabled addon, if it has one. Returns
     /// `None` once an addon is disabled or deleted, which is why queued
     /// deliveries treat that as permanent rather than retrying forever.
-    pub fn tracking_for(
+    pub fn media_tracker_for(
         &self,
         addon_id: Uuid,
-    ) -> Option<Arc<dyn tracking::TrackingAddon>> {
+    ) -> Option<Arc<dyn media_tracker::MediaTrackerAddon>> {
         self.inner
             .load()
             .iter()
@@ -1293,14 +1293,14 @@ impl AddonService {
             })
             .and_then(|r| {
                 r.caps
-                    .tracking
+                    .media_tracker
                     .clone()
             })
     }
 
     /// Whether any enabled addon can track at all. Nothing can be connected to
     /// an addon that is not installed, so this answers without a query.
-    pub fn has_tracking(&self) -> bool {
+    pub fn has_media_tracker(&self) -> bool {
         self.inner
             .load()
             .iter()
@@ -1308,7 +1308,7 @@ impl AddonService {
                 r.row
                     .enabled
                     && r.caps
-                        .tracking
+                        .media_tracker
                         .is_some()
             })
     }
