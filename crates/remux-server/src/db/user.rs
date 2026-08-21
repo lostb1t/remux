@@ -558,6 +558,27 @@ impl UserMediaState {
         })
     }
 
+    /// After a media item is (re-)imported, remap any `user_media_state` rows
+    /// that are still keyed to an old UUID for that item. Covers all users.
+    ///
+    /// Useful when the same content is purged and re-imported with a new UUID:
+    /// rather than waiting for each user to play the item before their state is
+    /// migrated lazily by `get_or_new`, this sweeps the whole table immediately.
+    pub async fn remap_orphaned_for(db: &SqlitePool, items: &[super::Media]) {
+        for item in items {
+            for old_id in super::Media::ext_id_uuid_candidates(item) {
+                sqlx::query(
+                    "UPDATE user_media_state SET media_id = ? WHERE media_id = ?",
+                )
+                .bind(item.id)
+                .bind(old_id)
+                .execute(db)
+                .await
+                .ok();
+            }
+        }
+    }
+
     /// Set or clear the personal rating.
     pub async fn set_rating(
         db: &SqlitePool,
