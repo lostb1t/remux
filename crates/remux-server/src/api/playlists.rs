@@ -6,8 +6,7 @@ use axum::{
 use axum_extra::extract::Query;
 use http::StatusCode;
 use remux_macros::{delete, get, post, query};
-use remux_sdks::CommaSeparatedList;
-use remux_sdks::remux::deserialize_separated_str;
+use remux_sdks::{CommaSeparatedList, remux::deserialize_separated_str};
 use uuid::Uuid;
 
 use crate::{
