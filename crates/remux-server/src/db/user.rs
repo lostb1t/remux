@@ -565,17 +565,48 @@ impl UserMediaState {
     /// rather than waiting for each user to play the item before their state is
     /// migrated lazily by `get_or_new`, this sweeps the whole table immediately.
     pub async fn remap_orphaned_for(db: &SqlitePool, items: &[super::Media]) {
-        for item in items {
-            for old_id in super::Media::ext_id_uuid_candidates(item) {
-                sqlx::query(
-                    "UPDATE user_media_state SET media_id = ? WHERE media_id = ?",
-                )
-                .bind(item.id)
-                .bind(old_id)
-                .execute(db)
+        let pairs: Vec<(uuid::Uuid, uuid::Uuid)> = items
+            .iter()
+            .flat_map(|item| {
+                super::Media::ext_id_uuid_candidates(item)
+                    .into_iter()
+                    .map(|old| (old, item.id))
+            })
+            .collect();
+
+        if pairs.is_empty() {
+            return;
+        }
+
+        // Each pair needs 3 bind slots (WHEN ?, THEN ?, IN ?).
+        // SQLite's limit is 999; use 300 pairs per batch to stay well under it.
+        for chunk in pairs.chunks(300) {
+            let mut sql =
+                String::from("UPDATE user_media_state SET media_id = CASE media_id");
+            for _ in chunk {
+                sql.push_str(" WHEN ? THEN ?");
+            }
+            sql.push_str(" END WHERE media_id IN (");
+            for i in 0..chunk.len() {
+                if i > 0 {
+                    sql.push(',');
+                }
+                sql.push('?');
+            }
+            sql.push(')');
+
+            let mut q = sqlx::query(&sql);
+            for (old, new) in chunk {
+                q = q
+                    .bind(old)
+                    .bind(new);
+            }
+            for (old, _) in chunk {
+                q = q.bind(old);
+            }
+            q.execute(db)
                 .await
                 .ok();
-            }
         }
     }
 
