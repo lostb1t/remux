@@ -986,14 +986,6 @@ impl TreeAddon for OpendalAddon {
 // Opendal file index scanning (backing refresh_index)
 // ---------------------------------------------------------------------------
 
-pub(crate) const VIDEO_EXTENSIONS: &[&str] = &[
-    "mkv", "mp4", "avi", "mov", "m4v", "ts", "wmv", "webm", "strm",
-];
-
-const AUDIO_EXTENSIONS: &[&str] = &[
-    "mp3", "flac", "m4a", "ogg", "opus", "wav", "aac", "wv", "strm",
-];
-
 const SUBTITLE_EXTENSIONS: &[&str] = &["srt", "ass", "ssa", "vtt", "sub", "sup"];
 
 /// Extract the file stem (filename without the last extension).
@@ -1079,10 +1071,16 @@ async fn scan_addon(
 
     info!(addon = %addon.name, kind = %addon.preset.kind, media_kind, "opendal: scanning");
 
-    let extensions: &[&str] = if media_kind == "track" {
-        AUDIO_EXTENSIONS
+    let is_media_ext: fn(&str) -> bool = if media_kind == "track" {
+        |ext| {
+            ext == "strm"
+                || remux_sdks::remux::AudioContainer::parse_known(ext).is_some()
+        }
     } else {
-        VIDEO_EXTENSIONS
+        |ext| {
+            ext == "strm"
+                || remux_sdks::remux::VideoContainer::parse_known(ext).is_some()
+        }
     };
 
     let track_num_re = Regex::new(r"^(\d{1,3})[.\s\-_\[\]]+").unwrap();
@@ -1270,7 +1268,7 @@ async fn scan_addon(
                 continue;
             }
 
-            if !extensions.contains(&ext.as_str()) {
+            if !is_media_ext(ext.as_str()) {
                 continue;
             }
 

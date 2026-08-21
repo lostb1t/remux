@@ -1,7 +1,10 @@
 use anyhow::anyhow;
 use axum::Json;
 
-use super::subtitles::{inject_external_subtitles, scored_external_subtitles};
+use super::subtitles::{
+    inject_external_subtitles, inject_sidecar_subtitles, save_sidecar_subtitle_routes,
+    scored_external_subtitles,
+};
 use axum::{
     body::Body,
     extract::{Path, State},
@@ -54,9 +57,21 @@ pub async fn items_playbackinfo(
     State(state): State<AppState>,
     session: auth::AuthSession,
     Path(id): Path<Uuid>,
+    Query(query): Query<api::PlaybackInfoQuery>,
     Json(payload): Json<api::PlaybackInfoQuery>,
 ) -> Result<impl IntoResponse> {
-    items_playbackinfo_inner(state, session, id, payload).await
+    // Jellyfin web sends MediaSourceId as query param even for POST; merge query and body
+    let mut q = payload;
+    q.media_source_id = q
+        .media_source_id
+        .or(query.media_source_id);
+    q.user_id = q
+        .user_id
+        .or(query.user_id);
+    q.device_profile = q
+        .device_profile
+        .or(query.device_profile);
+    items_playbackinfo_inner(state, session, id, q).await
 }
 
 #[get("/items/{id}/playbackinfo")]
@@ -94,6 +109,34 @@ async fn load_saved_selections(
         Ok(Some(state)) => (state.audio_idx, state.subtitle_idx),
         _ => (None, None),
     }
+}
+
+fn apply_item_runtime_fallback(
+    source: &mut api::MediaSourceInfo,
+    item_runtime_seconds: Option<i64>,
+) {
+    if source
+        .run_time_ticks
+        .is_some_and(|ticks| ticks > 0)
+    {
+        return;
+    }
+
+    source.run_time_ticks = item_runtime_seconds
+        .filter(|seconds| *seconds > 0)
+        .and_then(|seconds| seconds.to_ticks(TickUnit::Seconds));
+}
+
+fn playback_original_language(
+    item: Option<&db::Media>,
+    selected_source_language: Option<String>,
+) -> Option<String> {
+    item.and_then(|media| {
+        media
+            .original_language
+            .clone()
+    })
+    .or(selected_source_language)
 }
 
 async fn items_playbackinfo_inner(
@@ -155,7 +198,7 @@ async fn items_playbackinfo_inner(
     });
     let is_live = media.is_live();
     let is_track_item = media.is_track();
-    let original_language = media
+    let selected_source_language = media
         .original_language
         .clone();
     service
@@ -173,6 +216,11 @@ async fn items_playbackinfo_inner(
     .await
     .ok()
     .flatten();
+    let item_runtime_seconds = subtitle_media
+        .as_ref()
+        .and_then(|item| item.runtime);
+    let original_language =
+        playback_original_language(subtitle_media.as_ref(), selected_source_language);
 
     let is_track = is_track_item
         || subtitle_media
@@ -219,6 +267,11 @@ async fn items_playbackinfo_inner(
             .results
             .len(),
     );
+    let mut sidecar_subtitle_routes = Vec::with_capacity(
+        probed
+            .results
+            .len(),
+    );
 
     // Per-user playback preferences + remembered selections, resolved per source
     // via `MediaSourceInfo::resolve_default_streams` (see below).
@@ -250,6 +303,11 @@ async fn items_playbackinfo_inner(
         effective_stream,
     } in probed.results
     {
+        // Metadata-only torrent probes may not know the container duration yet.
+        // Keep the authoritative Movie/Episode duration in PlaybackInfo so
+        // clients do not treat a normal VOD source as an indefinite stream.
+        apply_item_runtime_fallback(&mut source, item_runtime_seconds);
+
         if has_lyrics {
             api::inject_lyric_stream(&mut source);
         }
@@ -414,16 +472,22 @@ async fn items_playbackinfo_inner(
                 source.supports_transcoding = true;
                 source.supports_direct_play = true;
             }
-            TranscodeDecision::Skip => {
-                info!(
-                    user = %session.user.username,
-                    stream_id = %stream.id,
-                    "video transcoding required but not allowed — marking source as not transcodable"
-                );
-                continue;
-            }
             TranscodeDecision::Transcode(outcome) => outcome.apply_to(&mut source),
         }
+
+        let sidecars = effective_stream
+            .stream_info
+            .as_ref()
+            .map(|stream| {
+                stream.subtitle_sidecars(
+                    &state
+                        .ctx
+                        .torrent,
+                )
+            })
+            .unwrap_or_default();
+        let routes = inject_sidecar_subtitles(&mut source, sidecars);
+        let subtitle_source_id = source.id;
 
         apply_subtitle_delivery(
             &mut source,
@@ -445,6 +509,7 @@ async fn items_playbackinfo_inner(
             }
         }
 
+        sidecar_subtitle_routes.push((subtitle_source_id, routes));
         media_sources.push(source);
     }
 
@@ -502,6 +567,35 @@ async fn items_playbackinfo_inner(
     if !specific_stream_requested && !media_sources.is_empty() {
         media_sources[0].id = id;
         media_sources[0].e_tag = id;
+    }
+
+    for (source, (delivery_source_id, routes)) in media_sources
+        .iter()
+        .zip(sidecar_subtitle_routes)
+    {
+        // DeliveryUrl contains the source ID from apply_subtitle_delivery, while
+        // some clients construct the route from the final MediaSourceInfo ID.
+        // Cache both keys when auto-play rewrites the first source ID.
+        if source.id != delivery_source_id {
+            save_sidecar_subtitle_routes(
+                &state.ctx,
+                &session
+                    .device
+                    .id,
+                id,
+                source.id,
+                routes.clone(),
+            );
+        }
+        save_sidecar_subtitle_routes(
+            &state.ctx,
+            &session
+                .device
+                .id,
+            id,
+            delivery_source_id,
+            routes,
+        );
     }
 
     // Live TV: apply stream flags on top of whatever the probe/transcoding decided.
@@ -869,22 +963,17 @@ async fn videos_stream_inner(
     let is_copy_video = video_codec == "copy";
 
     info!(
-        "starting progressive transcode for: {:?} (container={}, vcodec={}, acodec={}, start_ticks={:?}, bitrate={:?})",
+        "starting progressive transcode for: {:?} (container={}, vcodec={}, acodec={}, start_ticks={:?}, bitrate={:?}, video_transcoding={})",
         &media.title,
         container,
         video_codec,
         audio_codec,
         q.start_time_ticks,
-        q.video_bit_rate
+        q.video_bit_rate,
+        encoding_opts
+            .enable_video_transcoding
+            .unwrap_or(true)
     );
-
-    let encoding_opts = crate::db::Settings::get_encoding_config(
-        &state
-            .ctx
-            .db,
-    )
-    .await
-    .unwrap_or_default();
     let source_video_stream = media
         .probe_data
         .as_ref()
@@ -1105,6 +1194,48 @@ mod tests {
         insert_test_source_with_external_subtitle, new_test_server,
     };
 
+    #[test]
+    fn item_runtime_fills_missing_source_duration() {
+        let mut source = crate::api::MediaSourceInfo::default();
+
+        super::apply_item_runtime_fallback(&mut source, Some(142));
+
+        assert_eq!(source.run_time_ticks, Some(1_420_000_000));
+    }
+
+    #[test]
+    fn item_runtime_does_not_replace_probed_duration() {
+        let mut source = crate::api::MediaSourceInfo {
+            run_time_ticks: Some(900_000_000),
+            ..Default::default()
+        };
+
+        super::apply_item_runtime_fallback(&mut source, Some(142));
+
+        assert_eq!(source.run_time_ticks, Some(900_000_000));
+    }
+
+    #[test]
+    fn parent_item_language_overrides_missing_or_stale_source_language() {
+        let parent = crate::db::Media {
+            original_language: Some("en".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            super::playback_original_language(Some(&parent), None),
+            Some("en".to_string())
+        );
+        assert_eq!(
+            super::playback_original_language(Some(&parent), Some("ru".to_string())),
+            Some("en".to_string())
+        );
+        assert_eq!(
+            super::playback_original_language(None, Some("fr".to_string())),
+            Some("fr".to_string())
+        );
+    }
+
     #[tokio::test]
     async fn http_redirect_stream_issues_302_to_source_url() {
         use crate::{addons::addon::Addon, stream};
@@ -1318,6 +1449,63 @@ mod tests {
             .await;
 
         resp.assert_status(StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn playback_stop_notifies_clients_that_user_data_changed() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_test_source(&guard.0).await;
+        let play_session_id = "test-user-data-changed";
+        let mut events = guard
+            .0
+            .ws_tx
+            .subscribe();
+
+        server
+            .post("/sessions/playing")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": media.id,
+                "PlaySessionId": play_session_id,
+                "PositionTicks": 0
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        server
+            .post("/sessions/playing/stopped")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": media.id,
+                "PlaySessionId": play_session_id,
+                "PositionTicks": 30_000_000i64
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        let changed_item_id =
+            tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                loop {
+                    if let crate::ws::WsEvent::UserDataChanged { item_id, .. } = events
+                        .recv()
+                        .await
+                        .unwrap()
+                    {
+                        break item_id;
+                    }
+                }
+            })
+            .await
+            .expect("playback stop should broadcast UserDataChanged");
+
+        assert_eq!(changed_item_id, media.id);
     }
 
     #[tokio::test]

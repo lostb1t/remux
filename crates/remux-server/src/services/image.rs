@@ -216,7 +216,7 @@ impl ImageService {
 
     /// Delete the local image for `id`/`kind` and remove from media_images.
     pub async fn delete_image(
-        _data_dir: &std::path::Path,
+        data_dir: &std::path::Path,
         id: Uuid,
         kind: ImageKind,
         db: &sqlx::SqlitePool,
@@ -229,16 +229,33 @@ impl ImageService {
                     .path
                     .starts_with('/')
                 {
-                    let path = std::path::PathBuf::from(&img.path);
-                    if path.exists() {
-                        tokio::fs::remove_file(&path).await?;
-                    }
+                    let _ =
+                        tokio::fs::remove_file(std::path::Path::new(&img.path)).await;
                 }
             }
+        }
+        // Sweep all known extensions for this kind — previous uploads of different
+        // formats leave orphan files behind, and the generated placeholder is always
+        // primary.jpg regardless of what the DB row points to.
+        for ext in ["jpg", "png", "gif", "webp"] {
+            let _ = tokio::fs::remove_file(Self::image_path(
+                data_dir,
+                id,
+                &kind.to_string(),
+                ext,
+            ))
+            .await;
         }
         db::MediaImage::delete_for_type(db, id, kind)
             .await
             .map_err(anyhow::Error::from)?;
+        // Touch updated_at so the synthetic image tag (derived from it) changes,
+        // busting client caches that keyed on the old tag.
+        let _ = sqlx::query("UPDATE media SET updated_at = ? WHERE id = ?")
+            .bind(chrono::Utc::now().naive_utc())
+            .bind(id)
+            .execute(db)
+            .await;
         Ok(())
     }
 

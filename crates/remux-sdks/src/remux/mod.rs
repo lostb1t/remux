@@ -1,5 +1,7 @@
 pub mod codecs;
-pub use codecs::{AudioCodec, SubtitleCodec, VideoCodec};
+pub use codecs::{
+    AudioCodec, AudioContainer, SubtitleCodec, VideoCodec, VideoContainer,
+};
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use http::{HeaderValue, Method};
@@ -2098,6 +2100,7 @@ pub fn lang_to_two_letter(lang: &str) -> Option<String> {
     }
     isolang::Language::from_639_3(&lang)
         .or_else(|| isolang::Language::from_str(&lang).ok())
+        .or_else(|| isolang::Language::from_name_lowercase(&lang))
         .and_then(|l| l.to_639_1())
         .map(|s| s.to_string())
 }
@@ -6424,6 +6427,13 @@ pub struct RefreshItemQuery {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn language_normalization_accepts_codes_and_full_names() {
+        assert_eq!(lang_to_two_letter("en").as_deref(), Some("en"));
+        assert_eq!(lang_to_two_letter("eng").as_deref(), Some("en"));
+        assert_eq!(lang_to_two_letter("English").as_deref(), Some("en"));
+    }
 
     #[test]
     fn next_up_cutoff_accepts_rfc3339() {

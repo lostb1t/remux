@@ -94,6 +94,17 @@ impl ItemsQueryResultBuilder {
         self
     }
 
+    /// Fill `run_time_ticks` for Playlist rows in the payload before DTO
+    /// serialization. Playlists carry no runtime of their own in Remux;
+    /// Jellyfin clients expect the summed runtime of the member items.
+    /// Also fills Album rows from their child tracks.
+    pub async fn preload_playlist_runtimes(mut self, db: &sqlx::SqlitePool) -> Self {
+        if let ItemsSource::Raw(ref mut media) = self.items {
+            db::Media::preload_playlist_runtimes(db, media).await;
+        }
+        self
+    }
+
     pub fn with_client_patches(mut self) -> Self {
         let client = self
             .session
@@ -454,22 +465,32 @@ pub async fn get_items(
                 }
                 None => &relations[start.min(relations.len())..],
             };
+            let item_ids: Vec<Uuid> = slice
+                .iter()
+                .map(|r| r.right_media_id)
+                .collect();
             let mut items = Vec::with_capacity(slice.len());
-            for rel in slice {
-                if let Some(media) = db::Media::get_by_id(
-                    &state
-                        .ctx
-                        .db,
-                    &rel.right_media_id,
-                )
-                .await?
-                {
-                    let mut dto = api::db_media_to_item(media, hide_sources);
-                    dto.playlist_item_id = Some(
-                        rel.relation_id
-                            .to_string(),
-                    );
-                    items.push(dto);
+            if !item_ids.is_empty() {
+                let mut by_id: std::collections::HashMap<Uuid, db::Media> =
+                    db::Media::get_by_ids(
+                        &state
+                            .ctx
+                            .db,
+                        &item_ids,
+                    )
+                    .await?
+                    .into_iter()
+                    .map(|m| (m.id, m))
+                    .collect();
+                for rel in slice {
+                    if let Some(media) = by_id.remove(&rel.right_media_id) {
+                        let mut dto = api::db_media_to_item(media, hide_sources);
+                        dto.playlist_item_id = Some(
+                            rel.relation_id
+                                .to_string(),
+                        );
+                        items.push(dto);
+                    }
                 }
             }
             return Ok(ItemsQueryResultBuilder::with_dtos(session, items, total));
@@ -848,6 +869,12 @@ pub async fn items(
     //trace!(?q);
     let items = get_items(state.clone(), session.clone(), q.clone(), true)
         .await?
+        .preload_playlist_runtimes(
+            &state
+                .ctx
+                .db,
+        )
+        .await
         .with_permissions()
         .with_client_patches()
         .build();
@@ -1526,6 +1553,16 @@ async fn item_for_user(
     let show_ungrouped = server_config
         .stream_groups_show_ungrouped
         .unwrap_or(true);
+    let encoding_cfg = db::Settings::get_encoding_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await
+    .unwrap_or_default();
+    let transcoding_enabled = encoding_cfg
+        .enable_video_transcoding
+        .unwrap_or(true);
     // Clients that switch versions (Android TV) refetch the item by MediaSource id
     // and then play MediaSources[0], so the requested group must end up first and
     // keep its own UUID instead of the item id stamped by `db_media_to_item`.
@@ -1574,6 +1611,14 @@ async fn item_for_user(
     .into_iter()
     .next()
     .context_not_found("item not found")?;
+
+    db::Media::preload_playlist_runtimes(
+        &state
+            .ctx
+            .db,
+        std::slice::from_mut(&mut media),
+    )
+    .await;
 
     let needs_streams = want_streams
         && matches!(
@@ -1734,6 +1779,17 @@ async fn item_for_user(
         .await?;
     let mut base_item = api::db_media_to_item(media.clone(), false);
 
+    if !transcoding_enabled {
+        if let Some(sources) = base_item
+            .media_sources
+            .as_mut()
+        {
+            for source in sources.iter_mut() {
+                source.supports_transcoding = false;
+            }
+        }
+    }
+
     // `db_media_to_item` stamps MediaSources[0].Id with the item id (clients rely on
     // that for auto-play). Undo it for a group request: the item id would resolve
     // back to the highest-priority group on PlaybackInfo (issue #220).
@@ -1841,7 +1897,7 @@ async fn item_for_user(
             is_remote: true,
             supports_direct_play: true,
             supports_direct_stream: true,
-            supports_transcoding: true,
+            supports_transcoding: transcoding_enabled,
             transcoding_url: Some(transcoding_url),
             transcoding_sub_protocol: "hls".to_string(),
             transcoding_container: Some("ts".to_string()),
@@ -2263,20 +2319,6 @@ pub async fn update_virtual_folder(
     .bind(payload.sort_order)
     .execute(&state.ctx.db)
     .await?;
-
-    // Library name is baked into the generated placeholder — clear it so it regenerates.
-    let _ = ImageService::delete_image(
-        &state
-            .ctx
-            .config
-            .data_dir,
-        payload.id,
-        db::ImageKind::Primary,
-        &state
-            .ctx
-            .db,
-    )
-    .await;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -3218,24 +3260,6 @@ pub async fn patch_item(
         )
         .await
         .context_bad_request("Failed to update tags")?;
-    }
-
-    if payload
-        .name
-        .is_some()
-    {
-        let _ = ImageService::delete_image(
-            &state
-                .ctx
-                .config
-                .data_dir,
-            id,
-            db::ImageKind::Primary,
-            &state
-                .ctx
-                .db,
-        )
-        .await;
     }
 
     Ok(StatusCode::NO_CONTENT)

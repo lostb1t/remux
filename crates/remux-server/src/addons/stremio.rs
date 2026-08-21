@@ -1339,6 +1339,55 @@ fn extract_trackers(sources: &[String]) -> Vec<crate::stream::TrackerUrl> {
     trackers
 }
 
+struct StremioStreamMetadata {
+    filename: Option<String>,
+    file_idx: Option<usize>,
+    seeders: Option<i64>,
+}
+
+fn stremio_stream_metadata(stream: &sdks::stremio::Stream) -> StremioStreamMetadata {
+    let stream_data = stream
+        .stream_data
+        .as_ref();
+    let torrent = stream_data.and_then(|data| {
+        data.torrent
+            .as_ref()
+    });
+
+    StremioStreamMetadata {
+        filename: stream
+            .behavior_hints
+            .as_ref()
+            .and_then(|hints| {
+                hints
+                    .filename
+                    .clone()
+            })
+            .or_else(|| {
+                stream_data.and_then(|data| {
+                    data.filename
+                        .clone()
+                })
+            })
+            .or_else(|| {
+                stream
+                    .filename
+                    .clone()
+            }),
+        file_idx: stream
+            .file_idx
+            .and_then(|index| usize::try_from(index).ok())
+            .or_else(|| {
+                torrent
+                    .and_then(|torrent| torrent.file_idx)
+                    .and_then(|index| usize::try_from(index).ok())
+            }),
+        seeders: stream
+            .seeders
+            .or_else(|| torrent.and_then(|torrent| torrent.seeders)),
+    }
+}
+
 fn rewrite_aio_url(url: &str, manifest_url: &StremioManifestUrl) -> String {
     let Ok(mut parsed) = url::Url::parse(url) else {
         return url.to_string();
@@ -1414,6 +1463,10 @@ async fn stremio_streams(
         .into_iter()
         .filter(|s| s.is_valid())
         .filter_map(|s| {
+            let sd = s
+                .stream_data
+                .as_ref();
+            let metadata = stremio_stream_metadata(&s);
             let descriptor = if s.is_torrent() {
                 let trackers = extract_trackers(
                     s.sources
@@ -1429,12 +1482,10 @@ async fn stremio_streams(
                     info_hash: s
                         .info_hash()?
                         .to_ascii_lowercase(),
-                    file_hint: s
+                    file_hint: metadata
                         .filename
                         .clone(),
-                    file_idx: s
-                        .file_idx
-                        .map(|i| i as usize),
+                    file_idx: metadata.file_idx,
                     trackers,
                 }
             } else {
@@ -1466,9 +1517,6 @@ async fn stremio_streams(
                 (None, Some(d)) => d.to_string(),
                 _ => "Stream".to_string(),
             };
-            let sd = s
-                .stream_data
-                .as_ref();
             // Prefer nzb_url from streamData (AIOStreams), fall back to top-level field
             let nzb_url = sd
                 .and_then(|d| {
@@ -1510,24 +1558,8 @@ async fn stremio_streams(
                 description: s
                     .description
                     .clone(),
-                filename: s
-                    .behavior_hints
-                    .as_ref()
-                    .and_then(|bh| {
-                        bh.filename
-                            .clone()
-                    })
-                    .or_else(|| {
-                        sd.and_then(|d| {
-                            d.filename
-                                .clone()
-                        })
-                    })
-                    .or_else(|| {
-                        s.filename
-                            .clone()
-                    }),
-                seeders: s.seeders,
+                filename: metadata.filename,
+                seeders: metadata.seeders,
                 size: sd
                     .and_then(|d| d.size)
                     .or(s.size),
@@ -1581,6 +1613,54 @@ async fn stremio_streams(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stremio_torrent_metadata_uses_nested_fallbacks() {
+        let stream: sdks::stremio::Stream = serde_json::from_value(serde_json::json!({
+            "infoHash": "0123456789abcdef0123456789abcdef01234567",
+            "streamData": {
+                "filename": "Bundle/Movie.mkv",
+                "torrent": { "fileIdx": 3, "seeders": 42 }
+            }
+        }))
+        .unwrap();
+
+        let metadata = stremio_stream_metadata(&stream);
+        assert_eq!(
+            metadata
+                .filename
+                .as_deref(),
+            Some("Bundle/Movie.mkv")
+        );
+        assert_eq!(metadata.seeders, Some(42));
+        assert_eq!(metadata.file_idx, Some(3));
+    }
+
+    #[test]
+    fn stremio_torrent_metadata_prefers_top_level_fields() {
+        let stream: sdks::stremio::Stream = serde_json::from_value(serde_json::json!({
+            "infoHash": "0123456789abcdef0123456789abcdef01234567",
+            "filename": "Top Level.mkv",
+            "fileIdx": 7,
+            "seeders": 84,
+            "behaviorHints": { "filename": "Preferred/Movie.mkv" },
+            "streamData": {
+                "filename": "Nested/Movie.mkv",
+                "torrent": { "fileIdx": 3, "seeders": 42 }
+            }
+        }))
+        .unwrap();
+
+        let metadata = stremio_stream_metadata(&stream);
+        assert_eq!(
+            metadata
+                .filename
+                .as_deref(),
+            Some("Preferred/Movie.mkv")
+        );
+        assert_eq!(metadata.seeders, Some(84));
+        assert_eq!(metadata.file_idx, Some(7));
+    }
 
     #[test]
     fn manifest_url_strips_manifest_json_with_query_string() {
