@@ -1,3 +1,4 @@
+pub mod addon_catalogs;
 pub mod addons;
 pub mod api_keys;
 pub mod branding;
@@ -9,6 +10,7 @@ pub mod settings;
 pub mod streams;
 pub mod users;
 
+pub use addon_catalogs::AddonCatalogsPage;
 pub use addons::AddonsPage;
 pub use api_keys::ApiKeysPage;
 pub use branding::BrandingPage;

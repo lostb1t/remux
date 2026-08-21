@@ -5,6 +5,8 @@ use axum::{
     response::IntoResponse,
 };
 use chrono::Utc;
+use sqlx::Row;
+use std::collections::HashMap;
 use tracing::warn;
 
 use remux_macros::{delete, get, post};
@@ -589,15 +591,60 @@ pub async fn get_addon_catalogs(
         .await
         .context_not_reachable()?;
 
+    // Item counts are best-effort: a catalog with no rows yet (never indexed)
+    // just gets `None` rather than failing the whole request.
+    let mut counts: HashMap<Uuid, i64> = HashMap::new();
+    if !resolved.is_empty() {
+        let mut qb = sqlx::QueryBuilder::new(
+            "SELECT left_media_id, COUNT(*) FROM media_relations WHERE role = 'catalog' AND left_media_id IN (",
+        );
+        let mut sep = qb.separated(", ");
+        for c in &resolved {
+            sep.push_bind(c.collection_id);
+        }
+        qb.push(") GROUP BY left_media_id");
+        match qb
+            .build()
+            .fetch_all(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await
+        {
+            Ok(rows) => {
+                for row in rows {
+                    let cid: Uuid = row.get(0);
+                    let cnt: i64 = row.get(1);
+                    counts.insert(cid, cnt);
+                }
+            }
+            Err(e) => {
+                warn!(addon = %id, error = %e, "failed to load catalog item counts")
+            }
+        }
+    }
+
     let result = resolved
         .into_iter()
         .map(|c| AddonCatalogDto {
+            item_count: counts
+                .get(&c.collection_id)
+                .copied(),
             catalog_id: c.catalog_id,
             name: c.name,
             enabled: c.enabled,
             max_items: c.max_items,
             tags: c.tags,
             collection_id: Some(c.collection_id),
+            collection_media_kind: c
+                .collection_media_kind
+                .as_ref()
+                .and_then(|k| {
+                    k.to_string()
+                        .parse()
+                        .ok()
+                }),
         })
         .collect();
 

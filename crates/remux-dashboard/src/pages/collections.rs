@@ -556,6 +556,7 @@ pub fn CollectionForm(
                             }),
                             collection_default_sort: default_sort_payload,
                             collection_default_sort_order: default_sort_order_payload,
+                            collection_source: None,
                         },
                     })
                     .await;
@@ -616,6 +617,7 @@ pub fn CollectionForm(
                             }),
                             collection_default_sort: default_sort_payload,
                             collection_default_sort_order: default_sort_order_payload,
+                            collection_source: None,
                         },
                     })
                     .await;

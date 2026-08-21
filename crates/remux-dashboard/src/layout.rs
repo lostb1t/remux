@@ -98,6 +98,7 @@ pub fn DashboardLayout() -> Element {
     let page_title = match route {
         Route::DashboardRoute => "Remux",
         Route::AddonsRoute => "Addons",
+        Route::AddonCatalogsRoute { .. } => "Addon Catalogs",
         Route::LibraryRoute => "Library",
         Route::IptvRoute => "IPTV",
         Route::StreamingGroupsRoute => "Stream Groups",
