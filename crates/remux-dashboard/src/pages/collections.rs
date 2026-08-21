@@ -1,8 +1,5 @@
 use crate::{components::*, state::AppState};
 use dioxus::prelude::*;
-use dioxus_primitives::drag_and_drop_list::{
-    use_drag_and_drop_list_items, DragAndDropListRenderItem,
-};
 use remux_sdks::remux::{
     BaseItemDto, CollectionFilter, CollectionType, CreateVirtualFolder,
     CreateVirtualFolderPayload, DeleteVirtualFolder, FilterGroup, FilterMatchMode,
