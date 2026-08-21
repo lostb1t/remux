@@ -802,33 +802,14 @@ async fn tmdb_series_seasons(
         )
         .await?;
 
-    let series_imdb: db::NonEmptyString = tv
-        .external_ids
-        .as_ref()
-        .and_then(|e| {
-            e.imdb_id
-                .as_deref()
-        })
-        .and_then(|s| db::NonEmptyString::try_new(s.to_string()).ok())
-        .or_else(|| {
-            series
-                .external_ids
-                .imdb
-                .clone()
-        })
-        .unwrap_or_else(|| {
-            db::NonEmptyString::try_new(format!("tmdb:{}", tmdb_id)).unwrap()
-        });
+    let series_key = series.series_canonical_key();
 
     let seasons: Vec<db::Media> = tv
         .seasons
         .iter()
         .map(|s| {
             let mut stub = db::Media::from(s);
-            stub.id = common::stable_media_uuid(
-                &db::MediaKind::Season,
-                &format!("{}:{}", series_imdb, s.season_number),
-            );
+            stub.id = db::Media::season_id(&series_key, s.season_number);
             stub.parent_id = Some(series.id);
             stub.grandparent_id = Some(series.id);
             stub
@@ -846,19 +827,17 @@ async fn tmdb_season_episodes(
     season: &db::Media,
     ctx: &AppContext,
 ) -> Result<Option<Vec<db::Media>>> {
-    let gp = season
-        .grandparent
-        .as_deref();
-    let series_tmdb_id = gp.and_then(|g| {
-        g.external_ids
-            .tmdb
-    });
-    let series_imdb = gp.and_then(|g| {
-        g.external_ids
-            .imdb
-            .clone()
-    });
-    let (Some(series_tmdb_id), Some(season_number)) = (series_tmdb_id, season.idx)
+    let (Some(gp), Some(season_number)) = (
+        season
+            .grandparent
+            .as_deref(),
+        season.idx,
+    ) else {
+        return Ok(None);
+    };
+    let Some(series_tmdb_id) = gp
+        .external_ids
+        .tmdb
     else {
         return Ok(None);
     };
@@ -879,30 +858,16 @@ async fn tmdb_season_episodes(
         )
         .await?;
 
+    let anchor = gp.series_canonical_key();
     let episodes: Vec<db::Media> = season_details
         .episodes
         .unwrap_or_default()
         .into_iter()
         .map(|ep| {
             let mut stub = db::Media::from(&ep);
-            let key = if let Some(ref imdb) = series_imdb {
-                format!("{}:{}:{}", imdb, ep.season_number, ep.episode_number)
-            } else {
-                format!(
-                    "{}:{}:{}",
-                    series_tmdb_id, ep.season_number, ep.episode_number
-                )
-            };
-            stub.id = common::stable_media_uuid(&db::MediaKind::Episode, &key);
-            let season_key = if let Some(ref imdb) = series_imdb {
-                format!("{}:{}", imdb, ep.season_number)
-            } else {
-                format!("{}:{}", series_tmdb_id, ep.season_number)
-            };
-            stub.parent_id = Some(common::stable_media_uuid(
-                &db::MediaKind::Season,
-                &season_key,
-            ));
+            stub.id =
+                db::Media::episode_id(&anchor, ep.season_number, ep.episode_number);
+            stub.parent_id = Some(db::Media::season_id(&anchor, ep.season_number));
             stub.grandparent_id = season.parent_id;
             stub
         })
