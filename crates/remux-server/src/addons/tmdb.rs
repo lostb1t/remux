@@ -846,14 +846,17 @@ async fn tmdb_season_episodes(
     season: &db::Media,
     ctx: &AppContext,
 ) -> Result<Option<Vec<db::Media>>> {
-    let gp = season
-        .grandparent
-        .as_deref();
-    let series_tmdb_id = gp.and_then(|g| {
-        g.external_ids
-            .tmdb
-    });
-    let (Some(series_tmdb_id), Some(season_number)) = (series_tmdb_id, season.idx)
+    let (Some(gp), Some(season_number)) = (
+        season
+            .grandparent
+            .as_deref(),
+        season.idx,
+    ) else {
+        return Ok(None);
+    };
+    let Some(series_tmdb_id) = gp
+        .external_ids
+        .tmdb
     else {
         return Ok(None);
     };
@@ -874,9 +877,7 @@ async fn tmdb_season_episodes(
         )
         .await?;
 
-    let anchor = gp
-        .map(|g| g.series_canonical_key())
-        .unwrap_or_else(|| format!("tmdb:{series_tmdb_id}"));
+    let anchor = gp.series_canonical_key();
     let episodes: Vec<db::Media> = season_details
         .episodes
         .unwrap_or_default()
