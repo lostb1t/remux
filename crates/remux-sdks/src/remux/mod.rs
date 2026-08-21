@@ -2766,9 +2766,9 @@ impl Default for UserDto {
 #[serde(rename_all = "PascalCase")]
 #[strum(serialize_all = "PascalCase")]
 pub enum SyncPlayUserAccessType {
-    #[default]
     CreateAndJoinGroups,
     JoinGroups,
+    #[default]
     None,
 }
 
@@ -2863,7 +2863,7 @@ pub struct UserPolicy {
     #[serde(default = "default_password_reset_provider_id")]
     pub password_reset_provider_id: String,
     #[serde(default, deserialize_with = "deserialize_optional_with_default")]
-    #[default(SyncPlayUserAccessType::CreateAndJoinGroups)]
+    #[default(SyncPlayUserAccessType::None)]
     pub sync_play_access: SyncPlayUserAccessType,
 }
 
@@ -6424,6 +6424,16 @@ pub struct RefreshItemQuery {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_policy_does_not_advertise_unimplemented_sync_play() {
+        assert_eq!(
+            UserPolicy::default().sync_play_access,
+            SyncPlayUserAccessType::None
+        );
+        let policy: UserPolicy = serde_json::from_str("{}").unwrap();
+        assert_eq!(policy.sync_play_access, SyncPlayUserAccessType::None);
+    }
 
     #[test]
     fn language_normalization_accepts_codes_and_full_names() {
