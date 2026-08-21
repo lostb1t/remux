@@ -2753,47 +2753,29 @@ fn match_probe_version<'a>(
         })
 }
 
+const STREAMS_TTL_SECS: i64 = 60;
+
+fn streams_are_fresh(
+    refreshed_at: Option<chrono::NaiveDateTime>,
+    now: chrono::NaiveDateTime,
+) -> bool {
+    refreshed_at.is_some_and(|refreshed_at| {
+        (now - refreshed_at).num_seconds() < STREAMS_TTL_SECS
+    })
+}
+
+fn can_refresh_cached_streams_in_background(total: i64, p2p: i64) -> bool {
+    total > 0 && total == p2p
+}
+
 impl AddonService {
     #[tracing::instrument(skip_all, fields(title = %media.title, kind = %media.kind))]
-    pub async fn refresh_streams(
+    async fn refresh_streams_inner(
         &self,
         media: &mut db::Media,
         ctx: &AppContext,
         user_id: Option<Uuid>,
     ) -> Result<()> {
-        const STREAMS_TTL_SECS: i64 = 60;
-        static STREAM_LOCKS: KeyedLock<Uuid> = KeyedLock::new();
-
-        // Fast path: TTL not expired — skip the lock entirely.
-        let is_fresh = |refreshed: Option<chrono::NaiveDateTime>| {
-            refreshed.is_some_and(|r| {
-                (chrono::Utc::now().naive_utc() - r).num_seconds() < STREAMS_TTL_SECS
-            })
-        };
-        if is_fresh(media.streams_refreshed_at) {
-            return Ok(());
-        }
-
-        // Acquire per-media lock to prevent concurrent refreshes.
-        let _guard = STREAM_LOCKS
-            .lock(media.id)
-            .await;
-
-        // Re-check after acquiring lock — another task may have just refreshed.
-        let refreshed_at = sqlx::query_scalar::<_, Option<chrono::NaiveDateTime>>(
-            "SELECT streams_refreshed_at FROM media WHERE id = ?",
-        )
-        .bind(media.id)
-        .fetch_optional(&ctx.db)
-        .await
-        .ok()
-        .flatten()
-        .flatten();
-        if is_fresh(refreshed_at) {
-            media.streams_refreshed_at = refreshed_at;
-            return Ok(());
-        }
-
         media
             .grandparent(&ctx.db)
             .await
@@ -2961,6 +2943,87 @@ impl AddonService {
         .execute(&ctx.db)
         .await?;
         Ok(())
+    }
+
+    pub async fn refresh_streams(
+        &self,
+        media: &mut db::Media,
+        ctx: &AppContext,
+        user_id: Option<Uuid>,
+    ) -> Result<()> {
+        static STREAM_LOCKS: KeyedLock<Uuid> = KeyedLock::new();
+
+        let now = chrono::Utc::now().naive_utc();
+        if streams_are_fresh(media.streams_refreshed_at, now) {
+            return Ok(());
+        }
+
+        // Torrent descriptors are durable, so stale cached torrent results can
+        // be served immediately while their provider data refreshes. HTTP
+        // streams (including debrid links) may expire and must be refreshed
+        // synchronously before playback can select them.
+        let cached_counts = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT COUNT(*), COALESCE(SUM(CASE \
+                 WHEN json_type(stream_info, '$.descriptor.Torrent') IS NOT NULL \
+                 THEN 1 ELSE 0 END), 0) \
+             FROM media WHERE parent_id = ? AND kind = 'stream'",
+        )
+        .bind(media.id)
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap_or((0, 0));
+        if can_refresh_cached_streams_in_background(cached_counts.0, cached_counts.1) {
+            let service = self.clone();
+            let mut media = media.clone();
+            let ctx = ctx.clone();
+            tokio::spawn(async move {
+                let _guard = STREAM_LOCKS
+                    .lock(media.id)
+                    .await;
+                let refreshed_at =
+                    sqlx::query_scalar::<_, Option<chrono::NaiveDateTime>>(
+                        "SELECT streams_refreshed_at FROM media WHERE id = ?",
+                    )
+                    .bind(media.id)
+                    .fetch_optional(&ctx.db)
+                    .await
+                    .ok()
+                    .flatten()
+                    .flatten();
+                if streams_are_fresh(refreshed_at, chrono::Utc::now().naive_utc()) {
+                    return;
+                }
+                if let Err(error) = service
+                    .refresh_streams_inner(&mut media, &ctx, user_id)
+                    .await
+                {
+                    warn!(media_id = %media.id, %error, "background stream refresh failed");
+                }
+            });
+            return Ok(());
+        }
+
+        // Serialize cold loads and re-check after waiting because another
+        // request may have populated this item while the lock was held.
+        let _guard = STREAM_LOCKS
+            .lock(media.id)
+            .await;
+        let refreshed_at = sqlx::query_scalar::<_, Option<chrono::NaiveDateTime>>(
+            "SELECT streams_refreshed_at FROM media WHERE id = ?",
+        )
+        .bind(media.id)
+        .fetch_optional(&ctx.db)
+        .await
+        .ok()
+        .flatten()
+        .flatten();
+        if streams_are_fresh(refreshed_at, chrono::Utc::now().naive_utc()) {
+            media.streams_refreshed_at = refreshed_at;
+            return Ok(());
+        }
+
+        self.refresh_streams_inner(media, ctx, user_id)
+            .await
     }
 
     pub async fn fetch_segments(
@@ -3177,6 +3240,28 @@ pub fn make_media_id(addon_id: Uuid, local_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stream_freshness_uses_the_refresh_ttl() {
+        let now = chrono::Utc::now().naive_utc();
+        assert!(streams_are_fresh(
+            Some(now - chrono::Duration::seconds(STREAMS_TTL_SECS - 1)),
+            now
+        ));
+        assert!(!streams_are_fresh(
+            Some(now - chrono::Duration::seconds(STREAMS_TTL_SECS)),
+            now
+        ));
+        assert!(!streams_are_fresh(None, now));
+    }
+
+    #[test]
+    fn only_torrent_only_caches_refresh_in_the_background() {
+        assert!(can_refresh_cached_streams_in_background(3, 3));
+        assert!(!can_refresh_cached_streams_in_background(0, 0));
+        assert!(!can_refresh_cached_streams_in_background(3, 2));
+        assert!(!can_refresh_cached_streams_in_background(3, 0));
+    }
 
     fn torrent_stream(hash: &str, file_hint: &str, file_idx: usize) -> db::Media {
         db::Media {
