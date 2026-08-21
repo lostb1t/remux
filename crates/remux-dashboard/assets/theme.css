@@ -1475,17 +1475,7 @@ html, body {
 }
 
 /* ── Addon list cards ───────────────────────────────────────────── */
-.addon-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 10px;
-  padding: 16px;
-}
-
 .addon-card {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
   padding: 12px 14px;
   display: flex;
   flex-direction: column;
