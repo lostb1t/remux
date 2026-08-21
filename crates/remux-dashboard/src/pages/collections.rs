@@ -1,11 +1,16 @@
 use crate::{components::*, state::AppState};
 use dioxus::prelude::*;
+use dioxus_primitives::drag_and_drop_list::{
+    DragAndDropListRenderItem,
+    use_drag_and_drop_list_items,
+};
 use remux_sdks::remux::{
     BaseItemDto, CollectionFilter, CollectionType, CreateVirtualFolder,
     CreateVirtualFolderPayload, DeleteVirtualFolder, FilterGroup, FilterMatchMode,
     GetItems, GetItemsQuery, ItemSortBy, MediaType, PatchItem, PatchItemPayload,
     SortOrder,
 };
+use std::collections::HashMap;
 
 fn is_group_container(item: &BaseItemDto) -> bool {
     item.collection_type
@@ -91,14 +96,21 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                     EmptyState { message: "No collections yet" }
                 } else {
                     div { class: "data-table-container",
-                        div { class: "row-list",
-                            {
-                                let col_count = collections.read().len();
-                                rsx! {
-                                for (col_idx, col) in collections.read().clone().into_iter().enumerate() {
-                                {
+                        {
+                            let collection_items = collections.read().clone();
+                            let original_order: Vec<String> = collection_items
+                                .iter()
+                                .map(|col| col.id.to_string())
+                                .collect();
+                            let original_sort_orders: HashMap<String, Option<i64>> = collection_items
+                                .iter()
+                                .map(|col| (col.id.to_string(), col.index_number))
+                                .collect();
+                            let list_key = original_order.join(":");
+                            let items: Vec<Element> = collection_items
+                                .into_iter()
+                                .map(|col| {
                                     let col_edit = col.clone();
-                                    let client_sort = app_state.clone();
                                     let col_id_str = col.id.to_string();
                                     let name = col.name.clone().unwrap_or_default();
                                     let col_type_label = match col.collection_type.as_ref() {
@@ -119,7 +131,7 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                         None => "",
                                     };
                                     rsx! {
-                                        div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]", key: "{col_id_str}",
+                                        div { class: "flex items-center", key: "{col_id_str}",
                                             div { class: "flex-1 min-w-0 px-3 py-[10px]",
                                                 div { class: "catalog-name", "{name}" }
                                                 div { class: "catalog-meta",
@@ -136,87 +148,45 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                                 }
                                             }
                                             div { class: "shrink-0 px-3 py-[10px] flex items-center gap-2",
-                                                div { class: "addon-card-sort",
-                                                    button {
-                                                        class: "btn btn-ghost addon-sort-btn",
-                                                        disabled: col_idx == 0,
-                                                        title: "Move up",
-                                                        onclick: {
-                                                            let c = client_sort.clone();
-                                                            move |_| {
-                                                                let current = collections.read().clone();
-                                                                if col_idx == 0 { return; }
-                                                                let mut new_order = current.clone();
-                                                                new_order.swap(col_idx, col_idx - 1);
-                                                                let updates: Vec<(String, i64)> = new_order.iter().enumerate()
-                                                                    .filter_map(|(i, col)| {
-                                                                        let new_so = i as i64 * 10;
-                                                                        if col.index_number != Some(new_so) {
-                                                                            Some((col.id.to_string(), new_so))
-                                                                        } else { None }
-                                                                    })
-                                                                    .collect();
-                                                                let c = c.clone();
-                                                                spawn(async move {
-                                                                    for (id, so) in updates {
-                                                                        let _ = c.execute(PatchItem {
-                                                                            item_id: id,
-                                                                            payload: PatchItemPayload { sort_order: Some(so), ..Default::default() },
-                                                                        }).await;
-                                                                    }
-                                                                    let v = *refresh.peek() + 1;
-                                                                    refresh.set(v);
-                                                                });
-                                                            }
-                                                        },
-                                                        "↑"
-                                                    }
-                                                    button {
-                                                        class: "btn btn-ghost addon-sort-btn",
-                                                        disabled: col_idx + 1 >= col_count,
-                                                        title: "Move down",
-                                                        onclick: {
-                                                            let c = client_sort.clone();
-                                                            move |_| {
-                                                                let current = collections.read().clone();
-                                                                if col_idx + 1 >= current.len() { return; }
-                                                                let mut new_order = current.clone();
-                                                                new_order.swap(col_idx, col_idx + 1);
-                                                                let updates: Vec<(String, i64)> = new_order.iter().enumerate()
-                                                                    .filter_map(|(i, col)| {
-                                                                        let new_so = i as i64 * 10;
-                                                                        if col.index_number != Some(new_so) {
-                                                                            Some((col.id.to_string(), new_so))
-                                                                        } else { None }
-                                                                    })
-                                                                    .collect();
-                                                                let c = c.clone();
-                                                                spawn(async move {
-                                                                    for (id, so) in updates {
-                                                                        let _ = c.execute(PatchItem {
-                                                                            item_id: id,
-                                                                            payload: PatchItemPayload { sort_order: Some(so), ..Default::default() },
-                                                                        }).await;
-                                                                    }
-                                                                    let v = *refresh.peek() + 1;
-                                                                    refresh.set(v);
-                                                                });
-                                                            }
-                                                        },
-                                                        "↓"
-                                                    }
-                                                }
                                                 button {
+                                                    r#type: "button",
+                                                    draggable: "false",
                                                     class: "btn btn-ghost",
                                                     style: "height:30px;font-size:.68rem;padding:0 10px",
-                                                    onclick: move |_| form_mode.set(Some(FormMode::Edit(col_edit.clone()))),
+                                                    onpointerdown: move |e| e.stop_propagation(),
+                                                    onmousedown: move |e| e.stop_propagation(),
+                                                    onmouseup: move |e| e.stop_propagation(),
+                                                    ondragstart: move |e| {
+                                                        e.prevent_default();
+                                                        e.stop_propagation();
+                                                    },
+                                                    onclick: move |e| {
+                                                        e.stop_propagation();
+                                                        form_mode.set(Some(FormMode::Edit(col_edit.clone())));
+                                                    },
                                                     "Edit"
                                                 }
                                             }
                                         }
                                     }
-                                }
-                                }
+                                })
+                                .collect();
+
+                            rsx! {
+                                DragAndDropList {
+                                    key: "{list_key}",
+                                    items,
+                                    aria_label: "Collections",
+
+                                    CollectionOrderPersister {
+                                        app_state: app_state.clone(),
+                                        original_order,
+                                        original_sort_orders,
+                                        on_saved: move |_| {
+                                            let v = *refresh.peek() + 1;
+                                            refresh.set(v);
+                                        },
+                                    }
                                 }
                             }
                         }
@@ -242,6 +212,66 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
             }
         }
     }
+}
+
+// Needed in order to be able to react on list changes to persist those changes
+#[component]
+fn CollectionOrderPersister(
+    app_state: AppState,
+    original_order: Vec<String>,
+    original_sort_orders: HashMap<String, Option<i64>>,
+    on_saved: EventHandler,
+) -> Element {
+    web_sys::console::log_1(&"Persister created".into());
+    let items: Vec<DragAndDropListRenderItem> = use_drag_and_drop_list_items();
+    let current_order: Vec<String> = items
+        .into_iter()
+        .map(|item| item.key)
+        .collect();
+
+    let mut last_submitted = use_signal(|| original_order.clone());
+
+    use_effect(use_reactive((&current_order,), move |(new_order,)| {
+        if new_order == original_order || new_order == *last_submitted.peek() {
+            return;
+        }
+
+        let updates: Vec<(String, i64)> = new_order
+            .iter()
+            .enumerate()
+            .filter_map(|(i, id)| {
+                let new_so = i as i64 * 10;
+
+                if original_sort_orders.get(id).copied().flatten() != Some(new_so) {
+                    Some((id.clone(), new_so))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        last_submitted.set(new_order.clone());
+
+        let local_app_state = app_state.clone();
+
+        spawn(async move {
+            for (id, so) in updates {
+                let _ = local_app_state
+                    .execute(PatchItem {
+                        item_id: id,
+                        payload: PatchItemPayload {
+                            sort_order: Some(so),
+                            ..Default::default()
+                        },
+                    })
+                    .await;
+            }
+
+            on_saved.call(());
+        });
+    }));
+
+    rsx! {}
 }
 
 #[component]
