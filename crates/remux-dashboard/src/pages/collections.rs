@@ -222,7 +222,6 @@ fn CollectionOrderPersister(
     original_sort_orders: HashMap<String, Option<i64>>,
     on_saved: EventHandler,
 ) -> Element {
-    web_sys::console::log_1(&"Persister created".into());
     let items: Vec<DragAndDropListRenderItem> = use_drag_and_drop_list_items();
     let current_order: Vec<String> = items
         .into_iter()
