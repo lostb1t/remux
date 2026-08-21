@@ -4770,10 +4770,10 @@ impl Endpoint for GetJellyfinItemsByIds {
 
     fn query_params(&self) -> impl serde::Serialize + '_ {
         #[derive(Serialize)]
+        #[serde(rename_all = "PascalCase")]
         struct Q<'a> {
-            #[serde(rename = "Ids", serialize_with = "serialize_comma")]
+            #[serde(serialize_with = "serialize_comma")]
             ids: &'a [String],
-            #[serde(rename = "Fields")]
             fields: &'static str,
         }
         Q {
@@ -4798,6 +4798,8 @@ impl Endpoint for GetJellyfinUsers {
 pub struct GetJellyfinUserItems {
     pub user_id: String,
     pub filter: &'static str,
+    pub start_index: i32,
+    pub limit: i32,
 }
 
 impl Endpoint for GetJellyfinUserItems {
@@ -4809,21 +4811,22 @@ impl Endpoint for GetJellyfinUserItems {
 
     fn query_params(&self) -> impl serde::Serialize + '_ {
         #[derive(Serialize)]
+        #[serde(rename_all = "PascalCase")]
         struct Q<'a> {
-            #[serde(rename = "Recursive")]
             recursive: bool,
-            #[serde(rename = "Fields")]
             fields: &'static str,
-            #[serde(rename = "IncludeItemTypes")]
             include_item_types: &'static str,
-            #[serde(rename = "Filters")]
             filters: &'a str,
+            start_index: i32,
+            limit: i32,
         }
         Q {
             recursive: true,
             fields: "ProviderIds,SeriesProviderIds,UserData,SeriesId,Overview,ProductionYear,RunTimeTicks",
             include_item_types: "Movie,Series,Episode",
             filters: self.filter,
+            start_index: self.start_index,
+            limit: self.limit,
         }
     }
 }
