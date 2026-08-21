@@ -2579,8 +2579,25 @@ impl AddonService {
             .stream_info
             .as_ref()?;
         match &si.descriptor {
-            crate::stream::StreamDescriptor::Torrent { info_hash, .. } => {
-                Some(format!("torrent:{}", info_hash.to_lowercase()))
+            crate::stream::StreamDescriptor::Torrent {
+                info_hash,
+                file_hint,
+                file_idx,
+                ..
+            } => {
+                let file_key = file_hint
+                    .as_deref()
+                    .or(si
+                        .filename
+                        .as_deref())
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_ascii_lowercase)
+                    .unwrap_or_else(|| {
+                        file_idx
+                            .map(|index| format!("#{index}"))
+                            .unwrap_or_default()
+                    });
+                Some(format!("torrent:{}:{file_key}", info_hash.to_lowercase()))
             }
             crate::stream::StreamDescriptor::Http { url, .. } => {
                 let filename = si
@@ -3160,6 +3177,38 @@ pub fn make_media_id(addon_id: Uuid, local_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn torrent_stream(hash: &str, file_hint: &str, file_idx: usize) -> db::Media {
+        db::Media {
+            stream_info: Some(crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::Torrent {
+                    info_hash: hash.to_string(),
+                    file_hint: Some(file_hint.to_string()),
+                    file_idx: Some(file_idx),
+                    trackers: Vec::new(),
+                },
+                filename: Some(file_hint.to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn torrent_dedup_preserves_distinct_files_in_a_bundle() {
+        let first = torrent_stream("abc", "Bundle/Movie.One.mkv", 0);
+        let duplicate = torrent_stream("ABC", "Bundle/Movie.One.mkv", 7);
+        let second = torrent_stream("abc", "Bundle/Movie.Two.mkv", 1);
+
+        assert_eq!(
+            AddonService::stream_dedup_key(&first),
+            AddonService::stream_dedup_key(&duplicate)
+        );
+        assert_ne!(
+            AddonService::stream_dedup_key(&first),
+            AddonService::stream_dedup_key(&second)
+        );
+    }
 
     fn make_image(path: &str) -> db::MediaImage {
         db::MediaImage {
