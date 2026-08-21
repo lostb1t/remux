@@ -2670,27 +2670,11 @@ impl Media {
         })
     }
 
-    /// The canonical external-ID key for a series, in `MediaIdRaw::canonical` order.
+    /// The canonical external-ID key for a series: the first entry from `candidate_ids`.
     pub fn series_anchor_from_ext(ext: &ExternalIds) -> Option<String> {
-        ext.imdb
-            .as_deref()
-            .map(|s| s.to_string())
-            .or_else(|| {
-                ext.custom_stremio_id
-                    .clone()
-            })
-            .or_else(|| {
-                ext.tmdb
-                    .map(|id| format!("tmdb:{id}"))
-            })
-            .or_else(|| {
-                ext.tvdb
-                    .map(|id| format!("tvdb:{id}"))
-            })
-            .or_else(|| {
-                ext.kitsu
-                    .map(|id| format!("kitsu:{id}"))
-            })
+        ext.candidate_ids(&MediaKind::Series, None, None, None)
+            .into_iter()
+            .next()
     }
 
     /// Single source of truth for season UUIDs in the canonical (flat) scheme:

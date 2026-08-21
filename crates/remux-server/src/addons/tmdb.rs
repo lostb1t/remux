@@ -853,11 +853,6 @@ async fn tmdb_season_episodes(
         g.external_ids
             .tmdb
     });
-    let series_imdb = gp.and_then(|g| {
-        g.external_ids
-            .imdb
-            .clone()
-    });
     let (Some(series_tmdb_id), Some(season_number)) = (series_tmdb_id, season.idx)
     else {
         return Ok(None);
@@ -879,18 +874,15 @@ async fn tmdb_season_episodes(
         )
         .await?;
 
+    let anchor = gp
+        .map(|g| g.series_uuid_anchor())
+        .unwrap_or_else(|| format!("tmdb:{series_tmdb_id}"));
     let episodes: Vec<db::Media> = season_details
         .episodes
         .unwrap_or_default()
         .into_iter()
         .map(|ep| {
             let mut stub = db::Media::from(&ep);
-            // Keep the established anchor (imdb id when present, else the bare
-            // tmdb id) but derive the UUIDs through the shared helpers.
-            let anchor = match &series_imdb {
-                Some(imdb) => imdb.to_string(),
-                None => series_tmdb_id.to_string(),
-            };
             stub.id =
                 db::Media::episode_id(&anchor, ep.season_number, ep.episode_number);
             stub.parent_id = Some(db::Media::season_id(&anchor, ep.season_number));
