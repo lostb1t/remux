@@ -992,7 +992,9 @@ async fn hls_segment_inner(
         });
 
     if let Some(ref session) = session {
-        // Update playback position for the buffer monitor.
+        // Update download position for the buffer monitor.
+        // Using the segment download index (not progress-report ticks) gives an accurate
+        // position for live TV where clients may not send progress reports reliably.
         if let Some(idx) = requested_idx {
             use std::sync::atomic::Ordering;
             let s = session
@@ -1004,6 +1006,17 @@ async fn hls_segment_inner(
             if idx > prev {
                 s.last_segment_index
                     .store(idx, Ordering::Relaxed);
+                // (idx + 1) * segment_length = seconds of content the client has now downloaded,
+                // relative to the session start. Take the max so a retried segment request
+                // never regresses the position.
+                let download_secs = (idx + 1) * s.segment_length;
+                let current = s
+                    .playback_offset_secs
+                    .load(Ordering::Relaxed);
+                if download_secs > current {
+                    s.playback_offset_secs
+                        .store(download_secs, Ordering::Relaxed);
+                }
             }
         }
     }
