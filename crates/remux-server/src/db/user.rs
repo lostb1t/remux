@@ -1157,35 +1157,10 @@ mod playback_threshold_tests {
     use super::*;
     use crate::{db, integration_test::new_test_server};
 
-    const RUNTIME: i64 = 6_000;
+    use crate::integration_test::MOVIE_RUNTIME_SECONDS as RUNTIME;
 
     fn ticks(seconds: i64) -> i64 {
         seconds * 10_000_000
-    }
-
-    async fn movie(ctx: &crate::AppContext) -> db::Media {
-        let external_ids = db::ExternalIds {
-            imdb: db::NonEmptyString::try_new("tt0113277".to_string()).ok(),
-            tmdb: Some(949),
-            ..Default::default()
-        };
-        let mut m = db::Media {
-            id: uuid::Uuid::from(&db::MediaIdRaw {
-                kind: db::MediaKind::Movie,
-                external_ids: external_ids.clone(),
-                season: None,
-                episode: None,
-            }),
-            title: "Heat".into(),
-            kind: db::MediaKind::Movie,
-            runtime: Some(RUNTIME),
-            external_ids,
-            ..Default::default()
-        };
-        m.save(&ctx.db)
-            .await
-            .unwrap();
-        m
     }
 
     async fn stop_at(
@@ -1217,7 +1192,7 @@ mod playback_threshold_tests {
             .await
             .unwrap()
             .unwrap();
-        let media = movie(ctx).await;
+        let media = crate::integration_test::seed_movie(ctx).await;
 
         assert!(
             stop_at(ctx, &user, &media, RUNTIME * 95 / 100).await,
@@ -1251,7 +1226,7 @@ mod playback_threshold_tests {
             .await
             .unwrap()
             .unwrap();
-        let media = movie(ctx).await;
+        let media = crate::integration_test::seed_movie(ctx).await;
 
         stop_at(ctx, &user, &media, RUNTIME * 95 / 100).await;
 
