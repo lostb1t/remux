@@ -21,6 +21,16 @@ pub static CSS: &str = r##"
     pointer-events: auto;
     cursor: pointer;
   }
+
+  /* Keep the header's actual controls available to the pointer even when an
+     older webOS engine leaves a non-interactive state on the header shell. */
+  html.layout-tv .skinHeader .headerTop,
+  html.layout-tv .skinHeader .headerTabs,
+  html.layout-tv .skinHeader button,
+  html.layout-tv .skinHeader a,
+  html.layout-tv .skinHeader [role="button"] {
+    pointer-events: auto !important;
+  }
 "##;
 
 /// JS injected before `</body>` of every HTML response.
@@ -432,6 +442,191 @@ pub static JS: &str = r#"
 
 }());
 
+// Jellyfin deliberately disables its global focus-follows-pointer behavior on
+// webOS. Keep the Magic Remote pointer and keyboard focus aligned only for the
+// shared header. Focusing a TV button scales it; some webOS versions then lose
+// the native click between press and release because the target geometry moved.
+// Capture that gesture and dispatch exactly one click to the pressed control.
+(function () {
+  if (!/(web0s|netcast)/i.test(navigator.userAgent || '')) return;
+
+  var pressedHeaderControl = null;
+  var pressedAt = null;
+  var dispatchingHeaderClick = false;
+  var lastActivatedHeaderControl = null;
+  var suppressClickUntil = 0;
+  var lastPointer = null;
+
+  function hasOpenDialog() {
+    var dialogs = document.querySelectorAll('.dialog');
+    for (var i = 0; i < dialogs.length; i++) {
+      if (!dialogs[i].classList.contains('hide')) return true;
+    }
+    return false;
+  }
+
+  function headerControlFrom(target) {
+    var header = document.querySelector('.skinHeader');
+    if (!header || !target || !header.contains(target)) return null;
+
+    while (target && target !== header) {
+      var tagName = target.tagName;
+      if ((tagName === 'BUTTON'
+          || tagName === 'A'
+          || target.getAttribute('role') === 'button')
+          && !target.disabled) {
+        return target;
+      }
+      target = target.parentElement;
+    }
+    return null;
+  }
+
+  function eventPoint(event) {
+    if (typeof event.clientX !== 'number' || typeof event.clientY !== 'number') return null;
+    return { x: event.clientX, y: event.clientY, at: Date.now() };
+  }
+
+  function headerControlAtPoint(point) {
+    var header = document.querySelector('.skinHeader');
+    if (!header || !point) return null;
+    var controls = header.querySelectorAll('button, a, [role="button"]');
+    for (var i = 0; i < controls.length; i++) {
+      var control = controls[i];
+      if (control.disabled) continue;
+      var rect = control.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0
+          && point.x >= rect.left && point.x <= rect.right
+          && point.y >= rect.top && point.y <= rect.bottom) {
+        return control;
+      }
+    }
+    return null;
+  }
+
+  function headerControlForEvent(event) {
+    // Modal dialogs (including audio/subtitle action sheets) own the gesture.
+    // Never route their pointer events through to a header control behind them.
+    if (hasOpenDialog()) return null;
+    var direct = headerControlFrom(event.target);
+    if (direct) return direct;
+    var point = eventPoint(event);
+    return headerControlAtPoint(point || lastPointer);
+  }
+
+  function focusControl(control) {
+    if (!control || document.activeElement === control) return;
+    try {
+      control.focus({ preventScroll: true });
+    } catch (error) {
+      control.focus();
+    }
+  }
+
+  function focusHeaderControl(event) {
+    var point = eventPoint(event);
+    if (point) lastPointer = point;
+    focusControl(headerControlForEvent(event));
+  }
+
+  function activateHeaderControl(control, event) {
+    if (!control || !document.documentElement.contains(control)) return;
+    if (event) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+    lastActivatedHeaderControl = control;
+    suppressClickUntil = Date.now() + 500;
+    dispatchingHeaderClick = true;
+    try {
+      control.click();
+    } finally {
+      dispatchingHeaderClick = false;
+    }
+  }
+
+  function pressHeaderControl(event) {
+    var point = eventPoint(event);
+    if (point) lastPointer = point;
+    var control = headerControlForEvent(event);
+    if (!control || (typeof event.button === 'number' && event.button !== 0)) {
+      pressedHeaderControl = null;
+      pressedAt = null;
+      return;
+    }
+
+    pressedHeaderControl = control;
+    pressedAt = point;
+    focusControl(control);
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+
+  function releaseHeaderControl(event) {
+    var control = pressedHeaderControl;
+    var start = pressedAt;
+    pressedHeaderControl = null;
+    pressedAt = null;
+    if (hasOpenDialog()) return;
+    if (!control || !document.documentElement.contains(control)) return;
+    if (start && typeof event.clientX === 'number'
+        && (Math.abs(event.clientX - start.x) > 24
+            || Math.abs(event.clientY - start.y) > 24)) return;
+
+    activateHeaderControl(control, event);
+  }
+
+  function routeHeaderClick(event) {
+    if (dispatchingHeaderClick) return;
+    if (hasOpenDialog()) return;
+    var directControl = headerControlFrom(event.target);
+    var control = directControl || headerControlForEvent(event);
+    if (control === lastActivatedHeaderControl && Date.now() <= suppressClickUntil) {
+      lastActivatedHeaderControl = null;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
+    // A webOS overlay can own the click target even when the pointer is visibly
+    // over a header button. Resolve that button from the event coordinates.
+    if (!directControl) activateHeaderControl(control, event);
+  }
+
+  function selectPointedHeaderControl(event) {
+    var key = event.key || event.keyCode;
+    if (key === 'ArrowLeft' || key === 'ArrowRight'
+        || key === 'ArrowUp' || key === 'ArrowDown'
+        || key === 37 || key === 38 || key === 39 || key === 40) {
+      lastPointer = null;
+      return;
+    }
+    if (key !== 'Enter' && key !== 13) return;
+
+    var control = headerControlFrom(document.activeElement);
+    if (!control && lastPointer && Date.now() - lastPointer.at <= 6000) {
+      control = headerControlAtPoint(lastPointer);
+    }
+    if (!control) return;
+    focusControl(control);
+    activateHeaderControl(control, event);
+  }
+
+  document.addEventListener('pointerover', focusHeaderControl, true);
+  document.addEventListener('pointermove', focusHeaderControl, true);
+  document.addEventListener('pointerdown', pressHeaderControl, true);
+  document.addEventListener('pointerup', releaseHeaderControl, true);
+  document.addEventListener('pointercancel', function () {
+    pressedHeaderControl = null;
+    pressedAt = null;
+  }, true);
+  document.addEventListener('mouseover', focusHeaderControl, true);
+  document.addEventListener('mousemove', focusHeaderControl, true);
+  document.addEventListener('mousedown', pressHeaderControl, true);
+  document.addEventListener('mouseup', releaseHeaderControl, true);
+  document.addEventListener('click', routeHeaderClick, true);
+  document.addEventListener('keydown', selectPointedHeaderControl, true);
+}());
+
 // Strip "Recently Added in " prefix from homescreen section titles, leaving only the library name.
 (function () {
   var PREFIX = 'Recently Added in ';
@@ -471,11 +666,27 @@ pub static JS: &str = r#"
 
 #[cfg(test)]
 mod tests {
-    use super::JS;
+    use super::{CSS, JS};
 
     #[test]
     fn generic_item_transports_are_not_rewritten_to_source_stubs() {
         assert!(!JS.contains("proto.fetch = function"));
         assert!(!JS.contains("XMLHttpRequest.prototype.open = function"));
+    }
+
+    #[test]
+    fn webos_header_pointer_supports_pointer_mouse_and_select_events() {
+        assert!(CSS.contains("html.layout-tv .skinHeader .headerTop"));
+        assert!(CSS.contains("pointer-events: auto !important"));
+        assert!(JS.contains("pressedHeaderControl = control;"));
+        assert!(JS.contains("headerControlAtPoint"));
+        assert!(JS.contains("addEventListener('pointerdown'"));
+        assert!(JS.contains("selectPointedHeaderControl"));
+        assert!(JS.contains("if (hasOpenDialog()) return null;"));
+        assert!(
+            JS.contains("var control = directControl || headerControlForEvent(event);")
+        );
+        assert!(JS.contains("control.click();"));
+        assert!(JS.contains("routeHeaderClick"));
     }
 }
