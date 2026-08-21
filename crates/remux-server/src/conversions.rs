@@ -438,7 +438,7 @@ fn to_option_bool(flag: i64) -> Option<bool> {
 // Jellyfin-web fetches subtitles as either JSON TrackEvents (Stream.js)
 // or WebVTT (Stream.vtt).  We extract to SRT via ffmpeg and convert.
 
-/// Convert SRT to WebVTT. Already-valid VTT is passed through unchanged.
+/// Convert SRT to WebVTT. Existing VTT is retained with its timestamps normalized.
 pub fn srt_to_vtt(input: &str) -> String {
     let input = input.trim_start_matches('\u{FEFF}');
     let normalized = input
@@ -459,11 +459,11 @@ pub fn srt_to_vtt(input: &str) -> String {
                     .map(|off| first + 6 + off)
             });
         if let Some(pos) = second {
-            return input[pos..]
-                .trim_start_matches('\u{FEFF}')
-                .to_string();
+            return normalize_webvtt_timestamps(
+                input[pos..].trim_start_matches('\u{FEFF}'),
+            );
         }
-        return input.to_string();
+        return normalize_webvtt_timestamps(input);
     }
     let mut out = String::from("WEBVTT\n\n");
     for block in input
@@ -498,6 +498,44 @@ pub fn srt_to_vtt(input: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+/// Some subtitle providers prepend a `WEBVTT` header to otherwise-SRT content.
+/// Browsers reject comma-separated milliseconds in WebVTT timing lines, so
+/// normalize just the timestamp tokens while preserving cue settings and text.
+fn normalize_webvtt_timestamps(input: &str) -> String {
+    input
+        .lines()
+        .map(|line| {
+            let Some((start, end_and_settings)) = line.split_once("-->") else {
+                return line.to_string();
+            };
+            let end_and_settings = end_and_settings.trim();
+            let (end, settings) = end_and_settings
+                .split_once(char::is_whitespace)
+                .unwrap_or((end_and_settings, ""));
+            let settings = settings.trim_start();
+            if settings.is_empty() {
+                format!(
+                    "{} --> {}",
+                    start
+                        .trim()
+                        .replace(',', "."),
+                    end.replace(',', ".")
+                )
+            } else {
+                format!(
+                    "{} --> {} {}",
+                    start
+                        .trim()
+                        .replace(',', "."),
+                    end.replace(',', "."),
+                    settings
+                )
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Convert SRT to Jellyfin JSON TrackEvents format (1 tick = 100 ns).
@@ -583,6 +621,26 @@ fn srt_timestamp_to_ticks(ts: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn srt_to_vtt_normalizes_hybrid_webvtt_timestamps() {
+        let input = "WEBVTT\n\n1\n00:00:47,791 --> 00:00:49,791\nHello\n\n2\n00:00:50,000 --> 00:00:52,000 line:90%,start\nWorld\n";
+
+        let output = srt_to_vtt(input);
+
+        assert!(output.contains("00:00:47.791 --> 00:00:49.791"));
+        assert!(output.contains("00:00:50.000 --> 00:00:52.000 line:90%,start"));
+        assert!(!output.contains("00:00:47,791"));
+    }
+
+    #[test]
+    fn srt_to_vtt_keeps_valid_webvtt_timestamps() {
+        let input = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000 align:start\nHello\n";
+
+        let output = srt_to_vtt(input);
+
+        assert!(output.contains("00:00:01.000 --> 00:00:02.000 align:start"));
+    }
 
     #[test]
     fn srt_to_vtt_converts_crlf_separated_cues() {
