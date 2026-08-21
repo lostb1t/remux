@@ -1,5 +1,5 @@
 use crate::{
-    components::{EmptyState, FormGroup, LoadingText},
+    components::{DragAndDropList, EmptyState, FormGroup, LoadingText},
     state::AppState,
 };
 use dioxus::prelude::*;
@@ -12,6 +12,7 @@ use remux_sdks::{
     },
     stremio::ResourceType,
 };
+use std::collections::HashMap;
 use uuid::Uuid;
 
 #[component]
@@ -145,182 +146,168 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                         if visible.is_empty() {
                             rsx! { EmptyState { message: "No addons configured — add one to get started." } }
                         } else {
-                            rsx! {
-                                div { class: "addon-list",
-                                    for (addon_idx, addon) in visible.into_iter().enumerate() {
-                                        {
-                                            let id = addon.id;
-                                            let addon_count = addons.read().iter().filter(|a| if *active_tab.read() == "global" { a.is_default } else { !a.is_default }).count();
-                                            rsx! {
-                                                div { class: "addon-card", key: "{id}",
-                                        div { class: "addon-card-header",
-                                            span { class: "addon-card-name", "{addon.name}" }
-                                            span { class: "addon-card-kind", "{addon.kind}" }
-                                        }
-                                        div { class: "addon-kind-card-badges",
-                                            {
-                                                let is_user_tab = *active_tab.read() == "user";
-                                                let res_list = if is_user_tab {
-                                                    addon.supported_resources_user.clone()
-                                                } else {
-                                                    addon.resources.clone()
-                                                };
-                                                let display_types = if is_user_tab {
-                                                    addon.supported_types_user.clone()
-                                                } else if addon.types.is_empty() {
-                                                    addon.supported_types.clone()
-                                                } else {
-                                                    addon.types.clone()
-                                                };
-                                                rsx! {
-                                                    for res in res_list.iter() {
-                                                        span { class: "addon-kind-badge", "{res}" }
-                                                    }
-                                                    for t in display_types.iter() {
-                                                        span { class: "addon-kind-type", "{t}" }
-                                                    }
+                            let original_priorities: HashMap<String, i64> = visible
+                                .iter()
+                                .map(|addon| (addon.id.to_string(), addon.priority))
+                                .collect();
+                            let list_key = visible
+                                .iter()
+                                .map(|addon| addon.id.to_string())
+                                .collect::<Vec<_>>()
+                                .join(":");
+                            let items: Vec<Element> = visible
+                                .into_iter()
+                                .map(|addon| {
+                                    let id = addon.id;
+                                    let id_string = id.to_string();
+                                    let is_user_tab = *active_tab.read() == "user";
+                                    let res_list = if is_user_tab {
+                                        addon.supported_resources_user.clone()
+                                    } else {
+                                        addon.resources.clone()
+                                    };
+                                    let display_types = if is_user_tab {
+                                        addon.supported_types_user.clone()
+                                    } else if addon.types.is_empty() {
+                                        addon.supported_types.clone()
+                                    } else {
+                                        addon.types.clone()
+                                    };
+
+                                    rsx! {
+                                        div { class: "addon-card", key: "{id_string}",
+                                            div { class: "addon-card-header",
+                                                span { class: "addon-card-name", "{addon.name}" }
+                                                span { class: "addon-card-kind", "{addon.kind}" }
+                                            }
+                                            div { class: "addon-kind-card-badges",
+                                                for res in res_list.iter() {
+                                                    span { class: "addon-kind-badge", "{res}" }
+                                                }
+                                                for t in display_types.iter() {
+                                                    span { class: "addon-kind-type", "{t}" }
                                                 }
                                             }
-                                        }
-                                        div { class: "addon-card-actions",
-                                            // Up/down reorder buttons
-                                            div { class: "addon-card-sort",
+                                            div { class: "addon-card-actions",
                                                 button {
-                                                    class: "btn btn-ghost addon-sort-btn",
-                                                    disabled: addon_idx == 0,
-                                                    title: "Move up (higher priority)",
+                                                    class: "btn btn-ghost",
+                                                    style: "height:28px;font-size:.68rem;padding:0 10px",
+                                                    draggable: "false",
+                                                    onpointerdown: move |e| e.stop_propagation(),
+                                                    onmousedown: move |e| e.stop_propagation(),
+                                                    onmouseup: move |e| e.stop_propagation(),
                                                     onclick: {
                                                         let client = app_state.clone();
-                                                        move |_| {
-                                                            let current = addons.read().clone();
-                                                            if addon_idx == 0 { return; }
-                                                            let mut new_order = current.clone();
-                                                            new_order.swap(addon_idx, addon_idx - 1);
-                                                            let updates: Vec<(Uuid, i64)> = new_order.iter().enumerate()
-                                                                .filter_map(|(i, a)| {
-                                                                    let new_prio = i as i64 * 10;
-                                                                    if a.priority != new_prio { Some((a.id, new_prio)) } else { None }
-                                                                })
-                                                                .collect();
-                                                            let c = client.clone();
-                                                            spawn(async move {
-                                                                for (uid, prio) in updates {
-                                                                    let _ = c.execute(UpdateAddon { id: uid, payload: UpdateAddonRequest { priority: Some(prio), ..Default::default() } }).await;
-                                                                }
-                                                                let v = *refresh.peek() + 1;
-                                                                refresh.set(v);
-                                                            });
-                                                        }
-                                                    },
-                                                    "↑"
-                                                }
-                                                button {
-                                                    class: "btn btn-ghost addon-sort-btn",
-                                                    disabled: addon_idx + 1 >= addon_count,
-                                                    title: "Move down (lower priority)",
-                                                    onclick: {
-                                                        let client = app_state.clone();
-                                                        move |_| {
-                                                            let current = addons.read().clone();
-                                                            if addon_idx + 1 >= current.len() { return; }
-                                                            let mut new_order = current.clone();
-                                                            new_order.swap(addon_idx, addon_idx + 1);
-                                                            let updates: Vec<(Uuid, i64)> = new_order.iter().enumerate()
-                                                                .filter_map(|(i, a)| {
-                                                                    let new_prio = i as i64 * 10;
-                                                                    if a.priority != new_prio { Some((a.id, new_prio)) } else { None }
-                                                                })
-                                                                .collect();
-                                                            let c = client.clone();
-                                                            spawn(async move {
-                                                                for (uid, prio) in updates {
-                                                                    let _ = c.execute(UpdateAddon { id: uid, payload: UpdateAddonRequest { priority: Some(prio), ..Default::default() } }).await;
-                                                                }
-                                                                let v = *refresh.peek() + 1;
-                                                                refresh.set(v);
-                                                            });
-                                                        }
-                                                    },
-                                                    "↓"
-                                                }
-                                            }
-                                            button {
-                                                class: "btn btn-ghost",
-                                                style: "height:28px;font-size:.68rem;padding:0 10px",
-                                                onclick: {
-                                                    let client = app_state.clone();
-                                                    move |_| {
-                                                        if let Some(a) = addons.read().iter().find(|a| a.id == id).cloned() {
-                                                            edit_name_input.set(a.name.clone());
-                                                            let config_map = a.config.as_object()
-                                                                .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-                                                                .unwrap_or_default();
-                                                            edit_form_values.set(config_map);
-                                                            let res_set: std::collections::HashSet<String> = a.resources
-                                                                .iter()
-                                                                .map(|r| format!("{r}"))
-                                                                .collect();
-                                                            edit_resources.set(res_set);
-                                                            // Empty types = all enabled — pre-check every supported type.
-                                                            let type_set: std::collections::HashSet<String> = if a.types.is_empty() {
-                                                                a.supported_types.iter().map(|t| format!("{t}")).collect()
-                                                            } else {
-                                                                a.types.iter().map(|t| format!("{t}")).collect()
-                                                            };
-                                                            edit_types.set(type_set);
-                                                            edit_is_default.set(a.is_default);
-                                                            edit_http_redirect_stream.set(a.http_redirect_stream);
-                                                            edit_service_filter.set(a.service_filter.join(", "));
-                                                            let has_catalog = a.resources.contains(&ResourceType::Catalog);
-                                                            edit_catalogs.set(Vec::new());
-                                                            edit_catalog_settings.set(std::collections::HashMap::new());
-                                                            id_to_edit.set(Some(id));
-                                                            if has_catalog {
-                                                                edit_catalogs_loading.set(true);
-                                                                let c = client.clone();
-                                                                spawn(async move {
-                                                                    match c.execute(GetAddonCatalogs { id }).await {
-                                                                        Ok(cats) => {
-                                                                            let settings: std::collections::HashMap<String, (bool, String, String)> = cats
-                                                                                .iter()
-                                                                                .map(|cat| (
-                                                                                    cat.catalog_id.clone(),
-                                                                                    (
-                                                                                        cat.enabled,
-                                                                                        cat.max_items.map(|n| n.to_string()).unwrap_or_default(),
-                                                                                        cat.tags.join(", "),
-                                                                                    ),
-                                                                                ))
-                                                                                .collect();
-                                                                            edit_catalog_settings.set(settings);
-                                                                            edit_catalogs.set(cats);
+                                                        move |e| {
+                                                            e.stop_propagation();
+                                                            if let Some(a) = addons.read().iter().find(|a| a.id == id).cloned() {
+                                                                edit_name_input.set(a.name.clone());
+                                                                let config_map = a.config.as_object()
+                                                                    .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                                                                    .unwrap_or_default();
+                                                                edit_form_values.set(config_map);
+                                                                let res_set: std::collections::HashSet<String> = a.resources
+                                                                    .iter()
+                                                                    .map(|r| format!("{r}"))
+                                                                    .collect();
+                                                                edit_resources.set(res_set);
+                                                                let type_set: std::collections::HashSet<String> = if a.types.is_empty() {
+                                                                    a.supported_types.iter().map(|t| format!("{t}")).collect()
+                                                                } else {
+                                                                    a.types.iter().map(|t| format!("{t}")).collect()
+                                                                };
+                                                                edit_types.set(type_set);
+                                                                edit_is_default.set(a.is_default);
+                                                                edit_http_redirect_stream.set(a.http_redirect_stream);
+                                                                edit_service_filter.set(a.service_filter.join(", "));
+                                                                let has_catalog = a.resources.contains(&ResourceType::Catalog);
+                                                                edit_catalogs.set(Vec::new());
+                                                                edit_catalog_settings.set(std::collections::HashMap::new());
+                                                                id_to_edit.set(Some(id));
+                                                                if has_catalog {
+                                                                    edit_catalogs_loading.set(true);
+                                                                    let c = client.clone();
+                                                                    spawn(async move {
+                                                                        match c.execute(GetAddonCatalogs { id }).await {
+                                                                            Ok(cats) => {
+                                                                                let settings: std::collections::HashMap<String, (bool, String, String)> = cats
+                                                                                    .iter()
+                                                                                    .map(|cat| (
+                                                                                        cat.catalog_id.clone(),
+                                                                                        (
+                                                                                            cat.enabled,
+                                                                                            cat.max_items.map(|n| n.to_string()).unwrap_or_default(),
+                                                                                            cat.tags.join(", "),
+                                                                                        ),
+                                                                                    ))
+                                                                                    .collect();
+                                                                                edit_catalog_settings.set(settings);
+                                                                                edit_catalogs.set(cats);
+                                                                            }
+                                                                            Err(e) => error.set(Some(format!("Failed to load catalogs: {e}"))),
                                                                         }
-                                                                        Err(e) => {
-                                                                            error.set(Some(format!("Failed to load catalogs: {e}")));
-                                                                        }
-                                                                    }
-                                                                    edit_catalogs_loading.set(false);
-                                                                });
+                                                                        edit_catalogs_loading.set(false);
+                                                                    });
+                                                                }
                                                             }
                                                         }
-                                                    }
-                                                },
-                                                "Edit"
-                                            }
-                                            button {
-                                                class: "btn btn-ghost",
-                                                style: "height:28px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error)",
-                                                onclick: move |_| id_to_delete.set(Some(id)),
-                                                "Delete"
+                                                    },
+                                                    "Edit"
+                                                }
+                                                button {
+                                                    class: "btn btn-ghost",
+                                                    style: "height:28px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error)",
+                                                    draggable: "false",
+                                                    onpointerdown: move |e| e.stop_propagation(),
+                                                    onmousedown: move |e| e.stop_propagation(),
+                                                    onmouseup: move |e| e.stop_propagation(),
+                                                    onclick: move |e| {
+                                                        e.stop_propagation();
+                                                        id_to_delete.set(Some(id));
+                                                    },
+                                                    "Delete"
+                                                }
                                             }
                                         }
                                     }
+                                })
+                                .collect();
+                            let client = app_state.clone();
+
+                            rsx! {
+                                DragAndDropList {
+                                    key: "{list_key}",
+                                    items,
+                                    aria_label: "Addons",
+                                    on_reorder: move |new_order: Vec<String>| {
+                                        let updates: Vec<(Uuid, i64)> = new_order
+                                            .iter()
+                                            .enumerate()
+                                            .filter_map(|(index, id)| {
+                                                let priority = index as i64 * 10;
+                                                (original_priorities.get(id).copied() != Some(priority))
+                                                    .then(|| id.parse().ok().map(|id| (id, priority)))
+                                                    .flatten()
+                                            })
+                                            .collect();
+                                        let client = client.clone();
+                                        spawn(async move {
+                                            for (id, priority) in updates {
+                                                let _ = client.execute(UpdateAddon {
+                                                    id,
+                                                    payload: UpdateAddonRequest {
+                                                        priority: Some(priority),
+                                                        ..Default::default()
+                                                    },
+                                                }).await;
+                                            }
+                                            let value = *refresh.peek() + 1;
+                                            refresh.set(value);
+                                        });
+                                    },
                                 }
                             }
                         }
-                    }
-                }
-            }
                     }
                 }
             }
