@@ -11,25 +11,50 @@ use uuid::Uuid;
 
 use crate::AppState;
 
-/// A BitTorrent tracker announce URL: an absolute `udp://`/`http(s)://` URI with
-/// a path. Rejects bare hosts and non-URL `sources` entries, so random addon
-/// metadata is never mistaken for a tracker.
+/// A BitTorrent tracker announce URL with a supported scheme and host. UDP
+/// trackers may omit a path, while HTTP trackers must name an announce path.
+/// Unrelated addon `sources` entries are rejected.
 #[nutype(
     validate(predicate = is_tracker_url),
     derive(Clone, Debug, PartialEq, Eq, Hash, AsRef, Serialize, Deserialize)
 )]
 pub struct TrackerUrl(String);
 
-/// Whether `s` looks like a tracker announce URL (absolute http/https/udp + path).
+/// Whether `s` is a usable HTTP(S) or UDP tracker URL.
 pub fn is_tracker_url(s: &str) -> bool {
-    let lower = s
-        .trim()
-        .to_ascii_lowercase();
-    let rest = lower
-        .strip_prefix("udp://")
-        .or_else(|| lower.strip_prefix("http://"))
-        .or_else(|| lower.strip_prefix("https://"));
-    matches!(rest, Some(rest) if rest.contains('/'))
+    let Ok(url) = url::Url::parse(s.trim()) else {
+        return false;
+    };
+    if url
+        .host_str()
+        .is_none()
+    {
+        return false;
+    }
+    match url.scheme() {
+        "udp" => url
+            .port()
+            .is_some(),
+        "http" | "https" => {
+            !url.path()
+                .is_empty()
+                && url.path() != "/"
+        }
+        _ => false,
+    }
+}
+
+fn deserialize_tracker_urls<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<TrackerUrl>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let values = <Vec<String> as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(values
+        .into_iter()
+        .filter_map(|value| TrackerUrl::try_new(value).ok())
+        .collect())
 }
 
 /// Typed representation of how a stream is accessed (transport mechanism).
@@ -58,7 +83,7 @@ pub enum StreamDescriptor {
         /// Direct file index within the torrent (takes precedence over file_hint).
         file_idx: Option<usize>,
         /// Tracker announce URLs (populated from the stream's `sources`).
-        #[serde(default)]
+        #[serde(default, deserialize_with = "deserialize_tracker_urls")]
         trackers: Vec<TrackerUrl>,
     },
     Opendal {
@@ -606,7 +631,8 @@ fn extract_query_param(url: &str, param: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        HttpSource, STREAM_PROXY_CLIENT, TrackerUrl, is_tracker_url, mime_from_path,
+        HttpSource, STREAM_PROXY_CLIENT, StreamDescriptor, TrackerUrl, is_tracker_url,
+        mime_from_path,
     };
     use std::path::Path;
 
@@ -652,11 +678,14 @@ mod tests {
     #[test]
     fn tracker_url_validates_absolute_urls() {
         assert!(is_tracker_url("udp://tracker.opentrackr.org:1337/announce"));
+        assert!(is_tracker_url("udp://opentor.net:6969"));
         assert!(is_tracker_url("https://private.example/announce"));
         assert!(is_tracker_url("http://tracker.example:8080/announce"));
 
-        // bare host, relative path, and non-URLs are rejected
+        // Missing announce paths for HTTP, missing UDP ports, relative paths,
+        // unsupported schemes, and non-URLs are rejected.
         assert!(!is_tracker_url("https://tracker.example"));
+        assert!(!is_tracker_url("udp://tracker.example"));
         assert!(!is_tracker_url("/announce"));
         assert!(!is_tracker_url("tracker:udp://x/announce"));
         assert!(!is_tracker_url("not-a-tracker"));
@@ -667,6 +696,20 @@ mod tests {
             .is_ok()
         );
         assert!(TrackerUrl::try_new("not-a-tracker".to_string()).is_err());
+    }
+
+    #[test]
+    fn torrent_descriptor_ignores_invalid_persisted_trackers() {
+        let descriptor: StreamDescriptor = serde_json::from_str(
+            r#"{"Torrent":{"info_hash":"abc","file_hint":null,"file_idx":0,"trackers":["udp://opentor.net:6969","not-a-tracker"]}}"#,
+        )
+        .unwrap();
+
+        let StreamDescriptor::Torrent { trackers, .. } = descriptor else {
+            panic!("expected torrent descriptor");
+        };
+        assert_eq!(trackers.len(), 1);
+        assert_eq!(trackers[0].as_ref(), "udp://opentor.net:6969");
     }
 
     #[test]

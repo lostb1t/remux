@@ -1,7 +1,10 @@
 use anyhow::anyhow;
 use axum::Json;
 
-use super::subtitles::{inject_external_subtitles, scored_external_subtitles};
+use super::subtitles::{
+    inject_external_subtitles, inject_sidecar_subtitles, save_sidecar_subtitle_routes,
+    scored_external_subtitles,
+};
 use axum::{
     body::Body,
     extract::{Path, State},
@@ -264,6 +267,11 @@ async fn items_playbackinfo_inner(
             .results
             .len(),
     );
+    let mut sidecar_subtitle_routes = Vec::with_capacity(
+        probed
+            .results
+            .len(),
+    );
 
     // Per-user playback preferences + remembered selections, resolved per source
     // via `MediaSourceInfo::resolve_default_streams` (see below).
@@ -467,6 +475,20 @@ async fn items_playbackinfo_inner(
             TranscodeDecision::Transcode(outcome) => outcome.apply_to(&mut source),
         }
 
+        let sidecars = effective_stream
+            .stream_info
+            .as_ref()
+            .map(|stream| {
+                stream.subtitle_sidecars(
+                    &state
+                        .ctx
+                        .torrent,
+                )
+            })
+            .unwrap_or_default();
+        let routes = inject_sidecar_subtitles(&mut source, sidecars);
+        let subtitle_source_id = source.id;
+
         apply_subtitle_delivery(
             &mut source,
             id,
@@ -487,6 +509,7 @@ async fn items_playbackinfo_inner(
             }
         }
 
+        sidecar_subtitle_routes.push((subtitle_source_id, routes));
         media_sources.push(source);
     }
 
@@ -544,6 +567,35 @@ async fn items_playbackinfo_inner(
     if !specific_stream_requested && !media_sources.is_empty() {
         media_sources[0].id = id;
         media_sources[0].e_tag = id;
+    }
+
+    for (source, (delivery_source_id, routes)) in media_sources
+        .iter()
+        .zip(sidecar_subtitle_routes)
+    {
+        // DeliveryUrl contains the source ID from apply_subtitle_delivery, while
+        // some clients construct the route from the final MediaSourceInfo ID.
+        // Cache both keys when auto-play rewrites the first source ID.
+        if source.id != delivery_source_id {
+            save_sidecar_subtitle_routes(
+                &state.ctx,
+                &session
+                    .device
+                    .id,
+                id,
+                source.id,
+                routes.clone(),
+            );
+        }
+        save_sidecar_subtitle_routes(
+            &state.ctx,
+            &session
+                .device
+                .id,
+            id,
+            delivery_source_id,
+            routes,
+        );
     }
 
     // Live TV: apply stream flags on top of whatever the probe/transcoding decided.

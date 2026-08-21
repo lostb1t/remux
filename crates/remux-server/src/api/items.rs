@@ -472,11 +472,16 @@ pub async fn get_items(
             let mut items = Vec::with_capacity(slice.len());
             if !item_ids.is_empty() {
                 let mut by_id: std::collections::HashMap<Uuid, db::Media> =
-                    db::Media::get_by_ids(&state.ctx.db, &item_ids)
-                        .await?
-                        .into_iter()
-                        .map(|m| (m.id, m))
-                        .collect();
+                    db::Media::get_by_ids(
+                        &state
+                            .ctx
+                            .db,
+                        &item_ids,
+                    )
+                    .await?
+                    .into_iter()
+                    .map(|m| (m.id, m))
+                    .collect();
                 for rel in slice {
                     if let Some(media) = by_id.remove(&rel.right_media_id) {
                         let mut dto = api::db_media_to_item(media, hide_sources);
@@ -864,7 +869,11 @@ pub async fn items(
     //trace!(?q);
     let items = get_items(state.clone(), session.clone(), q.clone(), true)
         .await?
-        .preload_playlist_runtimes(&state.ctx.db)
+        .preload_playlist_runtimes(
+            &state
+                .ctx
+                .db,
+        )
         .await
         .with_permissions()
         .with_client_patches()
@@ -1604,7 +1613,9 @@ async fn item_for_user(
     .context_not_found("item not found")?;
 
     db::Media::preload_playlist_runtimes(
-        &state.ctx.db,
+        &state
+            .ctx
+            .db,
         std::slice::from_mut(&mut media),
     )
     .await;
