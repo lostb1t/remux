@@ -6,12 +6,3 @@ default_platform = "web"
 title = "Remux Admin"
 base_path = "/admin"
 
-[web.resource]
-script = [
-    "https://cdn.jsdelivr.net/npm/sortablejs@1.15.7/Sortable.min.js"
-]
-style = []
-
-[web.resource.dev]
-script = []
-style = []
