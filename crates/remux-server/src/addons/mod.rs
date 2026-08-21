@@ -2175,6 +2175,7 @@ impl AddonService {
             error!(id = %actual_root_id, error = %e, "failed to upsert root media");
             return actual_root_id;
         }
+        db::UserMediaState::remap_orphaned_for(&ctx.db, &[media.clone()]).await;
         save_pending_relations(&ctx, &[media.clone()]).await;
         save_pending_tags(&ctx, &[media.clone()]).await;
         save_pending_popularity(&ctx, &[media.clone()]).await;
@@ -2270,6 +2271,7 @@ impl AddonService {
             if let Err(e) = db::Media::upsert(&ctx.db, chunk).await {
                 error!(error = %e, "failed to upsert level-1 children");
             } else {
+                db::UserMediaState::remap_orphaned_for(&ctx.db, chunk).await;
                 save_pending_relations(&ctx, chunk).await;
                 save_pending_tags(&ctx, chunk).await;
                 save_pending_popularity(&ctx, chunk).await;
@@ -2327,6 +2329,7 @@ impl AddonService {
                 if let Err(e) = db::Media::upsert(&ctx.db, chunk).await {
                     error!(error = %e, "failed to upsert level-2 children");
                 } else {
+                    db::UserMediaState::remap_orphaned_for(&ctx.db, chunk).await;
                     save_pending_relations(&ctx, chunk).await;
                     save_pending_tags(&ctx, chunk).await;
                     save_pending_popularity(&ctx, chunk).await;
