@@ -16,12 +16,14 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use crate::{
-    AppState, IntoApiError, OptionExt, ResultExt, api,
+    AppState, IntoApiError, OptionExt, ResultExt,
+    addons::media_tracker::MediaTrackerEvent,
+    api,
     api::system::QuickConnectEntry,
     common::{get_uuid, server_id},
     db,
     db::{auth, user::User},
-    services::MediaResolveService,
+    services::{self, MediaResolveService},
     ws::WsEvent,
 };
 use axum_anyhow::ApiResult as Result;
@@ -452,6 +454,13 @@ pub async fn mark_favorite(
             &user,
         )
         .await?;
+    services::media_tracker::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        MediaTrackerEvent::Favorite { is_favorite: true },
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -473,6 +482,13 @@ pub async fn unmark_favorite(
             &user,
         )
         .await?;
+    services::media_tracker::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        MediaTrackerEvent::Favorite { is_favorite: false },
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -494,6 +510,13 @@ pub async fn mark_favorite_modern(
             &user,
         )
         .await?;
+    services::media_tracker::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        MediaTrackerEvent::Favorite { is_favorite: true },
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(s, &media)).into_response())
 }
 
@@ -515,6 +538,13 @@ pub async fn unmark_favorite_modern(
             &user,
         )
         .await?;
+    services::media_tracker::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        MediaTrackerEvent::Favorite { is_favorite: false },
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(s, &media)).into_response())
 }
 
@@ -544,6 +574,13 @@ pub async fn mark_played(
             server_config.release_date_threshold(),
         )
         .await?;
+    services::media_tracker::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        MediaTrackerEvent::MarkPlayed,
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -566,6 +603,13 @@ pub async fn unmark_played(
             true,
         )
         .await?;
+    services::media_tracker::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        MediaTrackerEvent::MarkUnplayed,
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -605,15 +649,25 @@ pub async fn update_item_rating(
     let media = MediaResolveService::resolve_item(id, &state.ctx)
         .await?
         .context_not_found("not found")?;
+    let rating = q.parse()?;
     let ms = db::UserMediaState::set_rating(
         &state
             .ctx
             .db,
         &user,
         &media,
-        q.parse()?,
+        rating,
     )
     .await?;
+    services::media_tracker::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        MediaTrackerEvent::Rating {
+            rating: rating.map(|r| r.value() as f32),
+        },
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -636,6 +690,13 @@ pub async fn delete_item_rating(
         None,
     )
     .await?;
+    services::media_tracker::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        MediaTrackerEvent::Rating { rating: None },
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -650,15 +711,25 @@ pub async fn update_item_rating_legacy(
     let media = MediaResolveService::resolve_item(id, &state.ctx)
         .await?
         .context_not_found("not found")?;
+    let rating = q.parse()?;
     let ms = db::UserMediaState::set_rating(
         &state
             .ctx
             .db,
         &user,
         &media,
-        q.parse()?,
+        rating,
     )
     .await?;
+    services::media_tracker::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        MediaTrackerEvent::Rating {
+            rating: rating.map(|r| r.value() as f32),
+        },
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -681,6 +752,13 @@ pub async fn delete_item_rating_legacy(
         None,
     )
     .await?;
+    services::media_tracker::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        MediaTrackerEvent::Rating { rating: None },
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 

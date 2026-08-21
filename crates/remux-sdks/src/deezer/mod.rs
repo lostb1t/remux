@@ -64,6 +64,8 @@ pub struct Album {
     pub release_date: Option<String>,
     pub label: Option<String>,
     pub nb_tracks: Option<u32>,
+    /// Total album duration in seconds, as reported by Deezer.
+    pub duration: Option<u64>,
     /// "album" | "single" | "ep" — keeps singles/EPs out of the Albums section.
     pub record_type: Option<String>,
     pub genres: Option<DeezerList<Genre>>,
@@ -101,6 +103,8 @@ pub struct ArtistAlbumRef {
     /// "album" | "single" | "ep" — the artist albums listing uses this to keep
     /// singles/EPs out of the Albums view.
     pub record_type: Option<String>,
+    /// Total album duration in seconds, as reported by Deezer.
+    pub duration: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------

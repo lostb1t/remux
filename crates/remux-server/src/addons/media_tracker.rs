@@ -1,4 +1,4 @@
-//! Tracking capability: syncing a user's watch activity with an external
+//! Media tracker capability: syncing a user's watch activity with an external
 //! service (Trakt, Yamtrack). Unlike other capabilities this is per-user —
 //! the operator configures the addon, each user connects it separately.
 
@@ -11,7 +11,7 @@ use async_trait::async_trait;
 
 /// Split by what the dispatcher should do next, not by cause.
 #[derive(Debug)]
-pub enum TrackingError {
+pub enum MediaTrackerError {
     /// Rate limited, 5xx, network. `retry_after` is a provider hint; the
     /// dispatcher waits the longer of it and its own backoff.
     Retryable {
@@ -25,7 +25,7 @@ pub enum TrackingError {
     },
 }
 
-impl TrackingError {
+impl MediaTrackerError {
     pub fn retryable(message: impl Into<String>) -> Self {
         Self::Retryable {
             message: message.into(),
@@ -55,7 +55,7 @@ impl TrackingError {
     }
 
     /// Backstop for a capability the provider never declared. Core gates on
-    /// `TrackingCapabilities` first, so this firing means the two disagree.
+    /// `MediaTrackerCapabilities` first, so this firing means the two disagree.
     pub fn unsupported(what: &str) -> Self {
         Self::permanent(format!("provider does not support {what}"))
     }
@@ -75,7 +75,7 @@ impl TrackingError {
     }
 }
 
-impl std::fmt::Display for TrackingError {
+impl std::fmt::Display for MediaTrackerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Retryable {
@@ -96,9 +96,9 @@ impl std::fmt::Display for TrackingError {
     }
 }
 
-impl std::error::Error for TrackingError {}
+impl std::error::Error for MediaTrackerError {}
 
-pub type TrackingResult<T> = std::result::Result<T, TrackingError>;
+pub type MediaTrackerResult<T> = std::result::Result<T, MediaTrackerError>;
 
 /// Unit a per-user event filter is expressed in. Serialised into
 /// `user_media_trackers.event_filters`, so renaming a variant is a migration.
@@ -116,7 +116,7 @@ pub type TrackingResult<T> = std::result::Result<T, TrackingError>;
 )]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
-pub enum TrackingEventKind {
+pub enum MediaTrackerEventKind {
     PlaybackStart,
     PlaybackProgress,
     PlaybackStop,
@@ -128,7 +128,7 @@ pub enum TrackingEventKind {
 
 /// One thing that happened to one item, for one user.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum TrackingEvent {
+pub enum MediaTrackerEvent {
     PlaybackStart {
         position_ticks: i64,
     },
@@ -154,16 +154,16 @@ pub enum TrackingEvent {
     },
 }
 
-impl TrackingEvent {
-    pub fn kind(&self) -> TrackingEventKind {
+impl MediaTrackerEvent {
+    pub fn kind(&self) -> MediaTrackerEventKind {
         match self {
-            Self::PlaybackStart { .. } => TrackingEventKind::PlaybackStart,
-            Self::PlaybackProgress { .. } => TrackingEventKind::PlaybackProgress,
-            Self::PlaybackStop { .. } => TrackingEventKind::PlaybackStop,
-            Self::MarkPlayed => TrackingEventKind::MarkPlayed,
-            Self::MarkUnplayed => TrackingEventKind::MarkUnplayed,
-            Self::Favorite { .. } => TrackingEventKind::Favorite,
-            Self::Rating { .. } => TrackingEventKind::Rating,
+            Self::PlaybackStart { .. } => MediaTrackerEventKind::PlaybackStart,
+            Self::PlaybackProgress { .. } => MediaTrackerEventKind::PlaybackProgress,
+            Self::PlaybackStop { .. } => MediaTrackerEventKind::PlaybackStop,
+            Self::MarkPlayed => MediaTrackerEventKind::MarkPlayed,
+            Self::MarkUnplayed => MediaTrackerEventKind::MarkUnplayed,
+            Self::Favorite { .. } => MediaTrackerEventKind::Favorite,
+            Self::Rating { .. } => MediaTrackerEventKind::Rating,
         }
     }
 
@@ -184,43 +184,48 @@ impl TrackingEvent {
 /// Core walks to the series via `Media::get_ancestors` once so addons never
 /// need a DB handle. No `Default`: there is no meaningful default `MediaKind`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TrackingTarget {
+pub struct MediaTrackerTarget {
     pub kind: db::MediaKind,
     pub title: String,
     pub year: Option<i32>,
-    pub ids: TrackingIds,
+    pub ids: db::ExternalIds,
     /// Set for episodes: the parent series' title, year and ids.
-    pub series: Option<Box<TrackingTarget>>,
+    pub series: Option<Box<MediaTrackerTarget>>,
     pub season: Option<i64>,
     pub episode: Option<i64>,
 }
 
-/// The ids tracking services key on — narrower than `db::ExternalIds`, which
-/// also carries Deezer/Kitsu/IPTV/Stremio ids none of them understand.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrackingIds {
-    pub imdb: Option<String>,
-    pub tmdb: Option<i64>,
-    pub tvdb: Option<i64>,
+/// Whether any id here is one a media tracker could key on. `ExternalIds`
+/// also carries Deezer, IPTV and Stremio ids, which identify nothing to them.
+fn has_media_tracker_ids(ids: &db::ExternalIds) -> bool {
+    ids.imdb
+        .is_some()
+        || ids
+            .tmdb
+            .is_some()
+        || ids
+            .tvdb
+            .is_some()
+        || ids
+            .kitsu
+            .is_some()
 }
 
-impl TrackingIds {
-    /// Nothing to match on. Core drops the action rather than queueing
-    /// something no provider can act on.
-    pub fn is_empty(&self) -> bool {
-        self.imdb
-            .is_none()
-            && self
-                .tmdb
-                .is_none()
-            && self
-                .tvdb
-                .is_none()
+impl MediaTrackerTarget {
+    /// Whether a provider could find this item at all. An episode counts when
+    /// its series does, since every service can key on the show plus season
+    /// and episode numbers.
+    pub fn is_matchable(&self) -> bool {
+        has_media_tracker_ids(&self.ids)
+            || self
+                .series
+                .as_ref()
+                .is_some_and(|s| has_media_tracker_ids(&s.ids))
     }
 }
 
 /// Opaque to core: a static webhook token and an OAuth triple look the same.
-pub type TrackingCredentials = remux_utils::Secret<serde_json::Value>;
+pub type MediaTrackerCredentials = remux_utils::Secret<serde_json::Value>;
 
 /// Drives which connect UI the dashboard renders, without it knowing the
 /// provider.
@@ -249,7 +254,7 @@ pub struct DeviceAuthStart {
 #[derive(Debug, Clone)]
 pub enum DeviceAuthPoll {
     Pending,
-    Approved(TrackingCredentials),
+    Approved(MediaTrackerCredentials),
     /// Declined or expired. Start over.
     Denied,
 }
@@ -278,14 +283,14 @@ impl SyncDirection {
 /// Static, no-I/O declaration of what a provider can do. Core reads these to
 /// decide what to offer and what to call, so it never matches on provider id.
 #[derive(Debug, Clone)]
-pub struct TrackingCapabilities {
+pub struct MediaTrackerCapabilities {
     pub auth_flow: AuthFlow,
     /// `Token` only. Reuses the addon option schema so the dashboard
     /// renders it with the same generic form code as addon settings.
     pub connect_fields: Vec<remux_sdks::remux::AddonOption>,
-    pub supported_events: Vec<TrackingEventKind>,
+    pub supported_events: Vec<MediaTrackerEventKind>,
     /// Must be a subset of `supported_events`.
-    pub default_event_filter: Vec<TrackingEventKind>,
+    pub default_event_filter: Vec<MediaTrackerEventKind>,
     pub history_import: bool,
     /// Partial playback positions, carried on `RemoteWatch::position_ticks` by
     /// `import_history` and `pull_changes` rather than by a method of its own.
@@ -298,7 +303,7 @@ pub struct TrackingCapabilities {
     pub watchlist: SyncDirection,
 }
 
-impl Default for TrackingCapabilities {
+impl Default for MediaTrackerCapabilities {
     /// Providers opt in, so a new capability never silently turns on for an
     /// existing addon.
     fn default() -> Self {
@@ -317,8 +322,8 @@ impl Default for TrackingCapabilities {
     }
 }
 
-impl TrackingCapabilities {
-    pub fn supports(&self, kind: TrackingEventKind) -> bool {
+impl MediaTrackerCapabilities {
+    pub fn supports(&self, kind: MediaTrackerEventKind) -> bool {
         self.supported_events
             .contains(&kind)
     }
@@ -326,66 +331,66 @@ impl TrackingCapabilities {
 
 /// Per-call context. No DB handle, matching `MetricsCtx`.
 #[derive(Clone)]
-pub struct TrackingCtx {
+pub struct MediaTrackerCtx {
     pub config: Arc<crate::Config>,
 }
 
-/// One external tracking service. Bulk-sync methods default to `unsupported`
+/// One external media tracker. Bulk-sync methods default to `unsupported`
 /// so a provider implements only what its capabilities advertise.
 #[async_trait]
-pub trait TrackingAddon: AddonKind + Send + Sync {
+pub trait MediaTrackerAddon: AddonKind + Send + Sync {
     /// Must be cheap and do no I/O — called while rendering pages.
-    fn capabilities(&self) -> TrackingCapabilities;
+    fn capabilities(&self) -> MediaTrackerCapabilities;
 
     /// Should hit the provider so a bad token is rejected while the user is
     /// still on the form, not later as a failed scrobble.
     async fn connect_with_token(
         &self,
         _fields: &serde_json::Value,
-        _ctx: &TrackingCtx,
-    ) -> TrackingResult<TrackingCredentials> {
-        Err(TrackingError::unsupported("token authentication"))
+        _ctx: &MediaTrackerCtx,
+    ) -> MediaTrackerResult<MediaTrackerCredentials> {
+        Err(MediaTrackerError::unsupported("token authentication"))
     }
 
     async fn begin_device_auth(
         &self,
-        _ctx: &TrackingCtx,
-    ) -> TrackingResult<DeviceAuthStart> {
-        Err(TrackingError::unsupported("device-code authentication"))
+        _ctx: &MediaTrackerCtx,
+    ) -> MediaTrackerResult<DeviceAuthStart> {
+        Err(MediaTrackerError::unsupported("device-code authentication"))
     }
 
     async fn poll_device_auth(
         &self,
         _poll_token: &str,
-        _ctx: &TrackingCtx,
-    ) -> TrackingResult<DeviceAuthPoll> {
-        Err(TrackingError::unsupported("device-code authentication"))
+        _ctx: &MediaTrackerCtx,
+    ) -> MediaTrackerResult<DeviceAuthPoll> {
+        Err(MediaTrackerError::unsupported("device-code authentication"))
     }
 
     async fn complete_redirect_auth(
         &self,
         _code: &str,
         _redirect_uri: &str,
-        _ctx: &TrackingCtx,
-    ) -> TrackingResult<TrackingCredentials> {
-        Err(TrackingError::unsupported("redirect authentication"))
+        _ctx: &MediaTrackerCtx,
+    ) -> MediaTrackerResult<MediaTrackerCredentials> {
+        Err(MediaTrackerError::unsupported("redirect authentication"))
     }
 
     /// Default suits providers whose credentials do not expire.
     async fn refresh(
         &self,
-        creds: &TrackingCredentials,
-        _ctx: &TrackingCtx,
-    ) -> TrackingResult<TrackingCredentials> {
+        creds: &MediaTrackerCredentials,
+        _ctx: &MediaTrackerCtx,
+    ) -> MediaTrackerResult<MediaTrackerCredentials> {
         Ok(creds.clone())
     }
 
     /// Backs the connection health indicator. Should be cheap.
     async fn verify(
         &self,
-        _creds: &TrackingCredentials,
-        _ctx: &TrackingCtx,
-    ) -> TrackingResult<()> {
+        _creds: &MediaTrackerCredentials,
+        _ctx: &MediaTrackerCtx,
+    ) -> MediaTrackerResult<()> {
         Ok(())
     }
 
@@ -393,54 +398,54 @@ pub trait TrackingAddon: AddonKind + Send + Sync {
     /// even when the provider is down.
     async fn disconnect(
         &self,
-        _creds: &TrackingCredentials,
-        _ctx: &TrackingCtx,
-    ) -> TrackingResult<()> {
+        _creds: &MediaTrackerCredentials,
+        _ctx: &MediaTrackerCtx,
+    ) -> MediaTrackerResult<()> {
         Ok(())
     }
 
     async fn on_event(
         &self,
-        event: &TrackingEvent,
-        target: &TrackingTarget,
-        creds: &TrackingCredentials,
-        ctx: &TrackingCtx,
-    ) -> TrackingResult<()>;
+        event: &MediaTrackerEvent,
+        target: &MediaTrackerTarget,
+        creds: &MediaTrackerCredentials,
+        ctx: &MediaTrackerCtx,
+    ) -> MediaTrackerResult<()>;
 
     async fn import_history(
         &self,
-        _creds: &TrackingCredentials,
-        _ctx: &TrackingCtx,
-    ) -> TrackingResult<Vec<RemoteWatch>> {
-        Err(TrackingError::unsupported("history import"))
+        _creds: &MediaTrackerCredentials,
+        _ctx: &MediaTrackerCtx,
+    ) -> MediaTrackerResult<Vec<RemoteWatch>> {
+        Err(MediaTrackerError::unsupported("history import"))
     }
 
     /// `None` for a full sweep.
     async fn pull_changes(
         &self,
         _since: Option<chrono::NaiveDateTime>,
-        _creds: &TrackingCredentials,
-        _ctx: &TrackingCtx,
-    ) -> TrackingResult<Vec<RemoteWatch>> {
-        Err(TrackingError::unsupported("external change sync"))
+        _creds: &MediaTrackerCredentials,
+        _ctx: &MediaTrackerCtx,
+    ) -> MediaTrackerResult<Vec<RemoteWatch>> {
+        Err(MediaTrackerError::unsupported("external change sync"))
     }
 
     async fn pull_watchlist(
         &self,
-        _creds: &TrackingCredentials,
-        _ctx: &TrackingCtx,
-    ) -> TrackingResult<Vec<TrackingIds>> {
-        Err(TrackingError::unsupported("watchlist sync"))
+        _creds: &MediaTrackerCredentials,
+        _ctx: &MediaTrackerCtx,
+    ) -> MediaTrackerResult<Vec<db::ExternalIds>> {
+        Err(MediaTrackerError::unsupported("watchlist sync"))
     }
 
     async fn push_watchlist(
         &self,
-        _target: &TrackingTarget,
+        _target: &MediaTrackerTarget,
         _add: bool,
-        _creds: &TrackingCredentials,
-        _ctx: &TrackingCtx,
-    ) -> TrackingResult<()> {
-        Err(TrackingError::unsupported("watchlist sync"))
+        _creds: &MediaTrackerCredentials,
+        _ctx: &MediaTrackerCtx,
+    ) -> MediaTrackerResult<()> {
+        Err(MediaTrackerError::unsupported("watchlist sync"))
     }
 }
 
@@ -448,7 +453,7 @@ pub trait TrackingAddon: AddonKind + Send + Sync {
 /// `pull_changes`.
 #[derive(Debug, Clone)]
 pub struct RemoteWatch {
-    pub ids: TrackingIds,
+    pub ids: db::ExternalIds,
     pub season: Option<i64>,
     pub episode: Option<i64>,
     pub watched: bool,
@@ -469,21 +474,21 @@ mod tests {
 
     #[test]
     fn retryable_and_permanent_are_distinguishable() {
-        assert!(TrackingError::retryable("boom").is_retryable());
-        assert!(!TrackingError::permanent("nope").is_retryable());
-        assert!(!TrackingError::reauth("bad token").is_retryable());
+        assert!(MediaTrackerError::retryable("boom").is_retryable());
+        assert!(!MediaTrackerError::permanent("nope").is_retryable());
+        assert!(!MediaTrackerError::reauth("bad token").is_retryable());
     }
 
     #[test]
     fn only_reauth_errors_ask_the_user_to_reconnect() {
-        assert!(TrackingError::reauth("401").requires_reauth());
-        assert!(!TrackingError::permanent("400 bad request").requires_reauth());
-        assert!(!TrackingError::retryable("timeout").requires_reauth());
+        assert!(MediaTrackerError::reauth("401").requires_reauth());
+        assert!(!MediaTrackerError::permanent("400 bad request").requires_reauth());
+        assert!(!MediaTrackerError::retryable("timeout").requires_reauth());
     }
 
     #[test]
     fn unsupported_is_permanent_and_never_retried() {
-        let err = TrackingError::unsupported("watchlist sync");
+        let err = MediaTrackerError::unsupported("watchlist sync");
         assert!(!err.is_retryable());
         assert!(!err.requires_reauth());
         assert!(
@@ -494,9 +499,9 @@ mod tests {
 
     #[test]
     fn retry_after_is_carried_and_shown() {
-        let err = TrackingError::retry_after("429", Duration::from_secs(30));
+        let err = MediaTrackerError::retry_after("429", Duration::from_secs(30));
         match &err {
-            TrackingError::Retryable {
+            MediaTrackerError::Retryable {
                 retry_after: Some(d),
                 ..
             } => assert_eq!(d.as_secs(), 30),
@@ -513,23 +518,23 @@ mod tests {
     #[test]
     fn event_kinds_round_trip_through_their_string_form() {
         for kind in [
-            TrackingEventKind::PlaybackStart,
-            TrackingEventKind::PlaybackProgress,
-            TrackingEventKind::PlaybackStop,
-            TrackingEventKind::MarkPlayed,
-            TrackingEventKind::MarkUnplayed,
-            TrackingEventKind::Favorite,
-            TrackingEventKind::Rating,
+            MediaTrackerEventKind::PlaybackStart,
+            MediaTrackerEventKind::PlaybackProgress,
+            MediaTrackerEventKind::PlaybackStop,
+            MediaTrackerEventKind::MarkPlayed,
+            MediaTrackerEventKind::MarkUnplayed,
+            MediaTrackerEventKind::Favorite,
+            MediaTrackerEventKind::Rating,
         ] {
             let s = kind.to_string();
             assert_eq!(
-                s.parse::<TrackingEventKind>()
+                s.parse::<MediaTrackerEventKind>()
                     .unwrap(),
                 kind
             );
             let json = serde_json::to_string(&kind).unwrap();
             assert_eq!(
-                serde_json::from_str::<TrackingEventKind>(&json).unwrap(),
+                serde_json::from_str::<MediaTrackerEventKind>(&json).unwrap(),
                 kind
             );
             // serde and strum must agree, or a filter written by the API would
@@ -542,36 +547,42 @@ mod tests {
     fn every_event_reports_its_own_kind() {
         let cases = [
             (
-                TrackingEvent::PlaybackStart { position_ticks: 0 },
-                TrackingEventKind::PlaybackStart,
+                MediaTrackerEvent::PlaybackStart { position_ticks: 0 },
+                MediaTrackerEventKind::PlaybackStart,
             ),
             (
-                TrackingEvent::PlaybackProgress {
+                MediaTrackerEvent::PlaybackProgress {
                     position_ticks: 1,
                     is_paused: true,
                 },
-                TrackingEventKind::PlaybackProgress,
+                MediaTrackerEventKind::PlaybackProgress,
             ),
             (
-                TrackingEvent::PlaybackStop {
+                MediaTrackerEvent::PlaybackStop {
                     position_ticks: 2,
                     played: true,
                 },
-                TrackingEventKind::PlaybackStop,
-            ),
-            (TrackingEvent::MarkPlayed, TrackingEventKind::MarkPlayed),
-            (TrackingEvent::MarkUnplayed, TrackingEventKind::MarkUnplayed),
-            (
-                TrackingEvent::Favorite { is_favorite: true },
-                TrackingEventKind::Favorite,
+                MediaTrackerEventKind::PlaybackStop,
             ),
             (
-                TrackingEvent::Rating { rating: Some(7.0) },
-                TrackingEventKind::Rating,
+                MediaTrackerEvent::MarkPlayed,
+                MediaTrackerEventKind::MarkPlayed,
             ),
             (
-                TrackingEvent::Rating { rating: None },
-                TrackingEventKind::Rating,
+                MediaTrackerEvent::MarkUnplayed,
+                MediaTrackerEventKind::MarkUnplayed,
+            ),
+            (
+                MediaTrackerEvent::Favorite { is_favorite: true },
+                MediaTrackerEventKind::Favorite,
+            ),
+            (
+                MediaTrackerEvent::Rating { rating: Some(7.0) },
+                MediaTrackerEventKind::Rating,
+            ),
+            (
+                MediaTrackerEvent::Rating { rating: None },
+                MediaTrackerEventKind::Rating,
             ),
         ];
         for (event, want) in cases {
@@ -582,47 +593,93 @@ mod tests {
     #[test]
     fn only_playback_events_carry_a_position() {
         assert_eq!(
-            TrackingEvent::PlaybackStop {
+            MediaTrackerEvent::PlaybackStop {
                 position_ticks: 99,
                 played: false,
             }
             .position_ticks(),
             Some(99)
         );
-        assert_eq!(TrackingEvent::MarkPlayed.position_ticks(), None);
+        assert_eq!(MediaTrackerEvent::MarkPlayed.position_ticks(), None);
         assert_eq!(
-            TrackingEvent::Favorite { is_favorite: false }.position_ticks(),
+            MediaTrackerEvent::Favorite { is_favorite: false }.position_ticks(),
             None
         );
         assert_eq!(
-            TrackingEvent::Rating { rating: Some(7.0) }.position_ticks(),
+            MediaTrackerEvent::Rating { rating: Some(7.0) }.position_ticks(),
             None
         );
     }
 
+    fn target(kind: db::MediaKind, ids: db::ExternalIds) -> MediaTrackerTarget {
+        MediaTrackerTarget {
+            kind,
+            title: "Heat".into(),
+            year: None,
+            ids,
+            series: None,
+            season: None,
+            episode: None,
+        }
+    }
+
     #[test]
-    fn ids_are_empty_only_when_nothing_is_matchable() {
-        assert!(TrackingIds::default().is_empty());
+    fn an_item_is_matchable_on_any_id_a_service_reads() {
         assert!(
-            !TrackingIds {
-                imdb: Some("tt123".into()),
-                ..Default::default()
-            }
-            .is_empty()
+            !target(db::MediaKind::Movie, db::ExternalIds::default()).is_matchable()
         );
-        assert!(
-            !TrackingIds {
+        for ids in [
+            db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt123".to_string()).ok(),
+                ..Default::default()
+            },
+            db::ExternalIds {
                 tmdb: Some(603),
                 ..Default::default()
-            }
-            .is_empty()
-        );
-        assert!(
-            !TrackingIds {
+            },
+            db::ExternalIds {
                 tvdb: Some(1),
                 ..Default::default()
-            }
-            .is_empty()
+            },
+            db::ExternalIds {
+                kitsu: Some(1),
+                ..Default::default()
+            },
+        ] {
+            assert!(target(db::MediaKind::Movie, ids).is_matchable());
+        }
+    }
+
+    /// An episode is keyed on its show, so one carrying no ids of its own is
+    /// still worth delivering.
+    #[test]
+    fn an_episode_is_matchable_through_its_series() {
+        let mut episode = target(db::MediaKind::Episode, db::ExternalIds::default());
+        assert!(!episode.is_matchable());
+
+        episode.series = Some(Box::new(target(
+            db::MediaKind::Series,
+            db::ExternalIds {
+                tvdb: Some(79126),
+                ..Default::default()
+            },
+        )));
+        assert!(episode.is_matchable());
+    }
+
+    /// A music id identifies nothing to a media tracker, so it must not
+    /// stand in for one.
+    #[test]
+    fn a_non_tracking_id_does_not_make_an_item_matchable() {
+        assert!(
+            !target(
+                db::MediaKind::Movie,
+                db::ExternalIds {
+                    deezer_album: Some(1),
+                    ..Default::default()
+                }
+            )
+            .is_matchable()
         );
     }
 
@@ -637,7 +694,7 @@ mod tests {
     /// A provider that forgets to declare an event should send nothing.
     #[test]
     fn default_capabilities_grant_nothing() {
-        let caps = TrackingCapabilities::default();
+        let caps = MediaTrackerCapabilities::default();
         assert!(
             caps.supported_events
                 .is_empty()
@@ -648,7 +705,7 @@ mod tests {
         assert_eq!(caps.favorites, SyncDirection::None);
         assert_eq!(caps.ratings, SyncDirection::None);
         assert_eq!(caps.watchlist, SyncDirection::None);
-        assert!(!caps.supports(TrackingEventKind::PlaybackStop));
+        assert!(!caps.supports(MediaTrackerEventKind::PlaybackStop));
     }
 
     /// A provider declaring `favorites: Pull` needs somewhere to put one, and a
@@ -656,7 +713,7 @@ mod tests {
     #[test]
     fn remote_user_data_can_carry_a_favourite_on_its_own() {
         let watch = RemoteWatch {
-            ids: TrackingIds {
+            ids: db::ExternalIds {
                 tmdb: Some(603),
                 ..Default::default()
             },
@@ -677,7 +734,7 @@ mod tests {
     #[test]
     fn remote_user_data_can_carry_a_rating_on_its_own() {
         let watch = RemoteWatch {
-            ids: TrackingIds {
+            ids: db::ExternalIds {
                 tmdb: Some(603),
                 ..Default::default()
             },

@@ -5,7 +5,7 @@ use sqlx::{FromRow, Row, SqlitePool, sqlite::SqliteRow};
 use std::time::Duration;
 use uuid::Uuid;
 
-use crate::addons::tracking::{TrackingError, TrackingEvent, TrackingTarget};
+use crate::addons::media_tracker::{MediaTrackerError, MediaTrackerEvent};
 
 /// Attempts before a row is parked as `failed_retryable` and stops being
 /// retried. Roughly a day of backoff, so a provider outage is ridden out but a
@@ -59,15 +59,16 @@ pub enum DeliveryStatus {
 #[strum(serialize_all = "snake_case")]
 #[sqlx(type_name = "TEXT", rename_all = "snake_case")]
 pub enum DeliveryKind {
-    Tracker,
+    MediaTracker,
 }
 
-/// What one tracking delivery carries: the event, plus the item it was about
-/// resolved at enqueue time so delivery never has to look anything up.
+/// What one media tracker delivery carries. The item is a reference rather than a
+/// snapshot, so the target is built at delivery, where its external ids can
+/// still be completed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TrackerPayload {
-    pub event: TrackingEvent,
-    pub target: TrackingTarget,
+pub struct MediaTrackerPayload {
+    pub media_id: Uuid,
+    pub event: MediaTrackerEvent,
 }
 
 /// A queued delivery and everything its deliverer needs to make it.
@@ -78,16 +79,16 @@ pub struct TrackerPayload {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum QueueKind {
     /// Watch activity headed for one of a user's connected media trackers.
-    Tracker {
+    MediaTracker {
         user_media_tracker_id: Uuid,
-        payload: TrackerPayload,
+        payload: MediaTrackerPayload,
     },
 }
 
 impl QueueKind {
     pub fn kind(&self) -> DeliveryKind {
         match self {
-            Self::Tracker { .. } => DeliveryKind::Tracker,
+            Self::MediaTracker { .. } => DeliveryKind::MediaTracker,
         }
     }
 
@@ -95,7 +96,7 @@ impl QueueKind {
     /// take the backlog with it.
     fn user_media_tracker_id(&self) -> Option<Uuid> {
         match self {
-            Self::Tracker {
+            Self::MediaTracker {
                 user_media_tracker_id,
                 ..
             } => Some(*user_media_tracker_id),
@@ -105,7 +106,7 @@ impl QueueKind {
     /// The variant's body, minus whatever already has its own column.
     fn body(&self) -> Result<String> {
         Ok(match self {
-            Self::Tracker { payload, .. } => serde_json::to_string(payload)?,
+            Self::MediaTracker { payload, .. } => serde_json::to_string(payload)?,
         })
     }
 
@@ -124,7 +125,7 @@ impl QueueKind {
                 }
             };
         match kind {
-            DeliveryKind::Tracker => Ok(Self::Tracker {
+            DeliveryKind::MediaTracker => Ok(Self::MediaTracker {
                 user_media_tracker_id: user_media_tracker_id.ok_or_else(|| {
                     decode(
                         "user_media_tracker_id",
@@ -299,7 +300,7 @@ impl DeliveryQueue {
         db: &SqlitePool,
         id: Uuid,
         attempts: i64,
-        err: &TrackingError,
+        err: &MediaTrackerError,
     ) -> Result<DeliveryStatus> {
         let now = Utc::now().naive_utc();
         // `attempts` is the count *before* this failure, which is also the
@@ -308,8 +309,10 @@ impl DeliveryQueue {
         let attempted = attempts + 1;
 
         let (status, next_attempt_at) = match err {
-            TrackingError::Permanent { .. } => (DeliveryStatus::FailedPermanent, now),
-            TrackingError::Retryable { retry_after, .. } => {
+            MediaTrackerError::Permanent { .. } => {
+                (DeliveryStatus::FailedPermanent, now)
+            }
+            MediaTrackerError::Retryable { retry_after, .. } => {
                 if attempted >= MAX_ATTEMPTS {
                     (DeliveryStatus::FailedRetryable, now)
                 } else {
@@ -385,8 +388,7 @@ mod tests {
     // --- state machine, against a real database ---
 
     use crate::{
-        addons::tracking::{TrackingEventKind, TrackingIds},
-        integration_test::new_test_server,
+        addons::media_tracker::MediaTrackerEventKind, integration_test::new_test_server,
     };
     use sqlx::SqlitePool;
 
@@ -418,7 +420,7 @@ mod tests {
             user.id,
             addon,
             Default::default(),
-            vec![TrackingEventKind::PlaybackStop],
+            vec![MediaTrackerEventKind::PlaybackStop],
         );
         conn.upsert(db)
             .await
@@ -426,29 +428,18 @@ mod tests {
         conn.id
     }
 
-    pub(crate) fn tracker_payload() -> TrackerPayload {
-        TrackerPayload {
-            event: TrackingEvent::PlaybackStop {
+    pub(crate) fn tracker_payload() -> MediaTrackerPayload {
+        MediaTrackerPayload {
+            media_id: crate::common::get_uuid(),
+            event: MediaTrackerEvent::PlaybackStop {
                 position_ticks: 42,
                 played: true,
-            },
-            target: TrackingTarget {
-                kind: crate::db::MediaKind::Movie,
-                title: "Arrival".into(),
-                year: Some(2016),
-                ids: TrackingIds {
-                    tmdb: Some(329865),
-                    ..Default::default()
-                },
-                series: None,
-                season: None,
-                episode: None,
             },
         }
     }
 
     async fn queue(db: &SqlitePool, conn: Uuid) -> DeliveryQueue {
-        let row = DeliveryQueue::new(QueueKind::Tracker {
+        let row = DeliveryQueue::new(QueueKind::MediaTracker {
             user_media_tracker_id: conn,
             payload: tracker_payload(),
         });
@@ -475,24 +466,20 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(
-            got.kind,
-            QueueKind::Tracker {
-                user_media_tracker_id: conn,
-                payload: tracker_payload(),
-            }
-        );
+        assert_eq!(got.kind, row.kind);
         assert_eq!(
             got.kind
                 .kind(),
-            DeliveryKind::Tracker
+            DeliveryKind::MediaTracker
         );
     }
 
     #[tokio::test]
-    async fn a_tracker_row_cannot_be_stored_without_its_owner() {
+    async fn a_media_tracker_row_cannot_be_stored_without_its_owner() {
         // Nothing would cascade it away, and delivery would have nowhere to
-        // send it.
+        // send it. The kind is bound rather than written out, so renaming the
+        // variant without migrating the CHECK fails here instead of quietly
+        // leaving it matching nothing.
         let (_s, guard) = new_test_server()
             .await
             .unwrap();
@@ -505,10 +492,11 @@ mod tests {
             "INSERT INTO delivery_queue \
              (id, kind, user_media_tracker_id, payload, status, attempts, \
               next_attempt_at, created_at, updated_at) \
-             VALUES (?1, 'tracker', NULL, '{}', 'pending', 0, datetime('now'), \
+             VALUES (?1, ?2, NULL, '{}', 'pending', 0, datetime('now'), \
                      datetime('now'), datetime('now'))",
         )
         .bind(crate::common::get_uuid())
+        .bind(DeliveryKind::MediaTracker.to_string())
         .execute(db)
         .await
         .unwrap_err();
@@ -544,7 +532,7 @@ mod tests {
             db,
             row.id,
             0,
-            &TrackingError::retryable("503"),
+            &MediaTrackerError::retryable("503"),
         )
         .await
         .unwrap();
@@ -580,10 +568,14 @@ mod tests {
         let conn = seed(db).await;
         let row = queue(db, conn).await;
 
-        let status =
-            DeliveryQueue::record_failure(db, row.id, 0, &TrackingError::reauth("401"))
-                .await
-                .unwrap();
+        let status = DeliveryQueue::record_failure(
+            db,
+            row.id,
+            0,
+            &MediaTrackerError::reauth("401"),
+        )
+        .await
+        .unwrap();
         assert_eq!(status, DeliveryStatus::FailedPermanent);
         assert!(
             DeliveryQueue::due(db, 10)
@@ -611,7 +603,7 @@ mod tests {
                 db,
                 row.id,
                 attempt,
-                &TrackingError::retryable("503"),
+                &MediaTrackerError::retryable("503"),
             )
             .await
             .unwrap();
@@ -646,9 +638,14 @@ mod tests {
         let conn = seed(db).await;
         let row = queue(db, conn).await;
 
-        DeliveryQueue::record_failure(db, row.id, 0, &TrackingError::retryable("503"))
-            .await
-            .unwrap();
+        DeliveryQueue::record_failure(
+            db,
+            row.id,
+            0,
+            &MediaTrackerError::retryable("503"),
+        )
+        .await
+        .unwrap();
         DeliveryQueue::mark_delivered(db, row.id)
             .await
             .unwrap();
@@ -693,7 +690,7 @@ mod tests {
             db,
             failed.id,
             0,
-            &TrackingError::permanent("nope"),
+            &MediaTrackerError::permanent("nope"),
         )
         .await
         .unwrap();
