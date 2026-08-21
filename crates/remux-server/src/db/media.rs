@@ -2659,20 +2659,79 @@ impl Media {
             .flatten()
     }
 
+    /// Stable anchor key for season/episode UUID derivation: the series'
+    /// canonical external-ID string (imdb ▸ custom ▸ tmdb ▸ tvdb ▸ kitsu,
+    /// mirroring `MediaIdRaw::canonical`). Falls back to the series' own UUID
+    /// when nothing external is resolvable.
+    pub fn series_canonical_key(&self) -> String {
+        Self::series_canonical_key_ext(&self.external_ids).unwrap_or_else(|| {
+            self.id
+                .to_string()
+        })
+    }
+
+    /// The canonical external-ID key for a series: the first entry from `candidate_ids`.
+    pub fn series_canonical_key_ext(ext: &ExternalIds) -> Option<String> {
+        ext.candidate_ids(&MediaKind::Series, None, None, None)
+            .into_iter()
+            .next()
+    }
+
+    /// Single source of truth for season UUIDs in the canonical (flat) scheme:
+    /// `stable_media_uuid(Season, "{series_key}:{season_idx}")`.
+    pub fn season_id(series_key: &str, season_idx: i64) -> Uuid {
+        crate::common::stable_media_uuid(
+            &MediaKind::Season,
+            &format!("{series_key}:{season_idx}"),
+        )
+    }
+
+    /// Single source of truth for episode UUIDs in the canonical (flat) scheme:
+    /// `stable_media_uuid(Episode, "{series_key}:{season_idx}:{ep_idx}")`.
+    pub fn episode_id(series_key: &str, season_idx: i64, ep_idx: i64) -> Uuid {
+        crate::common::stable_media_uuid(
+            &MediaKind::Episode,
+            &format!("{series_key}:{season_idx}:{ep_idx}"),
+        )
+    }
+
+    /// Legacy parent-anchored season UUID (pre-flattening scheme):
+    /// `stable_media_uuid(Season, "{series_uuid}:{season_idx}")`. Only used to
+    /// build migration candidates for rows stored under the old scheme.
+    pub fn season_id_nested(series_uuid: Uuid, season_idx: i64) -> Uuid {
+        crate::common::stable_media_uuid(
+            &MediaKind::Season,
+            &format!("{series_uuid}:{season_idx}"),
+        )
+    }
+
+    /// Legacy parent-anchored episode UUID (pre-flattening scheme):
+    /// `stable_media_uuid(Episode, "{season_uuid}:{ep_idx}")`. Only used to
+    /// build migration candidates for rows stored under the old scheme.
+    pub fn episode_id_nested(season_uuid: Uuid, ep_idx: i64) -> Uuid {
+        crate::common::stable_media_uuid(
+            &MediaKind::Episode,
+            &format!("{season_uuid}:{ep_idx}"),
+        )
+    }
+
     /// Compute all candidate UUIDs an existing DB row could have been stored under
     /// for the given item's external IDs. Used by `find_existing_id_by_ext` (dedup)
     /// and `UserMediaState::get_or_new` (legacy state lookup).
     ///
     /// Each external ID is turned into the stable UUID it would produce if it were
-    /// the canonical key at insert time. The item's own current UUID is excluded so
-    /// only *different* rows can match.
+    /// the canonical key at insert time. Seasons/Episodes additionally get the
+    /// parent-anchored UUIDs the Stremio importer writes (recomputed from
+    /// `grandparent_id` + indices) plus flat keys from the grandparent series'
+    /// external IDs. The item's own current UUID is excluded so only *different*
+    /// rows can match.
     pub fn ext_id_uuid_candidates(item: &Self) -> Vec<Uuid> {
         use crate::common::stable_media_uuid;
         let kind = &item.kind;
         let ext = &item.external_ids;
         let mut candidates: Vec<Uuid> = Vec::new();
         match kind {
-            MediaKind::Movie | MediaKind::Series => {
+            MediaKind::Movie | MediaKind::Series | MediaKind::TvProgram => {
                 if let Some(imdb) = ext
                     .imdb
                     .as_deref()
@@ -2694,6 +2753,56 @@ impl Media {
                 if let Some(kitsu) = ext.kitsu {
                     candidates.push(stable_media_uuid(kind, &format!("kitsu:{kitsu}")));
                 }
+            }
+            MediaKind::Season | MediaKind::Episode => {
+                // Season/Episode UUIDs are not derived from a single external ID:
+                // the Stremio path anchors them to the series UUID
+                // (season = f(series_id, season_idx), episode = f(season_id, ep_idx)),
+                // while other paths use flat keys like f(imdb, season, episode).
+                // After a library purge + repopulate the anchors can change, so we
+                // emit every UUID the row could plausibly be stored under:
+                //
+                // 1. the parent/nested scheme the Stremio importer writes
+                // 2. flat keys derived from the grandparent series' external IDs
+                // 3. the episode's own raw Stremio ID (used as a candidate upstream)
+                let (season_idx, episode_idx) = match kind {
+                    MediaKind::Season => (item.idx, None),
+                    _ => (item.parent_idx, item.idx),
+                };
+                let Some(s) = season_idx else {
+                    return candidates;
+                };
+
+                // (1) nested: season_uuid = stable(Season, "{series_id}:{s}")
+                let series_id = item
+                    .grandparent_id
+                    .or(item.parent_id);
+                if let Some(series_id) = series_id {
+                    let season_uuid = Self::season_id_nested(series_id, s);
+                    match kind {
+                        MediaKind::Season => candidates.push(season_uuid),
+                        _ => {
+                            if let Some(e) = episode_idx {
+                                candidates
+                                    .push(Self::episode_id_nested(season_uuid, e));
+                            }
+                        }
+                    }
+                }
+
+                // (2) flat keys derived from the same candidate_ids() the addon/
+                // route matching uses: every (series external ID, season[, episode])
+                // combination, plus the episode's own Stremio ID.
+                let gp_ext = item
+                    .grandparent
+                    .as_deref()
+                    .map(|gp| &gp.external_ids);
+                for id_str in item.candidate_ids(gp_ext) {
+                    candidates.push(stable_media_uuid(kind, &id_str));
+                }
+
+                // (3) the episode's own Stremio ID is already covered by
+                // candidate_ids() above.
             }
             MediaKind::Artist => {
                 if let Some(id) = ext.deezer_artist {
@@ -6290,6 +6399,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                 .map(|_| Uuid::from(&raw))
                 .unwrap_or_else(Uuid::new_v4);
         }
+        let series_key = media.series_canonical_key();
         let mut media_instances = vec![media.clone()];
         if let MediaKind::Series = media.kind {
             if let Some(ref episodes) = meta.videos {
@@ -6309,10 +6419,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                         acc
                     });
                 for (season_idx, episodes) in seasons {
-                    let season_id = crate::common::stable_media_uuid(
-                        &MediaKind::Season,
-                        &format!("{}:{season_idx}", media.id),
-                    );
+                    let season_id = Media::season_id(&series_key, season_idx);
                     let mut season = Media {
                         id: season_id,
                         title: format!("Season {}", season_idx),
@@ -6349,10 +6456,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                             .clone()
                             .try_into()?;
                         episode.idx = ep.episode;
-                        episode.id = crate::common::stable_media_uuid(
-                            &MediaKind::Episode,
-                            &format!("{season_id}:{ep_idx}"),
-                        );
+                        episode.id = Media::episode_id(&series_key, season_idx, ep_idx);
                         episode.external_ids = ExternalIds {
                             custom_stremio_type: media
                                 .external_ids
@@ -6399,6 +6503,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
             .map(|_| Uuid::from(&raw))
             .unwrap_or_else(Uuid::new_v4);
     }
+    let series_key = media.series_canonical_key();
 
     let mut media_instances = Vec::new();
     media_instances.push(media.clone());
@@ -6422,10 +6527,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                         },
                     );
             for (season_idx, episodes) in seasons {
-                let season_id = crate::common::stable_media_uuid(
-                    &MediaKind::Season,
-                    &format!("{}:{season_idx}", media.id),
-                );
+                let season_id = Media::season_id(&series_key, season_idx);
                 let mut season = Media {
                     id: season_id,
                     title: format!("Season {}", season_idx),
@@ -6463,10 +6565,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                         .episode
                         .unwrap_or(0);
                     episode.idx = ep.episode;
-                    episode.id = crate::common::stable_media_uuid(
-                        &MediaKind::Episode,
-                        &format!("{season_id}:{ep_idx}"),
-                    );
+                    episode.id = Media::episode_id(&series_key, season_idx, ep_idx);
                     episode.external_ids = ExternalIds {
                         custom_stremio_type: media
                             .external_ids
@@ -6510,12 +6609,10 @@ pub fn stremio_meta_seasons(
     series_id: Uuid,
     series_external_ids: &ExternalIds,
 ) -> Vec<Media> {
-    let imdb_id = series_external_ids
-        .imdb
-        .clone();
-    let custom_id = series_external_ids
-        .custom_stremio_id
-        .clone();
+    let series_key = Media::series_canonical_key_ext(series_external_ids)
+        .unwrap_or_else(|| series_id.to_string());
+    let has_canonical_key =
+        Media::series_canonical_key_ext(series_external_ids).is_some();
 
     let Some(videos) = meta
         .videos
@@ -6539,14 +6636,11 @@ pub fn stremio_meta_seasons(
 
     let mut out = Vec::with_capacity(seasons_map.len());
     for (season_idx, first_ep) in seasons_map {
-        if imdb_id.is_none() && custom_id.is_none() {
+        if !has_canonical_key {
             continue;
         }
         // UUID anchored to the stable series UUID + season index — no series_* fields needed.
-        let season_id = crate::common::stable_media_uuid(
-            &MediaKind::Season,
-            &format!("{series_id}:{season_idx}"),
-        );
+        let season_id = Media::season_id(&series_key, season_idx);
         let external_ids = ExternalIds {
             custom_stremio_type: series_external_ids
                 .custom_stremio_type
@@ -6625,6 +6719,8 @@ pub fn stremio_meta_episode(
     let ep_idx = ep
         .episode
         .unwrap_or(0);
+    let series_key = Media::series_canonical_key_ext(series_external_ids)
+        .unwrap_or_else(|| series_id.to_string());
     let mut episode: Media = ep
         .clone()
         .try_into()?;
@@ -6646,11 +6742,10 @@ pub fn stremio_meta_episode(
             ),
             ..Default::default()
         };
-        // UUID anchored to stable season UUID + episode index.
-        episode.id = crate::common::stable_media_uuid(
-            &MediaKind::Episode,
-            &format!("{season_id}:{ep_idx}"),
-        );
+        // UUID anchored to stable canonical series key + season/episode indices
+        // (flat) so it survives a purge + repopulate even if the series UUID
+        // itself was derived differently.
+        episode.id = Media::episode_id(&series_key, season_idx, ep_idx);
     }
 
     episode.idx = ep.episode;
@@ -7256,6 +7351,154 @@ mod tests {
                     .custom_stremio_id
             );
         }
+    }
+
+    /// Regression test for #235: episode/season UUIDs must be anchored to the
+    /// series' canonical external-ID string (imdb ▸ custom ▸ tmdb ▸ …), not to
+    /// the series' own UUID. After a purge + repopulate the series can be
+    /// re-derived with a different UUID, which previously cascaded into every
+    /// season/episode id and orphaned their user_media_state rows.
+    #[test]
+    fn episode_ids_survive_series_uuid_change() {
+        let ext = ExternalIds {
+            imdb: Some(NonEmptyString::try_new("tt1234567".to_string()).unwrap()),
+            ..Default::default()
+        };
+        let series_key = Media::series_canonical_key_ext(&ext).unwrap();
+        let season_id = crate::common::stable_media_uuid(
+            &MediaKind::Season,
+            &format!("{series_key}:2"),
+        );
+        let video: sdks::stremio::Episode = serde_json::from_value(serde_json::json!({
+            "id": "tt1234567:2:3",
+            "title": "Episode 3",
+            "season": 2,
+            "episode": 3,
+        }))
+        .expect("fixture video");
+        let expected = crate::common::stable_media_uuid(
+            &MediaKind::Episode,
+            &format!("tt1234567:2:3"),
+        );
+        // Same series content imported under two different series UUIDs
+        // (e.g. pre/post purge with different enrichment outcomes).
+        for series_id in [Uuid::from_u128(11), Uuid::from_u128(22)] {
+            let ep =
+                stremio_meta_episode(&video, series_id, season_id, 2, &ext).unwrap();
+            assert_eq!(
+                ep.id, expected,
+                "episode id must not depend on the series UUID"
+            );
+        }
+    }
+
+    /// The recall side of #235: episode state rows must be findable under every
+    /// UUID the importer could have written — the nested parent-anchored scheme
+    /// (old), flat external-ID keys (new), and the episode's own Stremio ID.
+    #[test]
+    fn episode_uuid_candidates_cover_nested_flat_and_stremio_id() {
+        let series_id = Uuid::from_u128(77);
+        let mut series = Media {
+            id: series_id,
+            kind: MediaKind::Series,
+            external_ids: ExternalIds {
+                imdb: Some(NonEmptyString::try_new("tt1234567".to_string()).unwrap()),
+                custom_stremio_id: Some("fk:27".to_string()),
+                tmdb: Some(12345),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        series.id = Uuid::from(&MediaIdRaw {
+            kind: series
+                .kind
+                .clone(),
+            external_ids: series
+                .external_ids
+                .clone(),
+            season: None,
+            episode: None,
+        });
+
+        let season_id = crate::common::stable_media_uuid(
+            &MediaKind::Season,
+            &format!("{}:1", series_id),
+        );
+        let episode = Media {
+            id: crate::common::stable_media_uuid(&MediaKind::Episode, &"deadbeef"),
+            kind: MediaKind::Episode,
+            idx: Some(3),
+            parent_idx: Some(1),
+            parent_id: Some(season_id),
+            grandparent_id: Some(series_id),
+            external_ids: ExternalIds {
+                custom_stremio_id: Some("fk-ep-3".to_string()),
+                ..Default::default()
+            },
+            grandparent: Some(Box::new(series.clone())),
+            ..Default::default()
+        };
+
+        let candidates = Media::ext_id_uuid_candidates(&episode);
+
+        // (1) nested / old Stremio scheme
+        let nested = crate::common::stable_media_uuid(
+            &MediaKind::Episode,
+            &format!("{season_id}:3"),
+        );
+        assert!(candidates.contains(&nested), "missing nested candidate");
+
+        // (2) flat keys from every grandparent external ID
+        for key in ["tt1234567:1:3", "fk:27:1:3", "tmdb:12345:1:3"] {
+            let flat = crate::common::stable_media_uuid(&MediaKind::Episode, key);
+            assert!(candidates.contains(&flat), "missing flat candidate {key}");
+        }
+
+        // (3) the episode's own Stremio ID
+        let own = crate::common::stable_media_uuid(&MediaKind::Episode, "fk-ep-3");
+        assert!(
+            candidates.contains(&own),
+            "missing own stremio-id candidate"
+        );
+
+        // The current id itself must never be returned as a candidate.
+        assert!(!candidates.contains(&episode.id));
+    }
+
+    #[test]
+    fn season_uuid_candidates_cover_nested_and_flat() {
+        let series_id = Uuid::from_u128(88);
+        let series = Media {
+            id: series_id,
+            kind: MediaKind::Series,
+            external_ids: ExternalIds {
+                imdb: Some(NonEmptyString::try_new("tt1234567".to_string()).unwrap()),
+                custom_stremio_id: Some("fk:27".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let season = Media {
+            id: crate::common::stable_media_uuid(&MediaKind::Season, &"deadbeef"),
+            kind: MediaKind::Season,
+            idx: Some(1),
+            parent_id: Some(series_id),
+            grandparent_id: Some(series_id),
+            grandparent: Some(Box::new(series)),
+            ..Default::default()
+        };
+        let candidates = Media::ext_id_uuid_candidates(&season);
+
+        let nested = crate::common::stable_media_uuid(
+            &MediaKind::Season,
+            &format!("{series_id}:1"),
+        );
+        assert!(candidates.contains(&nested), "missing nested candidate");
+        for key in ["tt1234567:1", "fk:27:1"] {
+            let flat = crate::common::stable_media_uuid(&MediaKind::Season, key);
+            assert!(candidates.contains(&flat), "missing flat candidate {key}");
+        }
+        assert!(!candidates.contains(&season.id));
     }
 
     #[test]
