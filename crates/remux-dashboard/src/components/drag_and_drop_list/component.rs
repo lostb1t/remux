@@ -27,6 +27,30 @@ pub struct DragAndDropListProps {
 
     /// The children of the list component.
     pub children: Element,
+
+    /// Called when the items are reordered.
+    #[props(default)]
+    pub on_reorder: Option<EventHandler<Vec<String>>>,
+}
+
+// Monitor item re-ordering and execute some code when that happens
+#[component]
+fn ReorderObserver(on_reorder: EventHandler<Vec<String>>) -> Element {
+    let items = drag_and_drop_list::use_drag_and_drop_list_items();
+    let order: Vec<String> = items
+        .into_iter()
+        .map(|item| item.key)
+        .collect();
+
+    let initial_order = use_signal(|| order.clone());
+
+    use_effect(use_reactive((&order,), move |(order,)| {
+        if order != *initial_order.peek() {
+            on_reorder.call(order);
+        }
+    }));
+
+    rsx! {}
 }
 
 #[component]
@@ -69,6 +93,9 @@ pub fn DragAndDropList(props: DragAndDropListProps) -> Element {
                 aria_label,
             }
             drag_and_drop_list::DragAndDropLiveRegion {}
+            if let Some(on_reorder) = props.on_reorder {
+                ReorderObserver { on_reorder }
+            }
             {props.children}
         }
     }

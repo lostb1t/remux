@@ -171,22 +171,46 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                     }
                                 })
                                 .collect();
+                            
+                            let app_state_reorder = app_state.clone();
 
                             rsx! {
                                 DragAndDropList {
                                     key: "{list_key}",
                                     items,
                                     aria_label: "Collections",
+                                    on_reorder: move |new_order: Vec<String>| {
+                                        let updates: Vec<(String, i64)> = new_order
+                                            .iter()
+                                            .enumerate()
+                                            .filter_map(|(i, id)| {
+                                                let new_so = i as i64 * 10;
 
-                                    CollectionOrderPersister {
-                                        app_state: app_state.clone(),
-                                        original_order,
-                                        original_sort_orders,
-                                        on_saved: move |_| {
+                                                if original_sort_orders.get(id).copied().flatten() != Some(new_so) {
+                                                    Some((id.clone(), new_so))
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                            .collect();
+
+                                        let app_state = app_state_reorder.clone();
+
+                                        spawn(async move {
+                                            for (id, so) in updates {
+                                                let _ = app_state.execute(PatchItem {
+                                                    item_id: id,
+                                                    payload: PatchItemPayload {
+                                                        sort_order: Some(so),
+                                                        ..Default::default()
+                                                    },
+                                                }).await;
+                                            }
+
                                             let v = *refresh.peek() + 1;
                                             refresh.set(v);
-                                        },
-                                    }
+                                        });
+                                    },
                                 }
                             }
                         }
@@ -212,65 +236,6 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
             }
         }
     }
-}
-
-// Needed in order to be able to react on list changes to persist those changes
-#[component]
-fn CollectionOrderPersister(
-    app_state: AppState,
-    original_order: Vec<String>,
-    original_sort_orders: HashMap<String, Option<i64>>,
-    on_saved: EventHandler,
-) -> Element {
-    let items: Vec<DragAndDropListRenderItem> = use_drag_and_drop_list_items();
-    let current_order: Vec<String> = items
-        .into_iter()
-        .map(|item| item.key)
-        .collect();
-
-    let mut last_submitted = use_signal(|| original_order.clone());
-
-    use_effect(use_reactive((&current_order,), move |(new_order,)| {
-        if new_order == original_order || new_order == *last_submitted.peek() {
-            return;
-        }
-
-        let updates: Vec<(String, i64)> = new_order
-            .iter()
-            .enumerate()
-            .filter_map(|(i, id)| {
-                let new_so = i as i64 * 10;
-
-                if original_sort_orders.get(id).copied().flatten() != Some(new_so) {
-                    Some((id.clone(), new_so))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        last_submitted.set(new_order.clone());
-
-        let local_app_state = app_state.clone();
-
-        spawn(async move {
-            for (id, so) in updates {
-                let _ = local_app_state
-                    .execute(PatchItem {
-                        item_id: id,
-                        payload: PatchItemPayload {
-                            sort_order: Some(so),
-                            ..Default::default()
-                        },
-                    })
-                    .await;
-            }
-
-            on_saved.call(());
-        });
-    }));
-
-    rsx! {}
 }
 
 #[component]
