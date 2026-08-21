@@ -327,11 +327,29 @@ struct YtDlpFormat {
 }
 
 impl YtDlpFormat {
+    fn is_storyboard_or_image(&self) -> bool {
+        if let Some(ext) = self.ext.as_deref() {
+            if matches!(ext, "mhtml" | "jpg" | "jpeg" | "png" | "webp") {
+                return true;
+            }
+        }
+        if let Some(id) = self.format_id.as_deref() {
+            if id.starts_with("sb") {
+                return true;
+            }
+        }
+        false
+    }
+
     fn is_audio_only(&self) -> bool {
+        if self.is_storyboard_or_image() {
+            return false;
+        }
+
         let no_video = self
             .vcodec
             .as_deref()
-            .map_or(false, |v| v == "none");
+            .map_or(true, |v| v == "none");
         let has_audio = self
             .acodec
             .as_deref()
@@ -909,6 +927,7 @@ impl YtDlpAddon {
             .filter(|f| {
                 f.url
                     .is_some()
+                    && !f.is_storyboard_or_image()
             })
             .map(&to_source)
             .collect())
