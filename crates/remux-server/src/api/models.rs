@@ -710,11 +710,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             })
             .flatten(),
         album_id: (media.kind == db::MediaKind::Track)
-            .then(|| {
-                media
-                    .parent_id
-                    .map(|id| id.simple().to_string())
-            })
+            .then_some(media.parent_id)
             .flatten(),
         album_primary_image_tag: (media.kind == db::MediaKind::Track)
             .then(|| {
