@@ -99,7 +99,13 @@ pub async fn create_playlist(
     if !ids.is_empty() {
         let resolved =
             crate::services::MediaResolveService::resolve_ids(&ids, &state.ctx).await;
-        let resolved = retain_playlist_items(&state.ctx.db, resolved).await?;
+        let resolved = retain_playlist_items(
+            &state
+                .ctx
+                .db,
+            resolved,
+        )
+        .await?;
         if !resolved.is_empty() {
             db::MediaRelation::add_playlist_items(
                 &state
@@ -215,10 +221,7 @@ pub struct PlaylistItemsQuery {
     pub start_index: Option<u32>,
     pub limit: Option<u32>,
     /// Jellyfin `IncludeItemTypes` filter, applied before pagination.
-    #[serde(
-        default,
-        deserialize_with = "deserialize_separated_str"
-    )]
+    #[serde(default, deserialize_with = "deserialize_separated_str")]
     pub include_item_types: Option<Vec<api::MediaType>>,
 }
 
@@ -255,11 +258,16 @@ pub async fn get_playlist_items(
     let mut by_id: std::collections::HashMap<Uuid, db::Media> = if item_ids.is_empty() {
         std::collections::HashMap::new()
     } else {
-        db::Media::get_by_ids(&state.ctx.db, &item_ids)
-            .await?
-            .into_iter()
-            .map(|m| (m.id, m))
-            .collect()
+        db::Media::get_by_ids(
+            &state
+                .ctx
+                .db,
+            &item_ids,
+        )
+        .await?
+        .into_iter()
+        .map(|m| (m.id, m))
+        .collect()
     };
 
     let mut ordered: Vec<(Uuid, db::Media)> = relations
@@ -286,23 +294,15 @@ pub async fn get_playlist_items(
         .unwrap_or(0) as usize;
     let start = start.min(ordered.len());
     let slice = match q.limit {
-        Some(limit) => {
-            &ordered[start..][..(limit as usize).min(ordered.len() - start)]
-        }
+        Some(limit) => &ordered[start..][..(limit as usize).min(ordered.len() - start)],
         None => &ordered[start..],
     };
 
     let items: Vec<api::BaseItemDto> = slice
         .iter()
         .map(|(relation_id, media)| {
-            let mut dto = api::db_media_to_item(
-                media.clone(),
-                false,
-            );
-            dto.playlist_item_id = Some(
-                relation_id
-                    .to_string(),
-            );
+            let mut dto = api::db_media_to_item(media.clone(), false);
+            dto.playlist_item_id = Some(relation_id.to_string());
             dto
         })
         .collect();
@@ -342,7 +342,13 @@ pub async fn add_playlist_items(
 
     let resolved =
         crate::services::MediaResolveService::resolve_ids(&q.ids, &state.ctx).await;
-    let resolved = retain_playlist_items(&state.ctx.db, resolved).await?;
+    let resolved = retain_playlist_items(
+        &state
+            .ctx
+            .db,
+        resolved,
+    )
+    .await?;
     db::MediaRelation::add_playlist_items(
         &state
             .ctx

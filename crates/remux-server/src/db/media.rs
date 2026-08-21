@@ -203,7 +203,10 @@ impl MediaKind {
     /// Whether the kind is a directly-playable leaf item, as opposed to a
     /// container that only groups other media (albums, artists, series, ...).
     pub fn is_playable_leaf(&self) -> bool {
-        matches!(self, Self::Movie | Self::Episode | Self::Track | Self::TvChannel)
+        matches!(
+            self,
+            Self::Movie | Self::Episode | Self::Track | Self::TvChannel
+        )
     }
 }
 
@@ -1767,17 +1770,29 @@ impl Media {
     pub async fn preload_playlist_runtimes(db: &SqlitePool, records: &mut [Self]) {
         let playlist_ids: Vec<Uuid> = records
             .iter()
-            .filter(|m| m.kind == MediaKind::Playlist && m.runtime.is_none())
+            .filter(|m| {
+                m.kind == MediaKind::Playlist
+                    && m.runtime
+                        .is_none()
+            })
             .map(|m| m.id)
             .collect();
         let album_ids: Vec<Uuid> = records
             .iter()
-            .filter(|m| m.kind == MediaKind::Album && m.runtime.is_none())
+            .filter(|m| {
+                m.kind == MediaKind::Album
+                    && m.runtime
+                        .is_none()
+            })
             .map(|m| m.id)
             .collect();
         let artist_ids: Vec<Uuid> = records
             .iter()
-            .filter(|m| m.kind == MediaKind::Artist && m.runtime.is_none())
+            .filter(|m| {
+                m.kind == MediaKind::Artist
+                    && m.runtime
+                        .is_none()
+            })
             .map(|m| m.id)
             .collect();
         if playlist_ids.is_empty() && album_ids.is_empty() && artist_ids.is_empty() {
