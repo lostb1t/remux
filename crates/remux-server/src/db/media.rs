@@ -6609,14 +6609,10 @@ pub fn stremio_meta_seasons(
     series_id: Uuid,
     series_external_ids: &ExternalIds,
 ) -> Vec<Media> {
-    let imdb_id = series_external_ids
-        .imdb
-        .clone();
-    let custom_id = series_external_ids
-        .custom_stremio_id
-        .clone();
     let series_key = Media::series_canonical_key_ext(series_external_ids)
         .unwrap_or_else(|| series_id.to_string());
+    let has_canonical_key =
+        Media::series_canonical_key_ext(series_external_ids).is_some();
 
     let Some(videos) = meta
         .videos
@@ -6640,7 +6636,7 @@ pub fn stremio_meta_seasons(
 
     let mut out = Vec::with_capacity(seasons_map.len());
     for (season_idx, first_ep) in seasons_map {
-        if imdb_id.is_none() && custom_id.is_none() {
+        if !has_canonical_key {
             continue;
         }
         // UUID anchored to the stable series UUID + season index — no series_* fields needed.

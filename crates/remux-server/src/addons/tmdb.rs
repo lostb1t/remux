@@ -802,33 +802,14 @@ async fn tmdb_series_seasons(
         )
         .await?;
 
-    let series_imdb: db::NonEmptyString = tv
-        .external_ids
-        .as_ref()
-        .and_then(|e| {
-            e.imdb_id
-                .as_deref()
-        })
-        .and_then(|s| db::NonEmptyString::try_new(s.to_string()).ok())
-        .or_else(|| {
-            series
-                .external_ids
-                .imdb
-                .clone()
-        })
-        .unwrap_or_else(|| {
-            db::NonEmptyString::try_new(format!("tmdb:{}", tmdb_id)).unwrap()
-        });
+    let series_key = series.series_canonical_key();
 
     let seasons: Vec<db::Media> = tv
         .seasons
         .iter()
         .map(|s| {
             let mut stub = db::Media::from(s);
-            stub.id = common::stable_media_uuid(
-                &db::MediaKind::Season,
-                &format!("{}:{}", series_imdb, s.season_number),
-            );
+            stub.id = db::Media::season_id(&series_key, s.season_number);
             stub.parent_id = Some(series.id);
             stub.grandparent_id = Some(series.id);
             stub
