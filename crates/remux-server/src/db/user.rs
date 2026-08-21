@@ -354,29 +354,9 @@ impl MediaIdRaw {
         match self.kind {
             MediaKind::Movie | MediaKind::Series | MediaKind::TvProgram => self
                 .external_ids
-                .imdb
-                .as_deref()
-                .map(|s| s.to_string())
-                .or_else(|| {
-                    self.external_ids
-                        .custom_stremio_id
-                        .clone()
-                })
-                .or_else(|| {
-                    self.external_ids
-                        .tmdb
-                        .map(|id| format!("tmdb:{id}"))
-                })
-                .or_else(|| {
-                    self.external_ids
-                        .tvdb
-                        .map(|id| format!("tvdb:{id}"))
-                })
-                .or_else(|| {
-                    self.external_ids
-                        .kitsu
-                        .map(|id| format!("kitsu:{id}"))
-                }),
+                .candidate_ids(&self.kind, None, None, None)
+                .into_iter()
+                .next(),
             MediaKind::Season | MediaKind::Episode => None,
             MediaKind::Artist => self
                 .external_ids

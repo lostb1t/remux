@@ -875,7 +875,7 @@ async fn tmdb_season_episodes(
         .await?;
 
     let anchor = gp
-        .map(|g| g.series_uuid_anchor())
+        .map(|g| g.series_canonical_key())
         .unwrap_or_else(|| format!("tmdb:{series_tmdb_id}"));
     let episodes: Vec<db::Media> = season_details
         .episodes

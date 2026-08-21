@@ -2663,35 +2663,35 @@ impl Media {
     /// canonical external-ID string (imdb ▸ custom ▸ tmdb ▸ tvdb ▸ kitsu,
     /// mirroring `MediaIdRaw::canonical`). Falls back to the series' own UUID
     /// when nothing external is resolvable.
-    pub fn series_uuid_anchor(&self) -> String {
-        Self::series_anchor_from_ext(&self.external_ids).unwrap_or_else(|| {
+    pub fn series_canonical_key(&self) -> String {
+        Self::series_canonical_key_ext(&self.external_ids).unwrap_or_else(|| {
             self.id
                 .to_string()
         })
     }
 
     /// The canonical external-ID key for a series: the first entry from `candidate_ids`.
-    pub fn series_anchor_from_ext(ext: &ExternalIds) -> Option<String> {
+    pub fn series_canonical_key_ext(ext: &ExternalIds) -> Option<String> {
         ext.candidate_ids(&MediaKind::Series, None, None, None)
             .into_iter()
             .next()
     }
 
     /// Single source of truth for season UUIDs in the canonical (flat) scheme:
-    /// `stable_media_uuid(Season, "{series_anchor}:{season_idx}")`.
-    pub fn season_id(series_anchor: &str, season_idx: i64) -> Uuid {
+    /// `stable_media_uuid(Season, "{series_key}:{season_idx}")`.
+    pub fn season_id(series_key: &str, season_idx: i64) -> Uuid {
         crate::common::stable_media_uuid(
             &MediaKind::Season,
-            &format!("{series_anchor}:{season_idx}"),
+            &format!("{series_key}:{season_idx}"),
         )
     }
 
     /// Single source of truth for episode UUIDs in the canonical (flat) scheme:
-    /// `stable_media_uuid(Episode, "{series_anchor}:{season_idx}:{ep_idx}")`.
-    pub fn episode_id(series_anchor: &str, season_idx: i64, ep_idx: i64) -> Uuid {
+    /// `stable_media_uuid(Episode, "{series_key}:{season_idx}:{ep_idx}")`.
+    pub fn episode_id(series_key: &str, season_idx: i64, ep_idx: i64) -> Uuid {
         crate::common::stable_media_uuid(
             &MediaKind::Episode,
-            &format!("{series_anchor}:{season_idx}:{ep_idx}"),
+            &format!("{series_key}:{season_idx}:{ep_idx}"),
         )
     }
 
@@ -6399,7 +6399,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                 .map(|_| Uuid::from(&raw))
                 .unwrap_or_else(Uuid::new_v4);
         }
-        let series_anchor = media.series_uuid_anchor();
+        let series_key = media.series_canonical_key();
         let mut media_instances = vec![media.clone()];
         if let MediaKind::Series = media.kind {
             if let Some(ref episodes) = meta.videos {
@@ -6419,7 +6419,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                         acc
                     });
                 for (season_idx, episodes) in seasons {
-                    let season_id = Media::season_id(&series_anchor, season_idx);
+                    let season_id = Media::season_id(&series_key, season_idx);
                     let mut season = Media {
                         id: season_id,
                         title: format!("Season {}", season_idx),
@@ -6456,8 +6456,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                             .clone()
                             .try_into()?;
                         episode.idx = ep.episode;
-                        episode.id =
-                            Media::episode_id(&series_anchor, season_idx, ep_idx);
+                        episode.id = Media::episode_id(&series_key, season_idx, ep_idx);
                         episode.external_ids = ExternalIds {
                             custom_stremio_type: media
                                 .external_ids
@@ -6504,7 +6503,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
             .map(|_| Uuid::from(&raw))
             .unwrap_or_else(Uuid::new_v4);
     }
-    let series_anchor = media.series_uuid_anchor();
+    let series_key = media.series_canonical_key();
 
     let mut media_instances = Vec::new();
     media_instances.push(media.clone());
@@ -6528,7 +6527,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                         },
                     );
             for (season_idx, episodes) in seasons {
-                let season_id = Media::season_id(&series_anchor, season_idx);
+                let season_id = Media::season_id(&series_key, season_idx);
                 let mut season = Media {
                     id: season_id,
                     title: format!("Season {}", season_idx),
@@ -6566,7 +6565,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                         .episode
                         .unwrap_or(0);
                     episode.idx = ep.episode;
-                    episode.id = Media::episode_id(&series_anchor, season_idx, ep_idx);
+                    episode.id = Media::episode_id(&series_key, season_idx, ep_idx);
                     episode.external_ids = ExternalIds {
                         custom_stremio_type: media
                             .external_ids
@@ -6616,7 +6615,7 @@ pub fn stremio_meta_seasons(
     let custom_id = series_external_ids
         .custom_stremio_id
         .clone();
-    let series_anchor = Media::series_anchor_from_ext(series_external_ids)
+    let series_key = Media::series_canonical_key_ext(series_external_ids)
         .unwrap_or_else(|| series_id.to_string());
 
     let Some(videos) = meta
@@ -6645,7 +6644,7 @@ pub fn stremio_meta_seasons(
             continue;
         }
         // UUID anchored to the stable series UUID + season index — no series_* fields needed.
-        let season_id = Media::season_id(&series_anchor, season_idx);
+        let season_id = Media::season_id(&series_key, season_idx);
         let external_ids = ExternalIds {
             custom_stremio_type: series_external_ids
                 .custom_stremio_type
@@ -6724,7 +6723,7 @@ pub fn stremio_meta_episode(
     let ep_idx = ep
         .episode
         .unwrap_or(0);
-    let series_anchor = Media::series_anchor_from_ext(series_external_ids)
+    let series_key = Media::series_canonical_key_ext(series_external_ids)
         .unwrap_or_else(|| series_id.to_string());
     let mut episode: Media = ep
         .clone()
@@ -6750,7 +6749,7 @@ pub fn stremio_meta_episode(
         // UUID anchored to stable canonical series key + season/episode indices
         // (flat) so it survives a purge + repopulate even if the series UUID
         // itself was derived differently.
-        episode.id = Media::episode_id(&series_anchor, season_idx, ep_idx);
+        episode.id = Media::episode_id(&series_key, season_idx, ep_idx);
     }
 
     episode.idx = ep.episode;
@@ -7369,10 +7368,10 @@ mod tests {
             imdb: Some(NonEmptyString::try_new("tt1234567".to_string()).unwrap()),
             ..Default::default()
         };
-        let series_anchor = Media::series_anchor_from_ext(&ext).unwrap();
+        let series_key = Media::series_canonical_key_ext(&ext).unwrap();
         let season_id = crate::common::stable_media_uuid(
             &MediaKind::Season,
-            &format!("{series_anchor}:2"),
+            &format!("{series_key}:2"),
         );
         let video: sdks::stremio::Episode = serde_json::from_value(serde_json::json!({
             "id": "tt1234567:2:3",
