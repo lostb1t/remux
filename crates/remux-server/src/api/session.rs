@@ -16,12 +16,14 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::{
-    AppState, IntoApiError, OptionExt, ResultExt, api, common,
+    AppState, IntoApiError, OptionExt, ResultExt,
+    addons::media_tracker::MediaTrackerEvent,
+    api, common,
     common::{TickUnit, ToRunTimeTicks},
     db,
     db::auth,
     playback::session::TranscodeSession,
-    services::MediaResolveService,
+    services::{self, MediaResolveService},
 };
 
 #[post("/sessions/logout")]
@@ -83,6 +85,38 @@ pub async fn sessions_capabilities_by_id(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Queue a playback event for the acting user's media trackers, resolving the
+/// item first. Handlers already holding the row call `enqueue_and_wake`
+/// directly rather than paying for a second lookup.
+async fn track_by_id(
+    state: &AppState,
+    session: &auth::AuthSession,
+    item_id: Uuid,
+    event: MediaTrackerEvent,
+) {
+    if !state
+        .ctx
+        .addons
+        .has_media_tracker()
+    {
+        return;
+    }
+
+    if let Ok(Some(media)) =
+        MediaResolveService::resolve_item(item_id, &state.ctx).await
+    {
+        services::media_tracker::enqueue_and_wake(
+            state,
+            session
+                .user
+                .id,
+            &media,
+            event,
+        )
+        .await;
+    }
+}
+
 #[post("/sessions/playing")]
 pub async fn report_playback_start(
     State(state): State<AppState>,
@@ -114,6 +148,17 @@ pub async fn report_playback_start(
         .ctx
         .ws_tx
         .send(crate::ws::WsEvent::SessionsChanged);
+    track_by_id(
+        &state,
+        &session,
+        data.item_id,
+        MediaTrackerEvent::PlaybackStart {
+            position_ticks: data
+                .position_ticks
+                .unwrap_or(0),
+        },
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -123,6 +168,17 @@ pub async fn report_playback_progress(
     session: auth::AuthSession,
     Json(data): Json<api::PlaybackInfo>,
 ) -> Result<impl IntoResponse> {
+    // Jellyfin clients keep reporting while paused, so the transition is what
+    // marks a real pause; the position is read before the session is updated.
+    let was_paused = state
+        .ctx
+        .sessions
+        .get_by_device(
+            &session
+                .device
+                .id,
+        )
+        .is_some_and(|s| s.is_paused);
     let effective_psid = data
         .play_session_id
         .clone()
@@ -155,6 +211,20 @@ pub async fn report_playback_progress(
             .ctx
             .ws_tx
             .send(crate::ws::WsEvent::SessionsChanged);
+        if data.is_paused && !was_paused {
+            track_by_id(
+                &state,
+                &session,
+                data.item_id,
+                MediaTrackerEvent::PlaybackProgress {
+                    position_ticks: data
+                        .position_ticks
+                        .unwrap_or(0),
+                    is_paused: true,
+                },
+            )
+            .await;
+        }
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -180,6 +250,8 @@ pub async fn report_playback_stopped(
                 .map(|s| s.play_session_id)
         });
     if let Some(ref psid) = effective_psid {
+        // Read before `stopped` clears the session, and the only id a client
+        // is guaranteed to have given us: a stop report may carry none.
         let changed_item_id = (!data
             .item_id
             .is_nil())
@@ -192,7 +264,10 @@ pub async fn report_playback_stopped(
                 .map(|playback| playback.item_id)
                 .filter(|item_id| !item_id.is_nil())
         });
-        state
+        // Whether this counted as a watch is decided by the threshold check
+        // inside `stopped`, so its answer is carried out rather than inferred
+        // from `played_at`, which stays set from every earlier watch.
+        let played = state
             .ctx
             .sessions
             .stopped(
@@ -219,6 +294,18 @@ pub async fn report_playback_stopped(
                         .id,
                     item_id,
                 });
+            track_by_id(
+                &state,
+                &session,
+                item_id,
+                MediaTrackerEvent::PlaybackStop {
+                    position_ticks: data
+                        .position_ticks
+                        .unwrap_or(0),
+                    played,
+                },
+            )
+            .await;
         }
     }
     Ok(StatusCode::NO_CONTENT.into_response())
