@@ -370,6 +370,9 @@ impl DeezerAddon {
             kind: db::MediaKind::Album,
             released_at,
             description: Some(desc_parts.join(" · ")),
+            runtime: a
+                .duration
+                .map(|s| s as i64),
             album_kind: a
                 .record_type
                 .as_deref()
@@ -590,6 +593,9 @@ impl DeezerAddon {
                         .title
                         .unwrap_or_default(),
                     kind: db::MediaKind::Album,
+                    runtime: album
+                        .duration
+                        .map(|s| s as i64),
                     parent_id: Some(root.id),
                     grandparent_id: Some(root.id),
                     album_kind: album
@@ -738,6 +744,9 @@ impl DeezerAddon {
                             .clone(),
                         kind: db::MediaKind::Album,
                         released_at,
+                        runtime: detail
+                            .duration
+                            .map(|s| s as i64),
                         description: Some(desc_parts.join(" · ")),
                         parent_id: Some(root_id),
                         grandparent_id: Some(root_id),
