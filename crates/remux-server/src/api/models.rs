@@ -199,6 +199,9 @@ pub fn db_user_to_dto(data_dir: &std::path::Path, user: db::User) -> UserDto {
         .map(|p| p.0)
         .unwrap_or_default();
     policy.is_administrator = user.is_admin;
+    // SyncPlay requires group lifecycle, playback commands, and websocket
+    // coordination. Do not advertise it while those server APIs are absent.
+    policy.sync_play_access = SyncPlayUserAccessType::None;
     let defaults = UserPolicy::default();
     macro_rules! default_if_empty {
         ($field:ident) => {
