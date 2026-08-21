@@ -245,13 +245,13 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                     };
                                     rsx! {
                                         div {
-                                            class: "collection-sortable-row flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]",
+                                            class: "collection-sortable-row [&.collection-sortable-ghost]:opacity-[0.35] [&.collection-sortable-ghost]:bg-black/[0.06] [&.collection-sortable-drag]:opacity-90 flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]",
                                             key: "{col_id_str}",
                                             "data-id": "{col_id_str}",
 
                                             div { class: "shrink-0 pl-3 py-[10px]",
                                                 div {
-                                                    class: "collection-drag-handle addon-card-sort",
+                                                    class: "collection-drag-handle cursor-grab select-none py-1 px-1.5 addon-card-sort [.collection-sortable-chosen_&]:cursor-grabbing",
                                                     title: "Drag to reorder",
                                                     "⠿"
                                                 }
