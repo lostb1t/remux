@@ -356,6 +356,10 @@ pub fn subtitle_to_media_stream(sub: &SubtitleInfo) -> api::MediaStream {
         Some(StreamDescriptor::Local(p)) => p
             .to_str()
             .unwrap_or(""),
+        Some(StreamDescriptor::Torrent {
+            file_hint: Some(path),
+            ..
+        }) => path.as_str(),
         Some(StreamDescriptor::Opendal { path, .. }) => path.as_str(),
         _ => "",
     };

@@ -10,10 +10,19 @@ use librqbit::{
 };
 use tracing::{debug, warn};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct TorrentFile {
     name: String,
     length: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SidecarSubtitleFile {
+    file_idx: usize,
+    path: String,
+    language: Option<String>,
+    is_forced: bool,
+    is_hearing_impaired: bool,
 }
 
 pub struct TorrentManager {
@@ -65,6 +74,37 @@ impl TorrentManager {
             session,
             http_port: bound_port,
         })
+    }
+
+    fn managed_torrent_files(&self, info_hash: &str) -> Option<Vec<TorrentFile>> {
+        let api = Api::new(
+            self.session
+                .clone(),
+            None,
+            None,
+        );
+        let torrent_id = api
+            .api_torrent_list()
+            .torrents
+            .into_iter()
+            .find(|torrent| {
+                torrent
+                    .info_hash
+                    .eq_ignore_ascii_case(info_hash)
+            })?
+            .id?;
+        api.api_torrent_details(TorrentIdOrHash::Id(torrent_id))
+            .ok()?
+            .files
+            .map(|files| {
+                files
+                    .into_iter()
+                    .map(|file| TorrentFile {
+                        name: file.name,
+                        length: file.length,
+                    })
+                    .collect()
+            })
     }
 
     /// Gracefully shut down the librqbit session, releasing all sockets
@@ -251,6 +291,49 @@ impl TorrentManager {
     }
 }
 
+impl crate::stream::StreamInfo {
+    /// Return supported subtitle files associated with this stream when its
+    /// torrent metadata has already been initialized. This never starts a
+    /// download; subtitle bytes are requested only if a client selects a track.
+    pub(crate) fn subtitle_sidecars(
+        &self,
+        torrent: &TorrentManager,
+    ) -> Vec<crate::addons::SubtitleInfo> {
+        let crate::stream::StreamDescriptor::Torrent {
+            info_hash,
+            file_hint,
+            file_idx,
+            trackers,
+        } = &self.descriptor
+        else {
+            return Vec::new();
+        };
+        let Some(files) = torrent.managed_torrent_files(info_hash) else {
+            return Vec::new();
+        };
+        let Ok(selected_idx) =
+            select_file_index(&files, *file_idx, file_hint.as_deref())
+        else {
+            return Vec::new();
+        };
+        select_sidecar_subtitles(&files, selected_idx)
+            .into_iter()
+            .map(|sidecar| crate::addons::SubtitleInfo {
+                id: format!("torrent:{info_hash}:{}", sidecar.file_idx),
+                url: Some(crate::stream::StreamDescriptor::Torrent {
+                    info_hash: info_hash.clone(),
+                    file_hint: Some(sidecar.path),
+                    file_idx: Some(sidecar.file_idx),
+                    trackers: trackers.clone(),
+                }),
+                lang: sidecar.language,
+                is_forced: sidecar.is_forced,
+                is_hi: sidecar.is_hearing_impaired,
+            })
+            .collect()
+    }
+}
+
 fn stream_only_options() -> AddTorrentOptions {
     AddTorrentOptions {
         // An empty selection leaves piece ownership to librqbit's HTTP
@@ -270,6 +353,170 @@ fn is_video_file(name: &str) -> bool {
     remux_sdks::remux::VideoContainer::parse_known(&ext).is_some()
 }
 
+fn is_supported_sidecar_subtitle(name: &str) -> bool {
+    std::path::Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("srt"))
+}
+
+fn subtitle_language_from_name(name: &str) -> Option<String> {
+    let stem = std::path::Path::new(name)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default();
+    stem.split(|character: char| !character.is_ascii_alphabetic())
+        .rev()
+        .find_map(|token| {
+            let lowercase = token.to_ascii_lowercase();
+            if matches!(
+                lowercase.as_str(),
+                "cc" | "default"
+                    | "forced"
+                    | "foreign"
+                    | "sdh"
+                    | "signs"
+                    | "hearing"
+                    | "impaired"
+                    | "hearingimpaired"
+            ) || token == "HI"
+            {
+                return None;
+            }
+
+            isolang::Language::from_639_1(&lowercase)
+                .or_else(|| isolang::Language::from_639_3(&lowercase))
+                .or_else(|| {
+                    remux_sdks::remux::common_audio_languages()
+                        .iter()
+                        .find(|(code, _)| code.eq_ignore_ascii_case(&lowercase))
+                        .and_then(|(_, name)| isolang::Language::from_name(name))
+                })
+                .or_else(|| {
+                    isolang::languages().find(|language| {
+                        language
+                            .to_name()
+                            .eq_ignore_ascii_case(&lowercase)
+                    })
+                })
+                .and_then(|language| language.to_639_1())
+                .map(str::to_string)
+        })
+}
+
+fn subtitle_stem_matches_video(selected_stem: &str, subtitle_stem: &str) -> bool {
+    !selected_stem.is_empty()
+        && subtitle_stem
+            .strip_prefix(selected_stem)
+            .is_some_and(|suffix| {
+                suffix.is_empty()
+                    || suffix
+                        .chars()
+                        .next()
+                        .is_some_and(|character| !character.is_ascii_alphanumeric())
+            })
+}
+
+fn select_sidecar_subtitles(
+    files: &[TorrentFile],
+    selected_idx: usize,
+) -> Vec<SidecarSubtitleFile> {
+    let Some(selected) = files.get(selected_idx) else {
+        return Vec::new();
+    };
+    let selected_name = selected
+        .name
+        .replace('\\', "/");
+    let selected_path = std::path::Path::new(&selected_name);
+    let selected_parent = selected_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""));
+    let selected_stem = selected_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let videos_in_parent = files
+        .iter()
+        .filter(|file| {
+            if !is_video_file(&file.name) {
+                return false;
+            }
+            let normalized = file
+                .name
+                .replace('\\', "/");
+            std::path::Path::new(&normalized)
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new(""))
+                == selected_parent
+        })
+        .count();
+
+    files
+        .iter()
+        .enumerate()
+        .filter_map(|(file_idx, file)| {
+            if file.length == 0
+                || file.length > 20 * 1024 * 1024
+                || !is_supported_sidecar_subtitle(&file.name)
+            {
+                return None;
+            }
+            let normalized = file
+                .name
+                .replace('\\', "/");
+            let subtitle_path = std::path::Path::new(&normalized);
+            let subtitle_parent = subtitle_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new(""));
+            let subtitle_stem = subtitle_path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let basename_matches =
+                subtitle_stem_matches_video(&selected_stem, &subtitle_stem);
+            let same_directory = subtitle_parent == selected_parent;
+            let in_subtitle_directory = subtitle_parent
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.eq_ignore_ascii_case("subs")
+                        || name.eq_ignore_ascii_case("subtitles")
+                })
+                && subtitle_parent
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new(""))
+                    == selected_parent;
+            // Generic names such as `Subs/2_English.srt` are safe only when
+            // the selected directory contains a single video. Filename-matched
+            // subtitles remain safe for episode packs and movie collections.
+            if !basename_matches
+                && !(videos_in_parent == 1 && (same_directory || in_subtitle_directory))
+            {
+                return None;
+            }
+            let tokens: Vec<&str> = subtitle_stem
+                .split(|character: char| !character.is_ascii_alphanumeric())
+                .filter(|token| !token.is_empty())
+                .collect();
+            Some(SidecarSubtitleFile {
+                file_idx,
+                path: normalized.clone(),
+                language: subtitle_language_from_name(&normalized),
+                is_forced: tokens
+                    .iter()
+                    .any(|token| matches!(*token, "forced" | "foreign" | "signs")),
+                is_hearing_impaired: tokens
+                    .iter()
+                    .any(|token| {
+                        matches!(*token, "sdh" | "cc" | "hi" | "hearingimpaired")
+                    }),
+            })
+        })
+        .collect()
+}
+
 fn select_file_index(
     files: &[TorrentFile],
     requested_idx: Option<usize>,
@@ -280,11 +527,13 @@ fn select_file_index(
     }
 
     if let Some(wanted) = wanted_file {
+        let wanted_is_sidecar = is_supported_sidecar_subtitle(wanted);
         if let Some((index, _)) = files
             .iter()
             .enumerate()
             .find(|(_, file)| {
-                is_video_file(&file.name)
+                (is_video_file(&file.name)
+                    || (wanted_is_sidecar && is_supported_sidecar_subtitle(&file.name)))
                     && (file
                         .name
                         .eq_ignore_ascii_case(wanted)
@@ -418,5 +667,75 @@ mod tests {
     #[test]
     fn metadata_lookup_selects_no_files_for_download() {
         assert_eq!(stream_only_options().only_files, Some(Vec::new()));
+    }
+
+    #[test]
+    fn exact_sidecar_hint_selects_the_subtitle_file() {
+        let files = vec![
+            file("Movie.mkv", 2_000),
+            file("Subs/English.srt", 20),
+            file("release.nfo", 1),
+        ];
+
+        assert_eq!(
+            select_file_index(&files, Some(1), Some("Subs/English.srt")).unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn single_movie_release_exposes_supported_subtitle_directory() {
+        let files = vec![
+            file("Movie.mkv", 2_000),
+            file("Subs/2_English.srt", 20),
+            file("Subs/3_English.srt", 25),
+            file("Subs/4_English.ass", 30),
+        ];
+
+        let subtitles = select_sidecar_subtitles(&files, 0);
+        assert_eq!(subtitles.len(), 2);
+        assert_eq!(subtitles[0].file_idx, 1);
+        assert_eq!(
+            subtitles[0]
+                .language
+                .as_deref(),
+            Some("en")
+        );
+        assert_eq!(subtitles[1].file_idx, 2);
+    }
+
+    #[test]
+    fn movie_bundle_rejects_ambiguous_generic_subtitles() {
+        let files = vec![
+            file("Movie.One.mkv", 2_000),
+            file("Movie.Two.mkv", 2_100),
+            file("Subs/2_English.srt", 20),
+        ];
+
+        assert!(select_sidecar_subtitles(&files, 0).is_empty());
+        assert!(select_sidecar_subtitles(&files, 1).is_empty());
+    }
+
+    #[test]
+    fn episode_pack_uses_only_filename_matched_subtitles() {
+        let files = vec![
+            file("Show.S01E01.mkv", 1_000),
+            file("Show.S01E01.en.HI.forced.srt", 10),
+            file("Show.S01E02.mkv", 1_000),
+            file("Show.S01E02.en.srt", 10),
+            file("Show.S01E010.en.srt", 10),
+        ];
+
+        let subtitles = select_sidecar_subtitles(&files, 0);
+        assert_eq!(subtitles.len(), 1);
+        assert_eq!(subtitles[0].file_idx, 1);
+        assert_eq!(
+            subtitles[0]
+                .language
+                .as_deref(),
+            Some("en")
+        );
+        assert!(subtitles[0].is_forced);
+        assert!(subtitles[0].is_hearing_impaired);
     }
 }
