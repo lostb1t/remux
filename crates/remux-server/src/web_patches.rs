@@ -296,30 +296,14 @@ pub static JS: &str = r#"
     });
   }
 
-  // Matches both /Users/{uuid}/Items/{uuid} and /Items/{uuid} (no trailing path).
-  var ITEM_PATH_RE = /\/(Users\/[0-9a-f-]{36}\/)?Items\/[0-9a-f-]{36}$/i;
-
   function patchApiClientProto(apiClient) {
     var proto = Object.getPrototypeOf(apiClient);
     if (!proto || proto._remuxGetItemPatched) return;
     proto._remuxGetItemPatched = true;
 
-    // Patch the apiclient's own fetch class method to catch any call to the
-    // single-item endpoint that bypasses getItem (e.g. direct getJSON/ajax calls).
-    var _origApiFetch = proto.fetch;
-    proto.fetch = function (opts, b) {
-      if (opts && opts.url && (!opts.type || opts.type === 'GET')) {
-        try {
-          var pu = new URL(opts.url);
-          if (ITEM_PATH_RE.test(pu.pathname) && !pu.searchParams.has('Fields')) {
-            pu.searchParams.set('Fields', 'ChildCount');
-            opts = Object.assign({}, opts, { url: pu.toString() });
-          }
-        } catch (ex) {}
-      }
-      return _origApiFetch.call(this, opts, b);
-    };
-
+    // Only getItem owns the follow-up MediaSources request below. Generic item
+    // fetches must remain intact: reducing one to ChildCount would leave callers
+    // that bypass getItem with a permanent stub and no source picker.
     proto.getItem = function (userId, itemId) {
       var self = this;
       // Guard: itemId may be non-string (e.g. undefined) when called from list-view play buttons.
@@ -483,26 +467,15 @@ pub static JS: &str = r#"
   processRoot(document.body);
 }());
 
-// Intercept XHR to add Fields=ChildCount to the @jellyfin/sdk shadow call
-// /Items/{uuid}?userId=... Use explicit _open.call() so the rewritten URL
-// is guaranteed to reach the native implementation.
-(function () {
-  var SDK_RE = /^\/Items\/[0-9a-f-]{36}$/i;
-  var _open = XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open = function (method, url) {
-    if (typeof url === 'string' && method.toUpperCase() === 'GET') {
-      try {
-        var p = new URL(url, location.href);
-        if (SDK_RE.test(p.pathname) && !p.searchParams.has('Fields')) {
-          p.searchParams.set('Fields', 'ChildCount');
-          var rewritten = p.toString();
-          var args = Array.prototype.slice.call(arguments);
-          args[1] = rewritten;
-          return _open.apply(this, args);
-        }
-      } catch (ex) {}
-    }
-    return _open.apply(this, arguments);
-  };
-}());
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::JS;
+
+    #[test]
+    fn generic_item_transports_are_not_rewritten_to_source_stubs() {
+        assert!(!JS.contains("proto.fetch = function"));
+        assert!(!JS.contains("XMLHttpRequest.prototype.open = function"));
+    }
+}

@@ -16,12 +16,14 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use crate::{
-    AppState, IntoApiError, OptionExt, ResultExt, api,
+    AppState, IntoApiError, OptionExt, ResultExt,
+    addons::media_tracker::MediaTrackerEvent,
+    api,
     api::system::QuickConnectEntry,
     common::{get_uuid, server_id},
     db,
     db::{auth, user::User},
-    services::MediaResolveService,
+    services::{self, MediaResolveService},
     ws::WsEvent,
 };
 use axum_anyhow::ApiResult as Result;
@@ -257,7 +259,11 @@ fn build_auth_response(
     user_dto.last_activity_date = Some(now);
 
     Json(api::AuthenticationResult {
-        access_token: Some(device.access_token),
+        access_token: Some(
+            device
+                .access_token
+                .into_inner(),
+        ),
         server_id: server_id(),
         session_info: Some(session_info),
         user: Some(user_dto),
@@ -346,7 +352,9 @@ pub async fn authenticate_with_quickconnect(
             .version
             .unwrap_or_else(|| "1.0".to_string()),
         user_id: user.id,
-        access_token: get_uuid().to_string(),
+        access_token: get_uuid()
+            .to_string()
+            .into(),
         last_activity_at: None,
         capabilities: None,
         remote_ip: None,
@@ -431,8 +439,9 @@ pub async fn users_me(
 #[post("/users/{user_id}/favoriteitems/{id}")]
 pub async fn mark_favorite(
     State(state): State<AppState>,
-    session: auth::AuthSession,
-    Path((user_id, id)): Path<(Uuid, Uuid)>,
+    _session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path((_, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
     let media = MediaResolveService::resolve_item(id, &state.ctx)
         .await?
@@ -442,17 +451,25 @@ pub async fn mark_favorite(
             &state
                 .ctx
                 .db,
-            &session.user,
+            &user,
         )
         .await?;
+    services::media_tracker::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        MediaTrackerEvent::Favorite { is_favorite: true },
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
 #[delete("/users/{user_id}/favoriteitems/{id}")]
 pub async fn unmark_favorite(
     State(state): State<AppState>,
-    session: auth::AuthSession,
-    Path((user_id, id)): Path<(Uuid, Uuid)>,
+    _session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path((_, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
     let media = MediaResolveService::resolve_item(id, &state.ctx)
         .await?
@@ -462,16 +479,24 @@ pub async fn unmark_favorite(
             &state
                 .ctx
                 .db,
-            &session.user,
+            &user,
         )
         .await?;
+    services::media_tracker::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        MediaTrackerEvent::Favorite { is_favorite: false },
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
 #[post("/userfavoriteitems/{id}")]
 pub async fn mark_favorite_modern(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     let media = MediaResolveService::resolve_item(id, &state.ctx)
@@ -482,16 +507,24 @@ pub async fn mark_favorite_modern(
             &state
                 .ctx
                 .db,
-            &session.user,
+            &user,
         )
         .await?;
+    services::media_tracker::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        MediaTrackerEvent::Favorite { is_favorite: true },
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(s, &media)).into_response())
 }
 
 #[delete("/userfavoriteitems/{id}")]
 pub async fn unmark_favorite_modern(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     let media = MediaResolveService::resolve_item(id, &state.ctx)
@@ -502,9 +535,16 @@ pub async fn unmark_favorite_modern(
             &state
                 .ctx
                 .db,
-            &session.user,
+            &user,
         )
         .await?;
+    services::media_tracker::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        MediaTrackerEvent::Favorite { is_favorite: false },
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(s, &media)).into_response())
 }
 
@@ -534,6 +574,13 @@ pub async fn mark_played(
             server_config.release_date_threshold(),
         )
         .await?;
+    services::media_tracker::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        MediaTrackerEvent::MarkPlayed,
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -556,6 +603,13 @@ pub async fn unmark_played(
             true,
         )
         .await?;
+    services::media_tracker::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        MediaTrackerEvent::MarkUnplayed,
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -595,15 +649,25 @@ pub async fn update_item_rating(
     let media = MediaResolveService::resolve_item(id, &state.ctx)
         .await?
         .context_not_found("not found")?;
+    let rating = q.parse()?;
     let ms = db::UserMediaState::set_rating(
         &state
             .ctx
             .db,
         &user,
         &media,
-        q.parse()?,
+        rating,
     )
     .await?;
+    services::media_tracker::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        MediaTrackerEvent::Rating {
+            rating: rating.map(|r| r.value() as f32),
+        },
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -626,6 +690,13 @@ pub async fn delete_item_rating(
         None,
     )
     .await?;
+    services::media_tracker::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        MediaTrackerEvent::Rating { rating: None },
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -640,15 +711,25 @@ pub async fn update_item_rating_legacy(
     let media = MediaResolveService::resolve_item(id, &state.ctx)
         .await?
         .context_not_found("not found")?;
+    let rating = q.parse()?;
     let ms = db::UserMediaState::set_rating(
         &state
             .ctx
             .db,
         &user,
         &media,
-        q.parse()?,
+        rating,
     )
     .await?;
+    services::media_tracker::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        MediaTrackerEvent::Rating {
+            rating: rating.map(|r| r.value() as f32),
+        },
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -671,6 +752,13 @@ pub async fn delete_item_rating_legacy(
         None,
     )
     .await?;
+    services::media_tracker::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        MediaTrackerEvent::Rating { rating: None },
+    )
+    .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -805,9 +893,10 @@ pub async fn change_password(
             .db,
         &user_id,
         Some(
-            &session
+            session
                 .device
-                .access_token,
+                .access_token
+                .expose(),
         ),
     )
     .await?;
@@ -1453,8 +1542,6 @@ pub async fn delete_user_image_indexed(
     .context_internal("failed to delete avatar")?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
-
-// ── Auth providers (stubs) ──────────────────────────────────────────────────
 
 #[get("/auth/providers")]
 pub async fn get_auth_providers(
@@ -3311,5 +3398,119 @@ mod e2e_tests {
                 "rating={value} derived the wrong Likes"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn favoriting_for_another_user_does_not_silently_hit_your_own() {
+        // The path user_id used to be ignored: an admin favouriting on behalf
+        // of someone else marked it for themselves instead, and the target was
+        // left untouched. Nothing failed, so it went unnoticed.
+        let (server, ctx, token) = authenticated_server().await;
+        let item = insert_test_source(&ctx.0).await;
+        let auth = || {
+            (
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+        };
+
+        let other = server
+            .post("/users/new")
+            .add_header(auth().0, auth().1)
+            .json(&json!({ "Name": "other", "Password": "pw" }))
+            .await;
+        let other_id = other.json::<serde_json::Value>()["Id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        server
+            .post(&format!("/users/{other_id}/favoriteitems/{}", item.id))
+            .add_header(auth().0, auth().1)
+            .await;
+
+        // The admin who issued the call must not have been marked.
+        let mine = server
+            .get(&format!("/items/{}", item.id))
+            .add_header(auth().0, auth().1)
+            .await;
+        assert_eq!(
+            mine.json::<serde_json::Value>()["UserData"]["IsFavorite"],
+            false,
+            "the caller was marked instead of the target"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_non_admin_cannot_favorite_for_someone_else() {
+        let (server, ctx, token) = authenticated_server().await;
+        let item = insert_test_source(&ctx.0).await;
+        let admin_auth = || {
+            (
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+        };
+
+        server
+            .post("/users/new")
+            .add_header(admin_auth().0, admin_auth().1)
+            .json(&json!({ "Name": "regular", "Password": "pw" }))
+            .await;
+        let login = server
+            .post("/users/authenticatebyname")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_static(AUTH_HEADER),
+            )
+            .json(&json!({ "Username": "regular", "Pw": "pw" }))
+            .await;
+        let user_token = login.json::<serde_json::Value>()["AccessToken"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // The admin's own id, not the caller's: targeting yourself is allowed.
+        let admin = server
+            .get("/users/me")
+            .add_header(admin_auth().0, admin_auth().1)
+            .await;
+        let target = admin.json::<serde_json::Value>()["Id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let resp = server
+            .post(&format!("/users/{target}/favoriteitems/{}", item.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&user_token)).unwrap(),
+            )
+            .expect_failure()
+            .await;
+        assert_eq!(resp.status_code(), http::StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn favoriting_yourself_still_works_on_both_routes() {
+        let (server, ctx, token) = authenticated_server().await;
+        let item = insert_test_source(&ctx.0).await;
+        let auth = || {
+            (
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+        };
+
+        let resp = server
+            .post(&format!("/userfavoriteitems/{}", item.id))
+            .add_header(auth().0, auth().1)
+            .await;
+        assert_eq!(resp.json::<serde_json::Value>()["IsFavorite"], true);
+
+        let resp = server
+            .delete(&format!("/userfavoriteitems/{}", item.id))
+            .add_header(auth().0, auth().1)
+            .await;
+        assert_eq!(resp.json::<serde_json::Value>()["IsFavorite"], false);
     }
 }

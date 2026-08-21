@@ -52,9 +52,9 @@ pub struct User {
     pub id: Uuid,
     pub username: String,
     #[serde(skip_serializing)]
-    pub password_hash: String,
+    pub password_hash: remux_utils::Secret<String>,
     #[serde(skip_serializing)]
-    pub aio_url: Option<String>,
+    pub aio_url: Option<remux_utils::Secret<String>>,
     pub configuration: Option<sqlx::types::Json<crate::api::UserConfiguration>>,
     pub is_admin: bool,
     pub policy: Option<sqlx::types::Json<crate::api::UserPolicy>>,
@@ -202,8 +202,8 @@ impl User {
         Ok(Self {
             id: get_uuid(),
             username,
-            password_hash,
-            aio_url,
+            password_hash: password_hash.into(),
+            aio_url: aio_url.map(Into::into),
             ..Default::default()
         })
     }
@@ -261,13 +261,16 @@ impl User {
     }
 
     pub fn set_password(&mut self, password: &str) -> Result<()> {
-        self.password_hash = Self::hash_password(password)?;
+        self.password_hash = Self::hash_password(password)?.into();
         Ok(())
     }
 
     pub fn verify_password(&self, password: &str) -> Result<bool> {
-        let parsed = PasswordHash::new(&self.password_hash)
-            .map_err(|e| anyhow!("invalid stored password hash: {e}"))?;
+        let parsed = PasswordHash::new(
+            self.password_hash
+                .expose(),
+        )
+        .map_err(|e| anyhow!("invalid stored password hash: {e}"))?;
 
         Ok(Argon2::default()
             .verify_password(password.as_bytes(), &parsed)
@@ -604,6 +607,10 @@ impl UserMediaState {
     /// * `runtime_seconds` – when `Some`, the 90 % "mark as watched" threshold
     ///   is applied. Pass `None` for progress updates (no watched-check) and
     ///   `Some(media.runtime)` for stop events.
+    ///
+    /// Returns whether this report crossed the played threshold, which is
+    /// always `false` when `runtime_seconds` is `None` because no threshold
+    /// was applied.
     pub async fn update_playback(
         db: &SqlitePool,
         user: &User,
@@ -612,7 +619,7 @@ impl UserMediaState {
         audio_idx: Option<i64>,
         subtitle_idx: Option<i64>,
         runtime_seconds: Option<i64>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let mut ms = Self::get_or_new(db, user, media).await?;
         let position_seconds = position_ticks / 10_000_000;
         ms.playback_position = position_seconds;
@@ -625,7 +632,7 @@ impl UserMediaState {
         }
 
         // On stop events apply resume/played thresholds from server config.
-        if let Some(runtime) = runtime_seconds {
+        let crossed_played_threshold = if let Some(runtime) = runtime_seconds {
             let server_config = Settings::get_config_or_default(db).await;
             let min_pct = server_config
                 .min_resume_pct
@@ -665,12 +672,14 @@ impl UserMediaState {
                 ms.save(db)
                     .await?;
             }
+            played
         } else {
             ms.save(db)
                 .await?;
-        }
+            false
+        };
 
-        Ok(())
+        Ok(crossed_played_threshold)
     }
 
     pub async fn save(&self, db: &SqlitePool) -> Result<()> {
@@ -1108,5 +1117,123 @@ mod rating_tests {
         assert_eq!(state(None).likes(), None);
         assert_eq!(state(Some(just_under_threshold())).likes(), Some(false));
         assert_eq!(state(Some(UserRating::LIKE_THRESHOLD)).likes(), Some(true));
+    }
+}
+
+#[cfg(test)]
+mod playback_threshold_tests {
+    use super::*;
+    use crate::{db, integration_test::new_test_server};
+
+    const RUNTIME: i64 = 6_000;
+
+    fn ticks(seconds: i64) -> i64 {
+        seconds * 10_000_000
+    }
+
+    async fn movie(ctx: &crate::AppContext) -> db::Media {
+        let external_ids = db::ExternalIds {
+            imdb: db::NonEmptyString::try_new("tt0113277".to_string()).ok(),
+            tmdb: Some(949),
+            ..Default::default()
+        };
+        let mut m = db::Media {
+            id: uuid::Uuid::from(&db::MediaIdRaw {
+                kind: db::MediaKind::Movie,
+                external_ids: external_ids.clone(),
+                season: None,
+                episode: None,
+            }),
+            title: "Heat".into(),
+            kind: db::MediaKind::Movie,
+            runtime: Some(RUNTIME),
+            external_ids,
+            ..Default::default()
+        };
+        m.save(&ctx.db)
+            .await
+            .unwrap();
+        m
+    }
+
+    async fn stop_at(
+        ctx: &crate::AppContext,
+        user: &User,
+        media: &db::Media,
+        secs: i64,
+    ) -> bool {
+        UserMediaState::update_playback(
+            &ctx.db,
+            user,
+            media,
+            ticks(secs),
+            None,
+            None,
+            media.runtime,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_rewatch_that_stops_early_is_not_a_second_watch() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let user = db::User::get_by_username(&ctx.db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+        let media = movie(ctx).await;
+
+        assert!(
+            stop_at(ctx, &user, &media, RUNTIME * 95 / 100).await,
+            "stopping past the threshold is a watch"
+        );
+
+        assert!(
+            !stop_at(ctx, &user, &media, RUNTIME * 10 / 100).await,
+            "stopping early is not a watch, even once the item is already played"
+        );
+
+        // The distinction only exists while `played_at` stays set, so a cleared
+        // one would make the assertion above pass for the wrong reason.
+        assert!(
+            UserMediaState::get_or_new(&ctx.db, &user, &media)
+                .await
+                .unwrap()
+                .played_at
+                .is_some(),
+            "the earlier watch should still stand"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_progress_report_never_claims_a_threshold_it_did_not_check() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let user = db::User::get_by_username(&ctx.db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+        let media = movie(ctx).await;
+
+        stop_at(ctx, &user, &media, RUNTIME * 95 / 100).await;
+
+        let crossed = UserMediaState::update_playback(
+            &ctx.db,
+            &user,
+            &media,
+            ticks(RUNTIME * 99 / 100),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!crossed, "no runtime means no threshold was applied");
     }
 }

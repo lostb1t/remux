@@ -71,7 +71,7 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      /remux/data:/data
+      - /remux/data:/data
 ```
 
 ### Development

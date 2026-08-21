@@ -34,15 +34,13 @@ fn infer_container_from_url(url: &str) -> Option<String> {
         .rsplit('.')
         .next()?
         .to_ascii_lowercase();
-    match ext.as_str() {
-        "matroska" | "mkv" => Some("mkv".to_string()),
-        "mp4" | "m4v" | "mov" => Some("mp4".to_string()),
-        "webm" => Some("webm".to_string()),
-        "avi" => Some("avi".to_string()),
-        "m2ts" | "ts" => Some("ts".to_string()),
-        "m3u8" => Some("ts".to_string()),
-        _ => None,
+    if ext == "m3u8" {
+        return Some("ts".to_string());
     }
+    remux_sdks::remux::VideoContainer::parse_known(&ext).map(|c| {
+        c.canonical()
+            .to_string()
+    })
 }
 
 fn infer_video_codec(text: &str) -> Option<String> {
@@ -358,6 +356,10 @@ pub fn subtitle_to_media_stream(sub: &SubtitleInfo) -> api::MediaStream {
         Some(StreamDescriptor::Local(p)) => p
             .to_str()
             .unwrap_or(""),
+        Some(StreamDescriptor::Torrent {
+            file_hint: Some(path),
+            ..
+        }) => path.as_str(),
         Some(StreamDescriptor::Opendal { path, .. }) => path.as_str(),
         _ => "",
     };
@@ -440,9 +442,13 @@ fn to_option_bool(flag: i64) -> Option<bool> {
 // Jellyfin-web fetches subtitles as either JSON TrackEvents (Stream.js)
 // or WebVTT (Stream.vtt).  We extract to SRT via ffmpeg and convert.
 
-/// Convert SRT to WebVTT. Already-valid VTT is passed through unchanged.
+/// Convert SRT to WebVTT. Existing VTT is retained with its timestamps normalized.
 pub fn srt_to_vtt(input: &str) -> String {
     let input = input.trim_start_matches('\u{FEFF}');
+    let normalized = input
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+    let input = normalized.as_str();
     if input
         .trim_start()
         .starts_with("WEBVTT")
@@ -457,11 +463,11 @@ pub fn srt_to_vtt(input: &str) -> String {
                     .map(|off| first + 6 + off)
             });
         if let Some(pos) = second {
-            return input[pos..]
-                .trim_start_matches('\u{FEFF}')
-                .to_string();
+            return normalize_webvtt_timestamps(
+                input[pos..].trim_start_matches('\u{FEFF}'),
+            );
         }
-        return input.to_string();
+        return normalize_webvtt_timestamps(input);
     }
     let mut out = String::from("WEBVTT\n\n");
     for block in input
@@ -498,10 +504,51 @@ pub fn srt_to_vtt(input: &str) -> String {
     out
 }
 
+/// Some subtitle providers prepend a `WEBVTT` header to otherwise-SRT content.
+/// Browsers reject comma-separated milliseconds in WebVTT timing lines, so
+/// normalize just the timestamp tokens while preserving cue settings and text.
+fn normalize_webvtt_timestamps(input: &str) -> String {
+    input
+        .lines()
+        .map(|line| {
+            let Some((start, end_and_settings)) = line.split_once("-->") else {
+                return line.to_string();
+            };
+            let end_and_settings = end_and_settings.trim();
+            let (end, settings) = end_and_settings
+                .split_once(char::is_whitespace)
+                .unwrap_or((end_and_settings, ""));
+            let settings = settings.trim_start();
+            if settings.is_empty() {
+                format!(
+                    "{} --> {}",
+                    start
+                        .trim()
+                        .replace(',', "."),
+                    end.replace(',', ".")
+                )
+            } else {
+                format!(
+                    "{} --> {} {}",
+                    start
+                        .trim()
+                        .replace(',', "."),
+                    end.replace(',', "."),
+                    settings
+                )
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Convert SRT to Jellyfin JSON TrackEvents format (1 tick = 100 ns).
 pub fn srt_to_jellyfin_json(input: &str) -> String {
+    let normalized = input
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
     let mut events: Vec<serde_json::Value> = Vec::new();
-    for block in input
+    for block in normalized
         .trim()
         .split("\n\n")
     {
@@ -573,4 +620,57 @@ fn srt_timestamp_to_ticks(ts: &str) -> Option<i64> {
         0
     };
     Some(((h * 3600 + m * 60 + s) * 1000 + ms) * 10_000)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn srt_to_vtt_normalizes_hybrid_webvtt_timestamps() {
+        let input = "WEBVTT\n\n1\n00:00:47,791 --> 00:00:49,791\nHello\n\n2\n00:00:50,000 --> 00:00:52,000 line:90%,start\nWorld\n";
+
+        let output = srt_to_vtt(input);
+
+        assert!(output.contains("00:00:47.791 --> 00:00:49.791"));
+        assert!(output.contains("00:00:50.000 --> 00:00:52.000 line:90%,start"));
+        assert!(!output.contains("00:00:47,791"));
+    }
+
+    #[test]
+    fn srt_to_vtt_keeps_valid_webvtt_timestamps() {
+        let input = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000 align:start\nHello\n";
+
+        let output = srt_to_vtt(input);
+
+        assert!(output.contains("00:00:01.000 --> 00:00:02.000 align:start"));
+    }
+
+    #[test]
+    fn srt_to_vtt_converts_crlf_separated_cues() {
+        let input = "1\r\n00:00:47,791 --> 00:00:49,791\r\nHello\r\n\r\n2\r\n00:00:50,000 --> 00:00:52,000\r\nWorld\r\n";
+
+        let output = srt_to_vtt(input);
+
+        assert!(output.contains("00:00:47.791 --> 00:00:49.791"));
+        assert!(output.contains("00:00:50.000 --> 00:00:52.000"));
+        assert!(!output.contains("00:00:47,791"));
+    }
+
+    #[test]
+    fn srt_to_jellyfin_json_converts_crlf_separated_cues() {
+        let input = "1\r\n00:00:01,000 --> 00:00:02,000\r\nHello\r\n\r\n2\r\n00:00:03,000 --> 00:00:04,000\r\nWorld\r\n";
+
+        let output: serde_json::Value =
+            serde_json::from_str(&srt_to_jellyfin_json(input)).unwrap();
+
+        assert_eq!(
+            output["TrackEvents"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(output["TrackEvents"][1]["Text"], "World");
+    }
 }

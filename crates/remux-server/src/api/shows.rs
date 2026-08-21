@@ -294,7 +294,10 @@ async fn shows_nextup_all(
         .id;
     let limit = q
         .limit
-        .unwrap_or(50) as i64;
+        .map(|l| l as usize);
+    let start_index = q
+        .start_index
+        .unwrap_or(0) as usize;
     let enable_resumable = q
         .enable_resumable
         .unwrap_or(true);
@@ -312,6 +315,8 @@ async fn shows_nextup_all(
     // because the two legs are mutually exclusive (play_count > 0 vs play_count = 0).
     // CROSS JOIN pins SQLite to start from the small active set and then PK-lookup
     // media rows, avoiding a slow scan over the full episode index.
+    // No series-count LIMIT here — we apply the page limit to the final episode list
+    // (matching Jellyfin's approach: consider all active series, paginate results).
     let date_cutoff = q
         .next_up_date_cutoff
         .clone()
@@ -331,13 +336,11 @@ async fn shows_nextup_all(
          AND m.grandparent_id IS NOT NULL \
          GROUP BY m.grandparent_id \
          HAVING last_activity >= ? \
-         ORDER BY last_activity DESC \
-         LIMIT ?",
+         ORDER BY last_activity DESC",
     )
     .bind(user_id)
     .bind(user_id)
     .bind(&date_cutoff)
-    .bind(limit)
     .fetch_all(&state.ctx.db)
     .await?;
 
@@ -443,7 +446,16 @@ async fn shows_nextup_all(
                 .iter()
                 .rposition(|e| state_for(e).map_or(false, |s| s.play_count > 0));
             if let Some(pos) = last_played_pos {
-                next_ep = episodes.get(pos + 1);
+                let candidate = episodes.get(pos + 1);
+                // Mirror Jellyfin: when EnableResumable=false, skip a candidate that
+                // is already in-progress — the user should resume or mark it watched.
+                next_ep = if !enable_resumable {
+                    candidate.filter(|e| {
+                        !state_for(e).map_or(false, |s| s.playback_position > 0)
+                    })
+                } else {
+                    candidate
+                };
             }
         }
 
@@ -507,8 +519,11 @@ async fn shows_nextup_all(
             .unwrap_or_default();
     }
 
+    let total = next_eps.len() as i64;
     let items: Vec<api::BaseItemDto> = next_eps
         .into_iter()
+        .skip(start_index)
+        .take(limit.unwrap_or(usize::MAX))
         .map(|ep| {
             let mut item = api::db_media_to_item(ep.clone(), false);
             if let Some(s) = states_map.get(&ep.id) {
@@ -518,13 +533,10 @@ async fn shows_nextup_all(
         })
         .collect();
 
-    let total = items.len() as i64;
     Ok(Json(api::BaseItemDtoQueryResult {
         items,
         total_record_count: total,
-        start_index: q
-            .start_index
-            .unwrap_or(0),
+        start_index: start_index as u32,
         ..Default::default()
     })
     .into_response())
@@ -690,7 +702,9 @@ mod test {
     async fn insert_user(db: &SqlitePool, username: &str) -> db::User {
         let mut user = db::User {
             username: username.to_string(),
-            password_hash: "test".to_string(),
+            password_hash: "test"
+                .to_string()
+                .into(),
             ..Default::default()
         };
         user.save(db)

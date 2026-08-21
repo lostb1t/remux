@@ -105,7 +105,12 @@ pub fn device_info_from(
                 .remote_ip
                 .clone(),
             user_id: Some(device.user_id),
-            is_current_session: Some(device.access_token == caller_token),
+            is_current_session: Some(
+                device
+                    .access_token
+                    .expose()
+                    == caller_token,
+            ),
         }),
     }
 }
@@ -449,11 +454,16 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                 ) {
                     // For collections/folders with no poster image, set a synthetic
                     // tag so clients know to request the generated placeholder.
-                    Some(
+                    // Include updated_at so deleting an image (which touches it)
+                    // produces a new tag and busts the client cache.
+                    Some(format!(
+                        "{}-{}",
+                        media.id,
                         media
-                            .id
-                            .to_string(),
-                    )
+                            .updated_at
+                            .and_utc()
+                            .timestamp()
+                    ))
                 } else {
                     None
                 }
@@ -700,11 +710,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             })
             .flatten(),
         album_id: (media.kind == db::MediaKind::Track)
-            .then(|| {
-                media
-                    .parent_id
-                    .map(|id| id.to_string())
-            })
+            .then_some(media.parent_id)
             .flatten(),
         album_primary_image_tag: (media.kind == db::MediaKind::Track)
             .then(|| {
@@ -956,7 +962,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
         } else {
             media.parent_id // season's parent is the series
         };
-        item.parent_backdrop_item_id = series_uuid.map(|id| id.to_string());
+        item.parent_backdrop_item_id = series_uuid;
         item.parent_backdrop_image_tags = parent_image_tag(
             media
                 .grandparent
@@ -964,6 +970,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             db::ImageKind::Backdrop,
         )
         .map(|b| vec![b]);
+
         // Thumb: prefer season (direct parent) when it has a thumb image;
         // fall back to series thumb/backdrop so the field is never empty.
         let season_thumb = (media.kind == db::MediaKind::Episode)
@@ -977,12 +984,10 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             })
             .flatten();
         if season_thumb.is_some() {
-            item.parent_thumb_item_id = media
-                .parent_id
-                .map(|id| id.to_string());
+            item.parent_thumb_item_id = media.parent_id;
             item.parent_thumb_image_tag = season_thumb;
         } else {
-            item.parent_thumb_item_id = series_uuid.map(|id| id.to_string());
+            item.parent_thumb_item_id = series_uuid;
             item.parent_thumb_image_tag = parent_image_tag(
                 media
                     .grandparent
@@ -1068,9 +1073,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
     }
 
     if media.kind == db::MediaKind::TvProgram {
-        item.channel_id = media
-            .parent_id
-            .map(|id| id.to_string());
+        item.channel_id = media.parent_id;
         item.channel_name = media
             .parent
             .as_ref()
@@ -1152,8 +1155,6 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
 
     item
 }
-
-// ── Remote Search DTOs ──────────────────────────────────────────────────────
 
 #[remux_macros::query]
 #[derive(Debug, Clone, Default)]

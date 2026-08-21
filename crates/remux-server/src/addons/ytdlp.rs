@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{
     AppContext, api,
-    common::{TickUnit, ToRunTimeTicks},
+    common::{HideConsole, TickUnit, ToRunTimeTicks},
     db,
 };
 
@@ -394,6 +394,7 @@ fn normalize_codec(codec: &str) -> &str {
 impl YtDlpAddon {
     async fn dump_json(&self, url_or_query: &str) -> Result<YtDlpVideo> {
         let output = Command::new(&self.executable)
+            .hide_console()
             .args([
                 "--dump-json",
                 "--no-playlist",
@@ -473,6 +474,7 @@ impl YtDlpAddon {
     ) -> Result<YtDlpPlaylist> {
         let limit_str = limit.to_string();
         let output = Command::new(&self.executable)
+            .hide_console()
             .args([
                 "--dump-single-json",
                 "--flat-playlist",
@@ -537,6 +539,7 @@ impl YtDlpAddon {
             })?;
 
         let output = Command::new(&self.executable)
+            .hide_console()
             .args([
                 "--dump-json",
                 "--no-playlist",
@@ -688,6 +691,7 @@ impl YtDlpAddon {
         );
 
         let output = Command::new(&self.executable)
+            .hide_console()
             .args([
                 "--dump-single-json",
                 "--flat-playlist",
@@ -750,6 +754,7 @@ impl YtDlpAddon {
                 let cookies_args = cookies_args.clone();
                 async move {
                     let output = Command::new(&exe)
+                        .hide_console()
                         .args([
                             "--dump-single-json",
                             "--flat-playlist",

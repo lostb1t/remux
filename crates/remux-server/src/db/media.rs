@@ -199,6 +199,15 @@ impl MediaKind {
                 | Self::Artist
         )
     }
+
+    /// Whether the kind is a directly-playable leaf item, as opposed to a
+    /// container that only groups other media (albums, artists, series, ...).
+    pub fn is_playable_leaf(&self) -> bool {
+        matches!(
+            self,
+            Self::Movie | Self::Episode | Self::Track | Self::TvChannel
+        )
+    }
 }
 
 impl TryFrom<String> for MediaKind {
@@ -870,7 +879,7 @@ impl ExternalRatings {
 pub use remux_utils::NonEmptyString;
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExternalIds {
     pub imdb: Option<NonEmptyString>,
     pub tmdb: Option<i64>,
@@ -1512,17 +1521,6 @@ impl Media {
         )
     }
 
-    /// Whether this is an Album row that is really a single or EP (Deezer
-    /// `album_kind`). Such rows are kept under Tracks, not shown in the Albums
-    /// view or album search results.
-    pub fn is_single_or_ep_album(&self) -> bool {
-        matches!(self.kind, MediaKind::Album)
-            && matches!(
-                self.album_kind,
-                Some(AlbumKind::Single) | Some(AlbumKind::Ep)
-            )
-    }
-
     /// Best-effort album name for a music item: the loaded parent row
     /// (`self.parent`, set by [`Self::preload_parents`]), then the flat
     /// `external_ids.album_title` (playlist imports have no album row).
@@ -1759,6 +1757,143 @@ impl Media {
                         .unwrap_or_default();
                     media.grandparent = Some(make_stub(row, imgs));
                 }
+            }
+        }
+    }
+
+    /// Fill `runtime` for Playlist rows from the summed runtime of their
+    /// member items, and for Album/Artist rows from the summed runtime of
+    /// their child tracks. Jellyfin reports playlist/album/artist duration
+    /// (`RunTimeTicks`) computed from child items; Remux stores no runtime of
+    /// its own on those rows, so clients like Feishin end up with NaN when the
+    /// field is absent from the serialized DTO ("0 seconds" headers).
+    pub async fn preload_playlist_runtimes(db: &SqlitePool, records: &mut [Self]) {
+        let playlist_ids: Vec<Uuid> = records
+            .iter()
+            .filter(|m| {
+                m.kind == MediaKind::Playlist
+                    && m.runtime
+                        .is_none()
+            })
+            .map(|m| m.id)
+            .collect();
+        let album_ids: Vec<Uuid> = records
+            .iter()
+            .filter(|m| {
+                m.kind == MediaKind::Album
+                    && m.runtime
+                        .is_none()
+            })
+            .map(|m| m.id)
+            .collect();
+        let artist_ids: Vec<Uuid> = records
+            .iter()
+            .filter(|m| {
+                m.kind == MediaKind::Artist
+                    && m.runtime
+                        .is_none()
+            })
+            .map(|m| m.id)
+            .collect();
+        if playlist_ids.is_empty() && album_ids.is_empty() && artist_ids.is_empty() {
+            return;
+        }
+
+        let mut runtime_map: std::collections::HashMap<Uuid, i64> = Default::default();
+
+        for chunk in playlist_ids.chunks(SQLITE_VAR_LIMIT) {
+            let mut qb = sqlx::QueryBuilder::new(
+                "SELECT mr.left_media_id, SUM(m.runtime) FROM media_relations mr JOIN media m ON m.id = mr.right_media_id WHERE mr.role = 'playlist' AND mr.left_media_id IN (",
+            );
+            let mut sep = qb.separated(", ");
+            for id in chunk {
+                sep.push_bind(id);
+            }
+            qb.push(") GROUP BY mr.left_media_id");
+
+            match qb
+                .build()
+                .fetch_all(db)
+                .await
+            {
+                Ok(rows) => {
+                    for row in rows {
+                        let pid: Uuid = row.get(0);
+                        let total: Option<i64> = row.get(1);
+                        if let Some(runtime) = total {
+                            runtime_map.insert(pid, runtime);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("failed to preload playlist runtimes: {e}");
+                }
+            }
+        }
+
+        for chunk in album_ids.chunks(SQLITE_VAR_LIMIT) {
+            let mut qb = sqlx::QueryBuilder::new(
+                "SELECT parent_id, SUM(runtime) FROM media WHERE kind = 'track' AND parent_id IN (",
+            );
+            let mut sep = qb.separated(", ");
+            for id in chunk {
+                sep.push_bind(id);
+            }
+            qb.push(") GROUP BY parent_id");
+
+            match qb
+                .build()
+                .fetch_all(db)
+                .await
+            {
+                Ok(rows) => {
+                    for row in rows {
+                        let pid: Uuid = row.get(0);
+                        let total: Option<i64> = row.get(1);
+                        if let Some(runtime) = total {
+                            runtime_map.insert(pid, runtime);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("failed to preload album runtimes: {e}");
+                }
+            }
+        }
+
+        for chunk in artist_ids.chunks(SQLITE_VAR_LIMIT) {
+            let mut qb = sqlx::QueryBuilder::new(
+                "SELECT grandparent_id, SUM(runtime) FROM media WHERE kind = 'track' AND grandparent_id IN (",
+            );
+            let mut sep = qb.separated(", ");
+            for id in chunk {
+                sep.push_bind(id);
+            }
+            qb.push(") GROUP BY grandparent_id");
+
+            match qb
+                .build()
+                .fetch_all(db)
+                .await
+            {
+                Ok(rows) => {
+                    for row in rows {
+                        let pid: Uuid = row.get(0);
+                        let total: Option<i64> = row.get(1);
+                        if let Some(runtime) = total {
+                            runtime_map.insert(pid, runtime);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("failed to preload artist runtimes: {e}");
+                }
+            }
+        }
+
+        for media in records.iter_mut() {
+            if let Some(runtime) = runtime_map.get(&media.id) {
+                media.runtime = Some(*runtime);
             }
         }
     }
@@ -2958,6 +3093,29 @@ impl Media {
         Ok(())
     }
 
+    /// Fetch media rows by id, chunking the `IN (...)` clause so queries stay
+    /// under SQLite's 999-variable limit (SQLITE_VAR_LIMIT).
+    pub async fn get_by_ids(db: &SqlitePool, ids: &[Uuid]) -> Result<Vec<Self>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut out = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(SQLITE_VAR_LIMIT) {
+            out.extend(
+                Self::get_by_filter(
+                    db,
+                    &MediaFilter {
+                        id: Some(chunk.to_vec()),
+                        ..Default::default()
+                    },
+                )
+                .await?
+                .records,
+            );
+        }
+        Ok(out)
+    }
+
     pub async fn get_by_filter(
         db: &SqlitePool,
         filter: &MediaFilter,
@@ -3346,12 +3504,20 @@ impl Media {
 
             if let Some(genre_ids) = &filter.genre_ids {
                 if !genre_ids.is_empty() {
-                    qb.push(" AND EXISTS (SELECT 1 FROM media_relations mr WHERE mr.left_media_id = media.id AND mr.right_media_id IN (");
+                    // Direct relation (album/artist/movie → genre), plus a
+                    // fallback for tracks: music genres are persisted at
+                    // album level only, so inherit them from the parent album.
+                    qb.push(" AND (EXISTS (SELECT 1 FROM media_relations mr WHERE mr.left_media_id = media.id AND mr.right_media_id IN (");
                     let mut sep = qb.separated(", ");
                     for id in genre_ids {
                         sep.push_bind(id);
                     }
-                    qb.push("))");
+                    qb.push(")) OR (media.kind = 'track' AND EXISTS (SELECT 1 FROM media_relations mr2 JOIN media p ON p.id = mr2.left_media_id WHERE mr2.right_media_id IN (");
+                    let mut sep = qb.separated(", ");
+                    for id in genre_ids {
+                        sep.push_bind(id);
+                    }
+                    qb.push(") AND p.kind = 'album' AND p.id = media.parent_id)))");
                 }
             }
 
@@ -5036,18 +5202,15 @@ impl Media {
                 .as_ref()
         });
 
-        // Album queries never want singles/EPs (Jellyfin MusicAlbum type): whenever
-        // the request asks for Album rows, restrict to real albums. Untyped albums
-        // (NULL album_kind) still show.
-        let album_kinds = kinds
-            .contains(&MediaKind::Album)
-            .then(|| vec![AlbumKind::Album]);
-
+        // Revert of #178: singles/EPs show in the Albums section again (they were
+        // hidden, leaving artist pages empty for single-only artists — #208). The
+        // album_kinds column/filter machinery stays for compatibility but is not
+        // applied here.
         let mut result = Self::get_by_filter(
             db,
             &MediaFilter {
                 kind: Some(kinds),
-                album_kinds,
+                album_kinds: None,
                 enabled: has_tv_channel.then_some(true),
                 promoted: filter.promoted,
                 limit: filter
@@ -5955,7 +6118,9 @@ impl From<sdks::stremio::Stream> for Media {
                     .unwrap_or_default()
                     .iter()
                     .filter_map(|src| src.strip_prefix("tracker:"))
-                    .map(String::from)
+                    .filter_map(|url| {
+                        crate::stream::TrackerUrl::try_new(url.to_string()).ok()
+                    })
                     .collect(),
             }
         } else if let Some(url) = source
@@ -6001,6 +6166,7 @@ impl From<sdks::stremio::Stream> for Media {
             usenet_guid: None,
             usenet_indexer: None,
             nzb_url: None,
+            binge_group: None,
             torrent_info_hash: None,
             torrent_file_idx: None,
             service_id: None,
@@ -8057,8 +8223,6 @@ mod tests {
             titles
         );
     }
-
-    // ── Sort arms ────────────────────────────────────────────────────────────
 
     async fn sort_titles(
         db: &sqlx::SqlitePool,

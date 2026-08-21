@@ -867,7 +867,7 @@ fn magnet_to_descriptor(
     let trackers = parsed
         .query_pairs()
         .filter(|(k, _)| k == "tr")
-        .map(|(_, v)| v.into_owned())
+        .filter_map(|(_, v)| crate::stream::TrackerUrl::try_new(v.into_owned()).ok())
         .collect();
     Some(crate::stream::StreamDescriptor::Torrent {
         info_hash,

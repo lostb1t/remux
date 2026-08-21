@@ -92,9 +92,10 @@ pub async fn delete_device(
                     .db,
                 &user_id,
                 Some(
-                    &session
+                    session
                         .device
-                        .access_token,
+                        .access_token
+                        .expose(),
                 ),
             )
             .await?;
@@ -206,6 +207,7 @@ pub async fn get_devices(
     let caller_token = session
         .device
         .access_token
+        .expose()
         .as_str();
     let device_infos: Vec<api::DeviceInfo> = devices
         .iter()

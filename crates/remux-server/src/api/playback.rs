@@ -1,7 +1,10 @@
 use anyhow::anyhow;
 use axum::Json;
 
-use super::subtitles::{inject_external_subtitles, scored_external_subtitles};
+use super::subtitles::{
+    inject_external_subtitles, inject_sidecar_subtitles, save_sidecar_subtitle_routes,
+    scored_external_subtitles,
+};
 use axum::{
     body::Body,
     extract::{Path, State},
@@ -30,6 +33,7 @@ use crate::{
     common::{TickUnit, ToRunTimeTicks},
     db,
     db::auth,
+    playback::hw_accel,
 };
 
 use crate::{
@@ -53,9 +57,21 @@ pub async fn items_playbackinfo(
     State(state): State<AppState>,
     session: auth::AuthSession,
     Path(id): Path<Uuid>,
+    Query(query): Query<api::PlaybackInfoQuery>,
     Json(payload): Json<api::PlaybackInfoQuery>,
 ) -> Result<impl IntoResponse> {
-    items_playbackinfo_inner(state, session, id, payload).await
+    // Jellyfin web sends MediaSourceId as query param even for POST; merge query and body
+    let mut q = payload;
+    q.media_source_id = q
+        .media_source_id
+        .or(query.media_source_id);
+    q.user_id = q
+        .user_id
+        .or(query.user_id);
+    q.device_profile = q
+        .device_profile
+        .or(query.device_profile);
+    items_playbackinfo_inner(state, session, id, q).await
 }
 
 #[get("/items/{id}/playbackinfo")]
@@ -93,6 +109,34 @@ async fn load_saved_selections(
         Ok(Some(state)) => (state.audio_idx, state.subtitle_idx),
         _ => (None, None),
     }
+}
+
+fn apply_item_runtime_fallback(
+    source: &mut api::MediaSourceInfo,
+    item_runtime_seconds: Option<i64>,
+) {
+    if source
+        .run_time_ticks
+        .is_some_and(|ticks| ticks > 0)
+    {
+        return;
+    }
+
+    source.run_time_ticks = item_runtime_seconds
+        .filter(|seconds| *seconds > 0)
+        .and_then(|seconds| seconds.to_ticks(TickUnit::Seconds));
+}
+
+fn playback_original_language(
+    item: Option<&db::Media>,
+    selected_source_language: Option<String>,
+) -> Option<String> {
+    item.and_then(|media| {
+        media
+            .original_language
+            .clone()
+    })
+    .or(selected_source_language)
 }
 
 async fn items_playbackinfo_inner(
@@ -154,7 +198,7 @@ async fn items_playbackinfo_inner(
     });
     let is_live = media.is_live();
     let is_track_item = media.is_track();
-    let original_language = media
+    let selected_source_language = media
         .original_language
         .clone();
     service
@@ -172,6 +216,11 @@ async fn items_playbackinfo_inner(
     .await
     .ok()
     .flatten();
+    let item_runtime_seconds = subtitle_media
+        .as_ref()
+        .and_then(|item| item.runtime);
+    let original_language =
+        playback_original_language(subtitle_media.as_ref(), selected_source_language);
 
     let is_track = is_track_item
         || subtitle_media
@@ -218,6 +267,11 @@ async fn items_playbackinfo_inner(
             .results
             .len(),
     );
+    let mut sidecar_subtitle_routes = Vec::with_capacity(
+        probed
+            .results
+            .len(),
+    );
 
     // Per-user playback preferences + remembered selections, resolved per source
     // via `MediaSourceInfo::resolve_default_streams` (see below).
@@ -249,6 +303,11 @@ async fn items_playbackinfo_inner(
         effective_stream,
     } in probed.results
     {
+        // Metadata-only torrent probes may not know the container duration yet.
+        // Keep the authoritative Movie/Episode duration in PlaybackInfo so
+        // clients do not treat a normal VOD source as an indefinite stream.
+        apply_item_runtime_fallback(&mut source, item_runtime_seconds);
+
         if has_lyrics {
             api::inject_lyric_stream(&mut source);
         }
@@ -413,23 +472,30 @@ async fn items_playbackinfo_inner(
                 source.supports_transcoding = true;
                 source.supports_direct_play = true;
             }
-            TranscodeDecision::Skip => {
-                info!(
-                    user = %session.user.username,
-                    stream_id = %stream.id,
-                    "video transcoding required but not allowed — marking source as not transcodable"
-                );
-                continue;
-            }
             TranscodeDecision::Transcode(outcome) => outcome.apply_to(&mut source),
         }
+
+        let sidecars = effective_stream
+            .stream_info
+            .as_ref()
+            .map(|stream| {
+                stream.subtitle_sidecars(
+                    &state
+                        .ctx
+                        .torrent,
+                )
+            })
+            .unwrap_or_default();
+        let routes = inject_sidecar_subtitles(&mut source, sidecars);
+        let subtitle_source_id = source.id;
 
         apply_subtitle_delivery(
             &mut source,
             id,
-            &session
+            session
                 .device
-                .access_token,
+                .access_token
+                .expose(),
             &cfg.device_profile,
             cfg.subtitle_mode,
         );
@@ -443,6 +509,7 @@ async fn items_playbackinfo_inner(
             }
         }
 
+        sidecar_subtitle_routes.push((subtitle_source_id, routes));
         media_sources.push(source);
     }
 
@@ -457,9 +524,10 @@ async fn items_playbackinfo_inner(
             sub_media,
             &mut media_sources,
             id,
-            &session
+            session
                 .device
-                .access_token,
+                .access_token
+                .expose(),
             sub_langs,
             Some(
                 session
@@ -501,6 +569,35 @@ async fn items_playbackinfo_inner(
         media_sources[0].e_tag = id;
     }
 
+    for (source, (delivery_source_id, routes)) in media_sources
+        .iter()
+        .zip(sidecar_subtitle_routes)
+    {
+        // DeliveryUrl contains the source ID from apply_subtitle_delivery, while
+        // some clients construct the route from the final MediaSourceInfo ID.
+        // Cache both keys when auto-play rewrites the first source ID.
+        if source.id != delivery_source_id {
+            save_sidecar_subtitle_routes(
+                &state.ctx,
+                &session
+                    .device
+                    .id,
+                id,
+                source.id,
+                routes.clone(),
+            );
+        }
+        save_sidecar_subtitle_routes(
+            &state.ctx,
+            &session
+                .device
+                .id,
+            id,
+            delivery_source_id,
+            routes,
+        );
+    }
+
     // Live TV: apply stream flags on top of whatever the probe/transcoding decided.
     if is_live {
         for source in &mut media_sources {
@@ -527,7 +624,8 @@ async fn items_playbackinfo_inner(
                     source.id,
                     session
                         .device
-                        .access_token,
+                        .access_token
+                        .expose(),
                 ));
             }
         }
@@ -865,22 +963,17 @@ async fn videos_stream_inner(
     let is_copy_video = video_codec == "copy";
 
     info!(
-        "starting progressive transcode for: {:?} (container={}, vcodec={}, acodec={}, start_ticks={:?}, bitrate={:?})",
+        "starting progressive transcode for: {:?} (container={}, vcodec={}, acodec={}, start_ticks={:?}, bitrate={:?}, video_transcoding={})",
         &media.title,
         container,
         video_codec,
         audio_codec,
         q.start_time_ticks,
-        q.video_bit_rate
+        q.video_bit_rate,
+        encoding_opts
+            .enable_video_transcoding
+            .unwrap_or(true)
     );
-
-    let encoding_opts = crate::db::Settings::get_encoding_config(
-        &state
-            .ctx
-            .db,
-    )
-    .await
-    .unwrap_or_default();
     let source_video_stream = media
         .probe_data
         .as_ref()
@@ -945,15 +1038,7 @@ async fn videos_stream_inner(
         encoding_preset: encoding_opts.encoding_preset,
         source_video_codec,
         source_audio_codec,
-        hardware_acceleration_type: encoding_opts
-            .hardware_acceleration_type
-            .unwrap_or_default(),
-        vaapi_device: encoding_opts
-            .vaapi_device
-            .unwrap_or_else(|| "/dev/dri/renderD128".to_string()),
-        vaapi_driver: encoding_opts
-            .vaapi_driver
-            .unwrap_or_default(),
+        accelerator: hw_accel::from_encoding_opts(&encoding_opts),
         source_video_range_type,
         enable_tonemapping: encoding_opts
             .enable_tonemapping
@@ -1069,6 +1154,7 @@ pub async fn audio_universal(
         session
             .device
             .access_token
+            .expose()
     );
 
     Ok(axum::response::Redirect::temporary(&transcoding_url).into_response())
@@ -1103,9 +1189,52 @@ mod tests {
     use serde_json::json;
 
     use crate::integration_test::{
-        AUTH_HEADER, auth_header_with_token, authenticated_server, insert_test_source,
-        new_test_server,
+        AUTH_HEADER, assert_api_keys_are_real, auth_header_with_token,
+        authenticated_server, insert_test_source, insert_test_source_of_kind,
+        insert_test_source_with_external_subtitle, new_test_server,
     };
+
+    #[test]
+    fn item_runtime_fills_missing_source_duration() {
+        let mut source = crate::api::MediaSourceInfo::default();
+
+        super::apply_item_runtime_fallback(&mut source, Some(142));
+
+        assert_eq!(source.run_time_ticks, Some(1_420_000_000));
+    }
+
+    #[test]
+    fn item_runtime_does_not_replace_probed_duration() {
+        let mut source = crate::api::MediaSourceInfo {
+            run_time_ticks: Some(900_000_000),
+            ..Default::default()
+        };
+
+        super::apply_item_runtime_fallback(&mut source, Some(142));
+
+        assert_eq!(source.run_time_ticks, Some(900_000_000));
+    }
+
+    #[test]
+    fn parent_item_language_overrides_missing_or_stale_source_language() {
+        let parent = crate::db::Media {
+            original_language: Some("en".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            super::playback_original_language(Some(&parent), None),
+            Some("en".to_string())
+        );
+        assert_eq!(
+            super::playback_original_language(Some(&parent), Some("ru".to_string())),
+            Some("en".to_string())
+        );
+        assert_eq!(
+            super::playback_original_language(None, Some("fr".to_string())),
+            Some("fr".to_string())
+        );
+    }
 
     #[tokio::test]
     async fn http_redirect_stream_issues_302_to_source_url() {
@@ -1130,7 +1259,8 @@ mod tests {
                 kind: "stremio".to_string(),
                 config: serde_json::json!({
                     "manifest_url": "https://example.com/addon/manifest.json"
-                }),
+                })
+                .into(),
             },
             resources: vec![ResourceType::Stream],
             types: vec![],
@@ -1319,6 +1449,63 @@ mod tests {
             .await;
 
         resp.assert_status(StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn playback_stop_notifies_clients_that_user_data_changed() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_test_source(&guard.0).await;
+        let play_session_id = "test-user-data-changed";
+        let mut events = guard
+            .0
+            .ws_tx
+            .subscribe();
+
+        server
+            .post("/sessions/playing")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": media.id,
+                "PlaySessionId": play_session_id,
+                "PositionTicks": 0
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        server
+            .post("/sessions/playing/stopped")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": media.id,
+                "PlaySessionId": play_session_id,
+                "PositionTicks": 30_000_000i64
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        let changed_item_id =
+            tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                loop {
+                    if let crate::ws::WsEvent::UserDataChanged { item_id, .. } = events
+                        .recv()
+                        .await
+                        .unwrap()
+                    {
+                        break item_id;
+                    }
+                }
+            })
+            .await
+            .expect("playback stop should broadcast UserDataChanged");
+
+        assert_eq!(changed_item_id, media.id);
     }
 
     #[tokio::test]
@@ -1810,6 +1997,121 @@ mod tests {
             url.contains(&format!("MaxStreamingBitrate={}", max_bitrate)),
             "TranscodingUrl should contain MaxStreamingBitrate: {}",
             url
+        );
+    }
+
+    /// The session token is carried in the URL the client is told to fetch, so
+    /// it has to be the real one. It is wrapped in a `Secret`, which only ever
+    /// prints as `<redacted>`.
+    #[tokio::test]
+    async fn test_playbackinfo_transcoding_url_carries_the_real_token() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_test_source(&guard.0).await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({ "MaxStreamingBitrate": 1_000_000 }))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let url = body["MediaSources"][0]["TranscodingUrl"]
+            .as_str()
+            .expect("TranscodingUrl should be present");
+        assert!(
+            url.contains(&format!("ApiKey={}", token)),
+            "TranscodingUrl should carry the session token: {}",
+            url
+        );
+        // Subtitle delivery URLs and any other URL in the body carry it too.
+        assert_api_keys_are_real(&body, &token);
+    }
+
+    /// An external subtitle is delivered by URL, and that URL is built apart
+    /// from the transcode one.
+    #[tokio::test]
+    async fn test_playbackinfo_subtitle_delivery_url_carries_the_real_token() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_test_source_with_external_subtitle(&guard.0).await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({ "MaxStreamingBitrate": 1_000_000 }))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let delivery = body["MediaSources"][0]["MediaStreams"]
+            .as_array()
+            .expect("media streams")
+            .iter()
+            .find_map(|s| s["DeliveryUrl"].as_str())
+            .expect("an external subtitle is delivered by URL");
+        assert!(
+            delivery.contains(&format!("ApiKey={}", token)),
+            "subtitle delivery URL should carry the session token: {delivery}"
+        );
+        assert_api_keys_are_real(&body, &token);
+    }
+
+    /// Live TV takes its own branch and builds its own URL.
+    #[tokio::test]
+    async fn test_playbackinfo_live_url_carries_the_real_token() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media =
+            insert_test_source_of_kind(&guard.0, crate::db::MediaKind::TvChannel).await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({ "MaxStreamingBitrate": 1_000_000 }))
+            .await;
+
+        resp.assert_status_ok();
+        assert_api_keys_are_real(&resp.json::<serde_json::Value>(), &token);
+    }
+
+    /// The audio redirect hands the client a URL it must fetch with the token
+    /// already in it, so a redacted one 401s on the very next request.
+    #[tokio::test]
+    async fn test_audio_universal_redirect_carries_the_real_token() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media =
+            insert_test_source_of_kind(&guard.0, crate::db::MediaKind::Track).await;
+
+        let resp = server
+            .get(&format!("/audio/{}/universal", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .expect_failure()
+            .await;
+
+        resp.assert_status(StatusCode::TEMPORARY_REDIRECT);
+        let location = resp
+            .header("location")
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            location.contains(&format!("ApiKey={}", token)),
+            "redirect should carry the session token: {location}"
         );
     }
 
@@ -2324,8 +2626,6 @@ mod tests {
 
         resp.assert_status(StatusCode::NO_CONTENT);
     }
-
-    // ── User preference tests ──────────────────────────────────────────────────
 
     /// Full UserConfiguration JSON with sensible defaults. Merge in per-test
     /// overrides before posting to `/users/{id}/configuration`.
@@ -2879,7 +3179,6 @@ mod tests {
             .await
             .unwrap();
 
-        // ── Initial PlaybackInfo: no MediaSourceId ────────────────────────────
         let resp = server
             .post(&format!("/items/{}/playbackinfo", movie.id))
             .add_header(
@@ -2917,7 +3216,6 @@ mod tests {
             "blu-ray group source Id must be the StreamGroup UUID"
         );
 
-        // ── Select Blu-ray group by its UUID ─────────────────────────────────
         let resp2 = server
             .post(&format!("/items/{}/playbackinfo", movie.id))
             .add_header(

@@ -1,5 +1,7 @@
 pub mod codecs;
-pub use codecs::{AudioCodec, SubtitleCodec, VideoCodec};
+pub use codecs::{
+    AudioCodec, AudioContainer, SubtitleCodec, VideoCodec, VideoContainer,
+};
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use http::{HeaderValue, Method};
@@ -145,8 +147,9 @@ pub struct AddonSelectOption {
 #[serde(rename_all = "camelCase")]
 pub struct AddonPresetRef {
     pub kind: String,
+    /// Holds every `Password`-kind option value.
     #[serde(default)]
-    pub config: serde_json::Value,
+    pub config: remux_utils::Secret<serde_json::Value>,
 }
 
 /// Static metadata describing one kind of addon. Returned by `GET /addon-kinds`
@@ -2097,6 +2100,7 @@ pub fn lang_to_two_letter(lang: &str) -> Option<String> {
     }
     isolang::Language::from_639_3(&lang)
         .or_else(|| isolang::Language::from_str(&lang).ok())
+        .or_else(|| isolang::Language::from_name_lowercase(&lang))
         .and_then(|l| l.to_639_1())
         .map(|s| s.to_string())
 }
@@ -3384,7 +3388,7 @@ pub struct BaseItemDto {
     pub path: Option<String>,
     pub official_rating: Option<String>,
     pub custom_rating: Option<String>,
-    pub channel_id: Option<String>,
+    pub channel_id: Option<Uuid>,
     pub channel_name: Option<String>,
     pub overview: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -3415,8 +3419,8 @@ pub struct BaseItemDto {
     pub studios: Vec<NameIdPair>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub genre_items: Vec<NameIdPair>,
-    pub parent_logo_item_id: Option<String>,
-    pub parent_backdrop_item_id: Option<String>,
+    pub parent_logo_item_id: Option<Uuid>,
+    pub parent_backdrop_item_id: Option<Uuid>,
     pub parent_backdrop_image_tags: Option<Vec<String>>,
     pub local_trailer_count: Option<i64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -3446,7 +3450,7 @@ pub struct BaseItemDto {
     pub album: Option<String>,
     pub collection_type: Option<CollectionType>,
     pub display_order: Option<String>,
-    pub album_id: Option<String>,
+    pub album_id: Option<Uuid>,
     pub album_primary_image_tag: Option<String>,
     pub series_primary_image_tag: Option<String>,
     pub album_artist: Option<String>,
@@ -3462,9 +3466,9 @@ pub struct BaseItemDto {
     pub backdrop_image_tags: Vec<String>,
     pub image_blur_hashes: Option<ImageBlurHashes>,
     pub screenshot_image_tags: Option<Vec<String>>,
-    pub parent_thumb_item_id: Option<String>,
+    pub parent_thumb_item_id: Option<Uuid>,
     pub parent_thumb_image_tag: Option<String>,
-    pub parent_primary_image_item_id: Option<String>,
+    pub parent_primary_image_item_id: Option<Uuid>,
     pub parent_primary_image_tag: Option<String>,
     //pub chapters: Option<Vec<ChapterInfo>>,
     #[default(LocationType::FileSystem)]
@@ -4253,6 +4257,7 @@ pub struct AuthenticationInfo {
 
 #[dto]
 pub struct SearchHint {
+    pub id: Uuid,
     pub item_id: Uuid,
     pub name: Option<String>,
     pub matched_term: Option<String>,
@@ -4271,6 +4276,10 @@ pub struct SearchHint {
     pub media_type: Option<String>,
     pub series_id: Option<Uuid>,
     pub series_name: Option<String>,
+    pub album: Option<String>,
+    pub album_id: Option<Uuid>,
+    pub album_artist: Option<String>,
+    pub artists: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -4329,6 +4338,21 @@ pub struct SearchHintsQuery {
     pub user_id: Option<Uuid>,
     #[serde(deserialize_with = "deserialize_separated_str", default)]
     pub include_item_types: Option<Vec<MediaType>>,
+    #[serde(deserialize_with = "deserialize_separated_str", default)]
+    pub exclude_item_types: Option<Vec<MediaType>>,
+    #[serde(deserialize_with = "deserialize_separated_str", default)]
+    pub media_types: Option<Vec<MediaType>>,
+    pub parent_id: Option<Uuid>,
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
+    pub is_movie: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
+    pub is_series: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
+    pub is_news: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
+    pub is_kids: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
+    pub is_sports: Option<bool>,
 }
 
 #[dto]
@@ -5984,8 +6008,6 @@ impl Endpoint for SetUserAddons {
     }
 }
 
-// ── Stream Groups ─────────────────────────────────────────────────────────────
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StreamResolution {
@@ -6404,6 +6426,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn language_normalization_accepts_codes_and_full_names() {
+        assert_eq!(lang_to_two_letter("en").as_deref(), Some("en"));
+        assert_eq!(lang_to_two_letter("eng").as_deref(), Some("en"));
+        assert_eq!(lang_to_two_letter("English").as_deref(), Some("en"));
+    }
+
+    #[test]
     fn next_up_cutoff_accepts_rfc3339() {
         assert_eq!(
             normalize_next_up_date_cutoff("2026-06-17T23:00:00Z").unwrap(),
@@ -6613,8 +6642,6 @@ mod tests {
         let v = 500 * 1024 * 1024;
         assert_eq!(format_size_rule(NumericOp::Gt, v), "> 500.00 MiB");
     }
-
-    // ── MediaSourceInfo::resolve_default_streams ──────────────────────────────
 
     fn source_with_subs() -> MediaSourceInfo {
         MediaSourceInfo {

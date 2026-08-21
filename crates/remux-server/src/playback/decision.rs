@@ -36,8 +36,6 @@ impl TranscodeOutcome {
 pub(crate) enum TranscodeDecision {
     /// Client can play directly; no transcode URL needed.
     DirectPlay,
-    /// Video transcode is required but the user/config disallows it; drop this source.
-    Skip,
     /// Transcode URL built; apply to the source.
     Transcode(TranscodeOutcome),
 }
@@ -121,7 +119,8 @@ fn build_audio_transcode(
             start_time,
             session
                 .device
-                .access_token,
+                .access_token
+                .expose(),
         ),
         container,
         sub_protocol: "http".to_string(),
@@ -160,6 +159,9 @@ fn build_video_transcode(
             String::new(),
         ));
 
+    // When video re-encoding is not allowed (server setting or user policy),
+    // fall through with video=copy — remux the container and transcode audio
+    // as needed rather than dropping the source entirely.
     let video_transcode_allowed = cfg
         .encoding_cfg
         .enable_video_transcoding
@@ -171,11 +173,7 @@ fn build_video_transcode(
             .map(|p| p.enable_video_playback_transcoding)
             .unwrap_or(true);
 
-    if needs_video_transcode && !video_transcode_allowed {
-        return TranscodeDecision::Skip;
-    }
-
-    let mut video_codec = if needs_video_transcode {
+    let mut video_codec = if needs_video_transcode && video_transcode_allowed {
         "h264"
     } else {
         "copy"
@@ -185,15 +183,25 @@ fn build_video_transcode(
         reasons.contains(&api::TranscodeReason::AudioCodecNotSupported(String::new()));
     let audio_codec = if needs_audio_transcode { "aac" } else { "copy" }.to_string();
 
-    let subtitle_method = subtitle_burn_method(
-        source,
-        effective_sub_idx,
-        &cfg.subtitle_mode,
-        &cfg.device_profile,
-    );
-    if subtitle_method == Some(api::SubtitleDeliveryMethod::Encode) {
-        video_codec = "h264".to_string();
-    }
+    let subtitle_method = {
+        let method = subtitle_burn_method(
+            source,
+            effective_sub_idx,
+            &cfg.subtitle_mode,
+            &cfg.device_profile,
+        );
+        if method == Some(api::SubtitleDeliveryMethod::Encode) {
+            if video_transcode_allowed {
+                video_codec = "h264".to_string();
+                method
+            } else {
+                // Burn-in requires video re-encoding; drop it when encoding is disabled.
+                None
+            }
+        } else {
+            method
+        }
+    };
 
     let bitrate = cfg
         .max_bitrate
@@ -235,7 +243,8 @@ fn build_video_transcode(
             start_time,
             session
                 .device
-                .access_token,
+                .access_token
+                .expose(),
         )
     } else {
         format!(
@@ -254,7 +263,8 @@ fn build_video_transcode(
             start_time,
             session
                 .device
-                .access_token,
+                .access_token
+                .expose(),
         )
     };
 
@@ -419,5 +429,69 @@ pub(crate) fn apply_subtitle_delivery(
             stream.is_external_url = Some(false);
             stream.is_external = false;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A source with no video stream routes to its own transcode branch, which
+    /// builds its own URL. That URL is what the client fetches next, so it has
+    /// to carry the real session token rather than the `Secret`'s redaction.
+    #[test]
+    fn audio_only_transcode_url_carries_the_real_token() {
+        let session = db::auth::AuthSession {
+            device: db::auth::Device {
+                access_token: "real-token"
+                    .to_string()
+                    .into(),
+                ..Default::default()
+            },
+            user: db::User::default(),
+        };
+        let source = api::MediaSourceInfo {
+            id: Uuid::new_v4(),
+            media_streams: vec![api::MediaStream {
+                codec: Some("flac".to_string()),
+                type_: Some(api::MediaStreamType::Audio),
+                index: 0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let cfg = PlaybackConfig {
+            encoding_cfg: EncodingOptions::default(),
+            device_profile: None,
+            max_bitrate: None,
+            play_session_id: "play-session".to_string(),
+            item_id: Uuid::new_v4(),
+            subtitle_mode: EmbeddedSubtitleHandling::default(),
+        };
+        // Direct play off is what forces the decision down a transcode branch.
+        let q = api::PlaybackInfoQuery {
+            enable_direct_play: Some(false),
+            ..Default::default()
+        };
+
+        let decision = build_transcode_decision(
+            &source,
+            &api::TranscodeReasons::default(),
+            None,
+            &q,
+            &session,
+            &cfg,
+        );
+
+        let TranscodeDecision::Transcode(outcome) = decision else {
+            panic!("a source with no video stream should transcode");
+        };
+        assert!(
+            outcome
+                .url
+                .contains("ApiKey=real-token"),
+            "audio transcode URL should carry the session token: {}",
+            outcome.url
+        );
     }
 }

@@ -32,7 +32,10 @@ pub async fn get_api_keys(
     let items: Vec<api::AuthenticationInfo> = keys
         .into_iter()
         .map(|k| api::AuthenticationInfo {
-            access_token: Some(k.access_token),
+            access_token: Some(
+                k.access_token
+                    .into_inner(),
+            ),
             app_name: Some(k.app_name),
             date_created: Some(k.created_at),
             is_active: Some(true),
@@ -62,7 +65,10 @@ pub async fn create_api_key(
     )
     .await?;
     let info = api::AuthenticationInfo {
-        access_token: Some(key.access_token),
+        access_token: Some(
+            key.access_token
+                .into_inner(),
+        ),
         app_name: Some(key.app_name),
         date_created: Some(key.created_at),
         is_active: Some(true),

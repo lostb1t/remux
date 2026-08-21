@@ -42,7 +42,7 @@ use crate::{AppState, common::get_uuid, db};
 #[serde(rename_all = "PascalCase")]
 pub struct Device {
     pub id: String,
-    pub access_token: String,
+    pub access_token: remux_utils::Secret<String>,
     pub user_id: Uuid,
     pub name: String,
     pub app_name: String,
@@ -54,6 +54,10 @@ pub struct Device {
 }
 
 impl Device {
+    pub fn jellyfin_client(&self) -> Box<dyn crate::jellyfin_client::JellyfinClient> {
+        crate::jellyfin_client::from_device(self)
+    }
+
     pub async fn save(&self, db: &SqlitePool) -> Result<()> {
         sqlx::query(
             r#"
@@ -101,7 +105,9 @@ impl Device {
             user_id: user
                 .id
                 .clone(),
-            access_token: get_uuid().to_string(),
+            access_token: get_uuid()
+                .to_string()
+                .into(),
             ..Default::default()
         })
     }
@@ -482,7 +488,12 @@ impl FromRequestParts<AppState> for AuthSession {
         .context_unauthorized("forbidden")?;
 
         let synthetic_device = Device {
-            id: format!("apikey-{}", api_key.access_token),
+            id: format!(
+                "apikey-{}",
+                api_key
+                    .access_token
+                    .expose()
+            ),
             access_token: api_key.access_token,
             user_id: user.id,
             name: api_key
@@ -753,7 +764,9 @@ mod tests {
     async fn insert_device(db: &SqlitePool, user_id: Uuid, token: &str) {
         Device {
             id: Uuid::new_v4().to_string(),
-            access_token: token.to_string(),
+            access_token: token
+                .to_string()
+                .into(),
             user_id,
             name: "Test Device".to_string(),
             app_name: "Test".to_string(),
@@ -763,6 +776,62 @@ mod tests {
         .save(db)
         .await
         .unwrap();
+    }
+
+    /// An API key authenticates without a row in `devices`, so its session gets
+    /// a device built here, with an id derived from the token. The id has to
+    /// carry the real token: two keys that derive the same id share one playback
+    /// session, and each overwrites the other's progress.
+    #[tokio::test]
+    async fn each_api_key_gets_its_own_synthetic_device_id() {
+        use crate::integration_test::{auth_header_with_token, authenticated_server};
+        use http::header::{AUTHORIZATION, HeaderValue};
+
+        let (server, guard, admin_token) = authenticated_server().await;
+        let admin_auth = auth_header_with_token(&admin_token);
+
+        let mut keys = Vec::new();
+        for app in ["first", "second"] {
+            let resp = server
+                .post(&format!("/auth/keys?app={app}"))
+                .add_header(AUTHORIZATION, HeaderValue::from_str(&admin_auth).unwrap())
+                .await;
+            resp.assert_status_ok();
+            let info: crate::api::AuthenticationInfo = resp.json();
+            keys.push(
+                info.access_token
+                    .expect("a new key returns its token"),
+            );
+        }
+
+        for (i, key) in keys
+            .iter()
+            .enumerate()
+        {
+            server
+                .post("/sessions/playing")
+                .add_header("X-Emby-Token", HeaderValue::from_str(key).unwrap())
+                .json(&serde_json::json!({
+                    "ItemId": Uuid::new_v4().simple().to_string(),
+                    "PlaySessionId": format!("api-key-session-{i}"),
+                }))
+                .await
+                .assert_status(http::StatusCode::NO_CONTENT);
+        }
+
+        let device_ids: std::collections::HashSet<String> = guard
+            .0
+            .sessions
+            .get_all()
+            .into_iter()
+            .map(|s| s.device_id)
+            .collect();
+        for key in &keys {
+            assert!(
+                device_ids.contains(&format!("apikey-{key}")),
+                "each key should own a session under its own device id: {device_ids:?}"
+            );
+        }
     }
 
     #[tokio::test]

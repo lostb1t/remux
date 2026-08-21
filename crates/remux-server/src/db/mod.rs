@@ -12,6 +12,7 @@ use uuid::Uuid;
 pub mod activity;
 pub mod api_key;
 pub mod auth;
+pub mod delivery_queue;
 pub mod image;
 pub mod iptv;
 pub mod media;
@@ -19,8 +20,10 @@ pub mod settings;
 pub mod stream_group;
 pub mod task;
 pub mod user;
+pub mod user_media_tracker;
 pub use activity::*;
 pub use api_key::*;
+pub use delivery_queue::*;
 pub use image::*;
 pub use iptv::*;
 pub use media::*;
@@ -28,6 +31,7 @@ pub use settings::*;
 pub use stream_group::*;
 pub use task::*;
 pub use user::*;
+pub use user_media_tracker::*;
 
 pub async fn connect(url: &str, slow_query_threshold_ms: u64) -> Result<SqlitePool> {
     let opts = SqliteConnectOptions::from_str(url)?

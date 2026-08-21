@@ -7,10 +7,13 @@ use axum::{
 use axum_anyhow::ApiResult as Result;
 use http::{Response, StatusCode};
 use remux_macros::get;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::{AppState, IntoApiError, OptionExt, ResultExt, api, db, db::auth};
+use crate::{
+    AppState, IntoApiError, OptionExt, ResultExt, api, common::HideConsole, db,
+    db::auth,
+};
 
 fn ffmpeg_bin() -> String {
     std::env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".into())
@@ -99,6 +102,7 @@ async fn extract_subtitle_to_cache(
     let ffmpeg_codec = subtitle_cache_ffmpeg_codec(&cache_codec, source_codec);
     let ffmpeg_format = cache_codec.to_string();
     let mut cmd = tokio::process::Command::new(ffmpeg_bin());
+    cmd.hide_console();
     cmd.kill_on_drop(true);
     cmd.args([
         "-y",
@@ -209,6 +213,180 @@ pub async fn subtitles_stream_tickless(
     .await
 }
 
+/// Fetch the raw bytes of an external subtitle URL through our stream proxy.
+/// A refused/corrupt upstream response (flaky subtitle CDN) is treated as
+/// "subtitle unavailable", not a server error: the caller logs it and answers
+/// 404 to the client instead of aborting the request with a 500.
+async fn fetch_external_subtitle_bytes(
+    state: &AppState,
+    descriptor: &crate::stream::StreamDescriptor,
+) -> anyhow::Result<axum::body::Bytes> {
+    let resp = match descriptor {
+        crate::stream::StreamDescriptor::Opendal { addon_id, .. } => {
+            let addon = state
+                .ctx
+                .addons
+                .get(*addon_id)
+                .ok_or_else(|| anyhow!("addon not found for subtitle"))?;
+            let stream_cap = addon
+                .stream
+                .as_ref()
+                .ok_or_else(|| anyhow!("addon has no stream capability"))?;
+            stream_cap
+                .serve_stream(descriptor, &axum::http::HeaderMap::new())
+                .await
+                .map_err(|e| anyhow!("upstream serve failed: {e:?}"))?
+        }
+        _ => descriptor
+            .clone()
+            .into_source()
+            .serve(state, &axum::http::HeaderMap::new())
+            .await
+            .map_err(|e| anyhow!("upstream serve failed: {e:?}"))?,
+    };
+    axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .map_err(|e| anyhow!("read subtitle bytes: {e}"))
+}
+
+fn external_subtitle_response(
+    bytes: axum::body::Bytes,
+    output_format: &str,
+) -> Response<Body> {
+    let body = String::from_utf8_lossy(&bytes).into_owned();
+    let (converted, content_type) = match output_format {
+        "vtt" | "webvtt" => (
+            crate::conversions::srt_to_vtt(&body),
+            "text/vtt; charset=utf-8",
+        ),
+        "js" | "json" => (
+            crate::conversions::srt_to_jellyfin_json(&body),
+            "application/json; charset=utf-8",
+        ),
+        _ => (body, "text/plain; charset=utf-8"),
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", content_type)
+        .header("Cache-Control", "public, max-age=3600")
+        .header("Access-Control-Allow-Origin", "*")
+        .body(Body::from(converted))
+        .unwrap()
+}
+
+#[derive(Clone)]
+pub(crate) struct SidecarSubtitleRoute {
+    index: i64,
+    subtitle: crate::addons::SubtitleInfo,
+}
+
+fn sidecar_subtitle_routes_key(
+    device_id: &str,
+    item_id: Uuid,
+    media_source_id: Uuid,
+) -> String {
+    format!("sidecar-subtitle-routes:{device_id}:{item_id}:{media_source_id}")
+}
+
+fn next_external_subtitle_index(
+    source_indices: impl IntoIterator<Item = i64>,
+    sidecar_indices: impl IntoIterator<Item = i64>,
+) -> i64 {
+    source_indices
+        .into_iter()
+        .chain(sidecar_indices)
+        .max()
+        .map_or(0, |index| index + 1)
+}
+
+pub(crate) fn inject_sidecar_subtitles(
+    source: &mut api::MediaSourceInfo,
+    subtitles: Vec<crate::addons::SubtitleInfo>,
+) -> Vec<SidecarSubtitleRoute> {
+    let next_idx = source
+        .media_streams
+        .iter()
+        .map(|stream| stream.index)
+        .max()
+        .map_or(0, |index| index + 1);
+
+    subtitles
+        .into_iter()
+        .enumerate()
+        .map(|(offset, subtitle)| {
+            let index = next_idx + offset as i64;
+            let mut stream = crate::conversions::subtitle_to_media_stream(&subtitle);
+            stream.index = index;
+            source
+                .media_streams
+                .push(stream);
+            SidecarSubtitleRoute { index, subtitle }
+        })
+        .collect()
+}
+
+pub(crate) fn save_sidecar_subtitle_routes(
+    ctx: &crate::AppContext,
+    device_id: &str,
+    item_id: Uuid,
+    media_source_id: Uuid,
+    routes: Vec<SidecarSubtitleRoute>,
+) {
+    if routes.is_empty() {
+        return;
+    }
+    ctx.store
+        .save(
+            sidecar_subtitle_routes_key(device_id, item_id, media_source_id),
+            routes,
+            std::time::Duration::from_secs(6 * 60 * 60),
+        );
+}
+
+fn load_sidecar_subtitle_routes(
+    ctx: &crate::AppContext,
+    device_id: &str,
+    item_id: Uuid,
+    media_source_id: Uuid,
+) -> Option<std::sync::Arc<Vec<SidecarSubtitleRoute>>> {
+    ctx.store
+        .get::<Vec<SidecarSubtitleRoute>>(&sidecar_subtitle_routes_key(
+            device_id,
+            item_id,
+            media_source_id,
+        ))
+}
+
+async fn sidecar_subtitle_response(
+    state: &AppState,
+    routes: Option<&[SidecarSubtitleRoute]>,
+    item_id: Uuid,
+    media_source_id: Uuid,
+    stream_index: i64,
+    format: &str,
+) -> Option<Response<Body>> {
+    let route = routes?
+        .iter()
+        .find(|route| route.index == stream_index)?;
+    let descriptor = route
+        .subtitle
+        .url
+        .as_ref()?;
+
+    Some(
+        match fetch_external_subtitle_bytes(state, descriptor).await {
+            Ok(bytes) => {
+                external_subtitle_response(bytes, &format.to_ascii_lowercase())
+            }
+            Err(error) => {
+                warn!(%error, %item_id, %media_source_id, stream_index,
+                "sidecar subtitle unavailable");
+                (StatusCode::NOT_FOUND, "subtitle unavailable").into_response()
+            }
+        },
+    )
+}
+
 async fn subtitles_stream_inner(
     state: AppState,
     session: auth::AuthSession,
@@ -217,6 +395,29 @@ async fn subtitles_stream_inner(
     stream_index: i64,
     format: String,
 ) -> Result<impl IntoResponse> {
+    let sidecar_routes = load_sidecar_subtitle_routes(
+        &state.ctx,
+        &session
+            .device
+            .id,
+        item_id,
+        media_source_id,
+    );
+    if let Some(response) = sidecar_subtitle_response(
+        &state,
+        sidecar_routes
+            .as_ref()
+            .map(|routes| routes.as_slice()),
+        item_id,
+        media_source_id,
+        stream_index,
+        &format,
+    )
+    .await
+    {
+        return Ok(response);
+    }
+
     // Try to resolve as an external subtitle injected during PlaybackInfo.
     // fetch_subtitles is cached (24h Stremio / SQLite Opendal) so this is cheap.
     if let Some(mut item_media) = db::Media::get_by_id(
@@ -253,10 +454,20 @@ async fn subtitles_stream_inner(
                         .collect()
                 })
                 .unwrap_or_default();
-            let next_idx = embedded_indices
-                .iter()
-                .max()
-                .map_or(0, |m| m + 1);
+            // Sidecars are inserted before add-on subtitles in PlaybackInfo,
+            // but are not present in the source's probe data. Include their
+            // advertised indexes so the requested add-on matches the selected
+            // menu entry.
+            let next_idx = next_external_subtitle_index(
+                embedded_indices
+                    .iter()
+                    .copied(),
+                sidecar_routes
+                    .as_deref()
+                    .into_iter()
+                    .flatten()
+                    .map(|entry| entry.index),
+            );
             let i = stream_index - next_idx;
             // Only attempt external resolution if the index is not an embedded stream.
             if i >= 0 && !embedded_indices.contains(&stream_index) {
@@ -294,61 +505,23 @@ async fn subtitles_stream_inner(
                 if let Some(sub) = scored.get(i as usize) {
                     if let Some(ref descriptor) = sub.url {
                         let output_format = format.to_ascii_lowercase();
-                        let resp = match descriptor {
-                            crate::stream::StreamDescriptor::Opendal {
-                                addon_id,
-                                ..
-                            } => {
-                                let addon = state
-                                    .ctx
-                                    .addons
-                                    .get(*addon_id)
-                                    .ok_or_else(|| {
-                                        anyhow!("addon not found for subtitle")
-                                    })?;
-                                let stream_cap = addon
-                                    .stream
-                                    .as_ref()
-                                    .ok_or_else(|| {
-                                        anyhow!("addon has no stream capability")
-                                    })?;
-                                stream_cap
-                                    .serve_stream(
-                                        descriptor,
-                                        &axum::http::HeaderMap::new(),
-                                    )
-                                    .await
-                                    .map_err(|e| anyhow!("{e:?}"))?
+                        match fetch_external_subtitle_bytes(&state, descriptor).await {
+                            Ok(bytes) => {
+                                return Ok(external_subtitle_response(
+                                    bytes,
+                                    &output_format,
+                                ));
                             }
-                            _ => descriptor
-                                .clone()
-                                .into_source()
-                                .serve(&state, &axum::http::HeaderMap::new())
-                                .await
-                                .map_err(|e| anyhow!("{e:?}"))?,
-                        };
-                        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-                            .await
-                            .map_err(|e| anyhow!("read subtitle bytes: {e}"))?;
-                        let body = String::from_utf8_lossy(&bytes).into_owned();
-                        let (converted, content_type) = match output_format.as_str() {
-                            "vtt" | "webvtt" => (
-                                crate::conversions::srt_to_vtt(&body),
-                                "text/vtt; charset=utf-8",
-                            ),
-                            "js" => (
-                                crate::conversions::srt_to_jellyfin_json(&body),
-                                "application/json",
-                            ),
-                            _ => (body, "text/plain; charset=utf-8"),
-                        };
-                        return Ok(Response::builder()
-                            .status(StatusCode::OK)
-                            .header("Content-Type", content_type)
-                            .header("Cache-Control", "public, max-age=3600")
-                            .header("Access-Control-Allow-Origin", "*")
-                            .body(Body::from(converted))
-                            .unwrap());
+                            Err(e) => {
+                                warn!(error = %e, item_id = %item_id, stream_index,
+                                    "external subtitle unavailable");
+                                return Ok((
+                                    StatusCode::NOT_FOUND,
+                                    "subtitle unavailable",
+                                )
+                                    .into_response());
+                            }
+                        }
                     }
                 }
             }
@@ -438,6 +611,7 @@ async fn subtitles_stream_inner(
     // Binary formats (PGS/SUP): extract on-the-fly as raw bytes.
     if is_binary {
         let mut cmd = tokio::process::Command::new(ffmpeg_bin());
+        cmd.hide_console();
         cmd.kill_on_drop(true);
         cmd.args([
             "-copyts",
@@ -819,5 +993,50 @@ mod tests {
 
         assert_eq!(cache, api::SubtitleCodec::Ass);
         assert_eq!(subtitle_cache_ffmpeg_codec(&cache, Some("subrip")), "ass");
+    }
+
+    #[test]
+    fn sidecars_follow_existing_stream_indexes() {
+        let mut source = api::MediaSourceInfo {
+            media_streams: vec![
+                api::MediaStream {
+                    index: 0,
+                    type_: Some(api::MediaStreamType::Video),
+                    ..Default::default()
+                },
+                api::MediaStream {
+                    index: 2,
+                    type_: Some(api::MediaStreamType::Audio),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let subtitles = vec![crate::addons::SubtitleInfo {
+            id: "sidecar-4".to_string(),
+            url: Some(crate::stream::StreamDescriptor::http(
+                "https://example.com/Movie.en.srt",
+            )),
+            lang: Some("en".to_string()),
+            is_forced: false,
+            is_hi: false,
+        }];
+
+        let routes = inject_sidecar_subtitles(&mut source, subtitles);
+
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].index, 3);
+        assert_eq!(source.media_streams[2].index, 3);
+        assert_eq!(
+            source.media_streams[2]
+                .codec
+                .as_deref(),
+            Some("subrip")
+        );
+    }
+
+    #[test]
+    fn external_subtitles_follow_sidecars() {
+        assert_eq!(next_external_subtitle_index([0, 1], [2]), 3);
     }
 }

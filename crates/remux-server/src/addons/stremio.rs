@@ -474,13 +474,6 @@ impl TreeAddon for StremioAddon {
                 )?;
                 let now = chrono::Utc::now().naive_utc();
                 for ep in &mut episodes {
-                    if let Some(ep_num) = ep.idx {
-                        if let Some(s_num) = ep.parent_idx {
-                            ep.title = format!("S{}E{} - {}", s_num, ep_num, ep.title);
-                        } else {
-                            ep.title = format!("E{} - {}", ep_num, ep.title);
-                        }
-                    }
                     // Mark refreshed so TMDB isn't called per-episode during tree sync.
                     ep.refreshed_at = Some(now);
                 }
@@ -1323,6 +1316,78 @@ async fn stremio_subtitles(
 /// Rewrite a URL whose host is `aiostreams` to use the stremio addon's origin.
 /// AIO running in Docker uses this internal hostname; we remap it at descriptor
 /// construction time so callers never see the unresolvable internal address.
+/// Extract tracker URLs from a Stremio stream's `sources` array.
+///
+/// Tracker entries are conventionally `"tracker:udp://…/announce"`, but some
+/// addons (notably private-tracker addons) emit the bare URL without the
+/// `tracker:` prefix. Accept both and run each through [`TrackerUrl`]
+/// validation so unrelated `sources` entries are dropped; de-duplicate.
+fn extract_trackers(sources: &[String]) -> Vec<crate::stream::TrackerUrl> {
+    let mut seen = std::collections::HashSet::new();
+    let mut trackers = Vec::new();
+    for src in sources {
+        let url = src
+            .strip_prefix("tracker:")
+            .unwrap_or(src.as_str())
+            .trim();
+        if let Ok(url) = crate::stream::TrackerUrl::try_new(url.to_string()) {
+            if seen.insert(url.clone()) {
+                trackers.push(url);
+            }
+        }
+    }
+    trackers
+}
+
+struct StremioStreamMetadata {
+    filename: Option<String>,
+    file_idx: Option<usize>,
+    seeders: Option<i64>,
+}
+
+fn stremio_stream_metadata(stream: &sdks::stremio::Stream) -> StremioStreamMetadata {
+    let stream_data = stream
+        .stream_data
+        .as_ref();
+    let torrent = stream_data.and_then(|data| {
+        data.torrent
+            .as_ref()
+    });
+
+    StremioStreamMetadata {
+        filename: stream
+            .behavior_hints
+            .as_ref()
+            .and_then(|hints| {
+                hints
+                    .filename
+                    .clone()
+            })
+            .or_else(|| {
+                stream_data.and_then(|data| {
+                    data.filename
+                        .clone()
+                })
+            })
+            .or_else(|| {
+                stream
+                    .filename
+                    .clone()
+            }),
+        file_idx: stream
+            .file_idx
+            .and_then(|index| usize::try_from(index).ok())
+            .or_else(|| {
+                torrent
+                    .and_then(|torrent| torrent.file_idx)
+                    .and_then(|index| usize::try_from(index).ok())
+            }),
+        seeders: stream
+            .seeders
+            .or_else(|| torrent.and_then(|torrent| torrent.seeders)),
+    }
+}
+
 fn rewrite_aio_url(url: &str, manifest_url: &StremioManifestUrl) -> String {
     let Ok(mut parsed) = url::Url::parse(url) else {
         return url.to_string();
@@ -1398,25 +1463,30 @@ async fn stremio_streams(
         .into_iter()
         .filter(|s| s.is_valid())
         .filter_map(|s| {
+            let sd = s
+                .stream_data
+                .as_ref();
+            let metadata = stremio_stream_metadata(&s);
             let descriptor = if s.is_torrent() {
+                let trackers = extract_trackers(
+                    s.sources
+                        .as_deref()
+                        .unwrap_or_default(),
+                );
+                debug!(
+                    info_hash = ?s.info_hash(),
+                    ?trackers,
+                    "torrent stream trackers"
+                );
                 crate::stream::StreamDescriptor::Torrent {
                     info_hash: s
                         .info_hash()?
                         .to_ascii_lowercase(),
-                    file_hint: s
+                    file_hint: metadata
                         .filename
                         .clone(),
-                    file_idx: s
-                        .file_idx
-                        .map(|i| i as usize),
-                    trackers: s
-                        .sources
-                        .as_deref()
-                        .unwrap_or_default()
-                        .iter()
-                        .filter_map(|src| src.strip_prefix("tracker:"))
-                        .map(String::from)
-                        .collect(),
+                    file_idx: metadata.file_idx,
+                    trackers,
                 }
             } else {
                 let url = s
@@ -1447,9 +1517,6 @@ async fn stremio_streams(
                 (None, Some(d)) => d.to_string(),
                 _ => "Stream".to_string(),
             };
-            let sd = s
-                .stream_data
-                .as_ref();
             // Prefer nzb_url from streamData (AIOStreams), fall back to top-level field
             let nzb_url = sd
                 .and_then(|d| {
@@ -1491,24 +1558,8 @@ async fn stremio_streams(
                 description: s
                     .description
                     .clone(),
-                filename: s
-                    .behavior_hints
-                    .as_ref()
-                    .and_then(|bh| {
-                        bh.filename
-                            .clone()
-                    })
-                    .or_else(|| {
-                        sd.and_then(|d| {
-                            d.filename
-                                .clone()
-                        })
-                    })
-                    .or_else(|| {
-                        s.filename
-                            .clone()
-                    }),
-                seeders: s.seeders,
+                filename: metadata.filename,
+                seeders: metadata.seeders,
                 size: sd
                     .and_then(|d| d.size)
                     .or(s.size),
@@ -1516,6 +1567,13 @@ async fn stremio_streams(
                 subtitles: s
                     .subtitles
                     .clone(),
+                binge_group: s
+                    .behavior_hints
+                    .as_ref()
+                    .and_then(|bh| {
+                        bh.binge_group
+                            .clone()
+                    }),
                 usenet_guid,
                 usenet_indexer: sd
                     .and_then(|d| {
@@ -1555,6 +1613,54 @@ async fn stremio_streams(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stremio_torrent_metadata_uses_nested_fallbacks() {
+        let stream: sdks::stremio::Stream = serde_json::from_value(serde_json::json!({
+            "infoHash": "0123456789abcdef0123456789abcdef01234567",
+            "streamData": {
+                "filename": "Bundle/Movie.mkv",
+                "torrent": { "fileIdx": 3, "seeders": 42 }
+            }
+        }))
+        .unwrap();
+
+        let metadata = stremio_stream_metadata(&stream);
+        assert_eq!(
+            metadata
+                .filename
+                .as_deref(),
+            Some("Bundle/Movie.mkv")
+        );
+        assert_eq!(metadata.seeders, Some(42));
+        assert_eq!(metadata.file_idx, Some(3));
+    }
+
+    #[test]
+    fn stremio_torrent_metadata_prefers_top_level_fields() {
+        let stream: sdks::stremio::Stream = serde_json::from_value(serde_json::json!({
+            "infoHash": "0123456789abcdef0123456789abcdef01234567",
+            "filename": "Top Level.mkv",
+            "fileIdx": 7,
+            "seeders": 84,
+            "behaviorHints": { "filename": "Preferred/Movie.mkv" },
+            "streamData": {
+                "filename": "Nested/Movie.mkv",
+                "torrent": { "fileIdx": 3, "seeders": 42 }
+            }
+        }))
+        .unwrap();
+
+        let metadata = stremio_stream_metadata(&stream);
+        assert_eq!(
+            metadata
+                .filename
+                .as_deref(),
+            Some("Preferred/Movie.mkv")
+        );
+        assert_eq!(metadata.seeders, Some(84));
+        assert_eq!(metadata.file_idx, Some(7));
+    }
 
     #[test]
     fn manifest_url_strips_manifest_json_with_query_string() {
@@ -1780,5 +1886,45 @@ mod tests {
 
         assert_eq!(streams.len(), 1);
         reconstructed.assert();
+    }
+
+    #[test]
+    fn extract_trackers_accepts_prefixed_bare_and_dedupes() {
+        use crate::stream::TrackerUrl;
+        let sources = vec![
+            "tracker:udp://tracker.opentrackr.org:1337/announce".to_string(),
+            "https://private-tracker.example/announce".to_string(),
+            "tracker:https://private-tracker.example/announce".to_string(),
+            "not-a-tracker".to_string(),
+            "udp://open.demonii.com:1337/announce".to_string(),
+        ];
+        let trackers = extract_trackers(&sources);
+        let inner = |t: &TrackerUrl| {
+            t.as_ref()
+                .to_string()
+        };
+        assert_eq!(
+            trackers
+                .iter()
+                .map(inner)
+                .collect::<Vec<_>>(),
+            vec![
+                "udp://tracker.opentrackr.org:1337/announce",
+                "https://private-tracker.example/announce",
+                "udp://open.demonii.com:1337/announce",
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_trackers_ignores_non_urls() {
+        use crate::stream::TrackerUrl;
+        let empty: Vec<TrackerUrl> = Vec::new();
+        assert_eq!(extract_trackers(&["foo".to_string()]), empty);
+        assert_eq!(
+            extract_trackers(&["https://tracker.example".to_string()]),
+            Vec::<TrackerUrl>::new()
+        );
+        assert_eq!(extract_trackers(&[]), Vec::<TrackerUrl>::new());
     }
 }

@@ -94,18 +94,24 @@ impl ItemsQueryResultBuilder {
         self
     }
 
+    /// Fill `run_time_ticks` for Playlist rows in the payload before DTO
+    /// serialization. Playlists carry no runtime of their own in Remux;
+    /// Jellyfin clients expect the summed runtime of the member items.
+    /// Also fills Album rows from their child tracks.
+    pub async fn preload_playlist_runtimes(mut self, db: &sqlx::SqlitePool) -> Self {
+        if let ItemsSource::Raw(ref mut media) = self.items {
+            db::Media::preload_playlist_runtimes(db, media).await;
+        }
+        self
+    }
+
     pub fn with_client_patches(mut self) -> Self {
-        let client = &self
+        let client = self
             .session
             .device
-            .app_name;
-        self.hide_sources = client == "Plezy";
-        self.mixed_collection_type = if client.contains("Swiftfin") {
-            // Swiftfin's SDK has no "mixed" case; homevideos is accepted and shows a home row.
-            Some(api::CollectionType::Homevideos)
-        } else {
-            None
-        };
+            .jellyfin_client();
+        self.hide_sources = client.hide_sources();
+        self.mixed_collection_type = client.mixed_collection_type();
         self
     }
 
@@ -180,10 +186,10 @@ pub async fn get_items(
     }
     // Used only by pre-converting paths (search, playlist) that use with_dtos().
     // Raw-media paths delegate hide_sources to with_client_patches() on the builder.
-    let hide_sources = session
+    let client = session
         .device
-        .app_name
-        == "Plezy";
+        .jellyfin_client();
+    let hide_sources = client.hide_sources();
 
     let parent = if let Some(parent_id) = q
         .parent_id
@@ -201,23 +207,11 @@ pub async fn get_items(
     };
 
     // Apply the collection's default sort override when the client sends no sort
-    // preference or sends SortName as the primary sort (Jellyfin clients use
-    // SortName as their generic default, so we treat it as "no preference").
+    // preference or its built-in default sort (treated as "no preference").
     if let Some(ref p) = parent {
         if let Some(ref default_sort) = p.collection_default_sort {
             if !default_sort.is_empty() {
-                let is_client_default = q
-                    .sort_by
-                    .as_deref()
-                    .map(|s| {
-                        s.is_empty()
-                            || matches!(
-                                s.first(),
-                                Some(api::ItemSortBy::SortName | api::ItemSortBy::Name)
-                            )
-                    })
-                    .unwrap_or(true);
-                if is_client_default {
+                if client.is_default_sort(&q) {
                     q.sort_by = Some(default_sort.clone());
                     q.sort_order = p
                         .collection_default_sort_order
@@ -355,7 +349,6 @@ pub async fn get_items(
                     Ok(results) => {
                         let items: Vec<_> = results
                             .into_iter()
-                            .filter(|m| !m.is_single_or_ep_album())
                             .map(|m| api::db_media_to_item(m, hide_sources))
                             .filter(|item| {
                                 q.media_types
@@ -410,7 +403,6 @@ pub async fn get_items(
                         all_items.extend(
                             r.records
                                 .into_iter()
-                                .filter(|m| !m.is_single_or_ep_album())
                                 .map(|m| api::db_media_to_item(m, hide_sources)),
                         );
                     }
@@ -473,22 +465,32 @@ pub async fn get_items(
                 }
                 None => &relations[start.min(relations.len())..],
             };
+            let item_ids: Vec<Uuid> = slice
+                .iter()
+                .map(|r| r.right_media_id)
+                .collect();
             let mut items = Vec::with_capacity(slice.len());
-            for rel in slice {
-                if let Some(media) = db::Media::get_by_id(
-                    &state
-                        .ctx
-                        .db,
-                    &rel.right_media_id,
-                )
-                .await?
-                {
-                    let mut dto = api::db_media_to_item(media, hide_sources);
-                    dto.playlist_item_id = Some(
-                        rel.relation_id
-                            .to_string(),
-                    );
-                    items.push(dto);
+            if !item_ids.is_empty() {
+                let mut by_id: std::collections::HashMap<Uuid, db::Media> =
+                    db::Media::get_by_ids(
+                        &state
+                            .ctx
+                            .db,
+                        &item_ids,
+                    )
+                    .await?
+                    .into_iter()
+                    .map(|m| (m.id, m))
+                    .collect();
+                for rel in slice {
+                    if let Some(media) = by_id.remove(&rel.right_media_id) {
+                        let mut dto = api::db_media_to_item(media, hide_sources);
+                        dto.playlist_item_id = Some(
+                            rel.relation_id
+                                .to_string(),
+                        );
+                        items.push(dto);
+                    }
                 }
             }
             return Ok(ItemsQueryResultBuilder::with_dtos(session, items, total));
@@ -801,6 +803,9 @@ pub async fn items_flat(
     // Jellyfin ignores the MediaTypes query parameter for this request.
     // Without this, supplying a value (e.g. Video) would exclude Series collections.
     q.media_types = None;
+    let client = session
+        .device
+        .jellyfin_client();
     if let Some(parent_id) = q
         .parent_id
         .clone()
@@ -831,21 +836,7 @@ pub async fn items_flat(
                 q.sort_order = Some(vec![api::SortOrder::Descending]);
             } else if let Some(ref default_sort) = parent.collection_default_sort {
                 if !default_sort.is_empty() {
-                    let is_client_default = q
-                        .sort_by
-                        .as_deref()
-                        .map(|s| {
-                            s.is_empty()
-                                || matches!(
-                                    s.first(),
-                                    Some(
-                                        api::ItemSortBy::SortName
-                                            | api::ItemSortBy::Name
-                                    )
-                                )
-                        })
-                        .unwrap_or(true);
-                    if is_client_default {
+                    if client.is_default_sort(&q) {
                         q.sort_by = Some(default_sort.clone());
                         q.sort_order = parent
                             .collection_default_sort_order
@@ -878,6 +869,12 @@ pub async fn items(
     //trace!(?q);
     let items = get_items(state.clone(), session.clone(), q.clone(), true)
         .await?
+        .preload_playlist_runtimes(
+            &state
+                .ctx
+                .db,
+        )
+        .await
         .with_permissions()
         .with_client_patches()
         .build();
@@ -1556,8 +1553,23 @@ async fn item_for_user(
     let show_ungrouped = server_config
         .stream_groups_show_ungrouped
         .unwrap_or(true);
+    let encoding_cfg = db::Settings::get_encoding_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await
+    .unwrap_or_default();
+    let transcoding_enabled = encoding_cfg
+        .enable_video_transcoding
+        .unwrap_or(true);
+    // Clients that switch versions (Android TV) refetch the item by MediaSource id
+    // and then play MediaSources[0], so the requested group must end up first and
+    // keep its own UUID instead of the item id stamped by `db_media_to_item`.
+    let mut requested_group: Option<Uuid> = None;
     let resolved_id = match MediaResolveService::resolve_item(id, &state.ctx).await? {
         Some(m) if m.kind == db::MediaKind::StreamGroup => {
+            requested_group = Some(m.id);
             // Stream groups have no parent_id on the row (they're global). Look up the
             // group→item mapping written by the items pipeline and PlaybackInfo.
             StreamService::get_group_item(
@@ -1599,6 +1611,14 @@ async fn item_for_user(
     .into_iter()
     .next()
     .context_not_found("item not found")?;
+
+    db::Media::preload_playlist_runtimes(
+        &state
+            .ctx
+            .db,
+        std::slice::from_mut(&mut media),
+    )
+    .await;
 
     let needs_streams = want_streams
         && matches!(
@@ -1678,6 +1698,23 @@ async fn item_for_user(
                 );
             }
         }
+        // The other versions stay in the list so the version picker is complete.
+        let mut filtered = filtered;
+        if let Some(gid) = requested_group {
+            match filtered
+                .iter()
+                .position(|s| s.group_id == Some(gid))
+            {
+                Some(pos) => {
+                    let source = filtered.remove(pos);
+                    filtered.insert(0, source);
+                }
+                None => {
+                    warn!(%gid, item = %media.id, "requested stream group has no matching source");
+                    requested_group = None;
+                }
+            }
+        }
         media.sources = Some(filtered);
         media
             .user_state(
@@ -1742,6 +1779,39 @@ async fn item_for_user(
         .await?;
     let mut base_item = api::db_media_to_item(media.clone(), false);
 
+    if !transcoding_enabled {
+        if let Some(sources) = base_item
+            .media_sources
+            .as_mut()
+        {
+            for source in sources.iter_mut() {
+                source.supports_transcoding = false;
+            }
+        }
+    }
+
+    // `db_media_to_item` stamps MediaSources[0].Id with the item id (clients rely on
+    // that for auto-play). Undo it for a group request: the item id would resolve
+    // back to the highest-priority group on PlaybackInfo (issue #220).
+    let hoisted_group = requested_group.filter(|gid| {
+        media
+            .sources
+            .as_ref()
+            .and_then(|s| s.first())
+            .and_then(|s| s.group_id)
+            == Some(*gid)
+    });
+    if let Some(gid) = hoisted_group {
+        if let Some(source) = base_item
+            .media_sources
+            .as_mut()
+            .and_then(|s| s.first_mut())
+        {
+            source.id = gid;
+            source.e_tag = gid;
+        }
+    }
+
     // When streams were actually fetched but none found, replace the
     // listing-style stubs with a single "No streams found" stub.
     if needs_streams
@@ -1780,6 +1850,7 @@ async fn item_for_user(
             session
                 .device
                 .access_token
+                .expose()
         );
         let sources = media
             .sources
@@ -1826,7 +1897,7 @@ async fn item_for_user(
             is_remote: true,
             supports_direct_play: true,
             supports_direct_stream: true,
-            supports_transcoding: true,
+            supports_transcoding: transcoding_enabled,
             transcoding_url: Some(transcoding_url),
             transcoding_sub_protocol: "hls".to_string(),
             transcoding_container: Some("ts".to_string()),
@@ -2248,20 +2319,6 @@ pub async fn update_virtual_folder(
     .bind(payload.sort_order)
     .execute(&state.ctx.db)
     .await?;
-
-    // Library name is baked into the generated placeholder — clear it so it regenerates.
-    let _ = ImageService::delete_image(
-        &state
-            .ctx
-            .config
-            .data_dir,
-        payload.id,
-        db::ImageKind::Primary,
-        &state
-            .ctx
-            .db,
-    )
-    .await;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -3205,24 +3262,6 @@ pub async fn patch_item(
         .context_bad_request("Failed to update tags")?;
     }
 
-    if payload
-        .name
-        .is_some()
-    {
-        let _ = ImageService::delete_image(
-            &state
-                .ctx
-                .config
-                .data_dir,
-            id,
-            db::ImageKind::Primary,
-            &state
-                .ctx
-                .db,
-        )
-        .await;
-    }
-
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -3348,7 +3387,10 @@ mod tests {
     use crate::{
         db,
         db::{ExternalIds, MediaIdRaw, NonEmptyString},
-        integration_test::{auth_header_with_token, authenticated_server},
+        integration_test::{
+            assert_api_keys_are_real, auth_header_with_token, authenticated_server,
+            insert_test_source_of_kind,
+        },
     };
 
     async fn get_user_id(server: &axum_test::TestServer, auth: &str) -> String {
@@ -4383,5 +4425,231 @@ mod tests {
             !names.contains(&"Comedy Movies"),
             "untagged collection must not appear in smart group; got: {names:?}"
         );
+    }
+
+    /// Android TV refetches the item by MediaSource Id when the user picks a
+    /// version, then plays `mediaSources.get(0)` because no source Id equals the
+    /// item Id. The requested group's source must therefore come first.
+    /// Regression test for issue #220.
+    #[tokio::test]
+    async fn test_items_get_by_stream_group_id_puts_that_group_first() {
+        use crate::api;
+        use remux_sdks::remux::{
+            StreamFilter, StreamQuality, StreamResolution, StreamRule,
+        };
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let ctx = &guard.0;
+        let now = Utc::now().naive_utc();
+
+        let web_group = db::StreamGroup::create(
+            &ctx.db,
+            "1080p · WEB",
+            StreamFilter {
+                match_mode: FilterMatchMode::All,
+                rules: vec![
+                    StreamRule::Resolution {
+                        op: SetOp::In,
+                        values: vec![StreamResolution::R1080p],
+                    },
+                    StreamRule::Quality {
+                        op: SetOp::In,
+                        values: vec![StreamQuality::WebDl, StreamQuality::WebRip],
+                    },
+                ],
+            },
+            0,
+        )
+        .await
+        .unwrap();
+
+        let bluray_group = db::StreamGroup::create(
+            &ctx.db,
+            "1080p · Blu-ray",
+            StreamFilter {
+                match_mode: FilterMatchMode::All,
+                rules: vec![
+                    StreamRule::Resolution {
+                        op: SetOp::In,
+                        values: vec![StreamResolution::R1080p],
+                    },
+                    StreamRule::Quality {
+                        op: SetOp::In,
+                        values: vec![StreamQuality::BluRay, StreamQuality::BluRayRemux],
+                    },
+                ],
+            },
+            1,
+        )
+        .await
+        .unwrap();
+
+        let make_probe = || api::MediaSourceInfo {
+            container: Some("mkv".to_string()),
+            bitrate: Some(8_000_000),
+            run_time_ticks: Some(100_000_000),
+            media_streams: vec![
+                api::MediaStream {
+                    codec: Some("h264".to_string()),
+                    type_: Some(api::MediaStreamType::Video),
+                    index: 0,
+                    width: Some(1920),
+                    height: Some(1080),
+                    ..Default::default()
+                },
+                api::MediaStream {
+                    codec: Some("aac".to_string()),
+                    type_: Some(api::MediaStreamType::Audio),
+                    index: 1,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let movie =
+            insert_media(&ctx.db, "Test Movie", db::MediaKind::Movie, "tt8888888")
+                .await;
+        sqlx::query("UPDATE media SET streams_refreshed_at = ? WHERE id = ?")
+            .bind(now)
+            .bind(movie.id)
+            .execute(&ctx.db)
+            .await
+            .unwrap();
+
+        for (idx, filename) in [
+            (0, "TestMovie.2026.1080p.WEB-DL.H264.mkv"),
+            (1, "TestMovie.2026.1080p.BluRay.x264.mkv"),
+        ] {
+            let mut stream = db::Media {
+                title: filename.to_string(),
+                kind: db::MediaKind::Stream,
+                parent_id: Some(movie.id),
+                idx: Some(idx),
+                stream_info: Some(crate::stream::StreamInfo {
+                    descriptor: crate::stream::StreamDescriptor::Local(filename.into()),
+                    filename: Some(filename.to_string()),
+                    ..Default::default()
+                }),
+                probe_data: Some(make_probe()),
+                created_at: now,
+                updated_at: now,
+                ..Default::default()
+            };
+            stream
+                .save(&ctx.db)
+                .await
+                .unwrap();
+        }
+
+        // Loading the item first writes the `gitem:{user}:{group}` mapping that
+        // /items/{group} needs, exactly like the real client flow.
+        let resp = server
+            .get(&format!("/items/{}", movie.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let sources = body["MediaSources"]
+            .as_array()
+            .unwrap();
+        assert_eq!(sources.len(), 2, "expected one source per group");
+        assert_eq!(
+            sources[0]["Name"]
+                .as_str()
+                .unwrap(),
+            "1080p · WEB"
+        );
+        assert_eq!(
+            sources[0]["Id"]
+                .as_str()
+                .unwrap(),
+            movie
+                .id
+                .simple()
+                .to_string(),
+            "source[0] keeps the item id in the default listing"
+        );
+        assert_eq!(
+            sources[1]["Id"]
+                .as_str()
+                .unwrap(),
+            bluray_group
+                .id
+                .simple()
+                .to_string(),
+        );
+
+        let resp2 = server
+            .get(&format!("/items/{}", bluray_group.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp2.assert_status_ok();
+        let body2: serde_json::Value = resp2.json();
+        let sources2 = body2["MediaSources"]
+            .as_array()
+            .unwrap();
+
+        assert_eq!(
+            sources2.len(),
+            2,
+            "the full version list must stay available"
+        );
+        assert_eq!(
+            sources2[0]["Name"]
+                .as_str()
+                .unwrap(),
+            "1080p · Blu-ray",
+            "the requested group must be MediaSources[0] — Android TV plays get(0)"
+        );
+        assert_eq!(
+            sources2[0]["Id"]
+                .as_str()
+                .unwrap(),
+            bluray_group
+                .id
+                .simple()
+                .to_string(),
+            "the hoisted source must keep its group UUID, not the item id, so the \
+             client sends the group back on PlaybackInfo"
+        );
+        assert_eq!(
+            body2["Id"]
+                .as_str()
+                .unwrap(),
+            movie
+                .id
+                .simple()
+                .to_string(),
+            "the item itself is still the parent movie"
+        );
+    }
+
+    /// Tracks are wrapped as HLS sources here rather than in the playback layer,
+    /// so this URL is built in its own place and needs its own check: it carries
+    /// the session token the client must play with.
+    #[tokio::test]
+    async fn track_media_source_url_carries_the_real_token() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_test_source_of_kind(&guard.0, db::MediaKind::Track).await;
+
+        let resp = server
+            .get(&format!("/items/{}", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+
+        resp.assert_status_ok();
+        assert_api_keys_are_real(&resp.json::<serde_json::Value>(), &token);
     }
 }

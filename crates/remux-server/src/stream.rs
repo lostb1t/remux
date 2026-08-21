@@ -2,13 +2,60 @@ use crate::ResultExt;
 use async_trait::async_trait;
 use axum::{body::Body, http::HeaderMap, response::Response};
 use axum_anyhow::ApiResult as Result;
-use futures_util::TryStreamExt;
+use futures_util::{StreamExt, TryStreamExt};
+use nutype::nutype;
 use std::{io, path::PathBuf};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
-use tokio_util::io::ReaderStream;
+use tokio_util::io::{ReaderStream, StreamReader};
 use uuid::Uuid;
 
 use crate::AppState;
+
+/// A BitTorrent tracker announce URL with a supported scheme and host. UDP
+/// trackers may omit a path, while HTTP trackers must name an announce path.
+/// Unrelated addon `sources` entries are rejected.
+#[nutype(
+    validate(predicate = is_tracker_url),
+    derive(Clone, Debug, PartialEq, Eq, Hash, AsRef, Serialize, Deserialize)
+)]
+pub struct TrackerUrl(String);
+
+/// Whether `s` is a usable HTTP(S) or UDP tracker URL.
+pub fn is_tracker_url(s: &str) -> bool {
+    let Ok(url) = url::Url::parse(s.trim()) else {
+        return false;
+    };
+    if url
+        .host_str()
+        .is_none()
+    {
+        return false;
+    }
+    match url.scheme() {
+        "udp" => url
+            .port()
+            .is_some(),
+        "http" | "https" => {
+            !url.path()
+                .is_empty()
+                && url.path() != "/"
+        }
+        _ => false,
+    }
+}
+
+fn deserialize_tracker_urls<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<TrackerUrl>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let values = <Vec<String> as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(values
+        .into_iter()
+        .filter_map(|value| TrackerUrl::try_new(value).ok())
+        .collect())
+}
 
 /// Typed representation of how a stream is accessed (transport mechanism).
 ///
@@ -36,8 +83,8 @@ pub enum StreamDescriptor {
         /// Direct file index within the torrent (takes precedence over file_hint).
         file_idx: Option<usize>,
         /// Tracker announce URLs (populated from the stream's `sources`).
-        #[serde(default)]
-        trackers: Vec<String>,
+        #[serde(default, deserialize_with = "deserialize_tracker_urls")]
+        trackers: Vec<TrackerUrl>,
     },
     Opendal {
         addon_id: Uuid,
@@ -189,6 +236,10 @@ pub struct StreamInfo {
     /// Raw NZB URL (from AIOStreams streamData). Used for RemuxDB matching via indexer_guid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nzb_url: Option<String>,
+    /// Binge group from `behaviorHints.bingeGroup` (e.g. "real-debrid|1080p").
+    /// Used as part of the stable dedup key for HTTP streams.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binge_group: Option<String>,
     /// Torrent info-hash for the source release (from AIOStreams streamData).
     /// Stored independently of the descriptor so debrid Http streams can match by hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -265,19 +316,20 @@ pub struct TorrentSource {
     pub info_hash: String,
     pub file_hint: Option<String>,
     pub file_idx: Option<usize>,
-    pub trackers: Vec<String>,
+    pub trackers: Vec<TrackerUrl>,
 }
 
 impl TorrentSource {
     fn to_magnet(&self) -> String {
         let mut m = format!("magnet:?xt=urn:btih:{}", self.info_hash);
-        let trackers: &[String] = &self.trackers;
+        let trackers = &self.trackers;
         if trackers.is_empty() {
             for t in DEFAULT_TRACKERS {
                 m.push_str(&format!("&tr={}", urlencoding::encode(t)));
             }
         } else {
             for t in trackers {
+                let t: &str = t.as_ref();
                 m.push_str(&format!("&tr={}", urlencoding::encode(t)));
             }
         }
@@ -291,13 +343,32 @@ impl TorrentSource {
     }
 }
 
-#[async_trait]
-impl StreamSource for HttpSource {
-    async fn serve(&self, _state: &AppState, headers: &HeaderMap) -> Result<Response> {
+impl HttpSource {
+    async fn serve_inner(
+        &self,
+        headers: &HeaderMap,
+        bound_finite_ranges: bool,
+    ) -> Result<Response> {
+        let requested_range = bound_finite_ranges
+            .then(|| {
+                headers
+                    .get(http::header::RANGE)
+                    .and_then(|value| {
+                        value
+                            .to_str()
+                            .ok()
+                    })
+                    .and_then(parse_open_or_finite_range)
+            })
+            .flatten();
         let mut req = STREAM_PROXY_CLIENT
             .clone()
             .get(&self.url);
-        if let Some(v) = headers.get(http::header::RANGE) {
+        if let Some((start, _)) = requested_range {
+            // librqbit accepts only `bytes=N-`. Normalize finite ranges and
+            // cap the proxied response body to the client's requested length.
+            req = req.header(http::header::RANGE, format!("bytes={start}-"));
+        } else if let Some(v) = headers.get(http::header::RANGE) {
             req = req.header(http::header::RANGE, v.clone());
         }
         for (k, v) in &self.request_headers {
@@ -309,18 +380,52 @@ impl StreamSource for HttpSource {
             .await
             .context_bad_request("upstream request failed")?;
 
-        let status = upstream.status();
+        let upstream_status = upstream.status();
         let upstream_headers = upstream
             .headers()
             .clone();
-        let body = Body::from_stream(
-            upstream
-                .bytes_stream()
-                .map_err(io::Error::other),
-        );
+        let total_length = upstream_headers
+            .get(http::header::CONTENT_RANGE)
+            .and_then(|value| {
+                value
+                    .to_str()
+                    .ok()
+            })
+            .and_then(|value| value.rsplit_once('/'))
+            .and_then(|(_, total)| {
+                total
+                    .parse::<u64>()
+                    .ok()
+            });
+        let bounded_range = requested_range
+            .filter(|(_, end)| {
+                end.is_some() && upstream_status == http::StatusCode::PARTIAL_CONTENT
+            })
+            .map(|(start, end)| {
+                let requested_end = end.expect("filtered to finite range");
+                let end = total_length
+                    .map(|total| requested_end.min(total.saturating_sub(1)))
+                    .unwrap_or(requested_end);
+                let length = end
+                    .saturating_sub(start)
+                    .saturating_add(1);
+                (start, end, length)
+            });
+        let stream = upstream
+            .bytes_stream()
+            .map_err(io::Error::other);
+        let body = if let Some((_, _, length)) = bounded_range {
+            Body::from_stream(ReaderStream::new(StreamReader::new(stream).take(length)))
+        } else {
+            Body::from_stream(stream)
+        };
 
         let mut resp = Response::builder()
-            .status(status)
+            .status(if bounded_range.is_some() {
+                http::StatusCode::PARTIAL_CONTENT
+            } else {
+                upstream_status
+            })
             .body(body)
             .unwrap();
         let out = resp.headers_mut();
@@ -333,6 +438,21 @@ impl StreamSource for HttpSource {
                 _ => {}
             }
         }
+        if let Some((start, end, length)) = bounded_range {
+            out.insert(
+                http::header::CONTENT_LENGTH,
+                http::HeaderValue::from_str(&length.to_string())
+                    .expect("range length is a valid header"),
+            );
+            let total = total_length
+                .map(|total| total.to_string())
+                .unwrap_or_else(|| "*".to_string());
+            out.insert(
+                http::header::CONTENT_RANGE,
+                http::HeaderValue::from_str(&format!("bytes {start}-{end}/{total}"))
+                    .expect("range is a valid header"),
+            );
+        }
         if !out.contains_key(http::header::CONTENT_TYPE) {
             out.insert(
                 http::header::CONTENT_TYPE,
@@ -341,6 +461,33 @@ impl StreamSource for HttpSource {
         }
 
         Ok(resp)
+    }
+}
+
+fn parse_open_or_finite_range(range: &str) -> Option<(u64, Option<u64>)> {
+    let bytes = range.strip_prefix("bytes=")?;
+    let (start, end) = bytes.split_once('-')?;
+    if start.is_empty() || end.contains(',') {
+        return None;
+    }
+    let start = start
+        .parse()
+        .ok()?;
+    let end = (!end.is_empty())
+        .then(|| {
+            end.parse()
+                .ok()
+        })
+        .flatten();
+    end.is_none_or(|end| end >= start)
+        .then_some((start, end))
+}
+
+#[async_trait]
+impl StreamSource for HttpSource {
+    async fn serve(&self, _state: &AppState, headers: &HeaderMap) -> Result<Response> {
+        self.serve_inner(headers, false)
+            .await
     }
 }
 
@@ -417,7 +564,7 @@ impl StreamSource for TorrentSource {
             request_headers: Default::default(),
             response_headers: Default::default(),
         }
-        .serve(state, headers)
+        .serve_inner(headers, true)
         .await
     }
 }
@@ -448,25 +595,17 @@ pub fn parse_range(range: &str, file_size: u64) -> anyhow::Result<(u64, u64)> {
 }
 
 pub fn mime_from_path(path: &std::path::Path) -> &'static str {
-    match path
+    let ext = path
         .extension()
         .and_then(|e| e.to_str())
-    {
-        Some("mp4") | Some("m4v") => "video/mp4",
-        Some("mkv") => "video/x-matroska",
-        Some("avi") => "video/x-msvideo",
-        Some("mov") => "video/quicktime",
-        Some("webm") => "video/webm",
-        Some("ts") => "video/mp2t",
-        Some("mp3") => "audio/mpeg",
-        Some("flac") => "audio/flac",
-        Some("aac") => "audio/aac",
-        Some("ogg") => "audio/ogg",
-        Some("opus") => "audio/opus",
-        Some("m4a") => "audio/mp4",
-        Some("wav") => "audio/wav",
-        _ => "application/octet-stream",
+        .unwrap_or("");
+    if let Some(c) = remux_sdks::remux::VideoContainer::parse_known(ext) {
+        return c.mime_type();
     }
+    if let Some(c) = remux_sdks::remux::AudioContainer::parse_known(ext) {
+        return c.mime_type();
+    }
+    "application/octet-stream"
 }
 
 /// Extract the `urn:btih:` info-hash from a magnet URI.
@@ -491,11 +630,167 @@ fn extract_query_param(url: &str, param: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::STREAM_PROXY_CLIENT;
+    use super::{
+        HttpSource, STREAM_PROXY_CLIENT, StreamDescriptor, TrackerUrl, is_tracker_url,
+        mime_from_path,
+    };
+    use std::path::Path;
+
+    #[test]
+    fn mime_from_path_video() {
+        assert_eq!(mime_from_path(Path::new("movie.mkv")), "video/x-matroska");
+        assert_eq!(mime_from_path(Path::new("movie.mp4")), "video/mp4");
+        assert_eq!(mime_from_path(Path::new("movie.m4v")), "video/mp4");
+        assert_eq!(mime_from_path(Path::new("movie.mov")), "video/quicktime");
+        assert_eq!(mime_from_path(Path::new("movie.avi")), "video/x-msvideo");
+        assert_eq!(mime_from_path(Path::new("movie.webm")), "video/webm");
+        assert_eq!(mime_from_path(Path::new("movie.ts")), "video/mp2t");
+        assert_eq!(mime_from_path(Path::new("movie.MKV")), "video/x-matroska");
+    }
+
+    #[test]
+    fn mime_from_path_audio() {
+        assert_eq!(mime_from_path(Path::new("track.mp3")), "audio/mpeg");
+        assert_eq!(mime_from_path(Path::new("track.flac")), "audio/flac");
+        assert_eq!(mime_from_path(Path::new("track.m4a")), "audio/mp4");
+        assert_eq!(mime_from_path(Path::new("track.ogg")), "audio/ogg");
+        assert_eq!(mime_from_path(Path::new("track.opus")), "audio/opus");
+        assert_eq!(mime_from_path(Path::new("track.wav")), "audio/wav");
+        assert_eq!(mime_from_path(Path::new("track.aac")), "audio/aac");
+    }
+
+    #[test]
+    fn mime_from_path_fallback() {
+        assert_eq!(
+            mime_from_path(Path::new("file.m3u8")),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            mime_from_path(Path::new("file.txt")),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            mime_from_path(Path::new("noextension")),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn tracker_url_validates_absolute_urls() {
+        assert!(is_tracker_url("udp://tracker.opentrackr.org:1337/announce"));
+        assert!(is_tracker_url("udp://opentor.net:6969"));
+        assert!(is_tracker_url("https://private.example/announce"));
+        assert!(is_tracker_url("http://tracker.example:8080/announce"));
+
+        // Missing announce paths for HTTP, missing UDP ports, relative paths,
+        // unsupported schemes, and non-URLs are rejected.
+        assert!(!is_tracker_url("https://tracker.example"));
+        assert!(!is_tracker_url("udp://tracker.example"));
+        assert!(!is_tracker_url("/announce"));
+        assert!(!is_tracker_url("tracker:udp://x/announce"));
+        assert!(!is_tracker_url("not-a-tracker"));
+        assert!(
+            TrackerUrl::try_new(
+                "udp://tracker.opentrackr.org:1337/announce".to_string()
+            )
+            .is_ok()
+        );
+        assert!(TrackerUrl::try_new("not-a-tracker".to_string()).is_err());
+    }
+
+    #[test]
+    fn torrent_descriptor_ignores_invalid_persisted_trackers() {
+        let descriptor: StreamDescriptor = serde_json::from_str(
+            r#"{"Torrent":{"info_hash":"abc","file_hint":null,"file_idx":0,"trackers":["udp://opentor.net:6969","not-a-tracker"]}}"#,
+        )
+        .unwrap();
+
+        let StreamDescriptor::Torrent { trackers, .. } = descriptor else {
+            panic!("expected torrent descriptor");
+        };
+        assert_eq!(trackers.len(), 1);
+        assert_eq!(trackers[0].as_ref(), "udp://opentor.net:6969");
+    }
 
     #[test]
     fn stream_proxy_client_builds_without_panic() {
         let _ = &*STREAM_PROXY_CLIENT;
+    }
+
+    #[tokio::test]
+    async fn torrent_proxy_bounds_finite_ranges() {
+        let server = httpmock::MockServer::start();
+        let payload = vec![b'x'; 2048];
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/file.mkv")
+                .header("Range", "bytes=0-");
+            then.status(206)
+                .header("Content-Range", "bytes 0-2047/2048")
+                .header("Accept-Ranges", "bytes")
+                .body(payload);
+        });
+
+        let source = HttpSource {
+            url: format!("{}/file.mkv", server.base_url()),
+            request_headers: Default::default(),
+            response_headers: Default::default(),
+        };
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::RANGE,
+            http::HeaderValue::from_static("bytes=0-1023"),
+        );
+
+        let response = source
+            .serve_inner(&headers, true)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), http::StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.headers()[http::header::CONTENT_LENGTH], "1024");
+        assert_eq!(
+            response.headers()[http::header::CONTENT_RANGE],
+            "bytes 0-1023/2048"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 2048)
+            .await
+            .unwrap();
+        assert_eq!(body.len(), 1024);
+    }
+
+    #[tokio::test]
+    async fn torrent_proxy_does_not_rewrite_full_responses_as_partial() {
+        let server = httpmock::MockServer::start();
+        let payload = vec![b'x'; 2048];
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/file.mkv")
+                .header("Range", "bytes=0-");
+            then.status(200)
+                .header("Accept-Ranges", "bytes")
+                .body(payload);
+        });
+
+        let source = HttpSource {
+            url: format!("{}/file.mkv", server.base_url()),
+            request_headers: Default::default(),
+            response_headers: Default::default(),
+        };
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::RANGE,
+            http::HeaderValue::from_static("bytes=0-1023"),
+        );
+
+        let response = source
+            .serve_inner(&headers, true)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 2048)
+            .await
+            .unwrap();
+        assert_eq!(body.len(), 2048);
     }
 
     #[tokio::test]

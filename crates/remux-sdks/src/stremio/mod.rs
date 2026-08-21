@@ -66,6 +66,7 @@ pub enum ResourceType {
     Lyrics,
     Segment,
     Metrics,
+    Tracking,
 
     #[serde(untagged)]
     Unknown(String),

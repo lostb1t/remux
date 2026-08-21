@@ -5,7 +5,7 @@ use sqlx::SqlitePool;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ApiKey {
-    pub access_token: String,
+    pub access_token: remux_utils::Secret<String>,
     pub app_name: String,
     pub created_at: DateTime<Utc>,
 }

@@ -372,3 +372,46 @@ impl<T> IntoVec<T> for Vec<T> {
             .collect()
     }
 }
+
+/// `CREATE_NO_WINDOW` — spawn background tools without a console window on
+/// Windows. Without it, every ffmpeg/ffprobe/yt-dlp child (transcoding, seeking,
+/// subtitle extraction, probing) pops a cmd window on the user's desktop.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Hide the Windows console for a child process spawned with
+/// [`std::process::Command`] or [`tokio::process::Command`]. No-op on non-Windows.
+pub trait HideConsole {
+    fn hide_console(&mut self) -> &mut Self;
+}
+
+#[cfg(windows)]
+impl HideConsole for std::process::Command {
+    fn hide_console(&mut self) -> &mut Self {
+        use std::os::windows::process::CommandExt;
+        self.creation_flags(CREATE_NO_WINDOW);
+        self
+    }
+}
+
+#[cfg(windows)]
+impl HideConsole for tokio::process::Command {
+    fn hide_console(&mut self) -> &mut Self {
+        self.creation_flags(CREATE_NO_WINDOW);
+        self
+    }
+}
+
+#[cfg(not(windows))]
+impl HideConsole for std::process::Command {
+    fn hide_console(&mut self) -> &mut Self {
+        self
+    }
+}
+
+#[cfg(not(windows))]
+impl HideConsole for tokio::process::Command {
+    fn hide_console(&mut self) -> &mut Self {
+        self
+    }
+}

@@ -26,6 +26,7 @@ pub enum SessionMessageType {
     LibraryChanged,
     UserDeleted,
     UserUpdated,
+    UserDataChanged,
     SessionsStart,
     SessionsStop,
     KeepAlive,
@@ -42,6 +43,25 @@ struct OutboundMessage<T: Serialize> {
     data: Option<T>,
 }
 
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct LibraryUpdateInfo {
+    folders_added_to: Vec<String>,
+    folders_removed_from: Vec<String>,
+    items_added: Vec<String>,
+    items_removed: Vec<String>,
+    items_updated: Vec<String>,
+    collection_folders: Vec<String>,
+    is_empty: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct UserDataChangeInfo {
+    user_id: Uuid,
+    user_data_list: Vec<api::UserItemDataDto>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct InboundMessage {
@@ -53,6 +73,10 @@ struct InboundMessage {
 pub enum WsEvent {
     UserUpdated(Uuid),
     UserDeleted(Uuid),
+    UserDataChanged {
+        user_id: Uuid,
+        item_id: Uuid,
+    },
     LibraryChanged,
     SessionsChanged,
     RemotePlay {
@@ -153,8 +177,39 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, session: AuthSess
                             return;
                         }
                     }
+                    Ok(WsEvent::UserDataChanged { user_id, item_id }) if user_id == session.user.id => {
+                        if let Ok(Some(media)) = db::Media::get_by_id(&state.ctx.db, &item_id).await {
+                            let user_data_list = db::UserMediaState::get_by_user_and_media(
+                                &state.ctx.db,
+                                &session.user,
+                                &media,
+                            )
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|user_data| vec![api::db_state_to_dto(user_data, &media)])
+                            .unwrap_or_default();
+                            if !send_msg(
+                                &mut socket,
+                                SessionMessageType::UserDataChanged,
+                                Some(UserDataChangeInfo { user_id, user_data_list }),
+                            )
+                            .await
+                            {
+                                return;
+                            }
+                        }
+                    }
+                    Ok(WsEvent::UserDataChanged { .. }) => {}
                     Ok(WsEvent::LibraryChanged) => {
-                        if !send_msg::<()>(&mut socket, SessionMessageType::LibraryChanged, None).await {
+                        if !send_msg(
+                            &mut socket,
+                            SessionMessageType::LibraryChanged,
+                            Some(LibraryUpdateInfo {
+                                is_empty: true,
+                                ..Default::default()
+                            }),
+                        ).await {
                             return;
                         }
                     }
@@ -243,4 +298,48 @@ async fn build_sessions(state: &AppState) -> Vec<api::SessionInfoDto> {
     build_session_list(state, Some(Duration::from_secs(120)), None)
         .await
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn library_update_info_uses_jellyfin_message_shape() {
+        let value = serde_json::to_value(LibraryUpdateInfo {
+            is_empty: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(value["ItemsAdded"], serde_json::json!([]));
+        assert_eq!(value["ItemsRemoved"], serde_json::json!([]));
+        assert_eq!(value["ItemsUpdated"], serde_json::json!([]));
+        assert_eq!(value["FoldersAddedTo"], serde_json::json!([]));
+        assert_eq!(value["FoldersRemovedFrom"], serde_json::json!([]));
+        assert_eq!(value["CollectionFolders"], serde_json::json!([]));
+        assert_eq!(value["IsEmpty"], true);
+    }
+
+    #[test]
+    fn user_data_change_info_uses_jellyfin_message_shape() {
+        let user_id = Uuid::new_v4();
+        let item_id = Uuid::new_v4();
+        let value = serde_json::to_value(UserDataChangeInfo {
+            user_id,
+            user_data_list: vec![api::UserItemDataDto {
+                item_id,
+                ..Default::default()
+            }],
+        })
+        .unwrap();
+
+        assert_eq!(value["UserId"], user_id.to_string());
+        assert_eq!(
+            value["UserDataList"][0]["ItemId"],
+            item_id
+                .simple()
+                .to_string()
+        );
+    }
 }
