@@ -1,8 +1,7 @@
 use crate::{components::*, state::AppState};
 use dioxus::prelude::*;
 use dioxus_primitives::drag_and_drop_list::{
-    DragAndDropListRenderItem,
-    use_drag_and_drop_list_items,
+    use_drag_and_drop_list_items, DragAndDropListRenderItem,
 };
 use remux_sdks::remux::{
     BaseItemDto, CollectionFilter, CollectionType, CreateVirtualFolder,
@@ -171,7 +170,7 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                     }
                                 })
                                 .collect();
-                            
+
                             let app_state_reorder = app_state.clone();
 
                             rsx! {

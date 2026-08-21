@@ -1,5 +1,6 @@
 pub mod button;
 pub mod card;
+pub mod drag_and_drop_list;
 pub mod filters;
 pub mod form;
 pub mod metrics;
@@ -9,10 +10,10 @@ pub mod server_info;
 pub mod sessions;
 pub mod states;
 pub mod tasks;
-pub mod drag_and_drop_list;
 
 pub use button::{Button, ButtonVariant};
 pub use card::Card;
+pub use drag_and_drop_list::DragAndDropList;
 pub use filters::{FilterRuleEditor, TagChipInput};
 pub use form::{FormActions, FormGroup, ToggleRow};
 pub use metrics::MetricsCard;
@@ -22,4 +23,3 @@ pub use server_info::{MediaStatsCard, ServerInfoCard};
 pub use sessions::{ActivityCard, SessionsCard};
 pub use states::{EmptyState, ErrorAlert, LoadingText, SuccessAlert};
 pub use tasks::TasksCard;
-pub use drag_and_drop_list::DragAndDropList;
