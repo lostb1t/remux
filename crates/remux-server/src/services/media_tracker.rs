@@ -209,44 +209,12 @@ mod tests {
         filters: Vec<MediaTrackerEventKind>,
         provider: StubMediaTracker,
     ) -> Uuid {
-        let now = Utc::now().naive_utc();
-        let addon = Addon {
-            id: crate::common::get_uuid(),
-            name: name.into(),
-            preset: AddonPresetRef {
-                kind: "scripted".into(),
-                config: serde_json::Value::Null.into(),
-            },
-            resources: vec![],
-            types: vec![],
-            enabled: true,
-            priority: 0,
-            created_at: now,
-            updated_at: now,
-            system: false,
-            is_default: true,
-            http_redirect_stream: false,
-            service_filter: vec![],
-        };
-        addon
-            .insert(&ctx.db)
-            .await
-            .unwrap();
-
-        let mut runtimes: Vec<AddonRuntime> = ctx
-            .addons
-            .list_for_user(&ctx.db, None)
-            .await;
-        runtimes.push(AddonRuntime {
-            row: addon.clone(),
-            caps: AddonCapabilities {
-                media_tracker: Some(Arc::new(provider)),
-                ..Default::default()
-            },
-        });
-        ctx.addons
-            .replace_runtimes_for_test(runtimes);
-
+        let addon = crate::integration_test::register_media_tracker(
+            ctx,
+            name,
+            Arc::new(provider),
+        )
+        .await;
         let mut tracker = UserMediaTracker::new(
             user_id(ctx).await,
             addon.id,
@@ -270,82 +238,6 @@ mod tests {
             .id
     }
 
-    /// Movies and series carry a UUID derived from their external ids, so the
-    /// id cannot be left to `Default`.
-    fn stable_id(kind: db::MediaKind, external_ids: &db::ExternalIds) -> Uuid {
-        Uuid::from(&db::MediaIdRaw {
-            kind,
-            external_ids: external_ids.clone(),
-            season: None,
-            episode: None,
-        })
-    }
-
-    async fn movie(ctx: &AppContext) -> db::Media {
-        let external_ids = db::ExternalIds {
-            imdb: db::NonEmptyString::try_new("tt0113277".to_string()).ok(),
-            tmdb: Some(949),
-            ..Default::default()
-        };
-        let mut m = db::Media {
-            id: stable_id(db::MediaKind::Movie, &external_ids),
-            title: "Heat".into(),
-            kind: db::MediaKind::Movie,
-            external_ids,
-            ..Default::default()
-        };
-        m.save(&ctx.db)
-            .await
-            .unwrap();
-        m
-    }
-
-    async fn episode(ctx: &AppContext) -> db::Media {
-        let external_ids = db::ExternalIds {
-            imdb: db::NonEmptyString::try_new("tt0306414".to_string()).ok(),
-            tvdb: Some(79126),
-            ..Default::default()
-        };
-        let mut series = db::Media {
-            id: stable_id(db::MediaKind::Series, &external_ids),
-            title: "The Wire".into(),
-            kind: db::MediaKind::Series,
-            external_ids,
-            ..Default::default()
-        };
-        series
-            .save(&ctx.db)
-            .await
-            .unwrap();
-
-        let mut season = db::Media {
-            title: "Season 1".into(),
-            kind: db::MediaKind::Season,
-            parent_id: Some(series.id),
-            grandparent_id: Some(series.id),
-            idx: Some(1),
-            ..Default::default()
-        };
-        season
-            .save(&ctx.db)
-            .await
-            .unwrap();
-
-        let mut ep = db::Media {
-            title: "The Target".into(),
-            kind: db::MediaKind::Episode,
-            parent_id: Some(season.id),
-            grandparent_id: Some(series.id),
-            idx: Some(1),
-            parent_idx: Some(1),
-            ..Default::default()
-        };
-        ep.save(&ctx.db)
-            .await
-            .unwrap();
-        ep
-    }
-
     async fn queued(ctx: &AppContext, tracker: Uuid) -> Vec<DeliveryQueue> {
         DeliveryQueue::list_for_media_tracker(&ctx.db, tracker, 10)
             .await
@@ -365,7 +257,7 @@ mod tests {
             vec![MediaTrackerEventKind::MarkPlayed],
         )
         .await;
-        let media = episode(ctx).await;
+        let media = crate::integration_test::seed_episode(ctx).await;
 
         enqueue(
             ctx,
@@ -402,7 +294,7 @@ mod tests {
             vec![MediaTrackerEventKind::MarkPlayed],
         )
         .await;
-        let media = movie(ctx).await;
+        let media = crate::integration_test::seed_movie(ctx).await;
 
         let n = enqueue(
             ctx,
@@ -444,7 +336,7 @@ mod tests {
             StubMediaTracker(vec![MediaTrackerEventKind::MarkPlayed]),
         )
         .await;
-        let media = movie(ctx).await;
+        let media = crate::integration_test::seed_movie(ctx).await;
 
         let n = enqueue(
             ctx,
@@ -479,7 +371,7 @@ mod tests {
             vec![MediaTrackerEventKind::MarkPlayed],
         )
         .await;
-        let media = movie(ctx).await;
+        let media = crate::integration_test::seed_movie(ctx).await;
         ctx.addons
             .replace_runtimes_for_test(Vec::new());
 
@@ -513,7 +405,7 @@ mod tests {
             vec![MediaTrackerEventKind::MarkPlayed],
         )
         .await;
-        let media = movie(ctx).await;
+        let media = crate::integration_test::seed_movie(ctx).await;
 
         let n = enqueue(
             ctx,
@@ -547,7 +439,7 @@ mod tests {
             vec![MediaTrackerEventKind::PlaybackStop],
         )
         .await;
-        let media = movie(ctx).await;
+        let media = crate::integration_test::seed_movie(ctx).await;
         let auth = crate::integration_test::auth_header_with_token(&token);
 
         server
@@ -596,7 +488,7 @@ mod tests {
             vec![MediaTrackerEventKind::Favorite],
         )
         .await;
-        let media = movie(ctx).await;
+        let media = crate::integration_test::seed_movie(ctx).await;
         let user = user_id(ctx).await;
 
         server
@@ -633,7 +525,7 @@ mod tests {
             vec![MediaTrackerEventKind::Rating],
         )
         .await;
-        let media = movie(ctx).await;
+        let media = crate::integration_test::seed_movie(ctx).await;
         let url = format!("/useritems/{}/rating{path_suffix}", media.id);
         let header = (
             http::header::AUTHORIZATION,
