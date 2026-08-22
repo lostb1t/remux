@@ -1099,10 +1099,16 @@ pub async fn users_items_latest(
     items_flat(State(state), session, Query(q)).await
 }
 
+#[query]
+struct UserViewsQuery {
+    include_hidden: Option<bool>,
+}
+
 #[get("/userviews")]
 pub async fn userviews(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    Query(q): Query<UserViewsQuery>,
 ) -> Result<impl IntoResponse> {
     let library_filter = db::MediaFilter {
         kind: Some(vec![db::MediaKind::Collection, db::MediaKind::Folder]),
@@ -1141,7 +1147,70 @@ pub async fn userviews(
         ),
     );
 
-    let libraries = library_result?.records;
+    let mut libraries = library_result?.records;
+
+    let config = session
+        .user
+        .configuration
+        .as_deref();
+    let policy = session
+        .user
+        .policy
+        .as_deref();
+
+    // Limit to enabled folders when the policy restricts folder access.
+    if let Some(pol) = policy {
+        if !pol.enable_all_folders
+            && !pol
+                .enabled_folders
+                .is_empty()
+        {
+            let allowed: Vec<Uuid> = pol
+                .enabled_folders
+                .iter()
+                .filter_map(|s| Uuid::parse_str(s).ok())
+                .collect();
+            libraries.retain(|m| allowed.contains(&m.id));
+        }
+    }
+
+    // Exclude hidden views unless the caller explicitly requests them.
+    if q.include_hidden != Some(true) {
+        if let Some(cfg) = config {
+            if !cfg
+                .my_media_excludes
+                .is_empty()
+            {
+                let excluded: Vec<Uuid> = cfg
+                    .my_media_excludes
+                    .iter()
+                    .filter_map(|s| Uuid::parse_str(s).ok())
+                    .collect();
+                libraries.retain(|m| !excluded.contains(&m.id));
+            }
+        }
+    }
+
+    // Stable-sort by OrderedViews: configured IDs come first in their saved
+    // order; any remaining views follow in their original DB order.
+    if let Some(cfg) = config {
+        if !cfg
+            .ordered_views
+            .is_empty()
+        {
+            let ordered: Vec<Uuid> = cfg
+                .ordered_views
+                .iter()
+                .filter_map(|s| Uuid::parse_str(s).ok())
+                .collect();
+            libraries.sort_by_key(|m| {
+                ordered
+                    .iter()
+                    .position(|id| *id == m.id)
+                    .unwrap_or(usize::MAX)
+            });
+        }
+    }
 
     let mut items = libraries
         .into_iter()
@@ -1202,8 +1271,9 @@ pub async fn userviews_groupingoptions(
 pub async fn users_views(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    Query(q): Query<UserViewsQuery>,
 ) -> Result<impl IntoResponse> {
-    userviews(State(state), session).await
+    userviews(State(state), session, Query(q)).await
 }
 
 async fn resume_items(
@@ -3512,5 +3582,219 @@ mod e2e_tests {
             .add_header(auth().0, auth().1)
             .await;
         assert_eq!(resp.json::<serde_json::Value>()["IsFavorite"], false);
+    }
+
+    async fn insert_promoted_collection(
+        ctx: &crate::AppContext,
+        title: &str,
+    ) -> db::Media {
+        let m = db::Media {
+            title: title.to_string(),
+            kind: db::MediaKind::Collection,
+            promoted: true,
+            ..Default::default()
+        };
+        db::Media::upsert(&ctx.db, &[m.clone()])
+            .await
+            .unwrap();
+        m
+    }
+
+    async fn get_user_id(server: &axum_test::TestServer, auth: &str) -> String {
+        let resp = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(auth).unwrap(),
+            )
+            .await;
+        resp.json::<serde_json::Value>()["Id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// `MyMediaExcludes` hides views; `includeHidden=true` restores them.
+    #[tokio::test]
+    async fn test_userviews_my_media_excludes() {
+        let (server, ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        let visible = insert_promoted_collection(&ctx.0, "Visible").await;
+        let hidden = insert_promoted_collection(&ctx.0, "Hidden").await;
+
+        let user_id = get_user_id(&server, &auth).await;
+        server
+            .post(&format!("/users/{}/configuration", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "PlayDefaultAudioTrack": true,
+                "SubtitleMode": "Default",
+                "HidePlayedInLatest": true,
+                "RememberAudioSelections": true,
+                "RememberSubtitleSelections": true,
+                "EnableNextEpisodeAutoPlay": true,
+                "MyMediaExcludes": [hidden.id.to_string()]
+            }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+
+        let resp = server
+            .get("/userviews")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let parse_ids = |body: &serde_json::Value| -> Vec<Uuid> {
+            body["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|v| {
+                    v["Id"]
+                        .as_str()
+                        .and_then(|s| Uuid::parse_str(s).ok())
+                })
+                .collect()
+        };
+
+        let ids = parse_ids(&resp.json::<serde_json::Value>());
+        assert!(ids.contains(&visible.id), "visible view missing");
+        assert!(!ids.contains(&hidden.id), "excluded view leaked");
+
+        let resp = server
+            .get("/userviews")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[("includeHidden", "true")])
+            .await;
+        resp.assert_status_ok();
+        let ids_all = parse_ids(&resp.json::<serde_json::Value>());
+        assert!(
+            ids_all.contains(&hidden.id),
+            "hidden view not restored by includeHidden=true"
+        );
+    }
+
+    /// `EnableAllFolders=false` restricts results to `EnabledFolders`.
+    #[tokio::test]
+    async fn test_userviews_enabled_folders_policy() {
+        let (server, ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        let allowed = insert_promoted_collection(&ctx.0, "Allowed").await;
+        let blocked = insert_promoted_collection(&ctx.0, "Blocked").await;
+
+        let user_id = get_user_id(&server, &auth).await;
+
+        server
+            .post(&format!("/users/{}/policy", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "IsAdministrator": true,
+                "EnableAllFolders": false,
+                "EnabledFolders": [allowed.id.to_string()]
+            }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+
+        let resp = server
+            .get("/userviews")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let ids: Vec<Uuid> = resp.json::<serde_json::Value>()["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| {
+                v["Id"]
+                    .as_str()
+                    .and_then(|s| Uuid::parse_str(s).ok())
+            })
+            .collect();
+        assert!(ids.contains(&allowed.id), "allowed folder missing");
+        assert!(!ids.contains(&blocked.id), "blocked folder leaked");
+    }
+
+    /// `OrderedViews` controls the returned order, including simple (non-hyphenated) UUIDs.
+    #[tokio::test]
+    async fn test_userviews_ordered_views() {
+        let (server, ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        let first = insert_promoted_collection(&ctx.0, "First").await;
+        let second = insert_promoted_collection(&ctx.0, "Second").await;
+
+        let user_id = get_user_id(&server, &auth).await;
+        // Use simple (non-hyphenated) UUIDs in the saved config to verify normalization.
+        let second_simple = second
+            .id
+            .to_string()
+            .replace('-', "");
+        let first_simple = first
+            .id
+            .to_string()
+            .replace('-', "");
+        server
+            .post(&format!("/users/{}/configuration", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "PlayDefaultAudioTrack": true,
+                "SubtitleMode": "Default",
+                "HidePlayedInLatest": true,
+                "RememberAudioSelections": true,
+                "RememberSubtitleSelections": true,
+                "EnableNextEpisodeAutoPlay": true,
+                "OrderedViews": [second_simple, first_simple]
+            }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+
+        let resp = server
+            .get("/userviews")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let ids: Vec<Uuid> = resp.json::<serde_json::Value>()["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| {
+                v["Id"]
+                    .as_str()
+                    .and_then(|s| Uuid::parse_str(s).ok())
+            })
+            .collect();
+
+        let pos_first = ids
+            .iter()
+            .position(|id| *id == first.id);
+        let pos_second = ids
+            .iter()
+            .position(|id| *id == second.id);
+        assert!(
+            pos_second < pos_first,
+            "OrderedViews ordering not respected"
+        );
     }
 }
