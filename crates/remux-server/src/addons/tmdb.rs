@@ -1954,24 +1954,6 @@ async fn tmdb_remote_images(
             .tmdb_base_url,
     )?;
 
-    let lookup_for_find = || -> Option<(String, &'static str)> {
-        let ids = &media.external_ids;
-        if let Some(tmdb_id) = ids.tmdb {
-            return Some((tmdb_id.to_string(), "tmdb_id"));
-        }
-        if let Some(ref imdb) = ids.imdb {
-            return Some((
-                imdb.clone()
-                    .into(),
-                "imdb_id",
-            ));
-        }
-        if let Some(tvdb_id) = ids.tvdb {
-            return Some((tvdb_id.to_string(), "tvdb_id"));
-        }
-        None
-    };
-
     fn map_image(
         type_label: &str,
         entry: &sdks::tmdb::ImageEntry,
@@ -2039,7 +2021,9 @@ async fn tmdb_remote_images(
                 .tmdb
             {
                 Some(id)
-            } else if let Some((external_id, external_source)) = lookup_for_find() {
+            } else if let Some((external_id, external_source)) =
+                tmdb_search_key(&media.external_ids, None).await
+            {
                 find_tmdb_id_by(external_id, external_source, false, &client).await?
             } else {
                 None
@@ -2113,7 +2097,9 @@ async fn tmdb_remote_images(
                 .tmdb
             {
                 Some(id)
-            } else if let Some((external_id, external_source)) = lookup_for_find() {
+            } else if let Some((external_id, external_source)) =
+                tmdb_search_key(&media.external_ids, None).await
+            {
                 find_tmdb_id_by(external_id, external_source, true, &client).await?
             } else {
                 None
@@ -2203,15 +2189,12 @@ async fn tmdb_remote_images(
 
 /// The series' TMDB id as already stored, for an episode or a season.
 ///
-/// Prefers an in-memory `grandparent` the caller preloaded, then the row
-/// `grandparent_id` names, then `parent_id` for the flat hierarchy
-/// `Media::preload_parents` leaves behind. Filtering on the kind keeps that
-/// last fallback from reading a season's own tmdb id when a non-flat episode
-/// reaches it.
-///
-/// This only reads. Resolving an id the series does not carry yet, and
-/// storing it, is `MediaResolveService::complete_series_tmdb`.
-pub(crate) async fn stored_series_tmdb_id(
+/// Prefers a preloaded `grandparent`, then `grandparent_id`, then `parent_id`
+/// for the flat hierarchy `preload_parents` leaves behind. The kind filter
+/// guards that last fallback on the row read only; a preloaded stub is a
+/// `Media::default()` and has no real kind to test. Reads only, where
+/// `MediaResolveService::complete_series_tmdb` resolves and stores.
+async fn stored_series_tmdb_id(
     media: &db::Media,
     ctx: &AppContext,
 ) -> Result<Option<i64>> {
@@ -2240,7 +2223,7 @@ pub(crate) async fn stored_series_tmdb_id(
         }))
 }
 
-pub(crate) async fn kitsu_tvdb_id(
+async fn kitsu_tvdb_id(
     kitsu_id: i64,
     client: &sdks::RestClient<sdks::NoAuth>,
 ) -> Option<i64> {
@@ -2260,30 +2243,20 @@ pub(crate) async fn kitsu_tvdb_id(
     }
 }
 
-/// How long a response that carries nothing but external ids is cached for.
-///
-/// An id mapping between TMDB and another provider is effectively permanent,
-/// unlike the metadata endpoints this file also caches. Every id lookup here
-/// shares the one value on purpose: the response cache is keyed on the url
-/// alone, so two callers of one endpoint disagreeing about the TTL means
-/// whichever ran first silently sets it for the other.
+/// How long a resolved id mapping is cached for. One that exists never
+/// changes, unlike the metadata endpoints this file also caches. Every id
+/// lookup shares the one value on purpose: the cache is keyed on the url
+/// alone, so callers that disagree just mean whichever ran first wins.
 const ID_CACHE_TTL: Duration = Duration::from_secs(86400);
 
-/// How long a `/find` that matched nothing is cached for.
-///
-/// "TMDB has this id" is permanent; "TMDB does not have this id" is only true
-/// until TMDB indexes the item, which for a new release is hours, not the day
-/// `ID_CACHE_TTL` would pin it for. Short enough that a release resolves the
-/// same evening, long enough that one library scan still asks once.
+/// How long a `/find` that matched nothing is cached for. Not having indexed
+/// an item is only true until TMDB does, so a new release must not inherit
+/// `ID_CACHE_TTL`; still long enough that one library scan asks once.
 const ID_MISS_CACHE_TTL: Duration = Duration::from_secs(360);
 
-/// Whether a `/find` response says TMDB knows the id at all, as opposed to
-/// knowing it as the other kind.
-///
-/// Both arms matter: a tvdb id that TMDB maps to a movie is a real, permanent
-/// answer even when the caller wanted a series and so gets `None` from it.
-/// Only a response with nothing in it is the "not indexed yet" case worth
-/// asking about again soon.
+/// Both arms, because a tvdb id TMDB holds as a movie is a real answer even
+/// though the series caller gets `None` out of it. Only an empty response is
+/// the "not indexed yet" case.
 fn find_matched_nothing(found: &sdks::tmdb::FindByIdResponse) -> bool {
     found
         .movie_results
@@ -2326,15 +2299,10 @@ async fn find_tmdb_id_by<A: sdks::Auth + Clone>(
     })
 }
 
-/// The best external id to search TMDB's `/find` with, in the order a hit is
-/// most likely: a direct imdb id, then a direct tvdb id, then a tvdb id
-/// resolved from kitsu when that's all `ids` carries. `None` when nothing
-/// here identifies the item at all.
-///
-/// Checks imdb before ever touching tvdb or kitsu, so a caller that already
-/// has an imdb id never pays for a kitsu round trip whose result would be
-/// discarded. Doesn't consider `tmdb` itself: a caller that already knows a
-/// tmdb id has nothing to search for and skips this function entirely.
+/// The best external id to search `/find` with, in the order a hit is most
+/// likely: imdb, then tvdb, then tvdb via kitsu. `None` when nothing here
+/// identifies the item. `tmdb` is not considered, since a caller holding one
+/// skips this entirely.
 async fn tmdb_search_key(
     ids: &db::ExternalIds,
     kitsu: Option<&sdks::RestClient<sdks::NoAuth>>,
@@ -2412,8 +2380,7 @@ pub(crate) async fn resolve_imdb_from_ids<A: sdks::Auth + Clone>(
         }
     }
 
-    // `ids.imdb` is already known to be absent here (handled above), so this
-    // only ever resolves a tvdb id, direct or via kitsu.
+    // imdb returned above, so this only ever resolves a tvdb id.
     let (external_id, external_source) =
         tmdb_search_key(ids, Some(&sdks::kitsu::client())).await?;
     let tmdb_id = find_tmdb_id_by(external_id, external_source, is_tv, client)
@@ -2477,10 +2444,8 @@ mod tests {
         });
     }
 
-    /// Anime is the case with no imdb id and often no tvdb id either, so the
-    /// search key has to come from kitsu's mapping. Checked here rather than
-    /// through `resolve_imdb_from_ids`, which reaches for the real kitsu
-    /// client and so cannot be pointed at a mock.
+    /// Not checked through `resolve_imdb_from_ids`, which reaches for the
+    /// real kitsu client and so cannot be pointed at a mock.
     #[tokio::test]
     async fn an_anime_series_is_searched_for_by_its_kitsu_mapping() {
         let server = httpmock::MockServer::start();
@@ -2511,8 +2476,6 @@ mod tests {
         mappings.assert();
     }
 
-    /// imdb outranks the rest, so a caller holding one never pays for the
-    /// kitsu round trip whose answer it would throw away.
     #[tokio::test]
     async fn a_direct_imdb_id_is_searched_for_without_asking_kitsu() {
         let server = httpmock::MockServer::start();
@@ -2537,8 +2500,6 @@ mod tests {
         assert_eq!(mappings.hits(), 0, "kitsu was never needed");
     }
 
-    /// A `/find` for an id TMDB has not indexed yet is the one answer worth
-    /// re-asking for before `ID_CACHE_TTL` is up.
     #[test]
     fn a_find_that_matched_nothing_is_a_miss() {
         assert!(find_matched_nothing(
@@ -2546,8 +2507,6 @@ mod tests {
         ));
     }
 
-    /// A tvdb id TMDB holds as a movie is a permanent answer, not a gap,
-    /// even for the series caller that gets nothing usable out of it.
     #[test]
     fn a_find_that_matched_the_other_kind_is_not_a_miss() {
         assert!(!find_matched_nothing(&sdks::tmdb::FindByIdResponse {
@@ -2556,18 +2515,17 @@ mod tests {
         }));
     }
 
-    /// Nothing here names the item to TMDB, and `deezer_artist` is one of the
-    /// ids `ExternalIds` carries that means nothing to it.
+    /// `deezer_artist` is one of the ids `ExternalIds` carries that TMDB
+    /// cannot be searched by.
     #[tokio::test]
     async fn ids_tmdb_cannot_search_on_produce_no_key() {
-        let server = httpmock::MockServer::start();
         assert!(
             tmdb_search_key(
                 &db::ExternalIds {
                     deezer_artist: Some(7),
                     ..Default::default()
                 },
-                Some(&kitsu_test_client(&server.base_url())),
+                None,
             )
             .await
             .is_none()
