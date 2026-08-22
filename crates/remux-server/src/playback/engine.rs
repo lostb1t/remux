@@ -577,6 +577,11 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             .collect::<Vec<_>>()
             .join("\r\n");
         args.extend(["-headers".into(), header_string]);
+
+        // ffmpeg probe may use -user_agent separately; ensure it matches yt-dlp's UA
+        if let Some(ua) = params.http_request_headers.get("User-Agent").or_else(|| params.http_request_headers.get("user-agent")) {
+            args.extend(["-user_agent".into(), ua.clone()]);
+        }
     }
 
     // Input seek (fast, before -i) — not applicable to live streams
