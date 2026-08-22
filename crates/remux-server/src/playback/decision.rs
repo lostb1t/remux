@@ -246,10 +246,10 @@ fn build_video_transcode(
         }
     };
 
-    // If policy constraints reduced both codecs to copy with no subtitle burn-in,
-    // this would be a no-op remux. If the source container already matches the
-    // transcoding target there is nothing to do — upgrade to direct play.
-    if video_codec == "copy" && audio_codec == "copy" && subtitle_method.is_none() {
+    // If policy constraints reduced both codecs to copy, this would be a no-op
+    // remux. If the source container already matches the transcoding target
+    // there is nothing to do — upgrade to direct play.
+    if video_codec == "copy" && audio_codec == "copy" {
         let src = source
             .container
             .as_deref()
