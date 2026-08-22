@@ -2189,11 +2189,15 @@ async fn tmdb_remote_images(
 
 /// The series' TMDB id as already stored, for an episode or a season.
 ///
-/// Prefers a preloaded `grandparent`, then `grandparent_id`, then `parent_id`
-/// for the flat hierarchy `preload_parents` leaves behind. The kind filter
-/// guards that last fallback on the row read only; a preloaded stub is a
-/// `Media::default()` and has no real kind to test. Reads only, where
-/// `MediaResolveService::complete_series_tmdb` resolves and stores.
+/// Prefers a preloaded `grandparent`, then the row `grandparent_id` names.
+/// An episode or a season always carries one: `Media::validate` refuses to
+/// store either without it, every tree addon sets it, and Stremio's errors
+/// outright when it is missing. So there is no walk up `parent_id` here, and
+/// the kind filter is what keeps a corrupt one from passing a season off as
+/// the series.
+///
+/// Reads only. `MediaResolveService::complete_series_tmdb` resolves an id the
+/// series does not carry yet, and stores it.
 async fn stored_series_tmdb_id(
     media: &db::Media,
     ctx: &AppContext,
@@ -2208,10 +2212,7 @@ async fn stored_series_tmdb_id(
     {
         return Ok(Some(tmdb));
     }
-    let Some(series_id) = media
-        .grandparent_id
-        .or(media.parent_id)
-    else {
+    let Some(series_id) = media.grandparent_id else {
         return Ok(None);
     };
     Ok(db::Media::get_by_id(&ctx.db, &series_id)
@@ -2591,14 +2592,11 @@ mod tests {
             );
         }
 
-        /// The `parent_id` fallback exists for a flat hierarchy, where the
-        /// parent is the series. Reaching it from a non-flat episode means
-        /// landing on a season, whose tmdb id is not the series'.
-        ///
-        /// Only in-memory media gets here: `Media::save` rejects an episode
-        /// or season with no `grandparent_id`, so no stored row can.
+        /// `grandparent_id` is an invariant, so the filter is the only thing
+        /// standing between a corrupt one and a season's own tmdb id being
+        /// spent as the series'.
         #[tokio::test]
-        async fn an_episode_does_not_take_its_season_for_the_series() {
+        async fn a_grandparent_that_is_not_a_series_is_ignored() {
             let (_s, guard) = new_test_server()
                 .await
                 .unwrap();
@@ -2606,7 +2604,7 @@ mod tests {
             let (_series, season) = seed(ctx, Some(1438), Some(9999)).await;
             let episode = db::Media {
                 kind: db::MediaKind::Episode,
-                parent_id: Some(season.id),
+                grandparent_id: Some(season.id),
                 ..Default::default()
             };
 
@@ -2615,29 +2613,6 @@ mod tests {
                     .await
                     .unwrap(),
                 None
-            );
-        }
-
-        /// The flat hierarchy the `parent_id` fallback is for: the episode
-        /// hangs straight off the series with no season in between.
-        #[tokio::test]
-        async fn a_flat_episode_walks_up_its_parent_id() {
-            let (_s, guard) = new_test_server()
-                .await
-                .unwrap();
-            let ctx = &guard.0;
-            let (series, _season) = seed(ctx, Some(1438), None).await;
-            let episode = db::Media {
-                kind: db::MediaKind::Episode,
-                parent_id: Some(series.id),
-                ..Default::default()
-            };
-
-            assert_eq!(
-                stored_series_tmdb_id(&episode, ctx)
-                    .await
-                    .unwrap(),
-                Some(1438)
             );
         }
 
