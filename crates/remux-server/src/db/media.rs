@@ -2336,6 +2336,27 @@ impl Media {
         Ok(())
     }
 
+    /// Widen `external_ids` without touching any other column.
+    ///
+    /// `save` would upsert the whole row from a struct fetched several network
+    /// round trips ago, reverting any concurrent edit. This reads nothing else,
+    /// so it cannot.
+    pub async fn update_external_ids(
+        db: &sqlx::SqlitePool,
+        id: &Uuid,
+        external_ids: &ExternalIds,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE media SET external_ids = ?1, updated_at = ?2 WHERE id = ?3",
+        )
+        .bind(sqlx::types::Json(external_ids))
+        .bind(Utc::now().naive_utc())
+        .bind(id)
+        .execute(db)
+        .await?;
+        Ok(())
+    }
+
     /// Invalidate the probe cache for a media source (e.g. after its URL changes).
     pub async fn clear_probe_data(db: &sqlx::SqlitePool, id: &Uuid) -> Result<()> {
         sqlx::query("UPDATE media SET probe_data = NULL WHERE id = ?1")

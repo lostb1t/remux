@@ -2,9 +2,8 @@
 //! a delivery names. Describing it at delivery keeps the walk to the series off
 //! the playback path. Nothing here talks to a provider; the sync task does that.
 
-use anyhow::Result;
+use anyhow::{Error, Result};
 use chrono::Datelike;
-use sqlx::SqlitePool;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -38,11 +37,11 @@ fn describe(media: &db::Media, series: Option<&db::Media>) -> MediaTrackerTarget
 /// carries an id one could match on. Episodes carry their series, because a
 /// provider keys an episode on the show's ids plus season and episode.
 pub async fn resolve_target(
-    db: &SqlitePool,
-    media: &db::Media,
+    ctx: &AppContext,
+    media: &mut db::Media,
 ) -> Result<Option<MediaTrackerTarget>> {
-    let series = if media.kind == db::MediaKind::Episode {
-        db::Media::get_ancestors(db, &media.id)
+    let mut series = if media.kind == db::MediaKind::Episode {
+        db::Media::get_ancestors(&ctx.db, &media.id)
             .await?
             .into_iter()
             .find(|m| m.kind == db::MediaKind::Series)
@@ -50,10 +49,35 @@ pub async fn resolve_target(
         None
     };
 
+    // Opportunistic, and here so it reuses the series row loaded above: a TMDB
+    // or Kitsu error must not hold up an event that was already deliverable, so
+    // it is surfaced below only if it turns out to be why nothing matched.
+    let mut completion_err: Option<Error> = None;
+    if let Some(series) = series.as_mut() {
+        if let Err(e) = crate::services::MediaResolveService::complete_episode_ids(
+            media, series, ctx,
+        )
+        .await
+        {
+            completion_err = Some(e);
+        }
+    }
+
     let target = describe(media, series.as_ref());
-    Ok(target
-        .is_matchable()
-        .then_some(target))
+    if !target.is_matchable() {
+        if let Some(e) = completion_err {
+            return Err(e);
+        }
+        return Ok(None);
+    }
+    if let Some(e) = completion_err {
+        warn!(
+            title = %media.title,
+            error = %e,
+            "failed to complete episode ids, delivering with what already matched"
+        );
+    }
+    Ok(Some(target))
 }
 
 /// Queue `event` for every media tracker this user has connected that wants
