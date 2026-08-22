@@ -200,6 +200,13 @@ pub trait Endpoint {
     fn cache_ttl(&self) -> Option<Duration> {
         None
     }
+
+    /// How long *this* response should live, for an endpoint that cannot pick
+    /// a TTL until it sees one. Defaults to `cache_ttl`, chosen before the
+    /// request went out and so blind to whether it came back with an answer.
+    fn cache_ttl_for(&self, _response: &Self::Output) -> Option<Duration> {
+        self.cache_ttl()
+    }
 }
 
 #[derive(Clone)]
@@ -359,7 +366,7 @@ impl<A: Auth + Clone> RestClient<A> {
                         }
                     });
                 let arc = result.map(Arc::new)?;
-                if let Some(ttl) = endpoint.cache_ttl() {
+                if let Some(ttl) = endpoint.cache_ttl_for(&arc) {
                     let weight = text
                         .len()
                         .min(u32::MAX as usize) as u32;
@@ -382,6 +389,7 @@ pub trait CachedEndpoint: Endpoint + Sized {
         Cached {
             endpoint: self,
             ttl,
+            expire_early: None,
         }
     }
 }
@@ -392,6 +400,19 @@ impl<EP: Endpoint + Sized> CachedEndpoint for EP {}
 pub struct Cached<EP: Endpoint> {
     endpoint: EP,
     ttl: Duration,
+    expire_early: Option<(Duration, fn(&EP::Output) -> bool)>,
+}
+
+impl<EP: Endpoint> Cached<EP> {
+    /// Keep a response matching `when` for `ttl` instead of the full cache
+    /// lifetime. Reads still consult the cache; only the expiry stamped on
+    /// the stored entry changes.
+    pub fn expiring_early(self, ttl: Duration, when: fn(&EP::Output) -> bool) -> Self {
+        Self {
+            expire_early: Some((ttl, when)),
+            ..self
+        }
+    }
 }
 
 impl<EP: Endpoint> Endpoint for Cached<EP> {
@@ -424,6 +445,13 @@ impl<EP: Endpoint> Endpoint for Cached<EP> {
 
     fn cache_ttl(&self) -> Option<Duration> {
         Some(self.ttl)
+    }
+
+    fn cache_ttl_for(&self, response: &Self::Output) -> Option<Duration> {
+        match self.expire_early {
+            Some((short, when)) if when(response) => Some(short),
+            _ => Some(self.ttl),
+        }
     }
 }
 
@@ -473,6 +501,11 @@ impl<EP: Endpoint> Endpoint for WithExtraQuery<EP> {
     fn cache_ttl(&self) -> Option<Duration> {
         self.endpoint
             .cache_ttl()
+    }
+
+    fn cache_ttl_for(&self, response: &Self::Output) -> Option<Duration> {
+        self.endpoint
+            .cache_ttl_for(response)
     }
 }
 
@@ -692,5 +725,131 @@ impl From<remux::MediaType> for stremio::MediaType {
             remux::MediaType::Episode => stremio::MediaType::Series,
             _ => stremio::MediaType::Movie,
         }
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    /// `Vec<String>` so "the response carries no answer" is just `is_empty`,
+    /// standing in for a `/find` with no results.
+    #[derive(Clone)]
+    struct Probe {
+        path: String,
+    }
+
+    impl Endpoint for Probe {
+        type Output = Vec<String>;
+
+        fn path(&self) -> String {
+            self.path
+                .clone()
+        }
+    }
+
+    /// Long enough that nothing here reaches it, so a re-request proves the
+    /// short TTL was the one stamped on the entry.
+    const NEVER: Duration = Duration::from_secs(600);
+    const BRIEF: Duration = Duration::from_millis(300);
+
+    fn is_empty(response: &Vec<String>) -> bool {
+        response.is_empty()
+    }
+
+    /// Each test needs its own path: httpmock leases servers from a pool, so
+    /// two tests can share a port, and `HTTP_CACHE` is process-wide and keyed
+    /// on the url.
+    fn probe<'s>(
+        server: &'s httpmock::MockServer,
+        path: &str,
+        body: serde_json::Value,
+    ) -> (httpmock::Mock<'s>, RestClient<NoAuth>, Probe) {
+        let mock = server.mock(|when, then| {
+            when.path(format!("/{path}"));
+            then.status(200)
+                .json_body(body);
+        });
+        (
+            mock,
+            RestClient::new(&server.base_url()).unwrap(),
+            Probe {
+                path: path.to_string(),
+            },
+        )
+    }
+
+    async fn elapse() {
+        tokio::time::sleep(BRIEF * 2).await;
+    }
+
+    #[tokio::test]
+    async fn a_response_matching_the_rule_is_re_fetched_after_the_short_ttl() {
+        let server = httpmock::MockServer::start();
+        let (mock, client, probe) = probe(&server, "matching", serde_json::json!([]));
+        let endpoint = probe
+            .with_cache(NEVER)
+            .expiring_early(BRIEF, is_empty);
+
+        client
+            .execute(endpoint.clone())
+            .await
+            .unwrap();
+        client
+            .execute(endpoint.clone())
+            .await
+            .unwrap();
+        assert_eq!(mock.hits(), 1, "served from cache while it lived");
+
+        elapse().await;
+        client
+            .execute(endpoint)
+            .await
+            .unwrap();
+        assert_eq!(mock.hits(), 2, "asked again once the short TTL was up");
+    }
+
+    #[tokio::test]
+    async fn a_response_the_rule_rejects_keeps_the_full_ttl() {
+        let server = httpmock::MockServer::start();
+        let (mock, client, probe) =
+            probe(&server, "rejected", serde_json::json!(["found"]));
+        let endpoint = probe
+            .with_cache(NEVER)
+            .expiring_early(BRIEF, is_empty);
+
+        client
+            .execute(endpoint.clone())
+            .await
+            .unwrap();
+        elapse().await;
+        client
+            .execute(endpoint)
+            .await
+            .unwrap();
+        assert_eq!(mock.hits(), 1);
+    }
+
+    /// The regression a response-aware TTL could have caused: an endpoint that
+    /// never asks for early expiry has to keep behaving as it did when
+    /// `cache_ttl` alone decided. The body is one the rule above would have
+    /// called a miss, so a second request would expose a default that
+    /// shortened anything.
+    #[tokio::test]
+    async fn an_endpoint_with_no_rule_holds_its_ttl() {
+        let server = httpmock::MockServer::start();
+        let (mock, client, probe) = probe(&server, "no-rule", serde_json::json!([]));
+        let endpoint = probe.with_cache(NEVER);
+
+        client
+            .execute(endpoint.clone())
+            .await
+            .unwrap();
+        elapse().await;
+        client
+            .execute(endpoint)
+            .await
+            .unwrap();
+        assert_eq!(mock.hits(), 1);
     }
 }

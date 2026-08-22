@@ -179,12 +179,13 @@ async fn deliver_media_tracker(
             MediaTrackerError::permanent("media tracker addon is not enabled")
         })?;
 
-    let media = db::Media::get_by_id(&ctx.db, &payload.media_id)
+    let mut media = db::Media::get_by_id(&ctx.db, &payload.media_id)
         .await
         .map_err(|e| MediaTrackerError::retryable(format!("loading item: {e}")))?
         .ok_or_else(|| MediaTrackerError::permanent("item no longer exists"))?;
 
-    let target = crate::services::media_tracker::resolve_target(&ctx.db, &media)
+    // Resolving can hit the network, so it stays off the playback path.
+    let target = crate::services::media_tracker::resolve_target(ctx, &mut media)
         .await
         .map_err(|e| MediaTrackerError::retryable(format!("describing item: {e}")))?
         .ok_or_else(|| {
@@ -220,6 +221,7 @@ mod tests {
         integration_test::new_test_server,
     };
     use chrono::Utc;
+    use httpmock::prelude::*;
     use sqlx::SqlitePool;
     use std::{
         collections::VecDeque,
@@ -551,14 +553,28 @@ mod tests {
     /// series to every one of them.
     #[tokio::test]
     async fn an_episode_reaches_the_provider_with_its_series_attached() {
-        let (_s, guard) = new_test_server()
-            .await
-            .unwrap();
+        // TMDB placing the series but not the episode, the shape that leaves
+        // an episode identified only through its series.
+        let mock = MockServer::start();
+        mock.mock(|when, then| {
+            when.path("/find/tt5550004");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "tv_results": [{ "id": 5153, "name": "Show" }],
+                    "movie_results": []
+                }));
+        });
+        mock.mock(|when, then| {
+            when.path("/tv/5153/season/1/episode/1");
+            then.status(404)
+                .json_body(serde_json::json!({ "status_code": 34 }));
+        });
+        let guard = server_with_tmdb(&mock).await;
         let ctx = &guard.0;
         let addon = ScriptedAddon::new(vec![]);
         let (conn, _) = connect(ctx, "hana", addon.clone()).await;
 
-        let episode = crate::integration_test::seed_episode(ctx).await;
+        let episode = crate::integration_test::seed_episode_of(ctx, "tt5550004").await;
 
         queue_item(&ctx.db, conn, episode.id).await;
         drain(ctx, &reporter())
@@ -570,14 +586,157 @@ mod tests {
         let target = &targets[0];
         assert_eq!(target.season, Some(1));
         assert_eq!(target.episode, Some(1));
+        let series = target
+            .series
+            .as_ref()
+            .expect("an episode alone identifies nothing");
         assert_eq!(
-            target
-                .series
-                .as_ref()
-                .expect("an episode alone identifies nothing")
+            series
                 .ids
                 .tvdb,
             Some(79126)
+        );
+        assert_eq!(
+            series
+                .ids
+                .tmdb,
+            Some(5153),
+            "reaching for the episode resolved it, so it is stored on the way past"
+        );
+    }
+
+    /// A server whose TMDB calls go to `mock`.
+    async fn server_with_tmdb(mock: &MockServer) -> crate::integration_test::TestGuard {
+        crate::integration_test::new_test_server_with_config(crate::Config {
+            database_url: Some("sqlite::memory:".into()),
+            torrent_http_port: None,
+            disable_dht: true,
+            tmdb_base_url: mock.base_url(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .1
+    }
+
+    /// No tmdb on the series, so the episode lookup is only reachable through
+    /// `/find`.
+    fn mock_episode_ids(mock: &MockServer) {
+        mock.mock(|when, then| {
+            when.path("/find/tt5550006");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "tv_results": [{ "id": 5554438, "name": "The Wire" }],
+                    "movie_results": []
+                }));
+        });
+        mock.mock(|when, then| {
+            when.path("/tv/5554438/season/1/episode/1");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "id": 972467,
+                    "name": "The Target",
+                    "season_number": 1,
+                    "episode_number": 1,
+                    "external_ids": { "imdb_id": "tt0749419", "tvdb_id": 303821 },
+                }));
+        });
+    }
+
+    /// Completion is opportunistic: the series' own tmdb id already made this
+    /// episode matchable, so the 503 below must not block delivery.
+    #[tokio::test]
+    async fn a_completion_failure_does_not_block_delivery_the_series_already_matches() {
+        let mock = MockServer::start();
+        mock.mock(|when, then| {
+            when.path("/tv/4242/season/1/episode/1");
+            then.status(503);
+        });
+        let guard = server_with_tmdb(&mock).await;
+        let ctx = &guard.0;
+        let addon = ScriptedAddon::new(vec![]);
+        let (conn, _) = connect(ctx, "iris", addon.clone()).await;
+
+        let episode = crate::integration_test::seed_episode_with(
+            ctx,
+            crate::db::ExternalIds {
+                imdb: crate::db::NonEmptyString::try_new("tt5550005".to_string()).ok(),
+                tmdb: Some(4242),
+                ..Default::default()
+            },
+        )
+        .await;
+        let queued = queue_item(&ctx.db, conn, episode.id).await;
+        drain(ctx, &reporter())
+            .await
+            .unwrap();
+
+        let targets = addon.targets();
+        assert_eq!(
+            targets.len(),
+            1,
+            "the series' own tmdb id was enough to deliver on"
+        );
+        assert_eq!(
+            targets[0]
+                .series
+                .as_ref()
+                .expect("an episode carries its series")
+                .ids
+                .tmdb,
+            Some(4242)
+        );
+        assert_eq!(
+            DeliveryQueue::get(&ctx.db, queued)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            DeliveryStatus::Delivered
+        );
+    }
+
+    #[tokio::test]
+    async fn an_episode_reaches_the_provider_with_ids_of_its_own() {
+        let mock = MockServer::start();
+        mock_episode_ids(&mock);
+        let guard = server_with_tmdb(&mock).await;
+        let ctx = &guard.0;
+        let addon = ScriptedAddon::new(vec![]);
+        let (conn, _) = connect(ctx, "iris", addon.clone()).await;
+
+        let episode = crate::integration_test::seed_episode_of(ctx, "tt5550006").await;
+        queue_item(&ctx.db, conn, episode.id).await;
+        drain(ctx, &reporter())
+            .await
+            .unwrap();
+
+        let targets = addon.targets();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(
+            targets[0]
+                .ids
+                .imdb
+                .as_deref()
+                .map(|s| s.as_str()),
+            Some("tt0749419")
+        );
+        assert_eq!(
+            targets[0]
+                .ids
+                .tvdb,
+            Some(303821)
+        );
+
+        // Persisted, so the next event about this episode costs no lookup.
+        assert_eq!(
+            crate::db::Media::get_by_id(&ctx.db, &episode.id)
+                .await
+                .unwrap()
+                .expect("the episode is still there")
+                .external_ids
+                .tvdb,
+            Some(303821)
         );
     }
 
