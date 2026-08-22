@@ -214,14 +214,9 @@ pub trait Endpoint {
         None
     }
 
-    /// How long *this* response should live in the cache, given a `cache_ttl`
-    /// that was chosen before it arrived. Defaults to `cache_ttl` unchanged.
-    ///
-    /// Overriding it lets an endpoint keep an answer far longer than a
-    /// non-answer. An id-mapping lookup is the case that needs it: a mapping
-    /// that exists is permanent, but "no match" only describes today, and
-    /// caching both for the same day leaves a newly released item
-    /// unresolvable long after the provider has indexed it.
+    /// How long *this* response should live, for an endpoint that cannot pick
+    /// a TTL until it sees one. Defaults to `cache_ttl`, chosen before the
+    /// request went out and so blind to whether it came back with an answer.
     fn cache_ttl_for(&self, _response: &Self::Output) -> Option<Duration> {
         self.cache_ttl()
     }
@@ -551,10 +546,6 @@ impl<EP: Endpoint> Cached<EP> {
     /// Keep a response matching `when` for `ttl` instead of the full cache
     /// lifetime. Reads still consult the cache; only the expiry stamped on
     /// the stored entry changes.
-    ///
-    /// Cache entries are keyed on the url alone, so this belongs next to the
-    /// request rather than at a call site: every caller of one url shares
-    /// whichever entry got written first, and so shares its expiry too.
     pub fn expiring_early(self, ttl: Duration, when: fn(&EP::Output) -> bool) -> Self {
         Self {
             expire_early: Some((ttl, when)),
