@@ -371,6 +371,8 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
     let mut h265_crf = use_signal(|| 28_u32);
     let mut normalize_audio_loudness = use_signal(|| false);
     let mut enable_video_transcoding = use_signal(|| true);
+    let mut enable_audio_transcoding = use_signal(|| true);
+    let mut enable_remuxing = use_signal(|| true);
     let mut subtitle_mode = use_signal(|| "Burn".to_string());
     let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
     let mut min_resume_pct = use_signal(|| 5_i64);
@@ -475,6 +477,14 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                         opts.enable_video_transcoding
                             .unwrap_or(true),
                     );
+                    enable_audio_transcoding.set(
+                        opts.enable_audio_transcoding
+                            .unwrap_or(true),
+                    );
+                    enable_remuxing.set(
+                        opts.enable_remuxing
+                            .unwrap_or(true),
+                    );
                     subtitle_mode.set(
                         opts.subtitle_mode
                             .unwrap_or(EmbeddedSubtitleHandling::Burn)
@@ -526,6 +536,8 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
             h264_crf: Some(*h264_crf.peek()),
             h265_crf: Some(*h265_crf.peek()),
             enable_video_transcoding: Some(*enable_video_transcoding.peek()),
+            enable_audio_transcoding: Some(*enable_audio_transcoding.peek()),
+            enable_remuxing: Some(*enable_remuxing.peek()),
             normalize_audio_loudness: Some(*normalize_audio_loudness.peek()),
             subtitle_mode: subtitle_mode
                 .peek()
@@ -570,7 +582,7 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                         div { class: "field",
                             label { class: "field-label", "Video Transcoding" }
                             div { class: "field-hint",
-                                "Allow the server to re-encode video streams. When disabled, the video track is always copied as-is (remux). Remuxing and audio transcoding are always available regardless of this setting."
+                                "Allow the server to re-encode video streams. When disabled, the video track is always copied as-is (remux). Per-user policy can restrict this further."
                             }
                             label { style: "display:flex;align-items:center;gap:8px",
                                 input {
@@ -579,6 +591,36 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                                     onchange: move |e| enable_video_transcoding.set(e.checked()),
                                 }
                                 "Enable video transcoding"
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", "Audio Transcoding" }
+                            div { class: "field-hint",
+                                "Allow the server to re-encode audio streams. When disabled, audio is always copied as-is. Per-user policy can restrict this further."
+                            }
+                            label { style: "display:flex;align-items:center;gap:8px",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *enable_audio_transcoding.read(),
+                                    onchange: move |e| enable_audio_transcoding.set(e.checked()),
+                                }
+                                "Enable audio transcoding"
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", "Remuxing" }
+                            div { class: "field-hint",
+                                "Allow the server to remux streams (copy video and audio into a different container). When disabled, only direct play is served. Per-user policy can restrict this further."
+                            }
+                            label { style: "display:flex;align-items:center;gap:8px",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *enable_remuxing.read(),
+                                    onchange: move |e| enable_remuxing.set(e.checked()),
+                                }
+                                "Enable remuxing"
                             }
                         }
 

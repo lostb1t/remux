@@ -647,6 +647,16 @@ pub struct EncodingOptions {
     /// unaffected by this setting.
     #[default(Some(true))]
     pub enable_video_transcoding: Option<bool>,
+    /// Allow audio codec re-encoding during transcoding. When false, audio is
+    /// always copied. Stacks AND with the per-user EnableAudioPlaybackTranscoding
+    /// policy flag.
+    #[default(Some(true))]
+    pub enable_audio_transcoding: Option<bool>,
+    /// Allow container remuxing (video=copy, audio=copy). When false, only
+    /// direct play is served. Stacks AND with the per-user EnablePlaybackRemuxing
+    /// policy flag.
+    #[default(Some(true))]
+    pub enable_remuxing: Option<bool>,
     /// Apply loudness normalization (`loudnorm=I=-14:TP=-1:LRA=11`) to the
     /// audio stream when transcoding. Has no effect when audio_codec is "copy".
     /// Defaults to false.

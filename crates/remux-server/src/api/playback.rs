@@ -170,6 +170,16 @@ async fn items_playbackinfo_inner(
     .await
     .unwrap_or_default();
 
+    if session
+        .user
+        .policy
+        .as_ref()
+        .is_some_and(|p| !p.enable_media_playback)
+    {
+        return Err(anyhow::anyhow!("Forbidden")
+            .context_forbidden("media playback is disabled"));
+    }
+
     let media =
         MediaResolveService::resolve_item(media_source_id.unwrap_or(id), &state.ctx)
             .await?

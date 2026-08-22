@@ -63,6 +63,20 @@ pub(crate) fn build_transcode_decision(
         return TranscodeDecision::DirectPlay;
     }
 
+    let remuxing_allowed = cfg
+        .encoding_cfg
+        .enable_remuxing
+        .unwrap_or(true)
+        && session
+            .user
+            .policy
+            .as_ref()
+            .map(|p| p.enable_playback_remuxing)
+            .unwrap_or(true);
+    if !remuxing_allowed {
+        return TranscodeDecision::DirectPlay;
+    }
+
     if source
         .video_stream()
         .is_none()
@@ -90,20 +104,34 @@ fn build_audio_transcode(
                 .clone()
         })
         .unwrap_or_else(|| "mp3".to_string());
-    let audio_codec = trans_profile
-        .and_then(|p| {
-            p.audio_codec
-                .as_deref()
-        })
-        .and_then(|c| {
-            c.split(',')
-                .next()
-        })
-        .map(|c| {
-            c.trim()
-                .to_string()
-        })
-        .unwrap_or_else(|| "aac".to_string());
+    let audio_transcode_allowed = cfg
+        .encoding_cfg
+        .enable_audio_transcoding
+        .unwrap_or(true)
+        && session
+            .user
+            .policy
+            .as_ref()
+            .map(|p| p.enable_audio_playback_transcoding)
+            .unwrap_or(true);
+    let audio_codec = if audio_transcode_allowed {
+        trans_profile
+            .and_then(|p| {
+                p.audio_codec
+                    .as_deref()
+            })
+            .and_then(|c| {
+                c.split(',')
+                    .next()
+            })
+            .map(|c| {
+                c.trim()
+                    .to_string()
+            })
+            .unwrap_or_else(|| "aac".to_string())
+    } else {
+        "copy".to_string()
+    };
     let start_time = q
         .start_time_ticks
         .map(|t| format!("&StartTimeTicks={t}"))
@@ -181,7 +209,22 @@ fn build_video_transcode(
     .to_string();
     let needs_audio_transcode =
         reasons.contains(&api::TranscodeReason::AudioCodecNotSupported(String::new()));
-    let audio_codec = if needs_audio_transcode { "aac" } else { "copy" }.to_string();
+    let audio_transcode_allowed = cfg
+        .encoding_cfg
+        .enable_audio_transcoding
+        .unwrap_or(true)
+        && session
+            .user
+            .policy
+            .as_ref()
+            .map(|p| p.enable_audio_playback_transcoding)
+            .unwrap_or(true);
+    let audio_codec = if needs_audio_transcode && audio_transcode_allowed {
+        "aac"
+    } else {
+        "copy"
+    }
+    .to_string();
 
     let subtitle_method = {
         let method = subtitle_burn_method(
@@ -202,6 +245,20 @@ fn build_video_transcode(
             method
         }
     };
+
+    // If policy constraints reduced both codecs to copy, this would be a no-op
+    // remux. If the source container already matches the transcoding target
+    // there is nothing to do — upgrade to direct play.
+    if video_codec == "copy" && audio_codec == "copy" {
+        let src = source
+            .container
+            .as_deref()
+            .unwrap_or("")
+            .to_lowercase();
+        if src == container.to_lowercase() {
+            return TranscodeDecision::DirectPlay;
+        }
+    }
 
     let bitrate = cfg
         .max_bitrate
@@ -493,5 +550,245 @@ mod tests {
             "audio transcode URL should carry the session token: {}",
             outcome.url
         );
+    }
+
+    fn make_video_source(container: &str) -> api::MediaSourceInfo {
+        api::MediaSourceInfo {
+            id: Uuid::new_v4(),
+            container: Some(container.to_string()),
+            media_streams: vec![
+                api::MediaStream {
+                    codec: Some("h264".to_string()),
+                    type_: Some(api::MediaStreamType::Video),
+                    index: 0,
+                    ..Default::default()
+                },
+                api::MediaStream {
+                    codec: Some("aac".to_string()),
+                    type_: Some(api::MediaStreamType::Audio),
+                    index: 1,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    fn make_session_with_policy(
+        policy: remux_sdks::remux::UserPolicy,
+    ) -> db::auth::AuthSession {
+        db::auth::AuthSession {
+            device: db::auth::Device {
+                access_token: "tok"
+                    .to_string()
+                    .into(),
+                ..Default::default()
+            },
+            user: db::User {
+                policy: Some(sqlx::types::Json(policy)),
+                ..Default::default()
+            },
+        }
+    }
+
+    fn base_cfg(encoding_cfg: EncodingOptions) -> PlaybackConfig {
+        PlaybackConfig {
+            encoding_cfg,
+            device_profile: None,
+            max_bitrate: None,
+            play_session_id: "s".to_string(),
+            item_id: Uuid::new_v4(),
+            subtitle_mode: EmbeddedSubtitleHandling::default(),
+        }
+    }
+
+    fn force_transcode_query() -> api::PlaybackInfoQuery {
+        api::PlaybackInfoQuery {
+            enable_direct_play: Some(false),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn remuxing_disabled_by_policy_returns_direct_play() {
+        let mut policy = remux_sdks::remux::UserPolicy::default();
+        policy.enable_playback_remuxing = false;
+        let session = make_session_with_policy(policy);
+        let source = make_video_source("ts");
+        let mut reasons = api::TranscodeReasons::default();
+        reasons.insert(api::TranscodeReason::VideoCodecNotSupported(
+            "hevc".to_string(),
+        ));
+        let decision = build_transcode_decision(
+            &source,
+            &reasons,
+            None,
+            &force_transcode_query(),
+            &session,
+            &base_cfg(EncodingOptions::default()),
+        );
+        assert!(
+            matches!(decision, TranscodeDecision::DirectPlay),
+            "remuxing disabled should force direct play"
+        );
+    }
+
+    #[test]
+    fn remuxing_disabled_globally_returns_direct_play() {
+        let session = db::auth::AuthSession {
+            device: db::auth::Device {
+                access_token: "tok"
+                    .to_string()
+                    .into(),
+                ..Default::default()
+            },
+            user: db::User::default(),
+        };
+        let source = make_video_source("ts");
+        let mut reasons = api::TranscodeReasons::default();
+        reasons.insert(api::TranscodeReason::VideoCodecNotSupported(
+            "hevc".to_string(),
+        ));
+        let mut enc = EncodingOptions::default();
+        enc.enable_remuxing = Some(false);
+        let decision = build_transcode_decision(
+            &source,
+            &reasons,
+            None,
+            &force_transcode_query(),
+            &session,
+            &base_cfg(enc),
+        );
+        assert!(
+            matches!(decision, TranscodeDecision::DirectPlay),
+            "global remuxing disabled should force direct play"
+        );
+    }
+
+    #[test]
+    fn audio_transcode_disabled_by_policy_forces_copy() {
+        let mut policy = remux_sdks::remux::UserPolicy::default();
+        policy.enable_audio_playback_transcoding = false;
+        let session = make_session_with_policy(policy);
+        let source = make_video_source("ts");
+        // Both video AND audio need transcoding so the result is a real transcode
+        // URL (video=h264). The audio codec must be copy despite needing a transcode.
+        let mut reasons = api::TranscodeReasons::default();
+        reasons.insert(api::TranscodeReason::VideoCodecNotSupported(
+            "hevc".to_string(),
+        ));
+        reasons.insert(api::TranscodeReason::AudioCodecNotSupported(
+            "ac3".to_string(),
+        ));
+        let TranscodeDecision::Transcode(outcome) = build_transcode_decision(
+            &source,
+            &reasons,
+            None,
+            &force_transcode_query(),
+            &session,
+            &base_cfg(EncodingOptions::default()),
+        ) else {
+            panic!("expected transcode outcome");
+        };
+        assert!(
+            outcome
+                .url
+                .contains("AudioCodec=copy"),
+            "audio codec should be copy when transcoding is disabled: {}",
+            outcome.url
+        );
+    }
+
+    #[test]
+    fn audio_transcode_disabled_globally_forces_copy() {
+        let session = db::auth::AuthSession {
+            device: db::auth::Device {
+                access_token: "tok"
+                    .to_string()
+                    .into(),
+                ..Default::default()
+            },
+            user: db::User::default(),
+        };
+        let source = make_video_source("ts");
+        let mut reasons = api::TranscodeReasons::default();
+        reasons.insert(api::TranscodeReason::VideoCodecNotSupported(
+            "hevc".to_string(),
+        ));
+        reasons.insert(api::TranscodeReason::AudioCodecNotSupported(
+            "ac3".to_string(),
+        ));
+        let mut enc = EncodingOptions::default();
+        enc.enable_audio_transcoding = Some(false);
+        let TranscodeDecision::Transcode(outcome) = build_transcode_decision(
+            &source,
+            &reasons,
+            None,
+            &force_transcode_query(),
+            &session,
+            &base_cfg(enc),
+        ) else {
+            panic!("expected transcode outcome");
+        };
+        assert!(
+            outcome
+                .url
+                .contains("AudioCodec=copy"),
+            "global audio transcoding disabled should force copy: {}",
+            outcome.url
+        );
+    }
+
+    #[test]
+    fn both_copy_same_container_returns_direct_play() {
+        // video transcode disabled + audio doesn't need transcoding + container matches
+        // → nothing would change → direct play
+        let mut policy = remux_sdks::remux::UserPolicy::default();
+        policy.enable_video_playback_transcoding = false;
+        let session = make_session_with_policy(policy);
+        let source = make_video_source("ts");
+        let mut reasons = api::TranscodeReasons::default();
+        reasons.insert(api::TranscodeReason::VideoCodecNotSupported(
+            "hevc".to_string(),
+        ));
+        // No audio transcode reason — audio codec would be copy already.
+        // With video also forced to copy and same container (ts) the result is a no-op.
+        let decision = build_transcode_decision(
+            &source,
+            &reasons,
+            None,
+            &force_transcode_query(),
+            &session,
+            &base_cfg(EncodingOptions::default()),
+        );
+        assert!(
+            matches!(decision, TranscodeDecision::DirectPlay),
+            "no-op remux should be upgraded to direct play"
+        );
+    }
+
+    #[test]
+    fn both_copy_different_container_returns_transcode() {
+        // video transcode disabled + audio copy + but container needs to change → remux URL
+        let mut policy = remux_sdks::remux::UserPolicy::default();
+        policy.enable_video_playback_transcoding = false;
+        let session = make_session_with_policy(policy);
+        // Source is mkv, transcoding profile will pick ts → remux is needed
+        let source = make_video_source("mkv");
+        let mut reasons = api::TranscodeReasons::default();
+        reasons.insert(api::TranscodeReason::VideoCodecNotSupported(
+            "hevc".to_string(),
+        ));
+        let TranscodeDecision::Transcode(outcome) = build_transcode_decision(
+            &source,
+            &reasons,
+            None,
+            &force_transcode_query(),
+            &session,
+            &base_cfg(EncodingOptions::default()),
+        ) else {
+            panic!("expected transcode outcome for container remux");
+        };
+        assert_eq!(outcome.container, "ts");
     }
 }
