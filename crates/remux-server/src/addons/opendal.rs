@@ -17,7 +17,10 @@ use super::{
     IndexAddon, MediaKind, ProgressReporter, ResourceType, StreamAddon, SubtitleAddon,
     SubtitleInfo, TreeAddon,
 };
-use crate::{AppContext, addons::Addon, common, db, sdks, sdks::CachedEndpoint};
+use crate::{
+    AppContext, addons::Addon, common, db, sdks, sdks::CachedEndpoint,
+    services::MediaResolveService,
+};
 
 // ---------------------------------------------------------------------------
 // Shared option helper
@@ -1177,7 +1180,7 @@ async fn scan_addon(
                                 Some(id)
                             } else if !jellyfin_ids.is_empty() {
                                 if let Some(client) = tmdb {
-                                    crate::addons::tmdb::resolve_imdb_from_ids(
+                                    MediaResolveService::resolve_imdb_from_ids(
                                         &jellyfin_ids,
                                         true,
                                         client,
@@ -1209,7 +1212,7 @@ async fn scan_addon(
                                 Some(id)
                             } else if !jellyfin_ids.is_empty() {
                                 if let Some(client) = tmdb {
-                                    crate::addons::tmdb::resolve_imdb_from_ids(
+                                    MediaResolveService::resolve_imdb_from_ids(
                                         &jellyfin_ids,
                                         false,
                                         client,
@@ -1461,7 +1464,7 @@ async fn scan_addon(
                         Some(id)
                     } else if !jellyfin_ids.is_empty() {
                         if let Some(client) = tmdb {
-                            crate::addons::tmdb::resolve_imdb_from_ids(
+                            MediaResolveService::resolve_imdb_from_ids(
                                 &jellyfin_ids,
                                 true,
                                 client,
@@ -1502,7 +1505,7 @@ async fn scan_addon(
                         Some(id)
                     } else if !jellyfin_ids.is_empty() {
                         if let Some(client) = tmdb {
-                            crate::addons::tmdb::resolve_imdb_from_ids(
+                            MediaResolveService::resolve_imdb_from_ids(
                                 &jellyfin_ids,
                                 false,
                                 client,
