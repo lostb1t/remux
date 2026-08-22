@@ -324,6 +324,10 @@ struct YtDlpFormat {
     ext: Option<String>,
     #[serde(default)]
     container: Option<String>,
+    #[serde(default)]
+    width: Option<u64>,
+    #[serde(default)]
+    height: Option<u64>,
 }
 
 impl YtDlpFormat {
@@ -337,6 +341,10 @@ impl YtDlpFormat {
             .as_deref()
             .map_or(false, |a| a != "none" && !a.is_empty());
         no_video && has_audio
+    }
+
+    fn is_playable(&self) -> bool {
+        self.url.is_some() && self.acodec.as_deref().is_some_and(|c| c != "none")
     }
 
     fn bitrate(&self) -> Option<i64> {
@@ -888,30 +896,43 @@ impl YtDlpAddon {
             }
         };
 
-        let audio_only: Vec<crate::stream::StreamInfo> = video
+        let playable: Vec<&YtDlpFormat> = video
             .formats
             .iter()
-            .filter(|f| {
-                f.url
-                    .is_some()
-                    && f.is_audio_only()
-            })
-            .map(&to_source)
+            .filter(|f| f.is_playable())
             .collect();
 
-        if !audio_only.is_empty() {
-            return Ok(audio_only);
+        if playable.is_empty() {
+            return Ok(vec![]);
         }
 
-        Ok(video
-            .formats
+        let audio_only: Vec<&YtDlpFormat> = playable
             .iter()
-            .filter(|f| {
-                f.url
-                    .is_some()
+            .filter(|f| f.is_audio_only())
+            .copied()
+            .collect();
+
+        let best = if !audio_only.is_empty() {
+            audio_only.into_iter().max_by_key(|f| f.bitrate().unwrap_or(0))
+        } else {
+            playable.into_iter().max_by(|a, b| {
+                let a_abr = a.abr.unwrap_or(0.0);
+                let b_abr = b.abr.unwrap_or(0.0);
+                a_abr.partial_cmp(&b_abr).unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| {
+                        // fallback for HLS muxed where abr is null
+                        a.tbr.partial_cmp(&b.tbr).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .then_with(|| {
+                        let a_pixels = a.width.unwrap_or(0) as u64 * a.height.unwrap_or(0) as u64;
+                        let b_pixels = b.width.unwrap_or(0) as u64 * b.height.unwrap_or(0) as u64;
+                        // smaller video wins ties
+                        b_pixels.cmp(&a_pixels)
+                    })
             })
-            .map(&to_source)
-            .collect())
+        };
+
+        Ok(best.map(&to_source).into_iter().collect())
     }
 }
 

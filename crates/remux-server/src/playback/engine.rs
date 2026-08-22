@@ -565,6 +565,13 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         ),
     );
 
+    if params.input_url.starts_with("http") {
+        args.extend([
+            "-user_agent".into(),
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36".into(),
+        ]);
+    }
+
     // Input seek (fast, before -i) — not applicable to live streams
     if !params.is_live {
         if let Some(ticks) = params.start_time_ticks {
