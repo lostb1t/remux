@@ -2515,6 +2515,182 @@ mod tests {
         }));
     }
 
+    /// Three call sites used to walk to the series themselves and disagreed
+    /// on how. These pin what the one they share now does.
+    mod stored_series_tmdb_id {
+        use super::*;
+        use crate::integration_test::new_test_server;
+
+        /// A series' id has to be the one its external ids hash to, which
+        /// `Media::save` enforces.
+        async fn seed(
+            ctx: &AppContext,
+            series_tmdb: Option<i64>,
+            season_tmdb: Option<i64>,
+        ) -> (db::Media, db::Media) {
+            let external_ids = db::ExternalIds {
+                tmdb: series_tmdb,
+                imdb: db::NonEmptyString::try_new("tt0306414".to_string()).ok(),
+                ..Default::default()
+            };
+            let mut series = db::Media {
+                id: uuid::Uuid::from(&db::MediaIdRaw {
+                    kind: db::MediaKind::Series,
+                    external_ids: external_ids.clone(),
+                    season: None,
+                    episode: None,
+                }),
+                title: "The Wire".into(),
+                kind: db::MediaKind::Series,
+                external_ids,
+                ..Default::default()
+            };
+            series
+                .save(&ctx.db)
+                .await
+                .unwrap();
+
+            let mut season = db::Media {
+                title: "Season 1".into(),
+                kind: db::MediaKind::Season,
+                parent_id: Some(series.id),
+                grandparent_id: Some(series.id),
+                idx: Some(1),
+                external_ids: db::ExternalIds {
+                    tmdb: season_tmdb,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            season
+                .save(&ctx.db)
+                .await
+                .unwrap();
+            (series, season)
+        }
+
+        #[tokio::test]
+        async fn an_episode_walks_up_its_grandparent_id() {
+            let (_s, guard) = new_test_server()
+                .await
+                .unwrap();
+            let ctx = &guard.0;
+            let (series, season) = seed(ctx, Some(1438), None).await;
+            let episode = db::Media {
+                kind: db::MediaKind::Episode,
+                parent_id: Some(season.id),
+                grandparent_id: Some(series.id),
+                ..Default::default()
+            };
+
+            assert_eq!(
+                stored_series_tmdb_id(&episode, ctx)
+                    .await
+                    .unwrap(),
+                Some(1438)
+            );
+        }
+
+        /// The `parent_id` fallback exists for a flat hierarchy, where the
+        /// parent is the series. Reaching it from a non-flat episode means
+        /// landing on a season, whose tmdb id is not the series'.
+        ///
+        /// Only in-memory media gets here: `Media::save` rejects an episode
+        /// or season with no `grandparent_id`, so no stored row can.
+        #[tokio::test]
+        async fn an_episode_does_not_take_its_season_for_the_series() {
+            let (_s, guard) = new_test_server()
+                .await
+                .unwrap();
+            let ctx = &guard.0;
+            let (_series, season) = seed(ctx, Some(1438), Some(9999)).await;
+            let episode = db::Media {
+                kind: db::MediaKind::Episode,
+                parent_id: Some(season.id),
+                ..Default::default()
+            };
+
+            assert_eq!(
+                stored_series_tmdb_id(&episode, ctx)
+                    .await
+                    .unwrap(),
+                None
+            );
+        }
+
+        /// The flat hierarchy the `parent_id` fallback is for: the episode
+        /// hangs straight off the series with no season in between.
+        #[tokio::test]
+        async fn a_flat_episode_walks_up_its_parent_id() {
+            let (_s, guard) = new_test_server()
+                .await
+                .unwrap();
+            let ctx = &guard.0;
+            let (series, _season) = seed(ctx, Some(1438), None).await;
+            let episode = db::Media {
+                kind: db::MediaKind::Episode,
+                parent_id: Some(series.id),
+                ..Default::default()
+            };
+
+            assert_eq!(
+                stored_series_tmdb_id(&episode, ctx)
+                    .await
+                    .unwrap(),
+                Some(1438)
+            );
+        }
+
+        /// `fetch_tmdb_season_meta` gained a kind filter it did not have.
+        /// A season still has to reach its series past it.
+        #[tokio::test]
+        async fn a_season_reaches_its_series() {
+            let (_s, guard) = new_test_server()
+                .await
+                .unwrap();
+            let ctx = &guard.0;
+            let (_series, season) = seed(ctx, Some(1438), None).await;
+
+            assert_eq!(
+                stored_series_tmdb_id(&season, ctx)
+                    .await
+                    .unwrap(),
+                Some(1438)
+            );
+        }
+
+        /// A preloaded grandparent is used in place of the row, so a caller
+        /// that ran `preload_parents` pays for no query here.
+        #[tokio::test]
+        async fn a_preloaded_grandparent_wins() {
+            let (_s, guard) = new_test_server()
+                .await
+                .unwrap();
+            let ctx = &guard.0;
+            let (series, season) = seed(ctx, Some(1438), None).await;
+            let episode = db::Media {
+                kind: db::MediaKind::Episode,
+                parent_id: Some(season.id),
+                grandparent_id: Some(series.id),
+                grandparent: Some(Box::new(db::Media {
+                    external_ids: db::ExternalIds {
+                        tmdb: Some(4242),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })),
+                ..Default::default()
+            };
+
+            assert_eq!(
+                stored_series_tmdb_id(&episode, ctx)
+                    .await
+                    .unwrap(),
+                Some(4242)
+            );
+        }
+    }
+
     /// `deezer_artist` is one of the ids `ExternalIds` carries that TMDB
     /// cannot be searched by.
     #[tokio::test]

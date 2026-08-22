@@ -727,3 +727,129 @@ impl From<remux::MediaType> for stremio::MediaType {
         }
     }
 }
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    /// `Vec<String>` so "the response carries no answer" is just `is_empty`,
+    /// standing in for a `/find` with no results.
+    #[derive(Clone)]
+    struct Probe {
+        path: String,
+    }
+
+    impl Endpoint for Probe {
+        type Output = Vec<String>;
+
+        fn path(&self) -> String {
+            self.path
+                .clone()
+        }
+    }
+
+    /// Long enough that nothing here reaches it, so a re-request proves the
+    /// short TTL was the one stamped on the entry.
+    const NEVER: Duration = Duration::from_secs(600);
+    const BRIEF: Duration = Duration::from_millis(300);
+
+    fn is_empty(response: &Vec<String>) -> bool {
+        response.is_empty()
+    }
+
+    /// Each test needs its own path: httpmock leases servers from a pool, so
+    /// two tests can share a port, and `HTTP_CACHE` is process-wide and keyed
+    /// on the url.
+    fn probe<'s>(
+        server: &'s httpmock::MockServer,
+        path: &str,
+        body: serde_json::Value,
+    ) -> (httpmock::Mock<'s>, RestClient<NoAuth>, Probe) {
+        let mock = server.mock(|when, then| {
+            when.path(format!("/{path}"));
+            then.status(200)
+                .json_body(body);
+        });
+        (
+            mock,
+            RestClient::new(&server.base_url()).unwrap(),
+            Probe {
+                path: path.to_string(),
+            },
+        )
+    }
+
+    async fn elapse() {
+        tokio::time::sleep(BRIEF * 2).await;
+    }
+
+    #[tokio::test]
+    async fn a_response_matching_the_rule_is_re_fetched_after_the_short_ttl() {
+        let server = httpmock::MockServer::start();
+        let (mock, client, probe) = probe(&server, "matching", serde_json::json!([]));
+        let endpoint = probe
+            .with_cache(NEVER)
+            .expiring_early(BRIEF, is_empty);
+
+        client
+            .execute(endpoint.clone())
+            .await
+            .unwrap();
+        client
+            .execute(endpoint.clone())
+            .await
+            .unwrap();
+        assert_eq!(mock.hits(), 1, "served from cache while it lived");
+
+        elapse().await;
+        client
+            .execute(endpoint)
+            .await
+            .unwrap();
+        assert_eq!(mock.hits(), 2, "asked again once the short TTL was up");
+    }
+
+    #[tokio::test]
+    async fn a_response_the_rule_rejects_keeps_the_full_ttl() {
+        let server = httpmock::MockServer::start();
+        let (mock, client, probe) =
+            probe(&server, "rejected", serde_json::json!(["found"]));
+        let endpoint = probe
+            .with_cache(NEVER)
+            .expiring_early(BRIEF, is_empty);
+
+        client
+            .execute(endpoint.clone())
+            .await
+            .unwrap();
+        elapse().await;
+        client
+            .execute(endpoint)
+            .await
+            .unwrap();
+        assert_eq!(mock.hits(), 1);
+    }
+
+    /// The regression a response-aware TTL could have caused: an endpoint that
+    /// never asks for early expiry has to keep behaving as it did when
+    /// `cache_ttl` alone decided. The body is one the rule above would have
+    /// called a miss, so a second request would expose a default that
+    /// shortened anything.
+    #[tokio::test]
+    async fn an_endpoint_with_no_rule_holds_its_ttl() {
+        let server = httpmock::MockServer::start();
+        let (mock, client, probe) = probe(&server, "no-rule", serde_json::json!([]));
+        let endpoint = probe.with_cache(NEVER);
+
+        client
+            .execute(endpoint.clone())
+            .await
+            .unwrap();
+        elapse().await;
+        client
+            .execute(endpoint)
+            .await
+            .unwrap();
+        assert_eq!(mock.hits(), 1);
+    }
+}
