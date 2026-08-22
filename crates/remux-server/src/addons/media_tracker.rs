@@ -10,6 +10,11 @@ use super::AddonKind;
 use async_trait::async_trait;
 
 /// Split by what the dispatcher should do next, not by cause.
+///
+/// The message is stored as `last_error` on the connection and returned by
+/// `GET /users/{id}/mediatrackers`, so it must never carry a credential. That
+/// is easy to do by accident: a provider that authenticates by url puts the
+/// secret in every transport error it raises.
 #[derive(Debug)]
 pub enum MediaTrackerError {
     /// Rate limited, 5xx, network. `retry_after` is a provider hint; the
