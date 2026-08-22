@@ -85,6 +85,222 @@ fn infer_audio_channels(text: &str) -> Option<i64> {
     }
 }
 
+pub(crate) fn media_source_display_name(source: &db::Media) -> String {
+    if is_auto_source_name(&source.title) {
+        return source
+            .title
+            .clone();
+    }
+
+    let Some(stream_info) = source
+        .stream_info
+        .as_ref()
+    else {
+        return source
+            .title
+            .clone();
+    };
+    if !matches!(&stream_info.descriptor, StreamDescriptor::Torrent { .. }) {
+        return source
+            .title
+            .clone();
+    }
+
+    let base = flatten_source_name(&source.title);
+    torrent_source_display_name(
+        &base,
+        stream_info
+            .filename
+            .as_deref(),
+        stream_info.seeders,
+    )
+}
+
+fn is_auto_source_name(name: &str) -> bool {
+    name.to_ascii_lowercase()
+        .ends_with("(auto)")
+}
+
+fn flatten_source_name(name: &str) -> String {
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn torrent_source_display_name(
+    base: &str,
+    filename: Option<&str>,
+    seeders: Option<i64>,
+) -> String {
+    let mut details = Vec::new();
+    let filename = filename.unwrap_or_default();
+    let lower = filename.to_ascii_lowercase();
+
+    if lower.contains("remux") {
+        push_source_detail(&mut details, base, "REMUX");
+    }
+    if lower.contains("web-dl") || lower.contains("webdl") {
+        push_source_detail(&mut details, base, "WEB-DL");
+    } else if lower.contains("webrip") || lower.contains("web-rip") {
+        push_source_detail(&mut details, base, "WEBRip");
+    } else if lower.contains("brrip") {
+        push_source_detail(&mut details, base, "BRRip");
+    } else if lower.contains("bdrip") {
+        push_source_detail(&mut details, base, "BDRip");
+    } else if lower.contains("bluray") || lower.contains("blu-ray") {
+        push_source_detail(&mut details, base, "BluRay");
+    } else if lower.contains("dvdrip") {
+        push_source_detail(&mut details, base, "DVDRip");
+    }
+
+    if lower.contains("x265") || lower.contains("hevc") || lower.contains("h.265") {
+        push_source_detail(&mut details, base, "HEVC/x265");
+    } else if lower.contains("x264")
+        || lower.contains("h264")
+        || lower.contains("h.264")
+        || lower.contains("avc")
+    {
+        push_source_detail(&mut details, base, "H.264/x264");
+    } else if lower.contains("av1") {
+        push_source_detail(&mut details, base, "AV1");
+    }
+
+    if lower.contains("dolby vision")
+        || lower.contains("dovi")
+        || lower.contains(" dv ")
+    {
+        push_source_detail(&mut details, base, "Dolby Vision");
+    } else if lower.contains("hdr") {
+        push_source_detail(&mut details, base, "HDR");
+    }
+    if lower.contains("10bit") || lower.contains("10-bit") || lower.contains("10 bit") {
+        push_source_detail(&mut details, base, "10-bit");
+    }
+    if lower.contains("60fps") || lower.contains("60 fps") {
+        push_source_detail(&mut details, base, "60fps");
+    }
+    if lower.contains("dual audio") || lower.contains("dual.audio") {
+        push_source_detail(&mut details, base, "Dual audio");
+    } else if lower.contains("multi audio")
+        || lower.contains("multi.audio")
+        || lower.contains(".multi.")
+    {
+        push_source_detail(&mut details, base, "Multi audio");
+    }
+    if lower.contains("atmos") {
+        push_source_detail(&mut details, base, "Atmos");
+    }
+
+    if let Some(group) = release_group(filename) {
+        if details.len() >= 6 {
+            details.truncate(5);
+        }
+        push_source_detail(&mut details, base, &group);
+    } else {
+        details.truncate(6);
+    }
+
+    let mut name = flatten_source_name(base);
+    if !details.is_empty() {
+        name.push_str(" · ");
+        name.push_str(&details.join(" · "));
+    }
+    if let Some(seeders) = seeders {
+        let seeders = seeders.max(0);
+        name.push_str(&format!(
+            " ({seeders} {})",
+            if seeders == 1 { "seed" } else { "seeds" }
+        ));
+    }
+    name
+}
+
+fn push_source_detail(details: &mut Vec<String>, base: &str, label: &str) {
+    if !base
+        .to_ascii_lowercase()
+        .contains(&label.to_ascii_lowercase())
+        && !details
+            .iter()
+            .any(|existing| existing == label)
+    {
+        details.push(label.to_string());
+    }
+}
+
+fn release_group(filename: &str) -> Option<String> {
+    let stem = filename
+        .rsplit_once('.')
+        .map(|(stem, _)| stem)
+        .unwrap_or(filename)
+        .trim_end_matches(|character| matches!(character, ']' | ')' | ' ' | '-'));
+
+    let hyphen_group = stem
+        .rsplit_once('-')
+        .map(|(_, group)| {
+            group.trim_matches(|character| {
+                matches!(character, '[' | ']' | '(' | ')' | ' ' | '-')
+            })
+        });
+    let trailing_token = stem
+        .rsplit(|character: char| {
+            character == '.'
+                || character == ' '
+                || character == '['
+                || character == ']'
+                || character == '('
+                || character == ')'
+        })
+        .find(|token| !token.is_empty());
+
+    hyphen_group
+        .filter(|group| valid_release_group(group))
+        .or_else(|| trailing_token.filter(|group| valid_release_group(group)))
+        .map(str::to_string)
+}
+
+fn valid_release_group(group: &str) -> bool {
+    let lower = group.to_ascii_lowercase();
+    (3..=20).contains(&group.len())
+        && group
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_')
+        && !matches!(
+            lower.as_str(),
+            "mkv"
+                | "mp4"
+                | "avi"
+                | "webdl"
+                | "webrip"
+                | "bluray"
+                | "brrip"
+                | "bdrip"
+                | "remux"
+                | "x264"
+                | "x265"
+                | "h264"
+                | "h265"
+                | "hevc"
+                | "av1"
+                | "hdr"
+                | "hdr10"
+                | "atmos"
+                | "proper"
+                | "repack"
+                | "esub"
+                | "story"
+                | "movie"
+                | "film"
+                | "edition"
+                | "extended"
+                | "theatrical"
+                | "english"
+                | "hindi"
+        )
+        && !group
+            .chars()
+            .all(|character| character.is_ascii_digit())
+}
+
 fn fallback_media_streams(source: &db::Media) -> Vec<api::MediaStream> {
     // Only synthesize streams for remote source entries.
     if source.kind != db::MediaKind::Stream {
@@ -138,6 +354,7 @@ fn fallback_media_streams(source: &db::Media) -> Vec<api::MediaStream> {
 
 impl From<db::Media> for api::MediaSourceInfo {
     fn from(source: db::Media) -> Self {
+        let display_name = media_source_display_name(&source);
         let descriptor = source
             .stream_info
             .as_ref()
@@ -282,11 +499,7 @@ impl From<db::Media> for api::MediaSourceInfo {
             path,
             protocol,
             is_remote,
-            name: Some(
-                source
-                    .title
-                    .clone(),
-            ),
+            name: Some(display_name),
             container,
             remux,
             has_segments: !is_stub,
@@ -672,5 +885,53 @@ mod tests {
             2
         );
         assert_eq!(output["TrackEvents"][1]["Text"], "World");
+    }
+
+    #[test]
+    fn torrent_labels_include_release_details_and_seeders() {
+        assert_eq!(
+            torrent_source_display_name(
+                "Torrentio 1080p",
+                Some("Example.Movie.2020.MULTI.1080p.BluRay.REMUX-DDB.mkv"),
+                Some(114),
+            ),
+            "Torrentio 1080p · REMUX · BluRay · Multi audio · DDB (114 seeds)"
+        );
+        assert_eq!(
+            torrent_source_display_name(
+                "Torrentio 1080p",
+                Some(
+                    "Example.Movie.[2020].1080p.10bit.[60FPS].Bluray.x265.Dual.Audio.[Hindi+English].DD.5.1.Esub.[-DUS-].mkv"
+                ),
+                Some(637),
+            ),
+            "Torrentio 1080p · BluRay · HEVC/x265 · 10-bit · 60fps · Dual audio · DUS (637 seeds)"
+        );
+    }
+
+    #[test]
+    fn auto_source_names_are_detected_without_seed_suffixes() {
+        assert!(is_auto_source_name("1080p (auto)"));
+        assert!(!is_auto_source_name("Torrentio 1080p"));
+    }
+
+    #[test]
+    fn direct_source_names_are_not_rewritten() {
+        let source = db::Media {
+            title: "Real-Debrid 1080p\nOriginal label".to_string(),
+            kind: db::MediaKind::Stream,
+            stream_info: Some(crate::stream::StreamInfo {
+                descriptor: StreamDescriptor::http("https://example.invalid/movie.mkv"),
+                filename: Some("Movie.1080p.BluRay.x264-GROUP.mkv".to_string()),
+                seeders: Some(100),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            media_source_display_name(&source),
+            "Real-Debrid 1080p\nOriginal label"
+        );
     }
 }
