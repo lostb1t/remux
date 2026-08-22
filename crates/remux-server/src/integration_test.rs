@@ -284,11 +284,29 @@ pub async fn seed_movie(ctx: &AppContext) -> db::Media {
 /// off. Only the series carries ids, which is what makes it the fixture for
 /// "an episode is matched through its series".
 pub async fn seed_episode(ctx: &AppContext) -> db::Media {
-    let external_ids = db::ExternalIds {
-        imdb: db::NonEmptyString::try_new("tt0306414".to_string()).ok(),
-        tvdb: Some(79126),
-        ..Default::default()
-    };
+    seed_episode_of(ctx, "tt0306414").await
+}
+
+/// As [`seed_episode`], for a series identified by `imdb`. A test needing TMDB
+/// to answer differently needs a series of its own: the http cache is keyed on
+/// the url and outlives any one test.
+pub async fn seed_episode_of(ctx: &AppContext, imdb: &str) -> db::Media {
+    seed_episode_with(
+        ctx,
+        db::ExternalIds {
+            imdb: db::NonEmptyString::try_new(imdb.to_string()).ok(),
+            tvdb: Some(79126),
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+/// As [`seed_episode_of`], for a series carrying exactly `external_ids`.
+pub async fn seed_episode_with(
+    ctx: &AppContext,
+    external_ids: db::ExternalIds,
+) -> db::Media {
     let mut series = db::Media {
         id: stable_id(db::MediaKind::Series, &external_ids),
         title: "The Wire".into(),
