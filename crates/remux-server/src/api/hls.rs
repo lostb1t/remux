@@ -70,10 +70,18 @@ async fn create_hls_session(
     } else {
         "h264".to_string()
     };
-    let audio_codec = q
+    let audio_transcode_enabled_hls = encoding_opts_hls
+        .enable_audio_transcoding
+        .unwrap_or(true);
+    let audio_codec_raw = q
         .audio_codec
         .clone()
         .unwrap_or_else(|| "aac".to_string());
+    let audio_codec = if !audio_transcode_enabled_hls {
+        "copy".to_string()
+    } else {
+        audio_codec_raw
+    };
     let segment_length = q
         .segment_length
         .unwrap_or(6) as u32;
