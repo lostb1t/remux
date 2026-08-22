@@ -316,6 +316,8 @@ pub struct TranscodeParams {
     /// Apply `loudnorm=I=-14:TP=-1:LRA=11` when transcoding audio. Has no effect
     /// when audio_codec is "copy". See EncodingOptions::normalize_audio_loudness.
     pub normalize_audio_loudness: bool,
+    /// HTTP request headers to pass to ffmpeg for http inputs.
+    pub http_request_headers: std::collections::HashMap<String, String>,
 }
 
 impl Default for TranscodeParams {
@@ -353,6 +355,7 @@ impl Default for TranscodeParams {
             h265_crf: 28,
             is_live: false,
             normalize_audio_loudness: false,
+            http_request_headers: std::collections::HashMap::new(),
         }
     }
 }
@@ -565,11 +568,15 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         ),
     );
 
-    if params.input_url.starts_with("http") {
-        args.extend([
-            "-user_agent".into(),
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36".into(),
-        ]);
+    if params.input_url.starts_with("http") && !params.http_request_headers.is_empty() {
+        // Build ffmpeg -headers string from the map provided by yt-dlp
+        let header_string = params
+            .http_request_headers
+            .iter()
+            .map(|(k, v)| format!("{k}: {v}"))
+            .collect::<Vec<_>>()
+            .join("\r\n");
+        args.extend(["-headers".into(), header_string]);
     }
 
     // Input seek (fast, before -i) — not applicable to live streams

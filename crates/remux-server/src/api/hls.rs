@@ -432,6 +432,14 @@ async fn create_hls_session(
         // Start transcoding in background
         let session_clone = session.clone();
         let encoding_opts = encoding_opts_hls.clone();
+        let http_request_headers = resolved_media
+            .stream_info
+            .as_ref()
+            .and_then(|si| match &si.descriptor {
+                crate::stream::StreamDescriptor::Http { request_headers, .. } => Some(request_headers.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
         let params = crate::playback::engine::TranscodeParams {
             input_url,
             output_dir: session
@@ -522,6 +530,7 @@ async fn create_hls_session(
             normalize_audio_loudness: encoding_opts
                 .normalize_audio_loudness
                 .unwrap_or(false),
+            http_request_headers,
         };
 
         // Spawn the transcode task with proper error handling
@@ -1199,6 +1208,7 @@ async fn hls_segment_inner(
                         normalize_audio_loudness: encoding_opts
                             .normalize_audio_loudness
                             .unwrap_or(false),
+                        http_request_headers: std::collections::HashMap::new(),
                     };
 
                     // Reinitialise the session's state for the new transcode run.

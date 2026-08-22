@@ -328,6 +328,8 @@ struct YtDlpFormat {
     width: Option<u64>,
     #[serde(default)]
     height: Option<u64>,
+    #[serde(default)]
+    http_headers: Option<std::collections::HashMap<String, String>>,
 }
 
 impl YtDlpFormat {
@@ -451,7 +453,10 @@ impl YtDlpAddon {
                     .as_http_url()
             })
         {
-            return Ok(url.to_owned());
+            // Never reuse a signed googlevideo URL — only reuse a YouTube watch page URL
+            if url.contains("youtube.com/watch") || url.contains("music.youtube.com/watch") {
+                return Ok(url.to_owned());
+            }
         }
         if let Some(id) = &media
             .external_ids
@@ -863,12 +868,13 @@ impl YtDlpAddon {
                 (Some(c), None) => c.to_uppercase(),
                 _ => f.label(),
             };
+            let request_headers = f.http_headers.clone().unwrap_or_default();
             crate::stream::StreamInfo {
-                descriptor: crate::stream::StreamDescriptor::http(
-                    f.url
-                        .clone()
-                        .unwrap_or_default(),
-                ),
+                descriptor: crate::stream::StreamDescriptor::Http {
+                    url: f.url.clone().unwrap_or_default(),
+                    request_headers,
+                    response_headers: Default::default(),
+                },
                 name: Some(f.label()),
                 probe_data: Some(api::MediaSourceInfo {
                     container: f.container(),
