@@ -479,9 +479,8 @@ pub struct ServerConfiguration {
     /// Number of items to process concurrently during metadata fetch (default: 12).
     #[default(12_i64)]
     pub meta_concurrency: i64,
-    /// Number of media trackers whose queued deliveries are drained
-    /// concurrently. One tracker's rows always go out in order, one at a
-    /// time (default: 8).
+    /// Number of media trackers drained concurrently; one tracker's queued
+    /// deliveries always go out in order, one at a time (default: 8).
     #[default(8_i64)]
     pub delivery_concurrency: i64,
     #[default(Some(true))]
