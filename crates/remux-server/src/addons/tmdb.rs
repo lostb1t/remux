@@ -2269,6 +2269,30 @@ pub(crate) async fn kitsu_tvdb_id(
 /// whichever ran first silently sets it for the other.
 const ID_CACHE_TTL: Duration = Duration::from_secs(86400);
 
+/// How long a `/find` that matched nothing is cached for.
+///
+/// "TMDB has this id" is permanent; "TMDB does not have this id" is only true
+/// until TMDB indexes the item, which for a new release is hours, not the day
+/// `ID_CACHE_TTL` would pin it for. Short enough that a release resolves the
+/// same evening, long enough that one library scan still asks once.
+const ID_MISS_CACHE_TTL: Duration = Duration::from_secs(360);
+
+/// Whether a `/find` response says TMDB knows the id at all, as opposed to
+/// knowing it as the other kind.
+///
+/// Both arms matter: a tvdb id that TMDB maps to a movie is a real, permanent
+/// answer even when the caller wanted a series and so gets `None` from it.
+/// Only a response with nothing in it is the "not indexed yet" case worth
+/// asking about again soon.
+fn find_matched_nothing(found: &sdks::tmdb::FindByIdResponse) -> bool {
+    found
+        .movie_results
+        .is_empty()
+        && found
+            .tv_results
+            .is_empty()
+}
+
 /// Search TMDB's `/find` endpoint for `external_id`, and take the first
 /// result of the right kind.
 async fn find_tmdb_id_by<A: sdks::Auth + Clone>(
@@ -2283,7 +2307,8 @@ async fn find_tmdb_id_by<A: sdks::Auth + Clone>(
                 external_id,
                 external_source: external_source.to_string(),
             }
-            .with_cache(ID_CACHE_TTL),
+            .with_cache(ID_CACHE_TTL)
+            .expiring_early(ID_MISS_CACHE_TTL, find_matched_nothing),
         )
         .await?;
     Ok(if is_tv {
@@ -2510,6 +2535,25 @@ mod tests {
             Some(("tt0306414".to_string(), "imdb_id"))
         );
         assert_eq!(mappings.hits(), 0, "kitsu was never needed");
+    }
+
+    /// A `/find` for an id TMDB has not indexed yet is the one answer worth
+    /// re-asking for before `ID_CACHE_TTL` is up.
+    #[test]
+    fn a_find_that_matched_nothing_is_a_miss() {
+        assert!(find_matched_nothing(
+            &sdks::tmdb::FindByIdResponse::default()
+        ));
+    }
+
+    /// A tvdb id TMDB holds as a movie is a permanent answer, not a gap,
+    /// even for the series caller that gets nothing usable out of it.
+    #[test]
+    fn a_find_that_matched_the_other_kind_is_not_a_miss() {
+        assert!(!find_matched_nothing(&sdks::tmdb::FindByIdResponse {
+            movie_results: vec![sdks::tmdb::Movie::default()],
+            tv_results: vec![],
+        }));
     }
 
     /// Nothing here names the item to TMDB, and `deezer_artist` is one of the

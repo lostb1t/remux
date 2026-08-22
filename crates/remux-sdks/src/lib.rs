@@ -200,6 +200,18 @@ pub trait Endpoint {
     fn cache_ttl(&self) -> Option<Duration> {
         None
     }
+
+    /// How long *this* response should live in the cache, given a `cache_ttl`
+    /// that was chosen before it arrived. Defaults to `cache_ttl` unchanged.
+    ///
+    /// Overriding it lets an endpoint keep an answer far longer than a
+    /// non-answer. An id-mapping lookup is the case that needs it: a mapping
+    /// that exists is permanent, but "no match" only describes today, and
+    /// caching both for the same day leaves a newly released item
+    /// unresolvable long after the provider has indexed it.
+    fn cache_ttl_for(&self, _response: &Self::Output) -> Option<Duration> {
+        self.cache_ttl()
+    }
 }
 
 #[derive(Clone)]
@@ -359,7 +371,7 @@ impl<A: Auth + Clone> RestClient<A> {
                         }
                     });
                 let arc = result.map(Arc::new)?;
-                if let Some(ttl) = endpoint.cache_ttl() {
+                if let Some(ttl) = endpoint.cache_ttl_for(&arc) {
                     let weight = text
                         .len()
                         .min(u32::MAX as usize) as u32;
@@ -382,6 +394,7 @@ pub trait CachedEndpoint: Endpoint + Sized {
         Cached {
             endpoint: self,
             ttl,
+            expire_early: None,
         }
     }
 }
@@ -392,6 +405,23 @@ impl<EP: Endpoint + Sized> CachedEndpoint for EP {}
 pub struct Cached<EP: Endpoint> {
     endpoint: EP,
     ttl: Duration,
+    expire_early: Option<(Duration, fn(&EP::Output) -> bool)>,
+}
+
+impl<EP: Endpoint> Cached<EP> {
+    /// Keep a response matching `when` for `ttl` instead of the full cache
+    /// lifetime. Reads still consult the cache; only the expiry stamped on
+    /// the stored entry changes.
+    ///
+    /// Cache entries are keyed on the url alone, so this belongs next to the
+    /// request rather than at a call site: every caller of one url shares
+    /// whichever entry got written first, and so shares its expiry too.
+    pub fn expiring_early(self, ttl: Duration, when: fn(&EP::Output) -> bool) -> Self {
+        Self {
+            expire_early: Some((ttl, when)),
+            ..self
+        }
+    }
 }
 
 impl<EP: Endpoint> Endpoint for Cached<EP> {
@@ -424,6 +454,13 @@ impl<EP: Endpoint> Endpoint for Cached<EP> {
 
     fn cache_ttl(&self) -> Option<Duration> {
         Some(self.ttl)
+    }
+
+    fn cache_ttl_for(&self, response: &Self::Output) -> Option<Duration> {
+        match self.expire_early {
+            Some((short, when)) if when(response) => Some(short),
+            _ => Some(self.ttl),
+        }
     }
 }
 
@@ -473,6 +510,11 @@ impl<EP: Endpoint> Endpoint for WithExtraQuery<EP> {
     fn cache_ttl(&self) -> Option<Duration> {
         self.endpoint
             .cache_ttl()
+    }
+
+    fn cache_ttl_for(&self, response: &Self::Output) -> Option<Duration> {
+        self.endpoint
+            .cache_ttl_for(response)
     }
 }
 
