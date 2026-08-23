@@ -201,9 +201,9 @@ pub trait Endpoint {
         None
     }
 
-    /// How long *this* response should live, for an endpoint that cannot pick
-    /// a TTL until it sees one. Defaults to `cache_ttl`, chosen before the
-    /// request went out and so blind to whether it came back with an answer.
+    /// How long *this* response should live, for an endpoint that cannot pick a
+    /// TTL until it sees one. Only consulted on the write; the read still gates
+    /// on `cache_ttl`, so returning `Some` here alone caches nothing.
     fn cache_ttl_for(&self, _response: &Self::Output) -> Option<Duration> {
         self.cache_ttl()
     }

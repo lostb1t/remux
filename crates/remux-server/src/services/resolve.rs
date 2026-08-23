@@ -71,9 +71,7 @@ impl MediaResolveService {
         true
     }
 
-    /// Resolve an IMDB ID from already-known external IDs without doing a title search.
-    ///
-    /// Resolution order: direct IMDB → TMDB lookup → TVDB lookup via FindById.
+    /// From ids alone, never a title search: imdb, then tmdb, then `/find`.
     pub(crate) async fn resolve_imdb_from_ids<A: sdks::Auth + Clone>(
         ids: &db::ExternalIds,
         is_tv: bool,
@@ -163,12 +161,13 @@ impl MediaResolveService {
         }
     }
 
-    /// The series' TMDB id as already stored, for an episode or a season:
-    /// the preloaded `grandparent` if there is one, else the row it names.
+    /// The series' TMDB id as already stored, for an episode or a season: the
+    /// preloaded `grandparent` if there is one, else the row `grandparent_id`
+    /// names.
     ///
-    /// No walk up `parent_id`, since `Media::validate` refuses to store either
-    /// kind without a `grandparent_id`. The kind filter is what stops a corrupt
-    /// one passing a season off as the series.
+    /// The kind filter is what stops a season being passed off as the series,
+    /// whether by a corrupt `grandparent_id` or by a `grandparent` that
+    /// `preload_parents` filled from `parent_id`.
     ///
     /// Reads only; [`Self::fill_series_tmdb`] is what resolves and stores.
     pub(crate) async fn stored_series_tmdb_id(
@@ -215,10 +214,8 @@ impl MediaResolveService {
         }
     }
 
-    /// The best external id to search `/find` with, in the order a hit is most
-    /// likely: imdb, then tvdb, then tvdb via kitsu. `None` when nothing here
-    /// identifies the item. `tmdb` is not considered, since a caller holding
-    /// one skips this entirely.
+    /// The likeliest id to hit on `/find`: imdb, then tvdb, then tvdb via kitsu.
+    /// Not tmdb, which a caller holding one would have skipped this for.
     pub(crate) async fn tmdb_search_key(
         ids: &db::ExternalIds,
         kitsu: Option<&RestClient>,
@@ -241,8 +238,7 @@ impl MediaResolveService {
         None
     }
 
-    /// Search TMDB's `/find` endpoint for `external_id`, and take the first
-    /// result of the right kind.
+    /// Takes the first `/find` result of the right kind.
     pub(crate) async fn find_tmdb_id_by<A: sdks::Auth + Clone>(
         external_id: String,
         external_source: &str,
@@ -274,11 +270,8 @@ impl MediaResolveService {
         })
     }
 
-    /// The series' TMDB id, from whatever else it carries.
-    ///
-    /// Kitsu is the last fallback rather than the first: anime is often on
-    /// kitsu and nowhere else, but a series with an imdb id would pay for a
-    /// mapping call whose result it then discards.
+    /// The series' TMDB id, from whatever else it carries. Kitsu comes last:
+    /// a series with an imdb id would pay for a mapping call it then discards.
     async fn series_tmdb_id(
         ids: &db::ExternalIds,
         client: &RestClient<BearerAuth>,
@@ -295,12 +288,10 @@ impl MediaResolveService {
         Self::find_tmdb_id_by(external_id, external_source, true, client).await
     }
 
-    /// The episode's own external ids. `Ok(None)` when TMDB has no such
-    /// episode, or knows it by no other id.
+    /// The episode's own external ids, `Ok(None)` when TMDB knows it by none.
     ///
-    /// Appends `external_ids` alone rather than the addon's default list: the
-    /// response cache is keyed on the url, so a wider request would share an
-    /// entry with the addon's episode call and inherit its TTL.
+    /// Appends `external_ids` alone, not the addon's default list: the cache is
+    /// keyed on the url, so a wider request would inherit the addon's TTL.
     async fn episode_external_ids(
         series_tmdb: i64,
         season: i64,
@@ -341,14 +332,13 @@ impl MediaResolveService {
         }))
     }
 
-    /// Fill in the ids a media tracker needs to name `episode`, on the episode
-    /// and on the `series` it hangs off.
+    /// Fill in the ids a tracker needs to name `episode`, on it and on `series`.
     ///
-    /// Providers disagree about which identifies an episode: one keys on the
-    /// show's tmdb id plus season and episode, another on the episode's own
-    /// imdb or tvdb id. Closing both beats encoding either rule here.
+    /// Providers disagree on what identifies an episode: the show's tmdb id plus
+    /// season and episode, or the episode's own imdb or tvdb id. Both are closed
+    /// rather than either rule encoded here.
     ///
-    /// `Ok(false)` is nothing left to add; an error is a lookup worth retrying.
+    /// `Ok(false)` is nothing left to add; an error is worth retrying.
     pub async fn complete_episode_ids(
         episode: &mut db::Media,
         series: &mut db::Media,
@@ -415,7 +405,6 @@ impl MediaResolveService {
         Ok(changed)
     }
 
-    /// Resolve the series' TMDB id and store it on the row.
     async fn fill_series_tmdb(
         series: &mut db::Media,
         ctx: &AppContext,
@@ -901,8 +890,7 @@ mod tests {
         );
     }
 
-    /// The case the kitsu fallback exists for: anime is often on kitsu and
-    /// nowhere else.
+    /// Anime is often on kitsu and nowhere else.
     #[tokio::test]
     async fn an_anime_series_is_found_through_kitsu() {
         let server = httpmock::MockServer::start();
@@ -1483,8 +1471,7 @@ mod tests {
             );
         }
 
-        /// `fetch_tmdb_season_meta` gained a kind filter it did not have.
-        /// A season still has to reach its series past it.
+        /// A season still has to reach its series past the kind filter.
         #[tokio::test]
         async fn a_season_reaches_its_series() {
             let (_s, guard) = new_test_server()
@@ -1501,8 +1488,7 @@ mod tests {
             );
         }
 
-        /// A preloaded grandparent is used in place of the row, so a caller
-        /// that ran `preload_parents` pays for no query here.
+        /// A caller that ran `preload_parents` pays for no query here.
         #[tokio::test]
         async fn a_preloaded_grandparent_wins() {
             let (_s, guard) = new_test_server()
@@ -1533,8 +1519,7 @@ mod tests {
             );
         }
 
-        /// A corrupt `grandparent_id` can preload a non-series stub, not just
-        /// point the DB fallback at one.
+        /// A corrupt `grandparent_id` reaches the preloaded branch too.
         #[tokio::test]
         async fn a_preloaded_grandparent_that_is_not_a_series_is_ignored() {
             let (_s, guard) = new_test_server()
@@ -1565,8 +1550,7 @@ mod tests {
         }
     }
 
-    /// `deezer_artist` is one of the ids `ExternalIds` carries that TMDB
-    /// cannot be searched by.
+    /// `deezer_artist` is one such id.
     #[tokio::test]
     async fn ids_tmdb_cannot_search_on_produce_no_key() {
         assert!(
