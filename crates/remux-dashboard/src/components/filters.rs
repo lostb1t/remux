@@ -29,6 +29,7 @@ fn rule_values(rule: &FilterRule) -> Vec<String> {
             .iter()
             .map(|id| id.to_string())
             .collect(),
+        FilterRule::Favorite { .. } => vec![],
         _ => vec![],
     }
 }
@@ -231,6 +232,7 @@ fn field_label(key: &str) -> &'static str {
         "person" => "Person",
         "catalog" => "Catalog",
         "collection_id" => "Collection",
+        "favorite" => "Favorite",
         _ => "",
     }
 }
@@ -240,7 +242,7 @@ fn ops_for_field(field_key: &str) -> Vec<(&'static str, &'static str)> {
         "year" | "rating_audience" | "rating_critic" => {
             vec![("eq", "is"), ("not_eq", "is not"), ("gt", ">"), ("lt", "<")]
         }
-        "parental_rating" | "has_trailer" => vec![],
+        "parental_rating" | "has_trailer" | "favorite" => vec![],
         _ => vec![("is", "is"), ("is_not", "is not")],
     }
 }
@@ -349,6 +351,9 @@ fn rule_to_raw(rule: &FilterRule) -> (String, String, String) {
                 .join(", ");
             ("collection_id".into(), set_op_str(op), val)
         }
+        FilterRule::Favorite { value } => {
+            ("favorite".into(), String::new(), value.to_string())
+        }
     }
 }
 
@@ -447,6 +452,9 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
                 .split(", ")
                 .filter_map(|s| Uuid::parse_str(s.trim()).ok())
                 .collect(),
+        },
+        "favorite" => FilterRule::Favorite {
+            value: value_str == "true",
         },
         _ => FilterRule::Genre {
             op: set_op,
@@ -783,7 +791,8 @@ pub fn FilterRuleRow(
     let is_parental_rating = field_val == "parental_rating";
     let is_catalog = field_val == "catalog";
     let is_collection_id = field_val == "collection_id";
-    let hide_operator = is_trailer || is_parental_rating;
+    let is_favorite = field_val == "favorite";
+    let hide_operator = is_trailer || is_parental_rating || is_favorite;
 
     let fv1 = field_val.clone();
     let fv2 = field_val.clone();
@@ -867,6 +876,7 @@ pub fn FilterRuleRow(
                 if show_field("person")          { option { value: "person",           selected: field_val == "person",           { field_label("person") } } }
                 if show_field("catalog")         { option { value: "catalog",          selected: field_val == "catalog",          { field_label("catalog") } } }
                 if show_field("collection_id")   { option { value: "collection_id",    selected: field_val == "collection_id",    { field_label("collection_id") } } }
+                if show_field("favorite")        { option { value: "favorite",         selected: field_val == "favorite",         { field_label("favorite") } } }
             }
             if !hide_operator {
                 select {
@@ -899,6 +909,19 @@ pub fn FilterRuleRow(
                     values: rule_values(&rule),
                     idx,
                     rules,
+                }
+            } else if is_favorite {
+                select {
+                    class: "select-input",
+                    style: "flex:2 1 130px;min-width:130px",
+                    value: "{value_val}",
+                    onchange: move |e| {
+                        if let Some(row) = rules.write().get_mut(idx) {
+                            *row = raw_to_rule("favorite", "", &e.value());
+                        }
+                    },
+                    option { value: "true",  selected: value_val == "true",  "Yes" }
+                    option { value: "false", selected: value_val == "false", "No" }
                 }
             } else if is_trailer {
                 select {

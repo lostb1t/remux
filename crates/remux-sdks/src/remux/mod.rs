@@ -3282,6 +3282,10 @@ pub enum FilterRule {
         op: SetOp,
         ids: Vec<Uuid>,
     },
+    /// Matches items the requesting user has (or has not) marked as a favourite.
+    Favorite {
+        value: bool,
+    },
 }
 
 /// Whether all rules must match (AND) or any rule must match (OR).
