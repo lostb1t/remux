@@ -93,7 +93,7 @@ impl MediaResolveService {
                 match client
                     .execute(
                         sdks::tmdb::SeriesEndpoint::new(tmdb_id, None)
-                            .with_cache(Duration::from_secs(86400)),
+                            .with_cache(ID_CACHE_TTL),
                     )
                     .await
                 {
@@ -113,7 +113,7 @@ impl MediaResolveService {
                 match client
                     .execute(
                         sdks::tmdb::MovieEndpoint::new(tmdb_id, None)
-                            .with_cache(Duration::from_secs(86400)),
+                            .with_cache(ID_CACHE_TTL),
                     )
                     .await
                 {
@@ -146,7 +146,7 @@ impl MediaResolveService {
             let series = client
                 .execute(
                     sdks::tmdb::SeriesEndpoint::new(tmdb_id, None)
-                        .with_cache(Duration::from_secs(86400)),
+                        .with_cache(ID_CACHE_TTL),
                 )
                 .await
                 .ok()?;
@@ -158,7 +158,7 @@ impl MediaResolveService {
             let movie = client
                 .execute(
                     sdks::tmdb::MovieEndpoint::new(tmdb_id, None)
-                        .with_cache(Duration::from_secs(86400)),
+                        .with_cache(ID_CACHE_TTL),
                 )
                 .await
                 .ok()?;
@@ -263,7 +263,7 @@ impl MediaResolveService {
                     external_source: external_source.to_string(),
                 }
                 .with_cache(ID_CACHE_TTL)
-                .expiring_early(ID_MISS_CACHE_TTL, find_matched_nothing),
+                .with_cache_ttl_if(ID_MISS_CACHE_TTL, find_matched_nothing),
             )
             .await?;
         Ok(if is_tv {
