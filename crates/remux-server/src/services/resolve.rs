@@ -34,6 +34,28 @@ fn find_matched_nothing(found: &sdks::tmdb::FindByIdResponse) -> bool {
             .is_empty()
 }
 
+/// The detail calls an id lookup makes, asking for `external_ids` alone.
+///
+/// The addon fetches the same two paths for metadata on a six minute TTL. The
+/// response cache is keyed on the url, so asking for the addon's wider default
+/// would land on its entry and stamp `ID_CACHE_TTL` over it, leaving metadata
+/// stale for a day.
+fn series_ids_endpoint(tmdb_id: i64) -> sdks::tmdb::SeriesEndpoint {
+    sdks::tmdb::SeriesEndpoint {
+        id: tmdb_id,
+        language: None,
+        append_to_response: vec!["external_ids".to_string()],
+    }
+}
+
+fn movie_ids_endpoint(tmdb_id: i64) -> sdks::tmdb::MovieEndpoint {
+    sdks::tmdb::MovieEndpoint {
+        id: tmdb_id,
+        language: None,
+        append_to_response: vec!["external_ids".to_string()],
+    }
+}
+
 pub struct MediaResolveService;
 
 impl MediaResolveService {
@@ -84,10 +106,7 @@ impl MediaResolveService {
         if let Some(tmdb_id) = ids.tmdb {
             if is_tv {
                 match client
-                    .execute(
-                        sdks::tmdb::SeriesEndpoint::new(tmdb_id, None)
-                            .with_cache(ID_CACHE_TTL),
-                    )
+                    .execute(series_ids_endpoint(tmdb_id).with_cache(ID_CACHE_TTL))
                     .await
                 {
                     Ok(series) => {
@@ -104,10 +123,7 @@ impl MediaResolveService {
                 }
             } else {
                 match client
-                    .execute(
-                        sdks::tmdb::MovieEndpoint::new(tmdb_id, None)
-                            .with_cache(ID_CACHE_TTL),
-                    )
+                    .execute(movie_ids_endpoint(tmdb_id).with_cache(ID_CACHE_TTL))
                     .await
                 {
                     Ok(movie) => {
@@ -137,10 +153,7 @@ impl MediaResolveService {
         // to fetch the full record which includes external_ids (via append_to_response).
         if is_tv {
             let series = client
-                .execute(
-                    sdks::tmdb::SeriesEndpoint::new(tmdb_id, None)
-                        .with_cache(ID_CACHE_TTL),
-                )
+                .execute(series_ids_endpoint(tmdb_id).with_cache(ID_CACHE_TTL))
                 .await
                 .ok()?;
             series
@@ -149,10 +162,7 @@ impl MediaResolveService {
                 .and_then(|s| db::NonEmptyString::try_new(s).ok())
         } else {
             let movie = client
-                .execute(
-                    sdks::tmdb::MovieEndpoint::new(tmdb_id, None)
-                        .with_cache(ID_CACHE_TTL),
-                )
+                .execute(movie_ids_endpoint(tmdb_id).with_cache(ID_CACHE_TTL))
                 .await
                 .ok()?;
             movie
@@ -1546,6 +1556,29 @@ mod tests {
                     .await
                     .unwrap(),
                 None
+            );
+        }
+    }
+
+    /// The addon caches the same two paths for six minutes, and the response
+    /// cache is keyed on the url, so an id lookup must not ask for its url.
+    #[test]
+    fn id_lookups_do_not_share_the_addon_s_metadata_url() {
+        use remux_sdks::Endpoint;
+
+        for (ids, meta) in [
+            (
+                series_ids_endpoint(1438).query(),
+                sdks::tmdb::SeriesEndpoint::new(1438, None).query(),
+            ),
+            (
+                movie_ids_endpoint(949).query(),
+                sdks::tmdb::MovieEndpoint::new(949, None).query(),
+            ),
+        ] {
+            assert_ne!(ids, meta);
+            assert!(
+                ids.contains(&("append_to_response".into(), "external_ids".into()))
             );
         }
     }
