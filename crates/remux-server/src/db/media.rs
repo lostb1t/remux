@@ -1653,6 +1653,7 @@ impl Media {
         struct ParentRow {
             id: Uuid,
             title: String,
+            kind: MediaKind,
             channel_number: Option<i64>,
             external_ids: ExternalIds,
         }
@@ -1660,7 +1661,7 @@ impl Media {
         let mut parent_map: HashMap<Uuid, ParentRow> = HashMap::new();
         for chunk in ids_needed.chunks(500) {
             let mut qb = sqlx::QueryBuilder::new(
-                "SELECT id, title, channel_number, external_ids FROM media WHERE id IN (",
+                "SELECT id, title, kind, channel_number, external_ids FROM media WHERE id IN (",
             );
             let mut sep = qb.separated(", ");
             for id in chunk {
@@ -1677,20 +1678,23 @@ impl Media {
                         .filter_map(|r| {
                             let id: Option<Uuid> = r.get(0);
                             let title: Option<String> = r.get(1);
-                            let channel_number: Option<i64> = r.get(2);
+                            let kind: Option<MediaKind> = r.get(2);
+                            let channel_number: Option<i64> = r.get(3);
                             let external_ids: ExternalIds = r
-                                .try_get::<Option<String>, _>(3)
+                                .try_get::<Option<String>, _>(4)
                                 .ok()
                                 .flatten()
                                 .and_then(|s| serde_json::from_str(&s).ok())
                                 .unwrap_or_default();
                             id.zip(title)
-                                .map(|(id, title)| {
+                                .zip(kind)
+                                .map(|((id, title), kind)| {
                                     (
                                         id,
                                         ParentRow {
                                             id,
                                             title,
+                                            kind,
                                             channel_number,
                                             external_ids,
                                         },
@@ -1717,6 +1721,9 @@ impl Media {
                 m.id = row.id;
                 m.title = row
                     .title
+                    .clone();
+                m.kind = row
+                    .kind
                     .clone();
                 m.channel_number = row.channel_number;
                 m.external_ids = row
