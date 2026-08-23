@@ -407,7 +407,11 @@ impl<EP: Endpoint> Cached<EP> {
     /// Keep a response matching `when` for `ttl` instead of the full cache
     /// lifetime. Reads still consult the cache; only the expiry stamped on
     /// the stored entry changes.
-    pub fn expiring_early(self, ttl: Duration, when: fn(&EP::Output) -> bool) -> Self {
+    pub fn with_cache_ttl_if(
+        self,
+        ttl: Duration,
+        when: fn(&EP::Output) -> bool,
+    ) -> Self {
         Self {
             expire_early: Some((ttl, when)),
             ..self
@@ -789,7 +793,7 @@ mod cache_tests {
         let (mock, client, probe) = probe(&server, "matching", serde_json::json!([]));
         let endpoint = probe
             .with_cache(NEVER)
-            .expiring_early(BRIEF, is_empty);
+            .with_cache_ttl_if(BRIEF, is_empty);
 
         client
             .execute(endpoint.clone())
@@ -816,7 +820,7 @@ mod cache_tests {
             probe(&server, "rejected", serde_json::json!(["found"]));
         let endpoint = probe
             .with_cache(NEVER)
-            .expiring_early(BRIEF, is_empty);
+            .with_cache_ttl_if(BRIEF, is_empty);
 
         client
             .execute(endpoint.clone())
