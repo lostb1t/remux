@@ -234,7 +234,7 @@ impl MediaResolveService {
             .execute(
                 sdks::kitsu::MappingsEndpoint { kitsu_id }
                     .with_cache(ID_CACHE_TTL)
-                    .with_cache_ttl_if(ID_MISS_CACHE_TTL, |m| {
+                    .with_cache_miss(ID_MISS_CACHE_TTL, |m| {
                         m.tvdb_id()
                             .is_none()
                     }),
@@ -291,7 +291,7 @@ impl MediaResolveService {
                     external_source: external_source.to_string(),
                 }
                 .with_cache(ID_CACHE_TTL)
-                .with_cache_ttl_if(ID_MISS_CACHE_TTL, find_matched_nothing),
+                .with_cache_miss(ID_MISS_CACHE_TTL, find_matched_nothing),
             )
             .await?;
         Ok(if is_tv {
@@ -351,7 +351,7 @@ impl MediaResolveService {
                 }
                 .absent_on(404)
                 .with_cache(ID_CACHE_TTL)
-                .with_cache_ttl_if(ID_MISS_CACHE_TTL, episode_ids_missing),
+                .with_cache_miss(ID_MISS_CACHE_TTL, episode_ids_missing),
             )
             .await?
         else {
