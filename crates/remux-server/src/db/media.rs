@@ -2352,23 +2352,14 @@ impl Media {
 
     /// Widen `external_ids` with `patch`, without touching any other column.
     ///
-    /// `save` would upsert the whole row from a struct fetched several network
-    /// round trips ago, reverting any concurrent edit. So would writing a
-    /// caller's merged snapshot back wholesale: two lookups enriching the same
-    /// item read the same row, fill different ids, and whichever writes last
-    /// erases the other's. The merge therefore happens in SQL, against the row
-    /// as it is at write time rather than as the caller last saw it.
-    ///
-    /// Stored ids win over `patch`, matching [`ExternalIds::merge`] with
-    /// `replace: false`, so enrichment only ever adds. `None` fields are
-    /// skipped on the way out (`skip_serializing_none`), so a patch never
-    /// carries a null that `json_patch` would read as a delete.
-    ///
-    /// An `external_ids` that is not valid JSON is treated as empty rather
-    /// than failing the write, which repairs the row.
-    ///
-    /// Returns the ids as they are stored after the merge, or `None` when no
-    /// such row exists.
+    /// Merged in SQL, not from the caller's snapshot: two lookups enriching one
+    /// item would otherwise fill different ids and the later write erase the
+    /// earlier. Stored ids win, as in [`ExternalIds::merge`] with
+    /// `replace: false`, so enrichment only ever adds. The stored side is the
+    /// merge patch here, so its nulls are dropped first: a null in a patch
+    /// deletes the key rather than leaving it, which would erase the very id
+    /// being added. Invalid JSON is treated as empty. Either repairs the row
+    /// rather than failing the write.
     pub async fn widen_external_ids(
         db: &sqlx::SqlitePool,
         id: &Uuid,
@@ -2378,8 +2369,8 @@ impl Media {
             "UPDATE media \
              SET external_ids = json_patch( \
                      ?1, \
-                     CASE WHEN json_valid(external_ids) \
-                          THEN external_ids ELSE '{}' END \
+                     json_patch('{}', CASE WHEN json_valid(external_ids) \
+                                           THEN external_ids ELSE '{}' END) \
                  ), \
                  updated_at = ?2 \
              WHERE id = ?3 \
@@ -9387,6 +9378,53 @@ mod tests {
                     .imdb
                     .map(String::from),
                 Some("tt0113277".to_string())
+            );
+        }
+
+        /// A row written before `skip_serializing_none` can hold an explicit
+        /// null, which as a merge patch would delete rather than keep.
+        #[tokio::test]
+        async fn a_stored_null_does_not_delete_the_id_being_added() {
+            let (_s, guard) = new_test_server()
+                .await
+                .unwrap();
+            let ctx = &guard.0;
+            let id = seed(
+                ctx,
+                ExternalIds {
+                    imdb: NonEmptyString::try_new("tt0113277".to_string()).ok(),
+                    ..Default::default()
+                },
+            )
+            .await;
+            sqlx::query(
+                "UPDATE media \
+                 SET external_ids = json('{\"imdb\":\"tt0113277\",\"tmdb\":null}') \
+                 WHERE id = ?1",
+            )
+            .bind(id)
+            .execute(&ctx.db)
+            .await
+            .unwrap();
+
+            let merged = Media::widen_external_ids(
+                &ctx.db,
+                &id,
+                &ExternalIds {
+                    tmdb: Some(949),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+            assert_eq!(merged.tmdb, Some(949));
+            assert_eq!(
+                stored(ctx, &id)
+                    .await
+                    .tmdb,
+                Some(949)
             );
         }
 
