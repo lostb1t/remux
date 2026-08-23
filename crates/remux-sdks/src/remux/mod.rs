@@ -4346,6 +4346,7 @@ pub struct RemoteImageResult {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct SearchHintsQuery {
+    #[serde(alias = "searchTerm")]
     pub search_term: Option<String>,
     pub start_index: Option<u32>,
     pub limit: Option<u32>,
@@ -6505,6 +6506,19 @@ mod tests {
             let json = serde_json::to_string(&variant).unwrap();
             let back: EmbeddedSubtitleHandling = serde_json::from_str(&json).unwrap();
             assert_eq!(back, variant);
+        }
+    }
+
+    #[test]
+    fn search_hints_query_accepts_pascal_and_camel_case_search_term() {
+        for query in ["SearchTerm=Naruto", "searchTerm=Naruto"] {
+            let parsed: SearchHintsQuery = serde_urlencoded::from_str(query).unwrap();
+            assert_eq!(
+                parsed
+                    .search_term
+                    .as_deref(),
+                Some("Naruto")
+            );
         }
     }
 
