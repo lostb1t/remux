@@ -3775,7 +3775,13 @@ impl Media {
             }
 
             if let Some(ref f) = filter.filter_rules {
-                apply_filter_rules(qb, f);
+                apply_filter_rules(
+                    qb,
+                    f,
+                    filter
+                        .user_id
+                        .as_ref(),
+                );
             }
             if let Some(ref ids) = filter.exclude_ids {
                 if !ids.is_empty() {
@@ -3809,7 +3815,13 @@ impl Media {
                 });
             if !container_only {
                 if let Some(ref f) = filter.policy_filter {
-                    apply_filter_rules(qb, f);
+                    apply_filter_rules(
+                        qb,
+                        f,
+                        filter
+                            .user_id
+                            .as_ref(),
+                    );
                 }
             }
         }
@@ -4372,7 +4384,13 @@ impl Media {
                 }
                 cc_qb.push(")");
                 if let Some(pf) = child_policy_filter {
-                    apply_filter_rules(&mut cc_qb, pf);
+                    apply_filter_rules(
+                        &mut cc_qb,
+                        pf,
+                        filter
+                            .user_id
+                            .as_ref(),
+                    );
                 }
                 cc_qb.push(" GROUP BY parent_id");
                 match cc_qb
@@ -4417,7 +4435,13 @@ impl Media {
                     pl_qb.push(
                         ") AND right_media_id IN (SELECT id FROM media WHERE 1=1",
                     );
-                    apply_filter_rules(&mut pl_qb, pf);
+                    apply_filter_rules(
+                        &mut pl_qb,
+                        pf,
+                        filter
+                            .user_id
+                            .as_ref(),
+                    );
                     pl_qb.push(")");
                 } else {
                     pl_qb.push(")");
@@ -4518,10 +4542,22 @@ impl Media {
                         }
                     }
                     if let Some(sf) = sf {
-                        apply_filter_rules(&mut qb, sf);
+                        apply_filter_rules(
+                            &mut qb,
+                            sf,
+                            filter
+                                .user_id
+                                .as_ref(),
+                        );
                     }
                     if let Some(pf) = child_policy_filter {
-                        apply_filter_rules(&mut qb, pf);
+                        apply_filter_rules(
+                            &mut qb,
+                            pf,
+                            filter
+                                .user_id
+                                .as_ref(),
+                        );
                     }
                 }
                 match qb
@@ -6849,6 +6885,7 @@ pub fn push_release_date_filter(
 pub fn apply_filter_rules(
     qb: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
     filter: &remux_sdks::remux::CollectionFilter,
+    user_id: Option<&Uuid>,
 ) {
     use remux_sdks::remux::FilterMatchMode;
 
@@ -6867,7 +6904,7 @@ pub fn apply_filter_rules(
             let rules: Vec<_> = g
                 .rules
                 .iter()
-                .filter_map(filter_rule_to_sql)
+                .filter_map(|r| filter_rule_to_sql(r, user_id))
                 .collect();
             if rules.is_empty() {
                 None
@@ -6919,7 +6956,10 @@ pub fn apply_filter_rules(
 /// Values are embedded directly — no string parsing needed since the rule carries typed values.
 /// Returns `(sql, negated)` — caller wraps in `NOT(...)` when negated is true.
 /// Returns `None` if the rule should be skipped (e.g. empty values list).
-fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, bool)> {
+fn filter_rule_to_sql(
+    rule: &remux_sdks::remux::FilterRule,
+    user_id: Option<&Uuid>,
+) -> Option<(String, bool)> {
     use remux_sdks::remux::{FilterRule as R, NumericOp, SetOp};
 
     fn esc(s: &str) -> String {
@@ -7191,6 +7231,23 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
             Some((format!("media.id IN ({in_clause})"), negated))
         }
         R::CollectionId { .. } => None,
+        R::Favorite { value } => {
+            let user_clause = user_id
+                .map(|id| format!(" AND ums.user_id = X'{}'", id.simple()))
+                .unwrap_or_default();
+            let sql = if *value {
+                format!(
+                    "EXISTS (SELECT 1 FROM user_media_state ums \
+                     WHERE ums.media_id = media.id{user_clause} AND ums.favorite = 1)"
+                )
+            } else {
+                format!(
+                    "NOT EXISTS (SELECT 1 FROM user_media_state ums \
+                     WHERE ums.media_id = media.id{user_clause} AND ums.favorite = 1)"
+                )
+            };
+            Some((sql, false))
+        }
     }
 }
 
@@ -8807,5 +8864,143 @@ mod tests {
 
         let filtered = fetch_titles(Some(vec![AlbumKind::Album])).await;
         assert_eq!(filtered, vec!["No Type", "Real Album"]);
+    }
+
+    async fn filter_rule_titles(
+        db: &sqlx::SqlitePool,
+        rule: remux_sdks::remux::FilterRule,
+        user_id: uuid::Uuid,
+    ) -> Vec<String> {
+        let filter = remux_sdks::remux::CollectionFilter {
+            groups: vec![remux_sdks::remux::FilterGroup {
+                rules: vec![rule],
+                match_mode: remux_sdks::remux::FilterMatchMode::All,
+            }],
+            match_mode: remux_sdks::remux::FilterMatchMode::All,
+        };
+        Media::get_by_filter(
+            db,
+            &MediaFilter {
+                kind: Some(vec![MediaKind::Movie]),
+                filter_rules: Some(filter),
+                user_id: Some(user_id),
+                sort_by: vec![api::ItemSortBy::SortName],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .records
+        .into_iter()
+        .map(|m| m.title)
+        .collect()
+    }
+
+    #[tokio::test]
+    async fn favorite_filter_rule_returns_only_favorited_items() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let uid = uuid::Uuid::new_v4();
+
+        let mut fav = media_row(MediaKind::Movie, "Fav", "tt8880001");
+        fav.save(db)
+            .await
+            .unwrap();
+        let mut not_fav = media_row(MediaKind::Movie, "NotFav", "tt8880002");
+        not_fav
+            .save(db)
+            .await
+            .unwrap();
+        // no_state has no UMS row at all
+        let mut no_state = media_row(MediaKind::Movie, "NoState", "tt8880003");
+        no_state
+            .save(db)
+            .await
+            .unwrap();
+
+        insert_user_state(db, uid, fav.id, 0, true).await;
+        insert_user_state(db, uid, not_fav.id, 0, false).await;
+
+        let titles = filter_rule_titles(
+            db,
+            remux_sdks::remux::FilterRule::Favorite { value: true },
+            uid,
+        )
+        .await;
+        assert_eq!(titles, vec!["Fav"]);
+    }
+
+    #[tokio::test]
+    async fn favorite_filter_rule_not_favorite_excludes_explicit_and_absent_favorites()
+    {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let uid = uuid::Uuid::new_v4();
+
+        let mut fav = media_row(MediaKind::Movie, "Fav", "tt8881001");
+        fav.save(db)
+            .await
+            .unwrap();
+        let mut not_fav = media_row(MediaKind::Movie, "NotFav", "tt8881002");
+        not_fav
+            .save(db)
+            .await
+            .unwrap();
+        let mut no_state = media_row(MediaKind::Movie, "NoState", "tt8881003");
+        no_state
+            .save(db)
+            .await
+            .unwrap();
+
+        insert_user_state(db, uid, fav.id, 0, true).await;
+        insert_user_state(db, uid, not_fav.id, 0, false).await;
+
+        let mut titles = filter_rule_titles(
+            db,
+            remux_sdks::remux::FilterRule::Favorite { value: false },
+            uid,
+        )
+        .await;
+        titles.sort();
+        assert_eq!(titles, vec!["NoState", "NotFav"]);
+    }
+
+    #[tokio::test]
+    async fn favorite_filter_rule_is_scoped_to_the_requesting_user() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let uid = uuid::Uuid::new_v4();
+        let other = uuid::Uuid::new_v4();
+
+        let mut item = media_row(MediaKind::Movie, "Item", "tt8882001");
+        item.save(db)
+            .await
+            .unwrap();
+
+        // only the other user has favorited this item
+        insert_user_state(db, other, item.id, 0, true).await;
+
+        let titles = filter_rule_titles(
+            db,
+            remux_sdks::remux::FilterRule::Favorite { value: true },
+            uid,
+        )
+        .await;
+        assert!(
+            titles.is_empty(),
+            "another user's favorite must not bleed through"
+        );
     }
 }

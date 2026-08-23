@@ -21,6 +21,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut cultures: Signal<Vec<CultureDto>> = use_signal(Vec::new);
     let mut catalog_max_items = use_signal(|| 100_i64);
     let mut meta_concurrency = use_signal(|| 12_i64);
+    let mut delivery_concurrency = use_signal(|| 8_i64);
     let mut filter_digital_release = use_signal(|| true);
     let mut digital_release_buffer = use_signal(|| 0_i64);
     let mut subtitle_languages = use_signal(String::new);
@@ -59,6 +60,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                             .unwrap_or(100),
                     );
                     meta_concurrency.set(cfg.meta_concurrency);
+                    delivery_concurrency.set(cfg.delivery_concurrency);
                     filter_digital_release.set(cfg.filter_by_digital_release_date);
                     digital_release_buffer.set(cfg.digital_release_buffer_days);
                     subtitle_languages.set(
@@ -105,6 +107,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
             .clone();
         let max = *catalog_max_items.peek();
         let concurrency = *meta_concurrency.peek();
+        let delivery = *delivery_concurrency.peek();
         let filter_dr = *filter_digital_release.peek();
         let dr_buffer = *digital_release_buffer.peek();
         let sub_langs_str = subtitle_languages
@@ -122,6 +125,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
         cfg.quick_connect_available = Some(qc_enabled);
         cfg.catalog_max_items = Some(max);
         cfg.meta_concurrency = concurrency;
+        cfg.delivery_concurrency = delivery;
         cfg.filter_by_digital_release_date = filter_dr;
         cfg.digital_release_buffer_days = dr_buffer;
         cfg.subtitle_languages = Some(
@@ -240,6 +244,26 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                             }
                             p { class: "field-hint",
                                 "Number of items to enrich with metadata concurrently during library import. Higher values are faster but increase memory usage and may trigger rate limits on metadata sources. Default: 12."
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", r#for: "s-delivery-concurrency", "Delivery Concurrency" }
+                            input {
+                                id: "s-delivery-concurrency",
+                                r#type: "number",
+                                class: "field-input",
+                                min: "1",
+                                max: "200",
+                                value: "{delivery_concurrency}",
+                                oninput: move |e| {
+                                    if let Ok(n) = e.value().parse::<i64>() {
+                                        delivery_concurrency.set(n);
+                                    }
+                                },
+                            }
+                            p { class: "field-hint",
+                                "Number of media trackers whose queued watch activity is sent concurrently. One tracker's events are always sent in order, one at a time, so this only controls how many trackers are worked on at once. Default: 8."
                             }
                         }
 
