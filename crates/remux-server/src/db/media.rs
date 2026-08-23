@@ -2336,25 +2336,47 @@ impl Media {
         Ok(())
     }
 
-    /// Widen `external_ids` without touching any other column.
+    /// Widen `external_ids` with `patch`, without touching any other column.
     ///
     /// `save` would upsert the whole row from a struct fetched several network
-    /// round trips ago, reverting any concurrent edit. This reads nothing else,
-    /// so it cannot.
-    pub async fn update_external_ids(
+    /// round trips ago, reverting any concurrent edit. So would writing a
+    /// caller's merged snapshot back wholesale: two lookups enriching the same
+    /// item read the same row, fill different ids, and whichever writes last
+    /// erases the other's. The merge therefore happens in SQL, against the row
+    /// as it is at write time rather than as the caller last saw it.
+    ///
+    /// Stored ids win over `patch`, matching [`ExternalIds::merge`] with
+    /// `replace: false`, so enrichment only ever adds. `None` fields are
+    /// skipped on the way out (`skip_serializing_none`), so a patch never
+    /// carries a null that `json_patch` would read as a delete.
+    ///
+    /// An `external_ids` that is not valid JSON is treated as empty rather
+    /// than failing the write, which repairs the row.
+    ///
+    /// Returns the ids as they are stored after the merge, or `None` when no
+    /// such row exists.
+    pub async fn widen_external_ids(
         db: &sqlx::SqlitePool,
         id: &Uuid,
-        external_ids: &ExternalIds,
-    ) -> Result<()> {
-        sqlx::query(
-            "UPDATE media SET external_ids = ?1, updated_at = ?2 WHERE id = ?3",
+        patch: &ExternalIds,
+    ) -> Result<Option<ExternalIds>> {
+        let merged: Option<sqlx::types::Json<ExternalIds>> = sqlx::query_scalar(
+            "UPDATE media \
+             SET external_ids = json_patch( \
+                     ?1, \
+                     CASE WHEN json_valid(external_ids) \
+                          THEN external_ids ELSE '{}' END \
+                 ), \
+                 updated_at = ?2 \
+             WHERE id = ?3 \
+             RETURNING external_ids",
         )
-        .bind(sqlx::types::Json(external_ids))
+        .bind(sqlx::types::Json(patch))
         .bind(Utc::now().naive_utc())
         .bind(id)
-        .execute(db)
+        .fetch_optional(db)
         .await?;
-        Ok(())
+        Ok(merged.map(|j| j.0))
     }
 
     /// Invalidate the probe cache for a media source (e.g. after its URL changes).
@@ -8835,5 +8857,192 @@ mod tests {
 
         let filtered = fetch_titles(Some(vec![AlbumKind::Album])).await;
         assert_eq!(filtered, vec!["No Type", "Real Album"]);
+    }
+
+    mod widen_external_ids {
+        use super::*;
+        use crate::integration_test::new_test_server;
+
+        async fn seed(ctx: &crate::AppContext, ids: ExternalIds) -> Uuid {
+            let mut m = Media {
+                id: Uuid::from(&MediaIdRaw {
+                    kind: MediaKind::Movie,
+                    external_ids: ids.clone(),
+                    season: None,
+                    episode: None,
+                }),
+                title: "Heat".into(),
+                kind: MediaKind::Movie,
+                external_ids: ids,
+                ..Default::default()
+            };
+            m.save(&ctx.db)
+                .await
+                .unwrap();
+            m.id
+        }
+
+        async fn stored(ctx: &crate::AppContext, id: &Uuid) -> ExternalIds {
+            Media::get_by_id(&ctx.db, id)
+                .await
+                .unwrap()
+                .unwrap()
+                .external_ids
+        }
+
+        /// The bug this replaced `update_external_ids` for: two lookups read
+        /// the same row, resolve different ids, and the second write used to
+        /// carry a snapshot that predated the first.
+        #[tokio::test]
+        async fn a_stale_writer_cannot_erase_what_another_added() {
+            let (_s, guard) = new_test_server()
+                .await
+                .unwrap();
+            let ctx = &guard.0;
+            let id = seed(
+                ctx,
+                ExternalIds {
+                    imdb: NonEmptyString::try_new("tt0113277".to_string()).ok(),
+                    ..Default::default()
+                },
+            )
+            .await;
+
+            Media::widen_external_ids(
+                &ctx.db,
+                &id,
+                &ExternalIds {
+                    tmdb: Some(949),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            Media::widen_external_ids(
+                &ctx.db,
+                &id,
+                &ExternalIds {
+                    tvdb: Some(468),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+            let ids = stored(ctx, &id).await;
+            assert_eq!(ids.tmdb, Some(949), "the earlier write was erased");
+            assert_eq!(ids.tvdb, Some(468));
+            assert_eq!(
+                ids.imdb
+                    .map(String::from),
+                Some("tt0113277".to_string()),
+                "the seeded id was erased"
+            );
+        }
+
+        /// `replace: false`, so enrichment adds and never overwrites.
+        #[tokio::test]
+        async fn a_stored_id_wins_over_the_patch() {
+            let (_s, guard) = new_test_server()
+                .await
+                .unwrap();
+            let ctx = &guard.0;
+            let id = seed(
+                ctx,
+                ExternalIds {
+                    imdb: NonEmptyString::try_new("tt0113277".to_string()).ok(),
+                    tmdb: Some(949),
+                    ..Default::default()
+                },
+            )
+            .await;
+
+            let merged = Media::widen_external_ids(
+                &ctx.db,
+                &id,
+                &ExternalIds {
+                    tmdb: Some(1111),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+            assert_eq!(merged.tmdb, Some(949));
+            assert_eq!(
+                stored(ctx, &id)
+                    .await
+                    .tmdb,
+                Some(949)
+            );
+        }
+
+        /// An episode the caller never saved must not fail the delivery that
+        /// was enriching it.
+        #[tokio::test]
+        async fn a_row_that_does_not_exist_is_not_an_error() {
+            let (_s, guard) = new_test_server()
+                .await
+                .unwrap();
+            let ctx = &guard.0;
+
+            assert!(
+                Media::widen_external_ids(
+                    &ctx.db,
+                    &Uuid::new_v4(),
+                    &ExternalIds {
+                        tmdb: Some(949),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap()
+                .is_none()
+            );
+        }
+
+        /// `external_ids` has been found holding `''`, which `sqlx` cannot
+        /// decode. Widening one repairs it rather than failing the write.
+        #[tokio::test]
+        async fn a_row_holding_invalid_json_is_repaired() {
+            let (_s, guard) = new_test_server()
+                .await
+                .unwrap();
+            let ctx = &guard.0;
+            let id = seed(
+                ctx,
+                ExternalIds {
+                    imdb: NonEmptyString::try_new("tt0113277".to_string()).ok(),
+                    ..Default::default()
+                },
+            )
+            .await;
+            sqlx::query("UPDATE media SET external_ids = '' WHERE id = ?1")
+                .bind(id)
+                .execute(&ctx.db)
+                .await
+                .unwrap();
+
+            let merged = Media::widen_external_ids(
+                &ctx.db,
+                &id,
+                &ExternalIds {
+                    tmdb: Some(949),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+            assert_eq!(merged.tmdb, Some(949));
+            assert_eq!(
+                stored(ctx, &id)
+                    .await
+                    .tmdb,
+                Some(949)
+            );
+        }
     }
 }
