@@ -186,6 +186,7 @@ impl MediaResolveService {
         if let Some(tmdb) = media
             .grandparent
             .as_ref()
+            .filter(|g| g.kind == db::MediaKind::Series)
             .and_then(|g| {
                 g.external_ids
                     .tmdb
@@ -1510,6 +1511,7 @@ mod tests {
                 parent_id: Some(season.id),
                 grandparent_id: Some(series.id),
                 grandparent: Some(Box::new(db::Media {
+                    kind: db::MediaKind::Series,
                     external_ids: db::ExternalIds {
                         tmdb: Some(4242),
                         ..Default::default()
@@ -1524,6 +1526,37 @@ mod tests {
                     .await
                     .unwrap(),
                 Some(4242)
+            );
+        }
+
+        /// A corrupt `grandparent_id` can preload a non-series stub just as
+        /// easily as it can point the DB fallback at one; both paths refuse it.
+        #[tokio::test]
+        async fn a_preloaded_grandparent_that_is_not_a_series_is_ignored() {
+            let (_s, guard) = new_test_server()
+                .await
+                .unwrap();
+            let ctx = &guard.0;
+            let (_series, season) = seed(ctx, Some(1438), Some(9999)).await;
+            let episode = db::Media {
+                kind: db::MediaKind::Episode,
+                grandparent_id: Some(season.id),
+                grandparent: Some(Box::new(db::Media {
+                    kind: db::MediaKind::Season,
+                    external_ids: db::ExternalIds {
+                        tmdb: Some(4242),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })),
+                ..Default::default()
+            };
+
+            assert_eq!(
+                MediaResolveService::stored_series_tmdb_id(&episode, ctx)
+                    .await
+                    .unwrap(),
+                None
             );
         }
     }
