@@ -752,8 +752,7 @@ mod cache_tests {
         }
     }
 
-    /// Long enough that nothing here reaches it, so a re-request proves the
-    /// short TTL was the one stamped on the entry.
+    /// Long enough that nothing here reaches it.
     const NEVER: Duration = Duration::from_secs(600);
     const BRIEF: Duration = Duration::from_millis(300);
 
@@ -761,9 +760,8 @@ mod cache_tests {
         response.is_empty()
     }
 
-    /// Each test needs its own path: httpmock leases servers from a pool, so
-    /// two tests can share a port, and `HTTP_CACHE` is process-wide and keyed
-    /// on the url.
+    /// `HTTP_CACHE` is process-wide and keyed on the url, and httpmock pools
+    /// its servers, so each test needs its own path.
     fn probe<'s>(
         server: &'s httpmock::MockServer,
         path: &str,
@@ -834,11 +832,9 @@ mod cache_tests {
         assert_eq!(mock.hits(), 1);
     }
 
-    /// The regression a response-aware TTL could have caused: an endpoint that
-    /// never asks for early expiry has to keep behaving as it did when
-    /// `cache_ttl` alone decided. The body is one the rule above would have
-    /// called a miss, so a second request would expose a default that
-    /// shortened anything.
+    /// An endpoint that asks for no early expiry must still behave as it did
+    /// when `cache_ttl` alone decided. The body is one the rule above calls a
+    /// miss, so a shortened default would show up on the second request.
     #[tokio::test]
     async fn an_endpoint_with_no_rule_holds_its_ttl() {
         let server = httpmock::MockServer::start();

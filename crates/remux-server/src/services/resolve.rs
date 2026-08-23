@@ -16,20 +16,15 @@ use crate::{
     sdks::{CachedEndpoint, ClientError},
 };
 
-/// How long a resolved id mapping is cached for. One that exists never
-/// changes, unlike the metadata endpoints the addon also caches. Every id
-/// lookup shares the one value on purpose: the cache is keyed on the url
-/// alone, so callers that disagree just mean whichever ran first wins.
+/// A mapping that exists never changes, unlike the metadata the addon caches.
 const ID_CACHE_TTL: Duration = Duration::from_secs(86400);
 
-/// How long a `/find` that matched nothing is cached for. Not having indexed
-/// an item is only true until TMDB does, so a new release must not inherit
-/// `ID_CACHE_TTL`; still long enough that one library scan asks once.
+/// Not indexed yet is only true until TMDB indexes it, so a new release must
+/// not inherit `ID_CACHE_TTL`. Still long enough that one scan asks once.
 const ID_MISS_CACHE_TTL: Duration = Duration::from_secs(360);
 
-/// Both arms, because a tvdb id TMDB holds as a movie is a real answer even
-/// though the series caller gets `None` out of it. Only an empty response is
-/// the "not indexed yet" case.
+/// Both arms: a tvdb id TMDB holds as a movie is a real answer even though the
+/// series caller gets `None` from it. Only an empty response is a miss.
 fn find_matched_nothing(found: &sdks::tmdb::FindByIdResponse) -> bool {
     found
         .movie_results
@@ -42,10 +37,8 @@ fn find_matched_nothing(found: &sdks::tmdb::FindByIdResponse) -> bool {
 pub struct MediaResolveService;
 
 impl MediaResolveService {
-    /// `None` only when `tmdb_base_url` will not parse: an operator who has set
-    /// no key of their own falls back to the bundled one rather than losing the
-    /// lookup. Reads the settings row, so a path needing more than one lookup
-    /// builds it once and passes it down.
+    /// `None` only when `tmdb_base_url` will not parse; a missing key falls back
+    /// to the bundled one. Reads the settings row, so callers pass it down.
     async fn tmdb(ctx: &AppContext) -> Option<RestClient<BearerAuth>> {
         crate::common::tmdb_client(
             &ctx.db,
@@ -170,17 +163,14 @@ impl MediaResolveService {
         }
     }
 
-    /// The series' TMDB id as already stored, for an episode or a season.
+    /// The series' TMDB id as already stored, for an episode or a season:
+    /// the preloaded `grandparent` if there is one, else the row it names.
     ///
-    /// Prefers a preloaded `grandparent`, then the row `grandparent_id` names.
-    /// An episode or a season always carries one: `Media::validate` refuses to
-    /// store either without it, every tree addon sets it, and Stremio's errors
-    /// outright when it is missing. So there is no walk up `parent_id` here,
-    /// and the kind filter is what keeps a corrupt one from passing a season
-    /// off as the series.
+    /// No walk up `parent_id`, since `Media::validate` refuses to store either
+    /// kind without a `grandparent_id`. The kind filter is what stops a corrupt
+    /// one passing a season off as the series.
     ///
-    /// Reads only. [`Self::fill_series_tmdb`] resolves an id the series does
-    /// not carry yet, and stores it.
+    /// Reads only; [`Self::fill_series_tmdb`] is what resolves and stores.
     pub(crate) async fn stored_series_tmdb_id(
         media: &db::Media,
         ctx: &AppContext,
@@ -414,9 +404,7 @@ impl MediaResolveService {
             .external_ids
             .merge(&patch, false);
         if episode.external_ids != before {
-            // The stored row is the authoritative merge, so adopt it: it can
-            // only be wider than the local one, and delivering with an id a
-            // concurrent lookup just resolved beats delivering without it.
+            // Adopt the stored merge: it can only be wider than the local one.
             if let Some(stored) =
                 db::Media::widen_external_ids(&ctx.db, &episode.id, &patch).await?
             {
@@ -1139,8 +1127,8 @@ mod tests {
         .1
     }
 
-    /// What lets the completion path store a tmdb id without a re-key guard of
-    /// its own: a series tmdb could re-key is one `save` refuses outright.
+    /// A series tmdb could re-key is one `save` refuses outright, which is why
+    /// the completion path needs no re-key guard of its own.
     #[tokio::test]
     async fn a_series_tmdb_could_re_key_cannot_be_stored_at_all() {
         let (_s, guard) =
@@ -1326,8 +1314,7 @@ mod tests {
         });
     }
 
-    /// Not checked through `resolve_imdb_from_ids`, which reaches for the
-    /// real kitsu client and so cannot be pointed at a mock.
+    /// Not via `resolve_imdb_from_ids`, which reaches for the real kitsu client.
     #[tokio::test]
     async fn an_anime_series_is_searched_for_by_its_kitsu_mapping() {
         let server = httpmock::MockServer::start();
@@ -1473,9 +1460,8 @@ mod tests {
             );
         }
 
-        /// `grandparent_id` is an invariant, so the filter is the only thing
-        /// standing between a corrupt one and a season's own tmdb id being
-        /// spent as the series'.
+        /// The filter is all that stands between a corrupt `grandparent_id`
+        /// and a season's own tmdb id being spent as the series'.
         #[tokio::test]
         async fn a_grandparent_that_is_not_a_series_is_ignored() {
             let (_s, guard) = new_test_server()
@@ -1547,8 +1533,8 @@ mod tests {
             );
         }
 
-        /// A corrupt `grandparent_id` can preload a non-series stub just as
-        /// easily as it can point the DB fallback at one; both paths refuse it.
+        /// A corrupt `grandparent_id` can preload a non-series stub, not just
+        /// point the DB fallback at one.
         #[tokio::test]
         async fn a_preloaded_grandparent_that_is_not_a_series_is_ignored() {
             let (_s, guard) = new_test_server()
