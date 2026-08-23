@@ -220,6 +220,13 @@ pub trait Endpoint {
     fn cache_ttl_for(&self, _response: &Self::Output) -> Option<Duration> {
         self.cache_ttl()
     }
+
+    /// The JSON to deserialize in place of the body `status` came with, for a
+    /// status that is an answer rather than a failure. `None` leaves it an
+    /// error. See [`Absent`], which is how an endpoint opts in.
+    fn absent_body(&self, _status: u16) -> Option<&'static str> {
+        None
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -518,8 +525,106 @@ impl<A: Auth + Clone> RestClient<A> {
                 }
                 Ok(arc)
             }
+            s if endpoint
+                .absent_body(s)
+                .is_some() =>
+            {
+                let stand_in = endpoint
+                    .absent_body(s)
+                    .unwrap_or("null");
+                let arc = serde_json::from_str::<EP::Output>(stand_in)
+                    .map(Arc::new)
+                    .map_err(|e| ClientError::Json {
+                        status: s,
+                        source: e,
+                        endpoint: Some(url.to_string()),
+                        body: Some(text.clone()),
+                    })?;
+                if let Some(ttl) = endpoint.cache_ttl_for(&arc) {
+                    HTTP_CACHE.save_arc_with_weight(
+                        cache_key,
+                        Arc::clone(&arc),
+                        stand_in.len() as u32,
+                        ttl,
+                    );
+                }
+                Ok(arc)
+            }
             s => Err((self.map_error)(s, &url.to_string(), &text)),
         }
+    }
+}
+
+pub trait OptionalEndpoint: Endpoint + Sized {
+    /// Read `status` as "no such thing" rather than a failure, making the
+    /// `Output` an `Option`. The answer then caches like any other, so a run of
+    /// deliveries naming something the provider does not have asks once.
+    fn absent_on(self, status: u16) -> Absent<Self> {
+        Absent {
+            endpoint: self,
+            status,
+        }
+    }
+}
+
+impl<EP: Endpoint + Sized> OptionalEndpoint for EP {}
+
+/// Wraps an endpoint so one status deserializes as `null`. Compose it inside
+/// `with_cache` to hold the miss: `.absent_on(404).with_cache(ttl)`.
+#[derive(Clone)]
+pub struct Absent<EP: Endpoint> {
+    endpoint: EP,
+    status: u16,
+}
+
+impl<EP: Endpoint> Endpoint for Absent<EP> {
+    type Output = Option<EP::Output>;
+
+    fn method(&self) -> Method {
+        self.endpoint
+            .method()
+    }
+
+    fn path(&self) -> String {
+        self.endpoint
+            .path()
+    }
+
+    fn query(&self) -> Vec<(String, String)> {
+        self.endpoint
+            .query()
+    }
+
+    fn headers(&self) -> HeaderMap {
+        self.endpoint
+            .headers()
+    }
+
+    fn body(&self) -> Body {
+        self.endpoint
+            .body()
+    }
+
+    fn cache_ttl(&self) -> Option<Duration> {
+        self.endpoint
+            .cache_ttl()
+    }
+
+    fn cache_ttl_for(&self, response: &Self::Output) -> Option<Duration> {
+        match response {
+            Some(inner) => self
+                .endpoint
+                .cache_ttl_for(inner),
+            None => self.cache_ttl(),
+        }
+    }
+
+    fn absent_body(&self, status: u16) -> Option<&'static str> {
+        if status == self.status {
+            return Some("null");
+        }
+        self.endpoint
+            .absent_body(status)
     }
 }
 
@@ -596,6 +701,11 @@ impl<EP: Endpoint> Endpoint for Cached<EP> {
             _ => Some(self.ttl),
         }
     }
+
+    fn absent_body(&self, status: u16) -> Option<&'static str> {
+        self.endpoint
+            .absent_body(status)
+    }
 }
 
 /// Wraps an endpoint and appends extra query parameters to every request.
@@ -649,6 +759,11 @@ impl<EP: Endpoint> Endpoint for WithExtraQuery<EP> {
     fn cache_ttl_for(&self, response: &Self::Output) -> Option<Duration> {
         self.endpoint
             .cache_ttl_for(response)
+    }
+
+    fn absent_body(&self, status: u16) -> Option<&'static str> {
+        self.endpoint
+            .absent_body(status)
     }
 }
 

@@ -13,7 +13,7 @@ use crate::{
     AppContext, AppState, db,
     keyed_lock::KeyedLock,
     sdks,
-    sdks::{CachedEndpoint, ClientError},
+    sdks::{CachedEndpoint, OptionalEndpoint},
 };
 
 /// A mapping that exists never changes, unlike the metadata the addon caches.
@@ -298,7 +298,9 @@ impl MediaResolveService {
         Self::find_tmdb_id_by(external_id, external_source, true, client).await
     }
 
-    /// The episode's own external ids, `Ok(None)` when TMDB knows it by none.
+    /// The episode's own external ids, `Ok(None)` when TMDB has no such episode
+    /// or knows it by none. A 404 is cached like any other answer, so a series
+    /// TMDB does not carry is not re-asked for on every delivery.
     ///
     /// Appends `external_ids` alone, not the addon's default list: the cache is
     /// keyed on the url, so a wider request would inherit the addon's TTL.
@@ -308,7 +310,7 @@ impl MediaResolveService {
         episode: i64,
         client: &RestClient<BearerAuth>,
     ) -> anyhow::Result<Option<db::ExternalIds>> {
-        let ep = match client
+        let Some(ep) = client
             .execute(
                 sdks::tmdb::EpisodeEndpoint {
                     series_id: series_tmdb,
@@ -317,16 +319,13 @@ impl MediaResolveService {
                     language: None,
                     append_to_response: Some(vec!["external_ids".to_string()]),
                 }
-                .with_cache(ID_CACHE_TTL),
+                .absent_on(404)
+                .with_cache(ID_CACHE_TTL)
+                .with_cache_ttl_if(ID_MISS_CACHE_TTL, Option::is_none),
             )
-            .await
-        {
-            Ok(ep) => ep,
-            Err(
-                ClientError::Http { status: 404, .. }
-                | ClientError::Json { status: 404, .. },
-            ) => return Ok(None),
-            Err(e) => return Err(e.into()),
+            .await?
+        else {
+            return Ok(None);
         };
 
         let Some(external) = ep.external_ids else {
@@ -1017,6 +1016,30 @@ mod tests {
             .unwrap()
             .is_none()
         );
+    }
+
+    /// Every delivery for the same episode would otherwise re-ask, since the
+    /// client caches nothing it did not get a 2xx for.
+    #[tokio::test]
+    async fn an_episode_tmdb_does_not_know_is_asked_for_once() {
+        let server = httpmock::MockServer::start();
+        let missing = server.mock(|when, then| {
+            when.path("/tv/5150/season/7/episode/7");
+            then.status(404)
+                .json_body(serde_json::json!({ "status_code": 34 }));
+        });
+        let client = tmdb_client(&server.base_url());
+
+        for _ in 0..2 {
+            assert!(
+                MediaResolveService::episode_external_ids(5150, 7, 7, &client)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+
+        assert_eq!(missing.hits(), 1, "the miss was not cached");
     }
 
     /// The UUID this row would be derived as, were it ingested again.
