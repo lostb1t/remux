@@ -2253,7 +2253,14 @@ impl Media {
             stream_info = COALESCE(excluded.stream_info, media.stream_info),
             probe_data = COALESCE(excluded.probe_data, media.probe_data),
             grandparent_id = excluded.grandparent_id,
-            external_ids = excluded.external_ids,
+            -- Widened, not replaced: a write that resolved no ids of its own
+            -- omits them (`skip_serializing_none`), and must not drop ids
+            -- another one has since resolved. See `widen_external_ids`.
+            external_ids = json_patch(
+                CASE WHEN json_valid(media.external_ids)
+                     THEN media.external_ids ELSE '{}' END,
+                excluded.external_ids
+            ),
             external_ratings = COALESCE(excluded.external_ratings, media.external_ratings),
             promoted = excluded.promoted,
             collection_kind = excluded.collection_kind,
@@ -2615,7 +2622,11 @@ impl Media {
                 description = COALESCE(excluded.description, media.description),
                 trailers = COALESCE(excluded.trailers, media.trailers),
                 stream_info = COALESCE(excluded.stream_info, media.stream_info),
-                external_ids = excluded.external_ids,
+                external_ids = json_patch(
+                    CASE WHEN json_valid(media.external_ids)
+                         THEN media.external_ids ELSE '{}' END,
+                    excluded.external_ids
+                ),
                 external_ratings = COALESCE(excluded.external_ratings, media.external_ratings),
                 probe_data = COALESCE(excluded.probe_data, media.probe_data),
                 grandparent_id = excluded.grandparent_id,
@@ -9194,6 +9205,233 @@ mod tests {
         assert_eq!(filtered, vec!["No Type", "Real Album"]);
     }
 
+    mod widen_external_ids {
+        use super::*;
+        use crate::integration_test::new_test_server;
+
+        async fn seed(ctx: &crate::AppContext, ids: ExternalIds) -> Uuid {
+            let mut m = Media {
+                id: Uuid::from(&MediaIdRaw {
+                    kind: MediaKind::Movie,
+                    external_ids: ids.clone(),
+                    season: None,
+                    episode: None,
+                }),
+                title: "Heat".into(),
+                kind: MediaKind::Movie,
+                external_ids: ids,
+                ..Default::default()
+            };
+            m.save(&ctx.db)
+                .await
+                .unwrap();
+            m.id
+        }
+
+        async fn stored(ctx: &crate::AppContext, id: &Uuid) -> ExternalIds {
+            Media::get_by_id(&ctx.db, id)
+                .await
+                .unwrap()
+                .unwrap()
+                .external_ids
+        }
+
+        /// Two lookups read the same row and resolve different ids; the second
+        /// write used to carry a snapshot that predated the first.
+        #[tokio::test]
+        async fn a_stale_writer_cannot_erase_what_another_added() {
+            let (_s, guard) = new_test_server()
+                .await
+                .unwrap();
+            let ctx = &guard.0;
+            let id = seed(
+                ctx,
+                ExternalIds {
+                    imdb: NonEmptyString::try_new("tt0113277".to_string()).ok(),
+                    ..Default::default()
+                },
+            )
+            .await;
+
+            Media::widen_external_ids(
+                &ctx.db,
+                &id,
+                &ExternalIds {
+                    tmdb: Some(949),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            Media::widen_external_ids(
+                &ctx.db,
+                &id,
+                &ExternalIds {
+                    tvdb: Some(468),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+            let ids = stored(ctx, &id).await;
+            assert_eq!(ids.tmdb, Some(949), "the earlier write was erased");
+            assert_eq!(ids.tvdb, Some(468));
+            assert_eq!(
+                ids.imdb
+                    .map(String::from),
+                Some("tt0113277".to_string()),
+                "the seeded id was erased"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_stored_id_wins_over_the_patch() {
+            let (_s, guard) = new_test_server()
+                .await
+                .unwrap();
+            let ctx = &guard.0;
+            let id = seed(
+                ctx,
+                ExternalIds {
+                    imdb: NonEmptyString::try_new("tt0113277".to_string()).ok(),
+                    tmdb: Some(949),
+                    ..Default::default()
+                },
+            )
+            .await;
+
+            let merged = Media::widen_external_ids(
+                &ctx.db,
+                &id,
+                &ExternalIds {
+                    tmdb: Some(1111),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+            assert_eq!(merged.tmdb, Some(949));
+            assert_eq!(
+                stored(ctx, &id)
+                    .await
+                    .tmdb,
+                Some(949)
+            );
+        }
+
+        /// An episode the caller never saved must not fail its delivery.
+        #[tokio::test]
+        async fn a_row_that_does_not_exist_is_not_an_error() {
+            let (_s, guard) = new_test_server()
+                .await
+                .unwrap();
+            let ctx = &guard.0;
+
+            assert!(
+                Media::widen_external_ids(
+                    &ctx.db,
+                    &Uuid::new_v4(),
+                    &ExternalIds {
+                        tmdb: Some(949),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap()
+                .is_none()
+            );
+        }
+
+        /// The other half of the race: a refresh that loaded the row before an
+        /// enrichment must not upsert its stale snapshot over the new ids.
+        #[tokio::test]
+        async fn a_save_does_not_drop_ids_resolved_since_it_loaded() {
+            let (_s, guard) = new_test_server()
+                .await
+                .unwrap();
+            let ctx = &guard.0;
+            let ids = ExternalIds {
+                imdb: NonEmptyString::try_new("tt0113277".to_string()).ok(),
+                ..Default::default()
+            };
+            let id = seed(ctx, ids.clone()).await;
+
+            let mut stale = Media::get_by_id(&ctx.db, &id)
+                .await
+                .unwrap()
+                .unwrap();
+            Media::widen_external_ids(
+                &ctx.db,
+                &id,
+                &ExternalIds {
+                    tmdb: Some(949),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+            stale.title = "Heat (1995)".into();
+            stale
+                .save(&ctx.db)
+                .await
+                .unwrap();
+
+            let after = stored(ctx, &id).await;
+            assert_eq!(after.tmdb, Some(949), "the stale save dropped it");
+            assert_eq!(
+                after
+                    .imdb
+                    .map(String::from),
+                Some("tt0113277".to_string())
+            );
+        }
+
+        /// `external_ids` has been found holding `''`, which `sqlx` cannot decode.
+        #[tokio::test]
+        async fn a_row_holding_invalid_json_is_repaired() {
+            let (_s, guard) = new_test_server()
+                .await
+                .unwrap();
+            let ctx = &guard.0;
+            let id = seed(
+                ctx,
+                ExternalIds {
+                    imdb: NonEmptyString::try_new("tt0113277".to_string()).ok(),
+                    ..Default::default()
+                },
+            )
+            .await;
+            sqlx::query("UPDATE media SET external_ids = '' WHERE id = ?1")
+                .bind(id)
+                .execute(&ctx.db)
+                .await
+                .unwrap();
+
+            let merged = Media::widen_external_ids(
+                &ctx.db,
+                &id,
+                &ExternalIds {
+                    tmdb: Some(949),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+            assert_eq!(merged.tmdb, Some(949));
+            assert_eq!(
+                stored(ctx, &id)
+                    .await
+                    .tmdb,
+                Some(949)
+            );
+        }
+    }
     async fn filter_rule_titles(
         db: &sqlx::SqlitePool,
         rule: remux_sdks::remux::FilterRule,
@@ -9330,192 +9568,5 @@ mod tests {
             titles.is_empty(),
             "another user's favorite must not bleed through"
         );
-    }
-
-    mod widen_external_ids {
-        use super::*;
-        use crate::integration_test::new_test_server;
-
-        async fn seed(ctx: &crate::AppContext, ids: ExternalIds) -> Uuid {
-            let mut m = Media {
-                id: Uuid::from(&MediaIdRaw {
-                    kind: MediaKind::Movie,
-                    external_ids: ids.clone(),
-                    season: None,
-                    episode: None,
-                }),
-                title: "Heat".into(),
-                kind: MediaKind::Movie,
-                external_ids: ids,
-                ..Default::default()
-            };
-            m.save(&ctx.db)
-                .await
-                .unwrap();
-            m.id
-        }
-
-        async fn stored(ctx: &crate::AppContext, id: &Uuid) -> ExternalIds {
-            Media::get_by_id(&ctx.db, id)
-                .await
-                .unwrap()
-                .unwrap()
-                .external_ids
-        }
-
-        /// The bug this replaced `update_external_ids` for: two lookups read
-        /// the same row, resolve different ids, and the second write used to
-        /// carry a snapshot that predated the first.
-        #[tokio::test]
-        async fn a_stale_writer_cannot_erase_what_another_added() {
-            let (_s, guard) = new_test_server()
-                .await
-                .unwrap();
-            let ctx = &guard.0;
-            let id = seed(
-                ctx,
-                ExternalIds {
-                    imdb: NonEmptyString::try_new("tt0113277".to_string()).ok(),
-                    ..Default::default()
-                },
-            )
-            .await;
-
-            Media::widen_external_ids(
-                &ctx.db,
-                &id,
-                &ExternalIds {
-                    tmdb: Some(949),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-            Media::widen_external_ids(
-                &ctx.db,
-                &id,
-                &ExternalIds {
-                    tvdb: Some(468),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-
-            let ids = stored(ctx, &id).await;
-            assert_eq!(ids.tmdb, Some(949), "the earlier write was erased");
-            assert_eq!(ids.tvdb, Some(468));
-            assert_eq!(
-                ids.imdb
-                    .map(String::from),
-                Some("tt0113277".to_string()),
-                "the seeded id was erased"
-            );
-        }
-
-        /// `replace: false`, so enrichment adds and never overwrites.
-        #[tokio::test]
-        async fn a_stored_id_wins_over_the_patch() {
-            let (_s, guard) = new_test_server()
-                .await
-                .unwrap();
-            let ctx = &guard.0;
-            let id = seed(
-                ctx,
-                ExternalIds {
-                    imdb: NonEmptyString::try_new("tt0113277".to_string()).ok(),
-                    tmdb: Some(949),
-                    ..Default::default()
-                },
-            )
-            .await;
-
-            let merged = Media::widen_external_ids(
-                &ctx.db,
-                &id,
-                &ExternalIds {
-                    tmdb: Some(1111),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap()
-            .unwrap();
-
-            assert_eq!(merged.tmdb, Some(949));
-            assert_eq!(
-                stored(ctx, &id)
-                    .await
-                    .tmdb,
-                Some(949)
-            );
-        }
-
-        /// An episode the caller never saved must not fail the delivery that
-        /// was enriching it.
-        #[tokio::test]
-        async fn a_row_that_does_not_exist_is_not_an_error() {
-            let (_s, guard) = new_test_server()
-                .await
-                .unwrap();
-            let ctx = &guard.0;
-
-            assert!(
-                Media::widen_external_ids(
-                    &ctx.db,
-                    &Uuid::new_v4(),
-                    &ExternalIds {
-                        tmdb: Some(949),
-                        ..Default::default()
-                    },
-                )
-                .await
-                .unwrap()
-                .is_none()
-            );
-        }
-
-        /// `external_ids` has been found holding `''`, which `sqlx` cannot
-        /// decode. Widening one repairs it rather than failing the write.
-        #[tokio::test]
-        async fn a_row_holding_invalid_json_is_repaired() {
-            let (_s, guard) = new_test_server()
-                .await
-                .unwrap();
-            let ctx = &guard.0;
-            let id = seed(
-                ctx,
-                ExternalIds {
-                    imdb: NonEmptyString::try_new("tt0113277".to_string()).ok(),
-                    ..Default::default()
-                },
-            )
-            .await;
-            sqlx::query("UPDATE media SET external_ids = '' WHERE id = ?1")
-                .bind(id)
-                .execute(&ctx.db)
-                .await
-                .unwrap();
-
-            let merged = Media::widen_external_ids(
-                &ctx.db,
-                &id,
-                &ExternalIds {
-                    tmdb: Some(949),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap()
-            .unwrap();
-
-            assert_eq!(merged.tmdb, Some(949));
-            assert_eq!(
-                stored(ctx, &id)
-                    .await
-                    .tmdb,
-                Some(949)
-            );
-        }
     }
 }

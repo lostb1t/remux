@@ -540,10 +540,14 @@ impl<A: Auth + Clone> RestClient<A> {
                         endpoint: Some(url.to_string()),
                         body: Some(text.clone()),
                     })?;
+                #[cfg(not(target_arch = "wasm32"))]
                 if let Some(ttl) = endpoint.cache_ttl_for(&arc) {
                     HTTP_CACHE.save_arc_with_weight(
-                        cache_key,
-                        Arc::clone(&arc),
+                        hash_key(url.as_str()),
+                        Arc::new(CachedResponse {
+                            status: s,
+                            body: stand_in.to_string(),
+                        }),
                         stand_in.len() as u32,
                         ttl,
                     );
