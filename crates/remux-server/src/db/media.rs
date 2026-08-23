@@ -674,36 +674,6 @@ impl MediaRelation {
         Ok(())
     }
 
-    pub async fn delete_collection_items_by_media_ids(
-        db: &SqlitePool,
-        collection_id: &Uuid,
-        media_ids: &[Uuid],
-    ) -> Result<()> {
-        if media_ids.is_empty() {
-            return Ok(());
-        }
-        let _permit = DB_WRITE_SEMAPHORE
-            .acquire()
-            .await
-            .unwrap();
-        for chunk in media_ids.chunks(SQLITE_VAR_LIMIT) {
-            let mut qb = sqlx::QueryBuilder::new(
-                "DELETE FROM media_relations WHERE left_media_id = ",
-            );
-            qb.push_bind(collection_id);
-            qb.push(" AND role = 'collection' AND right_media_id IN (");
-            let mut sep = qb.separated(", ");
-            for id in chunk {
-                sep.push_bind(id);
-            }
-            qb.push(")");
-            qb.build()
-                .execute(db)
-                .await?;
-        }
-        Ok(())
-    }
-
     pub async fn delete_by_right_kinds(
         db: &SqlitePool,
         left_id: Uuid,

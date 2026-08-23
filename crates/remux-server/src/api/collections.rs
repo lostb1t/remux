@@ -207,11 +207,10 @@ pub async fn remove_collection_items(
         .await
         .context_bad_request("failed to remove items")?;
     } else {
-        db::MediaRelation::delete_collection_items_by_media_ids(
+        db::MediaRelation::delete_by_relation_ids(
             &state
                 .ctx
                 .db,
-            &id,
             &ids,
         )
         .await
