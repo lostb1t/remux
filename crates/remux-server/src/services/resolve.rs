@@ -42,8 +42,10 @@ fn find_matched_nothing(found: &sdks::tmdb::FindByIdResponse) -> bool {
 pub struct MediaResolveService;
 
 impl MediaResolveService {
-    /// `None` when no TMDB key is configured. Reads the settings row, so a
-    /// path needing more than one lookup builds it once and passes it down.
+    /// `None` only when `tmdb_base_url` will not parse: an operator who has set
+    /// no key of their own falls back to the bundled one rather than losing the
+    /// lookup. Reads the settings row, so a path needing more than one lookup
+    /// builds it once and passes it down.
     async fn tmdb(ctx: &AppContext) -> Option<RestClient<BearerAuth>> {
         crate::common::tmdb_client(
             &ctx.db,
@@ -412,8 +414,14 @@ impl MediaResolveService {
             .external_ids
             .merge(&patch, false);
         if episode.external_ids != before {
-            db::Media::update_external_ids(&ctx.db, &episode.id, &episode.external_ids)
-                .await?;
+            // The stored row is the authoritative merge, so adopt it: it can
+            // only be wider than the local one, and delivering with an id a
+            // concurrent lookup just resolved beats delivering without it.
+            if let Some(stored) =
+                db::Media::widen_external_ids(&ctx.db, &episode.id, &patch).await?
+            {
+                episode.external_ids = stored;
+            }
             changed = true;
         }
         Ok(changed)
@@ -438,8 +446,18 @@ impl MediaResolveService {
         // Cannot re-key the row out from under its own episodes: `candidate_ids`
         // ranks imdb and the Stremio id above tmdb, and a series carrying
         // neither is one `Media::save` refuses.
-        db::Media::update_external_ids(&ctx.db, &series.id, &series.external_ids)
-            .await?;
+        if let Some(stored) = db::Media::widen_external_ids(
+            &ctx.db,
+            &series.id,
+            &db::ExternalIds {
+                tmdb: Some(tmdb),
+                ..Default::default()
+            },
+        )
+        .await?
+        {
+            series.external_ids = stored;
+        }
         Ok(true)
     }
 
