@@ -249,11 +249,14 @@ impl DeliveryQueue {
         .await?)
     }
 
+    /// Due rows, oldest first. `created_at` breaks ties so two rows queued in
+    /// the same tick come back in the order they were written: the drain pass
+    /// delivers one tracker's rows in exactly this order.
     pub async fn due(db: &SqlitePool, limit: i64) -> Result<Vec<Self>> {
         Ok(sqlx::query_as::<_, Self>(&format!(
             "SELECT {COLS} FROM delivery_queue \
              WHERE status = 'pending' AND next_attempt_at <= ?1 \
-             ORDER BY next_attempt_at ASC LIMIT ?2"
+             ORDER BY next_attempt_at ASC, created_at ASC LIMIT ?2"
         ))
         .bind(Utc::now().naive_utc())
         .bind(limit)
