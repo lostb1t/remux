@@ -451,7 +451,7 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: lostb1t
+          username: telenice
           password: ${{ secrets.GH_TOKEN }}
 
       - name: Build and push by digest
@@ -498,7 +498,7 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: lostb1t
+          username: telenice
           password: ${{ secrets.GH_TOKEN }}
 
       - name: Set up Docker Buildx
