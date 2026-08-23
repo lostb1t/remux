@@ -33,6 +33,28 @@ fn describe(media: &db::Media, series: Option<&db::Media>) -> MediaTrackerTarget
     }
 }
 
+/// The series an episode hangs off. The ancestor walk follows `parent_id`, so
+/// an episode saved without a season row above it falls back to the
+/// `grandparent_id` its row names, which `Media::validate` requires of it.
+async fn series_of(ctx: &AppContext, media: &db::Media) -> Result<Option<db::Media>> {
+    if media.kind != db::MediaKind::Episode {
+        return Ok(None);
+    }
+    if let Some(series) = db::Media::get_ancestors(&ctx.db, &media.id)
+        .await?
+        .into_iter()
+        .find(|m| m.kind == db::MediaKind::Series)
+    {
+        return Ok(Some(series));
+    }
+    let Some(series_id) = media.grandparent_id else {
+        return Ok(None);
+    };
+    Ok(db::Media::get_by_id(&ctx.db, &series_id)
+        .await?
+        .filter(|m| m.kind == db::MediaKind::Series))
+}
+
 /// The item as a provider needs to see it, or `None` when nothing about it
 /// carries an id one could match on. Episodes carry their series, because a
 /// provider keys an episode on the show's ids plus season and episode.
@@ -40,14 +62,7 @@ pub async fn resolve_target(
     ctx: &AppContext,
     media: &mut db::Media,
 ) -> Result<Option<MediaTrackerTarget>> {
-    let mut series = if media.kind == db::MediaKind::Episode {
-        db::Media::get_ancestors(&ctx.db, &media.id)
-            .await?
-            .into_iter()
-            .find(|m| m.kind == db::MediaKind::Series)
-    } else {
-        None
-    };
+    let mut series = series_of(ctx, media).await?;
 
     // Opportunistic, and here so it reuses the series row loaded above: a TMDB
     // or Kitsu error must not hold up an event that was already deliverable, so
@@ -583,6 +598,71 @@ mod tests {
                     .clone()
             })
             .collect()
+    }
+
+    /// The walk to the series follows `parent_id`, which an episode saved
+    /// without a season row above it does not have.
+    #[tokio::test]
+    async fn a_flat_episode_still_reaches_its_series() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let external_ids = db::ExternalIds {
+            imdb: db::NonEmptyString::try_new("tt0306414".to_string()).ok(),
+            tmdb: Some(1438),
+            ..Default::default()
+        };
+        let mut series = db::Media {
+            id: Uuid::from(&db::MediaIdRaw {
+                kind: db::MediaKind::Series,
+                external_ids: external_ids.clone(),
+                season: None,
+                episode: None,
+            }),
+            title: "The Wire".into(),
+            kind: db::MediaKind::Series,
+            external_ids,
+            ..Default::default()
+        };
+        series
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        // Its own ids, so completing them asks nobody.
+        let mut episode = db::Media {
+            title: "The Target".into(),
+            kind: db::MediaKind::Episode,
+            grandparent_id: Some(series.id),
+            idx: Some(1),
+            parent_idx: Some(1),
+            external_ids: db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt0749451".to_string()).ok(),
+                tvdb: Some(299034),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        episode
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let target = resolve_target(ctx, &mut episode)
+            .await
+            .unwrap()
+            .expect("an episode alone identifies nothing");
+
+        assert_eq!(
+            target
+                .series
+                .expect("no season row is not no series")
+                .ids
+                .tmdb,
+            Some(1438)
+        );
     }
 
     #[tokio::test]
