@@ -127,11 +127,22 @@ pub async fn add_collection_items(
         .collect();
 
     if collection.is_group_container() {
-        db::Media::set_parent_id(
+        let collection_ids: Vec<Uuid> = db::Media::get_by_ids(
             &state
                 .ctx
                 .db,
             &media_ids,
+        )
+        .await?
+        .into_iter()
+        .filter(|m| m.kind == db::MediaKind::Collection)
+        .map(|m| m.id)
+        .collect();
+        db::Media::set_parent_id(
+            &state
+                .ctx
+                .db,
+            &collection_ids,
             Some(id),
         )
         .await
@@ -186,20 +197,21 @@ pub async fn remove_collection_items(
         .collect();
 
     if collection.is_group_container() {
-        db::Media::set_parent_id(
+        db::Media::clear_parent_id_scoped(
             &state
                 .ctx
                 .db,
             &ids,
-            None,
+            &id,
         )
         .await
         .context_bad_request("failed to remove items")?;
     } else {
-        db::MediaRelation::delete_by_relation_ids(
+        db::MediaRelation::delete_collection_items_by_media_ids(
             &state
                 .ctx
                 .db,
+            &id,
             &ids,
         )
         .await
