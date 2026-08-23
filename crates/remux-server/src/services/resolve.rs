@@ -34,6 +34,26 @@ fn find_matched_nothing(found: &sdks::tmdb::FindByIdResponse) -> bool {
             .is_empty()
 }
 
+/// The ids the call was for are not there: no such episode, or one TMDB knows
+/// by neither. Both are "not indexed yet", so neither may inherit
+/// [`ID_CACHE_TTL`]. Either answer is still used; only how long it is held
+/// changes.
+fn episode_ids_missing(found: &Option<sdks::tmdb::Episode>) -> bool {
+    found
+        .as_ref()
+        .is_none_or(|ep| {
+            ep.external_ids
+                .as_ref()
+                .is_none_or(|e| {
+                    e.imdb_id
+                        .as_deref()
+                        .is_none_or(str::is_empty)
+                        && e.tvdb_id
+                            .is_none()
+                })
+        })
+}
+
 /// The detail calls an id lookup makes, asking for `external_ids` alone.
 ///
 /// The addon fetches the same two paths for metadata on a six minute TTL. The
@@ -300,7 +320,8 @@ impl MediaResolveService {
 
     /// The episode's own external ids, `Ok(None)` when TMDB has no such episode
     /// or knows it by none. A 404 is cached like any other answer, so a series
-    /// TMDB does not carry is not re-asked for on every delivery.
+    /// TMDB does not carry is not re-asked for on every delivery. See
+    /// [`episode_ids_missing`] for what does not earn the full day.
     ///
     /// Appends `external_ids` alone, not the addon's default list: the cache is
     /// keyed on the url, so a wider request would inherit the addon's TTL.
@@ -321,7 +342,7 @@ impl MediaResolveService {
                 }
                 .absent_on(404)
                 .with_cache(ID_CACHE_TTL)
-                .with_cache_ttl_if(ID_MISS_CACHE_TTL, Option::is_none),
+                .with_cache_ttl_if(ID_MISS_CACHE_TTL, episode_ids_missing),
             )
             .await?
         else {
@@ -1403,6 +1424,50 @@ mod tests {
             movie_results: vec![sdks::tmdb::Movie::default()],
             tv_results: vec![],
         }));
+    }
+
+    fn episode_known_by(
+        external_ids: Option<sdks::tmdb::ExternalIds>,
+    ) -> Option<sdks::tmdb::Episode> {
+        Some(sdks::tmdb::Episode {
+            id: 972467,
+            external_ids,
+            ..Default::default()
+        })
+    }
+
+    /// The 404 is not the only shape of "not indexed yet": TMDB answers for a
+    /// new episode long before it carries the ids a tracker matches on.
+    #[test]
+    fn an_episode_answered_for_but_not_identified_is_a_miss() {
+        assert!(episode_ids_missing(&None));
+        assert!(episode_ids_missing(&episode_known_by(None)));
+        assert!(episode_ids_missing(&episode_known_by(Some(
+            sdks::tmdb::ExternalIds::default()
+        ))));
+        assert!(
+            episode_ids_missing(&episode_known_by(Some(sdks::tmdb::ExternalIds {
+                imdb_id: Some(String::new()),
+                tvdb_id: None,
+            }))),
+            "TMDB writes an unknown imdb id as an empty string"
+        );
+    }
+
+    #[test]
+    fn an_episode_with_either_id_earns_the_full_day() {
+        assert!(!episode_ids_missing(&episode_known_by(Some(
+            sdks::tmdb::ExternalIds {
+                imdb_id: Some("tt0749419".to_string()),
+                tvdb_id: None,
+            }
+        ))));
+        assert!(!episode_ids_missing(&episode_known_by(Some(
+            sdks::tmdb::ExternalIds {
+                imdb_id: None,
+                tvdb_id: Some(303821),
+            }
+        ))));
     }
 
     /// Three call sites used to walk to the series themselves and disagreed
