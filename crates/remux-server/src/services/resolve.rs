@@ -227,9 +227,18 @@ impl MediaResolveService {
             }))
     }
 
+    /// Cached on the same rule as the TMDB lookups. Uncached, a series this
+    /// cannot place asks kitsu again on every delivery.
     async fn kitsu_tvdb_id(kitsu_id: i64, client: &RestClient) -> Option<i64> {
         match client
-            .execute(sdks::kitsu::MappingsEndpoint { kitsu_id })
+            .execute(
+                sdks::kitsu::MappingsEndpoint { kitsu_id }
+                    .with_cache(ID_CACHE_TTL)
+                    .with_cache_ttl_if(ID_MISS_CACHE_TTL, |m| {
+                        m.tvdb_id()
+                            .is_none()
+                    }),
+            )
             .await
         {
             Ok(m) => {
@@ -1361,7 +1370,7 @@ mod tests {
     async fn an_anime_series_is_searched_for_by_its_kitsu_mapping() {
         let server = httpmock::MockServer::start();
         let mappings = server.mock(|when, then| {
-            when.path("/anime/42/mappings");
+            when.path("/anime/442/mappings");
             then.status(200)
                 .json_body(serde_json::json!({
                     "data": [{
@@ -1376,7 +1385,7 @@ mod tests {
         assert_eq!(
             MediaResolveService::tmdb_search_key(
                 &db::ExternalIds {
-                    kitsu: Some(42),
+                    kitsu: Some(442),
                     ..Default::default()
                 },
                 Some(&kitsu_client(&server.base_url())),
