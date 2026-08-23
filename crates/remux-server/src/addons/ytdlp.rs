@@ -346,7 +346,12 @@ impl YtDlpFormat {
     }
 
     fn is_playable(&self) -> bool {
-        self.url.is_some() && self.acodec.as_deref().is_some_and(|c| c != "none")
+        self.url
+            .is_some()
+            && self
+                .acodec
+                .as_deref()
+                .is_some_and(|c| c != "none")
     }
 
     fn bitrate(&self) -> Option<i64> {
@@ -454,7 +459,9 @@ impl YtDlpAddon {
             })
         {
             // Never reuse a signed googlevideo URL — only reuse a YouTube watch page URL
-            if url.contains("youtube.com/watch") || url.contains("music.youtube.com/watch") {
+            if url.contains("youtube.com/watch")
+                || url.contains("music.youtube.com/watch")
+            {
                 return Ok(url.to_owned());
             }
         }
@@ -868,10 +875,16 @@ impl YtDlpAddon {
                 (Some(c), None) => c.to_uppercase(),
                 _ => f.label(),
             };
-            let request_headers = f.http_headers.clone().unwrap_or_default();
+            let request_headers = f
+                .http_headers
+                .clone()
+                .unwrap_or_default();
             crate::stream::StreamInfo {
                 descriptor: crate::stream::StreamDescriptor::Http {
-                    url: f.url.clone().unwrap_or_default(),
+                    url: f
+                        .url
+                        .clone()
+                        .unwrap_or_default(),
                     request_headers,
                     response_headers: Default::default(),
                 },
@@ -919,26 +932,56 @@ impl YtDlpAddon {
             .collect();
 
         let best = if !audio_only.is_empty() {
-            audio_only.into_iter().max_by_key(|f| f.bitrate().unwrap_or(0))
+            audio_only
+                .into_iter()
+                .max_by_key(|f| {
+                    f.bitrate()
+                        .unwrap_or(0)
+                })
         } else {
-            playable.into_iter().max_by(|a, b| {
-                let a_abr = a.abr.unwrap_or(0.0);
-                let b_abr = b.abr.unwrap_or(0.0);
-                a_abr.partial_cmp(&b_abr).unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| {
-                        // fallback for HLS muxed where abr is null
-                        a.tbr.partial_cmp(&b.tbr).unwrap_or(std::cmp::Ordering::Equal)
-                    })
-                    .then_with(|| {
-                        let a_pixels = a.width.unwrap_or(0) as u64 * a.height.unwrap_or(0) as u64;
-                        let b_pixels = b.width.unwrap_or(0) as u64 * b.height.unwrap_or(0) as u64;
-                        // smaller video wins ties
-                        b_pixels.cmp(&a_pixels)
-                    })
-            })
+            playable
+                .into_iter()
+                .max_by(|a, b| {
+                    let a_abr = a
+                        .abr
+                        .unwrap_or(0.0);
+                    let b_abr = b
+                        .abr
+                        .unwrap_or(0.0);
+                    a_abr
+                        .partial_cmp(&b_abr)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| {
+                            // fallback for HLS muxed where abr is null
+                            a.tbr
+                                .partial_cmp(&b.tbr)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .then_with(|| {
+                            let a_pixels = a
+                                .width
+                                .unwrap_or(0)
+                                as u64
+                                * a.height
+                                    .unwrap_or(0)
+                                    as u64;
+                            let b_pixels = b
+                                .width
+                                .unwrap_or(0)
+                                as u64
+                                * b.height
+                                    .unwrap_or(0)
+                                    as u64;
+                            // smaller video wins ties
+                            b_pixels.cmp(&a_pixels)
+                        })
+                })
         };
 
-        Ok(best.map(&to_source).into_iter().collect())
+        Ok(best
+            .map(&to_source)
+            .into_iter()
+            .collect())
     }
 }
 

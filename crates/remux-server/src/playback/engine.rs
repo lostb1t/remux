@@ -568,7 +568,10 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         ),
     );
 
-    if params.input_url.starts_with("http") && !params.http_request_headers.is_empty() {
+    if !params
+        .http_request_headers
+        .is_empty()
+    {
         // Build ffmpeg -headers string from the map provided by yt-dlp
         let header_string = params
             .http_request_headers
@@ -577,11 +580,6 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             .collect::<Vec<_>>()
             .join("\r\n");
         args.extend(["-headers".into(), header_string]);
-
-        // ffmpeg probe may use -user_agent separately; ensure it matches yt-dlp's UA
-        if let Some(ua) = params.http_request_headers.get("User-Agent").or_else(|| params.http_request_headers.get("user-agent")) {
-            args.extend(["-user_agent".into(), ua.clone()]);
-        }
     }
 
     // Input seek (fast, before -i) — not applicable to live streams

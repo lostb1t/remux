@@ -390,11 +390,22 @@ async fn create_hls_session(
                 hw => Some(hw.to_string()),
             }
         };
+        let http_request_headers = resolved_media
+            .stream_info
+            .as_ref()
+            .and_then(|si| match &si.descriptor {
+                crate::stream::StreamDescriptor::Http {
+                    request_headers, ..
+                } => Some(request_headers.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
         let session = TranscodeSession::new(
             play_session_id.clone(),
             id,
             media_source_id,
             input_url.clone(),
+            http_request_headers,
             output_dir,
             video_codec.clone(),
             audio_codec.clone(),
@@ -432,14 +443,11 @@ async fn create_hls_session(
         // Start transcoding in background
         let session_clone = session.clone();
         let encoding_opts = encoding_opts_hls.clone();
-        let http_request_headers = resolved_media
-            .stream_info
-            .as_ref()
-            .and_then(|si| match &si.descriptor {
-                crate::stream::StreamDescriptor::Http { request_headers, .. } => Some(request_headers.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
+        let http_request_headers = session
+            .read()
+            .await
+            .http_request_headers
+            .clone();
         let params = crate::playback::engine::TranscodeParams {
             input_url,
             output_dir: session
@@ -1089,6 +1097,9 @@ async fn hls_segment_inner(
                     let audio_stream_index = s.audio_stream_index;
                     let subtitle_stream_index = s.subtitle_stream_index;
                     let burn_subtitle = s.burn_subtitle;
+                    let http_request_headers = s
+                        .http_request_headers
+                        .clone();
                     drop(s);
 
                     // Kill running FFmpeg and clean up stale segments (params
@@ -1208,7 +1219,7 @@ async fn hls_segment_inner(
                         normalize_audio_loudness: encoding_opts
                             .normalize_audio_loudness
                             .unwrap_or(false),
-                        http_request_headers: std::collections::HashMap::new(),
+                        http_request_headers,
                     };
 
                     // Reinitialise the session's state for the new transcode run.

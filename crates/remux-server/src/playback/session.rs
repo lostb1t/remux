@@ -21,6 +21,7 @@ pub struct TranscodeSession {
     pub media_source_id: Uuid,
     pub output_dir: PathBuf,
     pub input_url: String,
+    pub http_request_headers: std::collections::HashMap<String, String>,
     pub state: TranscodeState,
     /// Broadcasts state transitions so waiters can react immediately.
     pub state_tx: Arc<watch::Sender<TranscodeState>>,
@@ -75,6 +76,7 @@ impl TranscodeSession {
         item_id: Uuid,
         media_source_id: Uuid,
         input_url: String,
+        http_request_headers: std::collections::HashMap<String, String>,
         output_dir: PathBuf,
         video_codec: String,
         audio_codec: String,
@@ -104,6 +106,7 @@ impl TranscodeSession {
             media_source_id,
             output_dir,
             input_url,
+            http_request_headers,
             state: TranscodeState::Starting,
             state_tx: Arc::new(state_tx),
             created_at: Instant::now(),
