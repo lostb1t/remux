@@ -1,6 +1,10 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use std::sync::Arc;
+use futures::StreamExt;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use tracing::{debug, warn};
 
 use super::{ProgressReporter, Task, TaskCategory, TaskService};
@@ -73,53 +77,133 @@ impl Task for DeliveryQueueSyncTask {
 /// Attempt every due row once. Returns how many were delivered.
 ///
 /// Failures are recorded per row and never abort the pass: one dead provider
-/// must not stop another user's deliveries from going out.
+/// must not stop another user's deliveries from going out. Trackers are drained
+/// concurrently, bounded by `delivery_concurrency`.
 pub async fn drain(ctx: &AppContext, progress: &ProgressReporter) -> Result<usize> {
     let due = db::DeliveryQueue::due(&ctx.db, BATCH).await?;
     if due.is_empty() {
         return Ok(0);
     }
 
-    let total = due.len() as f64;
-    let mut delivered = 0usize;
+    let total = due.len();
+    let concurrency = db::Settings::get_config_or_default(&ctx.db)
+        .await
+        .delivery_concurrency
+        .max(1) as usize;
 
-    for (i, row) in due
-        .into_iter()
-        .enumerate()
-    {
-        match deliver(ctx, &row.kind).await {
-            Ok(()) => {
-                db::DeliveryQueue::mark_delivered(&ctx.db, row.id).await?;
-                record_outcome(ctx, &row.kind, None).await?;
-                delivered += 1;
-            }
-            Err(err) => {
-                let status = db::DeliveryQueue::record_failure(
-                    &ctx.db,
-                    row.id,
-                    row.attempts,
-                    &err,
-                )
-                .await?;
-                // A retryable blip is the worker's business, not the user's, so
-                // only a terminal outcome touches the deliverer's health.
-                if status != db::DeliveryStatus::Pending {
-                    record_outcome(ctx, &row.kind, Some(&err)).await?;
-                }
-                warn!(
-                    delivery_id = %row.id,
-                    kind = %row.kind.kind(),
-                    attempts = row.attempts + 1,
-                    ?status,
-                    error = %err,
-                    "delivery failed"
-                );
-            }
+    // A queue per tracker, each holding its rows in the order `due` returned
+    // them. Two rows for one tracker have to settle in order and one at a
+    // time: a stop before the start it followed reads as a rewind, and both
+    // move the same health status.
+    let mut by_tracker: Vec<(Uuid, Vec<db::DeliveryQueue>)> = Vec::new();
+    for row in due {
+        let db::QueueKind::MediaTracker {
+            user_media_tracker_id,
+            ..
+        } = &row.kind;
+        let tracker = *user_media_tracker_id;
+        match by_tracker
+            .iter_mut()
+            .find(|(id, _)| *id == tracker)
+        {
+            Some((_, rows)) => rows.push(row),
+            None => by_tracker.push((tracker, vec![row])),
         }
-        progress.set((i as f64 + 1.0) / total * 100.0);
     }
 
-    Ok(delivered)
+    let delivered = Arc::new(AtomicUsize::new(0));
+    let processed = Arc::new(AtomicUsize::new(0));
+
+    futures::stream::iter(by_tracker)
+        .map(|(_, rows)| {
+            let ctx = ctx.clone();
+            let progress = progress.clone();
+            let delivered = Arc::clone(&delivered);
+            let processed = Arc::clone(&processed);
+            async move {
+                let queued = rows.len();
+                let mut attempted = 0usize;
+                for row in rows {
+                    let status = process_row(&ctx, &row).await;
+                    attempted += 1;
+                    if status == db::DeliveryStatus::Delivered {
+                        delivered.fetch_add(1, Ordering::Relaxed);
+                    }
+                    progress
+                        .report(processed.fetch_add(1, Ordering::Relaxed) + 1, total);
+                    // Still pending means a retry is coming. Letting the rows
+                    // behind it go out first is the reordering the grouping
+                    // exists to prevent, so the rest of this tracker waits.
+                    if status == db::DeliveryStatus::Pending {
+                        break;
+                    }
+                }
+                let held = queued - attempted;
+                if held > 0 {
+                    progress.report(
+                        processed.fetch_add(held, Ordering::Relaxed) + held,
+                        total,
+                    );
+                }
+            }
+        })
+        .buffer_unordered(concurrency)
+        .for_each(|()| async {})
+        .await;
+
+    Ok(delivered.load(Ordering::Relaxed))
+}
+
+/// One row through to a settled outcome. Returns the status it landed in.
+///
+/// A failure recording the outcome is logged rather than propagated: it's one
+/// row's bookkeeping, not a reason to give up on the rest of the pass.
+async fn process_row(ctx: &AppContext, row: &db::DeliveryQueue) -> db::DeliveryStatus {
+    match deliver(ctx, &row.kind).await {
+        Ok(()) => {
+            if let Err(e) = db::DeliveryQueue::mark_delivered(&ctx.db, row.id).await {
+                warn!(delivery_id = %row.id, error = %e, "failed to mark delivery delivered");
+            }
+            if let Err(e) = record_outcome(ctx, &row.kind, None).await {
+                warn!(delivery_id = %row.id, error = %e, "failed to record delivery outcome");
+            }
+            db::DeliveryStatus::Delivered
+        }
+        Err(err) => {
+            let status = match db::DeliveryQueue::record_failure(
+                &ctx.db,
+                row.id,
+                row.attempts,
+                &err,
+            )
+            .await
+            {
+                Ok(status) => status,
+                Err(e) => {
+                    warn!(delivery_id = %row.id, error = %e, "failed to record delivery failure");
+                    // The row is still pending in the table, so report it as
+                    // such rather than letting the ones behind it past.
+                    return db::DeliveryStatus::Pending;
+                }
+            };
+            // A retryable blip is the worker's business, not the user's, so
+            // only a terminal outcome touches the deliverer's health.
+            if status != db::DeliveryStatus::Pending {
+                if let Err(e) = record_outcome(ctx, &row.kind, Some(&err)).await {
+                    warn!(delivery_id = %row.id, error = %e, "failed to record delivery outcome");
+                }
+            }
+            warn!(
+                delivery_id = %row.id,
+                kind = %row.kind.kind(),
+                attempts = row.attempts + 1,
+                ?status,
+                error = %err,
+                "delivery failed"
+            );
+            status
+        }
+    }
 }
 
 /// Hand one row to whatever its kind talks to. Adding a kind means adding an
@@ -770,6 +854,93 @@ mod tests {
             DeliveryStatus::FailedPermanent,
             "no amount of retrying gives the item an id"
         );
+    }
+
+    #[tokio::test]
+    async fn one_trackers_rows_go_out_in_the_order_they_were_queued() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let addon = ScriptedAddon::new(vec![]);
+        let (conn, _) = connect(ctx, "gita", addon.clone()).await;
+
+        // Own imdb id each, or they would be one media row under three names.
+        let now = Utc::now().naive_utc();
+        let titles = ["Dune", "Sicario", "Arrival"];
+        for (i, title) in titles
+            .iter()
+            .enumerate()
+        {
+            let media = movie(&ctx.db, title, &format!("tt000000{i}")).await;
+            let row = queue_item(&ctx.db, conn, media).await;
+            sqlx::query("UPDATE delivery_queue SET next_attempt_at = ?1 WHERE id = ?2")
+                .bind(now - chrono::Duration::seconds((titles.len() - i) as i64))
+                .bind(row)
+                .execute(&ctx.db)
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(
+            drain(ctx, &reporter())
+                .await
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            addon
+                .seen()
+                .into_iter()
+                .map(|(_, title)| title)
+                .collect::<Vec<_>>(),
+            titles
+        );
+    }
+
+    /// The rows behind a retryable failure belong to the same tracker, so
+    /// letting them past would land a stop without the start it followed.
+    #[tokio::test]
+    async fn a_retryable_failure_holds_back_the_rest_of_its_trackers_queue() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let addon = ScriptedAddon::new(vec![Err(MediaTrackerError::retryable("down"))]);
+        let (conn, _) = connect(ctx, "hana", addon.clone()).await;
+
+        let mut rows = Vec::new();
+        for (i, title) in ["Dune", "Sicario", "Arrival"]
+            .iter()
+            .enumerate()
+        {
+            let media = movie(&ctx.db, title, &format!("tt000000{i}")).await;
+            rows.push(queue_item(&ctx.db, conn, media).await);
+        }
+
+        assert_eq!(
+            drain(ctx, &reporter())
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            addon
+                .seen()
+                .len(),
+            1,
+            "the rows behind the failure wait for the next pass"
+        );
+        for row in rows {
+            assert_eq!(
+                DeliveryQueue::get(&ctx.db, row)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                DeliveryStatus::Pending
+            );
+        }
     }
 
     #[tokio::test]
