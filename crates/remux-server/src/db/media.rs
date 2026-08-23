@@ -2248,7 +2248,14 @@ impl Media {
             stream_info = COALESCE(excluded.stream_info, media.stream_info),
             probe_data = COALESCE(excluded.probe_data, media.probe_data),
             grandparent_id = excluded.grandparent_id,
-            external_ids = excluded.external_ids,
+            -- Widened, not replaced: a write that resolved no ids of its own
+            -- omits them (`skip_serializing_none`), and must not drop ids
+            -- another one has since resolved. See `widen_external_ids`.
+            external_ids = json_patch(
+                CASE WHEN json_valid(media.external_ids)
+                     THEN media.external_ids ELSE '{}' END,
+                excluded.external_ids
+            ),
             external_ratings = COALESCE(excluded.external_ratings, media.external_ratings),
             promoted = excluded.promoted,
             collection_kind = excluded.collection_kind,
@@ -2595,7 +2602,11 @@ impl Media {
                 description = COALESCE(excluded.description, media.description),
                 trailers = COALESCE(excluded.trailers, media.trailers),
                 stream_info = COALESCE(excluded.stream_info, media.stream_info),
-                external_ids = excluded.external_ids,
+                external_ids = json_patch(
+                    CASE WHEN json_valid(media.external_ids)
+                         THEN media.external_ids ELSE '{}' END,
+                    excluded.external_ids
+                ),
                 external_ratings = COALESCE(excluded.external_ratings, media.external_ratings),
                 probe_data = COALESCE(excluded.probe_data, media.probe_data),
                 grandparent_id = excluded.grandparent_id,
@@ -9042,6 +9053,51 @@ mod tests {
                 .await
                 .unwrap()
                 .is_none()
+            );
+        }
+
+        /// The other half of the race: a refresh that loaded the row before an
+        /// enrichment must not upsert its stale snapshot over the new ids.
+        #[tokio::test]
+        async fn a_save_does_not_drop_ids_resolved_since_it_loaded() {
+            let (_s, guard) = new_test_server()
+                .await
+                .unwrap();
+            let ctx = &guard.0;
+            let ids = ExternalIds {
+                imdb: NonEmptyString::try_new("tt0113277".to_string()).ok(),
+                ..Default::default()
+            };
+            let id = seed(ctx, ids.clone()).await;
+
+            let mut stale = Media::get_by_id(&ctx.db, &id)
+                .await
+                .unwrap()
+                .unwrap();
+            Media::widen_external_ids(
+                &ctx.db,
+                &id,
+                &ExternalIds {
+                    tmdb: Some(949),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+            stale.title = "Heat (1995)".into();
+            stale
+                .save(&ctx.db)
+                .await
+                .unwrap();
+
+            let after = stored(ctx, &id).await;
+            assert_eq!(after.tmdb, Some(949), "the stale save dropped it");
+            assert_eq!(
+                after
+                    .imdb
+                    .map(String::from),
+                Some("tt0113277".to_string())
             );
         }
 
