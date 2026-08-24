@@ -304,7 +304,9 @@ pub async fn fetch_probe(
     episode: Option<i32>,
 ) -> Option<Vec<MediaInfo>> {
     let client = match RestClient::new(base_url.trim_end_matches('/')) {
-        Ok(c) => c,
+        Ok(c) => {
+            c.with_retry(crate::ExponentialBackoff::builder().build_with_max_retries(3))
+        }
         Err(e) => {
             warn!(error = %e, "remuxdb: invalid base url");
             return None;
