@@ -9,6 +9,7 @@ use axum_extra::extract::Query;
 use futures::StreamExt;
 use http::StatusCode;
 use remux_macros::{delete, get, post, query};
+use remux_sdks::CommaSeparatedList;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -99,7 +100,7 @@ pub async fn get_collection_items(
 #[query]
 #[derive(Debug)]
 pub struct AddCollectionItemsQuery {
-    pub ids: Option<String>,
+    pub ids: CommaSeparatedList<Uuid>,
 }
 
 #[post("/collections/{id}/items")]
@@ -119,12 +120,14 @@ pub async fn add_collection_items(
     .filter(|m| m.kind == db::MediaKind::Collection)
     .context_not_found("Collection not found")?;
 
+    if collection.collection_kind == Some(db::CollectionKind::Smart) {
+        return Err(anyhow::anyhow!("smart collection"))
+            .context_bad_request("Cannot add items to a smart collection");
+    }
+
     let media_ids: Vec<Uuid> = q
         .ids
-        .unwrap_or_default()
-        .split(',')
-        .filter_map(|s| Uuid::parse_str(s.trim()).ok())
-        .collect();
+        .to_vec();
 
     if collection.is_group_container() {
         let collection_ids: Vec<Uuid> = db::Media::get_by_ids(
@@ -169,7 +172,7 @@ pub async fn add_collection_items(
 #[query]
 #[derive(Debug)]
 pub struct RemoveCollectionItemsQuery {
-    pub ids: Option<String>,
+    pub ids: CommaSeparatedList<Uuid>,
 }
 
 #[delete("/collections/{id}/items")]
@@ -189,12 +192,14 @@ pub async fn remove_collection_items(
     .filter(|m| m.kind == db::MediaKind::Collection)
     .context_not_found("Collection not found")?;
 
+    if collection.collection_kind == Some(db::CollectionKind::Smart) {
+        return Err(anyhow::anyhow!("smart collection"))
+            .context_bad_request("Cannot remove items from a smart collection");
+    }
+
     let ids: Vec<Uuid> = q
         .ids
-        .unwrap_or_default()
-        .split(',')
-        .filter_map(|s| Uuid::parse_str(s.trim()).ok())
-        .collect();
+        .to_vec();
 
     if collection.is_group_container() {
         db::Media::clear_parent_id_scoped(
