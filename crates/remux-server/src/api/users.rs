@@ -492,12 +492,10 @@ pub async fn unmark_favorite(
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
-#[post("/users/{user_id}/favoriteitems/{id}/delete")]
-pub async fn unmark_favorite_vidhub(
-    State(state): State<AppState>,
-    _session: auth::AuthSession,
-    auth::TargetUser(user): auth::TargetUser,
-    Path((_, id)): Path<(Uuid, Uuid)>,
+async fn do_unmark_favorite(
+    state: AppState,
+    user: db::User,
+    id: Uuid,
 ) -> Result<impl IntoResponse> {
     let media = MediaResolveService::resolve_item(id, &state.ctx)
         .await?
@@ -518,6 +516,26 @@ pub async fn unmark_favorite_vidhub(
     )
     .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
+}
+
+#[get("/users/{user_id}/favoriteitems/{id}/delete")]
+pub async fn unmark_favorite_get(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path((_, id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    do_unmark_favorite(state, user, id).await
+}
+
+#[post("/users/{user_id}/favoriteitems/{id}/delete")]
+pub async fn unmark_favorite_post(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path((_, id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    do_unmark_favorite(state, user, id).await
 }
 
 #[post("/userfavoriteitems/{id}")]
@@ -641,12 +659,10 @@ pub async fn unmark_played(
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
-#[post("/users/{user_id}/playeditems/{id}/delete")]
-pub async fn unmark_played_vidhub(
-    State(state): State<AppState>,
-    session: auth::AuthSession,
-    auth::TargetUser(user): auth::TargetUser,
-    Path((_, id)): Path<(Uuid, Uuid)>,
+async fn do_unmark_played(
+    state: AppState,
+    user: db::User,
+    id: Uuid,
 ) -> Result<impl IntoResponse> {
     let media = MediaResolveService::resolve_item(id, &state.ctx)
         .await?
@@ -668,6 +684,26 @@ pub async fn unmark_played_vidhub(
     )
     .await;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
+}
+
+#[get("/users/{user_id}/playeditems/{id}/delete")]
+pub async fn unmark_played_get(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path((_, id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    do_unmark_played(state, user, id).await
+}
+
+#[post("/users/{user_id}/playeditems/{id}/delete")]
+pub async fn unmark_played_post(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path((_, id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    do_unmark_played(state, user, id).await
 }
 
 #[query]
@@ -3642,7 +3678,7 @@ mod e2e_tests {
     }
 
     #[tokio::test]
-    async fn vidhub_post_delete_unfavorite_alias() {
+    async fn post_delete_unfavorite_alias() {
         let (server, ctx, token) = authenticated_server().await;
         let item = insert_test_source(&ctx.0).await;
         let auth = auth_header_with_token(&token);
@@ -3671,7 +3707,7 @@ mod e2e_tests {
     }
 
     #[tokio::test]
-    async fn vidhub_post_delete_unplayed_alias() {
+    async fn post_delete_unplayed_alias() {
         let (server, ctx, token) = authenticated_server().await;
         let item = insert_test_source(&ctx.0).await;
         let auth = auth_header_with_token(&token);
