@@ -212,6 +212,12 @@ pub trait Endpoint {
 #[derive(Clone, Copy)]
 struct CacheTTL(Duration);
 
+#[derive(Clone)]
+struct CachedResponse {
+    status: u16,
+    body: String,
+}
+
 struct InMemoryCacheMiddleware;
 
 #[async_trait]
@@ -225,16 +231,25 @@ impl Middleware for InMemoryCacheMiddleware {
         let ttl = extensions
             .get::<CacheTTL>()
             .copied();
-
-        if ttl.is_some() {
-            let key = hash_key(
+        // Derive the cache key from the pre-redirect URL so hits are consistent
+        // regardless of whether the server redirects the request.
+        let key = ttl.map(|_| {
+            hash_key(
                 req.url()
                     .as_str(),
-            );
-            if let Some(cached) = HTTP_CACHE.get::<String>(&key) {
+            )
+        });
+
+        if let Some(ref k) = key {
+            if let Some(cached) = HTTP_CACHE.get::<CachedResponse>(k) {
                 let resp = http::Response::builder()
-                    .status(200)
-                    .body(Bytes::from((*cached).clone()))
+                    .status(cached.status)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Bytes::from(
+                        cached
+                            .body
+                            .clone(),
+                    ))
                     .unwrap();
                 return Ok(reqwest::Response::from(resp));
             }
@@ -244,31 +259,31 @@ impl Middleware for InMemoryCacheMiddleware {
             .run(req, extensions)
             .await?;
 
-        if let Some(CacheTTL(ttl)) = ttl {
+        if let (Some(CacheTTL(ttl)), Some(k)) = (ttl, key) {
             if resp
                 .status()
                 .is_success()
             {
                 let status = resp.status();
-                let url = resp
-                    .url()
-                    .clone();
                 let text = resp
                     .text()
                     .await
                     .map_err(reqwest_middleware::Error::Reqwest)?;
-                let key = hash_key(url.as_str());
                 let weight = text
                     .len()
                     .min(u32::MAX as usize) as u32;
                 HTTP_CACHE.save_arc_with_weight(
-                    key,
-                    Arc::new(text.clone()),
+                    k,
+                    Arc::new(CachedResponse {
+                        status: status.as_u16(),
+                        body: text.clone(),
+                    }),
                     weight,
                     ttl,
                 );
                 let rebuilt = http::Response::builder()
                     .status(status)
+                    .header(header::CONTENT_TYPE, "application/json")
                     .body(Bytes::from(text))
                     .unwrap();
                 return Ok(reqwest::Response::from(rebuilt));

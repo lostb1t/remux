@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::warn;
 use uuid::Uuid;
 
 use super::{
@@ -196,23 +197,29 @@ impl MetricsAddon for TraktAddon {
         )?;
         let today = chrono::Utc::now().date_naive();
 
-        let stats = match media.kind {
-            db::MediaKind::Movie => client
-                .execute(sdks::trakt::MovieStatsEndpoint {
-                    imdb_id: imdb_id.to_string(),
-                })
-                .await
-                .ok(),
-            db::MediaKind::Series => client
-                .execute(sdks::trakt::ShowStatsEndpoint {
-                    imdb_id: imdb_id.to_string(),
-                })
-                .await
-                .ok(),
+        let result = match media.kind {
+            db::MediaKind::Movie => {
+                client
+                    .execute(sdks::trakt::MovieStatsEndpoint {
+                        imdb_id: imdb_id.to_string(),
+                    })
+                    .await
+            }
+            db::MediaKind::Series => {
+                client
+                    .execute(sdks::trakt::ShowStatsEndpoint {
+                        imdb_id: imdb_id.to_string(),
+                    })
+                    .await
+            }
             _ => return Ok(None),
         };
-        let Some(stats) = stats else {
-            return Ok(None);
+        let stats = match result {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(imdb_id, error = %e, "trakt: stats fetch failed");
+                return Ok(None);
+            }
         };
 
         let ceiling = match media.kind {
