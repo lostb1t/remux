@@ -1504,6 +1504,7 @@ async fn stremio_streams(
                     response_headers: s
                         .response_headers
                         .clone(),
+                    addon_id: None,
                 }
             };
             let label = match (

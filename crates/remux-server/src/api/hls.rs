@@ -390,13 +390,15 @@ async fn create_hls_session(
                 hw => Some(hw.to_string()),
             }
         };
-        let http_request_headers = resolved_media
+        let (http_request_headers, stream_addon_id) = resolved_media
             .stream_info
             .as_ref()
             .and_then(|si| match &si.descriptor {
                 crate::stream::StreamDescriptor::Http {
-                    request_headers, ..
-                } => Some(request_headers.clone()),
+                    request_headers,
+                    addon_id,
+                    ..
+                } => Some((request_headers.clone(), *addon_id)),
                 _ => None,
             })
             .unwrap_or_default();
@@ -433,6 +435,7 @@ async fn create_hls_session(
             source_frame_rate,
             session_video_bitrate,
             session_hw_accel,
+            stream_addon_id,
         );
 
         state
@@ -1073,7 +1076,15 @@ async fn hls_segment_inner(
                 let has_running_ffmpeg = s
                     .kill_tx
                     .is_some();
-                if !has_running_ffmpeg {
+                let session_state = s
+                    .state
+                    .clone();
+                let should_restart = has_running_ffmpeg
+                    || matches!(
+                        session_state,
+                        TranscodeState::Error(_) | TranscodeState::Complete
+                    );
+                if !should_restart {
                     drop(s);
                     // Another request already restarted — fall through to wait loop.
                 } else {
@@ -1100,6 +1111,9 @@ async fn hls_segment_inner(
                     let http_request_headers = s
                         .http_request_headers
                         .clone();
+                    let needs_url_refresh = s.needs_url_refresh;
+                    let item_id = s.item_id;
+                    let stream_addon_id = s.stream_addon_id;
                     drop(s);
 
                     // Kill running FFmpeg and clean up stale segments (params
@@ -1124,6 +1138,44 @@ async fn hls_segment_inner(
                     }
                     let _ = std::fs::remove_dir_all(&output_dir);
                     let _ = std::fs::create_dir_all(&output_dir);
+
+                    // Refresh URL if needed (e.g., due to 403 error)
+                    let (input_url, http_request_headers) = if needs_url_refresh {
+                        if let Some(addon_id) = stream_addon_id {
+                            if let Some(addon_runtime) = state
+                                .ctx
+                                .addons
+                                .get(addon_id)
+                            {
+                                if let Some(stream_addon) = &addon_runtime.stream {
+                                    if let Ok(Some((new_url, new_headers))) =
+                                        stream_addon
+                                            .refresh_stream_url(item_id, &state.ctx)
+                                            .await
+                                    {
+                                        // Update session with refreshed URL
+                                        let mut s = session
+                                            .write()
+                                            .await;
+                                        s.input_url = new_url.clone();
+                                        s.http_request_headers = new_headers.clone();
+                                        s.needs_url_refresh = false;
+                                        (new_url, new_headers)
+                                    } else {
+                                        (input_url, http_request_headers)
+                                    }
+                                } else {
+                                    (input_url, http_request_headers)
+                                }
+                            } else {
+                                (input_url, http_request_headers)
+                            }
+                        } else {
+                            (input_url, http_request_headers)
+                        }
+                    } else {
+                        (input_url, http_request_headers)
+                    };
 
                     // Calculate the seek position from the runtimeTicks query param
                     // (cumulative ticks to start of this segment) provided by our

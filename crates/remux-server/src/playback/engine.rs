@@ -1190,16 +1190,29 @@ pub async fn start_transcode(
                     info!(session_id = %s.id, sw_fallback, "Transcode completed successfully");
                 }
                 Some(Ok(status)) => {
-                    let err_msg = format!(
-                        "ffmpeg exited with status {}: {}",
-                        status,
-                        stderr_out.trim()
-                    );
-                    error!(session_id = %s.id, error = %err_msg, "Transcode failed");
-                    s.state = TranscodeState::Error(err_msg.clone());
-                    let _ = s
-                        .state_tx
-                        .send(TranscodeState::Error(err_msg));
+                    let stderr_str = stderr_out
+                        .trim()
+                        .to_string();
+                    let is_403 =
+                        stderr_str.contains("403") || stderr_str.contains("Forbidden");
+                    if is_403 {
+                        warn!(session_id = %s.id, stderr = %stderr_str, "Transcode failed with 403, marking for URL refresh");
+                        s.needs_url_refresh = true;
+                        s.state = TranscodeState::Error("403 Forbidden".into());
+                        let _ = s
+                            .state_tx
+                            .send(TranscodeState::Error("403 Forbidden".into()));
+                    } else {
+                        let err_msg = format!(
+                            "ffmpeg exited with status {}: {}",
+                            status, &stderr_str
+                        );
+                        error!(session_id = %s.id, error = %err_msg, "Transcode failed");
+                        s.state = TranscodeState::Error(err_msg.clone());
+                        let _ = s
+                            .state_tx
+                            .send(TranscodeState::Error(err_msg));
+                    }
                 }
                 Some(Err(e)) => {
                     let err_msg = format!("Failed to wait for ffmpeg: {}", e);

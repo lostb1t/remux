@@ -71,7 +71,7 @@ impl AddonPreset for YtDlpPreset {
 
     fn from_cfg(
         &self,
-        _addon_id: Uuid,
+        addon_id: Uuid,
         cfg: &serde_json::Value,
         config: &crate::Config,
     ) -> Result<AddonCapabilities> {
@@ -96,6 +96,7 @@ impl AddonPreset for YtDlpPreset {
                 )
             });
         let addon = Arc::new(YtDlpAddon {
+            id: addon_id,
             cookies,
             executable: PathBuf::from("yt-dlp"),
             bgutil_script_path: config
@@ -152,6 +153,7 @@ inventory::submit! {
 }
 
 pub struct YtDlpAddon {
+    id: Uuid,
     cookies: Option<String>,
     executable: PathBuf,
     bgutil_script_path: PathBuf,
@@ -887,6 +889,7 @@ impl YtDlpAddon {
                         .unwrap_or_default(),
                     request_headers,
                     response_headers: Default::default(),
+                    addon_id: Some(self.id),
                 },
                 name: Some(f.label()),
                 probe_data: Some(api::MediaSourceInfo {
@@ -1054,6 +1057,60 @@ impl StreamAddon for YtDlpAddon {
     ) -> Result<Vec<crate::stream::StreamInfo>> {
         self.get_streams_for(media)
             .await
+    }
+
+    async fn refresh_stream_url(
+        &self,
+        media_id: Uuid,
+        ctx: &AppContext,
+    ) -> Result<Option<(String, std::collections::HashMap<String, String>)>> {
+        let media = match crate::db::Media::get_by_id(&ctx.db, &media_id).await {
+            Ok(Some(m)) => m,
+            Ok(None) => return Ok(None),
+            Err(_) => return Ok(None),
+        };
+
+        let url = match self
+            .resolve_watch_url(&media)
+            .await
+        {
+            Ok(u) => u,
+            Err(_) => return Ok(None),
+        };
+
+        let video = match self
+            .dump_json(&url)
+            .await
+        {
+            Ok(v) => v,
+            Err(_) => return Ok(None),
+        };
+
+        let best_audio = video
+            .formats
+            .iter()
+            .filter(|f| f.is_audio_only() && f.is_playable())
+            .max_by_key(|f| {
+                f.bitrate()
+                    .unwrap_or(0)
+            });
+
+        if let Some(f) = best_audio {
+            let headers = f
+                .http_headers
+                .clone()
+                .unwrap_or_default();
+            let url = f
+                .url
+                .clone()
+                .unwrap_or_default();
+            if url.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some((url, headers)))
+        } else {
+            Ok(None)
+        }
     }
 }
 
