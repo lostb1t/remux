@@ -3286,6 +3286,10 @@ pub enum FilterRule {
     Favorite {
         value: bool,
     },
+    /// Matches items the requesting user has (or has not) watched (play_count > 0).
+    Watched {
+        value: bool,
+    },
 }
 
 /// Whether all rules must match (AND) or any rule must match (OR).

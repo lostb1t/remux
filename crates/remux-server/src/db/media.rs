@@ -7281,6 +7281,23 @@ fn filter_rule_to_sql(
             };
             Some((sql, false))
         }
+        R::Watched { value } => {
+            let user_clause = user_id
+                .map(|id| format!(" AND ums.user_id = X'{}'", id.simple()))
+                .unwrap_or_default();
+            let sql = if *value {
+                format!(
+                    "EXISTS (SELECT 1 FROM user_media_state ums \
+                     WHERE ums.media_id = media.id{user_clause} AND ums.play_count > 0)"
+                )
+            } else {
+                format!(
+                    "NOT EXISTS (SELECT 1 FROM user_media_state ums \
+                     WHERE ums.media_id = media.id{user_clause} AND ums.play_count > 0)"
+                )
+            };
+            Some((sql, false))
+        }
     }
 }
 
