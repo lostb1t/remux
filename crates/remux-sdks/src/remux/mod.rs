@@ -6,7 +6,7 @@ pub use codecs::{
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use http::{HeaderValue, Method};
 use nutype::nutype;
-use remux_macros::dto;
+use remux_macros::{dto, query};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_alias::serde_alias;
 use serde_aux::prelude::*;
@@ -1613,8 +1613,8 @@ where
     Ok(Some(values))
 }
 
-#[derive(Default, Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[query]
+#[derive(Default, Debug)]
 pub struct VideoStreamQuery {
     pub container: Option<String>,
     #[serde(alias = "static", alias = "Static")]
@@ -1768,8 +1768,8 @@ pub struct PlaybackInfoQuery {
     pub device_profile: Option<DeviceProfile>,
 }
 
-#[derive(Debug, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[query]
+#[derive(Debug, Default)]
 pub struct ImageQuery {
     pub tag: Option<String>,
     /// Scale down to fit within box width, no upscale, maintain AR.
@@ -4206,8 +4206,8 @@ pub enum CollectionType {
     Folders,
 }
 
-#[derive(Debug, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[query]
+#[derive(Debug, Default)]
 pub struct HlsVideoQuery {
     #[serde(alias = "playSessionId")]
     pub play_session_id: Option<String>,
@@ -4343,10 +4343,9 @@ pub struct RemoteImageResult {
     pub providers: Option<Vec<String>>,
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[query]
+#[derive(Debug, Default)]
 pub struct SearchHintsQuery {
-    #[serde(alias = "searchTerm")]
     pub search_term: Option<String>,
     pub start_index: Option<u32>,
     pub limit: Option<u32>,
@@ -6419,8 +6418,8 @@ pub enum ImageRefreshMode {
     FullRefresh,
 }
 
-#[derive(Debug, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[query]
+#[derive(Debug, Default)]
 pub struct RefreshItemQuery {
     #[serde(default)]
     pub metadata_refresh_mode: MetadataRefreshMode,
