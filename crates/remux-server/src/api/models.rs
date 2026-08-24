@@ -503,7 +503,8 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                     .to_rfc3339()
             }),
         end_date: media
-            .live_end
+            .end_date
+            .or(media.live_end)
             .map(|d| {
                 d.and_utc()
                     .to_rfc3339()

@@ -41,6 +41,13 @@ fn apply_permissions(item: &mut api::BaseItemDto, user: &db::User) {
                 api::MediaType::TvChannel | api::MediaType::Program
             ),
     );
+    let allow_download = user
+        .policy
+        .as_ref()
+        .map_or(true, |p| p.enable_content_downloading);
+    if !allow_download {
+        item.can_download = Some(false);
+    }
 }
 
 enum ItemsSource {

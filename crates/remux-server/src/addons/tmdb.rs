@@ -1569,6 +1569,37 @@ async fn fetch_tmdb_meta(
                             vote_count: Some(tv_details.vote_count as u32),
                         }),
                 };
+                let tmdb_status = tv_details
+                    .status
+                    .as_ref();
+                let status = match tmdb_status {
+                    Some(sdks::tmdb::Status::Ended | sdks::tmdb::Status::Canceled) => {
+                        Some(db::MediaStatus::Ended)
+                    }
+                    Some(
+                        sdks::tmdb::Status::ReturningSeries | sdks::tmdb::Status::Pilot,
+                    ) => Some(db::MediaStatus::Continuing),
+                    Some(
+                        sdks::tmdb::Status::InProduction
+                        | sdks::tmdb::Status::Planned
+                        | sdks::tmdb::Status::PostProduction,
+                    ) => Some(db::MediaStatus::Unreleased),
+                    _ => None,
+                };
+                let end_date = if matches!(
+                    tmdb_status,
+                    Some(sdks::tmdb::Status::Ended | sdks::tmdb::Status::Canceled)
+                ) {
+                    tv_details
+                        .last_air_date
+                        .as_deref()
+                        .and_then(|s| {
+                            chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()
+                        })
+                        .and_then(|d| d.and_hms_opt(0, 0, 0))
+                } else {
+                    None
+                };
                 let mut patch = db::Media {
                     title: tv_details.name,
                     description: tv_details.overview,
@@ -1586,6 +1617,8 @@ async fn fetch_tmdb_meta(
                             .original_language
                             .clone(),
                     ),
+                    status,
+                    end_date,
                     ..Default::default()
                 };
                 if let Some(url) = tmdb_image(
