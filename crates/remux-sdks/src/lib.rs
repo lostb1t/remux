@@ -214,7 +214,7 @@ pub trait Endpoint {
 }
 
 #[derive(Clone, Copy)]
-struct CacheTtl(Duration);
+struct CacheTTL(Duration);
 
 struct InMemoryCacheMiddleware;
 
@@ -227,7 +227,7 @@ impl Middleware for InMemoryCacheMiddleware {
         next: Next<'_>,
     ) -> reqwest_middleware::Result<reqwest::Response> {
         let ttl = extensions
-            .get::<CacheTtl>()
+            .get::<CacheTTL>()
             .copied();
 
         if ttl.is_some() {
@@ -248,7 +248,7 @@ impl Middleware for InMemoryCacheMiddleware {
             .run(req, extensions)
             .await?;
 
-        if let Some(CacheTtl(ttl)) = ttl {
+        if let Some(CacheTTL(ttl)) = ttl {
             if resp
                 .status()
                 .is_success()
@@ -429,7 +429,7 @@ impl<A: Auth + Clone> RestClient<A> {
 
         let mut ext = Extensions::new();
         if let Some(ttl) = endpoint.cache_ttl() {
-            ext.insert(CacheTtl(ttl));
+            ext.insert(CacheTTL(ttl));
         }
 
         let ad_hoc: ClientWithMiddleware;
