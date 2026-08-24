@@ -1388,6 +1388,8 @@ pub struct Media {
     #[sqlx(skip)]
     pub images: MediaImages,
     pub status: Option<MediaStatus>,
+    /// Series end date (when the show concluded). Derived from `release_info` or episode dates.
+    pub end_date: Option<NaiveDateTime>,
     pub album_kind: Option<AlbumKind>,
     pub idx: Option<i64>,
     pub parent_idx: Option<i64>,
@@ -2224,9 +2226,9 @@ impl Media {
             live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id,
             collection_smart_filter, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital,
             collection_default_sort, collection_default_sort_order,
-            original_language, is_locked, locked_fields, album_kind
+            original_language, is_locked, locked_fields, album_kind, end_date
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
@@ -2270,7 +2272,8 @@ impl Media {
             original_language = COALESCE(excluded.original_language, media.original_language),
             is_locked = excluded.is_locked,
             locked_fields = excluded.locked_fields,
-            album_kind = COALESCE(excluded.album_kind, media.album_kind)
+            album_kind = COALESCE(excluded.album_kind, media.album_kind),
+            end_date = COALESCE(excluded.end_date, media.end_date)
         "#,
         )
         .bind(self.id)
@@ -2319,6 +2322,7 @@ impl Media {
         .bind(self.is_locked)
         .bind(sqlx::types::Json(&self.locked_fields))
         .bind(&self.album_kind)
+        .bind(self.end_date)
         .execute(db)
         .await?;
 
@@ -2371,7 +2375,7 @@ impl Media {
                 external_ids, external_ratings, created_at, updated_at, certification, certification_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, grandparent_id, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital,
                 collection_default_sort, collection_default_sort_order,
-                original_language, is_locked, locked_fields, album_kind
+                original_language, is_locked, locked_fields, album_kind, end_date
             )",
         );
             for item in chunk {
@@ -2428,7 +2432,8 @@ impl Media {
                     .push_bind(&item.original_language)
                     .push_bind(&item.is_locked)
                     .push_bind(sqlx::types::Json(&item.locked_fields))
-                    .push_bind(&item.album_kind);
+                    .push_bind(&item.album_kind)
+                    .push_bind(&item.end_date);
             });
 
             query_builder.push(" ON CONFLICT DO NOTHING");
@@ -2485,7 +2490,7 @@ impl Media {
                 external_ids, external_ratings, created_at, updated_at, certification, certification_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital,
                 collection_default_sort, collection_default_sort_order,
-                original_language, is_locked, locked_fields, album_kind
+                original_language, is_locked, locked_fields, album_kind, end_date
             )",
         );
 
@@ -2541,7 +2546,8 @@ impl Media {
                     .push_bind(&item.original_language)
                     .push_bind(&item.is_locked)
                     .push_bind(sqlx::types::Json(&item.locked_fields))
-                    .push_bind(&item.album_kind);
+                    .push_bind(&item.album_kind)
+                    .push_bind(&item.end_date);
             });
 
             query_builder.push(
@@ -2583,7 +2589,8 @@ impl Media {
                 -- preserve user-set locks; never let a provider refresh overwrite them
                 is_locked = CASE WHEN media.id IS NOT NULL THEN media.is_locked ELSE excluded.is_locked END,
                 locked_fields = CASE WHEN media.id IS NOT NULL THEN media.locked_fields ELSE excluded.locked_fields END,
-                album_kind = COALESCE(excluded.album_kind, media.album_kind)",
+                album_kind = COALESCE(excluded.album_kind, media.album_kind),
+                end_date = COALESCE(excluded.end_date, media.end_date)",
             );
 
             query_builder
@@ -6244,6 +6251,23 @@ impl From<sdks::stremio::Stream> for Media {
     }
 }
 
+/// Parses a Stremio `releaseInfo` string (e.g. "2016-2025" or "2025-") into
+/// an inferred status and an optional end year. Returns `(None, None)` when
+/// the string is just a start year with no range separator.
+fn parse_release_info(ri: &str) -> (Option<MediaStatus>, Option<i32>) {
+    let Some((_, end)) = ri.split_once('-') else {
+        return (None, None);
+    };
+    let end = end.trim();
+    if end.is_empty() {
+        (Some(MediaStatus::Continuing), None)
+    } else if let Ok(year) = end.parse::<i32>() {
+        (Some(MediaStatus::Ended), Some(year))
+    } else {
+        (None, None)
+    }
+}
+
 impl TryFrom<sdks::stremio::Meta> for Media {
     type Error = anyhow::Error;
     fn try_from(meta: sdks::stremio::Meta) -> Result<Media> {
@@ -6338,7 +6362,49 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                     sdks::stremio::Status::Upcoming
                     | sdks::stremio::Status::Planned => MediaStatus::Unreleased,
                     sdks::stremio::Status::Unknown => MediaStatus::Continuing,
+                })
+                .or_else(|| {
+                    // Fall back to release_info range when the addon omits status.
+                    // Only meaningful for series; movies don't use this field.
+                    if matches!(media_kind, MediaKind::Series) {
+                        meta.release_info
+                            .as_deref()
+                            .and_then(|ri| parse_release_info(ri).0)
+                    } else {
+                        None
+                    }
                 });
+
+        // Derive series end_date from release_info + episode dates.
+        let end_date: Option<NaiveDateTime> = if matches!(media_kind, MediaKind::Series)
+        {
+            meta.release_info
+                .as_deref()
+                .and_then(|ri| parse_release_info(ri).1)
+                .map(|end_year| {
+                    // Prefer the latest non-specials episode date in the ending year.
+                    meta.videos
+                        .as_deref()
+                        .unwrap_or(&[])
+                        .iter()
+                        .filter(|ep| {
+                            ep.season
+                                .map_or(true, |s| s > 0)
+                        })
+                        .filter_map(|ep| ep.released)
+                        .filter(|dt| dt.year() == end_year)
+                        .max()
+                        .map(|dt| dt.naive_utc())
+                        .unwrap_or_else(|| {
+                            chrono::NaiveDate::from_ymd_opt(end_year, 12, 31)
+                                .unwrap_or_default()
+                                .and_hms_opt(0, 0, 0)
+                                .unwrap_or_default()
+                        })
+                })
+        } else {
+            None
+        };
 
         let media = Media {
             title: meta
@@ -6386,6 +6452,7 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                 ids
             },
             status,
+            end_date,
             trailers: meta
                 .trailers
                 .map(|trailers| {
@@ -9052,5 +9119,26 @@ mod tests {
             titles.is_empty(),
             "another user's favorite must not bleed through"
         );
+    }
+
+    #[test]
+    fn parse_release_info_ended_range() {
+        let (status, end_year) = parse_release_info("2016-2025");
+        assert_eq!(status, Some(MediaStatus::Ended));
+        assert_eq!(end_year, Some(2025));
+    }
+
+    #[test]
+    fn parse_release_info_open_range() {
+        let (status, end_year) = parse_release_info("2025-");
+        assert_eq!(status, Some(MediaStatus::Continuing));
+        assert_eq!(end_year, None);
+    }
+
+    #[test]
+    fn parse_release_info_single_year() {
+        let (status, end_year) = parse_release_info("2016");
+        assert_eq!(status, None);
+        assert_eq!(end_year, None);
     }
 }

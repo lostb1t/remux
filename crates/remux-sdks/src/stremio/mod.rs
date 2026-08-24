@@ -445,9 +445,8 @@ pub struct Meta {
     #[serde(default, deserialize_with = "deserialize_option_string_or_array")]
     pub genres: Option<Vec<String>>,
     // pub season_posters: Option<Vec<String>>,
-    // this can be a range 2012-2015
-    // #[serde(deserialize_with = "deserialize_string_from_number")]
-    //pub release_info: String,
+    /// Year range string, e.g. "2016-2025" (ended) or "2025-" (ongoing) or "2016" (start year only).
+    pub release_info: Option<String>,
     #[serde(default, deserialize_with = "deserialize_opt_duration_empty_ok")]
     pub runtime: Option<Duration>,
 

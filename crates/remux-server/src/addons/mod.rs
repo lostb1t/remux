@@ -431,6 +431,7 @@ pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: b
         replace,
     );
     merge_option(&mut target.status, &source.status, replace);
+    merge_option(&mut target.end_date, &source.end_date, replace);
     merge_option(&mut target.idx, &source.idx, replace);
     merge_option(&mut target.parent_idx, &source.parent_idx, replace);
 
