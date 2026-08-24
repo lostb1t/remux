@@ -57,7 +57,8 @@ async fn items_images_inner(
     id: Uuid,
     image_type: api::ImageType,
     q: api::ImageQuery,
-) -> Result<impl IntoResponse> {
+    user: Option<&db::User>,
+) -> Result<axum::response::Response> {
     let opts = ImageProcessOptions {
         fill_width: q.fill_width,
         fill_height: q.fill_height,
@@ -74,6 +75,65 @@ async fn items_images_inner(
             .format
             .clone(),
     };
+
+    let explicit_remote = q
+        .tag
+        .as_ref()
+        .is_some_and(|tag| tag.contains("://"));
+    if !explicit_remote
+        && matches!(image_type, api::ImageType::Primary | api::ImageType::Thumb)
+    {
+        let media = match db::Media::get_by_id(
+            &state
+                .ctx
+                .db,
+            &id,
+        )
+        .await?
+        {
+            Some(media) => Some(std::sync::Arc::new(media)),
+            None => state
+                .ctx
+                .store
+                .get::<db::Media>(id.to_string()),
+        };
+
+        if let Some(media) = media {
+            if let Some(poster) = state
+                .ctx
+                .addons
+                .primary_poster_override(&media, &state.ctx, user)
+                .await
+            {
+                for url in std::iter::once(&poster.url).chain(
+                    poster
+                        .fallback_url
+                        .iter(),
+                ) {
+                    match fetch_upstream(url).await {
+                        Ok((bytes, content_type)) => {
+                            let cache_control = if poster.private_cache {
+                                "private, max-age=300"
+                            } else {
+                                "max-age=86400"
+                            };
+                            return Ok((
+                                [
+                                    (header::CONTENT_TYPE, content_type),
+                                    (header::CACHE_CONTROL, cache_control.to_string()),
+                                ],
+                                bytes,
+                            )
+                                .into_response());
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, %url, "effective primary poster override failed");
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // Resolve to (raw_bytes, content_type, source_key_for_cache, is_remote).
     // is_remote=true means the bytes came from an external URL and must not be
@@ -315,19 +375,39 @@ pub async fn get_item_image_infos(
 #[get("/items/{id}/images/{image_type}")]
 pub async fn items_images(
     State(state): State<AppState>,
+    auth::OptionalAuthSession(session): auth::OptionalAuthSession,
     Path((id, image_type)): Path<(Uuid, api::ImageType)>,
     Query(q): Query<api::ImageQuery>,
 ) -> Result<impl IntoResponse> {
-    items_images_inner(state, id, image_type, q).await
+    items_images_inner(
+        state,
+        id,
+        image_type,
+        q,
+        session
+            .as_ref()
+            .map(|s| &s.user),
+    )
+    .await
 }
 
 #[get("/items/{id}/images/{image_type}/{index}")]
 pub async fn items_images_indexed(
     State(state): State<AppState>,
+    auth::OptionalAuthSession(session): auth::OptionalAuthSession,
     Path((id, image_type, _index)): Path<(Uuid, api::ImageType, usize)>,
     Query(q): Query<api::ImageQuery>,
 ) -> Result<impl IntoResponse> {
-    items_images_inner(state, id, image_type, q).await
+    items_images_inner(
+        state,
+        id,
+        image_type,
+        q,
+        session
+            .as_ref()
+            .map(|s| &s.user),
+    )
+    .await
 }
 
 // --- POST (upload) ---

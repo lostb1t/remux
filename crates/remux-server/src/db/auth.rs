@@ -385,6 +385,24 @@ pub struct AuthSession {
     pub user: db::User,
 }
 
+#[derive(Clone, Default)]
+pub struct OptionalAuthSession(pub Option<AuthSession>);
+
+impl FromRequestParts<AppState> for OptionalAuthSession {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(
+            AuthSession::from_request_parts(parts, state)
+                .await
+                .ok(),
+        ))
+    }
+}
+
 //#[async_trait]
 impl FromRequestParts<AppState> for AuthSession {
     type Rejection = ApiError;

@@ -780,6 +780,15 @@ async fn tmdb_client_from_ctx(
     Ok(client)
 }
 
+pub(crate) async fn resolve_imdb_from_ctx(
+    ids: &db::ExternalIds,
+    is_tv: bool,
+    ctx: &AppContext,
+) -> Result<Option<db::NonEmptyString>> {
+    let client = tmdb_client_from_ctx(ctx).await?;
+    Ok(resolve_imdb_from_ids(ids, is_tv, &client).await)
+}
+
 async fn tmdb_series_seasons(
     series: &db::Media,
     ctx: &AppContext,
