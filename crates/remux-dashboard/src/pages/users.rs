@@ -295,6 +295,15 @@ pub fn UserForm(
             })
             .unwrap_or(true)
     });
+    let mut enable_content_downloading = use_signal(|| {
+        existing
+            .as_ref()
+            .map(|u| {
+                u.policy
+                    .enable_content_downloading
+            })
+            .unwrap_or(true)
+    });
     let mut subtitle_mode = use_signal(|| {
         existing
             .as_ref()
@@ -421,6 +430,7 @@ pub fn UserForm(
         let audio_transcoding_snapshot = *enable_audio_transcoding.peek();
         let remuxing_snapshot = *enable_remuxing.peek();
         let media_playback_snapshot = *enable_media_playback.peek();
+        let content_downloading_snapshot = *enable_content_downloading.peek();
         let addon_override_snapshot = addon_override
             .peek()
             .clone();
@@ -490,6 +500,7 @@ pub fn UserForm(
                         audio_transcoding_snapshot;
                     policy.enable_playback_remuxing = remuxing_snapshot;
                     policy.enable_media_playback = media_playback_snapshot;
+                    policy.enable_content_downloading = content_downloading_snapshot;
                     client
                         .execute(UpdateUserPolicy {
                             user_id: user.id,
@@ -552,6 +563,7 @@ pub fn UserForm(
                         || !audio_transcoding_snapshot
                         || !remuxing_snapshot
                         || !media_playback_snapshot
+                        || !content_downloading_snapshot
                     {
                         let mut policy = new_user
                             .policy
@@ -567,6 +579,8 @@ pub fn UserForm(
                             audio_transcoding_snapshot;
                         policy.enable_playback_remuxing = remuxing_snapshot;
                         policy.enable_media_playback = media_playback_snapshot;
+                        policy.enable_content_downloading =
+                            content_downloading_snapshot;
                         client
                             .execute(UpdateUserPolicy {
                                 user_id: new_user.id,
@@ -694,6 +708,12 @@ pub fn UserForm(
                 label: "Allow Remuxing",
                 checked: *enable_remuxing.read(),
                 on_change: move |v| enable_remuxing.set(v),
+            }
+
+            ToggleRow {
+                label: "Allow media downloads",
+                checked: *enable_content_downloading.read(),
+                on_change: move |v| enable_content_downloading.set(v),
             }
 
             div { class: "field",
