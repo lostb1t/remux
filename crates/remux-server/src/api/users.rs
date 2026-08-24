@@ -492,6 +492,34 @@ pub async fn unmark_favorite(
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
+#[post("/users/{user_id}/favoriteitems/{id}/delete")]
+pub async fn unmark_favorite_vidhub(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path((_, id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    let media = MediaResolveService::resolve_item(id, &state.ctx)
+        .await?
+        .context("not found")?;
+    let ms = media
+        .unmark_favorite(
+            &state
+                .ctx
+                .db,
+            &user,
+        )
+        .await?;
+    services::media_tracker::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        MediaTrackerEvent::Favorite { is_favorite: false },
+    )
+    .await;
+    Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
+}
+
 #[post("/userfavoriteitems/{id}")]
 pub async fn mark_favorite_modern(
     State(state): State<AppState>,
@@ -586,6 +614,35 @@ pub async fn mark_played(
 
 #[delete("/users/{user_id}/playeditems/{id}")]
 pub async fn unmark_played(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path((_, id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    let media = MediaResolveService::resolve_item(id, &state.ctx)
+        .await?
+        .context_not_found("not found")?;
+    let ms = media
+        .mark_unplayed(
+            &state
+                .ctx
+                .db,
+            &user,
+            true,
+        )
+        .await?;
+    services::media_tracker::enqueue_and_wake(
+        &state,
+        user.id,
+        &media,
+        MediaTrackerEvent::MarkUnplayed,
+    )
+    .await;
+    Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
+}
+
+#[post("/users/{user_id}/playeditems/{id}/delete")]
+pub async fn unmark_played_vidhub(
     State(state): State<AppState>,
     session: auth::AuthSession,
     auth::TargetUser(user): auth::TargetUser,
@@ -3582,6 +3639,61 @@ mod e2e_tests {
             .add_header(auth().0, auth().1)
             .await;
         assert_eq!(resp.json::<serde_json::Value>()["IsFavorite"], false);
+    }
+
+    #[tokio::test]
+    async fn vidhub_post_delete_unfavorite_alias() {
+        let (server, ctx, token) = authenticated_server().await;
+        let item = insert_test_source(&ctx.0).await;
+        let auth = auth_header_with_token(&token);
+        let user_id = get_user_id(&server, &auth).await;
+        let auth_hdr = || {
+            (
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+        };
+
+        server
+            .post(&format!("/users/{user_id}/favoriteitems/{}", item.id))
+            .add_header(auth_hdr().0, auth_hdr().1)
+            .await;
+
+        let resp = server
+            .post(&format!(
+                "/users/{user_id}/favoriteitems/{}/delete",
+                item.id
+            ))
+            .add_header(auth_hdr().0, auth_hdr().1)
+            .await;
+        assert_eq!(resp.status_code(), http::StatusCode::OK);
+        assert_eq!(resp.json::<serde_json::Value>()["IsFavorite"], false);
+    }
+
+    #[tokio::test]
+    async fn vidhub_post_delete_unplayed_alias() {
+        let (server, ctx, token) = authenticated_server().await;
+        let item = insert_test_source(&ctx.0).await;
+        let auth = auth_header_with_token(&token);
+        let user_id = get_user_id(&server, &auth).await;
+        let auth_hdr = || {
+            (
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+        };
+
+        server
+            .post(&format!("/users/{user_id}/playeditems/{}", item.id))
+            .add_header(auth_hdr().0, auth_hdr().1)
+            .await;
+
+        let resp = server
+            .post(&format!("/users/{user_id}/playeditems/{}/delete", item.id))
+            .add_header(auth_hdr().0, auth_hdr().1)
+            .await;
+        assert_eq!(resp.status_code(), http::StatusCode::OK);
+        assert_eq!(resp.json::<serde_json::Value>()["Played"], false);
     }
 
     async fn insert_promoted_collection(
