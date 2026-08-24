@@ -179,9 +179,33 @@ impl Service<Request<Body>> for WebClientService {
             .jellyfin
             .clone();
 
+        // Browser navigations carry `text/html` in Accept; API clients do not.
+        // Only serve the SPA shell for browser-like requests or known web
+        // client alias prefixes (/web/*, /jellyfin/*). Everything else gets
+        // a real 404 so API clients don't silently receive HTML.
+        let is_browser_or_alias = jellyfin_inner.is_some()
+            || path == "/"
+            || req
+                .headers()
+                .get(header::ACCEPT)
+                .and_then(|v| {
+                    v.to_str()
+                        .ok()
+                })
+                .map(|v| v.contains("text/html"))
+                .unwrap_or(false);
+
         Box::pin(async move {
             if is_service_worker_path {
                 return Ok(unregistering_service_worker_response());
+            }
+
+            if !is_browser_or_alias {
+                return Ok(Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .header(header::CONTENT_TYPE, "text/plain")
+                    .body(Body::from("404 Not Found"))
+                    .unwrap_or_else(|_| Response::new(Body::empty())));
             }
 
             let jellyfin_path = jellyfin_inner
