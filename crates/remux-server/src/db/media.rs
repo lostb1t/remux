@@ -6251,23 +6251,6 @@ impl From<sdks::stremio::Stream> for Media {
     }
 }
 
-/// Parses a Stremio `releaseInfo` string (e.g. "2016-2025" or "2025-") into
-/// an inferred status and an optional end year. Returns `(None, None)` when
-/// the string is just a start year with no range separator.
-fn parse_release_info(ri: &str) -> (Option<MediaStatus>, Option<i32>) {
-    let Some((_, end)) = ri.split_once('-') else {
-        return (None, None);
-    };
-    let end = end.trim();
-    if end.is_empty() {
-        (Some(MediaStatus::Continuing), None)
-    } else if let Ok(year) = end.parse::<i32>() {
-        (Some(MediaStatus::Ended), Some(year))
-    } else {
-        (None, None)
-    }
-}
-
 impl TryFrom<sdks::stremio::Meta> for Media {
     type Error = anyhow::Error;
     fn try_from(meta: sdks::stremio::Meta) -> Result<Media> {
@@ -6367,9 +6350,18 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                     // Fall back to release_info range when the addon omits status.
                     // Only meaningful for series; movies don't use this field.
                     if matches!(media_kind, MediaKind::Series) {
-                        meta.release_info
-                            .as_deref()
-                            .and_then(|ri| parse_release_info(ri).0)
+                        match meta
+                            .release_info
+                            .as_ref()
+                        {
+                            Some(sdks::stremio::ReleaseInfo::Ended { .. }) => {
+                                Some(MediaStatus::Ended)
+                            }
+                            Some(sdks::stremio::ReleaseInfo::Ongoing { .. }) => {
+                                Some(MediaStatus::Continuing)
+                            }
+                            _ => None,
+                        }
                     } else {
                         None
                     }
@@ -6379,8 +6371,8 @@ impl TryFrom<sdks::stremio::Meta> for Media {
         let end_date: Option<NaiveDateTime> = if matches!(media_kind, MediaKind::Series)
         {
             meta.release_info
-                .as_deref()
-                .and_then(|ri| parse_release_info(ri).1)
+                .as_ref()
+                .and_then(|ri| ri.end_year())
                 .map(|end_year| {
                     // Prefer the latest non-specials episode date in the ending year.
                     meta.videos
@@ -9119,26 +9111,5 @@ mod tests {
             titles.is_empty(),
             "another user's favorite must not bleed through"
         );
-    }
-
-    #[test]
-    fn parse_release_info_ended_range() {
-        let (status, end_year) = parse_release_info("2016-2025");
-        assert_eq!(status, Some(MediaStatus::Ended));
-        assert_eq!(end_year, Some(2025));
-    }
-
-    #[test]
-    fn parse_release_info_open_range() {
-        let (status, end_year) = parse_release_info("2025-");
-        assert_eq!(status, Some(MediaStatus::Continuing));
-        assert_eq!(end_year, None);
-    }
-
-    #[test]
-    fn parse_release_info_single_year() {
-        let (status, end_year) = parse_release_info("2016");
-        assert_eq!(status, None);
-        assert_eq!(end_year, None);
     }
 }
