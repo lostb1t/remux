@@ -23,6 +23,7 @@ pub struct TranscodeSession {
     pub input_url: String,
     pub http_request_headers: std::collections::HashMap<String, String>,
     pub needs_url_refresh: bool,
+    pub url_refresh_attempts: u32,
     pub stream_addon_id: Option<Uuid>,
     pub state: TranscodeState,
     /// Broadcasts state transitions so waiters can react immediately.
@@ -111,6 +112,7 @@ impl TranscodeSession {
             input_url,
             http_request_headers,
             needs_url_refresh: false,
+            url_refresh_attempts: 0,
             stream_addon_id,
             state: TranscodeState::Starting,
             state_tx: Arc::new(state_tx),

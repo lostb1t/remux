@@ -489,6 +489,53 @@ impl YtDlpAddon {
             .ok_or_else(|| anyhow!("yt-dlp search returned no webpage_url for query"))
     }
 
+    /// Extract YouTube video ID from a watch URL.
+    fn extract_youtube_id(url: &str) -> Option<String> {
+        // Handle youtube.com/watch?v=VIDEO_ID
+        if let Some(rest) = url.strip_prefix("https://www.youtube.com/watch?v=") {
+            let id = rest
+                .split('&')
+                .next()
+                .unwrap_or(rest);
+            if id.len() == 11
+                && id
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+            {
+                return Some(id.to_string());
+            }
+        }
+        // Handle music.youtube.com/watch?v=VIDEO_ID
+        if let Some(rest) = url.strip_prefix("https://music.youtube.com/watch?v=") {
+            let id = rest
+                .split('&')
+                .next()
+                .unwrap_or(rest);
+            if id.len() == 11
+                && id
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+            {
+                return Some(id.to_string());
+            }
+        }
+        // Handle youtu.be/VIDEO_ID
+        if let Some(rest) = url.strip_prefix("https://youtu.be/") {
+            let id = rest
+                .split('?')
+                .next()
+                .unwrap_or(rest);
+            if id.len() == 11
+                && id
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+            {
+                return Some(id.to_string());
+            }
+        }
+        None
+    }
+
     async fn run_flat_playlist(
         &self,
         url_or_query: &str,
@@ -1064,7 +1111,7 @@ impl StreamAddon for YtDlpAddon {
         media_id: Uuid,
         ctx: &AppContext,
     ) -> Result<Option<(String, std::collections::HashMap<String, String>)>> {
-        let media = match crate::db::Media::get_by_id(&ctx.db, &media_id).await {
+        let mut media = match crate::db::Media::get_by_id(&ctx.db, &media_id).await {
             Ok(Some(m)) => m,
             Ok(None) => return Ok(None),
             Err(_) => return Ok(None),
@@ -1077,6 +1124,28 @@ impl StreamAddon for YtDlpAddon {
             Ok(u) => u,
             Err(_) => return Ok(None),
         };
+
+        // Extract YouTube ID from watch URL and persist it to avoid re-searching on retries
+        if let Some(video_id) = Self::extract_youtube_id(&url) {
+            if media
+                .external_ids
+                .youtube_id
+                .as_deref()
+                != Some(video_id.as_str())
+            {
+                media
+                    .external_ids
+                    .youtube_id = Some(video_id.clone());
+                if let Err(e) = media
+                    .save(&ctx.db)
+                    .await
+                {
+                    warn!(media_id = %media_id, error = %e, "Failed to persist youtube_id");
+                } else {
+                    debug!(media_id = %media_id, youtube_id = %video_id, "Persisted youtube_id for future refreshes");
+                }
+            }
+        }
 
         let video = match self
             .dump_json(&url)

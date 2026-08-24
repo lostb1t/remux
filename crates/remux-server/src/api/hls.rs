@@ -1141,26 +1141,46 @@ async fn hls_segment_inner(
 
                     // Refresh URL if needed (e.g., due to 403 error)
                     let (input_url, http_request_headers) = if needs_url_refresh {
-                        if let Some(addon_id) = stream_addon_id {
-                            if let Some(addon_runtime) = state
-                                .ctx
-                                .addons
-                                .get(addon_id)
-                            {
-                                if let Some(stream_addon) = &addon_runtime.stream {
-                                    if let Ok(Some((new_url, new_headers))) =
-                                        stream_addon
-                                            .refresh_stream_url(item_id, &state.ctx)
-                                            .await
-                                    {
-                                        // Update session with refreshed URL
-                                        let mut s = session
-                                            .write()
-                                            .await;
-                                        s.input_url = new_url.clone();
-                                        s.http_request_headers = new_headers.clone();
-                                        s.needs_url_refresh = false;
-                                        (new_url, new_headers)
+                        // Check retry limit (max 5 attempts)
+                        let mut should_refresh = false;
+                        {
+                            let mut s = session
+                                .write()
+                                .await;
+                            if s.url_refresh_attempts < 5 {
+                                s.url_refresh_attempts += 1;
+                                should_refresh = true;
+                                debug!(session_id = %s.id, attempt = s.url_refresh_attempts, "Retrying URL refresh");
+                            } else {
+                                warn!(session_id = %s.id, "Max URL refresh attempts (5) reached, giving up");
+                            }
+                        }
+
+                        if should_refresh {
+                            if let Some(addon_id) = stream_addon_id {
+                                if let Some(addon_runtime) = state
+                                    .ctx
+                                    .addons
+                                    .get(addon_id)
+                                {
+                                    if let Some(stream_addon) = &addon_runtime.stream {
+                                        if let Ok(Some((new_url, new_headers))) =
+                                            stream_addon
+                                                .refresh_stream_url(item_id, &state.ctx)
+                                                .await
+                                        {
+                                            // Update session with refreshed URL
+                                            let mut s = session
+                                                .write()
+                                                .await;
+                                            s.input_url = new_url.clone();
+                                            s.http_request_headers =
+                                                new_headers.clone();
+                                            s.needs_url_refresh = false;
+                                            (new_url, new_headers)
+                                        } else {
+                                            (input_url, http_request_headers)
+                                        }
                                     } else {
                                         (input_url, http_request_headers)
                                     }
