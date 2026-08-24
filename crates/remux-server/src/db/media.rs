@@ -3077,6 +3077,39 @@ impl Media {
         Ok(())
     }
 
+    /// Like `set_parent_id(None, ...)` but only clears rows whose `parent_id`
+    /// currently equals `required_parent_id`. Prevents accidentally detaching
+    /// items that belong to a different parent.
+    pub async fn clear_parent_id_scoped(
+        db: &SqlitePool,
+        media_ids: &[Uuid],
+        required_parent_id: &Uuid,
+    ) -> Result<(), sqlx::Error> {
+        if media_ids.is_empty() {
+            return Ok(());
+        }
+        let _permit = DB_WRITE_SEMAPHORE
+            .acquire()
+            .await
+            .unwrap();
+        for chunk in media_ids.chunks(SQLITE_VAR_LIMIT) {
+            let mut qb = sqlx::QueryBuilder::new(
+                "UPDATE media SET parent_id = NULL WHERE parent_id = ",
+            );
+            qb.push_bind(required_parent_id);
+            qb.push(" AND id IN (");
+            let mut sep = qb.separated(", ");
+            for id in chunk {
+                sep.push_bind(id);
+            }
+            qb.push(")");
+            qb.build()
+                .execute(db)
+                .await?;
+        }
+        Ok(())
+    }
+
     /// Fetch media rows by id, chunking the `IN (...)` clause so queries stay
     /// under SQLite's 999-variable limit (SQLITE_VAR_LIMIT).
     pub async fn get_by_ids(db: &SqlitePool, ids: &[Uuid]) -> Result<Vec<Self>> {

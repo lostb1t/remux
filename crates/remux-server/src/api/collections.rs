@@ -9,6 +9,7 @@ use axum_extra::extract::Query;
 use futures::StreamExt;
 use http::StatusCode;
 use remux_macros::{delete, get, post, query};
+use remux_sdks::CommaSeparatedList;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -99,7 +100,7 @@ pub async fn get_collection_items(
 #[query]
 #[derive(Debug)]
 pub struct AddCollectionItemsQuery {
-    pub ids: Option<String>,
+    pub ids: CommaSeparatedList<Uuid>,
 }
 
 #[post("/collections/{id}/items")]
@@ -119,22 +120,47 @@ pub async fn add_collection_items(
     .filter(|m| m.kind == db::MediaKind::Collection)
     .context_not_found("Collection not found")?;
 
+    if collection.collection_kind == Some(db::CollectionKind::Smart) {
+        return Err(anyhow::anyhow!("smart collection"))
+            .context_bad_request("Cannot add items to a smart collection");
+    }
+
     let media_ids: Vec<Uuid> = q
         .ids
-        .unwrap_or_default()
-        .split(',')
-        .filter_map(|s| Uuid::parse_str(s.trim()).ok())
-        .collect();
+        .to_vec();
 
-    db::MediaRelation::add_collection_items(
-        &state
-            .ctx
-            .db,
-        &id,
-        &media_ids,
-    )
-    .await
-    .context_bad_request("failed to add items")?;
+    if collection.is_group_container() {
+        let collection_ids: Vec<Uuid> = db::Media::get_by_ids(
+            &state
+                .ctx
+                .db,
+            &media_ids,
+        )
+        .await?
+        .into_iter()
+        .filter(|m| m.kind == db::MediaKind::Collection)
+        .map(|m| m.id)
+        .collect();
+        db::Media::set_parent_id(
+            &state
+                .ctx
+                .db,
+            &collection_ids,
+            Some(id),
+        )
+        .await
+        .context_bad_request("failed to add items")?;
+    } else {
+        db::MediaRelation::add_collection_items(
+            &state
+                .ctx
+                .db,
+            &id,
+            &media_ids,
+        )
+        .await
+        .context_bad_request("failed to add items")?;
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -146,7 +172,7 @@ pub async fn add_collection_items(
 #[query]
 #[derive(Debug)]
 pub struct RemoveCollectionItemsQuery {
-    pub ids: Option<String>,
+    pub ids: CommaSeparatedList<Uuid>,
 }
 
 #[delete("/collections/{id}/items")]
@@ -156,21 +182,45 @@ pub async fn remove_collection_items(
     Path(id): Path<Uuid>,
     Query(q): Query<RemoveCollectionItemsQuery>,
 ) -> Result<StatusCode> {
-    let ids: Vec<Uuid> = q
-        .ids
-        .unwrap_or_default()
-        .split(',')
-        .filter_map(|s| Uuid::parse_str(s.trim()).ok())
-        .collect();
-
-    db::MediaRelation::delete_by_relation_ids(
+    let collection = db::Media::get_by_id(
         &state
             .ctx
             .db,
-        &ids,
+        &id,
     )
-    .await
-    .context_bad_request("failed to remove items")?;
+    .await?
+    .filter(|m| m.kind == db::MediaKind::Collection)
+    .context_not_found("Collection not found")?;
+
+    if collection.collection_kind == Some(db::CollectionKind::Smart) {
+        return Err(anyhow::anyhow!("smart collection"))
+            .context_bad_request("Cannot remove items from a smart collection");
+    }
+
+    let ids: Vec<Uuid> = q
+        .ids
+        .to_vec();
+
+    if collection.is_group_container() {
+        db::Media::clear_parent_id_scoped(
+            &state
+                .ctx
+                .db,
+            &ids,
+            &id,
+        )
+        .await
+        .context_bad_request("failed to remove items")?;
+    } else {
+        db::MediaRelation::delete_by_relation_ids(
+            &state
+                .ctx
+                .db,
+            &ids,
+        )
+        .await
+        .context_bad_request("failed to remove items")?;
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -296,4 +346,276 @@ pub async fn import_catalog(
     }
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+    use http::header::HeaderValue;
+
+    use crate::{
+        db,
+        db::{ExternalIds, MediaIdRaw, NonEmptyString},
+        integration_test::{auth_header_with_token, authenticated_server},
+    };
+
+    async fn get_user_id(server: &axum_test::TestServer, auth: &str) -> String {
+        let resp: serde_json::Value = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(auth).unwrap(),
+            )
+            .await
+            .json();
+        resp["Id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    async fn insert_group_container(db: &sqlx::SqlitePool, title: &str) -> db::Media {
+        let now = Utc::now().naive_utc();
+        let mut c = db::Media {
+            title: title.to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Manual),
+            collection_media_kind: Some(db::CollectionMediaKind::Collection),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        c.save(db)
+            .await
+            .expect("insert_group_container failed");
+        c
+    }
+
+    // Smart collection — matches the child type expected by group-container browse.
+    async fn insert_smart_collection(db: &sqlx::SqlitePool, title: &str) -> db::Media {
+        let now = Utc::now().naive_utc();
+        let mut c = db::Media {
+            title: title.to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Smart),
+            collection_media_kind: Some(db::CollectionMediaKind::Movie),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        c.save(db)
+            .await
+            .expect("insert_smart_collection failed");
+        c
+    }
+
+    // Manual (non-group) collection — used for the regular relation path.
+    async fn insert_manual_collection(db: &sqlx::SqlitePool, title: &str) -> db::Media {
+        let now = Utc::now().naive_utc();
+        let mut c = db::Media {
+            title: title.to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Manual),
+            collection_media_kind: Some(db::CollectionMediaKind::Movie),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        c.save(db)
+            .await
+            .expect("insert_manual_collection failed");
+        c
+    }
+
+    async fn insert_movie(db: &sqlx::SqlitePool, title: &str, imdb: &str) -> db::Media {
+        let now = Utc::now().naive_utc();
+        let ext = ExternalIds {
+            imdb: Some(NonEmptyString::try_new(imdb.to_string()).unwrap()),
+            ..Default::default()
+        };
+        let id = uuid::Uuid::from(&MediaIdRaw {
+            kind: db::MediaKind::Movie,
+            external_ids: ext.clone(),
+            season: None,
+            episode: None,
+        });
+        let mut m = db::Media {
+            id,
+            title: title.to_string(),
+            kind: db::MediaKind::Movie,
+            external_ids: ext,
+            created_at: now,
+            updated_at: now,
+            released_at: Some(now - chrono::Duration::days(365)),
+            ..Default::default()
+        };
+        m.save(db)
+            .await
+            .expect("insert_movie failed");
+        m
+    }
+
+    #[tokio::test]
+    async fn add_to_group_container_sets_parent_id() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(&server, &auth).await;
+
+        let group = insert_group_container(db, "Group").await;
+        let child = insert_smart_collection(db, "Child").await;
+
+        server
+            .post(&format!("/collections/{}/items", group.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[(
+                "ids",
+                child
+                    .id
+                    .to_string(),
+            )])
+            .await;
+
+        let updated = db::Media::get_by_id(db, &child.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.parent_id, Some(group.id));
+
+        let body: serde_json::Value = server
+            .get(&format!("/users/{user_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[(
+                "parentId",
+                group
+                    .id
+                    .to_string(),
+            )])
+            .await
+            .json();
+        let ids: Vec<String> = body["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|i| {
+                i["Id"]
+                    .as_str()
+                    .map(|s| s.to_string())
+            })
+            .collect();
+        let child_id_no_hyphens = child
+            .id
+            .to_string()
+            .replace('-', "");
+        assert!(ids.contains(&child_id_no_hyphens));
+    }
+
+    #[tokio::test]
+    async fn remove_from_group_container_clears_parent_id() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(&server, &auth).await;
+
+        let group = insert_group_container(db, "Group").await;
+        let child = insert_smart_collection(db, "Child").await;
+
+        db::Media::set_parent_id(db, &[child.id], Some(group.id))
+            .await
+            .unwrap();
+
+        server
+            .delete(&format!("/collections/{}/items", group.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[(
+                "ids",
+                child
+                    .id
+                    .to_string(),
+            )])
+            .await;
+
+        let updated = db::Media::get_by_id(db, &child.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.parent_id, None);
+
+        let body: serde_json::Value = server
+            .get(&format!("/users/{user_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[(
+                "parentId",
+                group
+                    .id
+                    .to_string(),
+            )])
+            .await
+            .json();
+        assert_eq!(
+            body["Items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0,
+            "group should be empty after remove"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_to_regular_collection_creates_relation() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let movie = insert_movie(db, "Movie A", "tt9990001").await;
+        let col = insert_manual_collection(db, "Movies").await;
+
+        server
+            .post(&format!("/collections/{}/items", col.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[(
+                "ids",
+                movie
+                    .id
+                    .to_string(),
+            )])
+            .await;
+
+        let relations = db::MediaRelation::get_collection_items(db, &col.id)
+            .await
+            .unwrap();
+        assert_eq!(relations.len(), 1);
+        assert_eq!(relations[0].right_media_id, movie.id);
+
+        let movie_after = db::Media::get_by_id(db, &movie.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            movie_after.parent_id, None,
+            "parent_id must not be set for non-group collections"
+        );
+    }
 }
