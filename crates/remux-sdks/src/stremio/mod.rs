@@ -384,6 +384,73 @@ pub enum Status {
     Unknown,
 }
 
+/// Parsed representation of the Stremio `releaseInfo` field.
+///
+/// The raw value may be an integer (`2016`) or a string (`"2016"`, `"2016-"`,
+/// `"2016-2025"`). An integer or bare year string means we only know the start
+/// year. A trailing dash means the series is ongoing. A closed range means it
+/// has ended.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub enum ReleaseInfo {
+    /// Only a start year is known (e.g. `2016` or `"2016"`).
+    Year(i32),
+    /// Series is ongoing (e.g. `"2016-"`).
+    Ongoing { start: i32 },
+    /// Series has ended (e.g. `"2016-2025"`).
+    Ended { start: i32, end: i32 },
+}
+
+impl ReleaseInfo {
+    pub fn end_year(&self) -> Option<i32> {
+        match self {
+            ReleaseInfo::Ended { end, .. } => Some(*end),
+            _ => None,
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ReleaseInfo {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Int(i32),
+            Str(String),
+        }
+
+        let raw = Raw::deserialize(de)?;
+        let s = match raw {
+            Raw::Int(n) => return Ok(ReleaseInfo::Year(n)),
+            Raw::Str(s) => s,
+        };
+
+        // Normalize en dash (U+2013) and em dash (U+2014) to ASCII hyphen.
+        let s = s
+            .replace('\u{2013}', "-")
+            .replace('\u{2014}', "-");
+        if let Some((left, right)) = s.split_once('-') {
+            let start = left
+                .trim()
+                .parse::<i32>()
+                .unwrap_or(0);
+            let right = right.trim();
+            if right.is_empty() {
+                Ok(ReleaseInfo::Ongoing { start })
+            } else if let Ok(end) = right.parse::<i32>() {
+                Ok(ReleaseInfo::Ended { start, end })
+            } else {
+                Ok(ReleaseInfo::Year(start))
+            }
+        } else {
+            let year = s
+                .trim()
+                .parse::<i32>()
+                .unwrap_or(0);
+            Ok(ReleaseInfo::Year(year))
+        }
+    }
+}
+
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -445,9 +512,7 @@ pub struct Meta {
     #[serde(default, deserialize_with = "deserialize_option_string_or_array")]
     pub genres: Option<Vec<String>>,
     // pub season_posters: Option<Vec<String>>,
-    // this can be a range 2012-2015
-    // #[serde(deserialize_with = "deserialize_string_from_number")]
-    //pub release_info: String,
+    pub release_info: Option<ReleaseInfo>,
     #[serde(default, deserialize_with = "deserialize_opt_duration_empty_ok")]
     pub runtime: Option<Duration>,
 
@@ -994,7 +1059,7 @@ pub fn client(base: &str) -> Result<RestClient, url::ParseError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MediaType, Meta, parse_duration_lossy};
+    use super::{MediaType, Meta, ReleaseInfo, parse_duration_lossy};
     use std::time::Duration;
 
     #[test]
@@ -1064,5 +1129,63 @@ mod tests {
         }"#;
         let meta: Meta = serde_json::from_str(json).unwrap();
         assert_eq!(meta.runtime, None);
+    }
+
+    #[test]
+    fn release_info_ended_range() {
+        let ri: ReleaseInfo = serde_json::from_str(r#""2016-2025""#).unwrap();
+        assert_eq!(
+            ri,
+            ReleaseInfo::Ended {
+                start: 2016,
+                end: 2025
+            }
+        );
+        assert_eq!(ri.end_year(), Some(2025));
+    }
+
+    #[test]
+    fn release_info_ongoing() {
+        let ri: ReleaseInfo = serde_json::from_str(r#""2016-""#).unwrap();
+        assert_eq!(ri, ReleaseInfo::Ongoing { start: 2016 });
+        assert_eq!(ri.end_year(), None);
+    }
+
+    #[test]
+    fn release_info_single_year_string() {
+        let ri: ReleaseInfo = serde_json::from_str(r#""2016""#).unwrap();
+        assert_eq!(ri, ReleaseInfo::Year(2016));
+        assert_eq!(ri.end_year(), None);
+    }
+
+    #[test]
+    fn release_info_integer() {
+        let ri: ReleaseInfo = serde_json::from_str("2016").unwrap();
+        assert_eq!(ri, ReleaseInfo::Year(2016));
+        assert_eq!(ri.end_year(), None);
+    }
+
+    #[test]
+    fn release_info_en_dash() {
+        let ri: ReleaseInfo = serde_json::from_str(r#""2016–2025""#).unwrap();
+        assert_eq!(
+            ri,
+            ReleaseInfo::Ended {
+                start: 2016,
+                end: 2025
+            }
+        );
+    }
+
+    #[test]
+    fn release_info_em_dash() {
+        let ri: ReleaseInfo = serde_json::from_str(r#""2016—2025""#).unwrap();
+        assert_eq!(
+            ri,
+            ReleaseInfo::Ended {
+                start: 2016,
+                end: 2025
+            }
+        );
     }
 }
