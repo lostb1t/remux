@@ -918,12 +918,27 @@ pub(crate) async fn probe_stream(
             .video_stream()
             .is_some()
         {
-            debug!(id = %stream.id, "probe cache hit");
-            let mut info = api::MediaSourceInfo::from(stream.clone());
-            apply_video_bitrate_fallback(&mut info.media_streams, info.bitrate);
-            return Ok((info, stream.clone()));
+            let alive = match stream
+                .stream_info
+                .as_ref()
+                .map(|si| &si.descriptor)
+            {
+                Some(d) => {
+                    d.is_alive()
+                        .await
+                }
+                None => true,
+            };
+            if alive {
+                debug!(id = %stream.id, "probe cache hit, url alive");
+                let mut info = api::MediaSourceInfo::from(stream.clone());
+                apply_video_bitrate_fallback(&mut info.media_streams, info.bitrate);
+                return Ok((info, stream.clone()));
+            }
+            debug!(id = %stream.id, "probe cache hit but url dead, falling through to fallback");
+        } else {
+            debug!(id = %stream.id, "probe cache stale (no video stream), re-probing");
         }
-        debug!(id = %stream.id, "probe cache stale (no video stream), re-probing");
     } else if stream
         .stream_info
         .as_ref()

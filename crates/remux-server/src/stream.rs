@@ -158,6 +158,27 @@ impl StreamDescriptor {
         }
     }
 
+    /// Returns `false` only for HTTP streams whose HEAD request yields a 4xx/5xx
+    /// status or a network/timeout error. Non-HTTP variants (local, torrent,
+    /// opendal) return `true` immediately.
+    pub async fn is_alive(&self) -> bool {
+        let Some(url) = self.as_http_url() else {
+            return true;
+        };
+        match HEAD_CLIENT
+            .head(url)
+            .send()
+            .await
+        {
+            Ok(r) => {
+                r.status()
+                    .as_u16()
+                    < 400
+            }
+            Err(_) => false,
+        }
+    }
+
     /// Instantiate the runtime service for self-contained variants.
     /// Do **not** call this for `Opendal` — those must go through the addon.
     pub fn into_source(self) -> Box<dyn StreamSource> {
@@ -277,6 +298,15 @@ impl StreamInfo {
 pub trait StreamSource: Send + Sync {
     async fn serve(&self, state: &AppState, headers: &HeaderMap) -> Result<Response>;
 }
+
+static HEAD_CLIENT: std::sync::LazyLock<reqwest::Client> =
+    std::sync::LazyLock::new(|| {
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(3))
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .expect("failed to build HEAD client")
+    });
 
 static STREAM_PROXY_CLIENT: std::sync::LazyLock<reqwest::Client> =
     std::sync::LazyLock::new(|| {
