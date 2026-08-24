@@ -492,7 +492,7 @@ pub async fn unmark_favorite(
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
-async fn do_unmark_favorite(
+async fn unmark_favorite_inner(
     state: AppState,
     user: db::User,
     id: Uuid,
@@ -525,7 +525,7 @@ pub async fn unmark_favorite_get(
     auth::TargetUser(user): auth::TargetUser,
     Path((_, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
-    do_unmark_favorite(state, user, id).await
+    unmark_favorite_inner(state, user, id).await
 }
 
 #[post("/users/{user_id}/favoriteitems/{id}/delete")]
@@ -535,7 +535,7 @@ pub async fn unmark_favorite_post(
     auth::TargetUser(user): auth::TargetUser,
     Path((_, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
-    do_unmark_favorite(state, user, id).await
+    unmark_favorite_inner(state, user, id).await
 }
 
 #[post("/userfavoriteitems/{id}")]
@@ -659,7 +659,7 @@ pub async fn unmark_played(
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
-async fn do_unmark_played(
+async fn unmark_played_inner(
     state: AppState,
     user: db::User,
     id: Uuid,
@@ -693,7 +693,7 @@ pub async fn unmark_played_get(
     auth::TargetUser(user): auth::TargetUser,
     Path((_, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
-    do_unmark_played(state, user, id).await
+    unmark_played_inner(state, user, id).await
 }
 
 #[post("/users/{user_id}/playeditems/{id}/delete")]
@@ -703,7 +703,7 @@ pub async fn unmark_played_post(
     auth::TargetUser(user): auth::TargetUser,
     Path((_, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
-    do_unmark_played(state, user, id).await
+    unmark_played_inner(state, user, id).await
 }
 
 #[query]
