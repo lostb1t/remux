@@ -6367,14 +6367,16 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                     }
                 });
 
-        // Derive series end_date from release_info + episode dates.
+        // Derive series end_date only when we resolved Ended status.
         let end_date: Option<NaiveDateTime> = if matches!(media_kind, MediaKind::Series)
+            && matches!(status, Some(MediaStatus::Ended))
         {
             meta.release_info
                 .as_ref()
                 .and_then(|ri| ri.end_year())
                 .map(|end_year| {
-                    // Prefer the latest non-specials episode date in the ending year.
+                    // Prefer the latest regular (non-specials) episode on or before the
+                    // declared end year; fall back to a synthetic year-end date.
                     meta.videos
                         .as_deref()
                         .unwrap_or(&[])
@@ -6384,7 +6386,7 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                                 .map_or(true, |s| s > 0)
                         })
                         .filter_map(|ep| ep.released)
-                        .filter(|dt| dt.year() == end_year)
+                        .filter(|dt| dt.year() <= end_year)
                         .max()
                         .map(|dt| dt.naive_utc())
                         .unwrap_or_else(|| {

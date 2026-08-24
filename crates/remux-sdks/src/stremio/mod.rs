@@ -424,6 +424,10 @@ impl<'de> serde::Deserialize<'de> for ReleaseInfo {
             Raw::Str(s) => s,
         };
 
+        // Normalize en dash (U+2013) and em dash (U+2014) to ASCII hyphen.
+        let s = s
+            .replace('\u{2013}', "-")
+            .replace('\u{2014}', "-");
         if let Some((left, right)) = s.split_once('-') {
             let start = left
                 .trim()
@@ -1159,5 +1163,29 @@ mod tests {
         let ri: ReleaseInfo = serde_json::from_str("2016").unwrap();
         assert_eq!(ri, ReleaseInfo::Year(2016));
         assert_eq!(ri.end_year(), None);
+    }
+
+    #[test]
+    fn release_info_en_dash() {
+        let ri: ReleaseInfo = serde_json::from_str(r#""2016–2025""#).unwrap();
+        assert_eq!(
+            ri,
+            ReleaseInfo::Ended {
+                start: 2016,
+                end: 2025
+            }
+        );
+    }
+
+    #[test]
+    fn release_info_em_dash() {
+        let ri: ReleaseInfo = serde_json::from_str(r#""2016—2025""#).unwrap();
+        assert_eq!(
+            ri,
+            ReleaseInfo::Ended {
+                start: 2016,
+                end: 2025
+            }
+        );
     }
 }
