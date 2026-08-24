@@ -9,11 +9,15 @@ pub mod stremio;
 pub mod tmdb;
 pub mod trakt;
 
-use http::{HeaderMap, HeaderValue, Method, header};
+use async_trait::async_trait;
+use bytes::Bytes;
+use http::{Extensions, HeaderMap, HeaderValue, Method, header};
 use itertools::Itertools;
 use md5;
 use remux_utils::Store;
-use reqwest_middleware::ClientBuilder as MwClientBuilder;
+use reqwest_middleware::{
+    ClientBuilder as MwClientBuilder, ClientWithMiddleware, Middleware, Next,
+};
 pub use reqwest_retry::policies::ExponentialBackoff;
 use reqwest_retry::{RetryPolicy, RetryTransientMiddleware};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
@@ -209,23 +213,123 @@ pub trait Endpoint {
     }
 }
 
+#[derive(Clone, Copy)]
+struct CacheTtl(Duration);
+
+struct InMemoryCacheMiddleware;
+
+#[async_trait]
+impl Middleware for InMemoryCacheMiddleware {
+    async fn handle(
+        &self,
+        req: reqwest::Request,
+        extensions: &mut Extensions,
+        next: Next<'_>,
+    ) -> reqwest_middleware::Result<reqwest::Response> {
+        let ttl = extensions
+            .get::<CacheTtl>()
+            .copied();
+
+        if ttl.is_some() {
+            let key = hash_key(
+                req.url()
+                    .as_str(),
+            );
+            if let Some(cached) = HTTP_CACHE.get::<String>(&key) {
+                let resp = http::Response::builder()
+                    .status(200)
+                    .body(Bytes::from((*cached).clone()))
+                    .unwrap();
+                return Ok(reqwest::Response::from(resp));
+            }
+        }
+
+        let resp = next
+            .run(req, extensions)
+            .await?;
+
+        if let Some(CacheTtl(ttl)) = ttl {
+            if resp
+                .status()
+                .is_success()
+            {
+                let status = resp.status();
+                let url = resp
+                    .url()
+                    .clone();
+                let text = resp
+                    .text()
+                    .await
+                    .map_err(reqwest_middleware::Error::Reqwest)?;
+                let key = hash_key(url.as_str());
+                let weight = text
+                    .len()
+                    .min(u32::MAX as usize) as u32;
+                HTTP_CACHE.save_arc_with_weight(
+                    key,
+                    Arc::new(text.clone()),
+                    weight,
+                    ttl,
+                );
+                let rebuilt = http::Response::builder()
+                    .status(status)
+                    .body(Bytes::from(text))
+                    .unwrap();
+                return Ok(reqwest::Response::from(rebuilt));
+            }
+        }
+
+        Ok(resp)
+    }
+}
+
+struct DynRetryPolicy(Arc<dyn RetryPolicy + Send + Sync>);
+
+impl RetryPolicy for DynRetryPolicy {
+    fn should_retry(
+        &self,
+        request_start_time: std::time::SystemTime,
+        n_past_retries: u32,
+    ) -> reqwest_retry::RetryDecision {
+        self.0
+            .should_retry(request_start_time, n_past_retries)
+    }
+}
+
+fn build_mw(
+    raw: &reqwest::Client,
+    retry: Option<Arc<dyn RetryPolicy + Send + Sync>>,
+) -> ClientWithMiddleware {
+    let builder = MwClientBuilder::new(raw.clone()).with(InMemoryCacheMiddleware);
+    match retry {
+        Some(policy) => builder
+            .with(RetryTransientMiddleware::new_with_policy(DynRetryPolicy(
+                policy,
+            )))
+            .build(),
+        None => builder.build(),
+    }
+}
+
 #[derive(Clone)]
 pub struct RestClient<A: Auth = NoAuth> {
-    http: reqwest::Client,
+    raw: reqwest::Client,
+    mw: ClientWithMiddleware,
     base: url::Url,
     auth: Arc<A>,
     map_error: fn(u16, &str, &str) -> ClientError,
-    default_retry: Option<Arc<dyn RetryPolicy + Send + Sync>>,
 }
 
 impl RestClient<NoAuth> {
     pub fn new(base: &str) -> Result<Self, url::ParseError> {
+        let raw = SHARED_HTTP_CLIENT.clone();
+        let mw = build_mw(&raw, None);
         Ok(Self {
-            http: SHARED_HTTP_CLIENT.clone(),
+            raw,
+            mw,
             base: url::Url::parse(format!("{}/", base.trim_end_matches('/')).as_str())?,
             auth: Arc::new(NoAuth),
             map_error: default_error_mapper,
-            default_retry: None,
         })
     }
 }
@@ -233,11 +337,11 @@ impl RestClient<NoAuth> {
 impl<A: Auth + Clone> RestClient<A> {
     pub fn with_auth<B: Auth + Clone>(self, auth: B) -> RestClient<B> {
         RestClient {
-            http: self.http,
+            raw: self.raw,
+            mw: self.mw,
             base: self.base,
             auth: Arc::new(auth),
             map_error: self.map_error,
-            default_retry: self.default_retry,
         }
     }
 
@@ -250,26 +354,19 @@ impl<A: Auth + Clone> RestClient<A> {
         mut self,
         policy: P,
     ) -> Self {
-        self.default_retry = Some(Arc::new(policy));
+        self.mw = build_mw(&self.raw, Some(Arc::new(policy)));
         self
     }
 
-    /// Owned result. Prefer `execute_arc` when the value is only read — on a cache
-    /// hit this has to deep-copy the payload to hand back a `T`.
     pub async fn execute<EP: Endpoint + Clone>(
         &self,
         endpoint: EP,
     ) -> Result<EP::Output, ClientError> {
         self.execute_arc(endpoint)
             .await
-            .map(|arc| {
-                // Uncached responses are uniquely owned here, so this unwraps
-                // without copying; only cache hits fall back to a clone.
-                Arc::try_unwrap(arc).unwrap_or_else(|arc| (*arc).clone())
-            })
+            .map(|arc| Arc::try_unwrap(arc).unwrap_or_else(|arc| (*arc).clone()))
     }
 
-    /// Shared result — no deep copy on a cache hit.
     pub async fn execute_arc<EP: Endpoint + Clone>(
         &self,
         endpoint: EP,
@@ -292,19 +389,9 @@ impl<A: Auth + Clone> RestClient<A> {
                 .join("&");
             url.set_query(Some(&qs));
         }
-        let cache_key = hash_key(&url.to_string());
-
-        if endpoint
-            .cache_ttl()
-            .is_some()
-        {
-            if let Some(value) = HTTP_CACHE.get::<EP::Output>(&cache_key) {
-                return Ok(value);
-            }
-        }
 
         let mut req = self
-            .http
+            .raw
             .request(endpoint.method(), url.clone())
             .headers(endpoint.headers());
         req = self
@@ -336,35 +423,31 @@ impl<A: Auth + Clone> RestClient<A> {
             Body::Text(s) => req.body(s),
             Body::Bytes(b) => req.body(b),
         };
-        let retry = endpoint
-            .retry_policy()
-            .or_else(|| {
-                self.default_retry
-                    .clone()
-            });
-        let resp = if let Some(policy) = retry {
-            let request = req
-                .build()
-                .map_err(ClientError::Transport)?;
-            let mw_client = MwClientBuilder::new(
-                self.http
-                    .clone(),
-            )
-            .with(RetryTransientMiddleware::new_with_policy(DynRetryPolicy(
-                policy,
-            )))
-            .build();
-            mw_client
-                .execute(request)
-                .await
-                .map_err(|e| match e {
-                    reqwest_middleware::Error::Reqwest(e) => ClientError::Transport(e),
-                    reqwest_middleware::Error::Middleware(e) => ClientError::Other(e),
-                })?
+        let request = req
+            .build()
+            .map_err(ClientError::Transport)?;
+
+        let mut ext = Extensions::new();
+        if let Some(ttl) = endpoint.cache_ttl() {
+            ext.insert(CacheTtl(ttl));
+        }
+
+        let ad_hoc: ClientWithMiddleware;
+        let client = if let Some(policy) = endpoint.retry_policy() {
+            ad_hoc = build_mw(&self.raw, Some(policy));
+            &ad_hoc
         } else {
-            req.send()
-                .await?
+            &self.mw
         };
+
+        let resp = client
+            .execute_with_extensions(request, &mut ext)
+            .await
+            .map_err(|e| match e {
+                reqwest_middleware::Error::Reqwest(e) => ClientError::Transport(e),
+                reqwest_middleware::Error::Middleware(e) => ClientError::Other(e),
+            })?;
+
         let status = resp
             .status()
             .as_u16();
@@ -393,28 +476,14 @@ impl<A: Auth + Clone> RestClient<A> {
                 // 204 No Content and similar empty responses: treat as JSON null so
                 // endpoints with `type Output = ()` deserialize successfully.
                 let parse_body = if text.is_empty() { "null" } else { &text };
-                let result: Result<EP::Output, ClientError> =
-                    serde_json::from_str::<EP::Output>(parse_body).map_err(|e| {
-                        ClientError::Json {
-                            status: s,
-                            source: e,
-                            endpoint: Some(url.to_string()),
-                            body: Some(text.clone()),
-                        }
-                    });
-                let arc = result.map(Arc::new)?;
-                if let Some(ttl) = endpoint.cache_ttl() {
-                    let weight = text
-                        .len()
-                        .min(u32::MAX as usize) as u32;
-                    HTTP_CACHE.save_arc_with_weight(
-                        cache_key,
-                        Arc::clone(&arc),
-                        weight,
-                        ttl,
-                    );
-                }
-                Ok(arc)
+                serde_json::from_str::<EP::Output>(parse_body)
+                    .map(Arc::new)
+                    .map_err(|e| ClientError::Json {
+                        status: s,
+                        source: e,
+                        endpoint: Some(url.to_string()),
+                        body: Some(text.clone()),
+                    })
             }
             s => Err((self.map_error)(s, &url.to_string(), &text)),
         }
@@ -468,21 +537,6 @@ impl<EP: Endpoint> Endpoint for Cached<EP> {
 
     fn cache_ttl(&self) -> Option<Duration> {
         Some(self.ttl)
-    }
-}
-
-// Wraps Arc<dyn RetryPolicy> so it can be passed to RetryTransientMiddleware,
-// which requires a concrete type implementing RetryPolicy + Send + Sync.
-struct DynRetryPolicy(Arc<dyn RetryPolicy + Send + Sync>);
-
-impl RetryPolicy for DynRetryPolicy {
-    fn should_retry(
-        &self,
-        request_start_time: std::time::SystemTime,
-        n_past_retries: u32,
-    ) -> reqwest_retry::RetryDecision {
-        self.0
-            .should_retry(request_start_time, n_past_retries)
     }
 }
 

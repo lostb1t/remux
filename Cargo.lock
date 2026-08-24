@@ -6760,6 +6760,8 @@ name = "remux-sdks"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "bytes",
  "chrono",
  "default2",
  "duration-str",
