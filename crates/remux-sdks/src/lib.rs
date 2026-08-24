@@ -207,10 +207,6 @@ pub trait Endpoint {
     fn cache_ttl(&self) -> Option<Duration> {
         None
     }
-
-    fn retry_policy(&self) -> Option<Arc<dyn RetryPolicy + Send + Sync>> {
-        None
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -296,11 +292,9 @@ impl RetryPolicy for DynRetryPolicy {
     }
 }
 
-fn build_mw(
-    raw: &reqwest::Client,
-    retry: Option<Arc<dyn RetryPolicy + Send + Sync>>,
-) -> ClientWithMiddleware {
-    let builder = MwClientBuilder::new(raw.clone()).with(InMemoryCacheMiddleware);
+fn build_mw(retry: Option<Arc<dyn RetryPolicy + Send + Sync>>) -> ClientWithMiddleware {
+    let builder =
+        MwClientBuilder::new(SHARED_HTTP_CLIENT.clone()).with(InMemoryCacheMiddleware);
     match retry {
         Some(policy) => builder
             .with(RetryTransientMiddleware::new_with_policy(DynRetryPolicy(
@@ -313,7 +307,6 @@ fn build_mw(
 
 #[derive(Clone)]
 pub struct RestClient<A: Auth = NoAuth> {
-    raw: reqwest::Client,
     mw: ClientWithMiddleware,
     base: url::Url,
     auth: Arc<A>,
@@ -322,11 +315,8 @@ pub struct RestClient<A: Auth = NoAuth> {
 
 impl RestClient<NoAuth> {
     pub fn new(base: &str) -> Result<Self, url::ParseError> {
-        let raw = SHARED_HTTP_CLIENT.clone();
-        let mw = build_mw(&raw, None);
         Ok(Self {
-            raw,
-            mw,
+            mw: build_mw(None),
             base: url::Url::parse(format!("{}/", base.trim_end_matches('/')).as_str())?,
             auth: Arc::new(NoAuth),
             map_error: default_error_mapper,
@@ -337,7 +327,6 @@ impl RestClient<NoAuth> {
 impl<A: Auth + Clone> RestClient<A> {
     pub fn with_auth<B: Auth + Clone>(self, auth: B) -> RestClient<B> {
         RestClient {
-            raw: self.raw,
             mw: self.mw,
             base: self.base,
             auth: Arc::new(auth),
@@ -354,7 +343,7 @@ impl<A: Auth + Clone> RestClient<A> {
         mut self,
         policy: P,
     ) -> Self {
-        self.mw = build_mw(&self.raw, Some(Arc::new(policy)));
+        self.mw = build_mw(Some(Arc::new(policy)));
         self
     }
 
@@ -390,8 +379,7 @@ impl<A: Auth + Clone> RestClient<A> {
             url.set_query(Some(&qs));
         }
 
-        let mut req = self
-            .raw
+        let mut req = SHARED_HTTP_CLIENT
             .request(endpoint.method(), url.clone())
             .headers(endpoint.headers());
         req = self
@@ -432,15 +420,8 @@ impl<A: Auth + Clone> RestClient<A> {
             ext.insert(CacheTTL(ttl));
         }
 
-        let ad_hoc: ClientWithMiddleware;
-        let client = if let Some(policy) = endpoint.retry_policy() {
-            ad_hoc = build_mw(&self.raw, Some(policy));
-            &ad_hoc
-        } else {
-            &self.mw
-        };
-
-        let resp = client
+        let resp = self
+            .mw
             .execute_with_extensions(request, &mut ext)
             .await
             .map_err(|e| match e {
@@ -539,67 +520,6 @@ impl<EP: Endpoint> Endpoint for Cached<EP> {
         Some(self.ttl)
     }
 }
-
-#[derive(Clone)]
-pub struct WithRetry<EP: Endpoint> {
-    endpoint: EP,
-    policy: Arc<dyn RetryPolicy + Send + Sync>,
-}
-
-impl<EP: Endpoint + Clone> Endpoint for WithRetry<EP> {
-    type Output = EP::Output;
-
-    fn method(&self) -> Method {
-        self.endpoint
-            .method()
-    }
-
-    fn path(&self) -> String {
-        self.endpoint
-            .path()
-    }
-
-    fn query(&self) -> Vec<(String, String)> {
-        self.endpoint
-            .query()
-    }
-
-    fn headers(&self) -> HeaderMap {
-        self.endpoint
-            .headers()
-    }
-
-    fn body(&self) -> Body {
-        self.endpoint
-            .body()
-    }
-
-    fn cache_ttl(&self) -> Option<Duration> {
-        self.endpoint
-            .cache_ttl()
-    }
-
-    fn retry_policy(&self) -> Option<Arc<dyn RetryPolicy + Send + Sync>> {
-        Some(
-            self.policy
-                .clone(),
-        )
-    }
-}
-
-pub trait RetryableEndpoint: Endpoint + Sized {
-    fn with_retry<P: RetryPolicy + Send + Sync + 'static>(
-        self,
-        policy: P,
-    ) -> WithRetry<Self> {
-        WithRetry {
-            endpoint: self,
-            policy: Arc::new(policy),
-        }
-    }
-}
-
-impl<EP: Endpoint + Sized> RetryableEndpoint for EP {}
 
 /// Wraps an endpoint and appends extra query parameters to every request.
 /// Used by `StremioService` to forward manifest-URL query params to all resource calls.
