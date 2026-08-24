@@ -1,6 +1,5 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use sdks::{ExponentialBackoff, RetryableEndpoint};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -197,24 +196,17 @@ impl MetricsAddon for TraktAddon {
         )?;
         let today = chrono::Utc::now().date_naive();
 
-        let policy = ExponentialBackoff::builder().build_with_max_retries(3);
         let stats = match media.kind {
             db::MediaKind::Movie => client
-                .execute(
-                    sdks::trakt::MovieStatsEndpoint {
-                        imdb_id: imdb_id.to_string(),
-                    }
-                    .with_retry(policy),
-                )
+                .execute(sdks::trakt::MovieStatsEndpoint {
+                    imdb_id: imdb_id.to_string(),
+                })
                 .await
                 .ok(),
             db::MediaKind::Series => client
-                .execute(
-                    sdks::trakt::ShowStatsEndpoint {
-                        imdb_id: imdb_id.to_string(),
-                    }
-                    .with_retry(policy),
-                )
+                .execute(sdks::trakt::ShowStatsEndpoint {
+                    imdb_id: imdb_id.to_string(),
+                })
                 .await
                 .ok(),
             _ => return Ok(None),
