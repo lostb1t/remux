@@ -30,6 +30,7 @@ fn rule_values(rule: &FilterRule) -> Vec<String> {
             .map(|id| id.to_string())
             .collect(),
         FilterRule::Favorite { .. } => vec![],
+        FilterRule::Watched { .. } => vec![],
         _ => vec![],
     }
 }
@@ -233,6 +234,7 @@ fn field_label(key: &str) -> &'static str {
         "catalog" => "Catalog",
         "collection_id" => "Collection",
         "favorite" => "Favorite",
+        "watched" => "Watched",
         _ => "",
     }
 }
@@ -242,7 +244,7 @@ fn ops_for_field(field_key: &str) -> Vec<(&'static str, &'static str)> {
         "year" | "rating_audience" | "rating_critic" => {
             vec![("eq", "is"), ("not_eq", "is not"), ("gt", ">"), ("lt", "<")]
         }
-        "parental_rating" | "has_trailer" | "favorite" => vec![],
+        "parental_rating" | "has_trailer" | "favorite" | "watched" => vec![],
         _ => vec![("is", "is"), ("is_not", "is not")],
     }
 }
@@ -354,6 +356,9 @@ fn rule_to_raw(rule: &FilterRule) -> (String, String, String) {
         FilterRule::Favorite { value } => {
             ("favorite".into(), String::new(), value.to_string())
         }
+        FilterRule::Watched { value } => {
+            ("watched".into(), String::new(), value.to_string())
+        }
     }
 }
 
@@ -454,6 +459,9 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
                 .collect(),
         },
         "favorite" => FilterRule::Favorite {
+            value: value_str == "true",
+        },
+        "watched" => FilterRule::Watched {
             value: value_str == "true",
         },
         _ => FilterRule::Genre {
@@ -792,7 +800,8 @@ pub fn FilterRuleRow(
     let is_catalog = field_val == "catalog";
     let is_collection_id = field_val == "collection_id";
     let is_favorite = field_val == "favorite";
-    let hide_operator = is_trailer || is_parental_rating || is_favorite;
+    let is_watched = field_val == "watched";
+    let hide_operator = is_trailer || is_parental_rating || is_favorite || is_watched;
 
     let fv1 = field_val.clone();
     let fv2 = field_val.clone();
@@ -877,6 +886,7 @@ pub fn FilterRuleRow(
                 if show_field("catalog")         { option { value: "catalog",          selected: field_val == "catalog",          { field_label("catalog") } } }
                 if show_field("collection_id")   { option { value: "collection_id",    selected: field_val == "collection_id",    { field_label("collection_id") } } }
                 if show_field("favorite")        { option { value: "favorite",         selected: field_val == "favorite",         { field_label("favorite") } } }
+                if show_field("watched")         { option { value: "watched",          selected: field_val == "watched",          { field_label("watched") } } }
             }
             if !hide_operator {
                 select {
@@ -918,6 +928,19 @@ pub fn FilterRuleRow(
                     onchange: move |e| {
                         if let Some(row) = rules.write().get_mut(idx) {
                             *row = raw_to_rule("favorite", "", &e.value());
+                        }
+                    },
+                    option { value: "true",  selected: value_val == "true",  "Yes" }
+                    option { value: "false", selected: value_val == "false", "No" }
+                }
+            } else if is_watched {
+                select {
+                    class: "select-input",
+                    style: "flex:2 1 130px;min-width:130px",
+                    value: "{value_val}",
+                    onchange: move |e| {
+                        if let Some(row) = rules.write().get_mut(idx) {
+                            *row = raw_to_rule("watched", "", &e.value());
                         }
                     },
                     option { value: "true",  selected: value_val == "true",  "Yes" }
