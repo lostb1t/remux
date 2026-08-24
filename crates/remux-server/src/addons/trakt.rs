@@ -1,6 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use std::{sync::Arc, time::Duration};
+use sdks::{ExponentialBackoff, RetryableEndpoint};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -196,31 +197,30 @@ impl MetricsAddon for TraktAddon {
         )?;
         let today = chrono::Utc::now().date_naive();
 
-        let stats = loop {
-            let result = match media.kind {
-                db::MediaKind::Movie => {
-                    client
-                        .execute(sdks::trakt::MovieStatsEndpoint {
-                            imdb_id: imdb_id.to_string(),
-                        })
-                        .await
-                }
-                db::MediaKind::Series => {
-                    client
-                        .execute(sdks::trakt::ShowStatsEndpoint {
-                            imdb_id: imdb_id.to_string(),
-                        })
-                        .await
-                }
-                _ => return Ok(None),
-            };
-            match result {
-                Ok(s) => break s,
-                Err(sdks::ClientError::RateLimited { retry_after_secs }) => {
-                    tokio::time::sleep(Duration::from_secs(retry_after_secs)).await;
-                }
-                Err(_) => return Ok(None),
-            }
+        let policy = ExponentialBackoff::builder().build_with_max_retries(3);
+        let stats = match media.kind {
+            db::MediaKind::Movie => client
+                .execute(
+                    sdks::trakt::MovieStatsEndpoint {
+                        imdb_id: imdb_id.to_string(),
+                    }
+                    .with_retry(policy),
+                )
+                .await
+                .ok(),
+            db::MediaKind::Series => client
+                .execute(
+                    sdks::trakt::ShowStatsEndpoint {
+                        imdb_id: imdb_id.to_string(),
+                    }
+                    .with_retry(policy),
+                )
+                .await
+                .ok(),
+            _ => return Ok(None),
+        };
+        let Some(stats) = stats else {
+            return Ok(None);
         };
 
         let ceiling = match media.kind {
