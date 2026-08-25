@@ -398,12 +398,24 @@ pub async fn init_app(
     let base = Router::new()
         .route("/websocket", get(ws::ws_handler))
         .route("/socket", get(ws::ws_handler))
+        .route(
+            "/",
+            get(|uri: axum::http::Uri| async move {
+                let q = uri
+                    .query()
+                    .map(|q| format!("?{q}"))
+                    .unwrap_or_default();
+                Redirect::permanent(&format!("/web/{q}"))
+            }),
+        )
+        .route("/serviceworker.js", get(web_client::root_serviceworker))
         .merge(collect_routes());
 
     let router = base
         .nest_service("/admin", admin)
-        .with_state(state)
-        .fallback_service(web_client);
+        .nest_service("/web", web_client.clone())
+        .nest_service("/jellyfin", web_client)
+        .with_state(state);
 
     let router = router
         .layer(on_error(log_api_error))
