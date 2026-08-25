@@ -5,7 +5,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use axum::{body::Body, response::Response};
+use axum::{body::Body, extract::OriginalUri, response::Response};
 use http::{Request, StatusCode, header};
 use tower::{Layer, Service, util::BoxCloneSyncService};
 use tower_http::services::ServeDir;
@@ -13,8 +13,6 @@ use tower_http::services::ServeDir;
 #[cfg(feature = "desktop")]
 use crate::embedded_static::EmbeddedDir;
 use crate::web_transform::TransformLayer;
-
-const JELLYFIN_ALIAS_PREFIXES: [&str; 2] = ["/jellyfin", "/web"];
 
 const UNREGISTER_SW_SCRIPT: &str = r#"self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => {
@@ -37,43 +35,16 @@ self.addEventListener('fetch', () => {});
 
 type StaticService = BoxCloneSyncService<Request<Body>, Response<Body>, Infallible>;
 
-fn strip_prefixed_path(path: &str, prefix: &str) -> Option<String> {
-    // Convert `/prefix/*` routes back to a root path for static services.
-    let lower = path.to_ascii_lowercase();
-    let prefix_lower = prefix.to_ascii_lowercase();
-
-    if lower == prefix_lower || lower == format!("{prefix_lower}/") {
-        return Some("/".to_string());
-    }
-
-    let prefix_with_slash = format!("{prefix_lower}/");
-    if lower.starts_with(&prefix_with_slash) {
-        return Some(path[prefix.len()..].to_string());
-    }
-
-    None
-}
-
-fn strip_client_alias(path: &str) -> Option<String> {
-    JELLYFIN_ALIAS_PREFIXES
-        .iter()
-        .find_map(|prefix| strip_prefixed_path(path, prefix))
-}
-
-fn normalize_spa_inner_path(path: &str) -> String {
-    // For SPA navigation paths, serve the static shell.
-    if path == "/" {
-        return "/index.html".to_string();
-    }
-
+fn spa_path(path: &str) -> &str {
+    // Paths without a file extension are SPA navigation routes — serve the shell.
     let last_segment = path
         .rsplit('/')
         .next()
         .unwrap_or_default();
     if last_segment.contains('.') {
-        path.to_string()
+        path
     } else {
-        "/index.html".to_string()
+        "/index.html"
     }
 }
 
@@ -89,34 +60,6 @@ fn rewrite_request_path(mut req: Request<Body>, new_path: &str) -> Request<Body>
     req
 }
 
-fn unregistering_service_worker_response() -> Response<Body> {
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(
-            header::CONTENT_TYPE,
-            "application/javascript; charset=utf-8",
-        )
-        .header(
-            header::CACHE_CONTROL,
-            "no-store, no-cache, must-revalidate, max-age=0",
-        )
-        .body(Body::from(UNREGISTER_SW_SCRIPT))
-        .unwrap_or_else(|_| Response::new(Body::from(UNREGISTER_SW_SCRIPT)))
-}
-
-fn redirect_to_trailing_slash(path: &str, query: Option<&str>) -> Response<Body> {
-    let location = match query {
-        Some(q) if !q.is_empty() => format!("{path}/?{q}"),
-        _ => format!("{path}/"),
-    };
-
-    Response::builder()
-        .status(StatusCode::TEMPORARY_REDIRECT)
-        .header(header::LOCATION, location)
-        .body(Body::empty())
-        .unwrap_or_else(|_| Response::new(Body::empty()))
-}
-
 pub fn normalize_web_client(
     value: Option<crate::api::DefaultWebClient>,
 ) -> crate::api::DefaultWebClient {
@@ -125,15 +68,15 @@ pub fn normalize_web_client(
 
 #[derive(Clone)]
 pub struct WebClientService {
-    jellyfin: StaticService,
+    inner: StaticService,
 }
 
 impl WebClientService {
     pub fn from_filesystem(web_path: &str, pool: sqlx::SqlitePool) -> Self {
-        let jellyfin = BoxCloneSyncService::new(
+        let inner = BoxCloneSyncService::new(
             TransformLayer::new(Some(pool)).layer(ServeDir::new(web_path)),
         );
-        Self { jellyfin }
+        Self { inner }
     }
 }
 
@@ -143,13 +86,13 @@ impl WebClientService {
         jellyfin_web: &'static include_dir::Dir<'static>,
         pool: sqlx::SqlitePool,
     ) -> Self {
-        let jellyfin = BoxCloneSyncService::new(TransformLayer::new(Some(pool)).layer(
+        let inner = BoxCloneSyncService::new(TransformLayer::new(Some(pool)).layer(
             EmbeddedDir {
                 dir: jellyfin_web,
                 spa_fallback: false,
             },
         ));
-        Self { jellyfin }
+        Self { inner }
     }
 }
 
@@ -168,86 +111,55 @@ impl Service<Request<Body>> for WebClientService {
             .uri()
             .path()
             .to_string();
-        let query = req
-            .uri()
-            .query()
-            .map(str::to_owned);
-
-        let is_service_worker_path = path.eq_ignore_ascii_case("/serviceworker.js");
-        let jellyfin_inner = strip_client_alias(&path);
-        let mut jellyfin = self
-            .jellyfin
+        let original_path = req
+            .extensions()
+            .get::<OriginalUri>()
+            .map(|u| {
+                u.path()
+                    .to_string()
+            });
+        let mut inner = self
+            .inner
             .clone();
 
-        // Static asset requests (JS, CSS, images, fonts …) carry `Accept: */*`
-        // rather than `text/html`, but they must still reach ServeDir.
-        // Detect them by the presence of a file extension in the last segment.
-        let last_segment = path
-            .rsplit('/')
-            .next()
-            .unwrap_or_default();
-        let is_file_like = last_segment.contains('.');
-
-        // Browser navigations carry `text/html` in Accept; API clients do not.
-        // Only serve the SPA shell for browser-like requests, known web-client
-        // alias prefixes (/web/*, /jellyfin/*), or static file paths.
-        // Everything else gets a real 404 so API clients don't silently get HTML.
-        let is_browser_or_alias = jellyfin_inner.is_some()
-            || path == "/"
-            || is_file_like
-            || req
-                .headers()
-                .get(header::ACCEPT)
-                .and_then(|v| {
-                    v.to_str()
-                        .ok()
-                })
-                .map(|v| v.contains("text/html"))
-                .unwrap_or(false);
-
         Box::pin(async move {
-            if is_service_worker_path {
-                return Ok(unregistering_service_worker_response());
+            // Redirect /web → /web/ and /jellyfin → /jellyfin/ so relative asset
+            // URLs in index.html resolve correctly against the mounted prefix.
+            if path == "/" {
+                if let Some(orig) = &original_path {
+                    let bare = orig.trim_end_matches('/');
+                    if !orig.ends_with('/') {
+                        let redirect = format!("{bare}/");
+                        return Ok(Response::builder()
+                            .status(StatusCode::PERMANENT_REDIRECT)
+                            .header(header::LOCATION, redirect)
+                            .body(Body::empty())
+                            .unwrap());
+                    }
+                }
             }
 
-            if !is_browser_or_alias {
+            if path.eq_ignore_ascii_case("/serviceworker.js") {
                 return Ok(Response::builder()
-                    .status(StatusCode::NOT_FOUND)
-                    .header(header::CONTENT_TYPE, "text/plain")
-                    .body(Body::from("404 Not Found"))
-                    .unwrap_or_else(|_| Response::new(Body::empty())));
+                    .status(StatusCode::OK)
+                    .header(
+                        header::CONTENT_TYPE,
+                        "application/javascript; charset=utf-8",
+                    )
+                    .header(
+                        header::CACHE_CONTROL,
+                        "no-store, no-cache, must-revalidate, max-age=0",
+                    )
+                    .body(Body::from(UNREGISTER_SW_SCRIPT))
+                    .unwrap_or_else(|_| {
+                        Response::new(Body::from(UNREGISTER_SW_SCRIPT))
+                    }));
             }
 
-            let jellyfin_path = jellyfin_inner
-                .map(|p| normalize_spa_inner_path(&p))
-                .unwrap_or_else(|| normalize_spa_inner_path(&path));
-            let req = rewrite_request_path(req, &jellyfin_path);
-            jellyfin
+            let req = rewrite_request_path(req, spa_path(&path));
+            inner
                 .call(req)
                 .await
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn strips_jellyfin_and_web_aliases() {
-        assert_eq!(
-            strip_client_alias("/jellyfin/index.html"),
-            Some("/index.html".to_string())
-        );
-        assert_eq!(
-            strip_client_alias("/web/index.html"),
-            Some("/index.html".to_string())
-        );
-        assert_eq!(
-            strip_client_alias("/WEB/assets/app.js"),
-            Some("/assets/app.js".to_string())
-        );
-        assert_eq!(strip_client_alias("/web"), Some("/".to_string()));
-        assert_eq!(strip_client_alias("/websocket"), None);
     }
 }
