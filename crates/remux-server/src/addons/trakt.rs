@@ -1,7 +1,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::warn;
 use uuid::Uuid;
 
 use super::{
@@ -196,30 +197,28 @@ impl MetricsAddon for TraktAddon {
         )?;
         let today = chrono::Utc::now().date_naive();
 
-        let stats = loop {
-            let result = match media.kind {
-                db::MediaKind::Movie => {
-                    client
-                        .execute(sdks::trakt::MovieStatsEndpoint {
-                            imdb_id: imdb_id.to_string(),
-                        })
-                        .await
-                }
-                db::MediaKind::Series => {
-                    client
-                        .execute(sdks::trakt::ShowStatsEndpoint {
-                            imdb_id: imdb_id.to_string(),
-                        })
-                        .await
-                }
-                _ => return Ok(None),
-            };
-            match result {
-                Ok(s) => break s,
-                Err(sdks::ClientError::RateLimited { retry_after_secs }) => {
-                    tokio::time::sleep(Duration::from_secs(retry_after_secs)).await;
-                }
-                Err(_) => return Ok(None),
+        let result = match media.kind {
+            db::MediaKind::Movie => {
+                client
+                    .execute(sdks::trakt::MovieStatsEndpoint {
+                        imdb_id: imdb_id.to_string(),
+                    })
+                    .await
+            }
+            db::MediaKind::Series => {
+                client
+                    .execute(sdks::trakt::ShowStatsEndpoint {
+                        imdb_id: imdb_id.to_string(),
+                    })
+                    .await
+            }
+            _ => return Ok(None),
+        };
+        let stats = match result {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(imdb_id, error = %e, "trakt: stats fetch failed");
+                return Ok(None);
             }
         };
 

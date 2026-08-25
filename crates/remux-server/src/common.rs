@@ -305,7 +305,12 @@ pub fn tmdb_client_from_config(
         .to_string();
     sdks::RestClient::new(base_url)
         .ok()
-        .map(|c| c.with_auth(sdks::BearerAuth { token: key }))
+        .map(|c| {
+            c.with_auth(sdks::BearerAuth { token: key })
+                .with_retry(
+                    sdks::ExponentialBackoff::builder().build_with_max_retries(3),
+                )
+        })
 }
 
 // --- Progress reporting ---
