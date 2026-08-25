@@ -398,7 +398,17 @@ pub async fn init_app(
     let base = Router::new()
         .route("/websocket", get(ws::ws_handler))
         .route("/socket", get(ws::ws_handler))
-        .route("/", get(|| async { Redirect::permanent("/web/") }))
+        .route(
+            "/",
+            get(|uri: axum::http::Uri| async move {
+                let q = uri
+                    .query()
+                    .map(|q| format!("?{q}"))
+                    .unwrap_or_default();
+                Redirect::permanent(&format!("/web/{q}"))
+            }),
+        )
+        .route("/serviceworker.js", get(web_client::root_serviceworker))
         .merge(collect_routes());
 
     let router = base

@@ -60,6 +60,23 @@ fn rewrite_request_path(mut req: Request<Body>, new_path: &str) -> Request<Body>
     req
 }
 
+/// Unregisters any root-scoped service worker left over from older installs that
+/// served `serviceworker.js` at `/` instead of `/web/`.
+pub async fn root_serviceworker() -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )
+        .header(
+            header::CACHE_CONTROL,
+            "no-store, no-cache, must-revalidate, max-age=0",
+        )
+        .body(Body::from(UNREGISTER_SW_SCRIPT))
+        .unwrap()
+}
+
 pub fn normalize_web_client(
     value: Option<crate::api::DefaultWebClient>,
 ) -> crate::api::DefaultWebClient {
@@ -127,9 +144,13 @@ impl Service<Request<Body>> for WebClientService {
             // URLs in index.html resolve correctly against the mounted prefix.
             if path == "/" {
                 if let Some(orig) = &original_path {
-                    let bare = orig.trim_end_matches('/');
                     if !orig.ends_with('/') {
-                        let redirect = format!("{bare}/");
+                        let q = req
+                            .uri()
+                            .query()
+                            .map(|q| format!("?{q}"))
+                            .unwrap_or_default();
+                        let redirect = format!("{orig}/{q}");
                         return Ok(Response::builder()
                             .status(StatusCode::PERMANENT_REDIRECT)
                             .header(header::LOCATION, redirect)
