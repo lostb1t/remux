@@ -185,7 +185,7 @@ pub struct TrackDetail {
     pub is_forced: bool,
     #[serde(default)]
     pub is_hearing_impaired: bool,
-    #[serde(default)]
+    #[serde(default, alias = "external")]
     pub is_external: bool,
     #[serde(default)]
     pub is_anamorphic: bool,
@@ -632,7 +632,16 @@ impl From<&MediaInfo> for MediaSourceInfo {
             media_streams: version
                 .tracks
                 .iter()
-                .map(MediaStream::from)
+                .filter(|t| !t.is_external)
+                .enumerate()
+                .map(|(pos, t)| {
+                    let mut s = MediaStream::from(t);
+                    // Use sequential container position rather than mediaInfo idx.
+                    // External tracks are not muxed into the container, so they
+                    // are excluded above and pos here matches what FFmpeg sees.
+                    s.index = pos as i64;
+                    s
+                })
                 .collect(),
             ..Default::default()
         }
