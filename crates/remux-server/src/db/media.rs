@@ -3899,8 +3899,9 @@ impl Media {
             .kind
             .as_ref()
             .map(|k| {
-                k.iter()
-                    .all(|k| matches!(k, MediaKind::TvChannel))
+                !k.is_empty()
+                    && k.iter()
+                        .all(|k| matches!(k, MediaKind::TvChannel))
             })
             .unwrap_or(false);
 
@@ -4201,6 +4202,14 @@ impl Media {
         } else if is_channel_query {
             records_qb.push(
                 " ORDER BY (sort_order IS NULL), COALESCE(sort_order, channel_number, 999999), title COLLATE NOCASE",
+            );
+        } else {
+            // Universal fallback: sort by index numbers so episodes/seasons/tracks
+            // always come back in natural order when the client sends no SortBy.
+            // Indexed content (episodes, seasons, tracks) has idx set; non-indexed
+            // content (movies, series) gets COALESCE to 9999 and falls back to title.
+            records_qb.push(
+                " ORDER BY COALESCE(parent_idx, 9999) ASC, COALESCE(idx, 9999) ASC, title COLLATE NOCASE ASC",
             );
         }
 

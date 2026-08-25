@@ -431,7 +431,13 @@ pub async fn init_app(
                     tracing::info_span!("request", user = tracing::field::Empty)
                 })
                 .on_request(|request: &axum::http::Request<axum::body::Body>, _span: &tracing::Span| {
-                    debug!(target: "remux_server::request", method = %request.method(), "→");
+                    let uri = request.uri();
+                    let path = uri.path();
+                    let full = match uri.query() {
+                        Some(q) => format!("{path}?{q}"),
+                        None => path.to_string(),
+                    };
+                    debug!(target: "remux_server::request", method = %request.method(), uri = %full, "→");
                 })
                 .on_response(|response: &axum::http::Response<axum::body::Body>, latency: std::time::Duration, _span: &tracing::Span| {
                     debug!(target: "remux_server::request", status = %response.status().as_u16(), latency_ms = %latency.as_millis(), "←");

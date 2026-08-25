@@ -4659,4 +4659,127 @@ mod tests {
         resp.assert_status_ok();
         assert_api_keys_are_real(&resp.json::<serde_json::Value>(), &token);
     }
+
+    /// Android TV calls `/items?parentId=<season>&startIndex=1` with no SortBy and
+    /// no includeItemTypes. Episodes must come back in episode-number order regardless.
+    #[tokio::test]
+    async fn items_by_parent_season_sorted_by_episode_number() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        // Insert series → season → episodes in reverse order so insertion order
+        // would give the wrong result without an explicit ORDER BY.
+        let imdb = db::NonEmptyString::try_new("tt_ep_order_001".to_string()).unwrap();
+        let series_id = uuid::Uuid::from(&db::MediaIdRaw {
+            kind: db::MediaKind::Series,
+            external_ids: db::ExternalIds {
+                imdb: Some(imdb.clone()),
+                ..Default::default()
+            },
+            season: None,
+            episode: None,
+        });
+        let mut series = db::Media {
+            id: series_id,
+            title: "EpOrderSeries".to_string(),
+            kind: db::MediaKind::Series,
+            external_ids: db::ExternalIds {
+                imdb: Some(imdb),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        series
+            .save(db)
+            .await
+            .unwrap();
+
+        let season_id = crate::common::stable_media_uuid(
+            &db::MediaKind::Season,
+            &format!("{}:1", series_id),
+        );
+        let mut season = db::Media {
+            id: season_id,
+            title: "Season 1".to_string(),
+            kind: db::MediaKind::Season,
+            grandparent_id: Some(series_id),
+            parent_id: Some(series_id),
+            idx: Some(1),
+            ..Default::default()
+        };
+        season
+            .save(db)
+            .await
+            .unwrap();
+
+        // Titles deliberately don't sort alphabetically in episode-number order so
+        // a title-based sort (the old buggy path) produces a wrong result.
+        let ep_titles = ["Zombie Attack", "Apple Pie", "Mango Dreams"];
+        for (ep_num, title) in [3i64, 2, 1]
+            .iter()
+            .zip(
+                ep_titles
+                    .iter()
+                    .rev(),
+            )
+        {
+            let ep_num = *ep_num;
+            let mut ep = db::Media {
+                id: crate::common::stable_media_uuid(
+                    &db::MediaKind::Episode,
+                    &format!("{}:{ep_num}", season_id),
+                ),
+                title: title.to_string(),
+                kind: db::MediaKind::Episode,
+                grandparent_id: Some(series_id),
+                parent_id: Some(season_id),
+                parent_idx: Some(1),
+                idx: Some(ep_num),
+                ..Default::default()
+            };
+            ep.save(db)
+                .await
+                .unwrap();
+        }
+
+        // Reproduce the exact Android TV request: parentId only, no SortBy, no includeItemTypes.
+        // Without includeItemTypes, `kinds` is empty — previously this triggered is_channel_query
+        // via vacuous `.all()` truth, causing episodes to sort by channel_number/title instead of idx.
+        let resp = server
+            .get(&format!(
+                "/items?startIndex=0&limit=100&parentId={}",
+                season_id.simple()
+            ))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let items = body["Items"]
+            .as_array()
+            .unwrap();
+
+        assert_eq!(items.len(), 3, "expected 3 episodes");
+        let indices: Vec<i64> = items
+            .iter()
+            .map(|i| {
+                i["IndexNumber"]
+                    .as_i64()
+                    .unwrap()
+            })
+            .collect();
+        // Titles sort alphabetically as Apple(2), Mango(3), Zombie(1) — wrong.
+        // Correct is episode-number order: 1, 2, 3.
+        assert_eq!(
+            indices,
+            vec![1, 2, 3],
+            "episodes must be in episode-number order, got {indices:?}"
+        );
+    }
 }
