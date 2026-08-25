@@ -77,10 +77,17 @@ pub(crate) fn build_transcode_decision(
         return TranscodeDecision::DirectPlay;
     }
 
-    if source
+    // Only take the audio path when the source explicitly has audio streams
+    // but NO video stream. An empty media_streams (unprobed skip-probe
+    // candidate) should default to the video path — the item being played
+    // is a movie/episode, not a music track.
+    let has_audio = source
+        .audio_stream()
+        .is_some();
+    let has_video = source
         .video_stream()
-        .is_none()
-    {
+        .is_some();
+    if has_audio && !has_video {
         return TranscodeDecision::Transcode(build_audio_transcode(
             source, q, session, cfg,
         ));
@@ -101,7 +108,8 @@ fn build_audio_transcode(
     let container = trans_profile
         .and_then(|p| {
             p.container
-                .clone()
+                .as_ref()
+                .map(|c| c.to_string())
         })
         .unwrap_or_else(|| "mp3".to_string());
     let audio_transcode_allowed = cfg
@@ -118,16 +126,10 @@ fn build_audio_transcode(
         trans_profile
             .and_then(|p| {
                 p.audio_codec
-                    .as_deref()
+                    .as_ref()
             })
-            .and_then(|c| {
-                c.split(',')
-                    .next()
-            })
-            .map(|c| {
-                c.trim()
-                    .to_string()
-            })
+            .and_then(|c| c.first())
+            .map(|c| c.to_string())
             .unwrap_or_else(|| "aac".to_string())
     } else {
         "copy".to_string()
@@ -171,10 +173,12 @@ fn build_video_transcode(
         .map(|p| {
             (
                 p.container
-                    .clone()
+                    .as_ref()
+                    .map(|c| c.to_string())
                     .unwrap_or_else(|| "ts".to_string()),
                 p.protocol
-                    .clone()
+                    .as_ref()
+                    .map(|pr| pr.to_string())
                     .unwrap_or_else(|| "hls".to_string()),
             )
         })

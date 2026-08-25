@@ -178,7 +178,7 @@ pub(crate) fn display_title_video(m: &StreamMeta) -> Option<String> {
         attrs.push(codec.to_ascii_uppercase());
     }
     if let Some(range) = m.video_range {
-        if *range != api::VideoRange::Unknown {
+        if *range != api::VideoRange::Other {
             attrs.push(format!("{:?}", range));
         }
     }
@@ -749,8 +749,8 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     is_forced,
                     is_avc: Some(false),
                     time_base: Some("1/1000".to_string()),
-                    video_range: Some(api::VideoRange::Unknown),
-                    video_range_type: Some(api::VideoRangeType::Unknown),
+                    video_range: Some(api::VideoRange::Other),
+                    video_range_type: Some(api::VideoRangeType::Other),
                     audio_spatial_format: Some("None".to_string()),
                     localized_default: Some("Default".to_string()),
                     localized_external: Some("External".to_string()),
@@ -822,8 +822,8 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     is_hearing_impaired,
                     is_avc: Some(false),
                     time_base: Some("1/1000".to_string()),
-                    video_range: Some(api::VideoRange::Unknown),
-                    video_range_type: Some(api::VideoRangeType::Unknown),
+                    video_range: Some(api::VideoRange::Other),
+                    video_range_type: Some(api::VideoRangeType::Other),
                     audio_spatial_format: Some("None".to_string()),
                     localized_undefined: Some("Undefined".to_string()),
                     localized_default: Some("Default".to_string()),
@@ -918,12 +918,27 @@ pub(crate) async fn probe_stream(
             .video_stream()
             .is_some()
         {
-            debug!(id = %stream.id, "probe cache hit");
-            let mut info = api::MediaSourceInfo::from(stream.clone());
-            apply_video_bitrate_fallback(&mut info.media_streams, info.bitrate);
-            return Ok((info, stream.clone()));
+            let alive = match stream
+                .stream_info
+                .as_ref()
+                .map(|si| &si.descriptor)
+            {
+                Some(d) => {
+                    d.is_alive()
+                        .await
+                }
+                None => true,
+            };
+            if alive {
+                debug!(id = %stream.id, "probe cache hit, url alive");
+                let mut info = api::MediaSourceInfo::from(stream.clone());
+                apply_video_bitrate_fallback(&mut info.media_streams, info.bitrate);
+                return Ok((info, stream.clone()));
+            }
+            debug!(id = %stream.id, "probe cache hit but url dead, falling through to fallback");
+        } else {
+            debug!(id = %stream.id, "probe cache stale (no video stream), re-probing");
         }
-        debug!(id = %stream.id, "probe cache stale (no video stream), re-probing");
     } else if stream
         .stream_info
         .as_ref()

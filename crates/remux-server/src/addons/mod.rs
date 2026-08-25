@@ -431,6 +431,7 @@ pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: b
         replace,
     );
     merge_option(&mut target.status, &source.status, replace);
+    merge_option(&mut target.end_date, &source.end_date, replace);
     merge_option(&mut target.idx, &source.idx, replace);
     merge_option(&mut target.parent_idx, &source.parent_idx, replace);
 
@@ -1076,7 +1077,7 @@ fn recognized_manifest_media_kind(
         MT::Artist => MK::Artist,
         MT::Track => MK::Track,
         MT::Events => MK::TvProgram,
-        MT::Unknown(s) => match s.as_str() {
+        MT::Other(s) => match s.as_str() {
             "episode" => MK::Episode,
             "season" => MK::Season,
             "person" => MK::Person,
@@ -3553,7 +3554,7 @@ mod tests {
     #[test]
     fn recognized_manifest_media_kind_drops_unrecognized_custom_type() {
         assert_eq!(
-            recognized_manifest_media_kind(sdks::stremio::MediaType::Unknown(
+            recognized_manifest_media_kind(sdks::stremio::MediaType::Other(
                 "anime".to_string()
             )),
             None
@@ -3563,7 +3564,7 @@ mod tests {
             Some(sdks::remux::MediaKind::Series)
         );
         assert_eq!(
-            recognized_manifest_media_kind(sdks::stremio::MediaType::Unknown(
+            recognized_manifest_media_kind(sdks::stremio::MediaType::Other(
                 "episode".to_string()
             )),
             Some(sdks::remux::MediaKind::Episode)

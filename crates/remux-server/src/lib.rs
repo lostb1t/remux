@@ -398,12 +398,24 @@ pub async fn init_app(
     let base = Router::new()
         .route("/websocket", get(ws::ws_handler))
         .route("/socket", get(ws::ws_handler))
+        .route(
+            "/",
+            get(|uri: axum::http::Uri| async move {
+                let q = uri
+                    .query()
+                    .map(|q| format!("?{q}"))
+                    .unwrap_or_default();
+                Redirect::permanent(&format!("/web/{q}"))
+            }),
+        )
+        .route("/serviceworker.js", get(web_client::root_serviceworker))
         .merge(collect_routes());
 
     let router = base
         .nest_service("/admin", admin)
-        .with_state(state)
-        .fallback_service(web_client);
+        .nest_service("/web", web_client.clone())
+        .nest_service("/jellyfin", web_client)
+        .with_state(state);
 
     let router = router
         .layer(on_error(log_api_error))
@@ -419,7 +431,13 @@ pub async fn init_app(
                     tracing::info_span!("request", user = tracing::field::Empty)
                 })
                 .on_request(|request: &axum::http::Request<axum::body::Body>, _span: &tracing::Span| {
-                    debug!(target: "remux_server::request", method = %request.method(), "→");
+                    let uri = request.uri();
+                    let path = uri.path();
+                    let full = match uri.query() {
+                        Some(q) => format!("{path}?{q}"),
+                        None => path.to_string(),
+                    };
+                    debug!(target: "remux_server::request", method = %request.method(), uri = %full, "→");
                 })
                 .on_response(|response: &axum::http::Response<axum::body::Body>, latency: std::time::Duration, _span: &tracing::Span| {
                     debug!(target: "remux_server::request", status = %response.status().as_u16(), latency_ms = %latency.as_millis(), "←");

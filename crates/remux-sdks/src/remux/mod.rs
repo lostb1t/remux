@@ -1,12 +1,13 @@
 pub mod codecs;
 pub use codecs::{
-    AudioCodec, AudioContainer, SubtitleCodec, VideoCodec, VideoContainer,
+    AudioCodec, AudioContainer, DlnaProfileType, SubtitleCodec, TranscodingProtocol,
+    VideoCodec, VideoContainer,
 };
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use http::{HeaderValue, Method};
 use nutype::nutype;
-use remux_macros::dto;
+use remux_macros::{dto, query};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_alias::serde_alias;
 use serde_aux::prelude::*;
@@ -1613,8 +1614,93 @@ where
     Ok(Some(values))
 }
 
-#[derive(Default, Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+/// Deserializes a comma-separated string into `Option<Vec<T>>`.
+/// An absent, empty, or `"*"` value maps to `None` (= no restriction / allow any).
+fn deser_csv<'de, D, T>(deserializer: D) -> Result<Option<Vec<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: FromStr,
+    T::Err: std::fmt::Display,
+{
+    let s = Option::<String>::deserialize(deserializer)?;
+    let s = match s.as_deref() {
+        None | Some("") | Some("*") => return Ok(None),
+        Some(s) => s,
+    };
+    let items: Vec<T> = s
+        .split(',')
+        .map(str::trim)
+        .filter(|e| !e.is_empty() && *e != "*")
+        .filter_map(|e| match e.parse::<T>() {
+            Ok(v) => Some(v),
+            Err(err) => {
+                tracing::warn!(value = %e, error = %err, "profile field parse failed, ignoring");
+                None
+            }
+        })
+        .collect();
+    // An entirely-wildcard list (e.g. "*") degrades to no restriction.
+    Ok(if items.is_empty() { None } else { Some(items) })
+}
+
+fn deser_csv_video_containers<'de, D>(
+    d: D,
+) -> Result<Option<Vec<VideoContainer>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deser_csv(d)
+}
+
+fn deser_csv_audio_codecs<'de, D>(d: D) -> Result<Option<Vec<AudioCodec>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deser_csv(d)
+}
+
+fn deser_csv_video_codecs<'de, D>(d: D) -> Result<Option<Vec<VideoCodec>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deser_csv(d)
+}
+
+fn deser_csv_strings<'de, D>(d: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = Option::<String>::deserialize(d)?;
+    Ok(match s.as_deref() {
+        None | Some("") | Some("*") => None,
+        Some(s) => {
+            let items: Vec<String> = s
+                .split(',')
+                .map(str::trim)
+                .filter(|e| !e.is_empty() && *e != "*")
+                .map(str::to_owned)
+                .collect();
+            if items.is_empty() { None } else { Some(items) }
+        }
+    })
+}
+
+fn deser_opt_video_container<'de, D>(d: D) -> Result<Option<VideoContainer>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = Option::<String>::deserialize(d)?;
+    Ok(match s.as_deref() {
+        None | Some("") | Some("*") => None,
+        Some(s) => s
+            .trim()
+            .parse()
+            .ok(),
+    })
+}
+
+#[query]
+#[derive(Default, Debug)]
 pub struct VideoStreamQuery {
     pub container: Option<String>,
     #[serde(alias = "static", alias = "Static")]
@@ -1663,6 +1749,7 @@ pub struct VideoStreamQuery {
     pub audio_stream_index: Option<i64>,
     pub video_stream_index: Option<i64>,
     pub context: Option<String>,
+    #[serde(skip_deserializing)]
     pub stream_options: Option<std::collections::HashMap<String, Option<String>>>,
     pub enable_audio_vbr_encoding: Option<bool>,
     pub always_burn_in_subtitle_when_transcoding: Option<bool>,
@@ -1672,12 +1759,15 @@ pub struct VideoStreamQuery {
 #[derive(Default, Debug, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct TranscodingProfile {
-    pub container: Option<String>,
-    pub protocol: Option<String>,
-    pub video_codec: Option<String>,
-    pub audio_codec: Option<String>,
+    #[serde(deserialize_with = "deser_opt_video_container")]
+    pub container: Option<VideoContainer>,
+    pub protocol: Option<TranscodingProtocol>,
+    #[serde(deserialize_with = "deser_csv_video_codecs")]
+    pub video_codec: Option<Vec<VideoCodec>>,
+    #[serde(deserialize_with = "deser_csv_audio_codecs")]
+    pub audio_codec: Option<Vec<AudioCodec>>,
     #[serde(rename = "Type")]
-    pub type_: Option<String>, // "Video", "Audio", "Photo"
+    pub type_: Option<DlnaProfileType>,
 }
 
 #[derive(Default, Debug, Deserialize, Clone)]
@@ -1698,17 +1788,20 @@ pub struct DeviceProfile {
 #[derive(Default, Debug, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct DirectPlayProfile {
-    pub container: Option<String>,
-    pub audio_codec: Option<String>,
-    pub video_codec: Option<String>,
+    #[serde(deserialize_with = "deser_csv_video_containers")]
+    pub container: Option<Vec<VideoContainer>>,
+    #[serde(deserialize_with = "deser_csv_audio_codecs")]
+    pub audio_codec: Option<Vec<AudioCodec>>,
+    #[serde(deserialize_with = "deser_csv_video_codecs")]
+    pub video_codec: Option<Vec<VideoCodec>>,
     #[serde(rename = "Type")]
-    pub type_: Option<String>, // "Video", "Audio", etc.
+    pub type_: Option<DlnaProfileType>,
 }
 
 #[derive(Default, Debug, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct ContainerProfile {
-    pub type_: Option<String>, // "Video", "Audio", etc.
+    pub type_: Option<DlnaProfileType>,
     pub container: Option<String>,
     pub conditions: Vec<ProfileCondition>,
 }
@@ -1716,8 +1809,9 @@ pub struct ContainerProfile {
 #[derive(Default, Debug, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct CodecProfile {
-    pub type_: Option<String>, // "Video", "Audio", etc.
-    pub codec: Option<String>,
+    pub type_: Option<DlnaProfileType>,
+    #[serde(deserialize_with = "deser_csv_strings")]
+    pub codec: Option<Vec<String>>,
     pub conditions: Vec<ProfileCondition>,
 }
 
@@ -1768,8 +1862,8 @@ pub struct PlaybackInfoQuery {
     pub device_profile: Option<DeviceProfile>,
 }
 
-#[derive(Debug, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[query]
+#[derive(Debug, Default)]
 pub struct ImageQuery {
     pub tag: Option<String>,
     /// Scale down to fit within box width, no upscale, maintain AR.
@@ -3168,7 +3262,7 @@ impl From<stremio::MediaType> for MediaKind {
             stremio::MediaType::Artist => Self::Artist,
             stremio::MediaType::Track => Self::Track,
             stremio::MediaType::Events => Self::TvProgram,
-            stremio::MediaType::Unknown(s) => match s.as_str() {
+            stremio::MediaType::Other(s) => match s.as_str() {
                 "episode" => Self::Episode,
                 "season" => Self::Season,
                 "person" => Self::Person,
@@ -3284,6 +3378,10 @@ pub enum FilterRule {
     },
     /// Matches items the requesting user has (or has not) marked as a favourite.
     Favorite {
+        value: bool,
+    },
+    /// Matches items the requesting user has (or has not) watched (play_count > 0).
+    Watched {
         value: bool,
     },
 }
@@ -3492,7 +3590,7 @@ pub struct BaseItemDto {
     #[default(LocationType::FileSystem)]
     pub location_type: LocationType,
     pub iso_type: Option<String>,
-    #[default(MediaType::Unknown)]
+    #[default(MediaType::Other)]
     pub media_type: MediaType,
     pub end_date: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -3766,7 +3864,8 @@ pub enum MediaType {
     Video,
     Year,
     #[default]
-    Unknown,
+    #[serde(rename = "Unknown")]
+    Other,
 }
 
 #[derive(
@@ -3977,7 +4076,7 @@ pub enum ItemFields {
     ArtistItems,
     PrimaryImageTag,
     #[serde(other)]
-    Unknown,
+    Other,
 }
 
 impl std::str::FromStr for ItemFields {
@@ -3987,7 +4086,7 @@ impl std::str::FromStr for ItemFields {
         use serde::de::IntoDeserializer;
         let d: serde::de::value::StrDeserializer<serde::de::value::Error> =
             s.into_deserializer();
-        Ok(ItemFields::deserialize(d).unwrap_or(ItemFields::Unknown))
+        Ok(ItemFields::deserialize(d).unwrap_or(ItemFields::Other))
     }
 }
 
@@ -4028,7 +4127,8 @@ pub enum MediaStreamType {
     // Default,
 )]
 pub enum VideoRange {
-    Unknown,
+    #[serde(rename = "Unknown")]
+    Other,
     #[serde(rename = "SDR")]
     Sdr,
     #[serde(rename = "HDR")]
@@ -4049,7 +4149,8 @@ pub enum VideoRange {
     // Default,
 )]
 pub enum VideoRangeType {
-    Unknown,
+    #[serde(rename = "Unknown")]
+    Other,
     #[serde(rename = "SDR")]
     Sdr,
     #[serde(rename = "HDR10")]
@@ -4071,7 +4172,7 @@ pub enum VideoRangeType {
 impl VideoRangeType {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Unknown => "Unknown",
+            Self::Other => "Unknown",
             Self::Sdr => "SDR",
             Self::Hdr10 => "HDR10",
             Self::Hlg => "HLG",
@@ -4181,7 +4282,7 @@ pub struct TaskQueryResult {
 )]
 pub enum CollectionType {
     #[serde(rename = "unknown")]
-    Unknown,
+    Other,
     #[serde(rename = "movies")]
     Movies,
     #[serde(rename = "tvshows")]
@@ -4210,8 +4311,8 @@ pub enum CollectionType {
     Folders,
 }
 
-#[derive(Debug, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[query]
+#[derive(Debug, Default)]
 pub struct HlsVideoQuery {
     #[serde(alias = "playSessionId")]
     pub play_session_id: Option<String>,
@@ -4347,8 +4448,8 @@ pub struct RemoteImageResult {
     pub providers: Option<Vec<String>>,
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[query]
+#[derive(Debug, Default)]
 pub struct SearchHintsQuery {
     pub search_term: Option<String>,
     pub start_index: Option<u32>,
@@ -4476,7 +4577,8 @@ pub struct RemoteLyricInfoDto {
 )]
 #[serde(rename_all = "PascalCase")]
 pub enum MediaSegmentType {
-    Unknown = 0,
+    #[serde(rename = "Unknown")]
+    Other = 0,
     Commercial = 1,
     Preview = 2,
     Recap = 3,
@@ -6039,7 +6141,8 @@ pub enum StreamResolution {
     R480p,
     #[serde(rename = "360p")]
     R360p,
-    Unknown,
+    #[serde(rename = "unknown")]
+    Other,
 }
 
 impl StreamResolution {
@@ -6050,7 +6153,7 @@ impl StreamResolution {
             Self::R720p => "720p",
             Self::R480p => "480p",
             Self::R360p => "360p",
-            Self::Unknown => "Unknown",
+            Self::Other => "Unknown",
         }
     }
 
@@ -6072,7 +6175,7 @@ impl StreamResolution {
             Self::R720p,
             Self::R480p,
             Self::R360p,
-            Self::Unknown,
+            Self::Other,
         ]
     }
 }
@@ -6087,7 +6190,8 @@ pub enum StreamQuality {
     Hdtv,
     Dvd,
     Tv,
-    Unknown,
+    #[serde(rename = "unknown")]
+    Other,
 }
 
 impl StreamQuality {
@@ -6100,7 +6204,7 @@ impl StreamQuality {
             Self::Hdtv => "HDTV",
             Self::Dvd => "DVD",
             Self::Tv => "TV",
-            Self::Unknown => "Unknown",
+            Self::Other => "Unknown",
         }
     }
 
@@ -6113,7 +6217,7 @@ impl StreamQuality {
             Self::Hdtv,
             Self::Dvd,
             Self::Tv,
-            Self::Unknown,
+            Self::Other,
         ]
     }
 }
@@ -6126,7 +6230,8 @@ pub enum StreamCodec {
     Vp9,
     Vc1,
     Mpeg2,
-    Unknown,
+    #[serde(rename = "unknown")]
+    Other,
 }
 
 impl StreamCodec {
@@ -6137,7 +6242,7 @@ impl StreamCodec {
             Self::Vp9 => "VP9",
             Self::Vc1 => "VC-1",
             Self::Mpeg2 => "MPEG-2",
-            Self::Unknown => "Unknown",
+            Self::Other => "Unknown",
         }
     }
 
@@ -6159,7 +6264,7 @@ impl StreamCodec {
             Self::Vp9,
             Self::Vc1,
             Self::Mpeg2,
-            Self::Unknown,
+            Self::Other,
         ]
     }
 }
@@ -6422,8 +6527,8 @@ pub enum ImageRefreshMode {
     FullRefresh,
 }
 
-#[derive(Debug, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[query]
+#[derive(Debug, Default)]
 pub struct RefreshItemQuery {
     #[serde(default)]
     pub metadata_refresh_mode: MetadataRefreshMode,
@@ -6509,6 +6614,19 @@ mod tests {
             let json = serde_json::to_string(&variant).unwrap();
             let back: EmbeddedSubtitleHandling = serde_json::from_str(&json).unwrap();
             assert_eq!(back, variant);
+        }
+    }
+
+    #[test]
+    fn search_hints_query_accepts_pascal_and_camel_case_search_term() {
+        for query in ["SearchTerm=Naruto", "searchTerm=Naruto"] {
+            let parsed: SearchHintsQuery = serde_urlencoded::from_str(query).unwrap();
+            assert_eq!(
+                parsed
+                    .search_term
+                    .as_deref(),
+                Some("Naruto")
+            );
         }
     }
 

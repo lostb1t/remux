@@ -523,7 +523,33 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         .audio_codec
         .as_str()
     {
-        "copy" => "copy",
+        "copy" => {
+            // IMPORTANT: do not remove this override.
+            //
+            // TrueHD, FLAC, and PCM are not valid MPEG-TS payloads. The TS
+            // spec simply has no stream type for them. FFmpeg either errors out
+            // or silently drops the audio track when you try to mux them.
+            // Clients (iOS Safari, ExoPlayer) then see a broken/silent stream.
+            //
+            // The client asked for "copy" because it trusts the server to only
+            // honour that when the codec can actually be carried in the
+            // container. We must downgrade to AAC here; do not "fix" this by
+            // removing the override thinking the client knows best.
+            let source = params
+                .source_audio_codec
+                .as_deref()
+                .and_then(|s| {
+                    s.parse::<remux_sdks::remux::AudioCodec>()
+                        .ok()
+                });
+            let ts_incompatible = matches!(
+                source,
+                Some(remux_sdks::remux::AudioCodec::TrueHd)
+                    | Some(remux_sdks::remux::AudioCodec::Flac)
+                    | Some(remux_sdks::remux::AudioCodec::Pcm)
+            );
+            if ts_incompatible { "aac" } else { "copy" }
+        }
         _ => "aac",
     };
 
@@ -1886,6 +1912,7 @@ pub fn generate_master_playlist(session: &TranscodeSession) -> String {
             }) {
             Some(AudioCodec::Eac3) => "ec-3",
             Some(AudioCodec::Ac3) => "ac-3",
+            Some(AudioCodec::Dts) => "dtsh",
             _ => "mp4a.40.2",
         }
     } else {

@@ -149,7 +149,7 @@ pub(super) fn parse_manifest_info(
         .iter()
         .map(|s| {
             serde_json::from_value(serde_json::Value::String(s.clone()))
-                .unwrap_or(remux_sdks::stremio::MediaType::Unknown(s.clone()))
+                .unwrap_or(remux_sdks::stremio::MediaType::Other(s.clone()))
         })
         .collect();
     (resources, types)
@@ -265,7 +265,7 @@ impl CatalogAddon for StremioAddon {
                             .clone(),
                     ))
                     .unwrap_or(
-                        remux_sdks::stremio::MediaType::Unknown(
+                        remux_sdks::stremio::MediaType::Other(
                             c.kind
                                 .clone(),
                         ),
@@ -704,7 +704,7 @@ async fn manifest_meta_type_fallback(
         .collect();
 
     for candidate in candidates {
-        let alt_type = sdks::stremio::MediaType::Unknown(candidate);
+        let alt_type = sdks::stremio::MediaType::Other(candidate);
         if let Ok(meta) = svc
             .get_meta(alt_type, meta_id.to_string())
             .await
