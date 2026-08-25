@@ -3384,6 +3384,13 @@ pub enum FilterRule {
     Watched {
         value: bool,
     },
+    /// Matches items whose media kind is (or is not) in the given set.
+    /// Accepted values: "movie", "series", "music", "live_tv".
+    /// "music" expands to track/album/artist/musicgenre; "live_tv" to tvchannel/tvprogram.
+    MediaKind {
+        op: SetOp,
+        values: Vec<String>,
+    },
 }
 
 /// Whether all rules must match (AND) or any rule must match (OR).

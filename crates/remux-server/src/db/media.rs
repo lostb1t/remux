@@ -3644,12 +3644,6 @@ impl Media {
                 }
             }
 
-            if let Some(max_rating) = filter.max_parental_rating {
-                qb.push(" AND (certification_age IS NULL OR certification_age <= ")
-                    .push_bind(max_rating)
-                    .push(")");
-            }
-
             if let Some(s) = &filter.name_starts_with {
                 // LIKE is case-insensitive for ASCII in SQLite; no UPPER() needed.
                 // A COLLATE NOCASE index on title can satisfy this as a prefix scan.
@@ -3714,30 +3708,6 @@ impl Media {
                     qb.push(" AND EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND mt.tag IN (");
                     let mut sep = qb.separated(", ");
                     for t in tags {
-                        sep.push_bind(t);
-                    }
-                    qb.push("))");
-                }
-            }
-
-            // User policy blocked_tags: hide if item has ANY blocked tag
-            if let Some(blocked) = &filter.blocked_tags {
-                if !blocked.is_empty() {
-                    qb.push(" AND NOT EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND mt.tag IN (");
-                    let mut sep = qb.separated(", ");
-                    for t in blocked {
-                        sep.push_bind(t);
-                    }
-                    qb.push("))");
-                }
-            }
-
-            // User policy allowed_tags: only show if item has AT LEAST ONE allowed tag
-            if let Some(allowed) = &filter.allowed_tags {
-                if !allowed.is_empty() {
-                    qb.push(" AND EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND mt.tag IN (");
-                    let mut sep = qb.separated(", ");
-                    for t in allowed {
                         sep.push_bind(t);
                     }
                     qb.push("))");
@@ -3836,10 +3806,11 @@ impl Media {
                     qb.push(")");
                 }
             }
-            // CLAUDE.md: content policy must not filter container rows themselves.
-            // Applying tag/rating rules to Collection/Folder records would wrongly
-            // hide libraries. Child-count branches still use policy_filter via
-            // child_policy_filter to scope counts to what the user can see.
+            // Policy filters (rating, tags, smart policy rules) must not apply to:
+            // - container rows (Collection/Folder/Playlist) — CLAUDE.md rule
+            // - music content (Track/Album/Artist/MusicGenre) — ratings/tags are irrelevant
+            // - live TV (TvChannel/TvProgram) — same reason
+            // All four policy conditions live here — one place, one guard.
             let container_only = filter
                 .kind
                 .as_deref()
@@ -3856,7 +3827,51 @@ impl Media {
                                 )
                             })
                 });
-            if !container_only {
+
+            let has_policy = filter
+                .max_parental_rating
+                .is_some()
+                || filter
+                    .blocked_tags
+                    .as_ref()
+                    .map_or(false, |v| !v.is_empty())
+                || filter
+                    .allowed_tags
+                    .as_ref()
+                    .map_or(false, |v| !v.is_empty())
+                || filter
+                    .policy_filter
+                    .is_some();
+
+            if !container_only && has_policy {
+                if let Some(max_rating) = filter.max_parental_rating {
+                    qb.push(" AND (certification_age IS NULL OR certification_age <= ")
+                        .push_bind(max_rating)
+                        .push(")");
+                }
+
+                if let Some(blocked) = &filter.blocked_tags {
+                    if !blocked.is_empty() {
+                        qb.push(" AND NOT EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND mt.tag IN (");
+                        let mut sep = qb.separated(", ");
+                        for t in blocked {
+                            sep.push_bind(t);
+                        }
+                        qb.push("))");
+                    }
+                }
+
+                if let Some(allowed) = &filter.allowed_tags {
+                    if !allowed.is_empty() {
+                        qb.push(" AND EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND mt.tag IN (");
+                        let mut sep = qb.separated(", ");
+                        for t in allowed {
+                            sep.push_bind(t);
+                        }
+                        qb.push("))");
+                    }
+                }
+
                 if let Some(ref f) = filter.policy_filter {
                     apply_filter_rules(
                         qb,
@@ -7371,6 +7386,38 @@ fn filter_rule_to_sql(
             };
             Some((sql, false))
         }
+        R::MediaKind { op, values } if !values.is_empty() => {
+            let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
+            let mut db_kinds: Vec<&'static str> = Vec::new();
+            for v in values {
+                match v.as_str() {
+                    "movie" => db_kinds.push("movie"),
+                    "series" => {
+                        db_kinds.extend_from_slice(&["series", "episode", "season"])
+                    }
+                    "music" => db_kinds.extend_from_slice(&[
+                        "track",
+                        "album",
+                        "artist",
+                        "musicgenre",
+                    ]),
+                    "live_tv" => {
+                        db_kinds.extend_from_slice(&["tvchannel", "tvprogram"])
+                    }
+                    _ => {}
+                }
+            }
+            if db_kinds.is_empty() {
+                return None;
+            }
+            let list = db_kinds
+                .iter()
+                .map(|k| format!("'{k}'"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Some((format!("media.kind IN ({list})"), negated))
+        }
+        R::MediaKind { .. } => None,
     }
 }
 
