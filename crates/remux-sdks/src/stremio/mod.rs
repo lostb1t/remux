@@ -68,6 +68,7 @@ pub enum ResourceType {
     Metrics,
     Tracking,
 
+    #[strum(to_string = "{0}")]
     #[serde(untagged)]
     Other(String),
 }

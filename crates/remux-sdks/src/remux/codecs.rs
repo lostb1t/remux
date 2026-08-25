@@ -30,7 +30,7 @@ pub enum SubtitleCodec {
     // Canonical: "tx3g". Aliases: mov_text.
     #[strum(to_string = "tx3g", serialize = "tx3g", serialize = "mov_text")]
     MovText,
-    #[strum(default)]
+    #[strum(default, to_string = "{0}")]
     Other(String),
 }
 
@@ -84,7 +84,7 @@ pub enum VideoCodec {
         serialize = "mpeg2"
     )]
     Mpeg2,
-    #[strum(default)]
+    #[strum(default, to_string = "{0}")]
     Other(String),
 }
 
@@ -135,7 +135,7 @@ pub enum AudioCodec {
         serialize = "pcm_u8"
     )]
     Pcm,
-    #[strum(default)]
+    #[strum(default, to_string = "{0}")]
     Other(String),
 }
 
@@ -160,7 +160,7 @@ pub enum AudioContainer {
     Aac,
     #[strum(to_string = "wv", serialize = "wv")]
     Wv,
-    #[strum(default)]
+    #[strum(default, to_string = "{0}")]
     Other(String),
 }
 
@@ -223,7 +223,7 @@ pub enum VideoContainer {
         serialize = "mpeg2"
     )]
     Mpeg,
-    #[strum(default)]
+    #[strum(default, to_string = "{0}")]
     Other(String),
 }
 
@@ -293,7 +293,7 @@ pub enum TranscodingProtocol {
     Http,
     #[strum(to_string = "hls")]
     Hls,
-    #[strum(default)]
+    #[strum(default, to_string = "{0}")]
     Other(String),
 }
 
@@ -324,7 +324,7 @@ pub enum DlnaProfileType {
     Video,
     Audio,
     Photo,
-    #[strum(default)]
+    #[strum(default, to_string = "{0}")]
     Other(String),
 }
 
