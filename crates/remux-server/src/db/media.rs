@@ -7399,10 +7399,10 @@ fn filter_rule_to_sql(
                         "track",
                         "album",
                         "artist",
-                        "musicgenre",
+                        "music_genre",
                     ]),
                     "live_tv" => {
-                        db_kinds.extend_from_slice(&["tvchannel", "tvprogram"])
+                        db_kinds.extend_from_slice(&["tv_channel", "tv_program"])
                     }
                     _ => {}
                 }
