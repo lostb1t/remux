@@ -118,7 +118,9 @@ pub fn trakt_client(
     client_id: &str,
     base_url: &str,
 ) -> Result<RestClient<TraktAuth>, url::ParseError> {
-    Ok(RestClient::new(base_url)?.with_auth(TraktAuth {
-        client_id: client_id.to_string(),
-    }))
+    Ok(RestClient::new(base_url)?
+        .with_auth(TraktAuth {
+            client_id: client_id.to_string(),
+        })
+        .with_retry(crate::ExponentialBackoff::builder().build_with_max_retries(3)))
 }

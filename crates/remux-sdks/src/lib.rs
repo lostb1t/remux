@@ -9,10 +9,17 @@ pub mod stremio;
 pub mod tmdb;
 pub mod trakt;
 
-use http::{HeaderMap, HeaderValue, Method, header};
+use async_trait::async_trait;
+use bytes::Bytes;
+use http::{Extensions, HeaderMap, HeaderValue, Method, header};
 use itertools::Itertools;
 use md5;
 use remux_utils::Store;
+use reqwest_middleware::{
+    ClientBuilder as MwClientBuilder, ClientWithMiddleware, Middleware, Next,
+};
+pub use reqwest_retry::policies::ExponentialBackoff;
+use reqwest_retry::{RetryPolicy, RetryTransientMiddleware};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use std::{collections::HashMap, fmt, iter, ops, sync::Arc, time::Duration};
 
@@ -202,9 +209,120 @@ pub trait Endpoint {
     }
 }
 
+#[derive(Clone, Copy)]
+struct CacheTTL(Duration);
+
+#[derive(Clone)]
+struct CachedResponse {
+    status: u16,
+    body: String,
+}
+
+struct InMemoryCacheMiddleware;
+
+#[async_trait]
+impl Middleware for InMemoryCacheMiddleware {
+    async fn handle(
+        &self,
+        req: reqwest::Request,
+        extensions: &mut Extensions,
+        next: Next<'_>,
+    ) -> reqwest_middleware::Result<reqwest::Response> {
+        let ttl = extensions
+            .get::<CacheTTL>()
+            .copied();
+        // Derive the cache key from the pre-redirect URL so hits are consistent
+        // regardless of whether the server redirects the request.
+        let key = ttl.map(|_| {
+            hash_key(
+                req.url()
+                    .as_str(),
+            )
+        });
+
+        if let Some(ref k) = key {
+            if let Some(cached) = HTTP_CACHE.get::<CachedResponse>(k) {
+                let resp = http::Response::builder()
+                    .status(cached.status)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Bytes::from(
+                        cached
+                            .body
+                            .clone(),
+                    ))
+                    .unwrap();
+                return Ok(reqwest::Response::from(resp));
+            }
+        }
+
+        let resp = next
+            .run(req, extensions)
+            .await?;
+
+        if let (Some(CacheTTL(ttl)), Some(k)) = (ttl, key) {
+            if resp
+                .status()
+                .is_success()
+            {
+                let status = resp.status();
+                let text = resp
+                    .text()
+                    .await
+                    .map_err(reqwest_middleware::Error::Reqwest)?;
+                let weight = text
+                    .len()
+                    .min(u32::MAX as usize) as u32;
+                HTTP_CACHE.save_arc_with_weight(
+                    k,
+                    Arc::new(CachedResponse {
+                        status: status.as_u16(),
+                        body: text.clone(),
+                    }),
+                    weight,
+                    ttl,
+                );
+                let rebuilt = http::Response::builder()
+                    .status(status)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Bytes::from(text))
+                    .unwrap();
+                return Ok(reqwest::Response::from(rebuilt));
+            }
+        }
+
+        Ok(resp)
+    }
+}
+
+struct DynRetryPolicy(Arc<dyn RetryPolicy + Send + Sync>);
+
+impl RetryPolicy for DynRetryPolicy {
+    fn should_retry(
+        &self,
+        request_start_time: std::time::SystemTime,
+        n_past_retries: u32,
+    ) -> reqwest_retry::RetryDecision {
+        self.0
+            .should_retry(request_start_time, n_past_retries)
+    }
+}
+
+fn build_mw(retry: Option<Arc<dyn RetryPolicy + Send + Sync>>) -> ClientWithMiddleware {
+    let builder =
+        MwClientBuilder::new(SHARED_HTTP_CLIENT.clone()).with(InMemoryCacheMiddleware);
+    match retry {
+        Some(policy) => builder
+            .with(RetryTransientMiddleware::new_with_policy(DynRetryPolicy(
+                policy,
+            )))
+            .build(),
+        None => builder.build(),
+    }
+}
+
 #[derive(Clone)]
 pub struct RestClient<A: Auth = NoAuth> {
-    http: reqwest::Client,
+    mw: ClientWithMiddleware,
     base: url::Url,
     auth: Arc<A>,
     map_error: fn(u16, &str, &str) -> ClientError,
@@ -213,7 +331,7 @@ pub struct RestClient<A: Auth = NoAuth> {
 impl RestClient<NoAuth> {
     pub fn new(base: &str) -> Result<Self, url::ParseError> {
         Ok(Self {
-            http: SHARED_HTTP_CLIENT.clone(),
+            mw: build_mw(None),
             base: url::Url::parse(format!("{}/", base.trim_end_matches('/')).as_str())?,
             auth: Arc::new(NoAuth),
             map_error: default_error_mapper,
@@ -224,7 +342,7 @@ impl RestClient<NoAuth> {
 impl<A: Auth + Clone> RestClient<A> {
     pub fn with_auth<B: Auth + Clone>(self, auth: B) -> RestClient<B> {
         RestClient {
-            http: self.http,
+            mw: self.mw,
             base: self.base,
             auth: Arc::new(auth),
             map_error: self.map_error,
@@ -236,22 +354,23 @@ impl<A: Auth + Clone> RestClient<A> {
         self
     }
 
-    /// Owned result. Prefer `execute_arc` when the value is only read — on a cache
-    /// hit this has to deep-copy the payload to hand back a `T`.
+    pub fn with_retry<P: RetryPolicy + Send + Sync + 'static>(
+        mut self,
+        policy: P,
+    ) -> Self {
+        self.mw = build_mw(Some(Arc::new(policy)));
+        self
+    }
+
     pub async fn execute<EP: Endpoint + Clone>(
         &self,
         endpoint: EP,
     ) -> Result<EP::Output, ClientError> {
         self.execute_arc(endpoint)
             .await
-            .map(|arc| {
-                // Uncached responses are uniquely owned here, so this unwraps
-                // without copying; only cache hits fall back to a clone.
-                Arc::try_unwrap(arc).unwrap_or_else(|arc| (*arc).clone())
-            })
+            .map(|arc| Arc::try_unwrap(arc).unwrap_or_else(|arc| (*arc).clone()))
     }
 
-    /// Shared result — no deep copy on a cache hit.
     pub async fn execute_arc<EP: Endpoint + Clone>(
         &self,
         endpoint: EP,
@@ -274,19 +393,8 @@ impl<A: Auth + Clone> RestClient<A> {
                 .join("&");
             url.set_query(Some(&qs));
         }
-        let cache_key = hash_key(&url.to_string());
 
-        if endpoint
-            .cache_ttl()
-            .is_some()
-        {
-            if let Some(value) = HTTP_CACHE.get::<EP::Output>(&cache_key) {
-                return Ok(value);
-            }
-        }
-
-        let mut req = self
-            .http
+        let mut req = SHARED_HTTP_CLIENT
             .request(endpoint.method(), url.clone())
             .headers(endpoint.headers());
         req = self
@@ -318,9 +426,24 @@ impl<A: Auth + Clone> RestClient<A> {
             Body::Text(s) => req.body(s),
             Body::Bytes(b) => req.body(b),
         };
-        let resp = req
-            .send()
-            .await?;
+        let request = req
+            .build()
+            .map_err(ClientError::Transport)?;
+
+        let mut ext = Extensions::new();
+        if let Some(ttl) = endpoint.cache_ttl() {
+            ext.insert(CacheTTL(ttl));
+        }
+
+        let resp = self
+            .mw
+            .execute_with_extensions(request, &mut ext)
+            .await
+            .map_err(|e| match e {
+                reqwest_middleware::Error::Reqwest(e) => ClientError::Transport(e),
+                reqwest_middleware::Error::Middleware(e) => ClientError::Other(e),
+            })?;
+
         let status = resp
             .status()
             .as_u16();
@@ -349,28 +472,14 @@ impl<A: Auth + Clone> RestClient<A> {
                 // 204 No Content and similar empty responses: treat as JSON null so
                 // endpoints with `type Output = ()` deserialize successfully.
                 let parse_body = if text.is_empty() { "null" } else { &text };
-                let result: Result<EP::Output, ClientError> =
-                    serde_json::from_str::<EP::Output>(parse_body).map_err(|e| {
-                        ClientError::Json {
-                            status: s,
-                            source: e,
-                            endpoint: Some(url.to_string()),
-                            body: Some(text.clone()),
-                        }
-                    });
-                let arc = result.map(Arc::new)?;
-                if let Some(ttl) = endpoint.cache_ttl() {
-                    let weight = text
-                        .len()
-                        .min(u32::MAX as usize) as u32;
-                    HTTP_CACHE.save_arc_with_weight(
-                        cache_key,
-                        Arc::clone(&arc),
-                        weight,
-                        ttl,
-                    );
-                }
-                Ok(arc)
+                serde_json::from_str::<EP::Output>(parse_body)
+                    .map(Arc::new)
+                    .map_err(|e| ClientError::Json {
+                        status: s,
+                        source: e,
+                        endpoint: Some(url.to_string()),
+                        body: Some(text.clone()),
+                    })
             }
             s => Err((self.map_error)(s, &url.to_string(), &text)),
         }

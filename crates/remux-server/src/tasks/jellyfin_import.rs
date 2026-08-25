@@ -7,7 +7,7 @@ use tracing::{debug, info, warn};
 use super::{ProgressReporter, Task, TaskCategory, TaskService};
 use crate::{AppContext, db};
 use remux_sdks::{
-    JellyfinApiKeyAuth, RestClient,
+    ExponentialBackoff, JellyfinApiKeyAuth, RestClient,
     remux::{
         GetJellyfinItemsByIds, GetJellyfinUserItems, GetJellyfinUsers, JellyfinItem,
         JellyfinUserDto,
@@ -56,7 +56,9 @@ impl Task for JellyfinImportTask {
             .ok_or_else(|| anyhow!("Jellyfin API key is not configured"))?
             .to_string();
 
-        let client = RestClient::new(&url)?.with_auth(JellyfinApiKeyAuth { api_key });
+        let client = RestClient::new(&url)?
+            .with_auth(JellyfinApiKeyAuth { api_key })
+            .with_retry(ExponentialBackoff::builder().build_with_max_retries(3));
 
         info!("fetching user list from {url}");
         let jf_users = client

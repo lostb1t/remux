@@ -1055,7 +1055,8 @@ pub struct ParsedFile {
 }
 
 pub fn client(base: &str) -> Result<RestClient, url::ParseError> {
-    Ok(RestClient::new(base)?)
+    Ok(RestClient::new(base)?
+        .with_retry(crate::ExponentialBackoff::builder().build_with_max_retries(3)))
 }
 
 #[cfg(test)]
