@@ -99,7 +99,10 @@ pub enum MediaStatus {
     Unreleased,
     Released,
     #[default]
-    Unknown,
+    #[serde(rename = "unknown")]
+    #[strum(to_string = "unknown", serialize = "unknown")]
+    #[sqlx(rename = "unknown")]
+    Other,
 }
 
 /// Deezer record type: what kind of release an Album row is. `NULL` = unknown
@@ -231,7 +234,7 @@ impl TryFrom<sdks::stremio::MediaType> for MediaKind {
             sdks::stremio::MediaType::Artist => Ok(MediaKind::Artist),
             sdks::stremio::MediaType::Track => Ok(MediaKind::Track),
             sdks::stremio::MediaType::Events => Ok(MediaKind::TvProgram),
-            sdks::stremio::MediaType::Unknown(s) => match s.as_str() {
+            sdks::stremio::MediaType::Other(s) => match s.as_str() {
                 "episode" => Ok(MediaKind::Episode),
                 "season" => Ok(MediaKind::Season),
                 "person" => Ok(MediaKind::Person),
@@ -247,7 +250,7 @@ impl TryFrom<sdks::stremio::MediaType> for MediaKind {
 /// are not content types and are excluded.
 fn custom_stremio_type(media_type: &sdks::stremio::MediaType) -> Option<String> {
     match media_type {
-        sdks::stremio::MediaType::Unknown(s)
+        sdks::stremio::MediaType::Other(s)
             if !matches!(s.as_str(), "episode" | "season" | "person") =>
         {
             Some(s.clone())
@@ -1185,7 +1188,7 @@ impl ExternalIds {
     pub fn stremio_media_type(&self, kind: &MediaKind) -> sdks::stremio::MediaType {
         self.custom_stremio_type
             .clone()
-            .map(sdks::stremio::MediaType::Unknown)
+            .map(sdks::stremio::MediaType::Other)
             .unwrap_or_else(|| sdks::stremio::MediaType::from(kind))
     }
 }
@@ -6344,7 +6347,7 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                     }
                     sdks::stremio::Status::Upcoming
                     | sdks::stremio::Status::Planned => MediaStatus::Unreleased,
-                    sdks::stremio::Status::Unknown => MediaStatus::Continuing,
+                    sdks::stremio::Status::Other => MediaStatus::Continuing,
                 })
                 .or_else(|| {
                     // Fall back to release_info range when the addon omits status.
@@ -7672,14 +7675,12 @@ mod tests {
     #[test]
     fn custom_stremio_type_extracts_non_standard_type() {
         assert_eq!(
-            custom_stremio_type(&sdks::stremio::MediaType::Unknown(
-                "anime".to_string()
-            )),
+            custom_stremio_type(&sdks::stremio::MediaType::Other("anime".to_string())),
             Some("anime".to_string())
         );
         assert_eq!(custom_stremio_type(&sdks::stremio::MediaType::Series), None);
         assert_eq!(
-            custom_stremio_type(&sdks::stremio::MediaType::Unknown(
+            custom_stremio_type(&sdks::stremio::MediaType::Other(
                 "episode".to_string()
             )),
             None
@@ -7825,7 +7826,7 @@ mod tests {
         };
         assert_eq!(
             anime_ids.stremio_media_type(&MediaKind::Series),
-            sdks::stremio::MediaType::Unknown("anime".to_string())
+            sdks::stremio::MediaType::Other("anime".to_string())
         );
 
         let standard_ids = ExternalIds::default();

@@ -535,7 +535,7 @@ impl From<&TrackDetail> for MediaStream {
             }
         };
         let video_range = match range_type {
-            VideoRangeType::Sdr | VideoRangeType::Unknown => VideoRange::Sdr,
+            VideoRangeType::Sdr | VideoRangeType::Other => VideoRange::Sdr,
             _ => VideoRange::Hdr,
         };
         MediaStream {

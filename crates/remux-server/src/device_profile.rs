@@ -1,8 +1,9 @@
 pub(crate) use remux_sdks::remux::{AudioCodec, SubtitleCodec, VideoCodec};
 use remux_sdks::remux::{
-    CodecProfile, DeviceProfile, DirectPlayProfile, MediaSourceInfo, MediaStream,
-    MediaStreamType, ProfileCondition, SubtitleDeliveryMethod, TranscodeReason,
-    TranscodeReasons, TranscodingProfile,
+    CodecProfile, DeviceProfile, DirectPlayProfile, DlnaProfileType, MediaSourceInfo,
+    MediaStream, MediaStreamType, ProfileCondition, SubtitleDeliveryMethod,
+    TranscodeReason, TranscodeReasons, TranscodingProfile, TranscodingProtocol,
+    VideoContainer,
 };
 
 pub trait DeviceProfileExt {
@@ -34,22 +35,14 @@ pub(crate) fn subtitle_codec_matches_profile(
 
 impl DeviceProfileExt for DeviceProfile {
     fn video_transcoding_profile(&self) -> Option<&TranscodingProfile> {
-        let is_video = |p: &&TranscodingProfile| {
-            p.type_
-                .as_deref()
-                .map(|t| t.eq_ignore_ascii_case("Video"))
-                .unwrap_or(false)
-        };
+        let is_video =
+            |p: &&TranscodingProfile| matches!(p.type_, Some(DlnaProfileType::Video));
         // Prefer HTTP progressive over HLS: clients like Streamyfin hardcode
         // contentType "video/mp4", so an HLS URL causes the Chromecast to reject.
         self.transcoding_profiles
             .iter()
             .find(|p| {
-                is_video(p)
-                    && p.protocol
-                        .as_deref()
-                        .map(|pr| pr.eq_ignore_ascii_case("http"))
-                        .unwrap_or(false)
+                is_video(p) && matches!(p.protocol, Some(TranscodingProtocol::Http))
             })
             .or_else(|| {
                 self.transcoding_profiles
@@ -61,12 +54,7 @@ impl DeviceProfileExt for DeviceProfile {
     fn audio_transcoding_profile(&self) -> Option<&TranscodingProfile> {
         self.transcoding_profiles
             .iter()
-            .find(|p| {
-                p.type_
-                    .as_deref()
-                    .map(|t| t.eq_ignore_ascii_case("Audio"))
-                    .unwrap_or(false)
-            })
+            .find(|p| matches!(p.type_, Some(DlnaProfileType::Audio)))
     }
 
     fn subtitle_delivery_method(&self, codec: &str) -> Option<SubtitleDeliveryMethod> {
@@ -93,13 +81,20 @@ impl DeviceProfileExt for DeviceProfile {
         let source_has_video = media_source
             .video_stream()
             .is_some();
+        let source_has_audio = media_source
+            .audio_stream()
+            .is_some();
+        // Only treat the source as audio-only when it explicitly has audio but
+        // no video. An unprobed source (empty media_streams) should still be
+        // matched against Video profiles — we don't know its type yet.
+        let is_audio_only = source_has_audio && !source_has_video;
         let mut best: Option<TranscodeReasons> = None;
         for profile in &self.direct_play_profiles {
             if let Some(t) = &profile.type_ {
-                if t.eq_ignore_ascii_case("Video") && !source_has_video {
+                if *t == DlnaProfileType::Video && is_audio_only {
                     continue;
                 }
-                if t.eq_ignore_ascii_case("Audio") && source_has_video {
+                if *t == DlnaProfileType::Audio && source_has_video {
                     continue;
                 }
             }
@@ -145,40 +140,40 @@ fn check_codec_profiles(
     reasons: &mut TranscodeReasons,
 ) {
     for cp in &profile.codec_profiles {
-        let type_ = cp
-            .type_
-            .as_deref()
-            .unwrap_or("");
-        if type_.eq_ignore_ascii_case("Video") {
-            if let Some(stream) = media_source.video_stream() {
-                let codec = stream
-                    .codec
-                    .as_deref()
-                    .unwrap_or("");
-                if cp.applies_to_codec(codec) {
-                    for r in cp
-                        .check_reasons(stream)
-                        .0
-                    {
-                        reasons.insert(r);
+        match cp.type_ {
+            Some(DlnaProfileType::Video) => {
+                if let Some(stream) = media_source.video_stream() {
+                    let codec = stream
+                        .codec
+                        .as_deref()
+                        .unwrap_or("");
+                    if cp.applies_to_codec(codec) {
+                        for r in cp
+                            .check_reasons(stream)
+                            .0
+                        {
+                            reasons.insert(r);
+                        }
                     }
                 }
             }
-        } else if type_.eq_ignore_ascii_case("Audio") {
-            if let Some(stream) = media_source.audio_stream() {
-                let codec = stream
-                    .codec
-                    .as_deref()
-                    .unwrap_or("");
-                if cp.applies_to_codec(codec) {
-                    for r in cp
-                        .check_reasons(stream)
-                        .0
-                    {
-                        reasons.insert(r);
+            Some(DlnaProfileType::Audio) => {
+                if let Some(stream) = media_source.audio_stream() {
+                    let codec = stream
+                        .codec
+                        .as_deref()
+                        .unwrap_or("");
+                    if cp.applies_to_codec(codec) {
+                        for r in cp
+                            .check_reasons(stream)
+                            .0
+                        {
+                            reasons.insert(r);
+                        }
                     }
                 }
             }
+            _ => {}
         }
     }
 }
@@ -253,41 +248,42 @@ impl DirectPlayProfileExt for DirectPlayProfile {
     fn check_reasons(&self, media_source: &MediaSourceInfo) -> TranscodeReasons {
         let mut reasons = TranscodeReasons::default();
 
-        match (&self.container, &media_source.container) {
-            (Some(profile_container), None) => {
-                reasons.insert(TranscodeReason::ContainerNotSupported(format!(
-                    "profile={profile_container} source=(none)"
-                )));
-            }
-            (Some(profile_container), Some(source_container)) => {
-                if !self.supports_container(source_container) {
-                    reasons.insert(TranscodeReason::ContainerNotSupported(format!(
-                        "profile={profile_container} source={source_container}"
-                    )));
+        // container = None means no restriction (wildcard / absent in profile)
+        if self
+            .container
+            .is_some()
+        {
+            match &media_source.container {
+                None => {
+                    reasons.insert(TranscodeReason::ContainerNotSupported(
+                        "source container unknown".into(),
+                    ));
+                }
+                Some(source_container) => {
+                    if !self.supports_container(source_container) {
+                        reasons.insert(TranscodeReason::ContainerNotSupported(
+                            format!("source={source_container}"),
+                        ));
+                    }
                 }
             }
-            _ => {}
         }
 
-        if let (Some(profile_codec), Some(video_stream)) =
-            (&self.video_codec, media_source.video_stream())
-        {
+        if let Some(video_stream) = media_source.video_stream() {
             if let Some(video_codec) = &video_stream.codec {
                 if !self.supports_video_codec(video_codec) {
                     reasons.insert(TranscodeReason::VideoCodecNotSupported(format!(
-                        "profile={profile_codec} source={video_codec}"
+                        "source={video_codec}"
                     )));
                 }
             }
         }
 
-        if let (Some(profile_codec), Some(audio_stream)) =
-            (&self.audio_codec, media_source.audio_stream())
-        {
+        if let Some(audio_stream) = media_source.audio_stream() {
             if let Some(audio_codec) = &audio_stream.codec {
                 if !self.supports_audio_codec(audio_codec) {
                     reasons.insert(TranscodeReason::AudioCodecNotSupported(format!(
-                        "profile={profile_codec} source={audio_codec}"
+                        "source={audio_codec}"
                     )));
                 }
             }
@@ -296,58 +292,52 @@ impl DirectPlayProfileExt for DirectPlayProfile {
         reasons
     }
 
-    fn supports_container(&self, container: &str) -> bool {
-        // Normalize aliases: mp4 and m4a are the same format.
-        let aliases: &[&str] = match container
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "mp4" => &["mp4", "m4a"],
-            "m4a" => &["m4a", "mp4"],
-            _ => &[],
+    fn supports_container(&self, source: &str) -> bool {
+        let Some(list) = &self.container else {
+            return true; // None = any container
         };
-        self.container
-            .as_ref()
-            .map(|c| {
-                c == "*"
-                    || c.split(',')
-                        .any(|c| {
-                            let c = c.trim();
-                            c.eq_ignore_ascii_case(container)
-                                || aliases
-                                    .iter()
-                                    .any(|a| c.eq_ignore_ascii_case(a))
-                        })
+        let src: VideoContainer = source
+            .parse()
+            .unwrap_or_else(|_| VideoContainer::Other(source.to_owned()));
+        list.iter()
+            .any(|c| match (c, &src) {
+                (VideoContainer::Other(a), VideoContainer::Other(b)) => {
+                    a.eq_ignore_ascii_case(b)
+                }
+                _ => c == &src,
             })
-            .unwrap_or(true)
     }
 
-    fn supports_video_codec(&self, codec: &str) -> bool {
-        self.video_codec
-            .as_ref()
-            .map(|v| {
-                v == "*"
-                    || v.split(',')
-                        .any(|v| {
-                            v.trim()
-                                .eq_ignore_ascii_case(codec)
-                        })
+    fn supports_video_codec(&self, source: &str) -> bool {
+        let Some(list) = &self.video_codec else {
+            return true; // None = any codec
+        };
+        let src: VideoCodec = source
+            .parse()
+            .unwrap_or_else(|_| VideoCodec::Other(source.to_owned()));
+        list.iter()
+            .any(|c| match (c, &src) {
+                (VideoCodec::Other(a), VideoCodec::Other(b)) => {
+                    a.eq_ignore_ascii_case(b)
+                }
+                _ => c == &src,
             })
-            .unwrap_or(true)
     }
 
-    fn supports_audio_codec(&self, codec: &str) -> bool {
-        self.audio_codec
-            .as_ref()
-            .map(|a| {
-                a == "*"
-                    || a.split(',')
-                        .any(|a| {
-                            a.trim()
-                                .eq_ignore_ascii_case(codec)
-                        })
+    fn supports_audio_codec(&self, source: &str) -> bool {
+        let Some(list) = &self.audio_codec else {
+            return true; // None = any codec
+        };
+        let src: AudioCodec = source
+            .parse()
+            .unwrap_or_else(|_| AudioCodec::Other(source.to_owned()));
+        list.iter()
+            .any(|c| match (c, &src) {
+                (AudioCodec::Other(a), AudioCodec::Other(b)) => {
+                    a.eq_ignore_ascii_case(b)
+                }
+                _ => c == &src,
             })
-            .unwrap_or(true)
     }
 }
 
@@ -358,17 +348,11 @@ pub trait CodecProfileExt {
 
 impl CodecProfileExt for CodecProfile {
     fn applies_to_codec(&self, codec: &str) -> bool {
-        self.codec
-            .as_deref()
-            .map(|c| {
-                c == "*"
-                    || c.split(',')
-                        .any(|v| {
-                            v.trim()
-                                .eq_ignore_ascii_case(codec)
-                        })
-            })
-            .unwrap_or(true)
+        let Some(list) = &self.codec else {
+            return true; // None = applies to all codecs
+        };
+        list.iter()
+            .any(|entry| any_codec_matches(entry, codec))
     }
 
     fn check_reasons(&self, stream: &MediaStream) -> TranscodeReasons {
@@ -420,6 +404,34 @@ impl CodecProfileExt for CodecProfile {
             }
         }
         reasons
+    }
+}
+
+fn any_codec_matches(entry: &str, source: &str) -> bool {
+    // Try VideoCodec first (handles aliasing like h265→Hevc).
+    let pe_v: VideoCodec = entry
+        .parse()
+        .unwrap_or_else(|_| VideoCodec::Other(entry.to_owned()));
+    let sc_v: VideoCodec = source
+        .parse()
+        .unwrap_or_else(|_| VideoCodec::Other(source.to_owned()));
+    let video_match = match (&pe_v, &sc_v) {
+        (VideoCodec::Other(_), VideoCodec::Other(_)) => false, // defer to audio
+        _ => pe_v == sc_v,
+    };
+    if video_match {
+        return true;
+    }
+    // Fall back to AudioCodec (handles aliases like a52→Ac3, aac_latm→Aac).
+    let pe_a: AudioCodec = entry
+        .parse()
+        .unwrap_or_else(|_| AudioCodec::Other(entry.to_owned()));
+    let sc_a: AudioCodec = source
+        .parse()
+        .unwrap_or_else(|_| AudioCodec::Other(source.to_owned()));
+    match (&pe_a, &sc_a) {
+        (AudioCodec::Other(a), AudioCodec::Other(b)) => a.eq_ignore_ascii_case(b),
+        _ => pe_a == sc_a,
     }
 }
 
@@ -544,8 +556,9 @@ impl ProfileConditionExt for ProfileCondition {
 mod tests {
     use super::DeviceProfileExt;
     use remux_sdks::remux::{
-        DeviceProfile, DirectPlayProfile, MediaSourceInfo, MediaStream,
-        MediaStreamType, SubtitleDeliveryMethod, SubtitleProfile, TranscodeReason,
+        AudioCodec, DeviceProfile, DirectPlayProfile, DlnaProfileType, MediaSourceInfo,
+        MediaStream, MediaStreamType, SubtitleDeliveryMethod, SubtitleProfile,
+        TranscodeReason, VideoCodec, VideoContainer,
     };
 
     #[test]
@@ -568,10 +581,10 @@ mod tests {
     fn direct_play_does_not_reject_aliased_subtitle_codecs() {
         let profile = DeviceProfile {
             direct_play_profiles: vec![DirectPlayProfile {
-                container: Some("mkv".to_string()),
-                video_codec: Some("h264".to_string()),
-                audio_codec: Some("aac".to_string()),
-                type_: Some("Video".to_string()),
+                container: Some(vec![VideoContainer::Mkv]),
+                video_codec: Some(vec![VideoCodec::H264]),
+                audio_codec: Some(vec![AudioCodec::Aac]),
+                type_: Some(DlnaProfileType::Video),
             }],
             subtitle_profiles: vec![SubtitleProfile {
                 format: Some("pgs".to_string()),

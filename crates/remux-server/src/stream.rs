@@ -629,10 +629,13 @@ pub fn mime_from_path(path: &std::path::Path) -> &'static str {
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("");
-    if let Some(c) = remux_sdks::remux::VideoContainer::parse_known(ext) {
+    // Check audio-specific extensions first so that formats like .m4a (which
+    // aliases to VideoContainer::Mp4 for profile matching) still get the
+    // correct audio/* mime type.
+    if let Some(c) = remux_sdks::remux::AudioContainer::parse_known(ext) {
         return c.mime_type();
     }
-    if let Some(c) = remux_sdks::remux::AudioContainer::parse_known(ext) {
+    if let Some(c) = remux_sdks::remux::VideoContainer::parse_known(ext) {
         return c.mime_type();
     }
     "application/octet-stream"

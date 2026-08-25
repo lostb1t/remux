@@ -395,10 +395,10 @@ impl StreamGroup {
 
         let resolution = min_screen_size(&parsed)
             .and_then(StreamResolution::from_hunch)
-            .unwrap_or(StreamResolution::Unknown);
+            .unwrap_or(StreamResolution::Other);
         let source = {
             let s = canonical_source(&parsed);
-            if s == StreamQuality::Unknown {
+            if s == StreamQuality::Other {
                 fallback_source(raw)
             } else {
                 s
@@ -407,13 +407,13 @@ impl StreamGroup {
         let codec = parsed
             .video_codec()
             .and_then(StreamCodec::from_hunch)
-            .unwrap_or(StreamCodec::Unknown);
+            .unwrap_or(StreamCodec::Other);
 
         let eval = |rule: &StreamRule| -> MatchOutcome {
             match rule {
                 StreamRule::Resolution { op, values } => {
-                    if resolution == StreamResolution::Unknown
-                        && !values.contains(&StreamResolution::Unknown)
+                    if resolution == StreamResolution::Other
+                        && !values.contains(&StreamResolution::Other)
                     {
                         return MatchOutcome::PassThrough;
                     }
@@ -421,8 +421,8 @@ impl StreamGroup {
                     bool_to_outcome(matches!(op, SetOp::In | SetOp::Is) == hit)
                 }
                 StreamRule::Quality { op, values } => {
-                    if source == StreamQuality::Unknown
-                        && !values.contains(&StreamQuality::Unknown)
+                    if source == StreamQuality::Other
+                        && !values.contains(&StreamQuality::Other)
                     {
                         return MatchOutcome::PassThrough;
                     }
@@ -430,8 +430,8 @@ impl StreamGroup {
                     bool_to_outcome(matches!(op, SetOp::In | SetOp::Is) == hit)
                 }
                 StreamRule::Codec { op, values } => {
-                    if codec == StreamCodec::Unknown
-                        && !values.contains(&StreamCodec::Unknown)
+                    if codec == StreamCodec::Other
+                        && !values.contains(&StreamCodec::Other)
                     {
                         return MatchOutcome::PassThrough;
                     }
@@ -662,7 +662,7 @@ fn canonical_source(parsed: &hunch::HunchResult) -> StreamQuality {
         return if is_remux {
             StreamQuality::BluRayRemux
         } else {
-            StreamQuality::Unknown
+            StreamQuality::Other
         };
     };
     match source {
@@ -673,7 +673,7 @@ fn canonical_source(parsed: &hunch::HunchResult) -> StreamQuality {
         "HDTV" => StreamQuality::Hdtv,
         "DVD" => StreamQuality::Dvd,
         "TV" => StreamQuality::Tv,
-        _ => StreamQuality::Unknown,
+        _ => StreamQuality::Other,
     }
 }
 
@@ -695,7 +695,7 @@ fn fallback_source(raw: &str) -> StreamQuality {
     } else if lower.contains("dvdrip") {
         StreamQuality::Dvd
     } else {
-        StreamQuality::Unknown
+        StreamQuality::Other
     }
 }
 
