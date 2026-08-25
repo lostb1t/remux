@@ -1749,6 +1749,7 @@ pub struct VideoStreamQuery {
     pub audio_stream_index: Option<i64>,
     pub video_stream_index: Option<i64>,
     pub context: Option<String>,
+    #[serde(skip_deserializing)]
     pub stream_options: Option<std::collections::HashMap<String, Option<String>>>,
     pub enable_audio_vbr_encoding: Option<bool>,
     pub always_burn_in_subtitle_when_transcoding: Option<bool>,

@@ -1886,6 +1886,7 @@ pub fn generate_master_playlist(session: &TranscodeSession) -> String {
             }) {
             Some(AudioCodec::Eac3) => "ec-3",
             Some(AudioCodec::Ac3) => "ac-3",
+            Some(AudioCodec::Dts) => "dtsh",
             _ => "mp4a.40.2",
         }
     } else {
