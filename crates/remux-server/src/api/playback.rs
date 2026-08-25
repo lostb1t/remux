@@ -651,32 +651,21 @@ async fn items_playbackinfo_inner(
             supports_direct_stream: true,
             supports_transcoding: true,
             path: Some("/videos/no-streams".to_string()),
-            run_time_ticks: Some(20 * 10_000_000),
+            run_time_ticks: Some(10 * 3600 * 10_000_000),
             container: Some("mp4".to_string()),
-            bitrate: Some(50_000),
+            bitrate: Some(100),
             size: Some(NO_STREAMS_VIDEO.len() as i64),
             formats: Some(vec![]),
             required_http_headers: Some(std::collections::HashMap::new()),
-            default_audio_stream_index: Some(1),
-            media_streams: vec![
-                api::MediaStream {
-                    type_: Some(api::MediaStreamType::Video),
-                    codec: Some("h264".to_string()),
-                    is_default: Some(true),
-                    index: 0,
-                    width: Some(640),
-                    height: Some(360),
-                    ..Default::default()
-                },
-                api::MediaStream {
-                    type_: Some(api::MediaStreamType::Audio),
-                    codec: Some("aac".to_string()),
-                    channels: Some(2),
-                    is_default: Some(true),
-                    index: 1,
-                    ..Default::default()
-                },
-            ],
+            media_streams: vec![api::MediaStream {
+                type_: Some(api::MediaStreamType::Video),
+                codec: Some("h264".to_string()),
+                is_default: Some(true),
+                index: 0,
+                width: Some(640),
+                height: Some(360),
+                ..Default::default()
+            }],
             ..Default::default()
         });
         Some(api::PlaybackErrorCode::NoCompatibleStream)
