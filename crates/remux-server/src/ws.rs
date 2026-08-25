@@ -31,7 +31,7 @@ pub enum SessionMessageType {
     SessionsStop,
     KeepAlive,
     #[serde(other)]
-    Unknown,
+    Other,
 }
 
 #[derive(Serialize)]

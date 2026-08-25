@@ -31,7 +31,7 @@ pub enum SubtitleCodec {
     #[strum(to_string = "tx3g", serialize = "tx3g", serialize = "mov_text")]
     MovText,
     #[strum(default)]
-    Unknown(String),
+    Other(String),
 }
 
 impl SubtitleCodec {
@@ -85,7 +85,7 @@ pub enum VideoCodec {
     )]
     Mpeg2,
     #[strum(default)]
-    Unknown(String),
+    Other(String),
 }
 
 impl VideoCodec {
@@ -136,7 +136,7 @@ pub enum AudioCodec {
     )]
     Pcm,
     #[strum(default)]
-    Unknown(String),
+    Other(String),
 }
 
 #[derive(
@@ -161,7 +161,7 @@ pub enum AudioContainer {
     #[strum(to_string = "wv", serialize = "wv")]
     Wv,
     #[strum(default)]
-    Unknown(String),
+    Other(String),
 }
 
 impl AudioContainer {
@@ -175,12 +175,12 @@ impl AudioContainer {
             Self::Wav => "audio/wav",
             Self::Aac => "audio/aac",
             Self::Wv => "audio/x-wavpack",
-            Self::Unknown(_) => "audio/octet-stream",
+            Self::Other(_) => "audio/octet-stream",
         }
     }
 
     pub fn is_known(&self) -> bool {
-        !matches!(self, Self::Unknown(_))
+        !matches!(self, Self::Other(_))
     }
 
     pub fn parse_known(ext: &str) -> Option<Self> {
@@ -197,7 +197,7 @@ impl AudioContainer {
 pub enum VideoContainer {
     #[strum(to_string = "mkv", serialize = "mkv", serialize = "matroska")]
     Mkv,
-    #[strum(to_string = "mp4", serialize = "mp4")]
+    #[strum(to_string = "mp4", serialize = "mp4", serialize = "m4a")]
     Mp4,
     #[strum(to_string = "m4v", serialize = "m4v")]
     M4v,
@@ -224,7 +224,7 @@ pub enum VideoContainer {
     )]
     Mpeg,
     #[strum(default)]
-    Unknown(String),
+    Other(String),
 }
 
 impl VideoContainer {
@@ -238,7 +238,7 @@ impl VideoContainer {
             Self::Ts => "video/mp2t",
             Self::Wmv => "video/x-ms-wmv",
             Self::Mpeg => "video/mpeg",
-            Self::Unknown(_) => "video/octet-stream",
+            Self::Other(_) => "video/octet-stream",
         }
     }
 
@@ -250,7 +250,7 @@ impl VideoContainer {
     }
 
     pub fn is_known(&self) -> bool {
-        !matches!(self, Self::Unknown(_))
+        !matches!(self, Self::Other(_))
     }
 
     /// Parse a file extension and return `Some` only for known variants.
@@ -275,11 +275,74 @@ impl AudioCodec {
             Self::Vorbis => "Vorbis",
             Self::Alac => "ALAC",
             Self::Pcm => "PCM",
-            Self::Unknown(s) => s.as_str(),
+            Self::Other(s) => s.as_str(),
         }
     }
 
     pub fn needs_adts_reframe(&self) -> bool {
         matches!(self, Self::Aac)
+    }
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, strum_macros::EnumString, strum_macros::Display,
+)]
+#[strum(ascii_case_insensitive)]
+pub enum TranscodingProtocol {
+    #[strum(to_string = "http")]
+    Http,
+    #[strum(to_string = "hls")]
+    Hls,
+    #[strum(default)]
+    Other(String),
+}
+
+impl<'de> serde::Deserialize<'de> for TranscodingProtocol {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Ok(s.parse()
+            .unwrap_or_else(|_| Self::Other(s)))
+    }
+}
+
+impl serde::Serialize for TranscodingProtocol {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, strum_macros::EnumString, strum_macros::Display,
+)]
+#[strum(ascii_case_insensitive)]
+pub enum DlnaProfileType {
+    Video,
+    Audio,
+    Photo,
+    #[strum(default)]
+    Other(String),
+}
+
+impl<'de> serde::Deserialize<'de> for DlnaProfileType {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Ok(s.parse()
+            .unwrap_or_else(|_| Self::Other(s)))
+    }
+}
+
+impl serde::Serialize for DlnaProfileType {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
     }
 }

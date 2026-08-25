@@ -36,7 +36,7 @@ pub enum MediaType {
     Track,
     #[strum(to_string = "{0}")]
     #[serde(untagged)]
-    Unknown(String),
+    Other(String),
 }
 
 #[derive(
@@ -69,7 +69,7 @@ pub enum ResourceType {
     Tracking,
 
     #[serde(untagged)]
-    Unknown(String),
+    Other(String),
 }
 
 #[derive(Debug, Clone)]
@@ -381,7 +381,7 @@ pub enum Status {
     Running,
     #[default]
     #[serde(other)]
-    Unknown,
+    Other,
 }
 
 /// Parsed representation of the Stremio `releaseInfo` field.
@@ -1093,7 +1093,7 @@ mod tests {
     #[test]
     fn media_type_display_unknown_preserves_inner_value() {
         let kind =
-            MediaType::Unknown("aiostreams::library.torbox.torrent.36825883".into());
+            MediaType::Other("aiostreams::library.torbox.torrent.36825883".into());
         assert_eq!(
             kind.to_string(),
             "aiostreams::library.torbox.torrent.36825883"
@@ -1102,7 +1102,7 @@ mod tests {
 
     #[test]
     fn media_type_display_unknown_used_in_endpoint_path() {
-        let kind = MediaType::Unknown("my_custom_type".into());
+        let kind = MediaType::Other("my_custom_type".into());
         let path = format!("/meta/{}/some_id.json", kind);
         assert_eq!(path, "/meta/my_custom_type/some_id.json");
     }
