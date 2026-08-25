@@ -179,12 +179,22 @@ impl Service<Request<Body>> for WebClientService {
             .jellyfin
             .clone();
 
+        // Static asset requests (JS, CSS, images, fonts …) carry `Accept: */*`
+        // rather than `text/html`, but they must still reach ServeDir.
+        // Detect them by the presence of a file extension in the last segment.
+        let last_segment = path
+            .rsplit('/')
+            .next()
+            .unwrap_or_default();
+        let is_file_like = last_segment.contains('.');
+
         // Browser navigations carry `text/html` in Accept; API clients do not.
-        // Only serve the SPA shell for browser-like requests or known web
-        // client alias prefixes (/web/*, /jellyfin/*). Everything else gets
-        // a real 404 so API clients don't silently receive HTML.
+        // Only serve the SPA shell for browser-like requests, known web-client
+        // alias prefixes (/web/*, /jellyfin/*), or static file paths.
+        // Everything else gets a real 404 so API clients don't silently get HTML.
         let is_browser_or_alias = jellyfin_inner.is_some()
             || path == "/"
+            || is_file_like
             || req
                 .headers()
                 .get(header::ACCEPT)
