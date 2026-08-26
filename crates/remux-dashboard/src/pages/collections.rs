@@ -193,6 +193,7 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                         let app_state = app_state_reorder.clone();
 
                                         spawn(async move {
+                                            loading.set(true);
                                             for (id, so) in updates {
                                                 let _ = app_state.execute(PatchItem {
                                                     item_id: id,
@@ -202,6 +203,7 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                                     },
                                                 }).await;
                                             }
+                                            loading.set(false);
 
                                             let v = *refresh.peek() + 1;
                                             refresh.set(v);

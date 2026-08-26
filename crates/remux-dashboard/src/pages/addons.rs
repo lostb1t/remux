@@ -292,6 +292,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                             .collect();
                                         let client = client.clone();
                                         spawn(async move {
+                                            loading.set(true);
                                             for (id, priority) in updates {
                                                 let _ = client.execute(UpdateAddon {
                                                     id,
@@ -301,6 +302,8 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                     },
                                                 }).await;
                                             }
+                                            loading.set(false);
+
                                             let value = *refresh.peek() + 1;
                                             refresh.set(value);
                                         });
