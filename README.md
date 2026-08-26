@@ -88,6 +88,12 @@ Install the dioxus cli
 cargo install dioxus-cli
 ```
 
+Copy env example
+
+```
+cp .env.example .env
+```
+
 Build jellyfin web
 
 ```
