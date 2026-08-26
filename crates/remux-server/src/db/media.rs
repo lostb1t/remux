@@ -3648,8 +3648,18 @@ impl Media {
                     qb.push(
                         " AND EXISTS (\
                           SELECT 1 FROM user_media_state ums \
-                          JOIN media m2 ON m2.id = ums.media_id \
-                          WHERE (m2.id = media.id OR (m2.grandparent_id = media.id AND m2.kind = 'episode'))",
+                          WHERE ums.media_id = media.id",
+                    );
+                    if let Some(user_id) = &user_state_filter.user_id {
+                        qb.push(" AND ums.user_id = ")
+                            .push_bind(user_id);
+                    }
+                    qb.push(
+                        " AND ums.play_count > 0 \
+                          UNION ALL \
+                          SELECT 1 FROM user_media_state ums \
+                          JOIN media ep ON ep.id = ums.media_id \
+                          WHERE ep.grandparent_id = media.id AND ep.kind = 'episode'",
                     );
                     if let Some(user_id) = &user_state_filter.user_id {
                         qb.push(" AND ums.user_id = ")
@@ -7493,9 +7503,12 @@ fn filter_rule_to_sql(
                 format!(
                     "EXISTS (\
                       SELECT 1 FROM user_media_state ums \
-                      JOIN media m2 ON m2.id = ums.media_id \
-                      WHERE (m2.id = media.id OR (m2.grandparent_id = media.id AND m2.kind = 'episode'))\
-                      {user_clause} AND ums.play_count > 0\
+                      WHERE ums.media_id = media.id{user_clause} AND ums.play_count > 0 \
+                      UNION ALL \
+                      SELECT 1 FROM user_media_state ums \
+                      JOIN media ep ON ep.id = ums.media_id \
+                      WHERE ep.grandparent_id = media.id{user_clause} \
+                        AND ep.kind = 'episode' AND ums.play_count > 0\
                     )"
                 )
             } else {
