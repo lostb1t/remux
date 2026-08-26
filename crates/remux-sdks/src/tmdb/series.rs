@@ -210,7 +210,7 @@ impl EpisodeEndpoint {
 }
 
 impl Endpoint for EpisodeEndpoint {
-    type Output = Episode;
+    type Output = Option<Episode>;
 
     fn path(&self) -> String {
         format!(

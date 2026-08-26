@@ -23,7 +23,7 @@ use super::{
 use crate::{
     AppContext, common, db, sdks,
     sdks::{CachedEndpoint, ClientError},
-    services::stremio as stremio_service,
+    services::{MediaResolveService, stremio as stremio_service},
 };
 
 pub struct StremioPreset;
@@ -624,7 +624,7 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
             if !ids.is_empty() {
                 let is_tv = meta.media_type == sdks::stremio::MediaType::Series;
                 ids.imdb =
-                    crate::addons::tmdb::resolve_imdb_from_ids(&ids, is_tv, client)
+                    MediaResolveService::resolve_imdb_from_ids(&ids, is_tv, client)
                         .await;
                 debug!(id = %meta.id, elapsed = ?t.elapsed(), resolved = ids.imdb.is_some(), "after TMDB resolve");
             }

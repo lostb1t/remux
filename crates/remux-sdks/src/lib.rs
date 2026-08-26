@@ -180,6 +180,39 @@ impl Default for Body {
     }
 }
 
+/// Per-request cache configuration.
+///
+/// Build with [`CacheOptions::new`]. Implements `From<Duration>` so existing
+/// `.with_cache(Duration::from_secs(60))` call sites keep compiling.
+#[derive(Clone)]
+pub struct CacheOptions {
+    pub ttl: Duration,
+    /// Status codes to cache. Defaults to `&[200]`. 2xx statuses are cached
+    /// and deserialized normally; non-2xx statuses are cached and returned as
+    /// `None` (the endpoint `Output` must be `Option<T>`).
+    pub on_statuses: &'static [u16],
+}
+
+impl CacheOptions {
+    pub fn new(ttl: Duration) -> Self {
+        Self {
+            ttl,
+            on_statuses: &[200],
+        }
+    }
+
+    pub fn on_statuses(mut self, statuses: &'static [u16]) -> Self {
+        self.on_statuses = statuses;
+        self
+    }
+}
+
+impl From<Duration> for CacheOptions {
+    fn from(ttl: Duration) -> Self {
+        Self::new(ttl)
+    }
+}
+
 pub trait Endpoint {
     type Output: DeserializeOwned + Clone + Serialize + Send + Sync + 'static;
 
@@ -210,8 +243,16 @@ pub trait Endpoint {
     fn body(&self) -> Body {
         Body::Empty
     }
-    fn cache_ttl(&self) -> Option<Duration> {
+
+    fn cache_options(&self) -> Option<CacheOptions> {
         None
+    }
+
+    /// Whether and how long to cache *this* response. `None` skips caching.
+    /// Defaults to `cache_options().ttl`. Override in [`Cached`] for one-off logic.
+    fn should_cache(&self, _response: &Self::Output) -> Option<Duration> {
+        self.cache_options()
+            .map(|o| o.ttl)
     }
 }
 
@@ -445,8 +486,8 @@ impl<A: Auth + Clone> RestClient<A> {
 
         let mut ext = Extensions::new();
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(ttl) = endpoint.cache_ttl() {
-            ext.insert(CacheTTL(ttl));
+        if let Some(opts) = endpoint.cache_options() {
+            ext.insert(CacheTTL(opts.ttl));
         }
 
         let resp = self
@@ -480,11 +521,67 @@ impl<A: Auth + Clone> RestClient<A> {
             .text()
             .await
             .unwrap_or_default();
+        let on_statuses = endpoint
+            .cache_options()
+            .map(|o| o.on_statuses)
+            .unwrap_or(&[]);
         match status {
             401 => Err(ClientError::Unauthorized),
-            s if (200..300).contains(&s) => {
+            s if on_statuses.contains(&s) && (200..300).contains(&s) => {
                 // 204 No Content and similar empty responses: treat as JSON null so
                 // endpoints with `type Output = ()` deserialize successfully.
+                let parse_body = if text.is_empty() { "null" } else { &text };
+                let arc = serde_json::from_str::<EP::Output>(parse_body)
+                    .map(Arc::new)
+                    .map_err(|e| ClientError::Json {
+                        status: s,
+                        source: e,
+                        endpoint: Some(url.to_string()),
+                        body: Some(text.clone()),
+                    })?;
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(ttl) = endpoint.should_cache(&arc) {
+                    let weight = text
+                        .len()
+                        .min(u32::MAX as usize) as u32;
+                    HTTP_CACHE.save_arc_with_weight(
+                        hash_key(url.as_str()),
+                        Arc::new(CachedResponse {
+                            status: s,
+                            body: text,
+                        }),
+                        weight,
+                        ttl,
+                    );
+                }
+                Ok(arc)
+            }
+            s if on_statuses.contains(&s) => {
+                // Non-2xx in on_statuses: cache and return None (Output must be Option<T>).
+                let arc = serde_json::from_str::<EP::Output>("null")
+                    .map(Arc::new)
+                    .map_err(|e| ClientError::Json {
+                        status: s,
+                        source: e,
+                        endpoint: Some(url.to_string()),
+                        body: Some(text.clone()),
+                    })?;
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(ttl) = endpoint.should_cache(&arc) {
+                    HTTP_CACHE.save_arc_with_weight(
+                        hash_key(url.as_str()),
+                        Arc::new(CachedResponse {
+                            status: s,
+                            body: "null".to_string(),
+                        }),
+                        4,
+                        ttl,
+                    );
+                }
+                Ok(arc)
+            }
+            s if (200..300).contains(&s) => {
+                // 2xx not in on_statuses: deserialize without caching.
                 let parse_body = if text.is_empty() { "null" } else { &text };
                 serde_json::from_str::<EP::Output>(parse_body)
                     .map(Arc::new)
@@ -501,10 +598,11 @@ impl<A: Auth + Clone> RestClient<A> {
 }
 
 pub trait CachedEndpoint: Endpoint + Sized {
-    fn with_cache(self, ttl: Duration) -> Cached<Self> {
+    fn with_cache(self, opts: impl Into<CacheOptions>) -> Cached<Self> {
         Cached {
             endpoint: self,
-            ttl,
+            opts: opts.into(),
+            should_cache_fn: None,
         }
     }
 }
@@ -514,7 +612,17 @@ impl<EP: Endpoint + Sized> CachedEndpoint for EP {}
 #[derive(Clone)]
 pub struct Cached<EP: Endpoint> {
     endpoint: EP,
-    ttl: Duration,
+    opts: CacheOptions,
+    should_cache_fn: Option<fn(&EP::Output) -> Option<Duration>>,
+}
+
+impl<EP: Endpoint> Cached<EP> {
+    pub fn should_cache(self, f: fn(&EP::Output) -> Option<Duration>) -> Self {
+        Self {
+            should_cache_fn: Some(f),
+            ..self
+        }
+    }
 }
 
 impl<EP: Endpoint> Endpoint for Cached<EP> {
@@ -545,8 +653,21 @@ impl<EP: Endpoint> Endpoint for Cached<EP> {
             .body()
     }
 
-    fn cache_ttl(&self) -> Option<Duration> {
-        Some(self.ttl)
+    fn cache_options(&self) -> Option<CacheOptions> {
+        Some(
+            self.opts
+                .clone(),
+        )
+    }
+
+    fn should_cache(&self, response: &Self::Output) -> Option<Duration> {
+        match self.should_cache_fn {
+            Some(f) => f(response),
+            None => Some(
+                self.opts
+                    .ttl,
+            ),
+        }
     }
 }
 
@@ -593,9 +714,14 @@ impl<EP: Endpoint> Endpoint for WithExtraQuery<EP> {
             .body()
     }
 
-    fn cache_ttl(&self) -> Option<Duration> {
+    fn cache_options(&self) -> Option<CacheOptions> {
         self.endpoint
-            .cache_ttl()
+            .cache_options()
+    }
+
+    fn should_cache(&self, response: &Self::Output) -> Option<Duration> {
+        self.endpoint
+            .should_cache(response)
     }
 }
 
@@ -815,5 +941,127 @@ impl From<remux::MediaType> for stremio::MediaType {
             remux::MediaType::Episode => stremio::MediaType::Series,
             _ => stremio::MediaType::Movie,
         }
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    /// `Vec<String>` so "the response carries no answer" is just `is_empty`,
+    /// standing in for a `/find` with no results.
+    #[derive(Clone)]
+    struct Probe {
+        path: String,
+    }
+
+    impl Endpoint for Probe {
+        type Output = Vec<String>;
+
+        fn path(&self) -> String {
+            self.path
+                .clone()
+        }
+    }
+
+    /// Long enough that nothing here reaches it.
+    const NEVER: Duration = Duration::from_secs(600);
+    const BRIEF: Duration = Duration::from_millis(300);
+
+    fn is_empty(response: &Vec<String>) -> bool {
+        response.is_empty()
+    }
+
+    /// `HTTP_CACHE` is process-wide and keyed on the url, and httpmock pools
+    /// its servers, so each test needs its own path.
+    fn probe<'s>(
+        server: &'s httpmock::MockServer,
+        path: &str,
+        body: serde_json::Value,
+    ) -> (httpmock::Mock<'s>, RestClient<NoAuth>, Probe) {
+        let mock = server.mock(|when, then| {
+            when.path(format!("/{path}"));
+            then.status(200)
+                .json_body(body);
+        });
+        (
+            mock,
+            RestClient::new(&server.base_url()).unwrap(),
+            Probe {
+                path: path.to_string(),
+            },
+        )
+    }
+
+    async fn elapse() {
+        tokio::time::sleep(BRIEF * 2).await;
+    }
+
+    #[tokio::test]
+    async fn a_response_matching_the_rule_is_re_fetched_after_the_short_ttl() {
+        let server = httpmock::MockServer::start();
+        let (mock, client, probe) = probe(&server, "matching", serde_json::json!([]));
+        let endpoint = probe
+            .with_cache(NEVER)
+            .should_cache(|r| Some(if is_empty(r) { BRIEF } else { NEVER }));
+
+        client
+            .execute(endpoint.clone())
+            .await
+            .unwrap();
+        client
+            .execute(endpoint.clone())
+            .await
+            .unwrap();
+        assert_eq!(mock.hits(), 1, "served from cache while it lived");
+
+        elapse().await;
+        client
+            .execute(endpoint)
+            .await
+            .unwrap();
+        assert_eq!(mock.hits(), 2, "asked again once the short TTL was up");
+    }
+
+    #[tokio::test]
+    async fn a_response_the_rule_rejects_keeps_the_full_ttl() {
+        let server = httpmock::MockServer::start();
+        let (mock, client, probe) =
+            probe(&server, "rejected", serde_json::json!(["found"]));
+        let endpoint = probe
+            .with_cache(NEVER)
+            .should_cache(|r| Some(if is_empty(r) { BRIEF } else { NEVER }));
+
+        client
+            .execute(endpoint.clone())
+            .await
+            .unwrap();
+        elapse().await;
+        client
+            .execute(endpoint)
+            .await
+            .unwrap();
+        assert_eq!(mock.hits(), 1);
+    }
+
+    /// An endpoint that asks for no early expiry must still behave as it did
+    /// when `cache_ttl` alone decided. The body is one the rule above calls a
+    /// miss, so a shortened default would show up on the second request.
+    #[tokio::test]
+    async fn an_endpoint_with_no_rule_holds_its_ttl() {
+        let server = httpmock::MockServer::start();
+        let (mock, client, probe) = probe(&server, "no-rule", serde_json::json!([]));
+        let endpoint = probe.with_cache(NEVER);
+
+        client
+            .execute(endpoint.clone())
+            .await
+            .unwrap();
+        elapse().await;
+        client
+            .execute(endpoint)
+            .await
+            .unwrap();
+        assert_eq!(mock.hits(), 1);
     }
 }
