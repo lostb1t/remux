@@ -428,6 +428,97 @@ mod tests {
         mock.assert();
     }
 
+    /// The ids Yamtrack matches an episode on are not on the row at ingest:
+    /// TMDB's season listing carries no `external_ids`, so the episode reaches
+    /// delivery with nothing of its own. Nothing in this file fills them, so a
+    /// change to `complete_episode_ids` would leave Yamtrack taking a 200 for
+    /// an episode it cannot place.
+    #[tokio::test]
+    async fn the_delivery_path_fills_in_the_ids_this_format_matches_on() {
+        let tmdb = MockServer::start();
+        tmdb.mock(|when, then| {
+            when.path("/find/tt5550007");
+            then.status(200)
+                .json_body(json!({
+                    "tv_results": [{ "id": 5554439, "name": "The Wire" }],
+                    "movie_results": []
+                }));
+        });
+        tmdb.mock(|when, then| {
+            when.path("/tv/5554439/season/1/episode/1");
+            then.status(200)
+                .json_body(json!({
+                    "id": 972467,
+                    "name": "The Target",
+                    "season_number": 1,
+                    "episode_number": 1,
+                    "external_ids": { "imdb_id": "tt0749419", "tvdb_id": 303821 },
+                }));
+        });
+        let guard =
+            crate::integration_test::new_test_server_with_config(crate::Config {
+                database_url: Some("sqlite::memory:".into()),
+                torrent_http_port: None,
+                disable_dht: true,
+                tmdb_base_url: tmdb.base_url(),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .1;
+
+        let mut media = crate::integration_test::seed_episode_with(
+            &guard.0,
+            db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt5550007".to_string()).ok(),
+                ..Default::default()
+            },
+        )
+        .await;
+        let target =
+            crate::services::media_tracker::resolve_target(&guard.0, &mut media)
+                .await
+                .unwrap()
+                .expect("the series' imdb id alone already makes it matchable");
+        assert_eq!(
+            target
+                .ids
+                .tvdb,
+            Some(303821),
+            "the delivery path left the episode without ids of its own"
+        );
+
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/webhook/jellyfin/tok")
+                .json_body(json!({
+                    "Event": "MarkPlayed",
+                    "Item": {
+                        "Type": "Episode",
+                        "Name": "The Target",
+                        "SeriesName": "The Wire",
+                        "ParentIndexNumber": 1,
+                        "IndexNumber": 1,
+                        "ProviderIds": {
+                            "Tmdb": "972467",
+                            "Imdb": "tt0749419",
+                            "Tvdb": "303821",
+                        },
+                        "UserData": { "Played": true },
+                    },
+                }));
+            then.status(200);
+        });
+
+        addon(&server)
+            .on_event(&MediaTrackerEvent::MarkPlayed, &target, &creds(), &ctx())
+            .await
+            .unwrap();
+
+        mock.assert();
+    }
+
     #[tokio::test]
     async fn a_start_reports_the_item_as_unplayed() {
         let server = MockServer::start();
