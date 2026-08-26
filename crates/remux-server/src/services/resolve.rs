@@ -188,13 +188,13 @@ impl MediaResolveService {
         }
     }
 
-    /// The series' TMDB id as already stored, for an episode or a season: the
-    /// preloaded `grandparent` if there is one, else the row `grandparent_id`
-    /// names.
+    /// The series' TMDB id as already stored, for an episode or a season:
+    /// checks the preloaded `grandparent` (episodes) or `parent` (seasons)
+    /// first, then falls back to a DB lookup via `grandparent_id` (episodes)
+    /// or `parent_id` (seasons).
     ///
-    /// The kind filter is what stops a season being passed off as the series,
-    /// whether by a corrupt `grandparent_id` or by a `grandparent` that
-    /// `preload_parents` filled from `parent_id`.
+    /// The kind filter guards against a corrupt ancestor id pointing at a
+    /// non-series row (e.g. a season's own id in `grandparent_id`).
     ///
     /// Reads only; [`Self::fill_series_tmdb`] is what resolves and stores.
     pub(crate) async fn stored_series_tmdb_id(
@@ -203,7 +203,12 @@ impl MediaResolveService {
     ) -> anyhow::Result<Option<i64>> {
         if let Some(tmdb) = media
             .grandparent
-            .as_ref()
+            .as_deref()
+            .or_else(|| {
+                media
+                    .parent
+                    .as_deref()
+            })
             .filter(|g| g.kind == db::MediaKind::Series)
             .and_then(|g| {
                 g.external_ids
@@ -212,7 +217,10 @@ impl MediaResolveService {
         {
             return Ok(Some(tmdb));
         }
-        let Some(series_id) = media.grandparent_id else {
+        let Some(series_id) = media
+            .grandparent_id
+            .or(media.parent_id)
+        else {
             return Ok(None);
         };
         Ok(db::Media::get_by_id(&ctx.db, &series_id)
@@ -1086,7 +1094,11 @@ mod tests {
             );
         }
 
-        assert_eq!(missing.hits(), 1, "the miss was not cached");
+        assert_eq!(
+            missing.hits(),
+            1,
+            "the 404 should be cached and not re-fetched"
+        );
     }
 
     /// The UUID this row would be derived as, were it ingested again.
@@ -1595,14 +1607,20 @@ mod tests {
             );
         }
 
-        /// A season still has to reach its series past the kind filter.
+        /// Seasons link to the series via `parent_id`, not `grandparent_id`.
         #[tokio::test]
-        async fn a_season_reaches_its_series() {
+        async fn a_season_reaches_its_series_via_parent_id() {
             let (_s, guard) = new_test_server()
                 .await
                 .unwrap();
             let ctx = &guard.0;
-            let (_series, season) = seed(ctx, Some(1438), None).await;
+            let (series, _season) = seed(ctx, Some(1438), None).await;
+            let season = db::Media {
+                kind: db::MediaKind::Season,
+                parent_id: Some(series.id),
+                grandparent_id: None,
+                ..Default::default()
+            };
 
             assert_eq!(
                 MediaResolveService::stored_series_tmdb_id(&season, ctx)
