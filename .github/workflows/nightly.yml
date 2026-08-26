@@ -129,6 +129,7 @@ jobs:
           chmod +x "remux-${VERSION}-linux-amd64" "remux-${VERSION}-linux-arm64"
           mv remux-desktop-linux-x86_64.deb   "remux-desktop-${VERSION}-linux-x86_64.deb"
           mv remux-desktop-macos-aarch64.dmg  "remux-desktop-${VERSION}-macos-aarch64.dmg"
+          mv remux-desktop-macos-x86_64.dmg   "remux-desktop-${VERSION}-macos-x86_64.dmg"
           mv remux-desktop-windows-x86_64.zip "remux-desktop-${VERSION}-windows-x86_64.zip"
 
       - name: Delete existing nightly release
@@ -156,4 +157,5 @@ jobs:
             "remux-${VERSION}-linux-arm64" \
             "remux-desktop-${VERSION}-linux-x86_64.deb" \
             "remux-desktop-${VERSION}-macos-aarch64.dmg" \
+            "remux-desktop-${VERSION}-macos-x86_64.dmg" \
             "remux-desktop-${VERSION}-windows-x86_64.zip"
