@@ -3214,7 +3214,6 @@ impl Media {
                     .any(|s| matches!(s, api::ItemSortBy::DatePlayed))
             {
                 if let Some(uid) = &filter.user_id {
-                    let uid_hex = format!("X'{}'", uid.simple());
                     let rows: Vec<(Vec<u8>, Option<NaiveDateTime>)> = sqlx::query_as(
                         "SELECT COALESCE(ep.grandparent_id, ums.media_id) AS effective_id, \
                          MAX(ums.played_at) AS effective_date \
@@ -3225,8 +3224,7 @@ impl Media {
                     )
                     .bind(uid)
                     .fetch_all(db)
-                    .await
-                    .unwrap_or_default();
+                    .await?;
 
                     let mapped = rows
                         .into_iter()
@@ -3965,30 +3963,6 @@ impl Media {
             }
         }
 
-        // When the Watched rollup pre-fetch ran, constrain to exactly those IDs.
-        // This replaces the DatePlayed-fast-path driving table for partially watched
-        // series that have no direct user_media_state row.
-        if let Some(ref rollup) = watched_rollup {
-            if rollup.is_empty() {
-                records_qb.push(" AND 1=0");
-                count_qb.push(" AND 1=0");
-            } else {
-                records_qb.push(" AND media.id IN (");
-                let mut sep = records_qb.separated(", ");
-                for (id, _) in rollup {
-                    sep.push_bind(*id);
-                }
-                records_qb.push(")");
-
-                count_qb.push(" AND media.id IN (");
-                let mut sep = count_qb.separated(", ");
-                for (id, _) in rollup {
-                    sep.push_bind(*id);
-                }
-                count_qb.push(")");
-            }
-        }
-
         // Close the filtered CTE and build the UNION ALL structure.
         // Arm 1 joins popularity_agg → filtered driving from idx_pop_agg_covering,
         // producing scored items in avg-DESC order without a sort step.
@@ -4151,18 +4125,21 @@ impl Media {
                                 // pre-fetched effective date via a CASE WHEN so SQLite
                                 // can resolve each row's date without a subquery.
                                 // Dates come from our own DB pre-fetch, not user input.
+                                // NULL dates use the smallest sentinel so they always
+                                // sink to the bottom regardless of sort direction.
+                                let null_date = "0001-01-01 00:00:00";
                                 let mut case = String::from("CASE media.id");
                                 for (id, dt) in rollup {
                                     let date_str = dt
                                         .map(|d| d.to_string())
-                                        .unwrap_or_else(|| "9999-12-31 00:00:00".into());
+                                        .unwrap_or_else(|| null_date.into());
                                     case.push_str(&format!(
                                         " WHEN X'{}' THEN '{}'",
                                         id.simple(),
                                         date_str
                                     ));
                                 }
-                                case.push_str(&format!(" ELSE '9999-12-31 00:00:00' END {}", dir));
+                                case.push_str(&format!(" ELSE '{}' END {}", null_date, dir));
                                 case
                             } else if filter.user_id.is_some() {
                                 // dp alias from the UMS-driven records_qb above.
