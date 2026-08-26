@@ -6395,34 +6395,37 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                 });
 
         // Derive series end_date only when we resolved Ended status.
+        // Use the latest regular (non-specials) episode date, constrained by the
+        // declared end year when present. Falls back to a synthetic year-end date
+        // when no episode date is found but an end year was declared.
         let end_date: Option<NaiveDateTime> = if matches!(media_kind, MediaKind::Series)
             && matches!(status, Some(MediaStatus::Ended))
         {
-            meta.release_info
+            let declared_end_year = meta
+                .release_info
                 .as_ref()
-                .and_then(|ri| ri.end_year())
-                .map(|end_year| {
-                    // Prefer the latest regular (non-specials) episode on or before the
-                    // declared end year; fall back to a synthetic year-end date.
-                    meta.videos
-                        .as_deref()
-                        .unwrap_or(&[])
-                        .iter()
-                        .filter(|ep| {
-                            ep.season
-                                .map_or(true, |s| s > 0)
-                        })
-                        .filter_map(|ep| ep.released)
-                        .filter(|dt| dt.year() <= end_year)
-                        .max()
-                        .map(|dt| dt.naive_utc())
-                        .unwrap_or_else(|| {
-                            chrono::NaiveDate::from_ymd_opt(end_year, 12, 31)
-                                .unwrap_or_default()
-                                .and_hms_opt(0, 0, 0)
-                                .unwrap_or_default()
-                        })
+                .and_then(|ri| ri.end_year());
+            let from_episodes = meta
+                .videos
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .filter(|ep| {
+                    ep.season
+                        .map_or(true, |s| s > 0)
                 })
+                .filter_map(|ep| ep.released)
+                .filter(|dt| declared_end_year.map_or(true, |y| dt.year() <= y))
+                .max()
+                .map(|dt| dt.naive_utc());
+            from_episodes.or_else(|| {
+                declared_end_year.map(|y| {
+                    chrono::NaiveDate::from_ymd_opt(y, 12, 31)
+                        .unwrap_or_default()
+                        .and_hms_opt(0, 0, 0)
+                        .unwrap_or_default()
+                })
+            })
         } else {
             None
         };
