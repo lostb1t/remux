@@ -9,35 +9,41 @@ pub mod stremio;
 pub mod tmdb;
 pub mod trakt;
 
-use async_trait::async_trait;
 use bytes::Bytes;
 use http::{Extensions, HeaderMap, HeaderValue, Method, header};
 use itertools::Itertools;
-use md5;
-use remux_utils::Store;
-use reqwest_middleware::{
-    ClientBuilder as MwClientBuilder, ClientWithMiddleware, Middleware, Next,
-};
+use reqwest_middleware::{ClientBuilder as MwClientBuilder, ClientWithMiddleware};
 pub use reqwest_retry::policies::ExponentialBackoff;
 use reqwest_retry::{RetryPolicy, RetryTransientMiddleware};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use std::{collections::HashMap, fmt, iter, ops, sync::Arc, time::Duration};
+#[cfg(not(target_arch = "wasm32"))]
+use {
+    async_trait::async_trait,
+    md5,
+    remux_utils::Store,
+    reqwest_middleware::{Middleware, Next},
+};
 
+#[cfg(not(target_arch = "wasm32"))]
 static HTTP_CACHE: std::sync::LazyLock<Store> =
     std::sync::LazyLock::new(|| Store::new_weighted(32 * 1024 * 1024)); // 32 MB weight cap
 
 static SHARED_HTTP_CLIENT: std::sync::LazyLock<reqwest::Client> =
     std::sync::LazyLock::new(reqwest::Client::new);
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn clear_http_cache() {
     HTTP_CACHE.clear();
 }
 
 /// Returns `(entry_count, weighted_size)` for the HTTP response cache.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn http_cache_stats() -> (u64, u64) {
     (HTTP_CACHE.entry_count(), HTTP_CACHE.weighted_size())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn hash_key(key: &str) -> String {
     let result = md5::compute(key.as_bytes());
     format!("{:x}", result)
@@ -209,17 +215,21 @@ pub trait Endpoint {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy)]
 struct CacheTTL(Duration);
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 struct CachedResponse {
     status: u16,
     body: String,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct InMemoryCacheMiddleware;
 
+#[cfg(not(target_arch = "wasm32"))]
 #[async_trait]
 impl Middleware for InMemoryCacheMiddleware {
     async fn handle(
@@ -308,8 +318,11 @@ impl RetryPolicy for DynRetryPolicy {
 }
 
 fn build_mw(retry: Option<Arc<dyn RetryPolicy + Send + Sync>>) -> ClientWithMiddleware {
+    #[cfg(not(target_arch = "wasm32"))]
     let builder =
         MwClientBuilder::new(SHARED_HTTP_CLIENT.clone()).with(InMemoryCacheMiddleware);
+    #[cfg(target_arch = "wasm32")]
+    let builder = MwClientBuilder::new(SHARED_HTTP_CLIENT.clone());
     match retry {
         Some(policy) => builder
             .with(RetryTransientMiddleware::new_with_policy(DynRetryPolicy(
@@ -431,6 +444,7 @@ impl<A: Auth + Clone> RestClient<A> {
             .map_err(ClientError::Transport)?;
 
         let mut ext = Extensions::new();
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(ttl) = endpoint.cache_ttl() {
             ext.insert(CacheTTL(ttl));
         }
