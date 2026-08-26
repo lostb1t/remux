@@ -87,17 +87,41 @@ jobs:
     if: needs.preview.outputs.new_release_published == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Download server binary (amd64)
+      - name: Download server binary (linux-amd64)
         uses: actions/download-artifact@v4
         with:
           name: server-linux-amd64
-          path: artifacts/amd64/
+          path: artifacts/linux-amd64/
 
-      - name: Download server binary (arm64)
+      - name: Download server binary (linux-arm64)
         uses: actions/download-artifact@v4
         with:
           name: server-linux-arm64
-          path: artifacts/arm64/
+          path: artifacts/linux-arm64/
+
+      - name: Download server binary (macos-amd64)
+        uses: actions/download-artifact@v4
+        with:
+          name: server-macos-amd64
+          path: artifacts/macos-amd64/
+
+      - name: Download server binary (macos-arm64)
+        uses: actions/download-artifact@v4
+        with:
+          name: server-macos-arm64
+          path: artifacts/macos-arm64/
+
+      - name: Download dashboard
+        uses: actions/download-artifact@v4
+        with:
+          name: dashboard-dist
+          path: artifacts/dashboard/
+
+      - name: Download jellyfin-web
+        uses: actions/download-artifact@v4
+        with:
+          name: jellyfin-web-dist
+          path: artifacts/jellyfin-web/
 
       - name: Download desktop artifacts
         uses: actions/download-artifact@v4
@@ -114,9 +138,14 @@ jobs:
       - name: Prepare release assets
         run: |
           VERSION="${{ needs.preview.outputs.new_release_version }}"
-          cp artifacts/amd64/remux-server "remux-${VERSION}-linux-amd64"
-          cp artifacts/arm64/remux-server "remux-${VERSION}-linux-arm64"
-          chmod +x "remux-${VERSION}-linux-amd64" "remux-${VERSION}-linux-arm64"
+          cp artifacts/linux-amd64/remux-server "remux-${VERSION}-linux-amd64"
+          cp artifacts/linux-arm64/remux-server "remux-${VERSION}-linux-arm64"
+          cp artifacts/macos-amd64/remux-server "remux-${VERSION}-macos-amd64"
+          cp artifacts/macos-arm64/remux-server "remux-${VERSION}-macos-arm64"
+          chmod +x "remux-${VERSION}-linux-amd64" "remux-${VERSION}-linux-arm64" \
+                   "remux-${VERSION}-macos-amd64" "remux-${VERSION}-macos-arm64"
+          tar -czf "remux-${VERSION}-dashboard.tar.gz" -C artifacts/dashboard .
+          tar -czf "remux-${VERSION}-jellyfin-web.tar.gz" -C artifacts/jellyfin-web .
 
       - name: Extract changelog for this release
         run: |
@@ -139,6 +168,11 @@ jobs:
             --notes-file release-notes.md \
             "remux-${VERSION}-linux-amd64" \
             "remux-${VERSION}-linux-arm64" \
+            "remux-${VERSION}-macos-amd64" \
+            "remux-${VERSION}-macos-arm64" \
+            "remux-${VERSION}-dashboard.tar.gz" \
+            "remux-${VERSION}-jellyfin-web.tar.gz" \
             "remux-desktop-linux-x86_64.deb" \
             "remux-desktop-macos-aarch64.dmg" \
+            "remux-desktop-macos-x86_64.dmg" \
             "remux-desktop-windows-x86_64.zip"
