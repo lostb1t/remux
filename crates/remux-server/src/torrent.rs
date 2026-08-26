@@ -76,6 +76,24 @@ impl TorrentManager {
         })
     }
 
+    pub async fn from_config(config: &crate::Config) -> Result<Self> {
+        Self::new(
+            std::path::PathBuf::from(
+                config
+                    .torrent_data_dir
+                    .as_deref()
+                    .expect("Config::resolve() must be called before TorrentManager::from_config"),
+            ),
+            config
+                .data_dir
+                .join("cache"),
+            config.torrent_http_port,
+            config.disable_dht,
+            config.torrent_peer_port,
+        )
+        .await
+    }
+
     fn managed_torrent_files(&self, info_hash: &str) -> Option<Vec<TorrentFile>> {
         let api = Api::new(
             self.session

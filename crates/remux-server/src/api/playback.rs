@@ -485,15 +485,18 @@ async fn items_playbackinfo_inner(
             TranscodeDecision::Transcode(outcome) => outcome.apply_to(&mut source),
         }
 
+        let torrent_guard = state
+            .ctx
+            .torrent
+            .read()
+            .await;
         let sidecars = effective_stream
             .stream_info
             .as_ref()
-            .map(|stream| {
-                stream.subtitle_sidecars(
-                    &state
-                        .ctx
-                        .torrent,
-                )
+            .and_then(|stream| {
+                torrent_guard
+                    .as_ref()
+                    .map(|mgr| stream.subtitle_sidecars(mgr))
             })
             .unwrap_or_default();
         let routes = inject_sidecar_subtitles(&mut source, sidecars);
