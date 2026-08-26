@@ -3643,9 +3643,14 @@ impl Media {
                         .push(")");
                 }
 
-                // played=true — EXISTS with play_count > 0
+                // played=true — direct row OR at least one watched episode (series rollup)
                 if user_state_filter.played == Some(true) {
-                    qb.push(" AND EXISTS (SELECT 1 FROM user_media_state ums WHERE ums.media_id = media.id");
+                    qb.push(
+                        " AND EXISTS (\
+                          SELECT 1 FROM user_media_state ums \
+                          JOIN media m2 ON m2.id = ums.media_id \
+                          WHERE (m2.id = media.id OR (m2.grandparent_id = media.id AND m2.kind = 'episode'))",
+                    );
                     if let Some(user_id) = &user_state_filter.user_id {
                         qb.push(" AND ums.user_id = ")
                             .push_bind(user_id);
@@ -7485,19 +7490,12 @@ fn filter_rule_to_sql(
                 .map(|id| format!(" AND ums.user_id = X'{}'", id.simple()))
                 .unwrap_or_default();
             let sql = if *value {
-                // Check both a direct play on this item AND any watched episode
-                // whose grandparent_id points to this series, so that partially
-                // watched series satisfy Watched=Yes without needing a series-level
-                // user_media_state row (which only exists once every episode is done).
                 format!(
                     "EXISTS (\
                       SELECT 1 FROM user_media_state ums \
-                      WHERE ums.media_id = media.id{user_clause} AND ums.play_count > 0 \
-                      UNION ALL \
-                      SELECT 1 FROM user_media_state ums \
-                      JOIN media ep ON ep.id = ums.media_id \
-                      WHERE ep.grandparent_id = media.id{user_clause} \
-                        AND ep.kind = 'episode' AND ums.play_count > 0\
+                      JOIN media m2 ON m2.id = ums.media_id \
+                      WHERE (m2.id = media.id OR (m2.grandparent_id = media.id AND m2.kind = 'episode'))\
+                      {user_clause} AND ums.play_count > 0\
                     )"
                 )
             } else {
