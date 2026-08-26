@@ -556,8 +556,15 @@ impl StreamService {
             let stem = effective_stream
                 .stream_info
                 .as_ref()
-                .and_then(|si| si.filename.as_deref())
-                .and_then(|f| std::path::Path::new(f).file_stem().and_then(|s| s.to_str()));
+                .and_then(|si| {
+                    si.filename
+                        .as_deref()
+                })
+                .and_then(|f| {
+                    std::path::Path::new(f)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                });
             source.path = Some(match stem {
                 Some(s) => format!("/remux/{}/{}", effective_stream.id, s),
                 None => format!("/remux/{}", effective_stream.id),
