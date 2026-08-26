@@ -3184,22 +3184,86 @@ impl Media {
                 })
                 .unwrap_or(false);
 
+        // Detect when a Watched=true smart-filter rule is active. In that case the
+        // DatePlayed fast path (driving FROM user_media_state) doesn't work for
+        // partially watched series — they have no series-level UMS row so they never
+        // enter the result set. We pre-fetch the effective watched-ID/date map once
+        // and use it for both membership and ordering instead.
+        let has_watched_true_rule = filter
+            .filter_rules
+            .iter()
+            .flat_map(|cf| {
+                cf.groups
+                    .iter()
+            })
+            .flat_map(|g| {
+                g.rules
+                    .iter()
+            })
+            .any(|r| matches!(r, sdks::remux::FilterRule::Watched { value: true }));
+
+        // Pre-fetch effective watched IDs + dates when the rollup path is needed:
+        // Watched=true filter rule AND DatePlayed sort AND a user_id is set.
+        // The query rolls episode plays up to their grandparent series so partially
+        // watched series appear with the date of their most recently watched episode.
+        let watched_rollup: Option<Vec<(Uuid, Option<NaiveDateTime>)>> =
+            if has_watched_true_rule
+                && filter
+                    .sort_by
+                    .iter()
+                    .any(|s| matches!(s, api::ItemSortBy::DatePlayed))
+            {
+                if let Some(uid) = &filter.user_id {
+                    let rows: Vec<(Vec<u8>, Option<NaiveDateTime>)> = sqlx::query_as(
+                        "SELECT COALESCE(ep.grandparent_id, ums.media_id) AS effective_id, \
+                         MAX(ums.played_at) AS effective_date \
+                         FROM user_media_state ums \
+                         LEFT JOIN media ep ON ep.id = ums.media_id AND ep.kind = 'episode' \
+                         WHERE ums.user_id = ? AND ums.play_count > 0 \
+                         GROUP BY effective_id",
+                    )
+                    .bind(uid)
+                    .fetch_all(db)
+                    .await?;
+
+                    let mapped = rows
+                        .into_iter()
+                        .filter_map(|(id_bytes, dt)| {
+                            Uuid::from_slice(&id_bytes)
+                                .ok()
+                                .map(|id| (id, dt))
+                        })
+                        .collect();
+                    Some(mapped)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
         // When sorting by DatePlayed, drive records_qb FROM user_media_state (dp) so
         // the result is already in last_played_at order — no correlated subquery per row,
         // no separate sort pass. Column names in subsequent WHERE clauses (kind, parent_id,
         // etc.) resolve unambiguously to media since dp only exposes (user_id, media_id,
         // last_played_at). Applied to all query shapes so dp.last_played_at in ORDER BY
         // is always valid when user_id is set.
-        let date_played_uid = filter
-            .sort_by
-            .iter()
-            .any(|s| matches!(s, api::ItemSortBy::DatePlayed))
-            .then(|| {
-                filter
-                    .user_id
-                    .as_ref()
-            })
-            .flatten();
+        // Disabled when watched_rollup is active: the fast path requires a direct
+        // user_media_state row which partially watched series don't have.
+        let date_played_uid = if watched_rollup.is_some() {
+            None
+        } else {
+            filter
+                .sort_by
+                .iter()
+                .any(|s| matches!(s, api::ItemSortBy::DatePlayed))
+                .then(|| {
+                    filter
+                        .user_id
+                        .as_ref()
+                })
+                .flatten()
+        };
 
         // When sorting by a single-period popularity metric, pre-compute scores via a
         // LEFT JOIN on a derived table so SQLite materialises popularity_agg once and
@@ -3577,9 +3641,24 @@ impl Media {
                         .push(")");
                 }
 
-                // played=true — EXISTS with play_count > 0
+                // played=true — direct row OR at least one watched episode (series rollup)
                 if user_state_filter.played == Some(true) {
-                    qb.push(" AND EXISTS (SELECT 1 FROM user_media_state ums WHERE ums.media_id = media.id");
+                    qb.push(
+                        " AND EXISTS (\
+                          SELECT 1 FROM user_media_state ums \
+                          WHERE ums.media_id = media.id",
+                    );
+                    if let Some(user_id) = &user_state_filter.user_id {
+                        qb.push(" AND ums.user_id = ")
+                            .push_bind(user_id);
+                    }
+                    qb.push(
+                        " AND ums.play_count > 0 \
+                          UNION ALL \
+                          SELECT 1 FROM user_media_state ums \
+                          JOIN media ep ON ep.id = ums.media_id \
+                          WHERE ep.grandparent_id = media.id AND ep.kind = 'episode'",
+                    );
                     if let Some(user_id) = &user_state_filter.user_id {
                         qb.push(" AND ums.user_id = ")
                             .push_bind(user_id);
@@ -4041,7 +4120,28 @@ impl Media {
                             format!("COALESCE(runtime, 0) {}", dir)
                         }
                         api::ItemSortBy::DatePlayed => {
-                            if filter.user_id.is_some() {
+                            if let Some(ref rollup) = watched_rollup {
+                                // Rollup path: no dp driving table. Order by the
+                                // pre-fetched effective date via a CASE WHEN so SQLite
+                                // can resolve each row's date without a subquery.
+                                // Dates come from our own DB pre-fetch, not user input.
+                                // NULL dates use the smallest sentinel so they always
+                                // sink to the bottom regardless of sort direction.
+                                let null_date = "0001-01-01 00:00:00";
+                                let mut case = String::from("CASE media.id");
+                                for (id, dt) in rollup {
+                                    let date_str = dt
+                                        .map(|d| d.to_string())
+                                        .unwrap_or_else(|| null_date.into());
+                                    case.push_str(&format!(
+                                        " WHEN X'{}' THEN '{}'",
+                                        id.simple(),
+                                        date_str
+                                    ));
+                                }
+                                case.push_str(&format!(" ELSE '{}' END {}", null_date, dir));
+                                case
+                            } else if filter.user_id.is_some() {
                                 // dp alias from the UMS-driven records_qb above.
                                 format!("dp.last_played_at {}", dir)
                             } else {
@@ -7378,8 +7478,15 @@ fn filter_rule_to_sql(
                 .unwrap_or_default();
             let sql = if *value {
                 format!(
-                    "EXISTS (SELECT 1 FROM user_media_state ums \
-                     WHERE ums.media_id = media.id{user_clause} AND ums.play_count > 0)"
+                    "EXISTS (\
+                      SELECT 1 FROM user_media_state ums \
+                      WHERE ums.media_id = media.id{user_clause} AND ums.play_count > 0 \
+                      UNION ALL \
+                      SELECT 1 FROM user_media_state ums \
+                      JOIN media ep ON ep.id = ums.media_id \
+                      WHERE ep.grandparent_id = media.id{user_clause} \
+                        AND ep.kind = 'episode' AND ums.play_count > 0\
+                    )"
                 )
             } else {
                 format!(

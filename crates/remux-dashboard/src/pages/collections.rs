@@ -815,6 +815,7 @@ pub fn CollectionForm(
                                 if sf_groups.read().iter().flat_map(|g| g.rules.iter()).any(|r| matches!(r, remux_sdks::remux::FilterRule::Catalog { .. })) {
                                     option { value: "CatalogOrder", selected: *default_sort.read() == "CatalogOrder", "Catalog Order" }
                                 }
+                                option { value: "DatePlayed",         selected: *default_sort.read() == "DatePlayed",         "Date Played" }
                                 option { value: "SortName",           selected: *default_sort.read() == "SortName",           "Name" }
                                 option { value: "PremiereDate",       selected: *default_sort.read() == "PremiereDate",       "Release Date" }
                                 option { value: "DigitalReleaseDate", selected: *default_sort.read() == "DigitalReleaseDate", "Digital Release Date" }
