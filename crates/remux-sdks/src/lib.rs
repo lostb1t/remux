@@ -248,9 +248,9 @@ pub trait Endpoint {
         None
     }
 
-    /// TTL to stamp on *this* response. Defaults to `cache_options().ttl`.
-    /// Override in [`Cached`] to implement short TTLs for misses.
-    fn cache_ttl_for(&self, _response: &Self::Output) -> Option<Duration> {
+    /// Whether and how long to cache *this* response. `None` skips caching.
+    /// Defaults to `cache_options().ttl`. Override in [`Cached`] for one-off logic.
+    fn should_cache(&self, _response: &Self::Output) -> Option<Duration> {
         self.cache_options()
             .map(|o| o.ttl)
     }
@@ -540,7 +540,7 @@ impl<A: Auth + Clone> RestClient<A> {
                         body: Some(text.clone()),
                     })?;
                 #[cfg(not(target_arch = "wasm32"))]
-                if let Some(ttl) = endpoint.cache_ttl_for(&arc) {
+                if let Some(ttl) = endpoint.should_cache(&arc) {
                     let weight = text
                         .len()
                         .min(u32::MAX as usize) as u32;
@@ -567,7 +567,7 @@ impl<A: Auth + Clone> RestClient<A> {
                         body: Some(text.clone()),
                     })?;
                 #[cfg(not(target_arch = "wasm32"))]
-                if let Some(ttl) = endpoint.cache_ttl_for(&arc) {
+                if let Some(ttl) = endpoint.should_cache(&arc) {
                     HTTP_CACHE.save_arc_with_weight(
                         hash_key(url.as_str()),
                         Arc::new(CachedResponse {
@@ -602,7 +602,7 @@ pub trait CachedEndpoint: Endpoint + Sized {
         Cached {
             endpoint: self,
             opts: opts.into(),
-            expire_early: None,
+            should_cache_fn: None,
         }
     }
 }
@@ -613,16 +613,13 @@ impl<EP: Endpoint + Sized> CachedEndpoint for EP {}
 pub struct Cached<EP: Endpoint> {
     endpoint: EP,
     opts: CacheOptions,
-    expire_early: Option<(Duration, fn(&EP::Output) -> bool)>,
+    should_cache_fn: Option<fn(&EP::Output) -> Option<Duration>>,
 }
 
 impl<EP: Endpoint> Cached<EP> {
-    /// Hold a response `when` calls a miss for `ttl` rather than the full
-    /// cache lifetime. Reads still consult the cache; only the expiry stamped
-    /// on the stored entry changes.
-    pub fn with_cache_miss(self, ttl: Duration, when: fn(&EP::Output) -> bool) -> Self {
+    pub fn should_cache(self, f: fn(&EP::Output) -> Option<Duration>) -> Self {
         Self {
-            expire_early: Some((ttl, when)),
+            should_cache_fn: Some(f),
             ..self
         }
     }
@@ -663,10 +660,10 @@ impl<EP: Endpoint> Endpoint for Cached<EP> {
         )
     }
 
-    fn cache_ttl_for(&self, response: &Self::Output) -> Option<Duration> {
-        match self.expire_early {
-            Some((short, when)) if when(response) => Some(short),
-            _ => Some(
+    fn should_cache(&self, response: &Self::Output) -> Option<Duration> {
+        match self.should_cache_fn {
+            Some(f) => f(response),
+            None => Some(
                 self.opts
                     .ttl,
             ),
@@ -722,9 +719,9 @@ impl<EP: Endpoint> Endpoint for WithExtraQuery<EP> {
             .cache_options()
     }
 
-    fn cache_ttl_for(&self, response: &Self::Output) -> Option<Duration> {
+    fn should_cache(&self, response: &Self::Output) -> Option<Duration> {
         self.endpoint
-            .cache_ttl_for(response)
+            .should_cache(response)
     }
 }
 
@@ -1006,7 +1003,7 @@ mod cache_tests {
         let (mock, client, probe) = probe(&server, "matching", serde_json::json!([]));
         let endpoint = probe
             .with_cache(NEVER)
-            .with_cache_miss(BRIEF, is_empty);
+            .should_cache(|r| Some(if is_empty(r) { BRIEF } else { NEVER }));
 
         client
             .execute(endpoint.clone())
@@ -1033,7 +1030,7 @@ mod cache_tests {
             probe(&server, "rejected", serde_json::json!(["found"]));
         let endpoint = probe
             .with_cache(NEVER)
-            .with_cache_miss(BRIEF, is_empty);
+            .should_cache(|r| Some(if is_empty(r) { BRIEF } else { NEVER }));
 
         client
             .execute(endpoint.clone())
