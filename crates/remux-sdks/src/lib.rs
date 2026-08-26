@@ -180,6 +180,38 @@ impl Default for Body {
     }
 }
 
+/// Per-request cache configuration.
+///
+/// Build with [`CacheOptions::new`]. Implement `From<Duration>` so existing
+/// `.with_cache(Duration::from_secs(60))` call sites keep compiling.
+#[derive(Clone)]
+pub struct CacheOptions {
+    pub ttl: Duration,
+    /// Non-2xx status codes that should be cached and returned as `None`
+    /// (the endpoint `Output` must be `Option<T>`). Empty by default.
+    pub on_statuses: &'static [u16],
+}
+
+impl CacheOptions {
+    pub fn new(ttl: Duration) -> Self {
+        Self {
+            ttl,
+            on_statuses: &[],
+        }
+    }
+
+    pub fn on_statuses(mut self, statuses: &'static [u16]) -> Self {
+        self.on_statuses = statuses;
+        self
+    }
+}
+
+impl From<Duration> for CacheOptions {
+    fn from(ttl: Duration) -> Self {
+        Self::new(ttl)
+    }
+}
+
 pub trait Endpoint {
     type Output: DeserializeOwned + Clone + Serialize + Send + Sync + 'static;
 
@@ -210,22 +242,16 @@ pub trait Endpoint {
     fn body(&self) -> Body {
         Body::Empty
     }
-    fn cache_ttl(&self) -> Option<Duration> {
+
+    fn cache_options(&self) -> Option<CacheOptions> {
         None
     }
 
-    /// How long *this* response should live, for an endpoint that cannot pick a
-    /// TTL until it sees one. Only consulted on the write; the read still gates
-    /// on `cache_ttl`, so returning `Some` here alone caches nothing.
+    /// TTL to stamp on *this* response. Defaults to `cache_options().ttl`.
+    /// Override in [`Cached`] to implement short TTLs for misses.
     fn cache_ttl_for(&self, _response: &Self::Output) -> Option<Duration> {
-        self.cache_ttl()
-    }
-
-    /// The JSON to deserialize in place of the body `status` came with, for a
-    /// status that is an answer rather than a failure. `None` leaves it an
-    /// error. See [`Absent`], which is how an endpoint opts in.
-    fn absent_body(&self, _status: u16) -> Option<&'static str> {
-        None
+        self.cache_options()
+            .map(|o| o.ttl)
     }
 }
 
@@ -459,8 +485,8 @@ impl<A: Auth + Clone> RestClient<A> {
 
         let mut ext = Extensions::new();
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(ttl) = endpoint.cache_ttl() {
-            ext.insert(CacheTTL(ttl));
+        if let Some(opts) = endpoint.cache_options() {
+            ext.insert(CacheTTL(opts.ttl));
         }
 
         let resp = self
@@ -526,13 +552,13 @@ impl<A: Auth + Clone> RestClient<A> {
                 Ok(arc)
             }
             s if endpoint
-                .absent_body(s)
-                .is_some() =>
+                .cache_options()
+                .is_some_and(|o| {
+                    o.on_statuses
+                        .contains(&s)
+                }) =>
             {
-                let stand_in = endpoint
-                    .absent_body(s)
-                    .unwrap_or("null");
-                let arc = serde_json::from_str::<EP::Output>(stand_in)
+                let arc = serde_json::from_str::<EP::Output>("null")
                     .map(Arc::new)
                     .map_err(|e| ClientError::Json {
                         status: s,
@@ -546,9 +572,9 @@ impl<A: Auth + Clone> RestClient<A> {
                         hash_key(url.as_str()),
                         Arc::new(CachedResponse {
                             status: s,
-                            body: stand_in.to_string(),
+                            body: "null".to_string(),
                         }),
-                        stand_in.len() as u32,
+                        4,
                         ttl,
                     );
                 }
@@ -559,84 +585,11 @@ impl<A: Auth + Clone> RestClient<A> {
     }
 }
 
-pub trait OptionalEndpoint: Endpoint + Sized {
-    /// Read `status` as "no such thing" rather than a failure, making the
-    /// `Output` an `Option`. The answer then caches like any other, so a run of
-    /// deliveries naming something the provider does not have asks once.
-    fn absent_on(self, status: u16) -> Absent<Self> {
-        Absent {
-            endpoint: self,
-            status,
-        }
-    }
-}
-
-impl<EP: Endpoint + Sized> OptionalEndpoint for EP {}
-
-/// Wraps an endpoint so one status deserializes as `null`. Compose it inside
-/// `with_cache` to hold the miss: `.absent_on(404).with_cache(ttl)`.
-#[derive(Clone)]
-pub struct Absent<EP: Endpoint> {
-    endpoint: EP,
-    status: u16,
-}
-
-impl<EP: Endpoint> Endpoint for Absent<EP> {
-    type Output = Option<EP::Output>;
-
-    fn method(&self) -> Method {
-        self.endpoint
-            .method()
-    }
-
-    fn path(&self) -> String {
-        self.endpoint
-            .path()
-    }
-
-    fn query(&self) -> Vec<(String, String)> {
-        self.endpoint
-            .query()
-    }
-
-    fn headers(&self) -> HeaderMap {
-        self.endpoint
-            .headers()
-    }
-
-    fn body(&self) -> Body {
-        self.endpoint
-            .body()
-    }
-
-    fn cache_ttl(&self) -> Option<Duration> {
-        self.endpoint
-            .cache_ttl()
-    }
-
-    fn cache_ttl_for(&self, response: &Self::Output) -> Option<Duration> {
-        match response {
-            Some(inner) => self
-                .endpoint
-                .cache_ttl_for(inner),
-            None => self.cache_ttl(),
-        }
-    }
-
-    fn absent_body(&self, status: u16) -> Option<&'static str> {
-        if status == self.status {
-            return Some("null");
-        }
-        self.endpoint
-            .absent_body(status)
-    }
-}
-
 pub trait CachedEndpoint: Endpoint + Sized {
-    fn with_cache(self, ttl: Duration) -> Cached<Self> {
+    fn with_cache(self, opts: impl Into<CacheOptions>) -> Cached<Self> {
         Cached {
             endpoint: self,
-            ttl,
+            opts: opts.into(),
             expire_early: None,
         }
     }
@@ -647,7 +600,7 @@ impl<EP: Endpoint + Sized> CachedEndpoint for EP {}
 #[derive(Clone)]
 pub struct Cached<EP: Endpoint> {
     endpoint: EP,
-    ttl: Duration,
+    opts: CacheOptions,
     expire_early: Option<(Duration, fn(&EP::Output) -> bool)>,
 }
 
@@ -691,20 +644,21 @@ impl<EP: Endpoint> Endpoint for Cached<EP> {
             .body()
     }
 
-    fn cache_ttl(&self) -> Option<Duration> {
-        Some(self.ttl)
+    fn cache_options(&self) -> Option<CacheOptions> {
+        Some(
+            self.opts
+                .clone(),
+        )
     }
 
     fn cache_ttl_for(&self, response: &Self::Output) -> Option<Duration> {
         match self.expire_early {
             Some((short, when)) if when(response) => Some(short),
-            _ => Some(self.ttl),
+            _ => Some(
+                self.opts
+                    .ttl,
+            ),
         }
-    }
-
-    fn absent_body(&self, status: u16) -> Option<&'static str> {
-        self.endpoint
-            .absent_body(status)
     }
 }
 
@@ -751,19 +705,14 @@ impl<EP: Endpoint> Endpoint for WithExtraQuery<EP> {
             .body()
     }
 
-    fn cache_ttl(&self) -> Option<Duration> {
+    fn cache_options(&self) -> Option<CacheOptions> {
         self.endpoint
-            .cache_ttl()
+            .cache_options()
     }
 
     fn cache_ttl_for(&self, response: &Self::Output) -> Option<Duration> {
         self.endpoint
             .cache_ttl_for(response)
-    }
-
-    fn absent_body(&self, status: u16) -> Option<&'static str> {
-        self.endpoint
-            .absent_body(status)
     }
 }
 

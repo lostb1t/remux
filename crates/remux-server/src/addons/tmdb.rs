@@ -2202,7 +2202,13 @@ async fn tmdb_remote_images(
                         .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
-                if let Some(images) = &ep.images {
+                if let Some(images) = ep
+                    .as_ref()
+                    .and_then(|e| {
+                        e.images
+                            .as_ref()
+                    })
+                {
                     extend_from_images(&mut out, images);
                 }
                 if out
@@ -2213,7 +2219,13 @@ async fn tmdb_remote_images(
                             != Some("Thumb")
                     })
                 {
-                    if let Some(p) = &ep.still_path {
+                    if let Some(p) = ep
+                        .as_ref()
+                        .and_then(|e| {
+                            e.still_path
+                                .as_ref()
+                        })
+                    {
                         let url = format!("https://image.tmdb.org/t/p/original{p}");
                         let thumb = format!("https://image.tmdb.org/t/p/w300{p}");
                         out.push(api::RemoteImageInfo {

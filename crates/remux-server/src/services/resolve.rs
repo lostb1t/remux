@@ -10,10 +10,7 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::{
-    AppContext, AppState, db,
-    keyed_lock::KeyedLock,
-    sdks,
-    sdks::{CachedEndpoint, OptionalEndpoint},
+    AppContext, AppState, db, keyed_lock::KeyedLock, sdks, sdks::CachedEndpoint,
 };
 
 /// A mapping that exists never changes, unlike the metadata the addon caches.
@@ -349,8 +346,7 @@ impl MediaResolveService {
                     language: None,
                     append_to_response: Some(vec!["external_ids".to_string()]),
                 }
-                .absent_on(404)
-                .with_cache(ID_CACHE_TTL)
+                .with_cache(sdks::CacheOptions::new(ID_CACHE_TTL).on_statuses(&[404]))
                 .with_cache_miss(ID_MISS_CACHE_TTL, episode_ids_missing),
             )
             .await?
