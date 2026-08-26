@@ -336,7 +336,7 @@ pub async fn init_app(
         db: conn.clone(),
         store: Store::new_weighted(128 * 1024 * 1024),
         sessions: playback_session::PlaybackSessionManager::new(transcode_sessions_dir),
-        torrent: Arc::new(tokio::sync::RwLock::new(torrent_mgr)),
+        torrent: Arc::new(tokio::sync::RwLock::new(torrent_mgr.map(Arc::new))),
         ws_tx: tokio::sync::broadcast::channel(128).0,
         default_web_client: Arc::new(tokio::sync::RwLock::new(
             web_client::normalize_web_client(saved_config.default_web_client)
@@ -444,7 +444,7 @@ pub struct AppContext {
     pub db: sqlx::SqlitePool,
     pub store: Store,
     pub sessions: playback_session::PlaybackSessionManager,
-    pub torrent: Arc<tokio::sync::RwLock<Option<torrent::TorrentManager>>>,
+    pub torrent: Arc<tokio::sync::RwLock<Option<Arc<torrent::TorrentManager>>>>,
     pub ws_tx: tokio::sync::broadcast::Sender<ws::WsEvent>,
     pub default_web_client: Arc<tokio::sync::RwLock<String>>,
     /// Present in filesystem builds; `None` in desktop (assets are embedded).
@@ -458,28 +458,39 @@ impl AppContext {
     /// Gracefully shut down background services (torrent DHT, etc.).
     /// Call this when the server is stopping to release sockets immediately.
     pub async fn shutdown(&self) {
-        if let Some(mgr) = self
+        let old = self
             .torrent
             .write()
             .await
-            .take()
-        {
+            .take();
+        if let Some(mgr) = old {
             mgr.shutdown()
                 .await;
         }
     }
 
     pub async fn set_p2p_enabled(&self, enabled: bool) -> anyhow::Result<()> {
-        let mut lock = self
+        let current = self
             .torrent
-            .write()
-            .await;
-        match (enabled, lock.is_some()) {
+            .read()
+            .await
+            .clone();
+        match (enabled, current.is_some()) {
             (true, false) => {
-                *lock = Some(torrent::TorrentManager::from_config(&self.config).await?);
+                let mgr =
+                    Arc::new(torrent::TorrentManager::from_config(&self.config).await?);
+                *self
+                    .torrent
+                    .write()
+                    .await = Some(mgr);
             }
             (false, true) => {
-                if let Some(mgr) = lock.take() {
+                let old = self
+                    .torrent
+                    .write()
+                    .await
+                    .take();
+                if let Some(mgr) = old {
                     mgr.shutdown()
                         .await;
                 }

@@ -106,11 +106,12 @@ impl Task for CleanTranscodeFolderTask {
             }
         }
 
-        let torrent_guard = ctx
+        let torrent = ctx
             .torrent
             .read()
-            .await;
-        let deleted = if let Some(mgr) = torrent_guard.as_ref() {
+            .await
+            .clone();
+        let deleted = if let Some(mgr) = torrent {
             mgr.delete_unused_with_files(&active_torrent_ids)
                 .await
                 .unwrap_or_else(|e| {

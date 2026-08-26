@@ -77,13 +77,12 @@ impl TorrentManager {
     }
 
     pub async fn from_config(config: &crate::Config) -> Result<Self> {
+        let data_dir = config
+            .torrent_data_dir
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("Config::resolve() must be called before TorrentManager::from_config"))?;
         Self::new(
-            std::path::PathBuf::from(
-                config
-                    .torrent_data_dir
-                    .as_deref()
-                    .expect("Config::resolve() must be called before TorrentManager::from_config"),
-            ),
+            std::path::PathBuf::from(data_dir),
             config
                 .data_dir
                 .join("cache"),

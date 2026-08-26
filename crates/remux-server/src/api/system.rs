@@ -282,7 +282,7 @@ pub async fn update_system_configuration(
             .torrent
             .read()
             .await
-            .as_ref()
+            .clone()
         {
             mgr.update_limits(
                 config
