@@ -346,7 +346,9 @@ impl MediaResolveService {
                     language: None,
                     append_to_response: Some(vec!["external_ids".to_string()]),
                 }
-                .with_cache(sdks::CacheOptions::new(ID_CACHE_TTL).on_statuses(&[404]))
+                .with_cache(
+                    sdks::CacheOptions::new(ID_CACHE_TTL).on_statuses(&[200, 404]),
+                )
                 .with_cache_miss(ID_MISS_CACHE_TTL, episode_ids_missing),
             )
             .await?

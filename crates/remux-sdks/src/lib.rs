@@ -182,13 +182,14 @@ impl Default for Body {
 
 /// Per-request cache configuration.
 ///
-/// Build with [`CacheOptions::new`]. Implement `From<Duration>` so existing
+/// Build with [`CacheOptions::new`]. Implements `From<Duration>` so existing
 /// `.with_cache(Duration::from_secs(60))` call sites keep compiling.
 #[derive(Clone)]
 pub struct CacheOptions {
     pub ttl: Duration,
-    /// Non-2xx status codes that should be cached and returned as `None`
-    /// (the endpoint `Output` must be `Option<T>`). Empty by default.
+    /// Status codes to cache. Defaults to `&[200]`. 2xx statuses are cached
+    /// and deserialized normally; non-2xx statuses are cached and returned as
+    /// `None` (the endpoint `Output` must be `Option<T>`).
     pub on_statuses: &'static [u16],
 }
 
@@ -196,7 +197,7 @@ impl CacheOptions {
     pub fn new(ttl: Duration) -> Self {
         Self {
             ttl,
-            on_statuses: &[],
+            on_statuses: &[200],
         }
     }
 
@@ -520,9 +521,13 @@ impl<A: Auth + Clone> RestClient<A> {
             .text()
             .await
             .unwrap_or_default();
+        let on_statuses = endpoint
+            .cache_options()
+            .map(|o| o.on_statuses)
+            .unwrap_or(&[]);
         match status {
             401 => Err(ClientError::Unauthorized),
-            s if (200..300).contains(&s) => {
+            s if on_statuses.contains(&s) && (200..300).contains(&s) => {
                 // 204 No Content and similar empty responses: treat as JSON null so
                 // endpoints with `type Output = ()` deserialize successfully.
                 let parse_body = if text.is_empty() { "null" } else { &text };
@@ -551,13 +556,8 @@ impl<A: Auth + Clone> RestClient<A> {
                 }
                 Ok(arc)
             }
-            s if endpoint
-                .cache_options()
-                .is_some_and(|o| {
-                    o.on_statuses
-                        .contains(&s)
-                }) =>
-            {
+            s if on_statuses.contains(&s) => {
+                // Non-2xx in on_statuses: cache and return None (Output must be Option<T>).
                 let arc = serde_json::from_str::<EP::Output>("null")
                     .map(Arc::new)
                     .map_err(|e| ClientError::Json {
@@ -579,6 +579,18 @@ impl<A: Auth + Clone> RestClient<A> {
                     );
                 }
                 Ok(arc)
+            }
+            s if (200..300).contains(&s) => {
+                // 2xx not in on_statuses: deserialize without caching.
+                let parse_body = if text.is_empty() { "null" } else { &text };
+                serde_json::from_str::<EP::Output>(parse_body)
+                    .map(Arc::new)
+                    .map_err(|e| ClientError::Json {
+                        status: s,
+                        source: e,
+                        endpoint: Some(url.to_string()),
+                        body: Some(text.clone()),
+                    })
             }
             s => Err((self.map_error)(s, &url.to_string(), &text)),
         }
