@@ -1828,6 +1828,10 @@ pub struct SubtitleProfile {
 pub struct ProfileCondition {
     pub condition: Option<String>,
     pub property: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "crate::deserialize_option_string_from_any"
+    )]
     pub value: Option<String>,
     #[serde(rename = "IsRequired")]
     pub is_required: Option<bool>,
@@ -3503,7 +3507,7 @@ pub struct BaseItemDto {
     pub video_3d_format: Option<String>,
     //#[serde_as(as = "Option<DisplayFromStr>")]
     pub premiere_date: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub external_urls: Vec<ExternalUrl>,
     pub media_sources: Option<Vec<MediaSourceInfo>>,
     pub critic_rating: Option<f64>,
@@ -3514,9 +3518,9 @@ pub struct BaseItemDto {
     pub channel_id: Option<Uuid>,
     pub channel_name: Option<String>,
     pub overview: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub taglines: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub genres: Vec<String>,
     pub community_rating: Option<f64>,
     pub cumulative_run_time_ticks: Option<i64>,
@@ -3536,17 +3540,17 @@ pub struct BaseItemDto {
     pub parent_id: Option<Uuid>,
     #[default(MediaType::Movie)]
     pub type_: MediaType,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub people: Vec<BaseItemPerson>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub studios: Vec<NameIdPair>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub genre_items: Vec<NameIdPair>,
     pub parent_logo_item_id: Option<Uuid>,
     pub parent_backdrop_item_id: Option<Uuid>,
     pub parent_backdrop_image_tags: Option<Vec<String>>,
     pub local_trailer_count: Option<i64>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub remote_trailers: Vec<ExternalUrl>,
     pub user_data: Option<UserItemDataDto>,
     pub recursive_item_count: Option<i64>,
@@ -3559,16 +3563,16 @@ pub struct BaseItemDto {
     pub status: Option<Status>,
     pub air_time: Option<String>,
     pub air_days: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub tags: Vec<String>,
 
     // TODO: compute from actual image dimensions rather than a hardcoded default
     pub primary_image_aspect_ratio: Option<f32>,
     //pub artists: Option<Vec<String>>,
     //pub artist_items: Option<Vec<NameIdPair>>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub artists: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub artist_items: Vec<NameIdPair>,
     pub album: Option<String>,
     pub collection_type: Option<CollectionType>,
@@ -3577,7 +3581,7 @@ pub struct BaseItemDto {
     pub album_primary_image_tag: Option<String>,
     pub series_primary_image_tag: Option<String>,
     pub album_artist: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub album_artists: Vec<NameIdPair>,
     pub season_name: Option<String>,
     pub media_streams: Option<Vec<MediaStream>>,
@@ -3600,7 +3604,7 @@ pub struct BaseItemDto {
     #[default(MediaType::Other)]
     pub media_type: MediaType,
     pub end_date: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub locked_fields: Vec<String>,
     pub trailer_count: Option<i64>,
     pub movie_count: Option<i64>,
@@ -7039,5 +7043,75 @@ mod tests {
             .map(|s| s.is_default)
             .collect();
         assert_eq!(flags_before, flags_after);
+    }
+
+    #[test]
+    fn test_profile_condition_deserializes_numbers_booleans_and_strings() {
+        let json_num =
+            r#"{"Condition": "Equals", "Property": "AudioChannels", "Value": 6}"#;
+        let cond: ProfileCondition = serde_json::from_str(json_num).unwrap();
+        assert_eq!(
+            cond.value
+                .as_deref(),
+            Some("6")
+        );
+
+        let json_str =
+            r#"{"Condition": "Equals", "Property": "AudioChannels", "Value": "6"}"#;
+        let cond: ProfileCondition = serde_json::from_str(json_str).unwrap();
+        assert_eq!(
+            cond.value
+                .as_deref(),
+            Some("6")
+        );
+
+        let json_bool =
+            r#"{"Condition": "Equals", "Property": "IsAnamorphic", "Value": true}"#;
+        let cond: ProfileCondition = serde_json::from_str(json_bool).unwrap();
+        assert_eq!(
+            cond.value
+                .as_deref(),
+            Some("true")
+        );
+
+        let json_null =
+            r#"{"Condition": "Equals", "Property": "Height", "Value": null}"#;
+        let cond: ProfileCondition = serde_json::from_str(json_null).unwrap();
+        assert_eq!(cond.value, None);
+
+        let json_empty =
+            r#"{"Condition": "Equals", "Property": "Height", "Value": "   "}"#;
+        let cond: ProfileCondition = serde_json::from_str(json_empty).unwrap();
+        assert_eq!(cond.value, None);
+    }
+
+    #[test]
+    fn test_base_item_dto_empty_arrays_serialized() {
+        let dto = BaseItemDto::default();
+        let json = serde_json::to_string(&dto).unwrap();
+        assert!(
+            json.contains(r#""Studios":[]"#),
+            "Expected 'Studios':[] in JSON: {json}"
+        );
+        assert!(
+            json.contains(r#""People":[]"#),
+            "Expected 'People':[] in JSON: {json}"
+        );
+        assert!(
+            json.contains(r#""Genres":[]"#),
+            "Expected 'Genres':[] in JSON: {json}"
+        );
+        assert!(
+            json.contains(r#""Tags":[]"#),
+            "Expected 'Tags':[] in JSON: {json}"
+        );
+        assert!(
+            json.contains(r#""GenreItems":[]"#),
+            "Expected 'GenreItems':[] in JSON: {json}"
+        );
+        assert!(
+            json.contains(r#""Artists":[]"#),
+            "Expected 'Artists':[] in JSON: {json}"
+        );
     }
 }
