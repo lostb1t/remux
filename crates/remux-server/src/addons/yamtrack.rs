@@ -253,6 +253,20 @@ impl MediaTrackerAddon for YamtrackAddon {
                     .to_string(),
             )
         })?;
+        // Yamtrack reads the episode's own tvdb or imdb id and nothing else, so
+        // an episode carrying neither identifies nothing to it. Posting anyway
+        // takes a 200 and marks the row delivered, because `is_matchable` is
+        // satisfied by the series' ids that this provider never reads. Refusing
+        // here is what puts the failure somewhere the user can see it.
+        let ids = provider_ids(&item.ids);
+        if ids
+            .as_object()
+            .is_some_and(|m| m.is_empty())
+        {
+            return Err(MediaTrackerError::permanent(
+                "no tmdb, imdb or tvdb id to match on",
+            ));
+        }
         post(
             &self.client,
             &self.webhook_url(Self::token(creds)?),
@@ -517,6 +531,37 @@ mod tests {
             .unwrap();
 
         mock.assert();
+    }
+
+    /// The shape a season-0 special arrives in: the series is identified, but
+    /// TMDB carries no external ids for the episode, so completion leaves it
+    /// with nothing of its own. `is_matchable` still passes it, on the series'
+    /// ids that this provider never reads.
+    #[tokio::test]
+    async fn an_episode_with_no_ids_of_its_own_is_refused_rather_than_posted() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST);
+            then.status(200);
+        });
+
+        let mut target = episode();
+        target.ids = db::ExternalIds::default();
+
+        let err = addon(&server)
+            .on_event(&MediaTrackerEvent::MarkPlayed, &target, &creds(), &ctx())
+            .await
+            .expect_err("nothing on the episode identifies it to Yamtrack");
+
+        assert!(
+            matches!(err, MediaTrackerError::Permanent { .. }),
+            "a retry cannot conjure ids: {err:?}"
+        );
+        assert_eq!(
+            mock.hits(),
+            0,
+            "the delivery went out and came back a 200 that recorded nothing"
+        );
     }
 
     #[tokio::test]
