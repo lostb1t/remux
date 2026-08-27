@@ -798,6 +798,13 @@ impl Meta {
 #[serde(rename_all = "camelCase")]
 pub struct Episode {
     pub id: String,
+    /// The episode's own TVDB id, which Cinemeta carries per video and TMDB's
+    /// season listing does not. The only episode-level id most providers can
+    /// be matched on.
+    ///
+    /// Named against `rename_all`, which would otherwise look for `tvdbId`.
+    #[serde(rename = "tvdb_id", alias = "tvdbId")]
+    pub tvdb_id: Option<i64>,
     pub title: Option<String>,
     pub name: Option<String>,
     pub released: Option<DateTime<Utc>>,
