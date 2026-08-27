@@ -1,19 +1,19 @@
-//! The half of a webhook-fed media tracker that all of them share.
+//! The Jellyfin webhook plugin's notification body, the way a webhook-fed
+//! tracker is reached.
 //!
-//! Yamtrack, Scrob, Ryot and Floppy are each fed through Jellyfin's webhook
-//! plugin, but every one of them supplies its own Handlebars template, so the
-//! JSON differs per tracker while the notification behind it does not. This
-//! builds that notification and posts it; a [`WebhookFormat`] renders the
-//! shape one tracker expects.
+//! Not remux's webhook feature: no operator-configured URL, no body a user can
+//! edit. Yamtrack, Scrob, Ryot and Floppy are each fed through that plugin,
+//! but every one of them supplies its own Handlebars template, so the JSON
+//! differs per tracker while the notification behind it does not. This builds
+//! that notification and posts it; a [`WebhookFormat`] renders the shape one
+//! tracker expects.
 
 use std::time::Duration;
 
-use crate::{
-    addons::media_tracker::{
-        MediaTrackerError, MediaTrackerEvent, MediaTrackerResult, MediaTrackerTarget,
-    },
-    db,
+use super::{
+    MediaTrackerError, MediaTrackerEvent, MediaTrackerResult, MediaTrackerTarget,
 };
+use crate::db;
 
 /// The plugin's notification kinds, limited to the ones a tracker acts on.
 #[derive(

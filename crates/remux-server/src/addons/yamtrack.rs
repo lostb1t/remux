@@ -1,7 +1,7 @@
 //! Yamtrack, reached through its Jellyfin webhook.
 //!
-//! Yamtrack has no write API, so the webhook its Jellyfin integration exposes
-//! is the only way in. It accepts four events and reads nothing off an item but
+//! Yamtrack has no released write API, so the webhook its Jellyfin
+//! integration exposes is the only way in. It accepts four events and reads nothing off an item but
 //! its external ids, its type, and a played flag. Scores and favourites are
 //! things Yamtrack keeps and this route cannot set, which is why the
 //! capabilities claim neither.
@@ -19,9 +19,9 @@ use super::{
         AuthFlow, MediaTrackerAddon, MediaTrackerCapabilities, MediaTrackerCredentials,
         MediaTrackerCtx, MediaTrackerError, MediaTrackerEvent, MediaTrackerEventKind,
         MediaTrackerResult, MediaTrackerTarget,
-    },
-    webhook_media_tracker::{
-        NotificationType, WebhookFormat, WebhookItem, post, provider_ids,
+        jellyfin_webhook_body::{
+            NotificationType, WebhookFormat, WebhookItem, post, provider_ids,
+        },
     },
 };
 use crate::db;

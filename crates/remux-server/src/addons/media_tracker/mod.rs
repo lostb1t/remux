@@ -2,6 +2,8 @@
 //! service (Trakt, Yamtrack). Unlike other capabilities this is per-user —
 //! the operator configures the addon, each user connects it separately.
 
+pub mod jellyfin_webhook_body;
+
 use crate::db;
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration};
