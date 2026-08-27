@@ -1630,20 +1630,35 @@ async fn stremio_streams(
 
     let mut last_err: Option<anyhow::Error> = None;
     let mut valid_streams: Vec<sdks::stremio::Stream> = Vec::new();
+    let mut seen_keys = std::collections::HashSet::new();
+
     for id in ids_to_try {
         match svc
             .get_streams(media_type.clone(), id)
             .await
         {
             Ok(s) => {
-                let matching: Vec<_> = s
-                    .into_iter()
-                    .filter(|s| s.is_valid())
-                    .filter(|s| stremio_stream_matches_media(s, media))
-                    .collect();
-                if !matching.is_empty() {
-                    valid_streams = matching;
-                    break;
+                for stream in s {
+                    if stream.is_valid() && stremio_stream_matches_media(&stream, media)
+                    {
+                        let dedup_key = stream
+                            .url
+                            .clone()
+                            .or_else(|| {
+                                stream
+                                    .info_hash
+                                    .clone()
+                            })
+                            .unwrap_or_else(|| {
+                                stream
+                                    .filename
+                                    .clone()
+                                    .unwrap_or_default()
+                            });
+                        if dedup_key.is_empty() || seen_keys.insert(dedup_key) {
+                            valid_streams.push(stream);
+                        }
+                    }
                 }
             }
             Err(e) if is_404(&e) => {
