@@ -181,7 +181,7 @@ pub async fn post(
 
 /// Only the delay-seconds form. The HTTP-date form exists, but no tracker here
 /// sends it, and guessing wrong is worse than falling back to our own backoff.
-fn retry_after(response: &reqwest::Response) -> Option<Duration> {
+pub(crate) fn retry_after(response: &reqwest::Response) -> Option<Duration> {
     response
         .headers()
         .get(reqwest::header::RETRY_AFTER)?
@@ -195,7 +195,7 @@ fn retry_after(response: &reqwest::Response) -> Option<Duration> {
 /// 401 and 403 are the user's credential and only they should cost the
 /// connection. 408, 429 and 5xx pass on their own. Every other 4xx is this
 /// request, which retrying will not change.
-fn classify(
+pub(crate) fn classify(
     status: reqwest::StatusCode,
     retry_after: Option<Duration>,
 ) -> MediaTrackerError {

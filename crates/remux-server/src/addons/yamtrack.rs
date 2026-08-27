@@ -1,10 +1,15 @@
-//! Yamtrack, reached through its Jellyfin webhook.
+//! Yamtrack, reached through its Jellyfin webhook or, optionally, its API.
 //!
-//! Yamtrack has no released write API, so the webhook its Jellyfin
-//! integration exposes is the only way in. It accepts four events and reads nothing off an item but
-//! its external ids, its type, and a played flag. Scores and favourites are
-//! things Yamtrack keeps and this route cannot set, which is why the
-//! capabilities claim neither.
+//! The webhook is what released Yamtrack ships. It accepts four events and
+//! reads nothing off an item but its external ids, its type, and a played
+//! flag; an episode in particular is matched only on its own tvdb or imdb id.
+//! Scores and favourites are things Yamtrack keeps and neither route can set,
+//! which is why the capabilities claim neither.
+//!
+//! The API, unreleased upstream as of August 2026, addresses media in TMDB
+//! terms instead: an episode is its show plus season and episode number,
+//! which remux stores for every episode. The `use_api` option switches
+//! delivery over for an instance built with it.
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
@@ -20,7 +25,8 @@ use super::{
         MediaTrackerCtx, MediaTrackerError, MediaTrackerEvent, MediaTrackerEventKind,
         MediaTrackerResult, MediaTrackerTarget,
         jellyfin_webhook_body::{
-            NotificationType, WebhookFormat, WebhookItem, post, provider_ids,
+            NotificationType, WebhookFormat, WebhookItem, classify, post, provider_ids,
+            retry_after,
         },
     },
 };
@@ -45,17 +51,34 @@ impl AddonPreset for YamtrackPreset {
             supported_types: vec![MediaKind::Movie, MediaKind::Series],
             supported_resources_user: vec![ResourceType::Tracking],
             supported_types_user: vec![MediaKind::Movie, MediaKind::Series],
-            options: vec![AddonOption {
-                id: "base_url".to_string(),
-                name: "Yamtrack URL".to_string(),
-                description: Some(
-                    "Where your Yamtrack lives, for example https://yamtrack.example.com."
-                        .to_string(),
-                ),
-                required: true,
-                default: None,
-                kind: AddonOptionType::Url,
-            }],
+            options: vec![
+                AddonOption {
+                    id: "base_url".to_string(),
+                    name: "Yamtrack URL".to_string(),
+                    description: Some(
+                        "Where your Yamtrack lives, for example https://yamtrack.example.com."
+                            .to_string(),
+                    ),
+                    required: true,
+                    default: None,
+                    kind: AddonOptionType::Url,
+                },
+                AddonOption {
+                    id: "use_api".to_string(),
+                    name: "Use the API".to_string(),
+                    description: Some(
+                        "Deliver through Yamtrack's API instead of its Jellyfin \
+                         webhook. The API matches an episode by its show plus \
+                         season and episode number, so episodes without ids of \
+                         their own still land. Needs a Yamtrack built with the \
+                         API, which no release ships yet."
+                            .to_string(),
+                    ),
+                    required: false,
+                    default: None,
+                    kind: AddonOptionType::Boolean,
+                },
+            ],
         }
     }
 
@@ -76,11 +99,16 @@ impl AddonPreset for YamtrackPreset {
             .ok_or_else(|| anyhow!("yamtrack: base_url is not set"))?
             .trim_end_matches('/')
             .to_string();
+        let use_api = cfg
+            .get("use_api")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         Ok(AddonCapabilities {
             media_tracker: Some(Arc::new(YamtrackAddon {
                 base_url,
                 client: super::make_http_client(),
+                use_api,
             })),
             ..Default::default()
         })
@@ -94,6 +122,7 @@ inventory::submit! {
 pub struct YamtrackAddon {
     base_url: String,
     client: reqwest::Client,
+    use_api: bool,
 }
 
 impl AddonKind for YamtrackAddon {
@@ -113,6 +142,264 @@ impl YamtrackAddon {
         creds
             .get_str("token")
             .ok_or_else(|| MediaTrackerError::reauth("no webhook token stored"))
+    }
+}
+
+/// Yamtrack's api encodes a status as an integer; these two are the only ones
+/// a playback event can mean.
+const STATUS_IN_PROGRESS: i64 = 1;
+const STATUS_COMPLETED: i64 = 3;
+
+/// The API a Yamtrack built from its `feat/add-api` branch serves, which no
+/// release ships as of August 2026. The same account token the webhook uses
+/// authenticates it, as a bearer header instead of a path segment.
+impl YamtrackAddon {
+    fn api_url(&self, path: &str) -> String {
+        format!("{}/api/v1/{}", self.base_url, path)
+    }
+
+    /// What a 404 from a route every api build serves means: an instance
+    /// without the api, which answers page-not-found to every api call.
+    fn without_api() -> MediaTrackerError {
+        MediaTrackerError::permanent(
+            "the tracker has no api at /api/v1: this Yamtrack does not ship \
+             the api, so turn the addon's api option off",
+        )
+    }
+
+    /// One api call, with refusals classified the way the webhook path
+    /// classifies them. A success or a 404 comes back as a status for the
+    /// caller to read, because a 404 is a real answer here: an untracked row
+    /// on a detail route, or an instance without the api at all.
+    async fn api_call(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        token: &str,
+        body: Option<&Value>,
+    ) -> MediaTrackerResult<reqwest::StatusCode> {
+        let mut request = self
+            .client
+            .request(method, self.api_url(path))
+            .bearer_auth(token);
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|e| {
+                // Same rule as the webhook path: the token travels in a header
+                // here, but the url still names the user's instance, so the
+                // error must not carry it.
+                MediaTrackerError::retryable(format!(
+                    "calling the tracker api: {}",
+                    e.without_url()
+                ))
+            })?;
+        let status = response.status();
+        if status.is_success() || status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(status);
+        }
+        Err(classify(status, retry_after(&response)))
+    }
+
+    /// The cheapest authenticated read the api has, shared by connect and
+    /// verify: it proves the token and that the api exists at all.
+    async fn api_probe(&self, token: &str) -> MediaTrackerResult<()> {
+        let status = self
+            .api_call(reqwest::Method::GET, "lists/", token, None)
+            .await?;
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(Self::without_api());
+        }
+        Ok(())
+    }
+
+    async fn deliver_api(
+        &self,
+        event: &MediaTrackerEvent,
+        target: &MediaTrackerTarget,
+        token: &str,
+    ) -> MediaTrackerResult<()> {
+        if matches!(
+            event,
+            MediaTrackerEvent::Favorite { .. } | MediaTrackerEvent::Rating { .. }
+        ) {
+            return Err(MediaTrackerError::unsupported(
+                &event
+                    .kind()
+                    .to_string(),
+            ));
+        }
+        if target.kind == db::MediaKind::Episode {
+            self.deliver_api_episode(event, target, token)
+                .await
+        } else {
+            self.deliver_api_movie(event, target, token)
+                .await
+        }
+    }
+
+    /// Whether the webhook could still match this item if the api cannot
+    /// address it: an episode on its own tvdb or imdb id, anything else on
+    /// any id at all.
+    fn webhook_could_match(target: &MediaTrackerTarget) -> bool {
+        if target.kind == db::MediaKind::Episode {
+            target
+                .ids
+                .imdb
+                .is_some()
+                || target
+                    .ids
+                    .tvdb
+                    .is_some()
+        } else {
+            provider_ids(&target.ids)
+                .as_object()
+                .is_some_and(|m| !m.is_empty())
+        }
+    }
+
+    async fn deliver_api_episode(
+        &self,
+        event: &MediaTrackerEvent,
+        target: &MediaTrackerTarget,
+        token: &str,
+    ) -> MediaTrackerResult<()> {
+        let coordinates = target
+            .series
+            .as_deref()
+            .and_then(|series| {
+                Some((
+                    series
+                        .ids
+                        .tmdb?,
+                    target.season?,
+                    target.episode?,
+                ))
+            });
+        let Some((show, season, episode)) = coordinates else {
+            // Nothing to address it by in TMDB terms; the webhook may still
+            // match it on its own ids.
+            return self
+                .deliver_webhook(event, target, token)
+                .await;
+        };
+        match event {
+            MediaTrackerEvent::PlaybackStop { played: true, .. }
+            | MediaTrackerEvent::MarkPlayed => {
+                let created = self
+                    .api_call(
+                        reqwest::Method::POST,
+                        &format!("media/tv/tmdb/{show}/{season}/{episode}/history/"),
+                        token,
+                        Some(&json!({})),
+                    )
+                    .await?;
+                if created != reqwest::StatusCode::NOT_FOUND {
+                    return Ok(());
+                }
+                // Two things answer 404 here: an instance without the api,
+                // and coordinates TMDB does not list, which the api refuses
+                // to track. The probe settles which.
+                self.api_probe(token)
+                    .await?;
+                // TMDB really does not know these numbers. Parts of a library
+                // are numbered in another provider's scheme, TVDB's year
+                // seasons for one, and for those the episode's own ids are
+                // the identity that still works, so the webhook has the
+                // better chance. Its refusal message names what was missing
+                // if it cannot either.
+                self.deliver_webhook(event, target, token)
+                    .await
+            }
+            MediaTrackerEvent::MarkUnplayed => {
+                let deleted = self
+                    .api_call(
+                        reqwest::Method::DELETE,
+                        &format!("media/tv/tmdb/{show}/{season}/{episode}/"),
+                        token,
+                        None,
+                    )
+                    .await?;
+                if deleted != reqwest::StatusCode::NOT_FOUND {
+                    return Ok(());
+                }
+                // Nothing tracked under these coordinates. It may have been
+                // tracked through the webhook under the coordinates Yamtrack
+                // resolved for itself, so unmark that way too when the item
+                // could match; a miss with no ids is already the state asked
+                // for.
+                if Self::webhook_could_match(target) {
+                    return self
+                        .deliver_webhook(event, target, token)
+                        .await;
+                }
+                Ok(())
+            }
+            // A start or an abandoned stop: Yamtrack's own webhook records
+            // nothing below the episode for these either, so there is no
+            // call to make.
+            _ => Ok(()),
+        }
+    }
+
+    async fn deliver_api_movie(
+        &self,
+        event: &MediaTrackerEvent,
+        target: &MediaTrackerTarget,
+        token: &str,
+    ) -> MediaTrackerResult<()> {
+        let Some(tmdb) = target
+            .ids
+            .tmdb
+        else {
+            // The api names a movie only by tmdb id; the webhook can still
+            // match one on imdb.
+            return self
+                .deliver_webhook(event, target, token)
+                .await;
+        };
+        let detail = format!("media/movie/tmdb/{tmdb}/");
+        if matches!(event, MediaTrackerEvent::MarkUnplayed) {
+            // Parity with the webhook, which deletes the tracked movie. A 404
+            // means nothing was tracked, which is already the state asked for.
+            self.api_call(reqwest::Method::DELETE, &detail, token, None)
+                .await?;
+            return Ok(());
+        }
+        // Everything else lands as a status. Yamtrack's webhook treats a
+        // start and a stop identically, so this route does too.
+        let status_code = match event {
+            MediaTrackerEvent::PlaybackStop { played: true, .. }
+            | MediaTrackerEvent::MarkPlayed => STATUS_COMPLETED,
+            _ => STATUS_IN_PROGRESS,
+        };
+        let updated = self
+            .api_call(
+                reqwest::Method::PATCH,
+                &detail,
+                token,
+                Some(&json!({ "status": status_code })),
+            )
+            .await?;
+        if updated != reqwest::StatusCode::NOT_FOUND {
+            return Ok(());
+        }
+        // Untracked, or an instance without the api; creating answers both.
+        let body = json!({
+            "source": "tmdb",
+            "media_id": tmdb.to_string(),
+            "status": status_code,
+        });
+        let created = self
+            .api_call(reqwest::Method::POST, "media/movie/", token, Some(&body))
+            .await?;
+        if created == reqwest::StatusCode::NOT_FOUND {
+            return Err(Self::without_api());
+        }
+        Ok(())
     }
 }
 
@@ -220,9 +507,15 @@ impl MediaTrackerAddon for YamtrackAddon {
                 MediaTrackerError::permanent("a webhook token is required")
             })?;
 
-        // An empty body carries no event, so Yamtrack answers the token and
-        // nothing else. Anything with an `Event` would be a real scrobble.
-        post(&self.client, &self.webhook_url(token), &json!({})).await?;
+        if self.use_api {
+            self.api_probe(token)
+                .await?;
+        } else {
+            // An empty body carries no event, so Yamtrack answers the token
+            // and nothing else. Anything with an `Event` would be a real
+            // scrobble.
+            post(&self.client, &self.webhook_url(token), &json!({})).await?;
+        }
         Ok(MediaTrackerCredentials::new(json!({ "token": token })))
     }
 
@@ -231,12 +524,13 @@ impl MediaTrackerAddon for YamtrackAddon {
         creds: &MediaTrackerCredentials,
         _ctx: &MediaTrackerCtx,
     ) -> MediaTrackerResult<()> {
-        post(
-            &self.client,
-            &self.webhook_url(Self::token(creds)?),
-            &json!({}),
-        )
-        .await
+        let token = Self::token(creds)?;
+        if self.use_api {
+            return self
+                .api_probe(token)
+                .await;
+        }
+        post(&self.client, &self.webhook_url(token), &json!({})).await
     }
 
     async fn on_event(
@@ -245,6 +539,24 @@ impl MediaTrackerAddon for YamtrackAddon {
         target: &MediaTrackerTarget,
         creds: &MediaTrackerCredentials,
         _ctx: &MediaTrackerCtx,
+    ) -> MediaTrackerResult<()> {
+        let token = Self::token(creds)?;
+        if self.use_api {
+            return self
+                .deliver_api(event, target, token)
+                .await;
+        }
+        self.deliver_webhook(event, target, token)
+            .await
+    }
+}
+
+impl YamtrackAddon {
+    async fn deliver_webhook(
+        &self,
+        event: &MediaTrackerEvent,
+        target: &MediaTrackerTarget,
+        token: &str,
     ) -> MediaTrackerResult<()> {
         let item = WebhookItem::from_event(event, target).ok_or_else(|| {
             MediaTrackerError::unsupported(
@@ -287,7 +599,7 @@ impl MediaTrackerAddon for YamtrackAddon {
         }
         post(
             &self.client,
-            &self.webhook_url(Self::token(creds)?),
+            &self.webhook_url(token),
             &YamtrackFormat.body(&item),
         )
         .await
@@ -306,6 +618,14 @@ mod tests {
                 .trim_end_matches('/')
                 .to_string(),
             client: super::super::make_http_client(),
+            use_api: false,
+        }
+    }
+
+    fn api_addon(server: &MockServer) -> YamtrackAddon {
+        YamtrackAddon {
+            use_api: true,
+            ..addon(server)
         }
     }
 
@@ -372,6 +692,7 @@ mod tests {
         let addon = YamtrackAddon {
             base_url: "http://127.0.0.1:1".to_string(),
             client: reqwest::Client::new(),
+            use_api: false,
         };
         let err = addon
             .on_event(
@@ -752,5 +1073,274 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    /// The case the webhook can never deliver: an episode with no external
+    /// ids at all, under a series known only to TMDB.
+    fn episode_known_only_by_coordinates() -> MediaTrackerTarget {
+        MediaTrackerTarget {
+            kind: db::MediaKind::Episode,
+            title: "Episode 101".into(),
+            year: None,
+            ids: db::ExternalIds::default(),
+            series: Some(Box::new(MediaTrackerTarget {
+                kind: db::MediaKind::Series,
+                title: "Blue's Clues".into(),
+                year: Some(1996),
+                ids: db::ExternalIds {
+                    tmdb: Some(10821),
+                    ..Default::default()
+                },
+                series: None,
+                season: None,
+                episode: None,
+            })),
+            season: Some(6),
+            episode: Some(14),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_api_tracks_an_episode_with_no_ids_of_its_own() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/v1/media/tv/tmdb/10821/6/14/history/")
+                .header("authorization", "Bearer tok")
+                .json_body(json!({}));
+            then.status(201);
+        });
+
+        api_addon(&server)
+            .on_event(
+                &MediaTrackerEvent::PlaybackStop {
+                    position_ticks: 0,
+                    played: true,
+                },
+                &episode_known_only_by_coordinates(),
+                &creds(),
+                &ctx(),
+            )
+            .await
+            .unwrap();
+
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn an_episode_with_neither_coordinates_nor_ids_is_refused() {
+        let mut target = episode_known_only_by_coordinates();
+        target
+            .series
+            .as_mut()
+            .unwrap()
+            .ids
+            .tmdb = None;
+
+        // An unroutable address: reaching the network at all would come back
+        // as a retryable transport error, not the permanent refusal expected.
+        // With no coordinates the api route hands over to the webhook, whose
+        // guard refuses before anything is sent.
+        let addon = YamtrackAddon {
+            base_url: "http://127.0.0.1:1".to_string(),
+            client: reqwest::Client::new(),
+            use_api: true,
+        };
+        let err = addon
+            .on_event(&MediaTrackerEvent::MarkPlayed, &target, &creds(), &ctx())
+            .await
+            .expect_err("nothing to address the episode by");
+
+        assert!(
+            err.to_string()
+                .contains("imdb"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn coordinates_tmdb_does_not_list_fall_back_to_the_webhook() {
+        let mut target = episode_known_only_by_coordinates();
+        target
+            .ids
+            .tvdb = Some(5711666);
+
+        let server = MockServer::start();
+        let history = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/v1/media/tv/tmdb/10821/6/14/history/");
+            then.status(404)
+                .json_body(json!({ "detail": "Episode not found." }));
+        });
+        let probe = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/v1/lists/");
+            then.status(200)
+                .json_body(json!([]));
+        });
+        let webhook = server.mock(|when, then| {
+            when.method(POST)
+                .path("/webhook/jellyfin/tok")
+                .json_body_partial(
+                    r#"{ "Item": { "ProviderIds": { "Tvdb": "5711666" } } }"#,
+                );
+            then.status(200);
+        });
+
+        api_addon(&server)
+            .on_event(&MediaTrackerEvent::MarkPlayed, &target, &creds(), &ctx())
+            .await
+            .unwrap();
+
+        history.assert();
+        probe.assert();
+        webhook.assert();
+    }
+
+    #[tokio::test]
+    async fn the_api_shrugs_when_unmarking_an_episode_it_never_tracked() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(DELETE)
+                .path("/api/v1/media/tv/tmdb/10821/6/14/");
+            then.status(404);
+        });
+
+        api_addon(&server)
+            .on_event(
+                &MediaTrackerEvent::MarkUnplayed,
+                &episode_known_only_by_coordinates(),
+                &creds(),
+                &ctx(),
+            )
+            .await
+            .unwrap();
+
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn an_abandoned_episode_stop_makes_no_api_call() {
+        let server = MockServer::start();
+        let catch_all = server.mock(|when, then| {
+            when.path_contains("/");
+            then.status(500);
+        });
+
+        api_addon(&server)
+            .on_event(
+                &MediaTrackerEvent::PlaybackStop {
+                    position_ticks: 5,
+                    played: false,
+                },
+                &episode_known_only_by_coordinates(),
+                &creds(),
+                &ctx(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(catch_all.hits(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_api_updates_a_movie_already_tracked() {
+        let server = MockServer::start();
+        let patch = server.mock(|when, then| {
+            when.method("PATCH")
+                .path("/api/v1/media/movie/tmdb/949/")
+                .json_body(json!({ "status": 3 }));
+            then.status(200);
+        });
+
+        api_addon(&server)
+            .on_event(&MediaTrackerEvent::MarkPlayed, &movie(), &creds(), &ctx())
+            .await
+            .unwrap();
+
+        patch.assert();
+    }
+
+    #[tokio::test]
+    async fn the_api_creates_a_movie_on_its_first_delivery() {
+        let server = MockServer::start();
+        let patch = server.mock(|when, then| {
+            when.method("PATCH")
+                .path("/api/v1/media/movie/tmdb/949/");
+            then.status(404);
+        });
+        let create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/v1/media/movie/")
+                .json_body(json!({
+                    "source": "tmdb",
+                    "media_id": "949",
+                    "status": 1,
+                }));
+            then.status(201);
+        });
+
+        api_addon(&server)
+            .on_event(
+                &MediaTrackerEvent::PlaybackStop {
+                    position_ticks: 5,
+                    played: false,
+                },
+                &movie(),
+                &creds(),
+                &ctx(),
+            )
+            .await
+            .unwrap();
+
+        patch.assert();
+        create.assert();
+    }
+
+    #[tokio::test]
+    async fn a_yamtrack_without_the_api_is_told_apart_from_a_miss() {
+        // Everything 404s on an instance that never routes /api/v1, so the
+        // create call, which exists on every api build, is what settles it.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.path_contains("/");
+            then.status(404);
+        });
+
+        let err = api_addon(&server)
+            .on_event(
+                &MediaTrackerEvent::MarkPlayed,
+                &episode_known_only_by_coordinates(),
+                &creds(),
+                &ctx(),
+            )
+            .await
+            .expect_err("a 404 from the create route means no api");
+
+        assert!(
+            err.to_string()
+                .contains("api"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connecting_in_api_mode_proves_the_token_against_the_api() {
+        let server = MockServer::start();
+        let probe = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/v1/lists/")
+                .header("authorization", "Bearer fresh");
+            then.status(200)
+                .json_body(json!([]));
+        });
+
+        let stored = api_addon(&server)
+            .connect_with_token(&json!({ "token": " fresh " }), &ctx())
+            .await
+            .unwrap();
+
+        probe.assert();
+        assert_eq!(stored.get_str("token"), Some("fresh"));
     }
 }
