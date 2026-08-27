@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use dioxus_icons::lucide::{GripVertical, X};
 use dioxus_primitives::drag_and_drop_list::{
     self, DragAndDropContext, DragAndDropDropIndicatorProps, DragAndDropItemContext,
-    DragAndDropListItemProps,
+    DragAndDropListItemProps, DragAndDropListItemsProps,
 };
 
 const AUTO_SCROLL_EDGE_PX: f64 = 96.0;
@@ -19,10 +19,6 @@ pub struct DragAndDropListProps {
     /// Set if the list items should be removable
     #[props(default)]
     pub is_removable: bool,
-
-    /// Whether the list can currently be reordered.
-    #[props(default = true)]
-    pub interactive: bool,
 
     /// Accessible label for the list
     #[props(default)]
@@ -63,7 +59,6 @@ fn ReorderObserver(on_reorder: EventHandler<Vec<String>>) -> Element {
 #[component]
 pub fn DragAndDropList(props: DragAndDropListProps) -> Element {
     let is_removable = props.is_removable;
-    let interactive = props.interactive;
     let aria_label = props
         .aria_label
         .clone()
@@ -95,13 +90,6 @@ pub fn DragAndDropList(props: DragAndDropListProps) -> Element {
 
     rsx! {
         div {
-            class: if interactive {
-                String::new()
-            } else {
-                Styles::dx_dnd_list_locked.to_string()
-            },
-            inert: (!interactive).then_some("true"),
-            aria_busy: if interactive { "false" } else { "true" },
             ondrag: auto_scroll_page,
             drag_and_drop_list::DragAndDropList {
                 class: Styles::dx_dnd_list,
@@ -111,7 +99,6 @@ pub fn DragAndDropList(props: DragAndDropListProps) -> Element {
                 drag_and_drop_list::DragAndDropInstructions {}
                 DragAndDropListItems {
                     aria_label,
-                    interactive,
                 }
                 drag_and_drop_list::DragAndDropLiveRegion {}
                 if let Some(on_reorder) = props.on_reorder {
@@ -149,39 +136,28 @@ pub fn DragAndDropListItem(props: DragAndDropListItemProps) -> Element {
     }
 }
 
-#[derive(Props, Clone, PartialEq)]
-struct LocalDragAndDropListItemsProps {
-    aria_label: String,
-    #[props(default = true)]
-    interactive: bool,
-}
-
 #[component]
-fn DragAndDropListItems(props: LocalDragAndDropListItemsProps) -> Element {
-    let interactive = props.interactive;
+pub fn DragAndDropListItems(props: DragAndDropListItemsProps) -> Element {
     rsx! {
         drag_and_drop_list::DragAndDropListItems {
             class: Styles::dx_dnd_list_ul,
             aria_label: props.aria_label,
+            attributes: props.attributes,
             for item in drag_and_drop_list::use_drag_and_drop_list_items() {
                 Fragment {
                     key: "{item.key}",
-                    if interactive {
-                        DragAndDropDropIndicator {
-                            index: item.index,
-                            position: "before",
-                        }
+                    DragAndDropDropIndicator {
+                        index: item.index,
+                        position: "before",
                     }
                     DragAndDropListItem {
                         index: item.index,
                         item_key: item.key.clone(),
                         {item.children}
                     }
-                    if interactive {
-                        DragAndDropDropIndicator {
-                            index: item.index,
-                            position: "after",
-                        }
+                    DragAndDropDropIndicator {
+                        index: item.index,
+                        position: "after",
                     }
                 }
             }

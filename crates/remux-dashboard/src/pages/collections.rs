@@ -42,7 +42,6 @@ impl PartialEq for FormMode {
 pub fn CollectionsPage(app_state: AppState) -> Element {
     let mut collections: Signal<Vec<BaseItemDto>> = use_signal(Vec::new);
     let mut loading = use_signal(|| true);
-    let mut reordering = use_signal(|| false);
     let mut error = use_signal(|| Option::<String>::None);
     let mut refresh = use_signal(|| 0_u32);
     let mut form_mode: Signal<Option<FormMode>> = use_signal(|| None);
@@ -176,7 +175,6 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                     key: "{list_key}",
                                     items,
                                     aria_label: "Collections",
-                                    interactive: !*reordering.read(),
                                     on_reorder: move |new_order: Vec<String>| {
                                         let updates: Vec<(String, i64)> = new_order
                                             .iter()
@@ -195,7 +193,6 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                         let app_state = app_state_reorder.clone();
 
                                         spawn(async move {
-                                            reordering.set(true);
                                             for (id, so) in updates {
                                                 let _ = app_state.execute(PatchItem {
                                                     item_id: id,
@@ -205,7 +202,6 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                                     },
                                                 }).await;
                                             }
-                                            reordering.set(false);
                                         });
                                     },
                                 }
