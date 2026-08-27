@@ -4,6 +4,16 @@
   width: 100%;
 }
 
+.dx-dnd-list-locked {
+  opacity: 0.5;
+  cursor: wait;
+  pointer-events: none;
+}
+
+.dx-dnd-list-locked .dx-dnd-list-item {
+  cursor: wait;
+}
+
 .dx-dnd-list-ul {
   display: flex;
   flex-direction: column;
@@ -50,10 +60,15 @@
   .dx-dnd-list-item:hover {
     /* --gap-shift: -1px; */
 
-    background-color: rgba(0,0,0,0.03);
+    background-color: rgb(0 0 0 / 3%);
     box-shadow:
       0 1px 2px rgb(0 0 0 / 4%),
       0 3px 8px rgb(0 0 0 / 4%);
+  }
+
+  .dx-dnd-list-locked .dx-dnd-list-item:hover {
+    background-color: transparent;
+    box-shadow: none;
   }
 
   .dx-dnd-list-item:active {

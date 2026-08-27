@@ -20,6 +20,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
     let mut addons: Signal<Vec<AddonDto>> = use_signal(Vec::new);
     let mut kinds: Signal<Vec<AddonMetadata>> = use_signal(Vec::new);
     let mut loading = use_signal(|| true);
+    let mut reordering = use_signal(|| false);
     let mut error: Signal<Option<String>> = use_signal(|| None);
     let mut refresh = use_signal(|| 0_u32);
     let mut active_tab: Signal<&'static str> = use_signal(|| "global");
@@ -279,6 +280,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                     key: "{list_key}",
                                     items,
                                     aria_label: "Addons",
+                                    interactive: !*reordering.read(),
                                     on_reorder: move |new_order: Vec<String>| {
                                         let updates: Vec<(Uuid, i64)> = new_order
                                             .iter()
@@ -292,7 +294,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                             .collect();
                                         let client = client.clone();
                                         spawn(async move {
-                                            loading.set(true);
+                                            reordering.set(true);
                                             for (id, priority) in updates {
                                                 let _ = client.execute(UpdateAddon {
                                                     id,
@@ -302,10 +304,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                     },
                                                 }).await;
                                             }
-                                            loading.set(false);
-
-                                            let value = *refresh.peek() + 1;
-                                            refresh.set(value);
+                                            reordering.set(false);
                                         });
                                     },
                                 }
