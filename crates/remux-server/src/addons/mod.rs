@@ -15,6 +15,7 @@ pub mod stremio;
 pub mod tmdb;
 pub mod torznab;
 pub mod trakt;
+pub mod yamtrack;
 pub mod ytdlp;
 
 use anyhow::{Result, anyhow};
