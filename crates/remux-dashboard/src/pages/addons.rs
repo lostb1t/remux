@@ -18,6 +18,8 @@ use uuid::Uuid;
 #[component]
 pub fn AddonsPage(app_state: AppState) -> Element {
     let mut addons: Signal<Vec<AddonDto>> = use_signal(Vec::new);
+    let mut global_addon_order: Signal<Vec<String>> = use_signal(Vec::new);
+    let mut user_addon_order: Signal<Vec<String>> = use_signal(Vec::new);
     let mut kinds: Signal<Vec<AddonMetadata>> = use_signal(Vec::new);
     let mut loading = use_signal(|| true);
     let mut error: Signal<Option<String>> = use_signal(|| None);
@@ -78,6 +80,26 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                 .await;
             match (kinds_res, addons_res) {
                 (Ok(k), Ok(a)) => {
+                    global_addon_order.set(
+                        a.iter()
+                            .filter(|addon| addon.is_default)
+                            .map(|addon| {
+                                addon
+                                    .id
+                                    .to_string()
+                            })
+                            .collect(),
+                    );
+                    user_addon_order.set(
+                        a.iter()
+                            .filter(|addon| !addon.is_default)
+                            .map(|addon| {
+                                addon
+                                    .id
+                                    .to_string()
+                            })
+                            .collect(),
+                    );
                     kinds.set(k);
                     addons.set(a);
                     error.set(None);
@@ -146,10 +168,11 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                         if visible.is_empty() {
                             rsx! { EmptyState { message: "No addons configured — add one to get started." } }
                         } else {
-                            let original_priorities: HashMap<String, i64> = visible
-                                .iter()
-                                .map(|addon| (addon.id.to_string(), addon.priority))
-                                .collect();
+                            let mut addon_order = if *active_tab.read() == "global" {
+                                global_addon_order
+                            } else {
+                                user_addon_order
+                            };
                             let list_key = visible
                                 .iter()
                                 .map(|addon| addon.id.to_string())
@@ -280,29 +303,43 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                     items,
                                     aria_label: "Addons",
                                     on_reorder: move |new_order: Vec<String>| {
+                                        let previous_positions: HashMap<String, usize> = addon_order
+                                            .peek()
+                                            .iter()
+                                            .enumerate()
+                                            .map(|(index, id)| (id.clone(), index))
+                                            .collect();
                                         let updates: Vec<(Uuid, i64)> = new_order
                                             .iter()
                                             .enumerate()
                                             .filter_map(|(index, id)| {
                                                 let priority = index as i64 * 10;
-                                                (original_priorities.get(id).copied() != Some(priority))
+                                                (previous_positions.get(id).copied() != Some(index))
                                                     .then(|| id.parse().ok().map(|id| (id, priority)))
                                                     .flatten()
                                             })
                                             .collect();
+                                        addon_order.set(new_order);
                                         let client = client.clone();
+                                        let mut reorder_error = error;
                                         spawn(async move {
                                             for (id, priority) in updates {
-                                                let _ = client.execute(UpdateAddon {
-                                                    id,
-                                                    payload: UpdateAddonRequest {
-                                                        priority: Some(priority),
-                                                        ..Default::default()
-                                                    },
-                                                }).await;
+                                                if let Err(e) = client
+                                                    .execute(UpdateAddon {
+                                                        id,
+                                                        payload: UpdateAddonRequest {
+                                                            priority: Some(priority),
+                                                            ..Default::default()
+                                                        },
+                                                    })
+                                                    .await
+                                                {
+                                                    reorder_error.set(Some(format!(
+                                                        "Failed to update addon order: {e}"
+                                                    )));
+                                                    return;
+                                                }
                                             }
-                                            let value = *refresh.peek() + 1;
-                                            refresh.set(value);
                                         });
                                     },
                                 }

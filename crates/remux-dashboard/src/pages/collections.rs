@@ -41,6 +41,7 @@ impl PartialEq for FormMode {
 #[component]
 pub fn CollectionsPage(app_state: AppState) -> Element {
     let mut collections: Signal<Vec<BaseItemDto>> = use_signal(Vec::new);
+    let mut collection_order: Signal<Vec<String>> = use_signal(Vec::new);
     let mut loading = use_signal(|| true);
     let mut error = use_signal(|| Option::<String>::None);
     let mut refresh = use_signal(|| 0_u32);
@@ -63,6 +64,16 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                 .await
             {
                 Ok(result) => {
+                    collection_order.set(
+                        result
+                            .items
+                            .iter()
+                            .map(|item| {
+                                item.id
+                                    .to_string()
+                            })
+                            .collect(),
+                    );
                     collections.set(result.items);
                     error.set(None);
                 }
@@ -97,10 +108,6 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                             let original_order: Vec<String> = collection_items
                                 .iter()
                                 .map(|col| col.id.to_string())
-                                .collect();
-                            let original_sort_orders: HashMap<String, Option<i64>> = collection_items
-                                .iter()
-                                .map(|col| (col.id.to_string(), col.index_number))
                                 .collect();
                             let list_key = original_order.join(":");
                             let items: Vec<Element> = collection_items
@@ -176,35 +183,44 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                     items,
                                     aria_label: "Collections",
                                     on_reorder: move |new_order: Vec<String>| {
+                                        let previous_positions: HashMap<String, usize> = collection_order
+                                            .peek()
+                                            .iter()
+                                            .enumerate()
+                                            .map(|(index, id)| (id.clone(), index))
+                                            .collect();
                                         let updates: Vec<(String, i64)> = new_order
                                             .iter()
                                             .enumerate()
-                                            .filter_map(|(i, id)| {
-                                                let new_so = i as i64 * 10;
-
-                                                if original_sort_orders.get(id).copied().flatten() != Some(new_so) {
-                                                    Some((id.clone(), new_so))
-                                                } else {
-                                                    None
-                                                }
+                                            .filter_map(|(index, id)| {
+                                                (previous_positions.get(id).copied() != Some(index))
+                                                    .then(|| (id.clone(), index as i64 * 10))
                                             })
                                             .collect();
 
+                                        collection_order.set(new_order);
+
                                         let app_state = app_state_reorder.clone();
+                                        let mut reorder_error = error;
 
                                         spawn(async move {
                                             for (id, so) in updates {
-                                                let _ = app_state.execute(PatchItem {
-                                                    item_id: id,
-                                                    payload: PatchItemPayload {
-                                                        sort_order: Some(so),
-                                                        ..Default::default()
-                                                    },
-                                                }).await;
+                                                if let Err(e) = app_state
+                                                    .execute(PatchItem {
+                                                        item_id: id,
+                                                        payload: PatchItemPayload {
+                                                            sort_order: Some(so),
+                                                            ..Default::default()
+                                                        },
+                                                    })
+                                                    .await
+                                                {
+                                                    reorder_error.set(Some(format!(
+                                                        "Failed to update collection order: {e}"
+                                                    )));
+                                                    return;
+                                                }
                                             }
-
-                                            let v = *refresh.peek() + 1;
-                                            refresh.set(v);
                                         });
                                     },
                                 }
