@@ -6778,6 +6778,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                                 ep.id
                                     .clone(),
                             ),
+                            tvdb: ep.tvdb_id,
                             ..Default::default()
                         };
                         episode.parent_id = Some(season_id);
@@ -6887,6 +6888,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                             ep.id
                                 .clone(),
                         ),
+                        tvdb: ep.tvdb_id,
                         ..Default::default()
                     };
                     episode.grandparent_id = Some(media.id);
@@ -7830,6 +7832,53 @@ mod tests {
                 .as_deref(),
             Some("tt0045373:0:1"),
             "the stremio id is still what the row is keyed on"
+        );
+    }
+
+    /// `stremio_meta_to_medias` builds episodes by its own route rather than
+    /// through `stremio_meta_episode`, so the id has to survive that path too.
+    #[test]
+    fn a_whole_series_import_keeps_its_episode_tvdb_ids() {
+        let meta: sdks::stremio::Meta = serde_json::from_value(serde_json::json!({
+            "id": "tt0045373",
+            "imdb_id": "tt0045373",
+            "type": "series",
+            "name": "The Bob Hope Show",
+            "videos": [
+                { "id": "tt0045373:0:1", "season": 0, "episode": 1,
+                  "number": 1, "tvdb_id": 5711666 },
+                { "id": "tt0045373:0:2", "season": 0, "episode": 2,
+                  "number": 2 },
+            ],
+        }))
+        .expect("fixture meta");
+
+        let medias = stremio_meta_to_medias(meta).expect("converts");
+        let episodes: Vec<&Media> = medias
+            .iter()
+            .filter(|m| m.kind == MediaKind::Episode)
+            .collect();
+        assert_eq!(episodes.len(), 2);
+
+        let first = episodes
+            .iter()
+            .find(|m| m.idx == Some(1))
+            .expect("episode 1");
+        assert_eq!(
+            first
+                .external_ids
+                .tvdb,
+            Some(5711666),
+            "the id was dropped on the whole-series path"
+        );
+        assert_eq!(
+            episodes
+                .iter()
+                .find(|m| m.idx == Some(2))
+                .expect("episode 2")
+                .external_ids
+                .tvdb,
+            None
         );
     }
 
