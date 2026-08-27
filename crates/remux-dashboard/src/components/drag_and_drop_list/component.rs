@@ -5,6 +5,9 @@ use dioxus_primitives::drag_and_drop_list::{
     DragAndDropListItemProps, DragAndDropListItemsProps,
 };
 
+const AUTO_SCROLL_EDGE_PX: f64 = 96.0;
+const AUTO_SCROLL_MAX_STEP_PX: f64 = 12.0;
+
 #[css_module("/src/components/drag_and_drop_list/style.css")]
 struct Styles;
 
@@ -86,21 +89,35 @@ pub fn DragAndDropList(props: DragAndDropListProps) -> Element {
         .collect();
 
     rsx! {
-        drag_and_drop_list::DragAndDropList {
-            class: Styles::dx_dnd_list,
-            items,
-            aria_label: props.aria_label,
-            attributes: props.attributes,
-            drag_and_drop_list::DragAndDropInstructions {}
-            DragAndDropListItems {
-                aria_label,
+        div {
+            ondrag: auto_scroll_page,
+            drag_and_drop_list::DragAndDropList {
+                class: Styles::dx_dnd_list,
+                items,
+                aria_label: props.aria_label,
+                attributes: props.attributes,
+                drag_and_drop_list::DragAndDropInstructions {}
+                DragAndDropListItems {
+                    aria_label,
+                }
+                drag_and_drop_list::DragAndDropLiveRegion {}
+                if let Some(on_reorder) = props.on_reorder {
+                    ReorderObserver { on_reorder }
+                }
+                {props.children}
             }
-            drag_and_drop_list::DragAndDropLiveRegion {}
-            if let Some(on_reorder) = props.on_reorder {
-                ReorderObserver { on_reorder }
-            }
-            {props.children}
         }
+    }
+}
+
+fn edge_scroll_delta(cursor_y: f64, viewport_height: f64) -> f64 {
+    if cursor_y < AUTO_SCROLL_EDGE_PX {
+        -AUTO_SCROLL_MAX_STEP_PX * (1.0 - cursor_y.max(0.0) / AUTO_SCROLL_EDGE_PX)
+    } else if cursor_y > viewport_height - AUTO_SCROLL_EDGE_PX {
+        AUTO_SCROLL_MAX_STEP_PX
+            * (1.0 - (viewport_height - cursor_y).max(0.0) / AUTO_SCROLL_EDGE_PX)
+    } else {
+        0.0
     }
 }
 
@@ -148,6 +165,27 @@ pub fn DragAndDropListItems(props: DragAndDropListItemsProps) -> Element {
     }
 }
 
+fn auto_scroll_page(event: DragEvent) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(viewport_height) = window
+        .inner_height()
+        .ok()
+        .and_then(|height| height.as_f64())
+    else {
+        return;
+    };
+
+    let cursor_y = event
+        .client_coordinates()
+        .y;
+    let scroll_delta = edge_scroll_delta(cursor_y, viewport_height);
+    if scroll_delta != 0.0 {
+        window.scroll_by_with_x_and_y(0.0, scroll_delta);
+    }
+}
+
 #[component]
 pub fn DragAndDropDropIndicator(props: DragAndDropDropIndicatorProps) -> Element {
     rsx! {
@@ -168,6 +206,24 @@ fn DragIcon() -> Element {
             "aria-hidden": "true",
             size: "16px",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scrolls_toward_viewport_edges() {
+        assert_eq!(edge_scroll_delta(0.0, 800.0), -AUTO_SCROLL_MAX_STEP_PX);
+        assert_eq!(edge_scroll_delta(400.0, 800.0), 0.0);
+        assert_eq!(edge_scroll_delta(800.0, 800.0), AUTO_SCROLL_MAX_STEP_PX);
+    }
+
+    #[test]
+    fn scroll_speed_increases_nearer_the_edge() {
+        assert!(edge_scroll_delta(20.0, 800.0) < edge_scroll_delta(80.0, 800.0));
+        assert!(edge_scroll_delta(780.0, 800.0) > edge_scroll_delta(720.0, 800.0));
     }
 }
 

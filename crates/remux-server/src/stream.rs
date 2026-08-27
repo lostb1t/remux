@@ -582,9 +582,15 @@ impl StreamSource for LocalSource {
 #[async_trait]
 impl StreamSource for TorrentSource {
     async fn serve(&self, state: &AppState, headers: &HeaderMap) -> Result<Response> {
-        let resolved = state
+        let torrent = state
             .ctx
             .torrent
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("P2P is disabled"))
+            .context_bad_request("P2P is disabled")?;
+        let resolved = torrent
             .resolve_url(&self.to_magnet())
             .await
             .context_bad_request("failed to resolve torrent")?;

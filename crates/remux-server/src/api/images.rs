@@ -5,6 +5,7 @@ use axum::{
 };
 use axum_extra::extract::Query;
 use remux_macros::{delete, get, post};
+use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{
@@ -414,6 +415,43 @@ pub async fn delete_item_image_indexed(
     Path((id, image_type, _index)): Path<(Uuid, String, usize)>,
 ) -> Result<impl IntoResponse> {
     delete_item_image_inner(state, id, parse_image_kind(&image_type)).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct RemoteImageDownloadQuery {
+    #[serde(rename = "Type")]
+    pub image_type: String,
+    #[serde(rename = "ImageUrl")]
+    pub image_url: String,
+}
+
+#[post("/items/{id}/remoteimages/download")]
+pub async fn download_remote_image(
+    State(state): State<AppState>,
+    _session: auth::AdminSession,
+    Path(id): Path<Uuid>,
+    Query(q): Query<RemoteImageDownloadQuery>,
+) -> Result<impl IntoResponse> {
+    let (bytes, _ct) = fetch_upstream(&q.image_url)
+        .await
+        .context_bad_request("failed to fetch remote image")?;
+    let kind = parse_image_kind(&q.image_type);
+    ImageService::save_image(
+        &state
+            .ctx
+            .config
+            .data_dir,
+        id,
+        kind,
+        &bytes,
+        &state
+            .ctx
+            .db,
+    )
+    .await
+    .context_internal("failed to save image")?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Convert a Jellyfin URL path segment (e.g. "Thumb", "Primary") to `ImageKind`.
