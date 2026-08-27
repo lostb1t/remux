@@ -253,18 +253,36 @@ impl MediaTrackerAddon for YamtrackAddon {
                     .to_string(),
             )
         })?;
-        // Yamtrack reads the episode's own tvdb or imdb id and nothing else, so
-        // an episode carrying neither identifies nothing to it. Posting anyway
-        // takes a 200 and marks the row delivered, because `is_matchable` is
-        // satisfied by the series' ids that this provider never reads. Refusing
-        // here is what puts the failure somewhere the user can see it.
-        let ids = provider_ids(&item.ids);
-        if ids
-            .as_object()
-            .is_some_and(|m| m.is_empty())
-        {
+        // Yamtrack reads the episode's own tvdb or imdb id and nothing else,
+        // a tmdb id included: its TV path never looks at that field. So an
+        // episode carrying only a tmdb id identifies nothing to it, even
+        // though `provider_ids` has something to send. Posting anyway takes a
+        // 200 and marks the row delivered, because `is_matchable` is satisfied
+        // by the series' ids this provider never reads. Refusing here is what
+        // puts the failure somewhere the user can see it.
+        //
+        // A movie is matched on any of the three, so only the episode rule is
+        // narrower than "carries an id at all".
+        let matchable = if item.kind == db::MediaKind::Episode {
+            item.ids
+                .imdb
+                .is_some()
+                || item
+                    .ids
+                    .tvdb
+                    .is_some()
+        } else {
+            provider_ids(&item.ids)
+                .as_object()
+                .is_some_and(|m| !m.is_empty())
+        };
+        if !matchable {
             return Err(MediaTrackerError::permanent(
-                "no tmdb, imdb or tvdb id to match on",
+                if item.kind == db::MediaKind::Episode {
+                    "no imdb or tvdb id to match the episode on"
+                } else {
+                    "no tmdb, imdb or tvdb id to match on"
+                },
             ));
         }
         post(
@@ -562,6 +580,63 @@ mod tests {
             0,
             "the delivery went out and came back a 200 that recorded nothing"
         );
+    }
+
+    /// The shape most of a real library is in: TMDB gives an episode its own
+    /// tmdb id and no `external_ids`. `provider_ids` has something to send, so
+    /// an emptiness check passes it, but Yamtrack's TV path never reads tmdb.
+    #[tokio::test]
+    async fn an_episode_known_only_by_tmdb_is_refused() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST);
+            then.status(200);
+        });
+
+        let mut target = episode();
+        target.ids = db::ExternalIds {
+            tmdb: Some(4762043),
+            ..Default::default()
+        };
+
+        let err = addon(&server)
+            .on_event(&MediaTrackerEvent::MarkPlayed, &target, &creds(), &ctx())
+            .await
+            .expect_err("a tmdb id names an episode to nobody here");
+
+        assert!(
+            matches!(err, MediaTrackerError::Permanent { .. }),
+            "{err:?}"
+        );
+        assert_eq!(
+            mock.hits(),
+            0,
+            "the delivery went out carrying an id this provider does not read"
+        );
+    }
+
+    /// The same id on a movie is enough, so the narrower rule is the episode's
+    /// alone.
+    #[tokio::test]
+    async fn a_movie_known_only_by_tmdb_still_goes_out() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST);
+            then.status(200);
+        });
+
+        let mut target = movie();
+        target.ids = db::ExternalIds {
+            tmdb: Some(949),
+            ..Default::default()
+        };
+
+        addon(&server)
+            .on_event(&MediaTrackerEvent::MarkPlayed, &target, &creds(), &ctx())
+            .await
+            .unwrap();
+
+        mock.assert();
     }
 
     #[tokio::test]
