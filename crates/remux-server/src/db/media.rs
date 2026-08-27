@@ -1123,12 +1123,11 @@ impl ExternalIds {
                 // Episode-specific video ID from the addon takes priority.
                 if let Some(ref cid) = self.custom_stremio_id {
                     ids.push(cid.clone());
+                } else if let Some(cid) = gp_custom {
+                    ids.push(format!("{cid}:{s}:{e}"));
                 }
                 if let Some(imdb) = gp_imdb {
                     ids.push(format!("{imdb}:{s}:{e}"));
-                }
-                if let Some(cid) = gp_custom {
-                    ids.push(format!("{cid}:{s}:{e}"));
                 }
                 if let Some(tmdb) = gp_tmdb {
                     ids.push(format!("tmdb:{tmdb}:{s}:{e}"));
