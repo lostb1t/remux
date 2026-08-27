@@ -499,7 +499,7 @@ jobs:
 
   merge-docker:
     name: Merge Docker manifests
-    needs: build-docker
+    needs: [build-docker, build-desktop, smoke-test-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: read
