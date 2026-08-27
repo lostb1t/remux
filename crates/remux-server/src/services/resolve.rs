@@ -452,16 +452,32 @@ impl MediaResolveService {
             None => None,
         };
 
-        // TheTVDB carries episodes TMDB has no `external_ids` for at all, which
-        // is most of a long-running show. It answers with the tvdb id alone,
-        // which is the id an episode is matched on anyway.
-        if patch.is_none() {
-            patch = Self::episode_tvdb_id(series, season, number, ctx)
-                .await
-                .map(|tvdb| db::ExternalIds {
-                    tvdb: Some(tvdb),
-                    ..Default::default()
-                });
+        // TheTVDB carries episodes TMDB has no ids for, which is most of a
+        // long-running show. Asked whenever TMDB left the two ids that name an
+        // episode elsewhere unfilled, not merely when it answered nothing at
+        // all: TMDB routinely holds an episode record whose `external_ids` are
+        // empty, and that answer carries its own tmdb id, so treating it as a
+        // result would skip the source that has what is missing.
+        let episode_still_unnamed = patch
+            .as_ref()
+            .map_or(true, |p| {
+                p.tvdb
+                    .is_none()
+                    && p.imdb
+                        .is_none()
+            });
+        if episode_still_unnamed
+            && let Some(tvdb) = Self::episode_tvdb_id(series, season, number, ctx).await
+        {
+            match patch.as_mut() {
+                Some(p) => p.tvdb = Some(tvdb),
+                None => {
+                    patch = Some(db::ExternalIds {
+                        tvdb: Some(tvdb),
+                        ..Default::default()
+                    })
+                }
+            }
         }
 
         let Some(patch) = patch else {
@@ -499,11 +515,18 @@ impl MediaResolveService {
         number: i64,
         ctx: &AppContext,
     ) -> Option<i64> {
-        let series_tvdb = series
+        let Some(series_tvdb) = series
             .external_ids
-            .tvdb?;
-        let client = crate::common::tvdb_client(ctx).await?;
-        client
+            .tvdb
+        else {
+            tracing::debug!(series = %series.title, "no series tvdb id to ask about");
+            return None;
+        };
+        let Some(client) = crate::common::tvdb_client(ctx).await else {
+            tracing::debug!("no tvdb client: key unset or login failed");
+            return None;
+        };
+        match client
             .execute(
                 sdks::tvdb::SeriesEpisodesEndpoint {
                     series_id: series_tvdb,
@@ -525,8 +548,23 @@ impl MediaResolveService {
                 }),
             )
             .await
-            .ok()?
-            .episode_id()
+        {
+            Ok(res) => {
+                let id = res.episode_id();
+                tracing::debug!(
+                    series_tvdb,
+                    season,
+                    number,
+                    ?id,
+                    "tvdb episode lookup"
+                );
+                id
+            }
+            Err(e) => {
+                tracing::warn!(series_tvdb, season, number, error = %e, "tvdb lookup failed");
+                None
+            }
+        }
     }
 
     async fn fill_series_tmdb(
