@@ -8,6 +8,7 @@ pub mod remuxdb;
 pub mod stremio;
 pub mod tmdb;
 pub mod trakt;
+pub mod tvdb;
 
 use bytes::Bytes;
 use http::{Extensions, HeaderMap, HeaderValue, Method, header};
