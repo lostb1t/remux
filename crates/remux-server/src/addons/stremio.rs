@@ -1426,6 +1426,27 @@ fn stream_identifying_text(s: &sdks::stremio::Stream) -> String {
     parts.join(" ")
 }
 
+fn extract_year(text: &str) -> Option<u32> {
+    static YEAR_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| {
+            regex::Regex::new(r"(?i)(?:^|[\s._\-\[(])(19\d\d|20\d\d)(?:[\s._\-\])]|$)")
+                .unwrap()
+        });
+    for cap in YEAR_RE.captures_iter(text) {
+        if let Some(m) = cap.get(1) {
+            if let Ok(y) = m
+                .as_str()
+                .parse::<u32>()
+            {
+                if (1920..=2040).contains(&y) && y != 1080 && y != 2160 {
+                    return Some(y);
+                }
+            }
+        }
+    }
+    None
+}
+
 fn stremio_stream_matches_media(s: &sdks::stremio::Stream, media: &db::Media) -> bool {
     let meta = stremio_stream_metadata(s);
     let filename = meta
@@ -1463,6 +1484,31 @@ fn stremio_stream_matches_media(s: &sdks::stremio::Stream, media: &db::Media) ->
         .is_empty()
     {
         return true;
+    }
+
+    // Release year mismatch check (e.g. 1999 anime vs 2023 live action remake)
+    let target_year: Option<u32> = match media.kind {
+        db::MediaKind::Episode => media
+            .grandparent
+            .as_ref()
+            .and_then(|gp| gp.released_at)
+            .or(media.released_at)
+            .map(|d| chrono::Datelike::year(&d) as u32),
+        _ => media
+            .released_at
+            .map(|d| chrono::Datelike::year(&d) as u32),
+    };
+    if let Some(target_y) = target_year {
+        if let Some(stream_y) = extract_year(&text) {
+            if stream_y != target_y && (stream_y as i32 - target_y as i32).abs() > 1 {
+                tracing::debug!(
+                    stream_year = stream_y,
+                    target_year = target_y,
+                    "stremio stream rejected: year mismatch"
+                );
+                return false;
+            }
+        }
     }
 
     match media.kind {
@@ -1583,15 +1629,22 @@ async fn stremio_streams(
         .stremio_media_type(&media.kind);
 
     let mut last_err: Option<anyhow::Error> = None;
-    let mut streams_opt: Option<Vec<sdks::stremio::Stream>> = None;
+    let mut valid_streams: Vec<sdks::stremio::Stream> = Vec::new();
     for id in ids_to_try {
         match svc
             .get_streams(media_type.clone(), id)
             .await
         {
             Ok(s) => {
-                streams_opt = Some(s);
-                break;
+                let matching: Vec<_> = s
+                    .into_iter()
+                    .filter(|s| s.is_valid())
+                    .filter(|s| stremio_stream_matches_media(s, media))
+                    .collect();
+                if !matching.is_empty() {
+                    valid_streams = matching;
+                    break;
+                }
             }
             Err(e) if is_404(&e) => {
                 last_err = Some(e);
@@ -1599,15 +1652,12 @@ async fn stremio_streams(
             Err(e) => return Err(e),
         }
     }
-    let streams = match streams_opt {
-        Some(s) => s,
-        None => return Err(last_err.unwrap_or_else(|| anyhow!("no streams found"))),
-    };
+    if valid_streams.is_empty() {
+        return Err(last_err.unwrap_or_else(|| anyhow!("no streams found")));
+    }
 
-    Ok(streams
+    Ok(valid_streams
         .into_iter()
-        .filter(|s| s.is_valid())
-        .filter(|s| stremio_stream_matches_media(s, media))
         .filter_map(|s| {
             let sd = s
                 .stream_data
