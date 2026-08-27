@@ -701,9 +701,13 @@ impl MediaResolveService {
             &deezer_artist.to_string(),
         );
 
+        // Map the transient store key to the item's stable UUID (no-op for
+        // deezer-keyed search results).
+        Self::save_alias(ctx, id, media.id).await;
+
         // A full discography sync is dozens of Deezer calls — keep it off the
-        // click's critical path. The stub upsert also dedupes concurrent
-        // clicks: only the first one sees a missing artist and spawns the sync.
+        // click's critical path. Concurrent first clicks on the same new
+        // artist may both spawn it; the sync is idempotent (stable UUIDs).
         if db::Media::get_by_id(&ctx.db, &artist_id)
             .await?
             .is_none()
@@ -817,11 +821,12 @@ impl MediaResolveService {
         {
             clicked.grandparent_id = Some(artist_id);
         }
+        let clicked_id = clicked.id;
         if let Err(e) = db::Media::upsert(&ctx.db, &[clicked]).await {
             warn!(%id, error = %e, "persist_music: failed to upsert clicked item");
             return Ok(None);
         }
-        Ok(db::Media::get_by_id(&ctx.db, &id).await?)
+        Ok(db::Media::get_by_id(&ctx.db, &clicked_id).await?)
     }
 
     /// Album root stable-keyed by the Deezer album ID, for tracks whose
