@@ -904,6 +904,36 @@ where
     }
 }
 
+pub fn deserialize_option_string_from_any<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrNumberOrBool {
+        String(String),
+        Number(serde_json::Number),
+        Bool(bool),
+    }
+
+    let value = Option::<StringOrNumberOrBool>::deserialize(deserializer)?;
+    Ok(match value {
+        Some(StringOrNumberOrBool::String(s)) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Some(StringOrNumberOrBool::Number(n)) => Some(n.to_string()),
+        Some(StringOrNumberOrBool::Bool(b)) => Some(b.to_string()),
+        None => None,
+    })
+}
+
 /// Deserializes an optional `NaiveDate` from a string, treating empty strings as `None`.
 /// TMDB returns `""` instead of `null` for missing dates, which chrono refuses to parse.
 pub fn deserialize_option_naive_date<'de, D>(
