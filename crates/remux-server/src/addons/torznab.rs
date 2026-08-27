@@ -9,7 +9,11 @@ use super::{
     AddonCapabilities, AddonKind, AddonMetadata, AddonOption, AddonOptionType,
     AddonPreset, AddonPresetRegistration, MediaKind, ResourceType, StreamAddon,
 };
-use crate::{AppContext, api, db};
+use crate::{
+    AppContext, api,
+    common::{contains_all_tokens, normalize_for_match, significant_tokens},
+    db,
+};
 
 const MAX_RESULTS: usize = 10;
 const MAX_CANDIDATES: usize = 100;
@@ -808,54 +812,6 @@ fn infer_quality(title: &str) -> Option<&'static str> {
             }
         })
         .or_else(|| infer_video_quality(title))
-}
-
-fn significant_tokens(input: &str) -> Vec<String> {
-    normalize_for_match(input)
-        .split_whitespace()
-        .filter(|t| t.len() > 1)
-        .filter(|t| {
-            !matches!(
-                *t,
-                "a" | "an"
-                    | "and"
-                    | "by"
-                    | "feat"
-                    | "ft"
-                    | "in"
-                    | "of"
-                    | "on"
-                    | "remaster"
-                    | "remastered"
-                    | "the"
-                    | "with"
-            )
-        })
-        .map(str::to_string)
-        .collect()
-}
-
-fn normalize_for_match(input: &str) -> String {
-    input
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                ' '
-            }
-        })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn contains_all_tokens(haystack: &str, tokens: &[String]) -> bool {
-    !tokens.is_empty()
-        && tokens
-            .iter()
-            .all(|t| haystack.contains(t.as_str()))
 }
 
 fn magnet_to_descriptor(
