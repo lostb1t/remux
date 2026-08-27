@@ -534,6 +534,139 @@ fn select_sidecar_subtitles(
         .collect()
 }
 
+fn parse_season_episode(s: &str) -> Option<(Option<u32>, u32)> {
+    static SE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)[sS](\d{1,4})[eE](\d{1,4})").unwrap()
+    });
+    if let Some(caps) = SE_RE.captures(s) {
+        let season = caps[1]
+            .parse::<u32>()
+            .ok();
+        let episode = caps[2]
+            .parse::<u32>()
+            .ok()?;
+        return Some((season, episode));
+    }
+
+    static X_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)(?:^|[\s._\-\[])(\d{1,4})x(\d{1,4})(?:[\s._\-\])]|$)")
+            .unwrap()
+    });
+    if let Some(caps) = X_RE.captures(s) {
+        let season = caps[1]
+            .parse::<u32>()
+            .ok();
+        let episode = caps[2]
+            .parse::<u32>()
+            .ok()?;
+        return Some((season, episode));
+    }
+
+    static EP_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)(?:^|[\s._\-\[])(?:ep|episode)[._\-\s]*(\d{1,4})(?:[\s._\-\])]|$)",
+        )
+        .unwrap()
+    });
+    if let Some(caps) = EP_RE.captures(s) {
+        let episode = caps[1]
+            .parse::<u32>()
+            .ok()?;
+        return Some((None, episode));
+    }
+
+    static E_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)(?:^|[\s._\-\[])[eE](\d{1,4})(?:[\s._\-\])]|$)")
+            .unwrap()
+    });
+    if let Some(caps) = E_RE.captures(s) {
+        let episode = caps[1]
+            .parse::<u32>()
+            .ok()?;
+        return Some((None, episode));
+    }
+
+    None
+}
+
+fn matches_episode_pattern(filename: &str, wanted: &str) -> bool {
+    let Some((wanted_season, wanted_ep)) = parse_season_episode(wanted) else {
+        return false;
+    };
+
+    // 1. Try parsing season & episode directly from filename
+    if let Some((file_season, file_ep)) = parse_season_episode(filename) {
+        if file_ep == wanted_ep {
+            if wanted_season.is_none()
+                || file_season.is_none()
+                || wanted_season == file_season
+            {
+                return true;
+            }
+        }
+    }
+
+    // 2. Check token/format matches in lowercase filename
+    let lower = filename.to_ascii_lowercase();
+    let mut patterns = Vec::new();
+    if let Some(s) = wanted_season {
+        patterns.push(format!("s{:02}e{:02}", s, wanted_ep));
+        patterns.push(format!("s{}e{}", s, wanted_ep));
+        patterns.push(format!("{}x{:02}", s, wanted_ep));
+        patterns.push(format!("{}x{}", s, wanted_ep));
+    }
+    patterns.push(format!("ep{:02}", wanted_ep));
+    patterns.push(format!("ep{}", wanted_ep));
+    patterns.push(format!("e{:02}", wanted_ep));
+
+    for p in &patterns {
+        if lower.contains(p) {
+            return true;
+        }
+    }
+
+    // 3. Absolute numbering match (e.g. "0001", "001", "01" for episode 1)
+    let ep_strs = [
+        format!("{:04}", wanted_ep),
+        format!("{:03}", wanted_ep),
+        format!("{:02}", wanted_ep),
+    ];
+    for ep_str in ep_strs {
+        if let Some(pos) = lower.find(&ep_str) {
+            let before = if pos == 0 {
+                None
+            } else {
+                lower[..pos]
+                    .chars()
+                    .last()
+            };
+            let after_pos = pos + ep_str.len();
+            let after = if after_pos >= lower.len() {
+                None
+            } else {
+                lower[after_pos..]
+                    .chars()
+                    .next()
+            };
+            let before_ok = before.map_or(true, |c| !c.is_ascii_alphanumeric());
+            let after_ok =
+                after.map_or(true, |c| !c.is_ascii_alphanumeric() || c == 'v');
+            if before_ok && after_ok {
+                if wanted_ep == 720
+                    || wanted_ep == 1080
+                    || wanted_ep == 480
+                    || (wanted_ep >= 1990 && wanted_ep <= 2030)
+                {
+                    continue;
+                }
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 fn select_file_index(
     files: &[TorrentFile],
     requested_idx: Option<usize>,
@@ -579,6 +712,17 @@ fn select_file_index(
         .collect();
     if videos.len() == 1 {
         return Ok(videos[0].0);
+    }
+
+    if let Some(wanted) = wanted_file {
+        let matching_videos: Vec<(usize, &TorrentFile)> = videos
+            .iter()
+            .copied()
+            .filter(|(_, file)| matches_episode_pattern(&file.name, wanted))
+            .collect();
+        if matching_videos.len() == 1 {
+            return Ok(matching_videos[0].0);
+        }
     }
 
     videos.sort_by_key(|(_, file)| std::cmp::Reverse(file.length));
@@ -754,5 +898,39 @@ mod tests {
         );
         assert!(subtitles[0].is_forced);
         assert!(subtitles[0].is_hearing_impaired);
+    }
+
+    #[test]
+    fn test_select_file_index_matches_season_pack_episode_pattern() {
+        let files = vec![
+            file("Season 1/Show.Name.S01E01.1080p.mkv", 1_200),
+            file("Season 1/Show.Name.S01E02.1080p.mkv", 1_210),
+            file("Season 1/Show.Name.S01E03.1080p.mkv", 1_190),
+            file("Season 1/Show.Name.S01E04.1080p.mkv", 1_205),
+        ];
+
+        // Wanted by episode query or filename hint from another release
+        assert_eq!(
+            select_file_index(&files, None, Some("Show.Name.S01E03.720p.HDTV.mkv"))
+                .unwrap(),
+            2
+        );
+        assert_eq!(select_file_index(&files, None, Some("S01E03")).unwrap(), 2);
+        assert_eq!(select_file_index(&files, None, Some("1x03")).unwrap(), 2);
+
+        // Anime absolute numbering season pack
+        let anime_files = vec![
+            file("One Piece 0001.mkv", 500),
+            file("One Piece 0002.mkv", 510),
+            file("One Piece 0352.mkv", 520),
+        ];
+        assert_eq!(
+            select_file_index(&anime_files, None, Some("One Piece S01E01")).unwrap(),
+            0
+        );
+        assert_eq!(
+            select_file_index(&anime_files, None, Some("S01E01")).unwrap(),
+            0
+        );
     }
 }

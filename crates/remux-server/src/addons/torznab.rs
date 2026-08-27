@@ -321,17 +321,23 @@ impl TorznabAddon {
         let episode = media
             .idx
             .unwrap_or(1);
+        let series_title = media
+            .grandparent
+            .as_ref()
+            .map(|gp| {
+                gp.title
+                    .as_str()
+            })
+            .unwrap_or(&media.title);
         let se = format!("S{:02}E{:02}", season, episode);
-        let query = format!("{} {}", media.title, se);
+        let query = format!("{} {}", series_title, se);
 
-        debug!(query, title = %media.title, %se, "torznab episode stream lookup");
+        debug!(query, title = %series_title, %se, "torznab episode stream lookup");
 
         let search = MediaSearch {
-            title: media
-                .title
-                .clone(),
+            title: series_title.to_string(),
             extra: Some(se.clone()),
-            title_tokens: significant_tokens(&media.title),
+            title_tokens: significant_tokens(series_title),
             extra_tokens: vec![se.to_ascii_lowercase()],
         };
 
@@ -1008,5 +1014,33 @@ mod tests {
         assert_eq!(infer_video_quality("Show.S01E01.4K.HDR"), Some("4K"));
         assert_eq!(infer_video_quality("Movie.720p.WEB-DL"), Some("720p"));
         assert_eq!(infer_video_quality("Movie.BluRay.x264"), None);
+    }
+
+    #[test]
+    fn test_torznab_episode_search_uses_series_title() {
+        let series_title = "The Sopranos";
+        let se = "S01E01";
+        let search = MediaSearch {
+            title: series_title.to_string(),
+            extra: Some(se.to_string()),
+            title_tokens: significant_tokens(series_title),
+            extra_tokens: vec![se.to_ascii_lowercase()],
+        };
+
+        let sopranos_item = TorznabItem {
+            title: "The.Sopranos.S01E01.1080p.BluRay.x264".to_string(),
+            category: Some("5040".to_string()),
+            seeders: 10,
+            ..Default::default()
+        };
+        let unrelated_pilot = TorznabItem {
+            title: "Some.Other.Show.Pilot.S01E01.720p.HDTV".to_string(),
+            category: Some("5040".to_string()),
+            seeders: 50,
+            ..Default::default()
+        };
+
+        assert!(item_matches_title(&sopranos_item, &search));
+        assert!(!item_matches_title(&unrelated_pilot, &search));
     }
 }
