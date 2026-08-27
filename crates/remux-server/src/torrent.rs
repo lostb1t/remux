@@ -534,7 +534,7 @@ fn select_sidecar_subtitles(
         .collect()
 }
 
-fn parse_season_episode(s: &str) -> Option<(Option<u32>, u32)> {
+pub(crate) fn parse_season_episode(s: &str) -> Option<(Option<u32>, u32)> {
     static SE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(r"(?i)[sS](\d{1,4})[eE](\d{1,4})").unwrap()
     });
@@ -564,7 +564,7 @@ fn parse_season_episode(s: &str) -> Option<(Option<u32>, u32)> {
 
     static EP_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(
-            r"(?i)(?:^|[\s._\-\[])(?:ep|episode)[._\-\s]*(\d{1,4})(?:[\s._\-\])]|$)",
+            r"(?i)(?:^|[\s._\-\[])(?:ep|episode)[._\-\s]*\(?(\d{1,4})\)?(?:[\s._\-\])]|$)",
         )
         .unwrap()
     });
@@ -586,10 +586,38 @@ fn parse_season_episode(s: &str) -> Option<(Option<u32>, u32)> {
         return Some((None, episode));
     }
 
+    // Anime dash-separated episode number: " - 508 v2", " - 0001", " - 01"
+    static DASH_EP_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| {
+            regex::Regex::new(r"(?i)(?:^|\s)-\s*(\d{1,4})(?:v\d+)?(?:[\s._\-\])]|$)")
+                .unwrap()
+        });
+    if let Some(caps) = DASH_EP_RE.captures(s) {
+        let episode = caps[1]
+            .parse::<u32>()
+            .ok()?;
+        return Some((None, episode));
+    }
+
+    // Zero-padded absolute episode number: "0352.mkv", " 0001 "
+    static ZERO_PAD_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| {
+            regex::Regex::new(
+                r"(?i)(?:^|[\s._\-\[])(0\d{2,3})(?:v\d+)?(?:[\s._\-\])]|$)",
+            )
+            .unwrap()
+        });
+    if let Some(caps) = ZERO_PAD_RE.captures(s) {
+        let episode = caps[1]
+            .parse::<u32>()
+            .ok()?;
+        return Some((None, episode));
+    }
+
     None
 }
 
-fn matches_episode_pattern(filename: &str, wanted: &str) -> bool {
+pub(crate) fn matches_episode_pattern(filename: &str, wanted: &str) -> bool {
     let Some((wanted_season, wanted_ep)) = parse_season_episode(wanted) else {
         return false;
     };

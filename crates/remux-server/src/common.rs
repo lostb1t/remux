@@ -420,3 +420,51 @@ impl HideConsole for tokio::process::Command {
         self
     }
 }
+
+pub fn normalize_for_match(input: &str) -> String {
+    input
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub fn significant_tokens(input: &str) -> Vec<String> {
+    normalize_for_match(input)
+        .split_whitespace()
+        .filter(|t| t.len() > 1)
+        .filter(|t| {
+            !matches!(
+                *t,
+                "a" | "an"
+                    | "and"
+                    | "by"
+                    | "feat"
+                    | "ft"
+                    | "in"
+                    | "of"
+                    | "on"
+                    | "remaster"
+                    | "remastered"
+                    | "the"
+                    | "with"
+            )
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+pub fn contains_all_tokens(haystack: &str, tokens: &[String]) -> bool {
+    !tokens.is_empty()
+        && tokens
+            .iter()
+            .all(|t| haystack.contains(t.as_str()))
+}

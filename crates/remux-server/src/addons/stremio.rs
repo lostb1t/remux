@@ -1408,6 +1408,151 @@ fn rewrite_aio_url(url: &str, manifest_url: &StremioManifestUrl) -> String {
     parsed.to_string()
 }
 
+fn stream_identifying_text(s: &sdks::stremio::Stream) -> String {
+    let mut parts = Vec::new();
+    let meta = stremio_stream_metadata(s);
+    if let Some(ref fn_) = meta.filename {
+        parts.push(fn_.as_str());
+    }
+    if let Some(ref folder) = s.folder_name {
+        parts.push(folder.as_str());
+    }
+    if let Some(ref desc) = s.description {
+        parts.push(desc.as_str());
+    }
+    if let Some(ref name) = s.name {
+        parts.push(name.as_str());
+    }
+    parts.join(" ")
+}
+
+fn stremio_stream_matches_media(s: &sdks::stremio::Stream, media: &db::Media) -> bool {
+    let meta = stremio_stream_metadata(s);
+    let filename = meta
+        .filename
+        .as_deref()
+        .unwrap_or_default();
+
+    if let Some(ext) = filename
+        .rsplit('.')
+        .next()
+    {
+        if matches!(
+            ext.to_ascii_lowercase()
+                .as_str(),
+            "z01"
+                | "z02"
+                | "zip"
+                | "rar"
+                | "r00"
+                | "r01"
+                | "7z"
+                | "tar"
+                | "gz"
+                | "txt"
+                | "nfo"
+                | "exe"
+        ) {
+            return false;
+        }
+    }
+
+    let text = stream_identifying_text(s);
+    if text
+        .trim()
+        .is_empty()
+    {
+        return true;
+    }
+
+    match media.kind {
+        db::MediaKind::Episode => {
+            let series_title = media
+                .grandparent
+                .as_ref()
+                .map(|gp| {
+                    gp.title
+                        .as_str()
+                })
+                .unwrap_or(&media.title);
+            let target_season = media
+                .parent_idx
+                .unwrap_or(1) as u32;
+            let target_episode = media
+                .idx
+                .unwrap_or(1) as u32;
+
+            // 1. Series Title verification:
+            let series_tokens = crate::common::significant_tokens(series_title);
+            let ep_tokens = crate::common::significant_tokens(&media.title);
+            let norm_text = crate::common::normalize_for_match(&text);
+
+            let matches_title =
+                crate::common::contains_all_tokens(&norm_text, &series_tokens)
+                    || crate::common::contains_all_tokens(&norm_text, &ep_tokens);
+            if !matches_title {
+                tracing::debug!(
+                    stream_text = %text,
+                    %series_title,
+                    "stremio stream rejected: does not match series title"
+                );
+                return false;
+            }
+
+            // 2. Episode verification:
+            // If the stream references a specific episode in its filename or descriptor,
+            // verify it matches the target episode.
+            if !filename.is_empty() {
+                let wanted_se = format!("S{:02}E{:02}", target_season, target_episode);
+                if let Some((parsed_season, parsed_ep)) =
+                    crate::torrent::parse_season_episode(filename)
+                {
+                    if let Some(s) = parsed_season {
+                        if s != target_season {
+                            tracing::debug!(
+                                %filename,
+                                target_season,
+                                parsed_season = s,
+                                "stremio stream rejected: season mismatch"
+                            );
+                            return false;
+                        }
+                    }
+                    if parsed_ep != target_episode
+                        && !crate::torrent::matches_episode_pattern(
+                            filename, &wanted_se,
+                        )
+                    {
+                        tracing::debug!(
+                            %filename,
+                            target_episode,
+                            parsed_episode = parsed_ep,
+                            "stremio stream rejected: episode mismatch"
+                        );
+                        return false;
+                    }
+                }
+            }
+
+            true
+        }
+        db::MediaKind::Movie => {
+            let movie_tokens = crate::common::significant_tokens(&media.title);
+            let norm_text = crate::common::normalize_for_match(&text);
+            if !crate::common::contains_all_tokens(&norm_text, &movie_tokens) {
+                tracing::debug!(
+                    stream_text = %text,
+                    movie_title = %media.title,
+                    "stremio stream rejected: does not match movie title"
+                );
+                return false;
+            }
+            true
+        }
+        _ => true,
+    }
+}
+
 async fn stremio_streams(
     svc: &stremio_service::StremioService,
     manifest_url: &StremioManifestUrl,
@@ -1462,6 +1607,7 @@ async fn stremio_streams(
     Ok(streams
         .into_iter()
         .filter(|s| s.is_valid())
+        .filter(|s| stremio_stream_matches_media(s, media))
         .filter_map(|s| {
             let sd = s
                 .stream_data
@@ -1926,5 +2072,75 @@ mod tests {
             Vec::<TrackerUrl>::new()
         );
         assert_eq!(extract_trackers(&[]), Vec::<TrackerUrl>::new());
+    }
+
+    #[test]
+    fn stremio_stream_matches_media_filters_sopranos_and_wrong_episodes() {
+        let grandparent = db::Media {
+            title: "One Piece".to_string(),
+            kind: db::MediaKind::Series,
+            ..Default::default()
+        };
+        let mut episode = db::Media {
+            title: "I'm Luffy! The Man Who Will Become the Pirate King!".to_string(),
+            kind: db::MediaKind::Episode,
+            parent_idx: Some(1),
+            idx: Some(1),
+            ..Default::default()
+        };
+        episode.grandparent = Some(Box::new(grandparent));
+
+        let make_stream =
+            |name: &str, desc: &str, filename: &str| -> sdks::stremio::Stream {
+                serde_json::from_value(serde_json::json!({
+                    "name": name,
+                    "description": desc,
+                    "behaviorHints": {
+                        "filename": filename
+                    }
+                }))
+                .unwrap()
+            };
+
+        // Unrelated series (Sopranos) -> must be rejected
+        let sopranos_stream = make_stream(
+            "Comet",
+            "The.Sopranos.S01E01.The.Sopranos.1080p.BluRay.REMUX.mkv",
+            "The.Sopranos.S01E01.The.Sopranos.1080p.BluRay.REMUX.mkv",
+        );
+        assert!(!stremio_stream_matches_media(&sopranos_stream, &episode));
+
+        // Wrong episode of One Piece (508) -> must be rejected
+        let wrong_ep_stream = make_stream(
+            "SeaDex",
+            "One Piece - 508 v2 [F-R].mkv",
+            "One Piece - 508 v2 [F-R][64511665].mkv",
+        );
+        assert!(!stremio_stream_matches_media(&wrong_ep_stream, &episode));
+
+        // Wrong episode of One Piece (352) -> must be rejected
+        let wrong_ep_stream2 =
+            make_stream("ElfCache", "One Piece 0352.mkv", "One Piece 0352.mkv");
+        assert!(!stremio_stream_matches_media(&wrong_ep_stream2, &episode));
+
+        // Archive file (.z01) -> must be rejected
+        let archive_stream = make_stream("Comet", "", "One Piece.z01");
+        assert!(!stremio_stream_matches_media(&archive_stream, &episode));
+
+        // Target episode (S01E01) -> must match!
+        let correct_stream = make_stream(
+            "Torrentio",
+            "[A&C] One Piece S01E01 (0001) [43DA846C].mkv",
+            "[A&C] One Piece S01E01 (0001) (DVD HEVC 480p) [43DA846C].mkv",
+        );
+        assert!(stremio_stream_matches_media(&correct_stream, &episode));
+
+        // Absolute numbering target episode (0001) -> must match!
+        let correct_stream_abs = make_stream(
+            "Torrentio",
+            "One Piece - 0001 (DVD 540p) [F-R].mkv",
+            "One Piece - 0001 (DVD 540p) [F-R][bb5cdb70].mkv",
+        );
+        assert!(stremio_stream_matches_media(&correct_stream_abs, &episode));
     }
 }
