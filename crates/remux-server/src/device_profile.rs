@@ -128,7 +128,6 @@ impl DeviceProfileExt for DeviceProfile {
         });
 
         check_codec_profiles(self, media_source, &mut reasons);
-        check_subtitle_codec(self, media_source, &mut reasons);
 
         reasons
     }
@@ -175,59 +174,6 @@ fn check_codec_profiles(
             }
             _ => {}
         }
-    }
-}
-
-fn check_subtitle_codec(
-    profile: &DeviceProfile,
-    media_source: &MediaSourceInfo,
-    reasons: &mut TranscodeReasons,
-) {
-    let sub_idx = match media_source.default_subtitle_stream_index {
-        Some(idx) => idx,
-        None => return,
-    };
-    let sub_stream = media_source
-        .media_streams
-        .iter()
-        .find(|s| {
-            s.index == sub_idx && matches!(s.type_, Some(MediaStreamType::Subtitle))
-        });
-    let sub_codec = match sub_stream.and_then(|s| {
-        s.codec
-            .as_deref()
-    }) {
-        Some(c) => c,
-        None => return,
-    };
-
-    // Drop/External/Embed are passthrough-compatible; Encode and Hls require transcoding.
-    let supported = profile
-        .subtitle_profiles
-        .iter()
-        .any(|p| {
-            let format_matches = p
-                .format
-                .as_deref()
-                .map(|f| subtitle_codec_matches_profile(sub_codec, f))
-                .unwrap_or(false);
-            if !format_matches {
-                return false;
-            }
-            matches!(
-                p.method,
-                Some(
-                    SubtitleDeliveryMethod::Drop
-                        | SubtitleDeliveryMethod::External
-                        | SubtitleDeliveryMethod::Embed
-                )
-            )
-        });
-
-    if !supported {
-        reasons.insert(TranscodeReason::SubtitleCodecNotSupported(
-            sub_codec.to_string(),
-        ));
     }
 }
 
@@ -624,6 +570,55 @@ mod tests {
                 "hdmv_pgs_subtitle".to_string()
             )),
             "alias-matched subtitle should remain direct-play eligible: {reasons:?}"
+        );
+    }
+
+    #[test]
+    fn test_direct_play_mkv_with_unsupported_embedded_subtitle_codec() {
+        // Device profile only supports VTT subtitles (like Roku without direct PGS)
+        let profile = DeviceProfile {
+            direct_play_profiles: vec![DirectPlayProfile {
+                container: Some(vec![VideoContainer::Mkv]),
+                video_codec: Some(vec![VideoCodec::H264]),
+                audio_codec: Some(vec![AudioCodec::Aac]),
+                type_: Some(DlnaProfileType::Video),
+            }],
+            subtitle_profiles: vec![SubtitleProfile {
+                format: Some("vtt".to_string()),
+                method: Some(SubtitleDeliveryMethod::External),
+            }],
+            ..Default::default()
+        };
+        let media_source = MediaSourceInfo {
+            container: Some("mkv".to_string()),
+            default_subtitle_stream_index: Some(2),
+            media_streams: vec![
+                MediaStream {
+                    codec: Some("h264".to_string()),
+                    type_: Some(MediaStreamType::Video),
+                    index: 0,
+                    ..Default::default()
+                },
+                MediaStream {
+                    codec: Some("aac".to_string()),
+                    type_: Some(MediaStreamType::Audio),
+                    index: 1,
+                    ..Default::default()
+                },
+                MediaStream {
+                    codec: Some("hdmv_pgs_subtitle".to_string()),
+                    type_: Some(MediaStreamType::Subtitle),
+                    index: 2,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let reasons = profile.check_direct_play(&media_source);
+        assert!(
+            reasons.is_empty(),
+            "direct play should be permitted for MKV even when embedded subtitle codec is not in profile: {reasons:?}"
         );
     }
 }
