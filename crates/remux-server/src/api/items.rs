@@ -1548,9 +1548,7 @@ async fn item_for_user(
     fields: Option<&[api::ItemFields]>,
     target_user_id: Option<Uuid>,
 ) -> Result<Option<api::BaseItemDto>> {
-    let want_streams = fields
-        .map(|f| f.contains(&api::ItemFields::MediaSources))
-        .unwrap_or(true);
+    let want_streams = true;
     let server_config = db::Settings::get_config_or_default(
         &state
             .ctx
