@@ -1069,14 +1069,6 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             .as_ref()
             .and_then(|s| s.first())
             .and_then(|s| s.bitrate);
-        item.media_streams = item
-            .media_sources
-            .as_ref()
-            .and_then(|s| s.first())
-            .map(|s| {
-                s.media_streams
-                    .clone()
-            });
         if media.kind != db::MediaKind::Track {
             item.video_type = Some(VideoType::VideoFile);
         }
