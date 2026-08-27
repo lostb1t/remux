@@ -291,15 +291,24 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                             })
                                             .collect();
                                         let client = client.clone();
+                                        let mut reorder_error = error;
                                         spawn(async move {
                                             for (id, priority) in updates {
-                                                let _ = client.execute(UpdateAddon {
-                                                    id,
-                                                    payload: UpdateAddonRequest {
-                                                        priority: Some(priority),
-                                                        ..Default::default()
-                                                    },
-                                                }).await;
+                                                if let Err(e) = client
+                                                    .execute(UpdateAddon {
+                                                        id,
+                                                        payload: UpdateAddonRequest {
+                                                            priority: Some(priority),
+                                                            ..Default::default()
+                                                        },
+                                                    })
+                                                    .await
+                                                {
+                                                    reorder_error.set(Some(format!(
+                                                        "Failed to update addon order: {e}"
+                                                    )));
+                                                    return;
+                                                }
                                             }
                                         });
                                     },

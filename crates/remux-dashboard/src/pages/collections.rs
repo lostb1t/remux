@@ -191,16 +191,25 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                             .collect();
 
                                         let app_state = app_state_reorder.clone();
+                                        let mut reorder_error = error;
 
                                         spawn(async move {
                                             for (id, so) in updates {
-                                                let _ = app_state.execute(PatchItem {
-                                                    item_id: id,
-                                                    payload: PatchItemPayload {
-                                                        sort_order: Some(so),
-                                                        ..Default::default()
-                                                    },
-                                                }).await;
+                                                if let Err(e) = app_state
+                                                    .execute(PatchItem {
+                                                        item_id: id,
+                                                        payload: PatchItemPayload {
+                                                            sort_order: Some(so),
+                                                            ..Default::default()
+                                                        },
+                                                    })
+                                                    .await
+                                                {
+                                                    reorder_error.set(Some(format!(
+                                                        "Failed to update collection order: {e}"
+                                                    )));
+                                                    return;
+                                                }
                                             }
                                         });
                                     },
