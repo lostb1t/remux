@@ -469,8 +469,8 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: lostb1t
+          password: ${{ secrets.GH_TOKEN }}
 
       - name: Build and push by digest
         id: build
@@ -499,7 +499,7 @@ jobs:
 
   merge-docker:
     name: Merge Docker manifests
-    needs: build-docker
+    needs: [build-docker, build-desktop, smoke-test-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -516,8 +516,8 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: lostb1t
+          password: ${{ secrets.GH_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
