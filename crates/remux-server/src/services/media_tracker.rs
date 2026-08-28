@@ -204,13 +204,13 @@ impl Subscriber for MediaTrackerSubscriber {
             return Ok(());
         }
 
-        let Ok(Some(mut media)) = db::Media::get_by_id(
+        let Some(mut media) = db::Media::get_by_id(
             &self
                 .ctx
                 .db,
             &media_id,
         )
-        .await
+        .await?
         else {
             return Ok(());
         };
