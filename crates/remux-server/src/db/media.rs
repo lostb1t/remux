@@ -7836,17 +7836,35 @@ mod tests {
         );
         assert!(candidates.contains(&nested), "missing nested candidate");
 
-        // (2) flat keys from every grandparent external ID
-        for key in ["tt1234567:1:3", "fk:27:1:3", "tmdb:12345:1:3"] {
+        // (2) flat keys from grandparent external IDs (omitting reconstructed
+        // grandparent custom ID because the episode has its own captured video ID)
+        for key in ["tt1234567:1:3", "tmdb:12345:1:3"] {
             let flat = crate::common::stable_media_uuid(&MediaKind::Episode, key);
             assert!(candidates.contains(&flat), "missing flat candidate {key}");
         }
+        let reconstructed_custom =
+            crate::common::stable_media_uuid(&MediaKind::Episode, "fk:27:1:3");
+        assert!(
+            !candidates.contains(&reconstructed_custom),
+            "reconstructed grandparent custom ID must be omitted when episode has its own video ID"
+        );
 
         // (3) the episode's own Stremio ID
         let own = crate::common::stable_media_uuid(&MediaKind::Episode, "fk-ep-3");
         assert!(
             candidates.contains(&own),
             "missing own stremio-id candidate"
+        );
+
+        // An episode without its own custom_stremio_id still includes the reconstructed grandparent custom ID
+        let episode_no_custom = Media {
+            external_ids: ExternalIds::default(),
+            ..episode.clone()
+        };
+        let candidates_no_custom = Media::ext_id_uuid_candidates(&episode_no_custom);
+        assert!(
+            candidates_no_custom.contains(&reconstructed_custom),
+            "missing flat candidate fk:27:1:3 when episode has no own custom stremio ID"
         );
 
         // The current id itself must never be returned as a candidate.
