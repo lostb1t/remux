@@ -256,8 +256,9 @@ fn build_video_transcode(
     if video_codec == "copy" && audio_codec == "copy" {
         let src = source
             .container
-            .as_deref()
-            .unwrap_or("")
+            .as_ref()
+            .map(|c| c.to_string())
+            .unwrap_or_default()
             .to_lowercase();
         if src == container.to_lowercase() {
             return TranscodeDecision::DirectPlay;

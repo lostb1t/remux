@@ -656,7 +656,7 @@ async fn items_playbackinfo_inner(
             supports_transcoding: true,
             path: Some("/videos/no-streams".to_string()),
             run_time_ticks: Some(10 * 3600 * 10_000_000),
-            container: Some("mp4".to_string()),
+            container: Some(remux_sdks::remux::VideoContainer::Mp4),
             bitrate: Some(100),
             size: Some(NO_STREAMS_VIDEO.len() as i64),
             formats: Some(vec![]),
@@ -2419,7 +2419,7 @@ mod tests {
         };
 
         let make_probe = || MediaSourceInfo {
-            container: Some("mp4".to_string()),
+            container: Some(remux_sdks::remux::VideoContainer::Mp4),
             bitrate: Some(8_000_000),
             run_time_ticks: Some(100_000_000),
             media_streams: vec![
@@ -2667,7 +2667,7 @@ mod tests {
         };
         let now = chrono::Utc::now().naive_utc();
         let probe = MediaSourceInfo {
-            container: Some("mp4".to_string()),
+            container: Some(remux_sdks::remux::VideoContainer::Mp4),
             bitrate: Some(8_000_000),
             run_time_ticks: Some(100_000_000),
             media_streams: vec![
@@ -2830,7 +2830,7 @@ mod tests {
         // audio track is Dutch — the server must pick English (index 2).
         let now = chrono::Utc::now().naive_utc();
         let probe = MediaSourceInfo {
-            container: Some("mp4".to_string()),
+            container: Some(remux_sdks::remux::VideoContainer::Mp4),
             bitrate: Some(8_000_000),
             run_time_ticks: Some(100_000_000),
             media_streams: vec![

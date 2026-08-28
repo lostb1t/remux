@@ -259,6 +259,26 @@ impl VideoContainer {
             .ok()
             .filter(|c| c.is_known())
     }
+
+    /// True when the container string represents an HLS playlist source (m3u8),
+    /// which ffprobe labels as "hls" — a transport, not a real container format.
+    pub fn is_hls_input(&self) -> bool {
+        matches!(self, Self::Other(s) if s.eq_ignore_ascii_case("hls"))
+    }
+}
+
+impl serde::Serialize for VideoContainer {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for VideoContainer {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        s.parse()
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 impl AudioCodec {

@@ -180,7 +180,7 @@ fn check_codec_profiles(
 pub trait DirectPlayProfileExt {
     fn supports_media_source(&self, media_source: &MediaSourceInfo) -> bool;
     fn check_reasons(&self, media_source: &MediaSourceInfo) -> TranscodeReasons;
-    fn supports_container(&self, container: &str) -> bool;
+    fn supports_container(&self, container: &VideoContainer) -> bool;
     fn supports_video_codec(&self, codec: &str) -> bool;
     fn supports_audio_codec(&self, codec: &str) -> bool;
 }
@@ -208,7 +208,7 @@ impl DirectPlayProfileExt for DirectPlayProfile {
                 Some(source_container) => {
                     if !self.supports_container(source_container) {
                         reasons.insert(TranscodeReason::ContainerNotSupported(
-                            format!("source={source_container}"),
+                            format!("source={}", source_container),
                         ));
                     }
                 }
@@ -238,19 +238,16 @@ impl DirectPlayProfileExt for DirectPlayProfile {
         reasons
     }
 
-    fn supports_container(&self, source: &str) -> bool {
+    fn supports_container(&self, source: &VideoContainer) -> bool {
         let Some(list) = &self.container else {
             return true; // None = any container
         };
-        let src: VideoContainer = source
-            .parse()
-            .unwrap_or_else(|_| VideoContainer::Other(source.to_owned()));
         list.iter()
-            .any(|c| match (c, &src) {
+            .any(|c| match (c, source) {
                 (VideoContainer::Other(a), VideoContainer::Other(b)) => {
                     a.eq_ignore_ascii_case(b)
                 }
-                _ => c == &src,
+                _ => c == source,
             })
     }
 

@@ -625,7 +625,10 @@ impl From<&MediaInfo> for MediaSourceInfo {
             container: version
                 .container
                 .as_deref()
-                .map(remux_utils::normalize_container),
+                .and_then(|s| {
+                    s.parse::<crate::remux::VideoContainer>()
+                        .ok()
+                }),
             size: version.size,
             run_time_ticks: version
                 .duration
