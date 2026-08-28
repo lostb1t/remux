@@ -584,7 +584,8 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
         .and_then(|s| {
             s.parse::<remux_sdks::remux::VideoContainer>()
                 .ok()
-        });
+        })
+        .map(|c| c.canonical());
 
     let overall_bitrate = probe
         .format

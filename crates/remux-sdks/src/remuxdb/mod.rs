@@ -628,7 +628,8 @@ impl From<&MediaInfo> for MediaSourceInfo {
                 .and_then(|s| {
                     s.parse::<crate::remux::VideoContainer>()
                         .ok()
-                }),
+                })
+                .map(|c| c.canonical()),
             size: version.size,
             run_time_ticks: version
                 .duration
