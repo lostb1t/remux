@@ -96,34 +96,94 @@ impl Auth for JellyfinApiKeyAuth {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum ClientError {
     #[error("unauthorized")]
     Unauthorized,
     #[error("rate limited, retry after {retry_after_secs}s")]
     RateLimited { retry_after_secs: u64 },
-    #[error("http error (status={status}) endpoint={endpoint:?}: {message}")]
+    #[error("http error (status={status}): {message}")]
     Http {
         status: u16,
         message: String,
         endpoint: Option<String>,
         body: Option<String>,
     },
-    #[error("json error (status={status}) endpoint={endpoint:?}: {source}")]
+    #[error("json error (status={status}): {source}")]
     Json {
         status: u16,
         source: serde_json::Error,
         endpoint: Option<String>,
         body: Option<String>,
     },
-    #[error(transparent)]
+    #[error("transport error")]
     Transport(#[from] reqwest::Error),
-    #[error(transparent)]
+    #[error("URL error")]
     Url(#[from] url::ParseError),
-    #[error(transparent)]
+    #[error("URL encoding error")]
     UrlEncoded(#[from] serde_urlencoded::ser::Error),
-    #[error(transparent)]
+    #[error("client error")]
     Other(#[from] anyhow::Error),
+}
+
+impl fmt::Debug for ClientError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Http {
+                status,
+                message,
+                endpoint,
+                body,
+            } => f
+                .debug_struct("ClientError::Http")
+                .field("status", status)
+                .field("message", message)
+                .field(
+                    "endpoint",
+                    &endpoint
+                        .as_ref()
+                        .map(|_| "<redacted>"),
+                )
+                .field(
+                    "body",
+                    &body
+                        .as_ref()
+                        .map(|_| "<redacted>"),
+                )
+                .finish(),
+            Self::Json {
+                status,
+                source,
+                endpoint,
+                body,
+            } => f
+                .debug_struct("ClientError::Json")
+                .field("status", status)
+                .field("source", source)
+                .field(
+                    "endpoint",
+                    &endpoint
+                        .as_ref()
+                        .map(|_| "<redacted>"),
+                )
+                .field(
+                    "body",
+                    &body
+                        .as_ref()
+                        .map(|_| "<redacted>"),
+                )
+                .finish(),
+            Self::Unauthorized => f.write_str("ClientError::Unauthorized"),
+            Self::RateLimited { retry_after_secs } => f
+                .debug_struct("ClientError::RateLimited")
+                .field("retry_after_secs", retry_after_secs)
+                .finish(),
+            Self::Transport(_) => f.write_str("ClientError::Transport(<redacted>)"),
+            Self::Url(_) => f.write_str("ClientError::Url(<redacted>)"),
+            Self::UrlEncoded(_) => f.write_str("ClientError::UrlEncoded(<redacted>)"),
+            Self::Other(_) => f.write_str("ClientError::Other(<redacted>)"),
+        }
+    }
 }
 
 impl ClientError {
@@ -134,6 +194,31 @@ impl ClientError {
             ClientError::Http { message, .. } => message.clone(),
             other => other.to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod client_error_tests {
+    use super::*;
+
+    #[test]
+    fn error_formatting_redacts_credentialed_endpoints() {
+        let secret = "do-not-log-this-token";
+        let error = ClientError::Http {
+            status: 502,
+            message: "upstream unavailable".to_string(),
+            endpoint: Some(format!(
+                "https://addon.example/manifest.json?token={secret}"
+            )),
+            body: None,
+        };
+
+        assert!(
+            !error
+                .to_string()
+                .contains(secret)
+        );
+        assert!(!format!("{error:?}").contains(secret));
     }
 }
 
