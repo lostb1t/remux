@@ -1545,7 +1545,7 @@ async fn item_for_user(
     state: AppState,
     session: auth::AuthSession,
     id: Uuid,
-    fields: Option<&[api::ItemFields]>,
+    _fields: Option<&[api::ItemFields]>,
     target_user_id: Option<Uuid>,
 ) -> Result<Option<api::BaseItemDto>> {
     let want_streams = true;
