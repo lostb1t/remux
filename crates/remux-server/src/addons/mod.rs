@@ -2871,10 +2871,7 @@ impl AddonService {
         let probe_t = std::time::Instant::now();
         let (raw, probe_versions) = tokio::join!(
             self.get_streams(media, ctx, user_id),
-            tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                probe_versions_fut,
-            )
+            tokio::time::timeout(std::time::Duration::from_secs(5), probe_versions_fut,)
         );
         let raw = raw?;
         let probe_versions = match probe_versions {
