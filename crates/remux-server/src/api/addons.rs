@@ -776,9 +776,19 @@ mod test {
             stremio
                 .options
                 .len(),
-            1
+            3
         );
         assert_eq!(stremio.options[0].id, "manifest_url");
+        assert_eq!(stremio.options[1].id, "strict_stream_matching");
+        assert_eq!(
+            stremio.options[1].default,
+            Some(serde_json::Value::Bool(false))
+        );
+        assert_eq!(stremio.options[2].id, "resolve_debrid_packs_as_torrents");
+        assert_eq!(
+            stremio.options[2].default,
+            Some(serde_json::Value::Bool(false))
+        );
     }
 
     #[tokio::test]
