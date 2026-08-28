@@ -624,14 +624,10 @@ pub(crate) fn matches_episode_pattern(filename: &str, wanted: &str) -> bool {
 
     // 1. Try parsing season & episode directly from filename
     if let Some((file_season, file_ep)) = parse_season_episode(filename) {
-        if file_ep == wanted_ep {
-            if wanted_season.is_none()
+        return file_ep == wanted_ep
+            && (wanted_season.is_none()
                 || file_season.is_none()
-                || wanted_season == file_season
-            {
-                return true;
-            }
-        }
+                || wanted_season == file_season);
     }
 
     // 2. Check token/format matches in lowercase filename
@@ -680,13 +676,6 @@ pub(crate) fn matches_episode_pattern(filename: &str, wanted: &str) -> bool {
             let after_ok =
                 after.map_or(true, |c| !c.is_ascii_alphanumeric() || c == 'v');
             if before_ok && after_ok {
-                if wanted_ep == 720
-                    || wanted_ep == 1080
-                    || wanted_ep == 480
-                    || (wanted_ep >= 1990 && wanted_ep <= 2030)
-                {
-                    continue;
-                }
                 return true;
             }
         }
@@ -945,6 +934,7 @@ mod tests {
         );
         assert_eq!(select_file_index(&files, None, Some("S01E03")).unwrap(), 2);
         assert_eq!(select_file_index(&files, None, Some("1x03")).unwrap(), 2);
+        assert!(!matches_episode_pattern("Show.Name.S01E010.mkv", "S01E01"));
 
         // Anime absolute numbering season pack
         let anime_files = vec![
@@ -959,6 +949,16 @@ mod tests {
         assert_eq!(
             select_file_index(&anime_files, None, Some("S01E01")).unwrap(),
             0
+        );
+
+        let long_running_files = vec![
+            file("Show - 1079.mkv", 500),
+            file("Show - 1080.mkv", 510),
+            file("Show - 1081.mkv", 520),
+        ];
+        assert_eq!(
+            select_file_index(&long_running_files, None, Some("S21E1080")).unwrap(),
+            1
         );
     }
 }
