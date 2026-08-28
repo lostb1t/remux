@@ -16,17 +16,16 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::{
-    AppState, IntoApiError, OptionExt, ResultExt,
-    addons::media_tracker::MediaTrackerEvent,
-    api, common,
+    AppState, IntoApiError, OptionExt, ResultExt, api, common,
     common::{TickUnit, ToRunTimeTicks},
     db,
     db::auth,
     playback::session::TranscodeSession,
     services::{self, MediaResolveService},
     signals::{
-        Event, RemoteCommandInfo, RemotePlayInfo, RemotePlaystateInfo,
-        UserDataChangedInfo, UserDataChangedKind,
+        Event, PlaybackProgressInfo, PlaybackStartedInfo, PlaybackStoppedInfo,
+        RemoteCommandInfo, RemotePlayInfo, RemotePlaystateInfo, UserDataChangedInfo,
+        UserDataChangedKind,
     },
 };
 
@@ -89,38 +88,6 @@ pub async fn sessions_capabilities_by_id(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Queue a playback event for the acting user's media trackers, resolving the
-/// item first. Handlers already holding the row call `enqueue_and_wake`
-/// directly rather than paying for a second lookup.
-async fn track_by_id(
-    state: &AppState,
-    session: &auth::AuthSession,
-    item_id: Uuid,
-    event: MediaTrackerEvent,
-) {
-    if !state
-        .ctx
-        .addons
-        .has_media_tracker()
-    {
-        return;
-    }
-
-    if let Ok(Some(media)) =
-        MediaResolveService::resolve_item(item_id, &state.ctx).await
-    {
-        services::media_tracker::enqueue_and_wake(
-            state,
-            session
-                .user
-                .id,
-            &media,
-            event,
-        )
-        .await;
-    }
-}
-
 #[post("/sessions/playing")]
 pub async fn report_playback_start(
     State(state): State<AppState>,
@@ -152,17 +119,19 @@ pub async fn report_playback_start(
         .ctx
         .signals
         .emit(Event::SessionsChanged);
-    track_by_id(
-        &state,
-        &session,
-        data.item_id,
-        MediaTrackerEvent::PlaybackStart {
+    state
+        .ctx
+        .signals
+        .emit(Event::PlaybackStarted(PlaybackStartedInfo {
+            user_id: session
+                .user
+                .id,
+            media_id: data.item_id,
             position_ticks: data
                 .position_ticks
                 .unwrap_or(0),
-        },
-    )
-    .await;
+            ..Default::default()
+        }));
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -216,18 +185,20 @@ pub async fn report_playback_progress(
             .signals
             .emit(Event::SessionsChanged);
         if data.is_paused && !was_paused {
-            track_by_id(
-                &state,
-                &session,
-                data.item_id,
-                MediaTrackerEvent::PlaybackProgress {
+            state
+                .ctx
+                .signals
+                .emit(Event::PlaybackProgress(PlaybackProgressInfo {
+                    user_id: session
+                        .user
+                        .id,
+                    media_id: data.item_id,
                     position_ticks: data
                         .position_ticks
                         .unwrap_or(0),
                     is_paused: true,
-                },
-            )
-            .await;
+                    ..Default::default()
+                }));
         }
     }
     Ok(StatusCode::NO_CONTENT.into_response())
@@ -303,18 +274,20 @@ pub async fn report_playback_stopped(
                             .unwrap_or(0),
                     },
                 }));
-            track_by_id(
-                &state,
-                &session,
-                item_id,
-                MediaTrackerEvent::PlaybackStop {
+            state
+                .ctx
+                .signals
+                .emit(Event::PlaybackStopped(PlaybackStoppedInfo {
+                    user_id: session
+                        .user
+                        .id,
+                    media_id: item_id,
                     position_ticks: data
                         .position_ticks
                         .unwrap_or(0),
                     played,
-                },
-            )
-            .await;
+                    ..Default::default()
+                }));
         }
     }
     Ok(StatusCode::NO_CONTENT.into_response())

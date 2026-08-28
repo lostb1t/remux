@@ -16,15 +16,16 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use crate::{
-    AppState, IntoApiError, OptionExt, ResultExt,
-    addons::media_tracker::MediaTrackerEvent,
-    api,
+    AppState, IntoApiError, OptionExt, ResultExt, api,
     api::system::QuickConnectEntry,
     common::{get_uuid, server_id},
     db,
     db::{auth, user::User},
-    services::{self, MediaResolveService},
-    signals::{Event, UserDeletedInfo, UserUpdatedInfo},
+    services::MediaResolveService,
+    signals::{
+        Event, UserDataChangedInfo, UserDataChangedKind, UserDeletedInfo,
+        UserUpdatedInfo,
+    },
 };
 use axum_anyhow::ApiResult as Result;
 use remux_sdks::remux::Username;
@@ -454,13 +455,14 @@ pub async fn mark_favorite(
             &user,
         )
         .await?;
-    services::media_tracker::enqueue_and_wake(
-        &state,
-        user.id,
-        &media,
-        MediaTrackerEvent::Favorite { is_favorite: true },
-    )
-    .await;
+    state
+        .ctx
+        .signals
+        .emit(Event::UserDataChanged(UserDataChangedInfo {
+            user_id: user.id,
+            media_id: media.id,
+            kind: UserDataChangedKind::Favorite { is_favorite: true },
+        }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -482,13 +484,14 @@ pub async fn unmark_favorite(
             &user,
         )
         .await?;
-    services::media_tracker::enqueue_and_wake(
-        &state,
-        user.id,
-        &media,
-        MediaTrackerEvent::Favorite { is_favorite: false },
-    )
-    .await;
+    state
+        .ctx
+        .signals
+        .emit(Event::UserDataChanged(UserDataChangedInfo {
+            user_id: user.id,
+            media_id: media.id,
+            kind: UserDataChangedKind::Favorite { is_favorite: false },
+        }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -508,13 +511,14 @@ async fn unmark_favorite_inner(
             &user,
         )
         .await?;
-    services::media_tracker::enqueue_and_wake(
-        &state,
-        user.id,
-        &media,
-        MediaTrackerEvent::Favorite { is_favorite: false },
-    )
-    .await;
+    state
+        .ctx
+        .signals
+        .emit(Event::UserDataChanged(UserDataChangedInfo {
+            user_id: user.id,
+            media_id: media.id,
+            kind: UserDataChangedKind::Favorite { is_favorite: false },
+        }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -556,13 +560,14 @@ pub async fn mark_favorite_modern(
             &user,
         )
         .await?;
-    services::media_tracker::enqueue_and_wake(
-        &state,
-        user.id,
-        &media,
-        MediaTrackerEvent::Favorite { is_favorite: true },
-    )
-    .await;
+    state
+        .ctx
+        .signals
+        .emit(Event::UserDataChanged(UserDataChangedInfo {
+            user_id: user.id,
+            media_id: media.id,
+            kind: UserDataChangedKind::Favorite { is_favorite: true },
+        }));
     Ok(Json(api::db_state_to_dto(s, &media)).into_response())
 }
 
@@ -584,13 +589,14 @@ pub async fn unmark_favorite_modern(
             &user,
         )
         .await?;
-    services::media_tracker::enqueue_and_wake(
-        &state,
-        user.id,
-        &media,
-        MediaTrackerEvent::Favorite { is_favorite: false },
-    )
-    .await;
+    state
+        .ctx
+        .signals
+        .emit(Event::UserDataChanged(UserDataChangedInfo {
+            user_id: user.id,
+            media_id: media.id,
+            kind: UserDataChangedKind::Favorite { is_favorite: false },
+        }));
     Ok(Json(api::db_state_to_dto(s, &media)).into_response())
 }
 
@@ -620,13 +626,14 @@ pub async fn mark_played(
             server_config.release_date_threshold(),
         )
         .await?;
-    services::media_tracker::enqueue_and_wake(
-        &state,
-        user.id,
-        &media,
-        MediaTrackerEvent::MarkPlayed,
-    )
-    .await;
+    state
+        .ctx
+        .signals
+        .emit(Event::UserDataChanged(UserDataChangedInfo {
+            user_id: user.id,
+            media_id: media.id,
+            kind: UserDataChangedKind::Played,
+        }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -649,13 +656,14 @@ pub async fn unmark_played(
             true,
         )
         .await?;
-    services::media_tracker::enqueue_and_wake(
-        &state,
-        user.id,
-        &media,
-        MediaTrackerEvent::MarkUnplayed,
-    )
-    .await;
+    state
+        .ctx
+        .signals
+        .emit(Event::UserDataChanged(UserDataChangedInfo {
+            user_id: user.id,
+            media_id: media.id,
+            kind: UserDataChangedKind::Unplayed,
+        }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -676,13 +684,14 @@ async fn unmark_played_inner(
             true,
         )
         .await?;
-    services::media_tracker::enqueue_and_wake(
-        &state,
-        user.id,
-        &media,
-        MediaTrackerEvent::MarkUnplayed,
-    )
-    .await;
+    state
+        .ctx
+        .signals
+        .emit(Event::UserDataChanged(UserDataChangedInfo {
+            user_id: user.id,
+            media_id: media.id,
+            kind: UserDataChangedKind::Unplayed,
+        }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -752,15 +761,16 @@ pub async fn update_item_rating(
         rating,
     )
     .await?;
-    services::media_tracker::enqueue_and_wake(
-        &state,
-        user.id,
-        &media,
-        MediaTrackerEvent::Rating {
-            rating: rating.map(|r| r.value() as f32),
-        },
-    )
-    .await;
+    state
+        .ctx
+        .signals
+        .emit(Event::UserDataChanged(UserDataChangedInfo {
+            user_id: user.id,
+            media_id: media.id,
+            kind: UserDataChangedKind::Rating {
+                rating: rating.map(|r| r.value() as f32),
+            },
+        }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -783,13 +793,14 @@ pub async fn delete_item_rating(
         None,
     )
     .await?;
-    services::media_tracker::enqueue_and_wake(
-        &state,
-        user.id,
-        &media,
-        MediaTrackerEvent::Rating { rating: None },
-    )
-    .await;
+    state
+        .ctx
+        .signals
+        .emit(Event::UserDataChanged(UserDataChangedInfo {
+            user_id: user.id,
+            media_id: media.id,
+            kind: UserDataChangedKind::Rating { rating: None },
+        }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -814,15 +825,16 @@ pub async fn update_item_rating_legacy(
         rating,
     )
     .await?;
-    services::media_tracker::enqueue_and_wake(
-        &state,
-        user.id,
-        &media,
-        MediaTrackerEvent::Rating {
-            rating: rating.map(|r| r.value() as f32),
-        },
-    )
-    .await;
+    state
+        .ctx
+        .signals
+        .emit(Event::UserDataChanged(UserDataChangedInfo {
+            user_id: user.id,
+            media_id: media.id,
+            kind: UserDataChangedKind::Rating {
+                rating: rating.map(|r| r.value() as f32),
+            },
+        }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -845,13 +857,14 @@ pub async fn delete_item_rating_legacy(
         None,
     )
     .await?;
-    services::media_tracker::enqueue_and_wake(
-        &state,
-        user.id,
-        &media,
-        MediaTrackerEvent::Rating { rating: None },
-    )
-    .await;
+    state
+        .ctx
+        .signals
+        .emit(Event::UserDataChanged(UserDataChangedInfo {
+            user_id: user.id,
+            media_id: media.id,
+            kind: UserDataChangedKind::Rating { rating: None },
+        }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 

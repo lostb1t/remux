@@ -338,7 +338,7 @@ pub async fn init_app(
         ws_tx: ws_tx.clone(),
     });
 
-    let ctx = AppContext {
+    let mut ctx = AppContext {
         config,
         db: conn.clone(),
         store: Store::new_weighted(128 * 1024 * 1024),
@@ -355,6 +355,8 @@ pub async fn init_app(
         signals,
         started_at: Utc::now(),
     };
+    ctx.signals
+        .register(services::media_tracker::MediaTrackerSubscriber { ctx: ctx.clone() });
 
     // Sync intro items at startup (best-effort; errors are logged not fatal).
     if let Err(e) = intro::sync_intros(&ctx).await {

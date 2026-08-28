@@ -4,14 +4,15 @@ use async_trait::async_trait;
 use tracing::warn;
 use uuid::Uuid;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PlaybackStartedInfo {
     pub user_id: Uuid,
     pub media_id: Uuid,
     pub session_id: String,
+    pub position_ticks: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PlaybackProgressInfo {
     pub user_id: Uuid,
     pub media_id: Uuid,
@@ -20,7 +21,7 @@ pub struct PlaybackProgressInfo {
     pub is_paused: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PlaybackStoppedInfo {
     pub user_id: Uuid,
     pub media_id: Uuid,
