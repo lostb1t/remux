@@ -16,6 +16,71 @@ fn ffprobe_bin() -> String {
     std::env::var("FFPROBE_PATH").unwrap_or_else(|_| "ffprobe".into())
 }
 
+fn should_retry_with_relaxed_hls_extensions(stderr: &str) -> bool {
+    stderr.contains("allowed_segment_extensions")
+        || stderr.contains("mismatches allowed extensions")
+}
+
+fn ffprobe_args(url: &str, allow_nonstandard_hls_extensions: bool) -> Vec<String> {
+    let mut args = vec![
+        "-v".into(),
+        "error".into(),
+        "-print_format".into(),
+        "json".into(),
+        "-show_chapters".into(),
+        "-show_streams".into(),
+        "-show_format".into(),
+    ];
+    if allow_nonstandard_hls_extensions {
+        args.extend([
+            "-allowed_extensions".into(),
+            "ALL".into(),
+            "-allowed_segment_extensions".into(),
+            "ALL".into(),
+            "-extension_picky".into(),
+            "0".into(),
+        ]);
+    }
+    args.push(url.into());
+    args
+}
+
+#[cfg(test)]
+mod extension_retry_tests {
+    #[test]
+    fn retries_hls_probe_when_extension_validation_rejects_a_proxy_segment() {
+        let stderr =
+            "[hls] URL https://relay.example/hls is not in allowed_segment_extensions";
+
+        assert!(super::should_retry_with_relaxed_hls_extensions(stderr));
+    }
+
+    #[test]
+    fn does_not_retry_unrelated_probe_errors() {
+        assert!(!super::should_retry_with_relaxed_hls_extensions(
+            "Connection timed out"
+        ));
+    }
+
+    #[test]
+    fn retry_uses_hls_extension_compatibility_options() {
+        let args = super::ffprobe_args("https://relay.example/hls?url=playlist", true);
+
+        assert!(
+            args.windows(2)
+                .any(|pair| { pair == ["-allowed_extensions", "ALL"] })
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| { pair == ["-allowed_segment_extensions", "ALL"] })
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| { pair == ["-extension_picky", "0"] })
+        );
+    }
+}
+
 fn nonzero<T: Default + PartialOrd>(v: T) -> Option<T> {
     if v > T::default() { Some(v) } else { None }
 }
@@ -465,20 +530,25 @@ fn apply_video_bitrate_fallback(
 pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
     debug!(url, "probing media");
 
-    let output = std::process::Command::new(ffprobe_bin())
-        .args([
-            "-v",
-            "error",
-            "-print_format",
-            "json",
-            "-show_chapters",
-            "-show_streams",
-            "-show_format",
-            url,
-        ])
+    let mut output = std::process::Command::new(ffprobe_bin())
+        .args(ffprobe_args(url, false))
         .hide_console()
         .output()
         .map_err(|e| anyhow!("Failed to run ffprobe: {}", e))?;
+
+    if !output
+        .status
+        .success()
+        && should_retry_with_relaxed_hls_extensions(&String::from_utf8_lossy(
+            &output.stderr,
+        ))
+    {
+        output = std::process::Command::new(ffprobe_bin())
+            .args(ffprobe_args(url, true))
+            .hide_console()
+            .output()
+            .map_err(|e| anyhow!("Failed to rerun ffprobe: {}", e))?;
+    }
 
     if !output
         .status
