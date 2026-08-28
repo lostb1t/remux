@@ -122,7 +122,8 @@ pub enum MediaTrackerEventKind {
     PlaybackStop,
     MarkPlayed,
     MarkUnplayed,
-    Favorite,
+    MarkFavorite,
+    UnmarkFavorite,
     Rating,
 }
 
@@ -144,9 +145,8 @@ pub enum MediaTrackerEvent {
     },
     MarkPlayed,
     MarkUnplayed,
-    Favorite {
-        is_favorite: bool,
-    },
+    MarkFavorite,
+    UnmarkFavorite,
     Rating {
         /// The user's own 0-10 rating, or `None` when they cleared it.
         /// Providers using a different scale rescale on the way out.
@@ -162,7 +162,8 @@ impl MediaTrackerEvent {
             Self::PlaybackStop { .. } => MediaTrackerEventKind::PlaybackStop,
             Self::MarkPlayed => MediaTrackerEventKind::MarkPlayed,
             Self::MarkUnplayed => MediaTrackerEventKind::MarkUnplayed,
-            Self::Favorite { .. } => MediaTrackerEventKind::Favorite,
+            Self::MarkFavorite => MediaTrackerEventKind::MarkFavorite,
+            Self::UnmarkFavorite => MediaTrackerEventKind::UnmarkFavorite,
             Self::Rating { .. } => MediaTrackerEventKind::Rating,
         }
     }
@@ -174,7 +175,8 @@ impl MediaTrackerEvent {
             | Self::PlaybackStop { position_ticks, .. } => Some(*position_ticks),
             Self::MarkPlayed
             | Self::MarkUnplayed
-            | Self::Favorite { .. }
+            | Self::MarkFavorite
+            | Self::UnmarkFavorite
             | Self::Rating { .. } => None,
         }
     }
@@ -523,7 +525,8 @@ mod tests {
             MediaTrackerEventKind::PlaybackStop,
             MediaTrackerEventKind::MarkPlayed,
             MediaTrackerEventKind::MarkUnplayed,
-            MediaTrackerEventKind::Favorite,
+            MediaTrackerEventKind::MarkFavorite,
+            MediaTrackerEventKind::UnmarkFavorite,
             MediaTrackerEventKind::Rating,
         ] {
             let s = kind.to_string();
@@ -573,8 +576,12 @@ mod tests {
                 MediaTrackerEventKind::MarkUnplayed,
             ),
             (
-                MediaTrackerEvent::Favorite { is_favorite: true },
-                MediaTrackerEventKind::Favorite,
+                MediaTrackerEvent::MarkFavorite,
+                MediaTrackerEventKind::MarkFavorite,
+            ),
+            (
+                MediaTrackerEvent::UnmarkFavorite,
+                MediaTrackerEventKind::UnmarkFavorite,
             ),
             (
                 MediaTrackerEvent::Rating { rating: Some(7.0) },
@@ -601,10 +608,8 @@ mod tests {
             Some(99)
         );
         assert_eq!(MediaTrackerEvent::MarkPlayed.position_ticks(), None);
-        assert_eq!(
-            MediaTrackerEvent::Favorite { is_favorite: false }.position_ticks(),
-            None
-        );
+        assert_eq!(MediaTrackerEvent::MarkFavorite.position_ticks(), None);
+        assert_eq!(MediaTrackerEvent::UnmarkFavorite.position_ticks(), None);
         assert_eq!(
             MediaTrackerEvent::Rating { rating: Some(7.0) }.position_ticks(),
             None

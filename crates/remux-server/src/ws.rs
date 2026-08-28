@@ -319,7 +319,12 @@ impl Subscriber for WebSocketSubscriber {
         &[
             EventType::UserUpdated,
             EventType::UserDeleted,
-            EventType::UserDataChanged,
+            EventType::MarkPlayed,
+            EventType::MarkUnplayed,
+            EventType::MarkFavorite,
+            EventType::UnmarkFavorite,
+            EventType::Rating,
+            EventType::PlaybackStopped,
             EventType::LibraryChanged,
             EventType::SessionsChanged,
             EventType::RemotePlay,
@@ -332,7 +337,27 @@ impl Subscriber for WebSocketSubscriber {
         let ws_event = match event {
             Event::UserUpdated(i) => WsEvent::UserUpdated(i.user_id),
             Event::UserDeleted(i) => WsEvent::UserDeleted(i.user_id),
-            Event::UserDataChanged(i) => WsEvent::UserDataChanged {
+            Event::MarkPlayed(i) => WsEvent::UserDataChanged {
+                user_id: i.user_id,
+                item_id: i.media_id,
+            },
+            Event::MarkUnplayed(i) => WsEvent::UserDataChanged {
+                user_id: i.user_id,
+                item_id: i.media_id,
+            },
+            Event::MarkFavorite(i) => WsEvent::UserDataChanged {
+                user_id: i.user_id,
+                item_id: i.media_id,
+            },
+            Event::UnmarkFavorite(i) => WsEvent::UserDataChanged {
+                user_id: i.user_id,
+                item_id: i.media_id,
+            },
+            Event::Rating(i) => WsEvent::UserDataChanged {
+                user_id: i.user_id,
+                item_id: i.media_id,
+            },
+            Event::PlaybackStopped(i) => WsEvent::UserDataChanged {
                 user_id: i.user_id,
                 item_id: i.media_id,
             },

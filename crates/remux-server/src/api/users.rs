@@ -23,8 +23,8 @@ use crate::{
     db::{auth, user::User},
     services::MediaResolveService,
     signals::{
-        Event, UserDataChangedInfo, UserDataChangedKind, UserDeletedInfo,
-        UserUpdatedInfo,
+        Event, MarkFavoriteInfo, MarkPlayedInfo, MarkUnplayedInfo, RatingInfo,
+        UnmarkFavoriteInfo, UserDeletedInfo, UserUpdatedInfo,
     },
 };
 use axum_anyhow::ApiResult as Result;
@@ -458,10 +458,9 @@ pub async fn mark_favorite(
     state
         .ctx
         .signals
-        .emit(Event::UserDataChanged(UserDataChangedInfo {
+        .emit(Event::MarkFavorite(MarkFavoriteInfo {
             user_id: user.id,
             media_id: media.id,
-            kind: UserDataChangedKind::Favorite { is_favorite: true },
         }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
@@ -487,10 +486,9 @@ pub async fn unmark_favorite(
     state
         .ctx
         .signals
-        .emit(Event::UserDataChanged(UserDataChangedInfo {
+        .emit(Event::UnmarkFavorite(UnmarkFavoriteInfo {
             user_id: user.id,
             media_id: media.id,
-            kind: UserDataChangedKind::Favorite { is_favorite: false },
         }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
@@ -514,10 +512,9 @@ async fn unmark_favorite_inner(
     state
         .ctx
         .signals
-        .emit(Event::UserDataChanged(UserDataChangedInfo {
+        .emit(Event::UnmarkFavorite(UnmarkFavoriteInfo {
             user_id: user.id,
             media_id: media.id,
-            kind: UserDataChangedKind::Favorite { is_favorite: false },
         }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
@@ -563,10 +560,9 @@ pub async fn mark_favorite_modern(
     state
         .ctx
         .signals
-        .emit(Event::UserDataChanged(UserDataChangedInfo {
+        .emit(Event::MarkFavorite(MarkFavoriteInfo {
             user_id: user.id,
             media_id: media.id,
-            kind: UserDataChangedKind::Favorite { is_favorite: true },
         }));
     Ok(Json(api::db_state_to_dto(s, &media)).into_response())
 }
@@ -592,10 +588,9 @@ pub async fn unmark_favorite_modern(
     state
         .ctx
         .signals
-        .emit(Event::UserDataChanged(UserDataChangedInfo {
+        .emit(Event::UnmarkFavorite(UnmarkFavoriteInfo {
             user_id: user.id,
             media_id: media.id,
-            kind: UserDataChangedKind::Favorite { is_favorite: false },
         }));
     Ok(Json(api::db_state_to_dto(s, &media)).into_response())
 }
@@ -629,10 +624,9 @@ pub async fn mark_played(
     state
         .ctx
         .signals
-        .emit(Event::UserDataChanged(UserDataChangedInfo {
+        .emit(Event::MarkPlayed(MarkPlayedInfo {
             user_id: user.id,
             media_id: media.id,
-            kind: UserDataChangedKind::Played,
         }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
@@ -659,10 +653,9 @@ pub async fn unmark_played(
     state
         .ctx
         .signals
-        .emit(Event::UserDataChanged(UserDataChangedInfo {
+        .emit(Event::MarkUnplayed(MarkUnplayedInfo {
             user_id: user.id,
             media_id: media.id,
-            kind: UserDataChangedKind::Unplayed,
         }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
@@ -687,10 +680,9 @@ async fn unmark_played_inner(
     state
         .ctx
         .signals
-        .emit(Event::UserDataChanged(UserDataChangedInfo {
+        .emit(Event::MarkUnplayed(MarkUnplayedInfo {
             user_id: user.id,
             media_id: media.id,
-            kind: UserDataChangedKind::Unplayed,
         }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
@@ -764,12 +756,10 @@ pub async fn update_item_rating(
     state
         .ctx
         .signals
-        .emit(Event::UserDataChanged(UserDataChangedInfo {
+        .emit(Event::Rating(RatingInfo {
             user_id: user.id,
             media_id: media.id,
-            kind: UserDataChangedKind::Rating {
-                rating: rating.map(|r| r.value() as f32),
-            },
+            rating: rating.map(|r| r.value() as f32),
         }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
@@ -796,10 +786,10 @@ pub async fn delete_item_rating(
     state
         .ctx
         .signals
-        .emit(Event::UserDataChanged(UserDataChangedInfo {
+        .emit(Event::Rating(RatingInfo {
             user_id: user.id,
             media_id: media.id,
-            kind: UserDataChangedKind::Rating { rating: None },
+            rating: None,
         }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
@@ -828,12 +818,10 @@ pub async fn update_item_rating_legacy(
     state
         .ctx
         .signals
-        .emit(Event::UserDataChanged(UserDataChangedInfo {
+        .emit(Event::Rating(RatingInfo {
             user_id: user.id,
             media_id: media.id,
-            kind: UserDataChangedKind::Rating {
-                rating: rating.map(|r| r.value() as f32),
-            },
+            rating: rating.map(|r| r.value() as f32),
         }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
@@ -860,10 +848,10 @@ pub async fn delete_item_rating_legacy(
     state
         .ctx
         .signals
-        .emit(Event::UserDataChanged(UserDataChangedInfo {
+        .emit(Event::Rating(RatingInfo {
             user_id: user.id,
             media_id: media.id,
-            kind: UserDataChangedKind::Rating { rating: None },
+            rating: None,
         }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }

@@ -30,11 +30,35 @@ pub struct PlaybackStoppedInfo {
     pub played: bool,
 }
 
-#[derive(Debug, Clone)]
-pub struct UserDataChangedInfo {
+#[derive(Debug, Clone, Default)]
+pub struct MarkPlayedInfo {
     pub user_id: Uuid,
     pub media_id: Uuid,
-    pub kind: UserDataChangedKind,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MarkUnplayedInfo {
+    pub user_id: Uuid,
+    pub media_id: Uuid,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MarkFavoriteInfo {
+    pub user_id: Uuid,
+    pub media_id: Uuid,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct UnmarkFavoriteInfo {
+    pub user_id: Uuid,
+    pub media_id: Uuid,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RatingInfo {
+    pub user_id: Uuid,
+    pub media_id: Uuid,
+    pub rating: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -66,20 +90,15 @@ pub struct RemoteCommandInfo {
 }
 
 #[derive(Debug, Clone)]
-pub enum UserDataChangedKind {
-    Progress { position_ticks: i64 },
-    Played,
-    Unplayed,
-    Favorite { is_favorite: bool },
-    Rating { rating: Option<f32> },
-}
-
-#[derive(Debug, Clone)]
 pub enum Event {
     PlaybackStarted(PlaybackStartedInfo),
     PlaybackProgress(PlaybackProgressInfo),
     PlaybackStopped(PlaybackStoppedInfo),
-    UserDataChanged(UserDataChangedInfo),
+    MarkPlayed(MarkPlayedInfo),
+    MarkUnplayed(MarkUnplayedInfo),
+    MarkFavorite(MarkFavoriteInfo),
+    UnmarkFavorite(UnmarkFavoriteInfo),
+    Rating(RatingInfo),
     UserUpdated(UserUpdatedInfo),
     UserDeleted(UserDeletedInfo),
     LibraryChanged,
@@ -94,7 +113,11 @@ pub enum EventType {
     PlaybackStarted,
     PlaybackProgress,
     PlaybackStopped,
-    UserDataChanged,
+    MarkPlayed,
+    MarkUnplayed,
+    MarkFavorite,
+    UnmarkFavorite,
+    Rating,
     UserUpdated,
     UserDeleted,
     LibraryChanged,
@@ -110,7 +133,11 @@ impl Event {
             Event::PlaybackStarted(_) => EventType::PlaybackStarted,
             Event::PlaybackProgress(_) => EventType::PlaybackProgress,
             Event::PlaybackStopped(_) => EventType::PlaybackStopped,
-            Event::UserDataChanged(_) => EventType::UserDataChanged,
+            Event::MarkPlayed(_) => EventType::MarkPlayed,
+            Event::MarkUnplayed(_) => EventType::MarkUnplayed,
+            Event::MarkFavorite(_) => EventType::MarkFavorite,
+            Event::UnmarkFavorite(_) => EventType::UnmarkFavorite,
+            Event::Rating(_) => EventType::Rating,
             Event::UserUpdated(_) => EventType::UserUpdated,
             Event::UserDeleted(_) => EventType::UserDeleted,
             Event::LibraryChanged => EventType::LibraryChanged,

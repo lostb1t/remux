@@ -24,8 +24,7 @@ use crate::{
     services::{self, MediaResolveService},
     signals::{
         Event, PlaybackProgressInfo, PlaybackStartedInfo, PlaybackStoppedInfo,
-        RemoteCommandInfo, RemotePlayInfo, RemotePlaystateInfo, UserDataChangedInfo,
-        UserDataChangedKind,
+        RemoteCommandInfo, RemotePlayInfo, RemotePlaystateInfo,
     },
 };
 
@@ -260,20 +259,6 @@ pub async fn report_playback_stopped(
             .signals
             .emit(Event::SessionsChanged);
         if let Some(item_id) = changed_item_id {
-            state
-                .ctx
-                .signals
-                .emit(Event::UserDataChanged(UserDataChangedInfo {
-                    user_id: session
-                        .user
-                        .id,
-                    media_id: item_id,
-                    kind: UserDataChangedKind::Progress {
-                        position_ticks: data
-                            .position_ticks
-                            .unwrap_or(0),
-                    },
-                }));
             state
                 .ctx
                 .signals

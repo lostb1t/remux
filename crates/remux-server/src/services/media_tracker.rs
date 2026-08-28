@@ -12,7 +12,7 @@ use crate::{
     AppContext,
     addons::media_tracker::{MediaTrackerCtx, MediaTrackerEvent, MediaTrackerTarget},
     db,
-    signals::{DeliveryMode, Event, EventType, Subscriber, UserDataChangedKind},
+    signals::{DeliveryMode, Event, EventType, Subscriber},
 };
 
 fn describe(media: &db::Media, series: Option<&db::Media>) -> MediaTrackerTarget {
@@ -112,7 +112,11 @@ impl Subscriber for MediaTrackerSubscriber {
             EventType::PlaybackStarted,
             EventType::PlaybackProgress,
             EventType::PlaybackStopped,
-            EventType::UserDataChanged,
+            EventType::MarkPlayed,
+            EventType::MarkUnplayed,
+            EventType::MarkFavorite,
+            EventType::UnmarkFavorite,
+            EventType::Rating,
         ]
     }
 
@@ -147,20 +151,23 @@ impl Subscriber for MediaTrackerSubscriber {
                     played: i.played,
                 },
             ),
-            Event::UserDataChanged(i) => {
-                let te = match i.kind {
-                    UserDataChangedKind::Played => MediaTrackerEvent::MarkPlayed,
-                    UserDataChangedKind::Unplayed => MediaTrackerEvent::MarkUnplayed,
-                    UserDataChangedKind::Favorite { is_favorite } => {
-                        MediaTrackerEvent::Favorite { is_favorite }
-                    }
-                    UserDataChangedKind::Rating { rating } => {
-                        MediaTrackerEvent::Rating { rating }
-                    }
-                    UserDataChangedKind::Progress { .. } => return Ok(()),
-                };
-                (i.user_id, i.media_id, te)
+            Event::MarkPlayed(i) => {
+                (i.user_id, i.media_id, MediaTrackerEvent::MarkPlayed)
             }
+            Event::MarkUnplayed(i) => {
+                (i.user_id, i.media_id, MediaTrackerEvent::MarkUnplayed)
+            }
+            Event::MarkFavorite(i) => {
+                (i.user_id, i.media_id, MediaTrackerEvent::MarkFavorite)
+            }
+            Event::UnmarkFavorite(i) => {
+                (i.user_id, i.media_id, MediaTrackerEvent::UnmarkFavorite)
+            }
+            Event::Rating(i) => (
+                i.user_id,
+                i.media_id,
+                MediaTrackerEvent::Rating { rating: i.rating },
+            ),
             _ => return Ok(()),
         };
 
@@ -270,6 +277,7 @@ mod tests {
         },
         db::{MediaTrackerStatus, UserMediaTracker},
         integration_test::new_test_server,
+        signals::MarkPlayedInfo,
     };
     use async_trait::async_trait;
     use chrono::Utc;
@@ -285,7 +293,8 @@ mod tests {
                 MediaTrackerEventKind::PlaybackStop,
                 MediaTrackerEventKind::MarkPlayed,
                 MediaTrackerEventKind::MarkUnplayed,
-                MediaTrackerEventKind::Favorite,
+                MediaTrackerEventKind::MarkFavorite,
+                MediaTrackerEventKind::UnmarkFavorite,
                 MediaTrackerEventKind::Rating,
             ])
         }
@@ -435,20 +444,17 @@ mod tests {
 
         let sub = MediaTrackerSubscriber { ctx: ctx.clone() };
         let result = sub
-            .handle(Event::UserDataChanged(
-                crate::signals::UserDataChangedInfo {
-                    user_id: uid,
-                    media_id: media.id,
-                    kind: UserDataChangedKind::Played,
-                },
-            ))
+            .handle(Event::MarkPlayed(MarkPlayedInfo {
+                user_id: uid,
+                media_id: media.id,
+            }))
             .await;
 
         assert!(result.is_ok());
     }
 
     #[tokio::test]
-    async fn subscriber_skips_progress_kind() {
+    async fn subscriber_ignores_playback_progress_for_mark_played_tracker() {
         let (_s, guard) = new_test_server()
             .await
             .unwrap();
@@ -457,21 +463,24 @@ mod tests {
             ctx,
             "a",
             MediaTrackerStatus::Connected,
-            vec![MediaTrackerEventKind::PlaybackProgress],
+            vec![MediaTrackerEventKind::MarkPlayed],
         )
         .await;
         let media = crate::integration_test::seed_movie(ctx).await;
         let uid = user_id(ctx).await;
 
         let sub = MediaTrackerSubscriber { ctx: ctx.clone() };
+        // PlaybackProgress is not in the subscriber's event list at all — emit
+        // returns immediately without calling handle, but we can test that
+        // handle on an unrelated event returns Ok.
         let result = sub
-            .handle(Event::UserDataChanged(
-                crate::signals::UserDataChangedInfo {
+            .handle(Event::PlaybackProgress(
+                crate::signals::PlaybackProgressInfo {
                     user_id: uid,
                     media_id: media.id,
-                    kind: UserDataChangedKind::Progress {
-                        position_ticks: 1000,
-                    },
+                    position_ticks: 1000,
+                    is_paused: false,
+                    ..Default::default()
                 },
             ))
             .await;
