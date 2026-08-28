@@ -475,6 +475,33 @@ fn is_hdr(range_type: Option<&VideoRangeType>) -> bool {
     )
 }
 
+fn is_hls_input_url(input_url: &str) -> bool {
+    let Ok(url) = url::Url::parse(input_url) else {
+        return false;
+    };
+    let path = url
+        .path()
+        .to_ascii_lowercase();
+    path.ends_with(".m3u8")
+        || (path.ends_with("/hls")
+            && url
+                .query_pairs()
+                .any(|(name, _)| name.eq_ignore_ascii_case("url")))
+}
+
+fn add_hls_extension_compat_args(args: &mut Vec<String>, input_url: &str) {
+    if is_hls_input_url(input_url) {
+        args.extend([
+            "-allowed_extensions".into(),
+            "ALL".into(),
+            "-allowed_segment_extensions".into(),
+            "ALL".into(),
+            "-extension_picky".into(),
+            "0".into(),
+        ]);
+    }
+}
+
 /// Build the ffmpeg CLI args for an HLS transcode.
 pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     let accel = params
@@ -612,6 +639,8 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             "5000000".into(),
         ]);
     }
+
+    add_hls_extension_compat_args(&mut args, &params.input_url);
 
     args.extend([
         "-copyts".into(),
@@ -2186,6 +2215,10 @@ mod tests {
         assert_eq!(arg_after(&args, "-c:v"), Some("copy"));
         assert_eq!(arg_after(&args, "-c:a"), Some("aac"));
         assert_eq!(arg_after(&args, "-f"), Some("hls"));
+        assert!(
+            !args_contains(&args, "-allowed_extensions"),
+            "ordinary file inputs must retain ffmpeg's default extension policy"
+        );
         // Default TS segments — no fmp4 flag
         assert!(!args_contains(&args, "-hls_segment_type"));
         // Playlist and segment paths
@@ -2197,6 +2230,20 @@ mod tests {
             args.iter()
                 .any(|a| a.contains("segment_") && a.ends_with(".ts"))
         );
+    }
+
+    #[test]
+    fn hls_proxy_input_allows_extensionless_segments() {
+        let args = build_hls_args(&TranscodeParams {
+            input_url:
+                "https://relay.example/hls?url=https%3A%2F%2Forigin.example%2Fplaylist"
+                    .into(),
+            ..default_hls(PathBuf::from("/tmp/test_extensionless_hls"))
+        });
+
+        assert_eq!(arg_after(&args, "-allowed_extensions"), Some("ALL"));
+        assert_eq!(arg_after(&args, "-allowed_segment_extensions"), Some("ALL"));
+        assert_eq!(arg_after(&args, "-extension_picky"), Some("0"));
     }
 
     #[test]
