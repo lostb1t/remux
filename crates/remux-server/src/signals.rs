@@ -238,5 +238,10 @@ impl Signals {
 }
 
 fn backoff_seconds(attempt: u32) -> u64 {
-    (30 * 2u64.pow(attempt.saturating_sub(1))).min(1800)
+    (30 * 2u64.pow(
+        attempt
+            .saturating_sub(1)
+            .min(10),
+    ))
+    .min(3600)
 }
