@@ -672,7 +672,7 @@ mod tests {
             row.id,
             &[
                 MediaTrackerEventKind::MarkPlayed,
-                MediaTrackerEventKind::Favorite,
+                MediaTrackerEventKind::MarkFavorite,
             ],
         )
         .await
@@ -686,7 +686,7 @@ mod tests {
             got.event_filters,
             vec![
                 MediaTrackerEventKind::MarkPlayed,
-                MediaTrackerEventKind::Favorite
+                MediaTrackerEventKind::MarkFavorite
             ]
         );
         assert_eq!(

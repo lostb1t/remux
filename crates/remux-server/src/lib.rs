@@ -63,6 +63,7 @@ pub mod localization;
 pub mod playback;
 pub mod playback_session;
 pub mod services;
+pub mod signals;
 pub mod stream;
 pub mod tasks;
 mod torrent;
@@ -331,13 +332,19 @@ pub async fn init_app(
 
     let addons = addons::AddonService::from_db(&conn, &config).await?;
     let transcode_sessions_dir = resolve_transcode_dir(&config.data_dir);
-    let ctx = AppContext {
+    let (ws_tx, _) = tokio::sync::broadcast::channel::<ws::WsEvent>(128);
+    let mut signals = signals::Signals::default();
+    signals.register(ws::WebSocketSubscriber {
+        ws_tx: ws_tx.clone(),
+    });
+
+    let mut ctx = AppContext {
         config,
         db: conn.clone(),
         store: Store::new_weighted(128 * 1024 * 1024),
         sessions: playback_session::PlaybackSessionManager::new(transcode_sessions_dir),
         torrent: Arc::new(tokio::sync::RwLock::new(torrent_mgr.map(Arc::new))),
-        ws_tx: tokio::sync::broadcast::channel(128).0,
+        ws_tx,
         default_web_client: Arc::new(tokio::sync::RwLock::new(
             web_client::normalize_web_client(saved_config.default_web_client)
                 .as_str()
@@ -345,8 +352,11 @@ pub async fn init_app(
         )),
         web_paths,
         addons,
+        signals,
         started_at: Utc::now(),
     };
+    ctx.signals
+        .register(services::media_tracker::MediaTrackerSubscriber { ctx: ctx.clone() });
 
     // Sync intro items at startup (best-effort; errors are logged not fatal).
     if let Err(e) = intro::sync_intros(&ctx).await {
@@ -450,6 +460,7 @@ pub struct AppContext {
     /// Present in filesystem builds; `None` in desktop (assets are embedded).
     pub web_paths: Option<FilesystemPaths>,
     pub addons: addons::AddonService,
+    pub signals: signals::Signals,
     /// When this server process started.
     pub started_at: chrono::DateTime<chrono::Utc>,
 }
