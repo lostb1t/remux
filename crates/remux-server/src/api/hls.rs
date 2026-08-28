@@ -280,7 +280,7 @@ async fn create_hls_session(
                 .and_then(|probe| {
                     probe
                         .container
-                        .as_deref()
+                        .as_ref()
                 }),
             &audio_codec,
         );
@@ -668,11 +668,10 @@ pub async fn variant_hls_video(
 /// Other source containers and explicit client codec choices are unchanged.
 fn resolve_hls_audio_codec(
     is_live: bool,
-    input_container: Option<&str>,
+    input_container: Option<&remux_sdks::remux::VideoContainer>,
     requested: &str,
 ) -> String {
-    let input_is_hls =
-        input_container.is_some_and(|container| container.eq_ignore_ascii_case("hls"));
+    let input_is_hls = input_container.is_some_and(|c| c.is_hls_input());
     if requested == "copy" && (is_live || input_is_hls) {
         "aac".to_string()
     } else {
@@ -1296,14 +1295,18 @@ async fn hls_segment_inner(
 
 #[cfg(test)]
 mod tests {
+    use remux_sdks::remux::VideoContainer;
+
     #[test]
     fn vod_hls_source_reencodes_copied_audio_to_aac() {
+        let hls = VideoContainer::Other("hls".to_string());
         assert_eq!(
-            super::resolve_hls_audio_codec(false, Some("hls"), "copy"),
+            super::resolve_hls_audio_codec(false, Some(&hls), "copy"),
             "aac"
         );
+        let hls_upper = VideoContainer::Other("HLS".to_string());
         assert_eq!(
-            super::resolve_hls_audio_codec(false, Some("HLS"), "copy"),
+            super::resolve_hls_audio_codec(false, Some(&hls_upper), "copy"),
             "aac"
         );
     }
@@ -1311,12 +1314,13 @@ mod tests {
     #[test]
     fn hls_audio_normalization_preserves_compatible_copy_paths() {
         assert_eq!(
-            super::resolve_hls_audio_codec(false, Some("mp4"), "copy"),
+            super::resolve_hls_audio_codec(false, Some(&VideoContainer::Mp4), "copy"),
             "copy"
         );
         assert_eq!(super::resolve_hls_audio_codec(false, None, "copy"), "copy");
+        let hls = VideoContainer::Other("hls".to_string());
         assert_eq!(
-            super::resolve_hls_audio_codec(false, Some("hls"), "ac3"),
+            super::resolve_hls_audio_codec(false, Some(&hls), "ac3"),
             "ac3"
         );
     }

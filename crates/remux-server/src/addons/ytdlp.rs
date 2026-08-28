@@ -863,7 +863,12 @@ impl YtDlpAddon {
                 ),
                 name: Some(f.label()),
                 probe_data: Some(api::MediaSourceInfo {
-                    container: f.container(),
+                    container: f
+                        .container()
+                        .and_then(|s| {
+                            s.parse()
+                                .ok()
+                        }),
                     run_time_ticks: media
                         .runtime
                         .and_then(|r| r.to_ticks(TickUnit::Seconds)),

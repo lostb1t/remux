@@ -259,6 +259,26 @@ impl VideoContainer {
             .ok()
             .filter(|c| c.is_known())
     }
+
+    /// True when the container string represents an HLS playlist source (m3u8),
+    /// which ffprobe labels as "hls" — a transport, not a real container format.
+    pub fn is_hls_input(&self) -> bool {
+        matches!(self, Self::Other(s) if s.eq_ignore_ascii_case("hls"))
+    }
+}
+
+impl serde::Serialize for VideoContainer {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for VideoContainer {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        s.parse()
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 impl AudioCodec {
@@ -297,22 +317,17 @@ pub enum TranscodingProtocol {
     Other(String),
 }
 
-impl<'de> serde::Deserialize<'de> for TranscodingProtocol {
-    fn deserialize<D: serde::Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Self, D::Error> {
-        let s = String::deserialize(deserializer)?;
-        Ok(s.parse()
-            .unwrap_or_else(|_| Self::Other(s)))
+impl serde::Serialize for TranscodingProtocol {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_string())
     }
 }
 
-impl serde::Serialize for TranscodingProtocol {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.to_string())
+impl<'de> serde::Deserialize<'de> for TranscodingProtocol {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(s.parse()
+            .unwrap_or_else(|_| Self::Other(s)))
     }
 }
 
@@ -328,21 +343,16 @@ pub enum DlnaProfileType {
     Other(String),
 }
 
-impl<'de> serde::Deserialize<'de> for DlnaProfileType {
-    fn deserialize<D: serde::Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Self, D::Error> {
-        let s = String::deserialize(deserializer)?;
-        Ok(s.parse()
-            .unwrap_or_else(|_| Self::Other(s)))
+impl serde::Serialize for DlnaProfileType {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_string())
     }
 }
 
-impl serde::Serialize for DlnaProfileType {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.to_string())
+impl<'de> serde::Deserialize<'de> for DlnaProfileType {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(s.parse()
+            .unwrap_or_else(|_| Self::Other(s)))
     }
 }

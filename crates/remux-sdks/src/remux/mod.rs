@@ -2128,7 +2128,7 @@ pub struct MediaSourceInfo {
     pub analyze_duration_ms: Option<i64>,
     pub bitrate: Option<i64>,
     pub buffer_ms: Option<i64>,
-    pub container: Option<String>,
+    pub container: Option<VideoContainer>,
     pub default_audio_stream_index: Option<i64>,
     pub default_subtitle_stream_index: Option<i64>,
     pub e_tag: Uuid,
