@@ -2,6 +2,7 @@
 //! media types it serves; user-added instances are rows in the `addons` table.
 
 pub mod addon;
+pub mod better_posters;
 pub mod deezer;
 pub mod eclipse;
 pub mod introdb;
@@ -731,6 +732,14 @@ pub trait CatalogAddon: Send + Sync {
     ) -> Result<Option<Pin<Box<dyn Stream<Item = db::Media> + Send>>>>;
 }
 
+#[derive(Debug, Clone)]
+pub struct PrimaryPosterOverride {
+    pub url: String,
+    pub fallback_url: Option<String>,
+    /// True when the effective poster depends on the authenticated user's local state.
+    pub private_cache: bool,
+}
+
 #[async_trait]
 pub trait MetaAddon: Send + Sync {
     async fn supports(&self, media: &db::Media) -> bool;
@@ -754,6 +763,16 @@ pub trait MetaAddon: Send + Sync {
         ctx: &AppContext,
     ) -> Result<Vec<crate::api::RemoteImageInfo>> {
         Ok(vec![])
+    }
+    /// Return an effective primary poster without mutating persisted media artwork.
+    /// The image API consults this before the stored Primary/Thumb image.
+    async fn primary_poster_override(
+        &self,
+        _media: &db::Media,
+        _ctx: &AppContext,
+        _user: Option<&db::User>,
+    ) -> Result<Option<PrimaryPosterOverride>> {
+        Ok(None)
     }
 }
 
@@ -2459,6 +2478,35 @@ impl AddonService {
             }
         }
         Ok(out)
+    }
+
+    #[tracing::instrument(skip_all, fields(title = %media.title, kind = %media.kind))]
+    pub async fn primary_poster_override(
+        &self,
+        media: &db::Media,
+        ctx: &AppContext,
+        user: Option<&db::User>,
+    ) -> Option<PrimaryPosterOverride> {
+        let addons = self
+            .addons_for::<dyn MetaAddon>(media, &ctx.db, None)
+            .await;
+
+        for r in addons {
+            match r
+                .meta
+                .as_ref()
+                .unwrap()
+                .primary_poster_override(media, ctx, user)
+                .await
+            {
+                Ok(Some(poster)) => return Some(poster),
+                Ok(None) => {}
+                Err(e) => {
+                    warn!(addon = %r.row.name, error = %e, "primary_poster_override failed")
+                }
+            }
+        }
+        None
     }
 
     #[tracing::instrument(skip_all, fields(title = %media.title, kind = %media.kind))]

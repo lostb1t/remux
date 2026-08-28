@@ -249,6 +249,28 @@ fn media_image_tag(media: &db::Media, kind: db::ImageKind) -> Option<String> {
         })
 }
 
+fn effective_primary_image_tag(media: &db::Media) -> Option<String> {
+    let base = media_image_tag(media, db::ImageKind::Primary)?;
+    let config_revision = crate::addons::better_posters::config_revision();
+    match media.kind {
+        db::MediaKind::Movie => {
+            let watched = media
+                .user_state
+                .as_ref()
+                .is_some_and(|state| state.play_count > 0);
+            Some(format!(
+                "{base}-bp{config_revision:016x}-state-{}",
+                if watched { "w" } else { "u" }
+            ))
+        }
+        db::MediaKind::Series => Some(format!(
+            "{base}-bp{config_revision:016x}-state-u{}",
+            media.unplayed_item_count.unwrap_or(-1)
+        )),
+        _ => Some(base),
+    }
+}
+
 fn parent_image_tag(parent: Option<&db::Media>, kind: db::ImageKind) -> Option<String> {
     parent?
         .images
@@ -442,7 +464,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             .clone(),
         parent_index_number: media.parent_idx,
         image_tags: Some(ImageTags {
-            primary: media_image_tag(&media, db::ImageKind::Primary).or_else(|| {
+            primary: effective_primary_image_tag(&media).or_else(|| {
                 if media.kind == db::MediaKind::Track {
                     // Tracks inherit album art when they have no dedicated cover.
                     parent_image_tag(
