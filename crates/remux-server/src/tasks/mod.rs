@@ -226,9 +226,8 @@ impl TaskHandler {
             let (new_status, db_status) = match &result {
                 Ok(_) => {
                     info!(task = %task.name(), elapsed = ?elapsed, "completed");
-                    let _ = ctx
-                        .ws_tx
-                        .send(ws::WsEvent::LibraryChanged);
+                    ctx.signals
+                        .emit(crate::signals::Event::LibraryChanged);
                     (TaskStatus::Idle, db::TaskResultStatus::Completed)
                 }
                 Err(e) => {

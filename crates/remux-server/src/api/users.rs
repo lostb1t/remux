@@ -24,7 +24,7 @@ use crate::{
     db,
     db::{auth, user::User},
     services::{self, MediaResolveService},
-    ws::WsEvent,
+    signals::{Event, UserDeletedInfo, UserUpdatedInfo},
 };
 use axum_anyhow::ApiResult as Result;
 use remux_sdks::remux::Username;
@@ -887,10 +887,10 @@ pub async fn create_user(
             .db,
     )
     .await?;
-    let _ = state
+    state
         .ctx
-        .ws_tx
-        .send(WsEvent::UserUpdated(user.id));
+        .signals
+        .emit(Event::UserUpdated(UserUpdatedInfo { user_id: user.id }));
     Ok((
         StatusCode::OK,
         Json(api::db_user_to_dto(
@@ -925,10 +925,10 @@ pub async fn delete_user(
         &user_id,
     )
     .await?;
-    let _ = state
+    state
         .ctx
-        .ws_tx
-        .send(WsEvent::UserDeleted(user_id));
+        .signals
+        .emit(Event::UserDeleted(UserDeletedInfo { user_id }));
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -1023,14 +1023,14 @@ pub async fn change_password(
         tracing::warn!("failed to log password_changed activity: {e}");
     }
 
-    let _ = state
+    state
         .ctx
-        .ws_tx
-        .send(WsEvent::UserUpdated(user_id));
-    let _ = state
+        .signals
+        .emit(Event::UserUpdated(UserUpdatedInfo { user_id }));
+    state
         .ctx
-        .ws_tx
-        .send(WsEvent::SessionsChanged);
+        .signals
+        .emit(Event::SessionsChanged);
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -1057,10 +1057,10 @@ pub async fn update_user_policy(
             .db,
     )
     .await?;
-    let _ = state
+    state
         .ctx
-        .ws_tx
-        .send(WsEvent::UserUpdated(user_id));
+        .signals
+        .emit(Event::UserUpdated(UserUpdatedInfo { user_id }));
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -1093,10 +1093,10 @@ pub async fn update_user(
             .db,
     )
     .await?;
-    let _ = state
+    state
         .ctx
-        .ws_tx
-        .send(WsEvent::UserUpdated(user_id));
+        .signals
+        .emit(Event::UserUpdated(UserUpdatedInfo { user_id }));
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 

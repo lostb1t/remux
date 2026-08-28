@@ -947,10 +947,10 @@ pub async fn delete_item(
         &id,
     )
     .await?;
-    let _ = state
+    state
         .ctx
-        .ws_tx
-        .send(crate::ws::WsEvent::LibraryChanged);
+        .signals
+        .emit(crate::signals::Event::LibraryChanged);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1012,10 +1012,10 @@ pub async fn refresh_item(
             .await?;
     }
 
-    let _ = state
+    state
         .ctx
-        .ws_tx
-        .send(crate::ws::WsEvent::LibraryChanged);
+        .signals
+        .emit(crate::signals::Event::LibraryChanged);
     Ok(StatusCode::NO_CONTENT)
 }
 
