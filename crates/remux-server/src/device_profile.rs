@@ -536,7 +536,7 @@ mod tests {
             ..Default::default()
         };
         let media_source = MediaSourceInfo {
-            container: Some("mkv".to_string()),
+            container: Some(VideoContainer::Mkv),
             default_subtitle_stream_index: Some(2),
             media_streams: vec![
                 MediaStream {
@@ -587,7 +587,7 @@ mod tests {
             ..Default::default()
         };
         let media_source = MediaSourceInfo {
-            container: Some("mkv".to_string()),
+            container: Some(VideoContainer::Mkv),
             default_subtitle_stream_index: Some(2),
             media_streams: vec![
                 MediaStream {

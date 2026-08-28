@@ -3388,6 +3388,7 @@ mod tests {
     use http::header::HeaderValue;
     use remux_sdks::remux::{
         CollectionFilter, FilterGroup, FilterMatchMode, FilterRule, SetOp,
+        VideoContainer,
     };
     use uuid::Uuid;
 
@@ -4025,7 +4026,7 @@ mod tests {
     async fn insert_subtitle_movie(ctx: &crate::AppContext) -> db::Media {
         let now = Utc::now().naive_utc();
         let probe = crate::api::MediaSourceInfo {
-            container: Some("mp4".to_string()),
+            container: Some(VideoContainer::Mp4),
             bitrate: Some(8_000_000),
             run_time_ticks: Some(100_000_000),
             media_streams: vec![
@@ -4493,7 +4494,7 @@ mod tests {
         .unwrap();
 
         let make_probe = || api::MediaSourceInfo {
-            container: Some("mkv".to_string()),
+            container: Some(VideoContainer::Mkv),
             bitrate: Some(8_000_000),
             run_time_ticks: Some(100_000_000),
             media_streams: vec![

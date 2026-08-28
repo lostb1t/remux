@@ -2,7 +2,9 @@ use anyhow::Result;
 use axum_test::TestServer;
 use chrono::Utc;
 use http::header::HeaderValue;
-use remux_sdks::remux::{MediaSourceInfo, MediaStream, MediaStreamType};
+use remux_sdks::remux::{
+    MediaSourceInfo, MediaStream, MediaStreamType, VideoContainer,
+};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -144,7 +146,7 @@ async fn insert_source(
     // without needing ffprobe or a live network connection.
     let probe = MediaSourceInfo {
         id: Uuid::new_v4(),
-        container: Some("mp4".to_string()),
+        container: Some(VideoContainer::Mp4),
         bitrate: Some(8_000_000),
         run_time_ticks: Some(100_000_000),
         media_streams: vec![

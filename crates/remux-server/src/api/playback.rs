@@ -16,6 +16,7 @@ use futures_util::{StreamExt, TryStreamExt};
 use headers;
 use http::{Response, StatusCode};
 use remux_macros::{delete, get, post, query};
+use remux_sdks::remux::VideoContainer;
 use remux_utils::Store;
 use serde::Deserialize;
 use serde_json::json;
@@ -656,7 +657,7 @@ async fn items_playbackinfo_inner(
             supports_transcoding: true,
             path: Some("/videos/no-streams".to_string()),
             run_time_ticks: Some(10 * 3600 * 10_000_000),
-            container: Some(remux_sdks::remux::VideoContainer::Mp4),
+            container: Some(VideoContainer::Mp4),
             bitrate: Some(100),
             size: Some(NO_STREAMS_VIDEO.len() as i64),
             formats: Some(vec![]),
@@ -1189,6 +1190,7 @@ pub struct BitrateTestQuery {
 #[cfg(test)]
 mod tests {
     use http::{StatusCode, header::HeaderValue};
+    use remux_sdks::remux::VideoContainer;
     use serde_json::json;
 
     use crate::integration_test::{
@@ -2206,7 +2208,7 @@ mod tests {
                 ..Default::default()
             }),
             probe_data: Some(MediaSourceInfo {
-                container: Some("mkv".to_string()),
+                container: Some(VideoContainer::Mkv),
                 default_subtitle_stream_index: Some(2),
                 media_streams: vec![
                     MediaStream {
@@ -2419,7 +2421,7 @@ mod tests {
         };
 
         let make_probe = || MediaSourceInfo {
-            container: Some(remux_sdks::remux::VideoContainer::Mp4),
+            container: Some(VideoContainer::Mp4),
             bitrate: Some(8_000_000),
             run_time_ticks: Some(100_000_000),
             media_streams: vec![
@@ -2667,7 +2669,7 @@ mod tests {
         };
         let now = chrono::Utc::now().naive_utc();
         let probe = MediaSourceInfo {
-            container: Some(remux_sdks::remux::VideoContainer::Mp4),
+            container: Some(VideoContainer::Mp4),
             bitrate: Some(8_000_000),
             run_time_ticks: Some(100_000_000),
             media_streams: vec![
@@ -2830,7 +2832,7 @@ mod tests {
         // audio track is Dutch — the server must pick English (index 2).
         let now = chrono::Utc::now().naive_utc();
         let probe = MediaSourceInfo {
-            container: Some(remux_sdks::remux::VideoContainer::Mp4),
+            container: Some(VideoContainer::Mp4),
             bitrate: Some(8_000_000),
             run_time_ticks: Some(100_000_000),
             media_streams: vec![
@@ -3092,7 +3094,7 @@ mod tests {
         .unwrap();
 
         let make_probe = || api::MediaSourceInfo {
-            container: Some("mkv".to_string()),
+            container: Some(VideoContainer::Mkv),
             bitrate: Some(8_000_000),
             run_time_ticks: Some(100_000_000),
             media_streams: vec![
@@ -3323,7 +3325,7 @@ mod tests {
         };
         let now = chrono::Utc::now().naive_utc();
         let probe = MediaSourceInfo {
-            container: Some("mkv".to_string()),
+            container: Some(VideoContainer::Mkv),
             bitrate: Some(8_000_000),
             run_time_ticks: Some(100_000_000),
             media_streams: vec![

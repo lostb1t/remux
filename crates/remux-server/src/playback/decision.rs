@@ -497,6 +497,7 @@ pub(crate) fn apply_subtitle_delivery(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use remux_sdks::remux::VideoContainer;
 
     /// A source with no video stream routes to its own transcode branch, which
     /// builds its own URL. That URL is what the client fetches next, so it has
@@ -557,10 +558,10 @@ mod tests {
         );
     }
 
-    fn make_video_source(container: &str) -> api::MediaSourceInfo {
+    fn make_video_source(container: VideoContainer) -> api::MediaSourceInfo {
         api::MediaSourceInfo {
             id: Uuid::new_v4(),
-            container: Some(container.to_string()),
+            container: Some(container),
             media_streams: vec![
                 api::MediaStream {
                     codec: Some("h264".to_string()),
@@ -619,7 +620,7 @@ mod tests {
         let mut policy = remux_sdks::remux::UserPolicy::default();
         policy.enable_playback_remuxing = false;
         let session = make_session_with_policy(policy);
-        let source = make_video_source("ts");
+        let source = make_video_source(VideoContainer::Ts);
         let mut reasons = api::TranscodeReasons::default();
         reasons.insert(api::TranscodeReason::VideoCodecNotSupported(
             "hevc".to_string(),
@@ -649,7 +650,7 @@ mod tests {
             },
             user: db::User::default(),
         };
-        let source = make_video_source("ts");
+        let source = make_video_source(VideoContainer::Ts);
         let mut reasons = api::TranscodeReasons::default();
         reasons.insert(api::TranscodeReason::VideoCodecNotSupported(
             "hevc".to_string(),
@@ -675,7 +676,7 @@ mod tests {
         let mut policy = remux_sdks::remux::UserPolicy::default();
         policy.enable_audio_playback_transcoding = false;
         let session = make_session_with_policy(policy);
-        let source = make_video_source("ts");
+        let source = make_video_source(VideoContainer::Ts);
         // Both video AND audio need transcoding so the result is a real transcode
         // URL (video=h264). The audio codec must be copy despite needing a transcode.
         let mut reasons = api::TranscodeReasons::default();
@@ -715,7 +716,7 @@ mod tests {
             },
             user: db::User::default(),
         };
-        let source = make_video_source("ts");
+        let source = make_video_source(VideoContainer::Ts);
         let mut reasons = api::TranscodeReasons::default();
         reasons.insert(api::TranscodeReason::VideoCodecNotSupported(
             "hevc".to_string(),
@@ -751,7 +752,7 @@ mod tests {
         let mut policy = remux_sdks::remux::UserPolicy::default();
         policy.enable_video_playback_transcoding = false;
         let session = make_session_with_policy(policy);
-        let source = make_video_source("ts");
+        let source = make_video_source(VideoContainer::Ts);
         let mut reasons = api::TranscodeReasons::default();
         reasons.insert(api::TranscodeReason::VideoCodecNotSupported(
             "hevc".to_string(),
@@ -779,7 +780,7 @@ mod tests {
         policy.enable_video_playback_transcoding = false;
         let session = make_session_with_policy(policy);
         // Source is mkv, transcoding profile will pick ts → remux is needed
-        let source = make_video_source("mkv");
+        let source = make_video_source(VideoContainer::Mkv);
         let mut reasons = api::TranscodeReasons::default();
         reasons.insert(api::TranscodeReason::VideoCodecNotSupported(
             "hevc".to_string(),
@@ -801,7 +802,7 @@ mod tests {
     fn test_burn_mode_transcodes_only_when_subtitle_actively_selected() {
         let session =
             make_session_with_policy(remux_sdks::remux::UserPolicy::default());
-        let mut source = make_video_source("mkv");
+        let mut source = make_video_source(VideoContainer::Mkv);
         source.media_streams = vec![
             api::MediaStream {
                 codec: Some("h264".to_string()),
