@@ -26,15 +26,11 @@ impl AddonPreset for BetterPostersPreset {
             supported_types: vec![
                 MediaKind::Movie,
                 MediaKind::Series,
-                MediaKind::Season,
-                MediaKind::Episode,
             ],
             supported_resources_user: vec![ResourceType::Meta],
             supported_types_user: vec![
                 MediaKind::Movie,
                 MediaKind::Series,
-                MediaKind::Season,
-                MediaKind::Episode,
             ],
             options: vec![
                 AddonOption {
@@ -360,16 +356,11 @@ impl AddonKind for BetterPostersAddon {
 #[async_trait]
 impl super::MetaAddon for BetterPostersAddon {
     async fn supports(&self, media: &db::Media) -> bool {
-        matches!(
-            media.kind,
-            db::MediaKind::Movie
-                | db::MediaKind::Series
-                | db::MediaKind::Season
-                | db::MediaKind::Episode
-        ) && media
-            .external_ids
-            .imdb
-            .is_some()
+        matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series)
+            && media
+                .external_ids
+                .imdb
+                .is_some()
     }
 
     async fn meta_fetch(

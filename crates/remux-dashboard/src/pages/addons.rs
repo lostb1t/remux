@@ -228,9 +228,19 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                             e.stop_propagation();
                                                             if let Some(a) = addons.read().iter().find(|a| a.id == id).cloned() {
                                                                 edit_name_input.set(a.name.clone());
-                                                                let config_map = a.config.as_object()
+                                                                let mut config_map: std::collections::HashMap<String, serde_json::Value> = a.config.as_object()
                                                                     .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
                                                                     .unwrap_or_default();
+                                                                // Fill missing keys with option defaults so switches show the right state.
+                                                                if let Some(meta) = kinds.read().iter().find(|m| m.id == a.kind).cloned() {
+                                                                    for opt in &meta.options {
+                                                                        if !config_map.contains_key(&opt.id) {
+                                                                            if let Some(default) = &opt.default {
+                                                                                config_map.insert(opt.id.clone(), default.clone());
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
                                                                 edit_form_values.set(config_map);
                                                                 let res_set: std::collections::HashSet<String> = a.resources
                                                                     .iter()
@@ -369,6 +379,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                 }) {
                                     {
                                         let k_id = k.id.clone();
+                                        let k_id_cfg = k.id.clone();
                                         let k_name = k.display_name.clone();
                                         let is_selected = selected_kind.read().as_deref() == Some(&k.id);
                                         let is_user_tab = *active_tab.read() == "user";
@@ -404,6 +415,15 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                         onclick: move |e| {
                                                             e.stop_propagation();
                                                             name_input.set(k_name.clone());
+                                                            let mut defaults = std::collections::HashMap::new();
+                                                            if let Some(meta) = kinds.read().iter().find(|m| m.id == k_id_cfg).cloned() {
+                                                                for opt in &meta.options {
+                                                                    if let Some(default) = &opt.default {
+                                                                        defaults.insert(opt.id.clone(), default.clone());
+                                                                    }
+                                                                }
+                                                            }
+                                                            form_values.set(defaults);
                                                             create_step.set(1);
                                                         },
                                                         "Configure →"
