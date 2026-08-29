@@ -1587,6 +1587,10 @@ async fn stremio_streams(
                 nzb_url,
                 torrent_info_hash,
                 torrent_file_idx,
+                stream_addon: sd.and_then(|d| {
+                    d.addon
+                        .clone()
+                }),
                 service_id: sd
                     .and_then(|d| {
                         d.service

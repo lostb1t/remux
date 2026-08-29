@@ -2549,13 +2549,15 @@ impl AddonService {
                             let sf = &r.row.service_filter;
                             if !sf.is_empty() {
                                 streams.retain(|s| {
-                                    s.service_id
-                                        .as_ref()
-                                        .map(|id| {
-                                            sf.iter()
-                                                .any(|f| f.to_lowercase() == id.to_lowercase())
-                                        })
-                                        .unwrap_or(true)
+                                    let service_match = s.service_id
+                                        .as_deref()
+                                        .map(|id| sf.iter().any(|f| f.eq_ignore_ascii_case(id)))
+                                        .unwrap_or(false);
+                                    let addon_match = s.stream_addon
+                                        .as_deref()
+                                        .map(|a| sf.iter().any(|f| f.eq_ignore_ascii_case(a)))
+                                        .unwrap_or(false);
+                                    service_match || addon_match
                                 });
                             }
                             debug!(addon = %name, count = streams.len(), ?elapsed, "addon: streams found");

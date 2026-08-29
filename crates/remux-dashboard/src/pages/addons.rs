@@ -636,7 +636,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                             value: "{edit_service_filter}",
                                             oninput: move |e| edit_service_filter.set(e.value()),
                                         }
-                                        span { class: "field-hint", "Comma-separated list of service IDs to stream directly (from streamData.service.id). Leave empty to apply to all services." }
+                                        span { class: "field-hint", "Comma-separated list of service IDs (from streamData.service.id) or addon names (from streamData.addon) to stream directly. Leave empty to apply to all." }
                                     }
                                 }
                                 // Catalogs section (only shown for global addons with catalog resource active)
