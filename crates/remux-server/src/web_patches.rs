@@ -11,7 +11,7 @@ pub static CSS: &str = r##"
   }
 
   /* ── ElegantFin mobile: pull logo up so it clears the play button ── */
-  .layout-mobile .detailLogo { top: 25vh !important; }
+  .layout-mobile .detailLogo { top: 27vh !important; }
 
   /* ── Card listing: hide inline play button overlay ───────────── */
   .cardOverlayButton-br { display: none !important; }
