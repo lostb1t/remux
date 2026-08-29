@@ -587,7 +587,33 @@ impl Task for JellyfinImportTask {
                     } else {
                         None
                     };
-                    positional.unwrap_or_else(|| uuid::Uuid::from(&raw))
+                    positional.unwrap_or_else(|| {
+                        // Derive a per-item stable UUID from series identity + position
+                        // so unresolved episodes/seasons don't all collapse to one row.
+                        let series_key = series_imdb
+                            .map(|s| s.to_string())
+                            .or_else(|| series_tmdb.map(|id| format!("tmdb:{id}")))
+                            .or_else(|| series_tvdb.map(|id| format!("tvdb:{id}")))
+                            .unwrap_or_default();
+                        let canonical = match kind {
+                            db::MediaKind::Episode => format!(
+                                "{}:{}:{}",
+                                series_key,
+                                item.parent_index_number
+                                    .unwrap_or(0),
+                                item.index_number
+                                    .unwrap_or(0)
+                            ),
+                            db::MediaKind::Season => format!(
+                                "{}:{}",
+                                series_key,
+                                item.parent_index_number
+                                    .unwrap_or(0)
+                            ),
+                            _ => series_key,
+                        };
+                        crate::common::stable_media_uuid(&kind, &canonical)
+                    })
                 } else {
                     uuid::Uuid::from(&raw)
                 };

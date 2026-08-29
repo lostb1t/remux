@@ -265,9 +265,10 @@ pub fn db_state_to_dto(
         .filter(|&r| r > 0)
         .map(|r| (state.playback_position as f32 / r as f32 * 100.0).clamp(0.0, 100.0));
     UserItemDataDto {
-        played: state
-            .played_at
-            .is_some(),
+        played: state.play_count > 0
+            || state
+                .played_at
+                .is_some(),
         last_played_date: state
             .last_played_at
             .or(state.played_at)
