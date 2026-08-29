@@ -134,6 +134,10 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
         is_default: addon.is_default,
         http_redirect_stream: addon.http_redirect_stream,
         service_filter: addon.service_filter,
+        description: preset.map(|p| {
+            p.metadata()
+                .description
+        }),
         created_at: addon.created_at,
         updated_at: addon.updated_at,
     }

@@ -92,7 +92,14 @@ pub struct JellyfinApiKeyAuth {
 
 impl Auth for JellyfinApiKeyAuth {
     fn apply(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        req.header("X-Emby-Token", &self.api_key)
+        let val = format!(
+            r#"MediaBrowser Client="remux", Device="server", DeviceId="remux-server", Version="1.0.0", Token="{}""#,
+            self.api_key
+        );
+        match HeaderValue::from_str(&val) {
+            Ok(v) => req.header(header::AUTHORIZATION, v),
+            Err(_) => req.header("X-Emby-Token", &self.api_key),
+        }
     }
 }
 

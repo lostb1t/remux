@@ -203,6 +203,9 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                 span { class: "addon-card-name", "{addon.name}" }
                                                 span { class: "addon-card-kind", "{addon.kind}" }
                                             }
+                                            if let Some(desc) = addon.description.as_deref().filter(|d| !d.is_empty()) {
+                                                div { class: "addon-kind-card-desc", "{desc}" }
+                                            }
                                             div { class: "addon-kind-card-badges",
                                                 for res in res_list.iter() {
                                                     span { class: "addon-kind-badge", "{res}" }

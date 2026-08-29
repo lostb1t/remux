@@ -838,7 +838,8 @@ fn media_info_from_probe(
         nzb,
         container: probe
             .container
-            .clone()
+            .as_ref()
+            .map(|c| c.to_string())
             .unwrap_or_default(),
         size: probe
             .size

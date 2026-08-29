@@ -149,6 +149,10 @@ impl DeezerAddon {
                 .external_ids
                 .deezer_album
                 .is_some(),
+            db::MediaKind::Artist => media
+                .external_ids
+                .deezer_artist
+                .is_some(),
             _ => false,
         }
     }
@@ -399,6 +403,33 @@ impl DeezerAddon {
             }
         }
         Ok(Some(patch))
+    }
+
+    async fn fetch_artist_meta(
+        &self,
+        deezer_id: &str,
+        base: &db::Media,
+    ) -> Result<Option<db::Media>> {
+        let Ok(id) = deezer_id.parse::<u64>() else {
+            return Ok(None);
+        };
+        let a = match self
+            .client
+            .execute(dz::ArtistEndpoint { id }.with_cache(CACHE_TTL))
+            .await
+        {
+            Ok(dz::DeezerResult::Ok(a)) => a,
+            Ok(dz::DeezerResult::Err { error }) => {
+                warn!(deezer_id, %error, "Deezer artist detail returned error");
+                return Ok(None);
+            }
+            Err(e) => {
+                warn!(deezer_id, error = %e, "Deezer artist detail HTTP error");
+                return Ok(None);
+            }
+        };
+        debug!(deezer_id, "Deezer artist detail fetched");
+        Ok(Some(artist_patch(a, base)))
     }
 
     // --- Helpers ---
@@ -1123,6 +1154,16 @@ impl MetaAddon for DeezerAddon {
                 self.fetch_album_meta(&id.to_string(), media)
                     .await
             }
+            db::MediaKind::Artist => {
+                let Some(id) = media
+                    .external_ids
+                    .deezer_artist
+                else {
+                    return Ok(None);
+                };
+                self.fetch_artist_meta(&id.to_string(), media)
+                    .await
+            }
             _ => Ok(None),
         }
     }
@@ -1446,6 +1487,24 @@ fn track_to_result(t: dz::SearchTrack) -> db::Media {
     track
 }
 
+/// Meta patch for an artist: canonical Deezer name and XL picture.
+fn artist_patch(a: dz::Artist, base: &db::Media) -> db::Media {
+    let mut patch = db::Media {
+        id: base.id,
+        title: a.name,
+        kind: db::MediaKind::Artist,
+        external_ids: db::ExternalIds {
+            deezer_artist: Some(a.id as i64),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    if let Some(url) = a.picture_xl {
+        patch.set_image(db::ImageKind::Primary, url);
+    }
+    patch
+}
+
 fn album_to_result(a: dz::SearchAlbum) -> db::Media {
     let artist_id = common::stable_media_uuid(
         &db::MediaKind::Artist,
@@ -1650,5 +1709,54 @@ mod tests {
         assert_eq!(extract_playlist_id("  98765  "), Some("98765".to_string()));
         assert_eq!(extract_playlist_id("not-a-playlist"), None);
         assert_eq!(extract_playlist_id(""), None);
+    }
+
+    #[test]
+    fn artist_patch_sets_primary_image_and_keeps_base_id() {
+        let base_id = Uuid::new_v4();
+        let base = db::Media {
+            id: base_id,
+            kind: db::MediaKind::Artist,
+            ..Default::default()
+        };
+        let patch = artist_patch(
+            dz::Artist {
+                id: 7741572,
+                name: "Blackway".into(),
+                picture_xl: Some("https://e.deezer.com/artist/7741572/xl.jpg".into()),
+            },
+            &base,
+        );
+        assert_eq!(patch.id, base_id);
+        assert_eq!(patch.kind, db::MediaKind::Artist);
+        assert_eq!(patch.title, "Blackway");
+        assert_eq!(
+            patch
+                .external_ids
+                .deezer_artist,
+            Some(7741572)
+        );
+        assert_eq!(
+            patch.get_image(db::ImageKind::Primary),
+            Some("https://e.deezer.com/artist/7741572/xl.jpg")
+        );
+    }
+
+    #[test]
+    fn artist_patch_without_picture_adds_no_image() {
+        let patch = artist_patch(
+            dz::Artist {
+                id: 1,
+                name: "Unknown".into(),
+                picture_xl: None,
+            },
+            &db::Media::default(),
+        );
+        assert_eq!(patch.title, "Unknown");
+        assert!(
+            patch
+                .get_image(db::ImageKind::Primary)
+                .is_none()
+        );
     }
 }

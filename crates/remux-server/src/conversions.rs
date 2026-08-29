@@ -18,7 +18,7 @@ use std::{
 // Heuristic metadata fallback for remote source URLs when ffprobe metadata is
 // unavailable. This keeps clients functional (stream selection/transcode
 // decisions) instead of exposing empty stream lists.
-fn infer_container_from_url(url: &str) -> Option<String> {
+fn infer_container_from_url(url: &str) -> Option<remux_sdks::remux::VideoContainer> {
     let path = url::Url::parse(url)
         .ok()
         .map(|u| {
@@ -35,12 +35,9 @@ fn infer_container_from_url(url: &str) -> Option<String> {
         .next()?
         .to_ascii_lowercase();
     if ext == "m3u8" {
-        return Some("ts".to_string());
+        return Some(remux_sdks::remux::VideoContainer::Other("hls".to_string()));
     }
-    remux_sdks::remux::VideoContainer::parse_known(&ext).map(|c| {
-        c.canonical()
-            .to_string()
-    })
+    remux_sdks::remux::VideoContainer::parse_known(&ext).map(|c| c.canonical())
 }
 
 fn infer_video_codec(text: &str) -> Option<String> {

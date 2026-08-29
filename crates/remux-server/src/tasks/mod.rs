@@ -21,7 +21,6 @@ mod catalog_import_shared;
 mod clean_transcode_folder;
 mod clear_cache;
 mod clear_image_cache;
-mod delivery_queue_sync;
 mod jellyfin_import;
 mod purge_iptv;
 mod purge_media;
@@ -39,7 +38,6 @@ pub use crate::common::ProgressReporter;
 use clean_transcode_folder::CleanTranscodeFolderTask;
 use clear_cache::ClearCacheTask;
 use clear_image_cache::ClearImageCacheTask;
-pub use delivery_queue_sync::{DELIVERY_QUEUE_SYNC_KEY, DeliveryQueueSyncTask};
 use jellyfin_import::JellyfinImportTask;
 use purge_iptv::PurgeIptvTask;
 use purge_media::PurgeMediaTask;
@@ -226,9 +224,8 @@ impl TaskHandler {
             let (new_status, db_status) = match &result {
                 Ok(_) => {
                     info!(task = %task.name(), elapsed = ?elapsed, "completed");
-                    let _ = ctx
-                        .ws_tx
-                        .send(ws::WsEvent::LibraryChanged);
+                    ctx.signals
+                        .emit(crate::signals::Event::LibraryChanged);
                     (TaskStatus::Idle, db::TaskResultStatus::Completed)
                 }
                 Err(e) => {
@@ -296,9 +293,6 @@ impl TaskService {
 
         service
             .register_task(Arc::new(ClearCacheTask))
-            .await?;
-        service
-            .register_task(Arc::new(DeliveryQueueSyncTask))
             .await?;
         service
             .register_task(Arc::new(ClearImageCacheTask))

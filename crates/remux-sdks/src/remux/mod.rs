@@ -230,6 +230,7 @@ pub struct AddonDto {
     pub http_redirect_stream: bool,
     #[serde(default)]
     pub service_filter: Vec<String>,
+    pub description: Option<String>,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
@@ -2128,7 +2129,7 @@ pub struct MediaSourceInfo {
     pub analyze_duration_ms: Option<i64>,
     pub bitrate: Option<i64>,
     pub buffer_ms: Option<i64>,
-    pub container: Option<String>,
+    pub container: Option<VideoContainer>,
     pub default_audio_stream_index: Option<i64>,
     pub default_subtitle_stream_index: Option<i64>,
     pub e_tag: Uuid,
@@ -4901,10 +4902,10 @@ impl Endpoint for GetJellyfinItemsByIds {
 
     fn query_params(&self) -> impl serde::Serialize + '_ {
         #[derive(Serialize)]
+        #[serde(rename_all = "PascalCase")]
         struct Q<'a> {
-            #[serde(rename = "Ids", serialize_with = "serialize_comma")]
+            #[serde(serialize_with = "serialize_comma")]
             ids: &'a [String],
-            #[serde(rename = "Fields")]
             fields: &'static str,
         }
         Q {
@@ -4929,6 +4930,8 @@ impl Endpoint for GetJellyfinUsers {
 pub struct GetJellyfinUserItems {
     pub user_id: String,
     pub filter: &'static str,
+    pub start_index: i32,
+    pub limit: i32,
 }
 
 impl Endpoint for GetJellyfinUserItems {
@@ -4940,21 +4943,22 @@ impl Endpoint for GetJellyfinUserItems {
 
     fn query_params(&self) -> impl serde::Serialize + '_ {
         #[derive(Serialize)]
+        #[serde(rename_all = "PascalCase")]
         struct Q<'a> {
-            #[serde(rename = "Recursive")]
             recursive: bool,
-            #[serde(rename = "Fields")]
             fields: &'static str,
-            #[serde(rename = "IncludeItemTypes")]
             include_item_types: &'static str,
-            #[serde(rename = "Filters")]
             filters: &'a str,
+            start_index: i32,
+            limit: i32,
         }
         Q {
             recursive: true,
             fields: "ProviderIds,SeriesProviderIds,UserData,SeriesId,Overview,ProductionYear,RunTimeTicks",
             include_item_types: "Movie,Series,Episode",
             filters: self.filter,
+            start_index: self.start_index,
+            limit: self.limit,
         }
     }
 }
