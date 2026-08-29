@@ -49,14 +49,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: jellyfin-web/
-          key: jellyfin-web-v10.11.9
+          key: jellyfin-web-v10.11.11
 
       - name: Checkout jellyfin-web
         if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
           repository: jellyfin/jellyfin-web
-          ref: v10.11.9
+          ref: v10.11.11
 
       - name: Setup Node
         if: steps.cache.outputs.cache-hit != 'true'
@@ -500,6 +500,11 @@ jobs:
   merge-docker:
     name: Merge Docker manifests
     needs: [build-docker, build-desktop, smoke-test-windows]
+    if: |
+      always() &&
+      needs.build-docker.result == 'success' &&
+      (needs.build-desktop.result == 'success' || needs.build-desktop.result == 'skipped') &&
+      (needs.smoke-test-windows.result == 'success' || needs.smoke-test-windows.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: read

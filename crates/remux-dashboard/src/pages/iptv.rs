@@ -1,5 +1,5 @@
 use crate::{
-    components::{FormGroup, LoadingText, Modal, PaginationBar},
+    components::{FormGroup, LoadingText, Modal, PaginationBar, Switch},
     state::AppState,
 };
 use dioxus::prelude::*;
@@ -266,24 +266,21 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
                                             class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)]",
                                             style: if !ch.enabled { "gap:8px;padding:6px 12px;opacity:.4" } else { "gap:8px;padding:6px 12px" },
 
-                                            input {
-                                                r#type: "checkbox",
+                                            Switch {
                                                 checked: ch.enabled,
-                                                style: "width:16px;height:16px;cursor:pointer;flex-shrink:0",
-                                                onchange: {
+                                                on_change: {
                                                     let id = id.clone();
-                                                    move |e| {
-                                                        let enabled = e.value() == "true";
+                                                    move |v| {
                                                         // optimistic update
                                                         if let Some(c) = channels.write().iter_mut().find(|c| c.id == id) {
-                                                            c.enabled = enabled;
+                                                            c.enabled = v;
                                                         }
                                                         let c = client1.clone();
                                                         let id = id.clone();
                                                         spawn(async move {
                                                             let _ = c.execute(PatchChannel {
                                                                 id,
-                                                                patch: PatchChannelRequest { enabled: Some(enabled), ..Default::default() },
+                                                                patch: PatchChannelRequest { enabled: Some(v), ..Default::default() },
                                                             }).await;
                                                         });
                                                     }

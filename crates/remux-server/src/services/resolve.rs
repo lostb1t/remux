@@ -602,8 +602,7 @@ impl MediaResolveService {
     /// Resolves a cached search result from the store into a persisted `db::Media`.
     ///
     /// - Movie/Series: resolves IMDB ID first (via TMDB), then saves.
-    /// - Track/Album: builds artist root from `external_ids.deezer_artist`, runs
-    ///   `process_meta_item` which triggers `sync_tree` → full discography.
+    /// - Track/Album: [`Self::persist_music`] — returns the clicked item itself.
     /// - Artist/Person: passed directly to `process_meta_item`.
     async fn persist_from_store(
         id: Uuid,
@@ -651,57 +650,14 @@ impl MediaResolveService {
         }
 
         if matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album) {
-            if !Self::resolve_music_deezer(&mut media).await {
-                warn!(%id, kind = ?media.kind, title = %media.title,
-                    "persist_from_store: Deezer ID resolution failed");
-            }
+            return Self::persist_music(media, id, ctx).await;
         }
 
-        let root = if matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
-        {
-            let Some(deezer_artist_id) = media
-                .external_ids
-                .deezer_artist
-            else {
-                debug!(%id, kind = ?media.kind, "persist_from_store: no deezer_artist id on music child");
-                return Ok(None);
-            };
-            db::Media {
-                id: crate::common::stable_media_uuid(
-                    &db::MediaKind::Artist,
-                    &deezer_artist_id.to_string(),
-                ),
-                title: media
-                    .grandparent
-                    .as_ref()
-                    .map(|gp| {
-                        gp.title
-                            .clone()
-                    })
-                    .unwrap_or_default(),
-                kind: db::MediaKind::Artist,
-                external_ids: db::ExternalIds {
-                    deezer_artist: Some(deezer_artist_id),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }
-        } else {
-            media
-        };
-
-        let resolved_id = root.id;
+        let resolved_id = media.id;
 
         // If the caller's fake UUID differs from the resolved real UUID, keep an alias so
         // future lookups for the fake ID still resolve to the persisted row.
-        if id != resolved_id {
-            ctx.store
-                .save(
-                    id.to_string(),
-                    resolved_id,
-                    std::time::Duration::from_secs(7 * 24 * 3600),
-                );
-        }
+        Self::save_alias(ctx, id, resolved_id).await;
 
         // Already in DB — alias is saved above, skip the full tree sync.
         if let Some(existing) = db::Media::get_by_id(&ctx.db, &resolved_id).await? {
@@ -713,11 +669,231 @@ impl MediaResolveService {
         );
         // process_meta_item now owns all upserts internally and returns the actual UUID
         // (which may differ from resolved_id if an existing DB row was adopted).
+        // force_refresh=true: this is a brand-new item; the stub is a placeholder,
+        // so meta addons should fully replace any pre-populated fields.
         let actual_id = ctx
             .addons
-            .process_meta_item(root, ctx.clone(), false, config)
+            .process_meta_item(media, ctx.clone(), true, config)
             .await;
         Ok(db::Media::get_by_id(&ctx.db, &actual_id).await?)
+    }
+
+    /// Persists a Track/Album clicked in search results and returns the
+    /// clicked item itself — the client navigated to this item, not to its
+    /// artist.
+    async fn persist_music(
+        mut media: db::Media,
+        id: Uuid,
+        ctx: &AppContext,
+    ) -> anyhow::Result<Option<db::Media>> {
+        if !Self::resolve_music_deezer(&mut media).await {
+            warn!(%id, kind = ?media.kind, title = %media.title,
+                "persist_music: Deezer ID resolution failed");
+        }
+        let Some(deezer_artist) = media
+            .external_ids
+            .deezer_artist
+        else {
+            debug!(%id, kind = ?media.kind, "persist_music: no deezer_artist id on music child");
+            return Ok(None);
+        };
+
+        let artist_id = crate::common::stable_media_uuid(
+            &db::MediaKind::Artist,
+            &deezer_artist.to_string(),
+        );
+
+        // Map the transient store key to the item's stable UUID (no-op for
+        // deezer-keyed search results).
+        Self::save_alias(ctx, id, media.id).await;
+
+        // A full discography sync is dozens of Deezer calls — keep it off the
+        // click's critical path. Concurrent first clicks on the same new
+        // artist may both spawn it; the sync is idempotent (stable UUIDs).
+        if db::Media::get_by_id(&ctx.db, &artist_id)
+            .await?
+            .is_none()
+        {
+            let root = db::Media {
+                id: artist_id,
+                title: media
+                    .artist_name()
+                    .map(str::to_string)
+                    .unwrap_or_default(),
+                kind: db::MediaKind::Artist,
+                external_ids: db::ExternalIds {
+                    deezer_artist: Some(deezer_artist),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            match db::Media::upsert(&ctx.db, &[root.clone()]).await {
+                Ok(()) => {
+                    let bg_ctx = ctx.clone();
+                    tokio::spawn(async move {
+                        let config = std::sync::Arc::new(
+                            crate::db::Settings::get_config_or_default(&bg_ctx.db)
+                                .await,
+                        );
+                        bg_ctx
+                            .addons
+                            .process_meta_item(root, bg_ctx.clone(), false, config)
+                            .await;
+                    });
+                }
+                Err(e) => {
+                    warn!(%id, error = %e, "persist_music: failed to upsert artist stub");
+                }
+            }
+        }
+
+        // The background sync may have already persisted this item.
+        if let Some(item) = db::Media::get_by_id(&ctx.db, &media.id).await? {
+            return Ok(Some(item));
+        }
+
+        // Compilation releases never appear in the artist's own discography —
+        // sync the item's album; this also persists its tracks.
+        let album_root = match media.kind {
+            db::MediaKind::Album => Some(media.clone()),
+            _ => Self::album_root_for_track(&media, artist_id),
+        };
+        if let Some(mut album_root) = album_root {
+            if album_root
+                .grandparent_id
+                .is_none()
+            {
+                album_root.grandparent_id = Some(artist_id);
+            }
+            if album_root
+                .grandparent
+                .is_none()
+            {
+                album_root.grandparent = Some(db::Media::stub(
+                    artist_id,
+                    media
+                        .artist_name()
+                        .map(str::to_string)
+                        .unwrap_or_default(),
+                ));
+            }
+            let config = std::sync::Arc::new(
+                crate::db::Settings::get_config_or_default(&ctx.db).await,
+            );
+            ctx.addons
+                .process_meta_item(album_root, ctx.clone(), false, config)
+                .await;
+        }
+
+        if let Some(item) = db::Media::get_by_id(&ctx.db, &media.id).await? {
+            return Ok(Some(item));
+        }
+        // process_meta_item may have adopted an existing row for the same
+        // external ID under a different UUID.
+        if let Some(existing_id) =
+            db::Media::find_existing_id_by_ext(&ctx.db, &media).await
+        {
+            Self::save_alias(ctx, id, existing_id).await;
+            if let Some(item) = db::Media::get_by_id(&ctx.db, &existing_id).await? {
+                return Ok(Some(item));
+            }
+        }
+
+        // Fallback for when the album sync failed — the click must still
+        // resolve to itself.
+        let mut clicked = media;
+        if clicked.kind == db::MediaKind::Track
+            && clicked
+                .parent_id
+                .is_none()
+        {
+            if let Some(dz_album) = clicked
+                .external_ids
+                .deezer_album
+            {
+                clicked.parent_id = Some(crate::common::stable_media_uuid(
+                    &db::MediaKind::Album,
+                    &dz_album.to_string(),
+                ));
+            }
+        }
+        if clicked
+            .grandparent_id
+            .is_none()
+        {
+            clicked.grandparent_id = Some(artist_id);
+        }
+        let clicked_id = clicked.id;
+        if let Err(e) = db::Media::upsert(&ctx.db, &[clicked]).await {
+            warn!(%id, error = %e, "persist_music: failed to upsert clicked item");
+            return Ok(None);
+        }
+        Ok(db::Media::get_by_id(&ctx.db, &clicked_id).await?)
+    }
+
+    /// Album root stable-keyed by the Deezer album ID, for tracks whose
+    /// release is not yet in the DB.
+    fn album_root_for_track(track: &db::Media, artist_id: Uuid) -> Option<db::Media> {
+        let deezer_album = track
+            .external_ids
+            .deezer_album?;
+        let mut album = db::Media {
+            id: crate::common::stable_media_uuid(
+                &db::MediaKind::Album,
+                &deezer_album.to_string(),
+            ),
+            title: track
+                .parent
+                .as_ref()
+                .map(|p| {
+                    p.title
+                        .clone()
+                })
+                .or_else(|| {
+                    track
+                        .external_ids
+                        .album_title
+                        .clone()
+                })
+                .unwrap_or_default(),
+            kind: db::MediaKind::Album,
+            grandparent_id: Some(artist_id),
+            external_ids: db::ExternalIds {
+                deezer_album: Some(deezer_album),
+                deezer_artist: track
+                    .external_ids
+                    .deezer_artist,
+                artist_name: track
+                    .external_ids
+                    .artist_name
+                    .clone(),
+                album_title: track
+                    .external_ids
+                    .album_title
+                    .clone(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        album.grandparent = Some(db::Media::stub(
+            artist_id,
+            track
+                .artist_name()
+                .map(str::to_string)
+                .unwrap_or_default(),
+        ));
+        Some(album)
+    }
+
+    async fn save_alias(ctx: &AppContext, from: Uuid, to: Uuid) {
+        if from != to {
+            ctx.store
+                .save(
+                    from.to_string(),
+                    to,
+                    std::time::Duration::from_secs(7 * 24 * 3600),
+                );
+        }
     }
 
     /// For each candidate ID: if not in DB, acquire its persist lock and persist if still missing;
@@ -1827,6 +2003,222 @@ mod tests {
                 .map(|s| s.as_str()),
             Some("tt1890725"),
             "Blood-C tvdbid-249864"
+        );
+    }
+
+    fn stable_id(kind: &db::MediaKind, id: &str) -> Uuid {
+        crate::common::stable_media_uuid(kind, id)
+    }
+
+    /// Search-result shape from `track_to_result`: stable Track UUID with
+    /// parent album / grandparent artist links, not yet persisted.
+    fn search_track(
+        deezer_track: i64,
+        deezer_album: i64,
+        deezer_artist: i64,
+    ) -> db::Media {
+        let track_id = stable_id(&db::MediaKind::Track, &deezer_track.to_string());
+        let album_id = stable_id(&db::MediaKind::Album, &deezer_album.to_string());
+        let artist_id = stable_id(&db::MediaKind::Artist, &deezer_artist.to_string());
+        let mut media = db::Media {
+            id: track_id,
+            title: "What's Up Danger".to_string(),
+            kind: db::MediaKind::Track,
+            parent_id: Some(album_id),
+            grandparent_id: Some(artist_id),
+            external_ids: db::ExternalIds {
+                deezer_track: Some(deezer_track),
+                deezer_album: Some(deezer_album),
+                deezer_artist: Some(deezer_artist),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        media.parent = Some(db::Media::stub(
+            album_id,
+            "Spider-Man: Into the Spider-Verse",
+        ));
+        media.grandparent = Some(db::Media::stub(artist_id, "Blackway"));
+        media
+    }
+
+    #[test]
+    fn album_root_for_track_builds_stable_album_stub() {
+        let artist_id = stable_id(&db::MediaKind::Artist, "7741572");
+        let media = search_track(602456542, 81457652, 7741572);
+        let album = MediaResolveService::album_root_for_track(&media, artist_id)
+            .expect("album root built for track with deezer_album");
+        assert_eq!(album.id, stable_id(&db::MediaKind::Album, "81457652"));
+        assert_eq!(album.kind, db::MediaKind::Album);
+        assert_eq!(album.grandparent_id, Some(artist_id));
+        assert_eq!(
+            album
+                .external_ids
+                .deezer_album,
+            Some(81457652)
+        );
+        assert_eq!(
+            album
+                .external_ids
+                .deezer_artist,
+            Some(7741572)
+        );
+        assert_eq!(album.title, "Spider-Man: Into the Spider-Verse");
+    }
+
+    #[test]
+    fn album_root_for_track_falls_back_to_album_title_ext_id() {
+        let artist_id = stable_id(&db::MediaKind::Artist, "7741572");
+        let mut media = search_track(10, 100, 7741572);
+        media.parent = None;
+        media
+            .external_ids
+            .album_title = Some("Album A".to_string());
+        let album =
+            MediaResolveService::album_root_for_track(&media, artist_id).unwrap();
+        assert_eq!(album.title, "Album A");
+    }
+
+    #[test]
+    fn album_root_for_track_requires_deezer_album() {
+        let artist_id = stable_id(&db::MediaKind::Artist, "7741572");
+        let mut media = search_track(10, 100, 7741572);
+        media
+            .external_ids
+            .deezer_album = None;
+        assert!(MediaResolveService::album_root_for_track(&media, artist_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn track_click_resolves_to_track_not_artist() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        // VA-soundtrack track: absent from the artist's own discography.
+        let media = search_track(602456542, 81457652, 7741572);
+        let track_id = media.id;
+        let album_id = stable_id(&db::MediaKind::Album, "81457652");
+        let artist_id = stable_id(&db::MediaKind::Artist, "7741572");
+        ctx.store
+            .save(
+                track_id.to_string(),
+                media,
+                std::time::Duration::from_secs(60),
+            );
+
+        let resolved = MediaResolveService::resolve_item(track_id, ctx)
+            .await
+            .unwrap()
+            .expect("clicked track resolves");
+        assert_eq!(resolved.id, track_id);
+        assert_eq!(resolved.kind, db::MediaKind::Track);
+
+        // Artist and album rows exist so navigation works.
+        assert!(
+            db::Media::get_by_id(&ctx.db, &artist_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            db::Media::get_by_id(&ctx.db, &album_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        // Retry stays on the track (DB fast path, no artist alias).
+        let again = MediaResolveService::resolve_item(track_id, ctx)
+            .await
+            .unwrap()
+            .expect("track resolves on retry");
+        assert_eq!(again.id, track_id);
+        assert_eq!(again.kind, db::MediaKind::Track);
+    }
+
+    #[tokio::test]
+    async fn track_click_with_synced_artist_still_resolves_to_track() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        // Artist already in the DB, but this track was never persisted.
+        let artist_id = stable_id(&db::MediaKind::Artist, "7741572");
+        let artist = db::Media {
+            id: artist_id,
+            title: "Blackway".to_string(),
+            kind: db::MediaKind::Artist,
+            external_ids: db::ExternalIds {
+                deezer_artist: Some(7741572),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        db::Media::upsert(&ctx.db, &[artist])
+            .await
+            .unwrap();
+
+        let media = search_track(623716672, 85606892, 7741572);
+        let track_id = media.id;
+        ctx.store
+            .save(
+                track_id.to_string(),
+                media,
+                std::time::Duration::from_secs(60),
+            );
+
+        let resolved = MediaResolveService::resolve_item(track_id, ctx)
+            .await
+            .unwrap()
+            .expect("clicked track resolves");
+        assert_eq!(resolved.id, track_id);
+        assert_eq!(resolved.kind, db::MediaKind::Track);
+    }
+
+    #[tokio::test]
+    async fn album_click_resolves_to_album_not_artist() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let artist_id = stable_id(&db::MediaKind::Artist, "7741572");
+        let album_id = stable_id(&db::MediaKind::Album, "81457652");
+        let mut album = db::Media {
+            id: album_id,
+            title: "Spider-Man: Into the Spider-Verse".to_string(),
+            kind: db::MediaKind::Album,
+            grandparent_id: Some(artist_id),
+            external_ids: db::ExternalIds {
+                deezer_album: Some(81457652),
+                deezer_artist: Some(7741572),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        album.grandparent = Some(db::Media::stub(artist_id, "Blackway"));
+        ctx.store
+            .save(
+                album_id.to_string(),
+                album,
+                std::time::Duration::from_secs(60),
+            );
+
+        let resolved = MediaResolveService::resolve_item(album_id, ctx)
+            .await
+            .unwrap()
+            .expect("clicked album resolves");
+        assert_eq!(resolved.id, album_id);
+        assert_eq!(resolved.kind, db::MediaKind::Album);
+        // The artist row exists so the album has a browsable parent.
+        assert!(
+            db::Media::get_by_id(&ctx.db, &artist_id)
+                .await
+                .unwrap()
+                .is_some()
         );
     }
 }

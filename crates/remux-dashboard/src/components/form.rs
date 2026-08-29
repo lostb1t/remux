@@ -11,22 +11,42 @@ pub fn FormGroup(label: String, children: Element) -> Element {
 }
 
 #[component]
-pub fn ToggleRow(
-    label: String,
+pub fn Switch(
     checked: bool,
     on_change: EventHandler<bool>,
+    #[props(default = false)] disabled: bool,
+) -> Element {
+    rsx! {
+        button {
+            r#type: "button",
+            role: "switch",
+            class: "switch",
+            aria_checked: "{checked}",
+            disabled,
+            "data-state": if checked { "checked" } else { "unchecked" },
+            onclick: move |_| on_change.call(!checked),
+            span { class: "switch-thumb" }
+        }
+    }
+}
+
+#[component]
+pub fn ToggleRow(
+    label: String,
+    #[props(default = None)] description: Option<String>,
+    checked: bool,
+    on_change: EventHandler<bool>,
+    #[props(default = false)] disabled: bool,
 ) -> Element {
     rsx! {
         div { class: "toggle-row",
-            span { class: "toggle-label", "{label}" }
-            label { class: "toggle",
-                input {
-                    r#type: "checkbox",
-                    checked,
-                    oninput: move |e| on_change.call(e.checked()),
+            div { class: "toggle-row-text",
+                span { class: "toggle-label", "{label}" }
+                if let Some(desc) = description {
+                    span { class: "toggle-description", "{desc}" }
                 }
-                span { class: "toggle-track" }
             }
+            Switch { checked, on_change, disabled }
         }
     }
 }

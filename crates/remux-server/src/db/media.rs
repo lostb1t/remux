@@ -6406,6 +6406,7 @@ impl From<sdks::stremio::Stream> for Media {
             usenet_indexer: None,
             nzb_url: None,
             binge_group: None,
+            stream_addon: None,
             torrent_info_hash: None,
             torrent_file_idx: None,
             service_id: None,

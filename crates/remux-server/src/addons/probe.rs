@@ -22,7 +22,7 @@ impl AddonPreset for ProbePreset {
             id: "probe".to_string(),
             display_name: "Probe Segments".to_string(),
             description:
-                "Extracts chapter/segment markers from the media file's probe data."
+                "Extracts segment markers (intro, outro, chapters) from the media file's probe data. Includes probe data from remuxdb if enabled."
                     .to_string(),
             icon: None,
             supported_resources: vec![AddonMetadata::simple_resource(

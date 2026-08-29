@@ -261,6 +261,10 @@ pub struct StreamInfo {
     /// Used as part of the stable dedup key for HTTP streams.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binge_group: Option<String>,
+    /// Upstream addon name from `streamData.addon` (e.g. "BB", "Comet").
+    /// Used alongside `service_id` for the addon-level stream filter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_addon: Option<String>,
     /// Torrent info-hash for the source release (from AIOStreams streamData).
     /// Stored independently of the descriptor so debrid Http streams can match by hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]

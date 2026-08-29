@@ -15,7 +15,7 @@ pub use button::{Button, ButtonVariant};
 pub use card::Card;
 pub use drag_and_drop_list::DragAndDropList;
 pub use filters::{FilterRuleEditor, TagChipInput};
-pub use form::{FormActions, FormGroup, ToggleRow};
+pub use form::{FormActions, FormGroup, Switch, ToggleRow};
 pub use metrics::MetricsCard;
 pub use modal::{ConfirmDialog, Modal};
 pub use pagination::PaginationBar;

@@ -1,5 +1,7 @@
 use crate::{
-    components::{DragAndDropList, EmptyState, FormGroup, LoadingText},
+    components::{
+        DragAndDropList, EmptyState, FormGroup, LoadingText, Switch, ToggleRow,
+    },
     state::AppState,
 };
 use dioxus::prelude::*;
@@ -203,6 +205,9 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                 span { class: "addon-card-name", "{addon.name}" }
                                                 span { class: "addon-card-kind", "{addon.kind}" }
                                             }
+                                            if let Some(desc) = addon.description.as_deref().filter(|d| !d.is_empty()) {
+                                                div { class: "addon-kind-card-desc", "{desc}" }
+                                            }
                                             div { class: "addon-kind-card-badges",
                                                 for res in res_list.iter() {
                                                     span { class: "addon-kind-badge", "{res}" }
@@ -225,9 +230,19 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                             e.stop_propagation();
                                                             if let Some(a) = addons.read().iter().find(|a| a.id == id).cloned() {
                                                                 edit_name_input.set(a.name.clone());
-                                                                let config_map = a.config.as_object()
+                                                                let mut config_map: std::collections::HashMap<String, serde_json::Value> = a.config.as_object()
                                                                     .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
                                                                     .unwrap_or_default();
+                                                                // Fill missing keys with option defaults so switches show the right state.
+                                                                if let Some(meta) = kinds.read().iter().find(|m| m.id == a.kind).cloned() {
+                                                                    for opt in &meta.options {
+                                                                        if !config_map.contains_key(&opt.id) {
+                                                                            if let Some(default) = &opt.default {
+                                                                                config_map.insert(opt.id.clone(), default.clone());
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
                                                                 edit_form_values.set(config_map);
                                                                 let res_set: std::collections::HashSet<String> = a.resources
                                                                     .iter()
@@ -366,6 +381,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                 }) {
                                     {
                                         let k_id = k.id.clone();
+                                        let k_id_cfg = k.id.clone();
                                         let k_name = k.display_name.clone();
                                         let is_selected = selected_kind.read().as_deref() == Some(&k.id);
                                         let is_user_tab = *active_tab.read() == "user";
@@ -401,6 +417,15 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                         onclick: move |e| {
                                                             e.stop_propagation();
                                                             name_input.set(k_name.clone());
+                                                            let mut defaults = std::collections::HashMap::new();
+                                                            if let Some(meta) = kinds.read().iter().find(|m| m.id == k_id_cfg).cloned() {
+                                                                for opt in &meta.options {
+                                                                    if let Some(default) = &opt.default {
+                                                                        defaults.insert(opt.id.clone(), default.clone());
+                                                                    }
+                                                                }
+                                                            }
+                                                            form_values.set(defaults);
                                                             create_step.set(1);
                                                         },
                                                         "Configure →"
@@ -430,6 +455,9 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                         option: opt,
                                         values: form_values,
                                     }
+                                }
+                                if !meta.options.is_empty() {
+                                    span { class: "field-hint", b { "Changing options might require a metadata refresh." } }
                                 }
                             }
                         }
@@ -529,6 +557,9 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                             values: edit_form_values,
                                         }
                                     }
+                                    if !meta.options.is_empty() {
+                                        span { class: "field-hint", b { "Changing options might require a metadata refresh." } }
+                                    }
                                 }
                                 // Resources section — options come from the addon row.
                                 if !resource_options.is_empty() {
@@ -542,14 +573,13 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                     let checked = edit_resources.read().contains(&res_str);
                                                     let is_system = addons.read().iter().find(|a| a.id == edit_id).map(|a| a.system).unwrap_or(false);
                                                     rsx! {
-                                                        label { class: "check-row",
-                                                            input {
-                                                                r#type: "checkbox",
+                                                        div { class: "check-row",
+                                                            Switch {
                                                                 checked,
                                                                 disabled: is_system,
-                                                                onchange: move |e| {
+                                                                on_change: move |v| {
                                                                     let mut set = edit_resources.write();
-                                                                    if e.checked() {
+                                                                    if v {
                                                                         set.insert(res_str_check.clone());
                                                                     } else {
                                                                         set.remove(&res_str_check);
@@ -584,14 +614,13 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                             let checked = edit_types.read().contains(&t_str);
                                                             let is_system = addons.read().iter().find(|a| a.id == edit_id).map(|a| a.system).unwrap_or(false);
                                                             rsx! {
-                                                                label { class: "check-row",
-                                                                    input {
-                                                                        r#type: "checkbox",
+                                                                div { class: "check-row",
+                                                                    Switch {
                                                                         checked,
                                                                         disabled: is_system,
-                                                                        onchange: move |e| {
+                                                                        on_change: move |v| {
                                                                             let mut set = edit_types.write();
-                                                                            if e.checked() {
+                                                                            if v {
                                                                                 set.insert(t_str_check.clone());
                                                                             } else {
                                                                                 set.remove(&t_str_check);
@@ -613,13 +642,12 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                 // Stream options (only shown when stream resource is active)
                                 if edit_resources.read().contains("stream") {
                                     div { class: "form-group",
-                                        label { class: "form-label", "Direct stream" }
-                                        input {
-                                            r#type: "checkbox",
+                                        ToggleRow {
+                                            label: "Direct stream",
+                                            description: "Send the client directly to the source URL instead of proxying through remux. Only applies to HTTP streams and direct play — transcoding always routes through remux.",
                                             checked: *edit_http_redirect_stream.read(),
-                                            onchange: move |e| edit_http_redirect_stream.set(e.checked()),
+                                            on_change: move |v| edit_http_redirect_stream.set(v),
                                         }
-                                        span { class: "field-hint", "Send the client directly to the source URL instead of proxying through remux. Only applies to HTTP streams and direct play — transcoding always routes through remux." }
                                     }
                                     div { class: "form-group",
                                         label { class: "form-label", "Direct stream service filter" }
@@ -629,7 +657,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                             value: "{edit_service_filter}",
                                             oninput: move |e| edit_service_filter.set(e.value()),
                                         }
-                                        span { class: "field-hint", "Comma-separated list of service IDs to stream directly (from streamData.service.id). Leave empty to apply to all services." }
+                                        span { class: "field-hint", "Comma-separated list of service IDs (from streamData.service.id) or addon names (from streamData.addon) to stream directly. Leave empty to apply to all." }
                                     }
                                 }
                                 // Catalogs section (only shown for global addons with catalog resource active)
@@ -666,13 +694,12 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                                     tr {
                                                                         td { class: "catalog-name", "{cat.name}" }
                                                                         td {
-                                                                            input {
-                                                                                r#type: "checkbox",
+                                                                            Switch {
                                                                                 checked: enabled,
-                                                                                onchange: move |e| {
+                                                                                on_change: move |v| {
                                                                                     let mut map = edit_catalog_settings.write();
                                                                                     let entry = map.entry(cid_toggle.clone()).or_default();
-                                                                                    entry.0 = e.checked();
+                                                                                    entry.0 = v;
                                                                                 },
                                                                             }
                                                                         }
@@ -901,10 +928,25 @@ pub(crate) fn AddonOptionField(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
+    if matches!(option.kind, AddonOptionType::Boolean) {
+        return rsx! {
+            ToggleRow {
+                label,
+                description: desc,
+                checked: current_bool,
+                on_change: move |v| {
+                    let mut map = values.write();
+                    map.insert(id_check.clone(), serde_json::Value::Bool(v));
+                },
+            }
+        };
+    }
+
     rsx! {
         div { class: "form-group",
             label { class: "form-label", "{label}" }
             match &option.kind {
+                AddonOptionType::Boolean => unreachable!(),
                 AddonOptionType::Url | AddonOptionType::String => rsx! {
                     input {
                         class: "form-input",
@@ -949,19 +991,6 @@ pub(crate) fn AddonOptionField(
                                 map.insert(id_num.clone(), serde_json::json!(n));
                             }
                         },
-                    }
-                },
-                AddonOptionType::Boolean => rsx! {
-                    label { class: "form-toggle",
-                        input {
-                            r#type: "checkbox",
-                            checked: current_bool,
-                            onchange: move |e| {
-                                let mut map = values.write();
-                                map.insert(id_check.clone(), serde_json::Value::Bool(e.value() == "true"));
-                            },
-                        }
-                        span { "Enabled" }
                     }
                 },
                 AddonOptionType::Select { options } => rsx! {

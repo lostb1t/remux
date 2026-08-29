@@ -1,5 +1,5 @@
 use crate::{
-    components::{EmptyState, FormGroup, LoadingText},
+    components::{EmptyState, FormGroup, LoadingText, Switch, ToggleRow},
     state::AppState,
 };
 use dioxus::prelude::*;
@@ -141,20 +141,20 @@ pub(crate) fn StreamRuleRow(
                     for res in StreamResolution::all() {
                         {
                             let res = res.clone();
+                            let res_label = res.label().to_string();
                             let checked = match &rule { StreamRule::Resolution { values, .. } => values.contains(&res), _ => false };
                             rsx! {
                                 label { style: "display:flex;align-items:center;gap:3px;font-size:.82rem;cursor:pointer",
-                                    input {
-                                        r#type: "checkbox",
+                                    Switch {
                                         checked,
-                                        onchange: move |e| {
+                                        on_change: move |v| {
                                             if let Some(StreamRule::Resolution { values, .. }) = rules.write().get_mut(idx) {
-                                                if e.checked() { if !values.contains(&res) { values.push(res.clone()); } }
+                                                if v { if !values.contains(&res) { values.push(res.clone()); } }
                                                 else { values.retain(|r| r != &res); }
                                             }
                                         },
                                     }
-                                    "{res.label()}"
+                                    "{res_label}"
                                 }
                             }
                         }
@@ -163,20 +163,20 @@ pub(crate) fn StreamRuleRow(
                     for src in StreamQuality::all() {
                         {
                             let src = src.clone();
+                            let src_label = src.label().to_string();
                             let checked = match &rule { StreamRule::Quality { values, .. } => values.contains(&src), _ => false };
                             rsx! {
                                 label { style: "display:flex;align-items:center;gap:3px;font-size:.82rem;cursor:pointer",
-                                    input {
-                                        r#type: "checkbox",
+                                    Switch {
                                         checked,
-                                        onchange: move |e| {
+                                        on_change: move |v| {
                                             if let Some(StreamRule::Quality { values, .. }) = rules.write().get_mut(idx) {
-                                                if e.checked() { if !values.contains(&src) { values.push(src.clone()); } }
+                                                if v { if !values.contains(&src) { values.push(src.clone()); } }
                                                 else { values.retain(|s| s != &src); }
                                             }
                                         },
                                     }
-                                    "{src.label()}"
+                                    "{src_label}"
                                 }
                             }
                         }
@@ -192,12 +192,11 @@ pub(crate) fn StreamRuleRow(
                                 };
                                 rsx! {
                                     label { style: "display:flex;align-items:center;gap:3px;font-size:.82rem;cursor:pointer",
-                                        input {
-                                            r#type: "checkbox",
+                                        Switch {
                                             checked,
-                                            onchange: move |e| {
+                                            on_change: move |v| {
                                                 if let Some(StreamRule::AudioLanguage { values, .. }) = rules.write().get_mut(idx) {
-                                                    if e.checked() { if !values.contains(&code) { values.push(code.clone()); } }
+                                                    if v { if !values.contains(&code) { values.push(code.clone()); } }
                                                     else { values.retain(|c| c != &code); }
                                                 }
                                             },
@@ -212,20 +211,20 @@ pub(crate) fn StreamRuleRow(
                     for codec in StreamCodec::all() {
                         {
                             let codec = codec.clone();
+                            let codec_label = codec.label().to_string();
                             let checked = match &rule { StreamRule::Codec { values, .. } => values.contains(&codec), _ => false };
                             rsx! {
                                 label { style: "display:flex;align-items:center;gap:3px;font-size:.82rem;cursor:pointer",
-                                    input {
-                                        r#type: "checkbox",
+                                    Switch {
                                         checked,
-                                        onchange: move |e| {
+                                        on_change: move |v| {
                                             if let Some(StreamRule::Codec { values, .. }) = rules.write().get_mut(idx) {
-                                                if e.checked() { if !values.contains(&codec) { values.push(codec.clone()); } }
+                                                if v { if !values.contains(&codec) { values.push(codec.clone()); } }
                                                 else { values.retain(|c| c != &codec); }
                                             }
                                         },
                                     }
-                                    "{codec.label()}"
+                                    "{codec_label}"
                                 }
                             }
                         }
@@ -398,41 +397,26 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                 span { class: "card-title", "Settings" }
             }
             div { class: "card-body",
-                div {
-                    class: "flex items-center justify-between",
-                    style: "padding:8px 0",
-                    div {
-                        div { style: "font-size:.85rem;font-weight:500", "Show ungrouped streams" }
-                        div { style: "font-size:.75rem;color:var(--text-muted)",
-                            "Show streams that don't match any group as individual entries."
-                        }
-                    }
-                    div { class: "flex items-center gap-2",
-                        if *saving_setting.read() {
-                            span { style: "font-size:.72rem;color:var(--text-muted)", "Saving…" }
-                        }
-                        input {
-                            r#type: "checkbox",
-                            checked: *show_ungrouped.read(),
-                            disabled: *saving_setting.read(),
-                            onchange: {
-                                let client = app_state.clone();
-                                move |e: Event<FormData>| {
-                                    let checked = e.checked();
-                                    show_ungrouped.set(checked);
-                                    let Some(cfg) = base_cfg.peek().clone() else { return };
-                                    let updated = ServerConfiguration {
-                                        stream_groups_show_ungrouped: Some(checked),
-                                        ..cfg
-                                    };
-                                    saving_setting.set(true);
-                                    let c = client.clone();
-                                    spawn(async move {
-                                        let _ = c.execute(UpdateSystemConfiguration { config: updated }).await;
-                                        saving_setting.set(false);
-                                    });
-                                }
-                            }
+                ToggleRow {
+                    label: "Show ungrouped streams",
+                    description: "Show streams that don't match any group as individual entries.",
+                    checked: *show_ungrouped.read(),
+                    disabled: *saving_setting.read(),
+                    on_change: {
+                        let client = app_state.clone();
+                        move |v| {
+                            show_ungrouped.set(v);
+                            let Some(cfg) = base_cfg.peek().clone() else { return };
+                            let updated = ServerConfiguration {
+                                stream_groups_show_ungrouped: Some(v),
+                                ..cfg
+                            };
+                            saving_setting.set(true);
+                            let c = client.clone();
+                            spawn(async move {
+                                let _ = c.execute(UpdateSystemConfiguration { config: updated }).await;
+                                saving_setting.set(false);
+                            });
                         }
                     }
                 }
@@ -722,23 +706,17 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                             }
                         }
                         div { class: "form-group",
-                            label { class: "form-label", style: "display:flex;align-items:center;gap:8px",
-                                input {
-                                    r#type: "checkbox",
-                                    checked: *edit_enabled.read(),
-                                    onchange: move |e| edit_enabled.set(e.checked()),
-                                }
-                                "Enabled"
+                            ToggleRow {
+                                label: "Enabled",
+                                checked: *edit_enabled.read(),
+                                on_change: move |v| edit_enabled.set(v),
                             }
                         }
                         div { class: "form-group",
-                            label { class: "form-label", style: "display:flex;align-items:center;gap:8px",
-                                input {
-                                    r#type: "checkbox",
-                                    checked: *edit_hidden.read(),
-                                    onchange: move |e| edit_hidden.set(e.checked()),
-                                }
-                                "Hide group"
+                            ToggleRow {
+                                label: "Hide group",
+                                checked: *edit_hidden.read(),
+                                on_change: move |v| edit_hidden.set(v),
                             }
                         }
                     }
