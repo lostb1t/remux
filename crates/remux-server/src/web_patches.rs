@@ -10,6 +10,9 @@ pub static CSS: &str = r##"
     to { transform: rotate(360deg); }
   }
 
+  /* ── Card listing: hide inline play button overlay ───────────── */
+  .cardOverlayButton-br { display: none !important; }
+
   /* ── Play button: disabled by default, enabled when streams arrive ── */
   .detailPagePrimaryContainer .btnPlay {
     opacity: 0.4;
