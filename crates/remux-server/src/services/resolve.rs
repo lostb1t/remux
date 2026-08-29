@@ -669,9 +669,11 @@ impl MediaResolveService {
         );
         // process_meta_item now owns all upserts internally and returns the actual UUID
         // (which may differ from resolved_id if an existing DB row was adopted).
+        // force_refresh=true: this is a brand-new item; the stub is a placeholder,
+        // so meta addons should fully replace any pre-populated fields.
         let actual_id = ctx
             .addons
-            .process_meta_item(media, ctx.clone(), false, config)
+            .process_meta_item(media, ctx.clone(), true, config)
             .await;
         Ok(db::Media::get_by_id(&ctx.db, &actual_id).await?)
     }

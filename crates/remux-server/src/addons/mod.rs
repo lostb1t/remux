@@ -2,6 +2,7 @@
 //! media types it serves; user-added instances are rows in the `addons` table.
 
 pub mod addon;
+pub mod betterposters;
 pub mod deezer;
 pub mod eclipse;
 pub mod introdb;
