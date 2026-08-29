@@ -20,7 +20,7 @@ impl AddonPreset for BetterPostersPreset {
         AddonMetadata {
             id: "betterposters".to_string(),
             display_name: "BetterPosters".to_string(),
-            description: "Replaces poster images with stylized versions from btttr.cc. Supports genre banners, rating overlays, quality tags, age ratings, and trend tags.".to_string(),
+            description: "Poster images with stylized versions from btttr.cc. Supports genre banners, rating overlays, quality tags, age ratings, and trend tags.".to_string(),
             icon: None,
             supported_resources: vec![AddonMetadata::simple_resource(ResourceType::Meta)],
             supported_types: vec![

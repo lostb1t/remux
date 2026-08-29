@@ -1114,6 +1114,47 @@ html, body {
 
 .toggle input:checked + .toggle-track::after { transform: translateX(16px); }
 
+/* ── Switch (button-based) ───────────────────────────────────────── */
+.switch {
+  position: relative;
+  display: inline-flex;
+  width: 36px;
+  height: 20px;
+  border-radius: 99px;
+  background: var(--border);
+  border: none;
+  cursor: pointer;
+  transition: background var(--transition);
+  flex-shrink: 0;
+  padding: 0;
+  outline-offset: 2px;
+}
+.switch[data-state="checked"] { background: var(--primary); }
+.switch:disabled { opacity: 0.5; cursor: not-allowed; }
+.switch:focus-visible { outline: 2px solid var(--primary); }
+
+.switch-thumb {
+  display: block;
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  background: #fff;
+  border-radius: 50%;
+  top: 3px;
+  left: 3px;
+  transition: transform var(--transition);
+  pointer-events: none;
+}
+.switch[data-state="checked"] .switch-thumb { transform: translateX(16px); }
+
+/* ── Field row (label + switch) ──────────────────────────────────── */
+.field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 /* ── Catalog rows ────────────────────────────────────────────────── */
 .catalog-row { border-bottom: 1px solid var(--border); }
 .catalog-row:last-child { border-bottom: none; }

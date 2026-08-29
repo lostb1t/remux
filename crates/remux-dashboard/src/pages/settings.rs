@@ -1,5 +1,7 @@
 use crate::{
-    components::{Card, ErrorAlert, FormActions, LoadingText, SuccessAlert, ToggleRow},
+    components::{
+        Card, ErrorAlert, FormActions, LoadingText, SuccessAlert, Switch, ToggleRow,
+    },
     state::AppState,
 };
 use dioxus::prelude::*;
@@ -268,13 +270,12 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                         }
 
                         div { class: "field",
-                            label { class: "field-label",
-                                input {
-                                    r#type: "checkbox",
+                            div { class: "field-row",
+                                span { class: "field-label", "Filter by digital release date" }
+                                Switch {
                                     checked: *filter_digital_release.read(),
-                                    oninput: move |e| filter_digital_release.set(e.checked()),
+                                    on_change: move |v| filter_digital_release.set(v),
                                 }
-                                " Filter by digital release date"
                             }
                             p { class: "field-hint",
                                 "Hide items that haven't been digitally released yet. Items released theatrically within the past year are always hidden when no digital date is available."
@@ -321,13 +322,12 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                         }
 
                         div { class: "field",
-                            label { class: "field-label",
-                                input {
-                                    r#type: "checkbox",
+                            div { class: "field-row",
+                                span { class: "field-label", "Enable QuickConnect" }
+                                Switch {
                                     checked: *quick_connect_enabled.read(),
-                                    oninput: move |e| quick_connect_enabled.set(e.checked()),
+                                    on_change: move |v| quick_connect_enabled.set(v),
                                 }
-                                " Enable QuickConnect"
                             }
                             p { class: "field-hint",
                                 "Allow clients to log in by entering a code shown on the login screen."
@@ -585,10 +585,9 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                                 "Allow the server to re-encode video streams. When disabled, the video track is always copied as-is (remux). Per-user policy can restrict this further."
                             }
                             label { style: "display:flex;align-items:center;gap:8px",
-                                input {
-                                    r#type: "checkbox",
+                                Switch {
                                     checked: *enable_video_transcoding.read(),
-                                    onchange: move |e| enable_video_transcoding.set(e.checked()),
+                                    on_change: move |v| enable_video_transcoding.set(v),
                                 }
                                 "Enable video transcoding"
                             }
@@ -600,10 +599,9 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                                 "Allow the server to re-encode audio streams. When disabled, audio is always copied as-is. Per-user policy can restrict this further."
                             }
                             label { style: "display:flex;align-items:center;gap:8px",
-                                input {
-                                    r#type: "checkbox",
+                                Switch {
                                     checked: *enable_audio_transcoding.read(),
-                                    onchange: move |e| enable_audio_transcoding.set(e.checked()),
+                                    on_change: move |v| enable_audio_transcoding.set(v),
                                 }
                                 "Enable audio transcoding"
                             }
@@ -615,10 +613,9 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                                 "Allow the server to remux streams (copy video and audio into a different container). When disabled, only direct play is served. Per-user policy can restrict this further."
                             }
                             label { style: "display:flex;align-items:center;gap:8px",
-                                input {
-                                    r#type: "checkbox",
+                                Switch {
                                     checked: *enable_remuxing.read(),
-                                    onchange: move |e| enable_remuxing.set(e.checked()),
+                                    on_change: move |v| enable_remuxing.set(v),
                                 }
                                 "Enable remuxing"
                             }
@@ -645,10 +642,9 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                                 "GPU-accelerated video encoding. When auto-detect is on, the server probes available hardware at startup and selects the best option."
                             }
                             label { style: "display:flex;align-items:center;gap:8px;margin-bottom:8px",
-                                input {
-                                    r#type: "checkbox",
+                                Switch {
                                     checked: *auto_detect.read(),
-                                    onchange: move |e| auto_detect.set(e.checked()),
+                                    on_change: move |v| auto_detect.set(v),
                                 }
                                 "Auto-detect at startup"
                             }
@@ -698,18 +694,16 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                             label { class: "field-label", "Codec Gates" }
                             div { class: "field-hint", "Allow these codecs for hardware/software encoding." }
                             label { style: "display:flex;align-items:center;gap:8px;margin-bottom:6px",
-                                input {
-                                    r#type: "checkbox",
+                                Switch {
                                     checked: *allow_hevc_encoding.read(),
-                                    onchange: move |e| allow_hevc_encoding.set(e.checked()),
+                                    on_change: move |v| allow_hevc_encoding.set(v),
                                 }
                                 "Allow HEVC (H.265) encoding"
                             }
                             label { style: "display:flex;align-items:center;gap:8px",
-                                input {
-                                    r#type: "checkbox",
+                                Switch {
                                     checked: *allow_av1_encoding.read(),
-                                    onchange: move |e| allow_av1_encoding.set(e.checked()),
+                                    on_change: move |v| allow_av1_encoding.set(v),
                                 }
                                 "Allow AV1 encoding"
                             }
@@ -760,10 +754,9 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                             label { class: "field-label", "Audio Loudness Normalization" }
                             div { class: "field-hint", "Normalize transcoded audio to a consistent volume level. May increase time to first segment. Has no effect when audio is stream-copied." }
                             label { style: "display:flex;align-items:center;gap:8px",
-                                input {
-                                    r#type: "checkbox",
+                                Switch {
                                     checked: *normalize_audio_loudness.read(),
-                                    onchange: move |e| normalize_audio_loudness.set(e.checked()),
+                                    on_change: move |v| normalize_audio_loudness.set(v),
                                 }
                                 "Normalize audio loudness to -14 LUFS"
                             }
@@ -773,18 +766,16 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                             label { class: "field-label", "HDR Tone Mapping" }
                             div { class: "field-hint", "Convert HDR content to SDR using tone mapping. Without tone mapping, colour metadata is rewritten so clients treat the stream as SDR (may look washed out on some content)." }
                             label { style: "display:flex;align-items:center;gap:8px;margin-bottom:6px",
-                                input {
-                                    r#type: "checkbox",
+                                Switch {
                                     checked: *enable_tonemapping.read(),
-                                    onchange: move |e| enable_tonemapping.set(e.checked()),
+                                    on_change: move |v| enable_tonemapping.set(v),
                                 }
                                 "Software tone mapping (tonemapx, CPU)"
                             }
                             label { style: "display:flex;align-items:center;gap:8px;margin-bottom:8px",
-                                input {
-                                    r#type: "checkbox",
+                                Switch {
                                     checked: *enable_vpp_tonemapping.read(),
-                                    onchange: move |e| enable_vpp_tonemapping.set(e.checked()),
+                                    on_change: move |v| enable_vpp_tonemapping.set(v),
                                 }
                                 "Hardware VPP tone mapping (tonemap_vaapi, Intel VAAPI/QSV)"
                             }
@@ -1053,10 +1044,9 @@ pub fn ProbeSettingsCard(app_state: AppState) -> Element {
                                 "When a stream probe fails, automatically try the next stream with matching resolution and type."
                             }
                             label { style: "display:flex;align-items:center;gap:8px",
-                                input {
-                                    r#type: "checkbox",
+                                Switch {
                                     checked: *auto_next_stream.read(),
-                                    onchange: move |e| auto_next_stream.set(e.checked()),
+                                    on_change: move |v| auto_next_stream.set(v),
                                 }
                                 "Enabled"
                             }
@@ -1494,13 +1484,12 @@ pub fn P2pSettingsCard(app_state: AppState) -> Element {
             } else {
                 form { onsubmit: on_submit, style: "display:flex;flex-direction:column;gap:14px",
                         div { class: "field",
-                            label { class: "field-label",
-                                input {
-                                    r#type: "checkbox",
+                            div { class: "field-row",
+                                span { class: "field-label", "Enable P2P Streams" }
+                                Switch {
                                     checked: *p2p_enabled.read(),
-                                    oninput: move |e| p2p_enabled.set(e.checked()),
+                                    on_change: move |v| p2p_enabled.set(v),
                                 }
-                                " Enable P2P Streams"
                             }
                             p { class: "field-hint", "Allow torrent/magnet streams from AIO sources." }
                         }
@@ -1689,26 +1678,23 @@ pub fn IntroSettingsCard(app_state: AppState) -> Element {
                         label { class: "field-label", "Play Before" }
                         div { class: "field-hint", "Which content types trigger an intro." }
                         label { style: "display:flex;align-items:center;gap:8px;margin-bottom:6px",
-                            input {
-                                r#type: "checkbox",
+                            Switch {
                                 checked: *movies.read(),
-                                onchange: move |e| movies.set(e.checked()),
+                                on_change: move |v| movies.set(v),
                             }
                             "Movies"
                         }
                         label { style: "display:flex;align-items:center;gap:8px;margin-bottom:6px",
-                            input {
-                                r#type: "checkbox",
+                            Switch {
                                 checked: *season_premieres.read(),
-                                onchange: move |e| season_premieres.set(e.checked()),
+                                on_change: move |v| season_premieres.set(v),
                             }
                             "Season premieres (episode 1 of each season)"
                         }
                         label { style: "display:flex;align-items:center;gap:8px",
-                            input {
-                                r#type: "checkbox",
+                            Switch {
                                 checked: *all_episodes.read(),
-                                onchange: move |e| all_episodes.set(e.checked()),
+                                on_change: move |v| all_episodes.set(v),
                             }
                             "All episodes"
                         }
@@ -1717,10 +1703,9 @@ pub fn IntroSettingsCard(app_state: AppState) -> Element {
                     div { class: "field",
                         label { class: "field-label", "Resume Behaviour" }
                         label { style: "display:flex;align-items:center;gap:8px",
-                            input {
-                                r#type: "checkbox",
+                            Switch {
                                 checked: *skip_resume.read(),
-                                onchange: move |e| skip_resume.set(e.checked()),
+                                on_change: move |v| skip_resume.set(v),
                             }
                             "Skip intro when user is resuming from a saved position"
                         }
@@ -1818,13 +1803,12 @@ pub fn RemuxdbSettingsCard(app_state: AppState) -> Element {
                         "Want to help populate the DB faster? You can run a worker! Join Discord for more info."
                     }
                     div { class: "field",
-                        label { class: "field-label",
-                            input {
-                                r#type: "checkbox",
+                        div { class: "field-row",
+                            span { class: "field-label", "Enable RemuxDB" }
+                            Switch {
                                 checked: *enabled.read(),
-                                oninput: move |e| enabled.set(e.checked()),
+                                on_change: move |v| enabled.set(v),
                             }
-                            " Enable RemuxDB"
                         }
                         p { class: "field-hint", "Submit probe data to RemuxDB after each live probe." }
                     }

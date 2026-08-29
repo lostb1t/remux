@@ -1,5 +1,5 @@
 use crate::{
-    components::{DragAndDropList, EmptyState, FormGroup, LoadingText},
+    components::{DragAndDropList, EmptyState, FormGroup, LoadingText, Switch},
     state::AppState,
 };
 use dioxus::prelude::*;
@@ -434,6 +434,9 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                         values: form_values,
                                     }
                                 }
+                                if !meta.options.is_empty() {
+                                    span { class: "field-hint", b { "Changing options might require a metadata refresh." } }
+                                }
                             }
                         }
                     }
@@ -532,6 +535,9 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                             values: edit_form_values,
                                         }
                                     }
+                                    if !meta.options.is_empty() {
+                                        span { class: "field-hint", b { "Changing options might require a metadata refresh." } }
+                                    }
                                 }
                                 // Resources section — options come from the addon row.
                                 if !resource_options.is_empty() {
@@ -545,14 +551,13 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                     let checked = edit_resources.read().contains(&res_str);
                                                     let is_system = addons.read().iter().find(|a| a.id == edit_id).map(|a| a.system).unwrap_or(false);
                                                     rsx! {
-                                                        label { class: "check-row",
-                                                            input {
-                                                                r#type: "checkbox",
+                                                        div { class: "check-row",
+                                                            Switch {
                                                                 checked,
                                                                 disabled: is_system,
-                                                                onchange: move |e| {
+                                                                on_change: move |v| {
                                                                     let mut set = edit_resources.write();
-                                                                    if e.checked() {
+                                                                    if v {
                                                                         set.insert(res_str_check.clone());
                                                                     } else {
                                                                         set.remove(&res_str_check);
@@ -587,14 +592,13 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                             let checked = edit_types.read().contains(&t_str);
                                                             let is_system = addons.read().iter().find(|a| a.id == edit_id).map(|a| a.system).unwrap_or(false);
                                                             rsx! {
-                                                                label { class: "check-row",
-                                                                    input {
-                                                                        r#type: "checkbox",
+                                                                div { class: "check-row",
+                                                                    Switch {
                                                                         checked,
                                                                         disabled: is_system,
-                                                                        onchange: move |e| {
+                                                                        on_change: move |v| {
                                                                             let mut set = edit_types.write();
-                                                                            if e.checked() {
+                                                                            if v {
                                                                                 set.insert(t_str_check.clone());
                                                                             } else {
                                                                                 set.remove(&t_str_check);
@@ -955,16 +959,15 @@ pub(crate) fn AddonOptionField(
                     }
                 },
                 AddonOptionType::Boolean => rsx! {
-                    label { class: "form-toggle",
-                        input {
-                            r#type: "checkbox",
+                    div { class: "field-row",
+                        span { class: "field-label", "Enabled" }
+                        Switch {
                             checked: current_bool,
-                            onchange: move |e| {
+                            on_change: move |v| {
                                 let mut map = values.write();
-                                map.insert(id_check.clone(), serde_json::Value::Bool(e.value() == "true"));
+                                map.insert(id_check.clone(), serde_json::Value::Bool(v));
                             },
                         }
-                        span { "Enabled" }
                     }
                 },
                 AddonOptionType::Select { options } => rsx! {

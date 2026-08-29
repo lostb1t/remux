@@ -1,3 +1,4 @@
+use super::form::Switch;
 use crate::state::AppState;
 use dioxus::prelude::*;
 use remux_sdks::remux::{
@@ -943,24 +944,23 @@ pub fn FilterRuleRow(
                                 let ov = ov1.clone();
                                 let vv = vv2.clone();
                                 rsx! {
-                                    label {
+                                    div {
                                         key: "{ki}",
-                                        style: "display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap",
-                                        input {
-                                            r#type: "checkbox",
+                                        style: "display:flex;align-items:center;gap:4px;white-space:nowrap",
+                                        Switch {
                                             checked: is_checked,
-                                            onchange: move |e| {
+                                            on_change: move |v| {
                                                 let mut vals: Vec<String> = vv
                                                     .split(',')
                                                     .map(|s| s.trim().to_string())
                                                     .filter(|s| !s.is_empty())
                                                     .collect();
-                                                if e.checked() {
+                                                if v {
                                                     if !vals.contains(&kv) {
                                                         vals.push(kv.clone());
                                                     }
                                                 } else {
-                                                    vals.retain(|v| v != &kv);
+                                                    vals.retain(|val| val != &kv);
                                                 }
                                                 if let Some(row) = rules.write().get_mut(idx) {
                                                     *row = raw_to_rule(&fv, &ov, &vals.join(", "));

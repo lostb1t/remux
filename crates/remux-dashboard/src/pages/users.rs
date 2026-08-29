@@ -739,11 +739,10 @@ pub fn UserForm(
                 div { class: "field",
                     div { class: "field-row",
                         label { class: "field-label", "Custom Addon List" }
-                        input {
-                            r#type: "checkbox",
+                        Switch {
                             checked: addon_override.read().is_some(),
-                            onchange: move |e| {
-                                if e.checked() {
+                            on_change: move |v| {
+                                if v {
                                     // Pre-check addons that are default (or system); non-default start unchecked.
                                     let entries = all_addons.read().iter()
                                         .map(|a| (a.id, a.is_default || a.system))
@@ -788,14 +787,13 @@ pub fn UserForm(
                                                         if is_system {
                                                             span { style: "font-size:.65rem;color:var(--text-dim)", "🔒" }
                                                         } else {
-                                                            input {
-                                                                r#type: "checkbox",
+                                                            Switch {
                                                                 checked: enabled,
-                                                                onchange: move |e| {
+                                                                on_change: move |v| {
                                                                     let mut ov = addon_override.write();
                                                                     if let Some(ref mut list) = *ov {
                                                                         if let Some(entry) = list.iter_mut().find(|(id, _)| *id == aid) {
-                                                                            entry.1 = e.checked();
+                                                                            entry.1 = v;
                                                                         }
                                                                     }
                                                                 },
