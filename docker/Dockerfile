@@ -79,4 +79,7 @@ COPY jellyfin-web ./jellyfin-web
 
 EXPOSE 3000
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:3000/health || exit 1
+
 CMD ["./remux-server"]

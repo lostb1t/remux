@@ -6,11 +6,6 @@ services:
 
     ports:
       - "3001:3000"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
     #command: ["bash", "-c", "tail -f /dev/null"]
     #command: ["bash", "-lc", "ls -la ."]
     #command: ["/app/remux-server"]
