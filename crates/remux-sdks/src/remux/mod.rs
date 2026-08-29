@@ -230,6 +230,7 @@ pub struct AddonDto {
     pub http_redirect_stream: bool,
     #[serde(default)]
     pub service_filter: Vec<String>,
+    pub description: Option<String>,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
