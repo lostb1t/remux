@@ -642,13 +642,12 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                 // Stream options (only shown when stream resource is active)
                                 if edit_resources.read().contains("stream") {
                                     div { class: "form-group",
-                                        label { class: "form-label", "Direct stream" }
-                                        input {
-                                            r#type: "checkbox",
+                                        ToggleRow {
+                                            label: "Direct stream",
+                                            description: "Send the client directly to the source URL instead of proxying through remux. Only applies to HTTP streams and direct play — transcoding always routes through remux.",
                                             checked: *edit_http_redirect_stream.read(),
-                                            onchange: move |e| edit_http_redirect_stream.set(e.checked()),
+                                            on_change: move |v| edit_http_redirect_stream.set(v),
                                         }
-                                        span { class: "field-hint", "Send the client directly to the source URL instead of proxying through remux. Only applies to HTTP streams and direct play — transcoding always routes through remux." }
                                     }
                                     div { class: "form-group",
                                         label { class: "form-label", "Direct stream service filter" }
@@ -695,13 +694,12 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                                     tr {
                                                                         td { class: "catalog-name", "{cat.name}" }
                                                                         td {
-                                                                            input {
-                                                                                r#type: "checkbox",
+                                                                            Switch {
                                                                                 checked: enabled,
-                                                                                onchange: move |e| {
+                                                                                on_change: move |v| {
                                                                                     let mut map = edit_catalog_settings.write();
                                                                                     let entry = map.entry(cid_toggle.clone()).or_default();
-                                                                                    entry.0 = e.checked();
+                                                                                    entry.0 = v;
                                                                                 },
                                                                             }
                                                                         }
