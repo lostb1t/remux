@@ -17,6 +17,7 @@ ENV DATABASE_URL=sqlite:///data/db.sqlite?mode=rwc
 ENV LOG_FILE=/data/logs/remux.jsonl
 ENV TORRENT_DATA_DIR=/data/torrents
 ENV DATA_DIR=/data
+ENV PORT=3000
 ENV FFMPEG_PATH=/usr/lib/jellyfin-ffmpeg/ffmpeg
 ENV FFPROBE_PATH=/usr/lib/jellyfin-ffmpeg/ffprobe
 ENV PATH="/usr/lib/jellyfin-ffmpeg:${PATH}"
@@ -80,6 +81,6 @@ COPY jellyfin-web ./jellyfin-web
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:3000/health || exit 1
+    CMD curl -fsS "http://127.0.0.1:${PORT}/health"
 
 CMD ["./remux-server"]
