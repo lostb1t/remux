@@ -33,13 +33,20 @@ pub fn Switch(
 #[component]
 pub fn ToggleRow(
     label: String,
+    #[props(default = None)] description: Option<String>,
     checked: bool,
     on_change: EventHandler<bool>,
+    #[props(default = false)] disabled: bool,
 ) -> Element {
     rsx! {
         div { class: "toggle-row",
-            span { class: "toggle-label", "{label}" }
-            Switch { checked, on_change }
+            div { class: "toggle-row-text",
+                span { class: "toggle-label", "{label}" }
+                if let Some(desc) = description {
+                    span { class: "toggle-description", "{desc}" }
+                }
+            }
+            Switch { checked, on_change, disabled }
         }
     }
 }

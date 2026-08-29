@@ -1,7 +1,5 @@
 use crate::{
-    components::{
-        Card, ErrorAlert, FormActions, LoadingText, SuccessAlert, Switch, ToggleRow,
-    },
+    components::{Card, ErrorAlert, FormActions, LoadingText, SuccessAlert, ToggleRow},
     state::AppState,
 };
 use dioxus::prelude::*;
@@ -270,15 +268,11 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                         }
 
                         div { class: "field",
-                            div { class: "field-row",
-                                span { class: "field-label", "Filter by digital release date" }
-                                Switch {
-                                    checked: *filter_digital_release.read(),
-                                    on_change: move |v| filter_digital_release.set(v),
-                                }
-                            }
-                            p { class: "field-hint",
-                                "Hide items that haven't been digitally released yet. Items released theatrically within the past year are always hidden when no digital date is available."
+                            ToggleRow {
+                                label: "Filter by digital release date",
+                                description: "Hide items that haven't been digitally released yet. Items released theatrically within the past year are always hidden when no digital date is available.",
+                                checked: *filter_digital_release.read(),
+                                on_change: move |v| filter_digital_release.set(v),
                             }
                         }
 
@@ -322,15 +316,11 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                         }
 
                         div { class: "field",
-                            div { class: "field-row",
-                                span { class: "field-label", "Enable QuickConnect" }
-                                Switch {
-                                    checked: *quick_connect_enabled.read(),
-                                    on_change: move |v| quick_connect_enabled.set(v),
-                                }
-                            }
-                            p { class: "field-hint",
-                                "Allow clients to log in by entering a code shown on the login screen."
+                            ToggleRow {
+                                label: "Enable QuickConnect",
+                                description: "Allow clients to log in by entering a code shown on the login screen.",
+                                checked: *quick_connect_enabled.read(),
+                                on_change: move |v| quick_connect_enabled.set(v),
                             }
                         }
 
@@ -580,44 +570,29 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
             } else {
                 form { onsubmit: on_submit, style: "display:flex;flex-direction:column;gap:14px",
                         div { class: "field",
-                            label { class: "field-label", "Video Transcoding" }
-                            div { class: "field-hint",
-                                "Allow the server to re-encode video streams. When disabled, the video track is always copied as-is (remux). Per-user policy can restrict this further."
-                            }
-                            label { style: "display:flex;align-items:center;gap:8px",
-                                Switch {
-                                    checked: *enable_video_transcoding.read(),
-                                    on_change: move |v| enable_video_transcoding.set(v),
-                                }
-                                "Enable video transcoding"
+                            ToggleRow {
+                                label: "Video Transcoding",
+                                description: "Allow the server to re-encode video streams. When disabled, the video track is always copied as-is (remux). Per-user policy can restrict this further.",
+                                checked: *enable_video_transcoding.read(),
+                                on_change: move |v| enable_video_transcoding.set(v),
                             }
                         }
 
                         div { class: "field",
-                            label { class: "field-label", "Audio Transcoding" }
-                            div { class: "field-hint",
-                                "Allow the server to re-encode audio streams. When disabled, audio is always copied as-is. Per-user policy can restrict this further."
-                            }
-                            label { style: "display:flex;align-items:center;gap:8px",
-                                Switch {
-                                    checked: *enable_audio_transcoding.read(),
-                                    on_change: move |v| enable_audio_transcoding.set(v),
-                                }
-                                "Enable audio transcoding"
+                            ToggleRow {
+                                label: "Audio Transcoding",
+                                description: "Allow the server to re-encode audio streams. When disabled, audio is always copied as-is. Per-user policy can restrict this further.",
+                                checked: *enable_audio_transcoding.read(),
+                                on_change: move |v| enable_audio_transcoding.set(v),
                             }
                         }
 
                         div { class: "field",
-                            label { class: "field-label", "Remuxing" }
-                            div { class: "field-hint",
-                                "Allow the server to remux streams (copy video and audio into a different container). When disabled, only direct play is served. Per-user policy can restrict this further."
-                            }
-                            label { style: "display:flex;align-items:center;gap:8px",
-                                Switch {
-                                    checked: *enable_remuxing.read(),
-                                    on_change: move |v| enable_remuxing.set(v),
-                                }
-                                "Enable remuxing"
+                            ToggleRow {
+                                label: "Remuxing",
+                                description: "Allow the server to remux streams (copy video and audio into a different container). When disabled, only direct play is served. Per-user policy can restrict this further.",
+                                checked: *enable_remuxing.read(),
+                                on_change: move |v| enable_remuxing.set(v),
                             }
                         }
 
@@ -641,12 +616,10 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                             div { class: "field-hint",
                                 "GPU-accelerated video encoding. When auto-detect is on, the server probes available hardware at startup and selects the best option."
                             }
-                            label { style: "display:flex;align-items:center;gap:8px;margin-bottom:8px",
-                                Switch {
-                                    checked: *auto_detect.read(),
-                                    on_change: move |v| auto_detect.set(v),
-                                }
-                                "Auto-detect at startup"
+                            ToggleRow {
+                                label: "Auto-detect at startup",
+                                checked: *auto_detect.read(),
+                                on_change: move |v| auto_detect.set(v),
                             }
                             select {
                                 id: "hw-accel",
@@ -693,19 +666,15 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                         div { class: "field",
                             label { class: "field-label", "Codec Gates" }
                             div { class: "field-hint", "Allow these codecs for hardware/software encoding." }
-                            label { style: "display:flex;align-items:center;gap:8px;margin-bottom:6px",
-                                Switch {
-                                    checked: *allow_hevc_encoding.read(),
-                                    on_change: move |v| allow_hevc_encoding.set(v),
-                                }
-                                "Allow HEVC (H.265) encoding"
+                            ToggleRow {
+                                label: "Allow HEVC (H.265) encoding",
+                                checked: *allow_hevc_encoding.read(),
+                                on_change: move |v| allow_hevc_encoding.set(v),
                             }
-                            label { style: "display:flex;align-items:center;gap:8px",
-                                Switch {
-                                    checked: *allow_av1_encoding.read(),
-                                    on_change: move |v| allow_av1_encoding.set(v),
-                                }
-                                "Allow AV1 encoding"
+                            ToggleRow {
+                                label: "Allow AV1 encoding",
+                                checked: *allow_av1_encoding.read(),
+                                on_change: move |v| allow_av1_encoding.set(v),
                             }
                         }
 
@@ -751,33 +720,26 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                         }
 
                         div { class: "field",
-                            label { class: "field-label", "Audio Loudness Normalization" }
-                            div { class: "field-hint", "Normalize transcoded audio to a consistent volume level. May increase time to first segment. Has no effect when audio is stream-copied." }
-                            label { style: "display:flex;align-items:center;gap:8px",
-                                Switch {
-                                    checked: *normalize_audio_loudness.read(),
-                                    on_change: move |v| normalize_audio_loudness.set(v),
-                                }
-                                "Normalize audio loudness to -14 LUFS"
+                            ToggleRow {
+                                label: "Audio Loudness Normalization",
+                                description: "Normalize transcoded audio to a consistent volume level. May increase time to first segment. Has no effect when audio is stream-copied.",
+                                checked: *normalize_audio_loudness.read(),
+                                on_change: move |v| normalize_audio_loudness.set(v),
                             }
                         }
 
                         div { class: "field",
                             label { class: "field-label", "HDR Tone Mapping" }
                             div { class: "field-hint", "Convert HDR content to SDR using tone mapping. Without tone mapping, colour metadata is rewritten so clients treat the stream as SDR (may look washed out on some content)." }
-                            label { style: "display:flex;align-items:center;gap:8px;margin-bottom:6px",
-                                Switch {
-                                    checked: *enable_tonemapping.read(),
-                                    on_change: move |v| enable_tonemapping.set(v),
-                                }
-                                "Software tone mapping (tonemapx, CPU)"
+                            ToggleRow {
+                                label: "Software tone mapping (tonemapx, CPU)",
+                                checked: *enable_tonemapping.read(),
+                                on_change: move |v| enable_tonemapping.set(v),
                             }
-                            label { style: "display:flex;align-items:center;gap:8px;margin-bottom:8px",
-                                Switch {
-                                    checked: *enable_vpp_tonemapping.read(),
-                                    on_change: move |v| enable_vpp_tonemapping.set(v),
-                                }
-                                "Hardware VPP tone mapping (tonemap_vaapi, Intel VAAPI/QSV)"
+                            ToggleRow {
+                                label: "Hardware VPP tone mapping (tonemap_vaapi, Intel VAAPI/QSV)",
+                                checked: *enable_vpp_tonemapping.read(),
+                                on_change: move |v| enable_vpp_tonemapping.set(v),
                             }
                             if *enable_tonemapping.read() && !*enable_vpp_tonemapping.read() {
                                 div { style: "margin-top:4px",
@@ -1039,16 +1001,11 @@ pub fn ProbeSettingsCard(app_state: AppState) -> Element {
                         }
 
                         div { class: "field",
-                            label { class: "field-label", "Auto Next Stream on Probe Fail" }
-                            div { class: "field-hint",
-                                "When a stream probe fails, automatically try the next stream with matching resolution and type."
-                            }
-                            label { style: "display:flex;align-items:center;gap:8px",
-                                Switch {
-                                    checked: *auto_next_stream.read(),
-                                    on_change: move |v| auto_next_stream.set(v),
-                                }
-                                "Enabled"
+                            ToggleRow {
+                                label: "Auto Next Stream on Probe Fail",
+                                description: "When a stream probe fails, automatically try the next stream with matching resolution and type.",
+                                checked: *auto_next_stream.read(),
+                                on_change: move |v| auto_next_stream.set(v),
                             }
                         }
 
@@ -1484,14 +1441,12 @@ pub fn P2pSettingsCard(app_state: AppState) -> Element {
             } else {
                 form { onsubmit: on_submit, style: "display:flex;flex-direction:column;gap:14px",
                         div { class: "field",
-                            div { class: "field-row",
-                                span { class: "field-label", "Enable P2P Streams" }
-                                Switch {
-                                    checked: *p2p_enabled.read(),
-                                    on_change: move |v| p2p_enabled.set(v),
-                                }
+                            ToggleRow {
+                                label: "Enable P2P Streams",
+                                description: "Allow torrent/magnet streams from AIO sources.",
+                                checked: *p2p_enabled.read(),
+                                on_change: move |v| p2p_enabled.set(v),
                             }
-                            p { class: "field-hint", "Allow torrent/magnet streams from AIO sources." }
                         }
 
                         if *p2p_enabled.read() {
@@ -1677,37 +1632,29 @@ pub fn IntroSettingsCard(app_state: AppState) -> Element {
                     div { class: "field",
                         label { class: "field-label", "Play Before" }
                         div { class: "field-hint", "Which content types trigger an intro." }
-                        label { style: "display:flex;align-items:center;gap:8px;margin-bottom:6px",
-                            Switch {
-                                checked: *movies.read(),
-                                on_change: move |v| movies.set(v),
-                            }
-                            "Movies"
+                        ToggleRow {
+                            label: "Movies",
+                            checked: *movies.read(),
+                            on_change: move |v| movies.set(v),
                         }
-                        label { style: "display:flex;align-items:center;gap:8px;margin-bottom:6px",
-                            Switch {
-                                checked: *season_premieres.read(),
-                                on_change: move |v| season_premieres.set(v),
-                            }
-                            "Season premieres (episode 1 of each season)"
+                        ToggleRow {
+                            label: "Season premieres (episode 1 of each season)",
+                            checked: *season_premieres.read(),
+                            on_change: move |v| season_premieres.set(v),
                         }
-                        label { style: "display:flex;align-items:center;gap:8px",
-                            Switch {
-                                checked: *all_episodes.read(),
-                                on_change: move |v| all_episodes.set(v),
-                            }
-                            "All episodes"
+                        ToggleRow {
+                            label: "All episodes",
+                            checked: *all_episodes.read(),
+                            on_change: move |v| all_episodes.set(v),
                         }
                     }
 
                     div { class: "field",
-                        label { class: "field-label", "Resume Behaviour" }
-                        label { style: "display:flex;align-items:center;gap:8px",
-                            Switch {
-                                checked: *skip_resume.read(),
-                                on_change: move |v| skip_resume.set(v),
-                            }
-                            "Skip intro when user is resuming from a saved position"
+                        ToggleRow {
+                            label: "Skip intro when resuming",
+                            description: "Skip intro when user is resuming from a saved position.",
+                            checked: *skip_resume.read(),
+                            on_change: move |v| skip_resume.set(v),
                         }
                     }
 
@@ -1803,14 +1750,12 @@ pub fn RemuxdbSettingsCard(app_state: AppState) -> Element {
                         "Want to help populate the DB faster? You can run a worker! Join Discord for more info."
                     }
                     div { class: "field",
-                        div { class: "field-row",
-                            span { class: "field-label", "Enable RemuxDB" }
-                            Switch {
-                                checked: *enabled.read(),
-                                on_change: move |v| enabled.set(v),
-                            }
+                        ToggleRow {
+                            label: "Enable RemuxDB",
+                            description: "Submit probe data to RemuxDB after each live probe.",
+                            checked: *enabled.read(),
+                            on_change: move |v| enabled.set(v),
                         }
-                        p { class: "field-hint", "Submit probe data to RemuxDB after each live probe." }
                     }
                     if let Some(err) = error.read().as_ref() {
                         ErrorAlert { message: err.clone() }

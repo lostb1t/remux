@@ -1,5 +1,5 @@
 use crate::{
-    components::{EmptyState, FormGroup, LoadingText, Switch},
+    components::{EmptyState, FormGroup, LoadingText, Switch, ToggleRow},
     state::AppState,
 };
 use dioxus::prelude::*;
@@ -397,39 +397,26 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                 span { class: "card-title", "Settings" }
             }
             div { class: "card-body",
-                div {
-                    class: "flex items-center justify-between",
-                    style: "padding:8px 0",
-                    div {
-                        div { style: "font-size:.85rem;font-weight:500", "Show ungrouped streams" }
-                        div { style: "font-size:.75rem;color:var(--text-muted)",
-                            "Show streams that don't match any group as individual entries."
-                        }
-                    }
-                    div { class: "flex items-center gap-2",
-                        if *saving_setting.read() {
-                            span { style: "font-size:.72rem;color:var(--text-muted)", "Saving…" }
-                        }
-                        Switch {
-                            checked: *show_ungrouped.read(),
-                            disabled: *saving_setting.read(),
-                            on_change: {
-                                let client = app_state.clone();
-                                move |v| {
-                                    show_ungrouped.set(v);
-                                    let Some(cfg) = base_cfg.peek().clone() else { return };
-                                    let updated = ServerConfiguration {
-                                        stream_groups_show_ungrouped: Some(v),
-                                        ..cfg
-                                    };
-                                    saving_setting.set(true);
-                                    let c = client.clone();
-                                    spawn(async move {
-                                        let _ = c.execute(UpdateSystemConfiguration { config: updated }).await;
-                                        saving_setting.set(false);
-                                    });
-                                }
-                            }
+                ToggleRow {
+                    label: "Show ungrouped streams",
+                    description: "Show streams that don't match any group as individual entries.",
+                    checked: *show_ungrouped.read(),
+                    disabled: *saving_setting.read(),
+                    on_change: {
+                        let client = app_state.clone();
+                        move |v| {
+                            show_ungrouped.set(v);
+                            let Some(cfg) = base_cfg.peek().clone() else { return };
+                            let updated = ServerConfiguration {
+                                stream_groups_show_ungrouped: Some(v),
+                                ..cfg
+                            };
+                            saving_setting.set(true);
+                            let c = client.clone();
+                            spawn(async move {
+                                let _ = c.execute(UpdateSystemConfiguration { config: updated }).await;
+                                saving_setting.set(false);
+                            });
                         }
                     }
                 }
@@ -719,21 +706,17 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                             }
                         }
                         div { class: "form-group",
-                            label { class: "form-label", style: "display:flex;align-items:center;gap:8px",
-                                Switch {
-                                    checked: *edit_enabled.read(),
-                                    on_change: move |v| edit_enabled.set(v),
-                                }
-                                "Enabled"
+                            ToggleRow {
+                                label: "Enabled",
+                                checked: *edit_enabled.read(),
+                                on_change: move |v| edit_enabled.set(v),
                             }
                         }
                         div { class: "form-group",
-                            label { class: "form-label", style: "display:flex;align-items:center;gap:8px",
-                                Switch {
-                                    checked: *edit_hidden.read(),
-                                    on_change: move |v| edit_hidden.set(v),
-                                }
-                                "Hide group"
+                            ToggleRow {
+                                label: "Hide group",
+                                checked: *edit_hidden.read(),
+                                on_change: move |v| edit_hidden.set(v),
                             }
                         }
                     }

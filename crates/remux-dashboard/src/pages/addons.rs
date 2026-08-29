@@ -1,5 +1,7 @@
 use crate::{
-    components::{DragAndDropList, EmptyState, FormGroup, LoadingText, Switch},
+    components::{
+        DragAndDropList, EmptyState, FormGroup, LoadingText, Switch, ToggleRow,
+    },
     state::AppState,
 };
 use dioxus::prelude::*;
@@ -928,10 +930,25 @@ pub(crate) fn AddonOptionField(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
+    if matches!(option.kind, AddonOptionType::Boolean) {
+        return rsx! {
+            ToggleRow {
+                label,
+                description: desc,
+                checked: current_bool,
+                on_change: move |v| {
+                    let mut map = values.write();
+                    map.insert(id_check.clone(), serde_json::Value::Bool(v));
+                },
+            }
+        };
+    }
+
     rsx! {
         div { class: "form-group",
             label { class: "form-label", "{label}" }
             match &option.kind {
+                AddonOptionType::Boolean => unreachable!(),
                 AddonOptionType::Url | AddonOptionType::String => rsx! {
                     input {
                         class: "form-input",
@@ -976,18 +993,6 @@ pub(crate) fn AddonOptionField(
                                 map.insert(id_num.clone(), serde_json::json!(n));
                             }
                         },
-                    }
-                },
-                AddonOptionType::Boolean => rsx! {
-                    div { class: "field-row",
-                        span { class: "field-label", "Enabled" }
-                        Switch {
-                            checked: current_bool,
-                            on_change: move |v| {
-                                let mut map = values.write();
-                                map.insert(id_check.clone(), serde_json::Value::Bool(v));
-                            },
-                        }
                     }
                 },
                 AddonOptionType::Select { options } => rsx! {

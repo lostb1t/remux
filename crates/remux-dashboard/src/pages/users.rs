@@ -737,25 +737,20 @@ pub fn UserForm(
 
             if is_edit && !all_addons.read().is_empty() {
                 div { class: "field",
-                    div { class: "field-row",
-                        label { class: "field-label", "Custom Addon List" }
-                        Switch {
-                            checked: addon_override.read().is_some(),
-                            on_change: move |v| {
-                                if v {
-                                    // Pre-check addons that are default (or system); non-default start unchecked.
-                                    let entries = all_addons.read().iter()
-                                        .map(|a| (a.id, a.is_default || a.system))
-                                        .collect();
-                                    addon_override.set(Some(entries));
-                                } else {
-                                    addon_override.set(None);
-                                }
-                            },
-                        }
-                    }
-                    span { class: "field-hint",
-                        "Override which addons run for this user and in what order. System addons always run regardless."
+                    ToggleRow {
+                        label: "Custom Addon List",
+                        description: "Override which addons run for this user and in what order. System addons always run regardless.",
+                        checked: addon_override.read().is_some(),
+                        on_change: move |v| {
+                            if v {
+                                let entries = all_addons.read().iter()
+                                    .map(|a| (a.id, a.is_default || a.system))
+                                    .collect();
+                                addon_override.set(Some(entries));
+                            } else {
+                                addon_override.set(None);
+                            }
+                        },
                     }
                     if addon_override.read().is_some() {
                         {
