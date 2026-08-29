@@ -102,21 +102,16 @@ impl Store {
         item: T,
         ttl: Duration,
     ) -> bool {
-        let key = key.into();
-        if self
-            .inner
-            .contains_key(&key)
-        {
-            return false;
-        }
-        let entry = Arc::new(StoreEntry {
-            item: Arc::new(item),
-            ttl,
-            weight: 1,
-        });
         self.inner
-            .insert(key, entry);
-        true
+            .entry(key.into())
+            .or_insert_with(|| {
+                Arc::new(StoreEntry {
+                    item: Arc::new(item),
+                    ttl,
+                    weight: 1,
+                })
+            })
+            .is_fresh()
     }
 
     /// Shared handle to the cached value.
@@ -204,5 +199,29 @@ impl Expiry<String, Arc<StoreEntry>> for PerEntryExpiry {
         _: std::time::Instant,
     ) -> Option<Duration> {
         current
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insert_first_writer_wins() {
+        let store = Store::new(10);
+        let ttl = Duration::from_secs(60);
+
+        let first = store.insert("k", 1u32, ttl);
+        let second = store.insert("k", 2u32, ttl);
+
+        assert!(first, "first insert should return true");
+        assert!(!second, "second insert should return false");
+        assert_eq!(
+            *store
+                .get::<u32>("k")
+                .unwrap(),
+            1,
+            "first writer's value should win"
+        );
     }
 }

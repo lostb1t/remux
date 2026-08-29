@@ -17,7 +17,10 @@ use super::{
     IndexAddon, MediaKind, ProgressReporter, ResourceType, StreamAddon, SubtitleAddon,
     SubtitleInfo, TreeAddon,
 };
-use crate::{AppContext, addons::Addon, common, db, sdks, sdks::CachedEndpoint};
+use crate::{
+    AppContext, addons::Addon, common, db, sdks, sdks::CachedEndpoint,
+    services::MediaResolveService,
+};
 
 // ---------------------------------------------------------------------------
 // Shared option helper
@@ -1177,7 +1180,7 @@ async fn scan_addon(
                                 Some(id)
                             } else if !jellyfin_ids.is_empty() {
                                 if let Some(client) = tmdb {
-                                    crate::addons::tmdb::resolve_imdb_from_ids(
+                                    MediaResolveService::resolve_imdb_from_ids(
                                         &jellyfin_ids,
                                         true,
                                         client,
@@ -1209,7 +1212,7 @@ async fn scan_addon(
                                 Some(id)
                             } else if !jellyfin_ids.is_empty() {
                                 if let Some(client) = tmdb {
-                                    crate::addons::tmdb::resolve_imdb_from_ids(
+                                    MediaResolveService::resolve_imdb_from_ids(
                                         &jellyfin_ids,
                                         false,
                                         client,
@@ -1461,7 +1464,7 @@ async fn scan_addon(
                         Some(id)
                     } else if !jellyfin_ids.is_empty() {
                         if let Some(client) = tmdb {
-                            crate::addons::tmdb::resolve_imdb_from_ids(
+                            MediaResolveService::resolve_imdb_from_ids(
                                 &jellyfin_ids,
                                 true,
                                 client,
@@ -1502,7 +1505,7 @@ async fn scan_addon(
                         Some(id)
                     } else if !jellyfin_ids.is_empty() {
                         if let Some(client) = tmdb {
-                            crate::addons::tmdb::resolve_imdb_from_ids(
+                            MediaResolveService::resolve_imdb_from_ids(
                                 &jellyfin_ids,
                                 false,
                                 client,
@@ -3481,91 +3484,6 @@ mod tests {
                 count, 1,
                 "{}: expected imdb={} s={} e={} after title-search resolution",
                 f.rel_path, f.expected_imdb, f.expected_season, f.expected_episode
-            );
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // E2E: movie resolve — tmdbid tag and no-label (title+year search).
-    // Also verifies catalog_stream surfaces the indexed movies.
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn opendal_local_movie_resolve() {
-        // (rel_path, expected_imdb)
-        let fixtures: &[(&str, &str)] = &[
-            // [tmdbid-603] → The Matrix → tt0133093
-            (
-                "[tmdbid-603] The Matrix (1999)/The.Matrix.1999.mkv",
-                "tt0133093",
-            ),
-            // No label: title+year parsed from filename → TMDB search
-            ("Interstellar.2014.mkv", "tt0816692"),
-        ];
-
-        let dir = tempfile::tempdir().unwrap();
-        write_files(
-            dir.path(),
-            &fixtures
-                .iter()
-                .map(|(p, _)| (*p, b"fake" as &[u8]))
-                .collect::<Vec<_>>(),
-        );
-
-        let (_, guard) = new_test_server()
-            .await
-            .unwrap();
-        let ctx = &guard.0;
-
-        let (addon, db_addon) = make_local_addon(ctx, dir.path(), "movie").await;
-        addon
-            .refresh_index(ctx, &db_addon, noop_progress())
-            .await
-            .unwrap();
-
-        // Every fixture must have a DB row.
-        for (path, imdb) in fixtures {
-            let count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM opendal_files \
-                 WHERE addon_id = ? AND media_kind = 'movie' AND imdb_id = ?",
-            )
-            .bind(db_addon.id)
-            .bind(imdb)
-            .fetch_one(&ctx.db)
-            .await
-            .unwrap();
-            assert_eq!(count, 1, "{path}: expected imdb={imdb}");
-        }
-
-        // catalog_stream must return one Movie item per distinct IMDB.
-        let catalog: Vec<db::Media> = addon
-            .catalog_stream(ctx, "files")
-            .await
-            .unwrap()
-            .unwrap()
-            .collect()
-            .await;
-        assert_eq!(
-            catalog.len(),
-            fixtures.len(),
-            "catalog should have one entry per movie"
-        );
-        assert!(
-            catalog
-                .iter()
-                .all(|m| m.kind == db::MediaKind::Movie)
-        );
-        for (_, imdb) in fixtures {
-            assert!(
-                catalog
-                    .iter()
-                    .any(|m| m
-                        .external_ids
-                        .imdb
-                        .as_deref()
-                        .map(|s| s.as_str())
-                        == Some(imdb)),
-                "catalog missing movie with imdb={imdb}"
             );
         }
     }

@@ -268,6 +268,42 @@ pub fn UserForm(
             })
             .unwrap_or(true)
     });
+    let mut enable_audio_transcoding = use_signal(|| {
+        existing
+            .as_ref()
+            .map(|u| {
+                u.policy
+                    .enable_audio_playback_transcoding
+            })
+            .unwrap_or(true)
+    });
+    let mut enable_remuxing = use_signal(|| {
+        existing
+            .as_ref()
+            .map(|u| {
+                u.policy
+                    .enable_playback_remuxing
+            })
+            .unwrap_or(true)
+    });
+    let mut enable_media_playback = use_signal(|| {
+        existing
+            .as_ref()
+            .map(|u| {
+                u.policy
+                    .enable_media_playback
+            })
+            .unwrap_or(true)
+    });
+    let mut enable_content_downloading = use_signal(|| {
+        existing
+            .as_ref()
+            .map(|u| {
+                u.policy
+                    .enable_content_downloading
+            })
+            .unwrap_or(true)
+    });
     let mut subtitle_mode = use_signal(|| {
         existing
             .as_ref()
@@ -391,6 +427,10 @@ pub fn UserForm(
         let remote_search_snapshot = *enable_remote_search.peek();
         let max_sessions_snapshot = *max_active_sessions.peek();
         let video_transcoding_snapshot = *enable_video_transcoding.peek();
+        let audio_transcoding_snapshot = *enable_audio_transcoding.peek();
+        let remuxing_snapshot = *enable_remuxing.peek();
+        let media_playback_snapshot = *enable_media_playback.peek();
+        let content_downloading_snapshot = *enable_content_downloading.peek();
         let addon_override_snapshot = addon_override
             .peek()
             .clone();
@@ -456,6 +496,11 @@ pub fn UserForm(
                     policy.max_active_sessions = max_sessions_snapshot;
                     policy.enable_video_playback_transcoding =
                         video_transcoding_snapshot;
+                    policy.enable_audio_playback_transcoding =
+                        audio_transcoding_snapshot;
+                    policy.enable_playback_remuxing = remuxing_snapshot;
+                    policy.enable_media_playback = media_playback_snapshot;
+                    policy.enable_content_downloading = content_downloading_snapshot;
                     client
                         .execute(UpdateUserPolicy {
                             user_id: user.id,
@@ -515,6 +560,10 @@ pub fn UserForm(
                         || !remote_search_snapshot
                         || max_sessions_snapshot > 0
                         || !video_transcoding_snapshot
+                        || !audio_transcoding_snapshot
+                        || !remuxing_snapshot
+                        || !media_playback_snapshot
+                        || !content_downloading_snapshot
                     {
                         let mut policy = new_user
                             .policy
@@ -526,6 +575,12 @@ pub fn UserForm(
                         policy.max_active_sessions = max_sessions_snapshot;
                         policy.enable_video_playback_transcoding =
                             video_transcoding_snapshot;
+                        policy.enable_audio_playback_transcoding =
+                            audio_transcoding_snapshot;
+                        policy.enable_playback_remuxing = remuxing_snapshot;
+                        policy.enable_media_playback = media_playback_snapshot;
+                        policy.enable_content_downloading =
+                            content_downloading_snapshot;
                         client
                             .execute(UpdateUserPolicy {
                                 user_id: new_user.id,
@@ -632,9 +687,33 @@ pub fn UserForm(
             }
 
             ToggleRow {
+                label: "Allow Media Playback",
+                checked: *enable_media_playback.read(),
+                on_change: move |v| enable_media_playback.set(v),
+            }
+
+            ToggleRow {
                 label: "Allow Video Transcoding",
                 checked: *enable_video_transcoding.read(),
                 on_change: move |v| enable_video_transcoding.set(v),
+            }
+
+            ToggleRow {
+                label: "Allow Audio Transcoding",
+                checked: *enable_audio_transcoding.read(),
+                on_change: move |v| enable_audio_transcoding.set(v),
+            }
+
+            ToggleRow {
+                label: "Allow Remuxing",
+                checked: *enable_remuxing.read(),
+                on_change: move |v| enable_remuxing.set(v),
+            }
+
+            ToggleRow {
+                label: "Allow media downloads",
+                checked: *enable_content_downloading.read(),
+                on_change: move |v| enable_content_downloading.set(v),
             }
 
             div { class: "field",

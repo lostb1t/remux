@@ -475,6 +475,33 @@ fn is_hdr(range_type: Option<&VideoRangeType>) -> bool {
     )
 }
 
+fn is_hls_input_url(input_url: &str) -> bool {
+    let Ok(url) = url::Url::parse(input_url) else {
+        return false;
+    };
+    let path = url
+        .path()
+        .to_ascii_lowercase();
+    path.ends_with(".m3u8")
+        || (path.ends_with("/hls")
+            && url
+                .query_pairs()
+                .any(|(name, _)| name.eq_ignore_ascii_case("url")))
+}
+
+fn add_hls_extension_compat_args(args: &mut Vec<String>, input_url: &str) {
+    if is_hls_input_url(input_url) {
+        args.extend([
+            "-allowed_extensions".into(),
+            "ALL".into(),
+            "-allowed_segment_extensions".into(),
+            "ALL".into(),
+            "-extension_picky".into(),
+            "0".into(),
+        ]);
+    }
+}
+
 /// Build the ffmpeg CLI args for an HLS transcode.
 pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     let accel = params
@@ -523,7 +550,33 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         .audio_codec
         .as_str()
     {
-        "copy" => "copy",
+        "copy" => {
+            // IMPORTANT: do not remove this override.
+            //
+            // TrueHD, FLAC, and PCM are not valid MPEG-TS payloads. The TS
+            // spec simply has no stream type for them. FFmpeg either errors out
+            // or silently drops the audio track when you try to mux them.
+            // Clients (iOS Safari, ExoPlayer) then see a broken/silent stream.
+            //
+            // The client asked for "copy" because it trusts the server to only
+            // honour that when the codec can actually be carried in the
+            // container. We must downgrade to AAC here; do not "fix" this by
+            // removing the override thinking the client knows best.
+            let source = params
+                .source_audio_codec
+                .as_deref()
+                .and_then(|s| {
+                    s.parse::<remux_sdks::remux::AudioCodec>()
+                        .ok()
+                });
+            let ts_incompatible = matches!(
+                source,
+                Some(remux_sdks::remux::AudioCodec::TrueHd)
+                    | Some(remux_sdks::remux::AudioCodec::Flac)
+                    | Some(remux_sdks::remux::AudioCodec::Pcm)
+            );
+            if ts_incompatible { "aac" } else { "copy" }
+        }
         _ => "aac",
     };
 
@@ -586,6 +639,8 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             "5000000".into(),
         ]);
     }
+
+    add_hls_extension_compat_args(&mut args, &params.input_url);
 
     args.extend([
         "-copyts".into(),
@@ -1886,6 +1941,7 @@ pub fn generate_master_playlist(session: &TranscodeSession) -> String {
             }) {
             Some(AudioCodec::Eac3) => "ec-3",
             Some(AudioCodec::Ac3) => "ac-3",
+            Some(AudioCodec::Dts) => "dtsh",
             _ => "mp4a.40.2",
         }
     } else {
@@ -2159,6 +2215,10 @@ mod tests {
         assert_eq!(arg_after(&args, "-c:v"), Some("copy"));
         assert_eq!(arg_after(&args, "-c:a"), Some("aac"));
         assert_eq!(arg_after(&args, "-f"), Some("hls"));
+        assert!(
+            !args_contains(&args, "-allowed_extensions"),
+            "ordinary file inputs must retain ffmpeg's default extension policy"
+        );
         // Default TS segments — no fmp4 flag
         assert!(!args_contains(&args, "-hls_segment_type"));
         // Playlist and segment paths
@@ -2170,6 +2230,20 @@ mod tests {
             args.iter()
                 .any(|a| a.contains("segment_") && a.ends_with(".ts"))
         );
+    }
+
+    #[test]
+    fn hls_proxy_input_allows_extensionless_segments() {
+        let args = build_hls_args(&TranscodeParams {
+            input_url:
+                "https://relay.example/hls?url=https%3A%2F%2Forigin.example%2Fplaylist"
+                    .into(),
+            ..default_hls(PathBuf::from("/tmp/test_extensionless_hls"))
+        });
+
+        assert_eq!(arg_after(&args, "-allowed_extensions"), Some("ALL"));
+        assert_eq!(arg_after(&args, "-allowed_segment_extensions"), Some("ALL"));
+        assert_eq!(arg_after(&args, "-extension_picky"), Some("0"));
     }
 
     #[test]

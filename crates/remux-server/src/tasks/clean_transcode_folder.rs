@@ -106,14 +106,21 @@ impl Task for CleanTranscodeFolderTask {
             }
         }
 
-        let deleted = ctx
+        let torrent = ctx
             .torrent
-            .delete_unused_with_files(&active_torrent_ids)
+            .read()
             .await
-            .unwrap_or_else(|e| {
-                warn!("failed to clean torrents: {e:#}");
-                0
-            });
+            .clone();
+        let deleted = if let Some(mgr) = torrent {
+            mgr.delete_unused_with_files(&active_torrent_ids)
+                .await
+                .unwrap_or_else(|e| {
+                    warn!("failed to clean torrents: {e:#}");
+                    0
+                })
+        } else {
+            0
+        };
         info!(deleted, "cleaned torrent sessions");
 
         progress.set(100.0);

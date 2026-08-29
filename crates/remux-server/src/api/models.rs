@@ -199,6 +199,9 @@ pub fn db_user_to_dto(data_dir: &std::path::Path, user: db::User) -> UserDto {
         .map(|p| p.0)
         .unwrap_or_default();
     policy.is_administrator = user.is_admin;
+    // SyncPlay requires group lifecycle, playback commands, and websocket
+    // coordination. Do not advertise it while those server APIs are absent.
+    policy.sync_play_access = SyncPlayUserAccessType::None;
     let defaults = UserPolicy::default();
     macro_rules! default_if_empty {
         ($field:ident) => {
@@ -397,9 +400,9 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             db::MediaKind::Playlist => match media.collection_media_kind {
                 Some(db::CollectionMediaKind::Music) => MediaType::Audio,
                 Some(_) => MediaType::Video,
-                None => MediaType::Unknown,
+                None => MediaType::Other,
             },
-            _ => MediaType::Unknown,
+            _ => MediaType::Other,
         },
         is_movie: (media.kind == db::MediaKind::Movie
             || matches!(media.program_kind, Some(db::ProgramKind::Movie)))
@@ -501,7 +504,8 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                     .to_rfc3339()
             }),
         end_date: media
-            .live_end
+            .end_date
+            .or(media.live_end)
             .map(|d| {
                 d.and_utc()
                     .to_rfc3339()
@@ -835,9 +839,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                 db::MediaStatus::Continuing => Status::Continuing,
                 db::MediaStatus::Ended => Status::Ended,
                 db::MediaStatus::Unreleased => Status::Unreleased,
-                db::MediaStatus::Released | db::MediaStatus::Unknown => {
-                    Status::Released
-                }
+                db::MediaStatus::Released | db::MediaStatus::Other => Status::Released,
             }),
         sort_name: Some(
             media

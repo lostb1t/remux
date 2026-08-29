@@ -16,15 +16,16 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use crate::{
-    AppState, IntoApiError, OptionExt, ResultExt,
-    addons::media_tracker::MediaTrackerEvent,
-    api,
+    AppState, IntoApiError, OptionExt, ResultExt, api,
     api::system::QuickConnectEntry,
     common::{get_uuid, server_id},
     db,
     db::{auth, user::User},
-    services::{self, MediaResolveService},
-    ws::WsEvent,
+    services::MediaResolveService,
+    signals::{
+        Event, MarkFavoriteInfo, MarkPlayedInfo, MarkUnplayedInfo, RatingInfo,
+        UnmarkFavoriteInfo, UserDeletedInfo, UserUpdatedInfo,
+    },
 };
 use axum_anyhow::ApiResult as Result;
 use remux_sdks::remux::Username;
@@ -454,13 +455,13 @@ pub async fn mark_favorite(
             &user,
         )
         .await?;
-    services::media_tracker::enqueue_and_wake(
-        &state,
-        user.id,
-        &media,
-        MediaTrackerEvent::Favorite { is_favorite: true },
-    )
-    .await;
+    state
+        .ctx
+        .signals
+        .emit(Event::MarkFavorite(MarkFavoriteInfo {
+            user_id: user.id,
+            media_id: media.id,
+        }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -482,14 +483,60 @@ pub async fn unmark_favorite(
             &user,
         )
         .await?;
-    services::media_tracker::enqueue_and_wake(
-        &state,
-        user.id,
-        &media,
-        MediaTrackerEvent::Favorite { is_favorite: false },
-    )
-    .await;
+    state
+        .ctx
+        .signals
+        .emit(Event::UnmarkFavorite(UnmarkFavoriteInfo {
+            user_id: user.id,
+            media_id: media.id,
+        }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
+}
+
+async fn unmark_favorite_inner(
+    state: AppState,
+    user: db::User,
+    id: Uuid,
+) -> Result<impl IntoResponse> {
+    let media = MediaResolveService::resolve_item(id, &state.ctx)
+        .await?
+        .context("not found")?;
+    let ms = media
+        .unmark_favorite(
+            &state
+                .ctx
+                .db,
+            &user,
+        )
+        .await?;
+    state
+        .ctx
+        .signals
+        .emit(Event::UnmarkFavorite(UnmarkFavoriteInfo {
+            user_id: user.id,
+            media_id: media.id,
+        }));
+    Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
+}
+
+#[get("/users/{user_id}/favoriteitems/{id}/delete")]
+pub async fn unmark_favorite_get(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path((_, id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    unmark_favorite_inner(state, user, id).await
+}
+
+#[post("/users/{user_id}/favoriteitems/{id}/delete")]
+pub async fn unmark_favorite_post(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path((_, id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    unmark_favorite_inner(state, user, id).await
 }
 
 #[post("/userfavoriteitems/{id}")]
@@ -510,13 +557,13 @@ pub async fn mark_favorite_modern(
             &user,
         )
         .await?;
-    services::media_tracker::enqueue_and_wake(
-        &state,
-        user.id,
-        &media,
-        MediaTrackerEvent::Favorite { is_favorite: true },
-    )
-    .await;
+    state
+        .ctx
+        .signals
+        .emit(Event::MarkFavorite(MarkFavoriteInfo {
+            user_id: user.id,
+            media_id: media.id,
+        }));
     Ok(Json(api::db_state_to_dto(s, &media)).into_response())
 }
 
@@ -538,13 +585,13 @@ pub async fn unmark_favorite_modern(
             &user,
         )
         .await?;
-    services::media_tracker::enqueue_and_wake(
-        &state,
-        user.id,
-        &media,
-        MediaTrackerEvent::Favorite { is_favorite: false },
-    )
-    .await;
+    state
+        .ctx
+        .signals
+        .emit(Event::UnmarkFavorite(UnmarkFavoriteInfo {
+            user_id: user.id,
+            media_id: media.id,
+        }));
     Ok(Json(api::db_state_to_dto(s, &media)).into_response())
 }
 
@@ -574,13 +621,13 @@ pub async fn mark_played(
             server_config.release_date_threshold(),
         )
         .await?;
-    services::media_tracker::enqueue_and_wake(
-        &state,
-        user.id,
-        &media,
-        MediaTrackerEvent::MarkPlayed,
-    )
-    .await;
+    state
+        .ctx
+        .signals
+        .emit(Event::MarkPlayed(MarkPlayedInfo {
+            user_id: user.id,
+            media_id: media.id,
+        }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -603,14 +650,61 @@ pub async fn unmark_played(
             true,
         )
         .await?;
-    services::media_tracker::enqueue_and_wake(
-        &state,
-        user.id,
-        &media,
-        MediaTrackerEvent::MarkUnplayed,
-    )
-    .await;
+    state
+        .ctx
+        .signals
+        .emit(Event::MarkUnplayed(MarkUnplayedInfo {
+            user_id: user.id,
+            media_id: media.id,
+        }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
+}
+
+async fn unmark_played_inner(
+    state: AppState,
+    user: db::User,
+    id: Uuid,
+) -> Result<impl IntoResponse> {
+    let media = MediaResolveService::resolve_item(id, &state.ctx)
+        .await?
+        .context_not_found("not found")?;
+    let ms = media
+        .mark_unplayed(
+            &state
+                .ctx
+                .db,
+            &user,
+            true,
+        )
+        .await?;
+    state
+        .ctx
+        .signals
+        .emit(Event::MarkUnplayed(MarkUnplayedInfo {
+            user_id: user.id,
+            media_id: media.id,
+        }));
+    Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
+}
+
+#[get("/users/{user_id}/playeditems/{id}/delete")]
+pub async fn unmark_played_get(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path((_, id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    unmark_played_inner(state, user, id).await
+}
+
+#[post("/users/{user_id}/playeditems/{id}/delete")]
+pub async fn unmark_played_post(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path((_, id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    unmark_played_inner(state, user, id).await
 }
 
 #[query]
@@ -659,15 +753,14 @@ pub async fn update_item_rating(
         rating,
     )
     .await?;
-    services::media_tracker::enqueue_and_wake(
-        &state,
-        user.id,
-        &media,
-        MediaTrackerEvent::Rating {
+    state
+        .ctx
+        .signals
+        .emit(Event::Rating(RatingInfo {
+            user_id: user.id,
+            media_id: media.id,
             rating: rating.map(|r| r.value() as f32),
-        },
-    )
-    .await;
+        }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -690,13 +783,14 @@ pub async fn delete_item_rating(
         None,
     )
     .await?;
-    services::media_tracker::enqueue_and_wake(
-        &state,
-        user.id,
-        &media,
-        MediaTrackerEvent::Rating { rating: None },
-    )
-    .await;
+    state
+        .ctx
+        .signals
+        .emit(Event::Rating(RatingInfo {
+            user_id: user.id,
+            media_id: media.id,
+            rating: None,
+        }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -721,15 +815,14 @@ pub async fn update_item_rating_legacy(
         rating,
     )
     .await?;
-    services::media_tracker::enqueue_and_wake(
-        &state,
-        user.id,
-        &media,
-        MediaTrackerEvent::Rating {
+    state
+        .ctx
+        .signals
+        .emit(Event::Rating(RatingInfo {
+            user_id: user.id,
+            media_id: media.id,
             rating: rating.map(|r| r.value() as f32),
-        },
-    )
-    .await;
+        }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -752,13 +845,14 @@ pub async fn delete_item_rating_legacy(
         None,
     )
     .await?;
-    services::media_tracker::enqueue_and_wake(
-        &state,
-        user.id,
-        &media,
-        MediaTrackerEvent::Rating { rating: None },
-    )
-    .await;
+    state
+        .ctx
+        .signals
+        .emit(Event::Rating(RatingInfo {
+            user_id: user.id,
+            media_id: media.id,
+            rating: None,
+        }));
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -794,10 +888,10 @@ pub async fn create_user(
             .db,
     )
     .await?;
-    let _ = state
+    state
         .ctx
-        .ws_tx
-        .send(WsEvent::UserUpdated(user.id));
+        .signals
+        .emit(Event::UserUpdated(UserUpdatedInfo { user_id: user.id }));
     Ok((
         StatusCode::OK,
         Json(api::db_user_to_dto(
@@ -832,10 +926,10 @@ pub async fn delete_user(
         &user_id,
     )
     .await?;
-    let _ = state
+    state
         .ctx
-        .ws_tx
-        .send(WsEvent::UserDeleted(user_id));
+        .signals
+        .emit(Event::UserDeleted(UserDeletedInfo { user_id }));
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -930,14 +1024,14 @@ pub async fn change_password(
         tracing::warn!("failed to log password_changed activity: {e}");
     }
 
-    let _ = state
+    state
         .ctx
-        .ws_tx
-        .send(WsEvent::UserUpdated(user_id));
-    let _ = state
+        .signals
+        .emit(Event::UserUpdated(UserUpdatedInfo { user_id }));
+    state
         .ctx
-        .ws_tx
-        .send(WsEvent::SessionsChanged);
+        .signals
+        .emit(Event::SessionsChanged);
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -964,10 +1058,10 @@ pub async fn update_user_policy(
             .db,
     )
     .await?;
-    let _ = state
+    state
         .ctx
-        .ws_tx
-        .send(WsEvent::UserUpdated(user_id));
+        .signals
+        .emit(Event::UserUpdated(UserUpdatedInfo { user_id }));
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -1000,10 +1094,10 @@ pub async fn update_user(
             .db,
     )
     .await?;
-    let _ = state
+    state
         .ctx
-        .ws_tx
-        .send(WsEvent::UserUpdated(user_id));
+        .signals
+        .emit(Event::UserUpdated(UserUpdatedInfo { user_id }));
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -1099,10 +1193,16 @@ pub async fn users_items_latest(
     items_flat(State(state), session, Query(q)).await
 }
 
+#[query]
+struct UserViewsQuery {
+    include_hidden: Option<bool>,
+}
+
 #[get("/userviews")]
 pub async fn userviews(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    Query(q): Query<UserViewsQuery>,
 ) -> Result<impl IntoResponse> {
     let library_filter = db::MediaFilter {
         kind: Some(vec![db::MediaKind::Collection, db::MediaKind::Folder]),
@@ -1141,7 +1241,70 @@ pub async fn userviews(
         ),
     );
 
-    let libraries = library_result?.records;
+    let mut libraries = library_result?.records;
+
+    let config = session
+        .user
+        .configuration
+        .as_deref();
+    let policy = session
+        .user
+        .policy
+        .as_deref();
+
+    // Limit to enabled folders when the policy restricts folder access.
+    if let Some(pol) = policy {
+        if !pol.enable_all_folders
+            && !pol
+                .enabled_folders
+                .is_empty()
+        {
+            let allowed: Vec<Uuid> = pol
+                .enabled_folders
+                .iter()
+                .filter_map(|s| Uuid::parse_str(s).ok())
+                .collect();
+            libraries.retain(|m| allowed.contains(&m.id));
+        }
+    }
+
+    // Exclude hidden views unless the caller explicitly requests them.
+    if q.include_hidden != Some(true) {
+        if let Some(cfg) = config {
+            if !cfg
+                .my_media_excludes
+                .is_empty()
+            {
+                let excluded: Vec<Uuid> = cfg
+                    .my_media_excludes
+                    .iter()
+                    .filter_map(|s| Uuid::parse_str(s).ok())
+                    .collect();
+                libraries.retain(|m| !excluded.contains(&m.id));
+            }
+        }
+    }
+
+    // Stable-sort by OrderedViews: configured IDs come first in their saved
+    // order; any remaining views follow in their original DB order.
+    if let Some(cfg) = config {
+        if !cfg
+            .ordered_views
+            .is_empty()
+        {
+            let ordered: Vec<Uuid> = cfg
+                .ordered_views
+                .iter()
+                .filter_map(|s| Uuid::parse_str(s).ok())
+                .collect();
+            libraries.sort_by_key(|m| {
+                ordered
+                    .iter()
+                    .position(|id| *id == m.id)
+                    .unwrap_or(usize::MAX)
+            });
+        }
+    }
 
     let mut items = libraries
         .into_iter()
@@ -1202,8 +1365,9 @@ pub async fn userviews_groupingoptions(
 pub async fn users_views(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    Query(q): Query<UserViewsQuery>,
 ) -> Result<impl IntoResponse> {
-    userviews(State(state), session).await
+    userviews(State(state), session, Query(q)).await
 }
 
 async fn resume_items(
@@ -3512,5 +3676,274 @@ mod e2e_tests {
             .add_header(auth().0, auth().1)
             .await;
         assert_eq!(resp.json::<serde_json::Value>()["IsFavorite"], false);
+    }
+
+    #[tokio::test]
+    async fn post_delete_unfavorite_alias() {
+        let (server, ctx, token) = authenticated_server().await;
+        let item = insert_test_source(&ctx.0).await;
+        let auth = auth_header_with_token(&token);
+        let user_id = get_user_id(&server, &auth).await;
+        let auth_hdr = || {
+            (
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+        };
+
+        server
+            .post(&format!("/users/{user_id}/favoriteitems/{}", item.id))
+            .add_header(auth_hdr().0, auth_hdr().1)
+            .await;
+
+        let resp = server
+            .post(&format!(
+                "/users/{user_id}/favoriteitems/{}/delete",
+                item.id
+            ))
+            .add_header(auth_hdr().0, auth_hdr().1)
+            .await;
+        assert_eq!(resp.status_code(), http::StatusCode::OK);
+        assert_eq!(resp.json::<serde_json::Value>()["IsFavorite"], false);
+    }
+
+    #[tokio::test]
+    async fn post_delete_unplayed_alias() {
+        let (server, ctx, token) = authenticated_server().await;
+        let item = insert_test_source(&ctx.0).await;
+        let auth = auth_header_with_token(&token);
+        let user_id = get_user_id(&server, &auth).await;
+        let auth_hdr = || {
+            (
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+        };
+
+        server
+            .post(&format!("/users/{user_id}/playeditems/{}", item.id))
+            .add_header(auth_hdr().0, auth_hdr().1)
+            .await;
+
+        let resp = server
+            .post(&format!("/users/{user_id}/playeditems/{}/delete", item.id))
+            .add_header(auth_hdr().0, auth_hdr().1)
+            .await;
+        assert_eq!(resp.status_code(), http::StatusCode::OK);
+        assert_eq!(resp.json::<serde_json::Value>()["Played"], false);
+    }
+
+    async fn insert_promoted_collection(
+        ctx: &crate::AppContext,
+        title: &str,
+    ) -> db::Media {
+        let m = db::Media {
+            title: title.to_string(),
+            kind: db::MediaKind::Collection,
+            promoted: true,
+            ..Default::default()
+        };
+        db::Media::upsert(&ctx.db, &[m.clone()])
+            .await
+            .unwrap();
+        m
+    }
+
+    async fn get_user_id(server: &axum_test::TestServer, auth: &str) -> String {
+        let resp = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(auth).unwrap(),
+            )
+            .await;
+        resp.json::<serde_json::Value>()["Id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// `MyMediaExcludes` hides views; `includeHidden=true` restores them.
+    #[tokio::test]
+    async fn test_userviews_my_media_excludes() {
+        let (server, ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        let visible = insert_promoted_collection(&ctx.0, "Visible").await;
+        let hidden = insert_promoted_collection(&ctx.0, "Hidden").await;
+
+        let user_id = get_user_id(&server, &auth).await;
+        server
+            .post(&format!("/users/{}/configuration", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "PlayDefaultAudioTrack": true,
+                "SubtitleMode": "Default",
+                "HidePlayedInLatest": true,
+                "RememberAudioSelections": true,
+                "RememberSubtitleSelections": true,
+                "EnableNextEpisodeAutoPlay": true,
+                "MyMediaExcludes": [hidden.id.to_string()]
+            }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+
+        let resp = server
+            .get("/userviews")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let parse_ids = |body: &serde_json::Value| -> Vec<Uuid> {
+            body["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|v| {
+                    v["Id"]
+                        .as_str()
+                        .and_then(|s| Uuid::parse_str(s).ok())
+                })
+                .collect()
+        };
+
+        let ids = parse_ids(&resp.json::<serde_json::Value>());
+        assert!(ids.contains(&visible.id), "visible view missing");
+        assert!(!ids.contains(&hidden.id), "excluded view leaked");
+
+        let resp = server
+            .get("/userviews")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[("includeHidden", "true")])
+            .await;
+        resp.assert_status_ok();
+        let ids_all = parse_ids(&resp.json::<serde_json::Value>());
+        assert!(
+            ids_all.contains(&hidden.id),
+            "hidden view not restored by includeHidden=true"
+        );
+    }
+
+    /// `EnableAllFolders=false` restricts results to `EnabledFolders`.
+    #[tokio::test]
+    async fn test_userviews_enabled_folders_policy() {
+        let (server, ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        let allowed = insert_promoted_collection(&ctx.0, "Allowed").await;
+        let blocked = insert_promoted_collection(&ctx.0, "Blocked").await;
+
+        let user_id = get_user_id(&server, &auth).await;
+
+        server
+            .post(&format!("/users/{}/policy", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "IsAdministrator": true,
+                "EnableAllFolders": false,
+                "EnabledFolders": [allowed.id.to_string()]
+            }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+
+        let resp = server
+            .get("/userviews")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let ids: Vec<Uuid> = resp.json::<serde_json::Value>()["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| {
+                v["Id"]
+                    .as_str()
+                    .and_then(|s| Uuid::parse_str(s).ok())
+            })
+            .collect();
+        assert!(ids.contains(&allowed.id), "allowed folder missing");
+        assert!(!ids.contains(&blocked.id), "blocked folder leaked");
+    }
+
+    /// `OrderedViews` controls the returned order, including simple (non-hyphenated) UUIDs.
+    #[tokio::test]
+    async fn test_userviews_ordered_views() {
+        let (server, ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        let first = insert_promoted_collection(&ctx.0, "First").await;
+        let second = insert_promoted_collection(&ctx.0, "Second").await;
+
+        let user_id = get_user_id(&server, &auth).await;
+        // Use simple (non-hyphenated) UUIDs in the saved config to verify normalization.
+        let second_simple = second
+            .id
+            .to_string()
+            .replace('-', "");
+        let first_simple = first
+            .id
+            .to_string()
+            .replace('-', "");
+        server
+            .post(&format!("/users/{}/configuration", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "PlayDefaultAudioTrack": true,
+                "SubtitleMode": "Default",
+                "HidePlayedInLatest": true,
+                "RememberAudioSelections": true,
+                "RememberSubtitleSelections": true,
+                "EnableNextEpisodeAutoPlay": true,
+                "OrderedViews": [second_simple, first_simple]
+            }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+
+        let resp = server
+            .get("/userviews")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let ids: Vec<Uuid> = resp.json::<serde_json::Value>()["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| {
+                v["Id"]
+                    .as_str()
+                    .and_then(|s| Uuid::parse_str(s).ok())
+            })
+            .collect();
+
+        let pos_first = ids
+            .iter()
+            .position(|id| *id == first.id);
+        let pos_second = ids
+            .iter()
+            .position(|id| *id == second.id);
+        assert!(
+            pos_second < pos_first,
+            "OrderedViews ordering not respected"
+        );
     }
 }

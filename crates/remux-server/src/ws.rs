@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use axum::{
     extract::{
         State, WebSocketUpgrade,
@@ -12,8 +13,12 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::{
-    AppState, api, api::session::build_session_list, common::get_uuid, db,
+    AppState, api,
+    api::session::build_session_list,
+    common::get_uuid,
+    db,
     db::auth::AuthSession,
+    signals::{Event, EventType, Subscriber},
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -31,7 +36,7 @@ pub enum SessionMessageType {
     SessionsStop,
     KeepAlive,
     #[serde(other)]
-    Unknown,
+    Other,
 }
 
 #[derive(Serialize)]
@@ -298,6 +303,85 @@ async fn build_sessions(state: &AppState) -> Vec<api::SessionInfoDto> {
     build_session_list(state, Some(Duration::from_secs(120)), None)
         .await
         .unwrap_or_default()
+}
+
+pub struct WebSocketSubscriber {
+    pub ws_tx: tokio::sync::broadcast::Sender<WsEvent>,
+}
+
+#[async_trait]
+impl Subscriber for WebSocketSubscriber {
+    fn key(&self) -> &'static str {
+        "websocket"
+    }
+
+    fn events(&self) -> &[EventType] {
+        &[
+            EventType::UserUpdated,
+            EventType::UserDeleted,
+            EventType::MarkPlayed,
+            EventType::MarkUnplayed,
+            EventType::MarkFavorite,
+            EventType::UnmarkFavorite,
+            EventType::Rating,
+            EventType::PlaybackStopped,
+            EventType::LibraryChanged,
+            EventType::SessionsChanged,
+            EventType::RemotePlay,
+            EventType::RemotePlaystate,
+            EventType::RemoteCommand,
+        ]
+    }
+
+    async fn handle(&self, event: Event) -> anyhow::Result<()> {
+        let ws_event = match event {
+            Event::UserUpdated(i) => WsEvent::UserUpdated(i.user_id),
+            Event::UserDeleted(i) => WsEvent::UserDeleted(i.user_id),
+            Event::MarkPlayed(i) => WsEvent::UserDataChanged {
+                user_id: i.user_id,
+                item_id: i.media_id,
+            },
+            Event::MarkUnplayed(i) => WsEvent::UserDataChanged {
+                user_id: i.user_id,
+                item_id: i.media_id,
+            },
+            Event::MarkFavorite(i) => WsEvent::UserDataChanged {
+                user_id: i.user_id,
+                item_id: i.media_id,
+            },
+            Event::UnmarkFavorite(i) => WsEvent::UserDataChanged {
+                user_id: i.user_id,
+                item_id: i.media_id,
+            },
+            Event::Rating(i) => WsEvent::UserDataChanged {
+                user_id: i.user_id,
+                item_id: i.media_id,
+            },
+            Event::PlaybackStopped(i) => WsEvent::UserDataChanged {
+                user_id: i.user_id,
+                item_id: i.media_id,
+            },
+            Event::LibraryChanged => WsEvent::LibraryChanged,
+            Event::SessionsChanged => WsEvent::SessionsChanged,
+            Event::RemotePlay(i) => WsEvent::RemotePlay {
+                device_id: i.device_id,
+                data: i.data,
+            },
+            Event::RemotePlaystate(i) => WsEvent::RemotePlaystate {
+                device_id: i.device_id,
+                data: i.data,
+            },
+            Event::RemoteCommand(i) => WsEvent::RemoteCommand {
+                device_id: i.device_id,
+                data: i.data,
+            },
+            _ => return Ok(()),
+        };
+        let _ = self
+            .ws_tx
+            .send(ws_event);
+        Ok(())
+    }
 }
 
 #[cfg(test)]

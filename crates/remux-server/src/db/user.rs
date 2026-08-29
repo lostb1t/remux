@@ -354,29 +354,9 @@ impl MediaIdRaw {
         match self.kind {
             MediaKind::Movie | MediaKind::Series | MediaKind::TvProgram => self
                 .external_ids
-                .imdb
-                .as_deref()
-                .map(|s| s.to_string())
-                .or_else(|| {
-                    self.external_ids
-                        .custom_stremio_id
-                        .clone()
-                })
-                .or_else(|| {
-                    self.external_ids
-                        .tmdb
-                        .map(|id| format!("tmdb:{id}"))
-                })
-                .or_else(|| {
-                    self.external_ids
-                        .tvdb
-                        .map(|id| format!("tvdb:{id}"))
-                })
-                .or_else(|| {
-                    self.external_ids
-                        .kitsu
-                        .map(|id| format!("kitsu:{id}"))
-                }),
+                .candidate_ids(&self.kind, None, None, None)
+                .into_iter()
+                .next(),
             MediaKind::Season | MediaKind::Episode => None,
             MediaKind::Artist => self
                 .external_ids
@@ -514,6 +494,27 @@ impl UserMediaState {
         let mut all_ids: Vec<Uuid> = Vec::with_capacity(6);
         all_ids.push(media.id);
         all_ids.extend(super::Media::ext_id_uuid_candidates(media));
+        // For episodes/seasons the flat candidates are derived from the grandparent
+        // series' external IDs, which are usually not preloaded on the media row.
+        // Load them so a purged+repopulated library can still find old state rows.
+        if matches!(
+            media.kind,
+            super::MediaKind::Season | super::MediaKind::Episode
+        ) && media
+            .grandparent
+            .is_none()
+        {
+            if let Some(gp_id) = media
+                .grandparent_id
+                .or(media.parent_id)
+            {
+                if let Ok(Some(gp)) = super::Media::get_by_id(db, &gp_id).await {
+                    let mut with_gp = media.clone();
+                    with_gp.grandparent = Some(Box::new(gp));
+                    all_ids.extend(super::Media::ext_id_uuid_candidates(&with_gp));
+                }
+            }
+        }
 
         let placeholders = all_ids
             .iter()
@@ -555,6 +556,58 @@ impl UserMediaState {
             media_id: media.id,
             ..Default::default()
         })
+    }
+
+    /// After a media item is (re-)imported, remap any `user_media_state` rows
+    /// that are still keyed to an old UUID for that item. Covers all users.
+    ///
+    /// Useful when the same content is purged and re-imported with a new UUID:
+    /// rather than waiting for each user to play the item before their state is
+    /// migrated lazily by `get_or_new`, this sweeps the whole table immediately.
+    pub async fn remap_orphaned_for(db: &SqlitePool, items: &[super::Media]) {
+        let pairs: Vec<(uuid::Uuid, uuid::Uuid)> = items
+            .iter()
+            .flat_map(|item| {
+                super::Media::ext_id_uuid_candidates(item)
+                    .into_iter()
+                    .map(|old| (old, item.id))
+            })
+            .collect();
+
+        if pairs.is_empty() {
+            return;
+        }
+
+        // Each pair needs 3 bind slots (WHEN ?, THEN ?, IN ?).
+        // SQLite's limit is 999; use 300 pairs per batch to stay well under it.
+        for chunk in pairs.chunks(300) {
+            let mut sql =
+                String::from("UPDATE user_media_state SET media_id = CASE media_id");
+            for _ in chunk {
+                sql.push_str(" WHEN ? THEN ?");
+            }
+            sql.push_str(" END WHERE media_id IN (");
+            for i in 0..chunk.len() {
+                if i > 0 {
+                    sql.push(',');
+                }
+                sql.push('?');
+            }
+            sql.push(')');
+
+            let mut q = sqlx::query(&sql);
+            for (old, new) in chunk {
+                q = q
+                    .bind(old)
+                    .bind(new);
+            }
+            for (old, _) in chunk {
+                q = q.bind(old);
+            }
+            q.execute(db)
+                .await
+                .ok();
+        }
     }
 
     /// Set or clear the personal rating.
@@ -1104,35 +1157,10 @@ mod playback_threshold_tests {
     use super::*;
     use crate::{db, integration_test::new_test_server};
 
-    const RUNTIME: i64 = 6_000;
+    use crate::integration_test::MOVIE_RUNTIME_SECONDS as RUNTIME;
 
     fn ticks(seconds: i64) -> i64 {
         seconds * 10_000_000
-    }
-
-    async fn movie(ctx: &crate::AppContext) -> db::Media {
-        let external_ids = db::ExternalIds {
-            imdb: db::NonEmptyString::try_new("tt0113277".to_string()).ok(),
-            tmdb: Some(949),
-            ..Default::default()
-        };
-        let mut m = db::Media {
-            id: uuid::Uuid::from(&db::MediaIdRaw {
-                kind: db::MediaKind::Movie,
-                external_ids: external_ids.clone(),
-                season: None,
-                episode: None,
-            }),
-            title: "Heat".into(),
-            kind: db::MediaKind::Movie,
-            runtime: Some(RUNTIME),
-            external_ids,
-            ..Default::default()
-        };
-        m.save(&ctx.db)
-            .await
-            .unwrap();
-        m
     }
 
     async fn stop_at(
@@ -1164,7 +1192,7 @@ mod playback_threshold_tests {
             .await
             .unwrap()
             .unwrap();
-        let media = movie(ctx).await;
+        let media = crate::integration_test::seed_movie(ctx).await;
 
         assert!(
             stop_at(ctx, &user, &media, RUNTIME * 95 / 100).await,
@@ -1198,7 +1226,7 @@ mod playback_threshold_tests {
             .await
             .unwrap()
             .unwrap();
-        let media = movie(ctx).await;
+        let media = crate::integration_test::seed_movie(ctx).await;
 
         stop_at(ctx, &user, &media, RUNTIME * 95 / 100).await;
 

@@ -16,6 +16,7 @@ use futures_util::{StreamExt, TryStreamExt};
 use headers;
 use http::{Response, StatusCode};
 use remux_macros::{delete, get, post, query};
+use remux_sdks::remux::VideoContainer;
 use remux_utils::Store;
 use serde::Deserialize;
 use serde_json::json;
@@ -169,6 +170,16 @@ async fn items_playbackinfo_inner(
     )
     .await
     .unwrap_or_default();
+
+    if session
+        .user
+        .policy
+        .as_ref()
+        .is_some_and(|p| !p.enable_media_playback)
+    {
+        return Err(anyhow::anyhow!("Forbidden")
+            .context_forbidden("media playback is disabled"));
+    }
 
     let media =
         MediaResolveService::resolve_item(media_source_id.unwrap_or(id), &state.ctx)
@@ -475,15 +486,19 @@ async fn items_playbackinfo_inner(
             TranscodeDecision::Transcode(outcome) => outcome.apply_to(&mut source),
         }
 
+        let torrent = state
+            .ctx
+            .torrent
+            .read()
+            .await
+            .clone();
         let sidecars = effective_stream
             .stream_info
             .as_ref()
-            .map(|stream| {
-                stream.subtitle_sidecars(
-                    &state
-                        .ctx
-                        .torrent,
-                )
+            .and_then(|stream| {
+                torrent
+                    .as_ref()
+                    .map(|mgr| stream.subtitle_sidecars(mgr))
             })
             .unwrap_or_default();
         let routes = inject_sidecar_subtitles(&mut source, sidecars);
@@ -641,32 +656,21 @@ async fn items_playbackinfo_inner(
             supports_direct_stream: true,
             supports_transcoding: true,
             path: Some("/videos/no-streams".to_string()),
-            run_time_ticks: Some(20 * 10_000_000),
-            container: Some("mp4".to_string()),
-            bitrate: Some(50_000),
+            run_time_ticks: Some(10 * 3600 * 10_000_000),
+            container: Some(VideoContainer::Mp4),
+            bitrate: Some(100),
             size: Some(NO_STREAMS_VIDEO.len() as i64),
             formats: Some(vec![]),
             required_http_headers: Some(std::collections::HashMap::new()),
-            default_audio_stream_index: Some(1),
-            media_streams: vec![
-                api::MediaStream {
-                    type_: Some(api::MediaStreamType::Video),
-                    codec: Some("h264".to_string()),
-                    is_default: Some(true),
-                    index: 0,
-                    width: Some(640),
-                    height: Some(360),
-                    ..Default::default()
-                },
-                api::MediaStream {
-                    type_: Some(api::MediaStreamType::Audio),
-                    codec: Some("aac".to_string()),
-                    channels: Some(2),
-                    is_default: Some(true),
-                    index: 1,
-                    ..Default::default()
-                },
-            ],
+            media_streams: vec![api::MediaStream {
+                type_: Some(api::MediaStreamType::Video),
+                codec: Some("h264".to_string()),
+                is_default: Some(true),
+                index: 0,
+                width: Some(640),
+                height: Some(360),
+                ..Default::default()
+            }],
             ..Default::default()
         });
         Some(api::PlaybackErrorCode::NoCompatibleStream)
@@ -1186,6 +1190,7 @@ pub struct BitrateTestQuery {
 #[cfg(test)]
 mod tests {
     use http::{StatusCode, header::HeaderValue};
+    use remux_sdks::remux::VideoContainer;
     use serde_json::json;
 
     use crate::integration_test::{
@@ -2203,7 +2208,7 @@ mod tests {
                 ..Default::default()
             }),
             probe_data: Some(MediaSourceInfo {
-                container: Some("mkv".to_string()),
+                container: Some(VideoContainer::Mkv),
                 default_subtitle_stream_index: Some(2),
                 media_streams: vec![
                     MediaStream {
@@ -2416,7 +2421,7 @@ mod tests {
         };
 
         let make_probe = || MediaSourceInfo {
-            container: Some("mp4".to_string()),
+            container: Some(VideoContainer::Mp4),
             bitrate: Some(8_000_000),
             run_time_ticks: Some(100_000_000),
             media_streams: vec![
@@ -2664,7 +2669,7 @@ mod tests {
         };
         let now = chrono::Utc::now().naive_utc();
         let probe = MediaSourceInfo {
-            container: Some("mp4".to_string()),
+            container: Some(VideoContainer::Mp4),
             bitrate: Some(8_000_000),
             run_time_ticks: Some(100_000_000),
             media_streams: vec![
@@ -2827,7 +2832,7 @@ mod tests {
         // audio track is Dutch — the server must pick English (index 2).
         let now = chrono::Utc::now().naive_utc();
         let probe = MediaSourceInfo {
-            container: Some("mp4".to_string()),
+            container: Some(VideoContainer::Mp4),
             bitrate: Some(8_000_000),
             run_time_ticks: Some(100_000_000),
             media_streams: vec![
@@ -3089,7 +3094,7 @@ mod tests {
         .unwrap();
 
         let make_probe = || api::MediaSourceInfo {
-            container: Some("mkv".to_string()),
+            container: Some(VideoContainer::Mkv),
             bitrate: Some(8_000_000),
             run_time_ticks: Some(100_000_000),
             media_streams: vec![
@@ -3320,7 +3325,7 @@ mod tests {
         };
         let now = chrono::Utc::now().naive_utc();
         let probe = MediaSourceInfo {
-            container: Some("mkv".to_string()),
+            container: Some(VideoContainer::Mkv),
             bitrate: Some(8_000_000),
             run_time_ticks: Some(100_000_000),
             media_streams: vec![

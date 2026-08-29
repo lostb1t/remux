@@ -16,14 +16,16 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::{
-    AppState, IntoApiError, OptionExt, ResultExt,
-    addons::media_tracker::MediaTrackerEvent,
-    api, common,
+    AppState, IntoApiError, OptionExt, ResultExt, api, common,
     common::{TickUnit, ToRunTimeTicks},
     db,
     db::auth,
     playback::session::TranscodeSession,
     services::{self, MediaResolveService},
+    signals::{
+        Event, PlaybackProgressInfo, PlaybackStartedInfo, PlaybackStoppedInfo,
+        RemoteCommandInfo, RemotePlayInfo, RemotePlaystateInfo,
+    },
 };
 
 #[post("/sessions/logout")]
@@ -85,38 +87,6 @@ pub async fn sessions_capabilities_by_id(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Queue a playback event for the acting user's media trackers, resolving the
-/// item first. Handlers already holding the row call `enqueue_and_wake`
-/// directly rather than paying for a second lookup.
-async fn track_by_id(
-    state: &AppState,
-    session: &auth::AuthSession,
-    item_id: Uuid,
-    event: MediaTrackerEvent,
-) {
-    if !state
-        .ctx
-        .addons
-        .has_media_tracker()
-    {
-        return;
-    }
-
-    if let Ok(Some(media)) =
-        MediaResolveService::resolve_item(item_id, &state.ctx).await
-    {
-        services::media_tracker::enqueue_and_wake(
-            state,
-            session
-                .user
-                .id,
-            &media,
-            event,
-        )
-        .await;
-    }
-}
-
 #[post("/sessions/playing")]
 pub async fn report_playback_start(
     State(state): State<AppState>,
@@ -144,21 +114,23 @@ pub async fn report_playback_start(
                 e.context_internal("failed to start session")
             }
         })?;
-    let _ = state
+    state
         .ctx
-        .ws_tx
-        .send(crate::ws::WsEvent::SessionsChanged);
-    track_by_id(
-        &state,
-        &session,
-        data.item_id,
-        MediaTrackerEvent::PlaybackStart {
+        .signals
+        .emit(Event::SessionsChanged);
+    state
+        .ctx
+        .signals
+        .emit(Event::PlaybackStarted(PlaybackStartedInfo {
+            user_id: session
+                .user
+                .id,
+            media_id: data.item_id,
             position_ticks: data
                 .position_ticks
                 .unwrap_or(0),
-        },
-    )
-    .await;
+            ..Default::default()
+        }));
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -207,23 +179,25 @@ pub async fn report_playback_progress(
             )
             .await
             .context_internal("failed to update progress")?;
-        let _ = state
+        state
             .ctx
-            .ws_tx
-            .send(crate::ws::WsEvent::SessionsChanged);
+            .signals
+            .emit(Event::SessionsChanged);
         if data.is_paused && !was_paused {
-            track_by_id(
-                &state,
-                &session,
-                data.item_id,
-                MediaTrackerEvent::PlaybackProgress {
+            state
+                .ctx
+                .signals
+                .emit(Event::PlaybackProgress(PlaybackProgressInfo {
+                    user_id: session
+                        .user
+                        .id,
+                    media_id: data.item_id,
                     position_ticks: data
                         .position_ticks
                         .unwrap_or(0),
                     is_paused: true,
-                },
-            )
-            .await;
+                    ..Default::default()
+                }));
         }
     }
     Ok(StatusCode::NO_CONTENT.into_response())
@@ -280,32 +254,25 @@ pub async fn report_playback_stopped(
             )
             .await
             .context_internal("failed to record stop")?;
-        let _ = state
+        state
             .ctx
-            .ws_tx
-            .send(crate::ws::WsEvent::SessionsChanged);
+            .signals
+            .emit(Event::SessionsChanged);
         if let Some(item_id) = changed_item_id {
-            let _ = state
+            state
                 .ctx
-                .ws_tx
-                .send(crate::ws::WsEvent::UserDataChanged {
+                .signals
+                .emit(Event::PlaybackStopped(PlaybackStoppedInfo {
                     user_id: session
                         .user
                         .id,
-                    item_id,
-                });
-            track_by_id(
-                &state,
-                &session,
-                item_id,
-                MediaTrackerEvent::PlaybackStop {
+                    media_id: item_id,
                     position_ticks: data
                         .position_ticks
                         .unwrap_or(0),
                     played,
-                },
-            )
-            .await;
+                    ..Default::default()
+                }));
         }
     }
     Ok(StatusCode::NO_CONTENT.into_response())
@@ -1022,18 +989,15 @@ pub async fn remote_play(
         .ws_tx
         .receiver_count();
     info!(device_id = %device.id, ws_receivers = receivers, "sending remote Play command");
-    let result = state
+    state
         .ctx
-        .ws_tx
-        .send(crate::ws::WsEvent::RemotePlay {
+        .signals
+        .emit(Event::RemotePlay(RemotePlayInfo {
             device_id: device
                 .id
                 .clone(),
             data,
-        });
-    if let Err(_) = result {
-        info!(device_id = %device.id, "no WS receivers for remote Play (target may not be connected)");
-    }
+        }));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1072,13 +1036,13 @@ pub async fn remote_playstate_command(
         "SeekPositionTicks": q.seek_position_ticks,
         "ControllingUserId": q.controlling_user_id,
     });
-    let _ = state
+    state
         .ctx
-        .ws_tx
-        .send(crate::ws::WsEvent::RemotePlaystate {
+        .signals
+        .emit(Event::RemotePlaystate(RemotePlaystateInfo {
             device_id: device.id,
             data,
-        });
+        }));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1109,13 +1073,13 @@ pub async fn remote_general_command(
             .context_forbidden("cannot control other users' sessions"));
     }
     let data = serde_json::json!({ "Name": command, "Arguments": {} });
-    let _ = state
+    state
         .ctx
-        .ws_tx
-        .send(crate::ws::WsEvent::RemoteCommand {
+        .signals
+        .emit(Event::RemoteCommand(RemoteCommandInfo {
             device_id: device.id,
             data,
-        });
+        }));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1151,13 +1115,13 @@ pub async fn remote_full_command(
         "ControllingUserId": body.controlling_user_id,
         "Arguments": body.arguments.unwrap_or_default(),
     });
-    let _ = state
+    state
         .ctx
-        .ws_tx
-        .send(crate::ws::WsEvent::RemoteCommand {
+        .signals
+        .emit(Event::RemoteCommand(RemoteCommandInfo {
             device_id: device.id,
             data,
-        });
+        }));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1188,13 +1152,13 @@ pub async fn remote_system_command(
             .context_forbidden("cannot control other users' sessions"));
     }
     let data = serde_json::json!({ "Name": command, "Arguments": {} });
-    let _ = state
+    state
         .ctx
-        .ws_tx
-        .send(crate::ws::WsEvent::RemoteCommand {
+        .signals
+        .emit(Event::RemoteCommand(RemoteCommandInfo {
             device_id: device.id,
             data,
-        });
+        }));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1233,13 +1197,13 @@ pub async fn remote_message(
             "TimeoutMs": body.timeout_ms,
         },
     });
-    let _ = state
+    state
         .ctx
-        .ws_tx
-        .send(crate::ws::WsEvent::RemoteCommand {
+        .signals
+        .emit(Event::RemoteCommand(RemoteCommandInfo {
             device_id: device.id,
             data,
-        });
+        }));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1278,13 +1242,13 @@ pub async fn remote_viewing(
             "ItemName": q.item_name.unwrap_or_default(),
         },
     });
-    let _ = state
+    state
         .ctx
-        .ws_tx
-        .send(crate::ws::WsEvent::RemoteCommand {
+        .signals
+        .emit(Event::RemoteCommand(RemoteCommandInfo {
             device_id: device.id,
             data,
-        });
+        }));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1330,10 +1294,10 @@ pub async fn delete_transcoding(
             .sessions
             .stop_transcode(&play_session_id)
             .await;
-        let _ = state
+        state
             .ctx
-            .ws_tx
-            .send(crate::ws::WsEvent::SessionsChanged);
+            .signals
+            .emit(Event::SessionsChanged);
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }

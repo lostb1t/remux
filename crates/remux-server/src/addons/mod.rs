@@ -431,6 +431,7 @@ pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: b
         replace,
     );
     merge_option(&mut target.status, &source.status, replace);
+    merge_option(&mut target.end_date, &source.end_date, replace);
     merge_option(&mut target.idx, &source.idx, replace);
     merge_option(&mut target.parent_idx, &source.parent_idx, replace);
 
@@ -1076,7 +1077,7 @@ fn recognized_manifest_media_kind(
         MT::Artist => MK::Artist,
         MT::Track => MK::Track,
         MT::Events => MK::TvProgram,
-        MT::Unknown(s) => match s.as_str() {
+        MT::Other(s) => match s.as_str() {
             "episode" => MK::Episode,
             "season" => MK::Season,
             "person" => MK::Person,
@@ -2019,6 +2020,13 @@ impl AddonService {
             .iter()
             .filter_map(|r| {
                 if !r
+                    .row
+                    .resources
+                    .contains(&ResourceType::Meta)
+                {
+                    return None;
+                }
+                if !r
                     .tree
                     .as_ref()
                     .map(|t| t.supports(node))
@@ -2175,6 +2183,7 @@ impl AddonService {
             error!(id = %actual_root_id, error = %e, "failed to upsert root media");
             return actual_root_id;
         }
+        db::UserMediaState::remap_orphaned_for(&ctx.db, &[media.clone()]).await;
         save_pending_relations(&ctx, &[media.clone()]).await;
         save_pending_tags(&ctx, &[media.clone()]).await;
         save_pending_popularity(&ctx, &[media.clone()]).await;
@@ -2270,6 +2279,7 @@ impl AddonService {
             if let Err(e) = db::Media::upsert(&ctx.db, chunk).await {
                 error!(error = %e, "failed to upsert level-1 children");
             } else {
+                db::UserMediaState::remap_orphaned_for(&ctx.db, chunk).await;
                 save_pending_relations(&ctx, chunk).await;
                 save_pending_tags(&ctx, chunk).await;
                 save_pending_popularity(&ctx, chunk).await;
@@ -2327,6 +2337,7 @@ impl AddonService {
                 if let Err(e) = db::Media::upsert(&ctx.db, chunk).await {
                     error!(error = %e, "failed to upsert level-2 children");
                 } else {
+                    db::UserMediaState::remap_orphaned_for(&ctx.db, chunk).await;
                     save_pending_relations(&ctx, chunk).await;
                     save_pending_tags(&ctx, chunk).await;
                     save_pending_popularity(&ctx, chunk).await;
@@ -2576,8 +2587,25 @@ impl AddonService {
             .stream_info
             .as_ref()?;
         match &si.descriptor {
-            crate::stream::StreamDescriptor::Torrent { info_hash, .. } => {
-                Some(format!("torrent:{}", info_hash.to_lowercase()))
+            crate::stream::StreamDescriptor::Torrent {
+                info_hash,
+                file_hint,
+                file_idx,
+                ..
+            } => {
+                let file_key = file_hint
+                    .as_deref()
+                    .or(si
+                        .filename
+                        .as_deref())
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_ascii_lowercase)
+                    .unwrap_or_else(|| {
+                        file_idx
+                            .map(|index| format!("#{index}"))
+                            .unwrap_or_default()
+                    });
+                Some(format!("torrent:{}:{file_key}", info_hash.to_lowercase()))
             }
             crate::stream::StreamDescriptor::Http { url, .. } => {
                 let filename = si
@@ -2843,10 +2871,7 @@ impl AddonService {
         let probe_t = std::time::Instant::now();
         let (raw, probe_versions) = tokio::join!(
             self.get_streams(media, ctx, user_id),
-            tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                probe_versions_fut,
-            )
+            tokio::time::timeout(std::time::Duration::from_secs(5), probe_versions_fut,)
         );
         let raw = raw?;
         let probe_versions = match probe_versions {
@@ -3157,6 +3182,38 @@ pub fn make_media_id(addon_id: Uuid, local_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn torrent_stream(hash: &str, file_hint: &str, file_idx: usize) -> db::Media {
+        db::Media {
+            stream_info: Some(crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::Torrent {
+                    info_hash: hash.to_string(),
+                    file_hint: Some(file_hint.to_string()),
+                    file_idx: Some(file_idx),
+                    trackers: Vec::new(),
+                },
+                filename: Some(file_hint.to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn torrent_dedup_preserves_distinct_files_in_a_bundle() {
+        let first = torrent_stream("abc", "Bundle/Movie.One.mkv", 0);
+        let duplicate = torrent_stream("ABC", "Bundle/Movie.One.mkv", 7);
+        let second = torrent_stream("abc", "Bundle/Movie.Two.mkv", 1);
+
+        assert_eq!(
+            AddonService::stream_dedup_key(&first),
+            AddonService::stream_dedup_key(&duplicate)
+        );
+        assert_ne!(
+            AddonService::stream_dedup_key(&first),
+            AddonService::stream_dedup_key(&second)
+        );
+    }
 
     fn make_image(path: &str) -> db::MediaImage {
         db::MediaImage {
@@ -3501,7 +3558,7 @@ mod tests {
     #[test]
     fn recognized_manifest_media_kind_drops_unrecognized_custom_type() {
         assert_eq!(
-            recognized_manifest_media_kind(sdks::stremio::MediaType::Unknown(
+            recognized_manifest_media_kind(sdks::stremio::MediaType::Other(
                 "anime".to_string()
             )),
             None
@@ -3511,10 +3568,101 @@ mod tests {
             Some(sdks::remux::MediaKind::Series)
         );
         assert_eq!(
-            recognized_manifest_media_kind(sdks::stremio::MediaType::Unknown(
+            recognized_manifest_media_kind(sdks::stremio::MediaType::Other(
                 "episode".to_string()
             )),
             Some(sdks::remux::MediaKind::Episode)
+        );
+    }
+
+    // --- get_direct_children resource guard ---
+
+    struct SpyTree {
+        called: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait]
+    impl TreeAddon for SpyTree {
+        fn supports(&self, root: &db::Media) -> bool {
+            matches!(root.kind, db::MediaKind::Series)
+        }
+
+        async fn get_children(
+            &self,
+            _root: &db::Media,
+            _ctx: &AppContext,
+        ) -> anyhow::Result<Option<Vec<db::Media>>> {
+            self.called
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(Some(vec![]))
+        }
+    }
+
+    fn stream_only_runtime_with_tree(
+        called: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> AddonRuntime {
+        let now = chrono::Utc::now().naive_utc();
+        AddonRuntime {
+            row: addon::Addon {
+                id: uuid::Uuid::new_v4(),
+                name: "stream-only".into(),
+                preset: AddonPresetRef {
+                    kind: "scripted".into(),
+                    config: serde_json::Value::Null.into(),
+                },
+                resources: vec![ResourceType::Stream], // no Meta
+                types: vec![],
+                enabled: true,
+                priority: 0,
+                created_at: now,
+                updated_at: now,
+                system: false,
+                is_default: false,
+                http_redirect_stream: false,
+                service_filter: vec![],
+            },
+            caps: AddonCapabilities {
+                tree: Some(std::sync::Arc::new(SpyTree { called })),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn get_direct_children_skips_addons_without_meta_resource() {
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let runtime = stream_only_runtime_with_tree(called.clone());
+
+        let service = AddonService {
+            inner: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(vec![runtime])),
+        };
+
+        let series = db::Media {
+            kind: db::MediaKind::Series,
+            ..Default::default()
+        };
+
+        // AppContext is required by the trait signature but is never reached when the
+        // addon is filtered out before get_children is called. Use new_test_server so
+        // port binding is handled correctly (same as all other integration tests).
+        let (_, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = guard
+            .0
+            .clone();
+
+        let children = service
+            .get_direct_children(&series, &ctx)
+            .await;
+
+        assert!(
+            children.is_empty(),
+            "stream-only addon should not contribute children"
+        );
+        assert!(
+            !called.load(std::sync::atomic::Ordering::SeqCst),
+            "stream-only addon's get_children should never be called"
         );
     }
 }

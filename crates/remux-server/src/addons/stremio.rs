@@ -23,7 +23,7 @@ use super::{
 use crate::{
     AppContext, common, db, sdks,
     sdks::{CachedEndpoint, ClientError},
-    services::stremio as stremio_service,
+    services::{MediaResolveService, stremio as stremio_service},
 };
 
 pub struct StremioPreset;
@@ -149,7 +149,7 @@ pub(super) fn parse_manifest_info(
         .iter()
         .map(|s| {
             serde_json::from_value(serde_json::Value::String(s.clone()))
-                .unwrap_or(remux_sdks::stremio::MediaType::Unknown(s.clone()))
+                .unwrap_or(remux_sdks::stremio::MediaType::Other(s.clone()))
         })
         .collect();
     (resources, types)
@@ -265,7 +265,7 @@ impl CatalogAddon for StremioAddon {
                             .clone(),
                     ))
                     .unwrap_or(
-                        remux_sdks::stremio::MediaType::Unknown(
+                        remux_sdks::stremio::MediaType::Other(
                             c.kind
                                 .clone(),
                         ),
@@ -624,7 +624,7 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
             if !ids.is_empty() {
                 let is_tv = meta.media_type == sdks::stremio::MediaType::Series;
                 ids.imdb =
-                    crate::addons::tmdb::resolve_imdb_from_ids(&ids, is_tv, client)
+                    MediaResolveService::resolve_imdb_from_ids(&ids, is_tv, client)
                         .await;
                 debug!(id = %meta.id, elapsed = ?t.elapsed(), resolved = ids.imdb.is_some(), "after TMDB resolve");
             }
@@ -704,7 +704,7 @@ async fn manifest_meta_type_fallback(
         .collect();
 
     for candidate in candidates {
-        let alt_type = sdks::stremio::MediaType::Unknown(candidate);
+        let alt_type = sdks::stremio::MediaType::Other(candidate);
         if let Ok(meta) = svc
             .get_meta(alt_type, meta_id.to_string())
             .await

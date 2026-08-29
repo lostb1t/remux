@@ -16,6 +16,71 @@ fn ffprobe_bin() -> String {
     std::env::var("FFPROBE_PATH").unwrap_or_else(|_| "ffprobe".into())
 }
 
+fn should_retry_with_relaxed_hls_extensions(stderr: &str) -> bool {
+    stderr.contains("allowed_segment_extensions")
+        || stderr.contains("mismatches allowed extensions")
+}
+
+fn ffprobe_args(url: &str, allow_nonstandard_hls_extensions: bool) -> Vec<String> {
+    let mut args = vec![
+        "-v".into(),
+        "error".into(),
+        "-print_format".into(),
+        "json".into(),
+        "-show_chapters".into(),
+        "-show_streams".into(),
+        "-show_format".into(),
+    ];
+    if allow_nonstandard_hls_extensions {
+        args.extend([
+            "-allowed_extensions".into(),
+            "ALL".into(),
+            "-allowed_segment_extensions".into(),
+            "ALL".into(),
+            "-extension_picky".into(),
+            "0".into(),
+        ]);
+    }
+    args.push(url.into());
+    args
+}
+
+#[cfg(test)]
+mod extension_retry_tests {
+    #[test]
+    fn retries_hls_probe_when_extension_validation_rejects_a_proxy_segment() {
+        let stderr =
+            "[hls] URL https://relay.example/hls is not in allowed_segment_extensions";
+
+        assert!(super::should_retry_with_relaxed_hls_extensions(stderr));
+    }
+
+    #[test]
+    fn does_not_retry_unrelated_probe_errors() {
+        assert!(!super::should_retry_with_relaxed_hls_extensions(
+            "Connection timed out"
+        ));
+    }
+
+    #[test]
+    fn retry_uses_hls_extension_compatibility_options() {
+        let args = super::ffprobe_args("https://relay.example/hls?url=playlist", true);
+
+        assert!(
+            args.windows(2)
+                .any(|pair| { pair == ["-allowed_extensions", "ALL"] })
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| { pair == ["-allowed_segment_extensions", "ALL"] })
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| { pair == ["-extension_picky", "0"] })
+        );
+    }
+}
+
 fn nonzero<T: Default + PartialOrd>(v: T) -> Option<T> {
     if v > T::default() { Some(v) } else { None }
 }
@@ -178,7 +243,7 @@ pub(crate) fn display_title_video(m: &StreamMeta) -> Option<String> {
         attrs.push(codec.to_ascii_uppercase());
     }
     if let Some(range) = m.video_range {
-        if *range != api::VideoRange::Unknown {
+        if *range != api::VideoRange::Other {
             attrs.push(format!("{:?}", range));
         }
     }
@@ -465,20 +530,25 @@ fn apply_video_bitrate_fallback(
 pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
     debug!(url, "probing media");
 
-    let output = std::process::Command::new(ffprobe_bin())
-        .args([
-            "-v",
-            "error",
-            "-print_format",
-            "json",
-            "-show_chapters",
-            "-show_streams",
-            "-show_format",
-            url,
-        ])
+    let mut output = std::process::Command::new(ffprobe_bin())
+        .args(ffprobe_args(url, false))
         .hide_console()
         .output()
         .map_err(|e| anyhow!("Failed to run ffprobe: {}", e))?;
+
+    if !output
+        .status
+        .success()
+        && should_retry_with_relaxed_hls_extensions(&String::from_utf8_lossy(
+            &output.stderr,
+        ))
+    {
+        output = std::process::Command::new(ffprobe_bin())
+            .args(ffprobe_args(url, true))
+            .hide_console()
+            .output()
+            .map_err(|e| anyhow!("Failed to rerun ffprobe: {}", e))?;
+    }
 
     if !output
         .status
@@ -507,7 +577,15 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
         .format
         .format_name
         .as_deref()
-        .map(remux_utils::normalize_container);
+        .and_then(|s| {
+            s.split(',')
+                .next()
+        })
+        .and_then(|s| {
+            s.parse::<remux_sdks::remux::VideoContainer>()
+                .ok()
+        })
+        .map(|c| c.canonical());
 
     let overall_bitrate = probe
         .format
@@ -749,8 +827,8 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     is_forced,
                     is_avc: Some(false),
                     time_base: Some("1/1000".to_string()),
-                    video_range: Some(api::VideoRange::Unknown),
-                    video_range_type: Some(api::VideoRangeType::Unknown),
+                    video_range: Some(api::VideoRange::Other),
+                    video_range_type: Some(api::VideoRangeType::Other),
                     audio_spatial_format: Some("None".to_string()),
                     localized_default: Some("Default".to_string()),
                     localized_external: Some("External".to_string()),
@@ -822,8 +900,8 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     is_hearing_impaired,
                     is_avc: Some(false),
                     time_base: Some("1/1000".to_string()),
-                    video_range: Some(api::VideoRange::Unknown),
-                    video_range_type: Some(api::VideoRangeType::Unknown),
+                    video_range: Some(api::VideoRange::Other),
+                    video_range_type: Some(api::VideoRangeType::Other),
                     audio_spatial_format: Some("None".to_string()),
                     localized_undefined: Some("Undefined".to_string()),
                     localized_default: Some("Default".to_string()),
@@ -895,6 +973,9 @@ pub(crate) async fn resolve_stream_root(
 }
 
 /// Resolve probe data for a single source: cache hit → skip → live probe with fallback.
+/// Uncached P2P sources return inferred stream metadata immediately so
+/// `PlaybackInfo` is not blocked waiting for torrent pieces; ordinary network
+/// sources still use authoritative probing for codec decisions.
 pub(crate) async fn probe_stream(
     stream: &db::Media,
     url_opt: Option<String>,
@@ -915,12 +996,37 @@ pub(crate) async fn probe_stream(
             .video_stream()
             .is_some()
         {
-            debug!(id = %stream.id, "probe cache hit");
-            let mut info = api::MediaSourceInfo::from(stream.clone());
-            apply_video_bitrate_fallback(&mut info.media_streams, info.bitrate);
-            return Ok((info, stream.clone()));
+            let alive = match stream
+                .stream_info
+                .as_ref()
+                .map(|si| &si.descriptor)
+            {
+                Some(d) => {
+                    d.is_alive()
+                        .await
+                }
+                None => true,
+            };
+            if alive {
+                debug!(id = %stream.id, "probe cache hit, url alive");
+                let mut info = api::MediaSourceInfo::from(stream.clone());
+                apply_video_bitrate_fallback(&mut info.media_streams, info.bitrate);
+                return Ok((info, stream.clone()));
+            }
+            debug!(id = %stream.id, "probe cache hit but url dead, falling through to fallback");
+        } else {
+            debug!(id = %stream.id, "probe cache stale (no video stream), re-probing");
         }
-        debug!(id = %stream.id, "probe cache stale (no video stream), re-probing");
+    } else if stream
+        .stream_info
+        .as_ref()
+        .is_some_and(|stream_info| stream_info.is_p2p())
+    {
+        // Probing a torrent URL requests media pieces. PlaybackInfo and version
+        // dropdowns must remain metadata-only, so defer authoritative probing
+        // until the playback-owned HLS path starts the selected source.
+        debug!(id = %stream.id, "uncached P2P source — returning inferred metadata without downloading pieces");
+        return Ok((api::MediaSourceInfo::from(stream.clone()), stream.clone()));
     }
     probe_with_fallback(
         stream.clone(),
@@ -998,9 +1104,41 @@ fn select_candidates(
         .collect()
 }
 
+fn probe_attempt_timeout(primary: &db::Media, configured_secs: u64) -> u64 {
+    if primary
+        .stream_info
+        .as_ref()
+        .is_some_and(|info| info.is_p2p())
+    {
+        configured_secs.min(30)
+    } else {
+        configured_secs
+    }
+}
+
+fn probe_overall_deadline(
+    primary: &db::Media,
+    attempt_timeout_secs: u64,
+    candidate_count: usize,
+) -> Option<std::time::Duration> {
+    primary
+        .stream_info
+        .as_ref()
+        .is_some_and(|info| info.is_p2p())
+        .then(|| {
+            std::time::Duration::from_secs(
+                attempt_timeout_secs * (candidate_count as u64).min(4) + 5,
+            )
+        })
+}
+
 /// Probe a stream URL, retrying with the next matching candidate on failure.
 ///
 /// Returns a 500 error if all candidates fail to probe.
+///
+/// Probes are sequential, but both the per-source timeout and total fallback
+/// duration are bounded so a large candidate pool cannot multiply startup
+/// latency without limit.
 async fn probe_with_fallback<F>(
     primary: db::Media,
     primary_url: Option<String>,
@@ -1040,8 +1178,25 @@ where
         .collect();
     let total_available = probe_pool.len();
     let mut attempts = 0usize;
+    // Bound P2P probing so one unreachable swarm cannot dominate the fallback
+    // sequence. Local and HTTP/debrid sources retain the administrator's
+    // configured timeout.
+    let effective_timeout = probe_attempt_timeout(&primary, timeout_secs);
+    // P2P fallback probing is bounded across the candidate pool. Direct HTTP,
+    // debrid, and local sources retain their existing fallback behavior.
+    let overall_deadline =
+        probe_overall_deadline(&primary, effective_timeout, all_to_try.len());
+    let overall_start = std::time::Instant::now();
 
     for (stream, url_opt) in all_to_try {
+        if overall_deadline.is_some_and(|deadline| overall_start.elapsed() >= deadline)
+        {
+            warn!(
+                timeout = ?overall_deadline,
+                attempts, "probe overall deadline exceeded"
+            );
+            break;
+        }
         let is_retry = stream.id != primary.id;
         let url = match url_opt {
             Some(u) => u,
@@ -1052,7 +1207,7 @@ where
         };
         attempts += 1;
         if is_retry {
-            info!(
+            debug!(
                 failed_id = %primary.id,
                 next_id = %stream.id,
                 next_url = %url,
@@ -1064,7 +1219,7 @@ where
         let db2 = db.clone();
         let f = probe_fn.clone();
         let probe_result = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
+            std::time::Duration::from_secs(effective_timeout),
             tokio::task::spawn_blocking(move || f(url2)),
         )
         .await;
@@ -1140,7 +1295,7 @@ where
                 warn!(url = %url, error = %e, "probe task panicked");
             }
             Err(_) => {
-                warn!(url = %url, timeout = timeout_secs, "probe timed out");
+                warn!(url = %url, timeout = effective_timeout, "probe timed out");
             }
         }
     }
@@ -1281,6 +1436,23 @@ mod probe_tests {
         let all = vec![primary.clone(), p2p];
         let result = select_candidates(&primary, &all, true, 10, false, 3000);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn probe_timeout_cap_does_not_override_non_p2p_configuration() {
+        assert_eq!(
+            probe_attempt_timeout(&http_media("http://example.com"), 75),
+            75
+        );
+        assert_eq!(probe_attempt_timeout(&p2p_media(), 75), 30);
+        assert_eq!(
+            probe_overall_deadline(&http_media("http://example.com"), 75, 10),
+            None
+        );
+        assert_eq!(
+            probe_overall_deadline(&p2p_media(), 30, 10),
+            Some(std::time::Duration::from_secs(125))
+        );
     }
 
     #[test]

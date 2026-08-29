@@ -29,6 +29,9 @@ fn rule_values(rule: &FilterRule) -> Vec<String> {
             .iter()
             .map(|id| id.to_string())
             .collect(),
+        FilterRule::MediaKind { values, .. } => values.clone(),
+        FilterRule::Favorite { .. } => vec![],
+        FilterRule::Watched { .. } => vec![],
         _ => vec![],
     }
 }
@@ -231,6 +234,9 @@ fn field_label(key: &str) -> &'static str {
         "person" => "Person",
         "catalog" => "Catalog",
         "collection_id" => "Collection",
+        "favorite" => "Favorite",
+        "watched" => "Watched",
+        "media_kind" => "Media Kind",
         _ => "",
     }
 }
@@ -240,7 +246,7 @@ fn ops_for_field(field_key: &str) -> Vec<(&'static str, &'static str)> {
         "year" | "rating_audience" | "rating_critic" => {
             vec![("eq", "is"), ("not_eq", "is not"), ("gt", ">"), ("lt", "<")]
         }
-        "parental_rating" | "has_trailer" => vec![],
+        "parental_rating" | "has_trailer" | "favorite" | "watched" => vec![],
         _ => vec![("is", "is"), ("is_not", "is not")],
     }
 }
@@ -349,6 +355,15 @@ fn rule_to_raw(rule: &FilterRule) -> (String, String, String) {
                 .join(", ");
             ("collection_id".into(), set_op_str(op), val)
         }
+        FilterRule::MediaKind { op, values } => {
+            ("media_kind".into(), set_op_str(op), values.join(", "))
+        }
+        FilterRule::Favorite { value } => {
+            ("favorite".into(), String::new(), value.to_string())
+        }
+        FilterRule::Watched { value } => {
+            ("watched".into(), String::new(), value.to_string())
+        }
     }
 }
 
@@ -447,6 +462,16 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
                 .split(", ")
                 .filter_map(|s| Uuid::parse_str(s.trim()).ok())
                 .collect(),
+        },
+        "media_kind" => FilterRule::MediaKind {
+            op: set_op,
+            values: set_values(),
+        },
+        "favorite" => FilterRule::Favorite {
+            value: value_str == "true",
+        },
+        "watched" => FilterRule::Watched {
+            value: value_str == "true",
         },
         _ => FilterRule::Genre {
             op: set_op,
@@ -783,7 +808,10 @@ pub fn FilterRuleRow(
     let is_parental_rating = field_val == "parental_rating";
     let is_catalog = field_val == "catalog";
     let is_collection_id = field_val == "collection_id";
-    let hide_operator = is_trailer || is_parental_rating;
+    let is_favorite = field_val == "favorite";
+    let is_watched = field_val == "watched";
+    let is_media_kind = field_val == "media_kind";
+    let hide_operator = is_trailer || is_parental_rating || is_favorite || is_watched;
 
     let fv1 = field_val.clone();
     let fv2 = field_val.clone();
@@ -867,6 +895,9 @@ pub fn FilterRuleRow(
                 if show_field("person")          { option { value: "person",           selected: field_val == "person",           { field_label("person") } } }
                 if show_field("catalog")         { option { value: "catalog",          selected: field_val == "catalog",          { field_label("catalog") } } }
                 if show_field("collection_id")   { option { value: "collection_id",    selected: field_val == "collection_id",    { field_label("collection_id") } } }
+                if show_field("favorite")        { option { value: "favorite",         selected: field_val == "favorite",         { field_label("favorite") } } }
+                if show_field("watched")         { option { value: "watched",          selected: field_val == "watched",          { field_label("watched") } } }
+                if show_field("media_kind")      { option { value: "media_kind",       selected: field_val == "media_kind",       { field_label("media_kind") } } }
             }
             if !hide_operator {
                 select {
@@ -883,7 +914,66 @@ pub fn FilterRuleRow(
                     }
                 }
             }
-            if is_catalog {
+            if is_media_kind {
+                div {
+                    style: "flex:2 1 130px;min-width:130px;display:flex;flex-wrap:wrap;gap:8px;align-items:center",
+                    {
+                        let sel: Vec<String> = vv2
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                        // Compute checked state eagerly so sel can be dropped before closures.
+                        let kinds: Vec<(&str, &str, bool)> = [
+                            ("movie", "Movie"),
+                            ("series", "Series"),
+                            ("music", "Music"),
+                            ("live_tv", "Live TV"),
+                        ]
+                        .iter()
+                        .map(|(kv, kl)| (*kv, *kl, sel.contains(&kv.to_string())))
+                        .collect();
+                        drop(sel);
+                        kinds
+                            .into_iter()
+                            .enumerate()
+                            .map(|(ki, (kv, kl, is_checked))| {
+                                let kv = kv.to_string();
+                                let fv = fv2.clone();
+                                let ov = ov1.clone();
+                                let vv = vv2.clone();
+                                rsx! {
+                                    label {
+                                        key: "{ki}",
+                                        style: "display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap",
+                                        input {
+                                            r#type: "checkbox",
+                                            checked: is_checked,
+                                            onchange: move |e| {
+                                                let mut vals: Vec<String> = vv
+                                                    .split(',')
+                                                    .map(|s| s.trim().to_string())
+                                                    .filter(|s| !s.is_empty())
+                                                    .collect();
+                                                if e.checked() {
+                                                    if !vals.contains(&kv) {
+                                                        vals.push(kv.clone());
+                                                    }
+                                                } else {
+                                                    vals.retain(|v| v != &kv);
+                                                }
+                                                if let Some(row) = rules.write().get_mut(idx) {
+                                                    *row = raw_to_rule(&fv, &ov, &vals.join(", "));
+                                                }
+                                            },
+                                        }
+                                        "{kl}"
+                                    }
+                                }
+                            })
+                    }
+                }
+            } else if is_catalog {
                 ChipInput {
                     field_key: "catalog".to_string(),
                     op_val: op_val.clone(),
@@ -899,6 +989,32 @@ pub fn FilterRuleRow(
                     values: rule_values(&rule),
                     idx,
                     rules,
+                }
+            } else if is_favorite {
+                select {
+                    class: "select-input",
+                    style: "flex:2 1 130px;min-width:130px",
+                    value: "{value_val}",
+                    onchange: move |e| {
+                        if let Some(row) = rules.write().get_mut(idx) {
+                            *row = raw_to_rule("favorite", "", &e.value());
+                        }
+                    },
+                    option { value: "true",  selected: value_val == "true",  "Yes" }
+                    option { value: "false", selected: value_val == "false", "No" }
+                }
+            } else if is_watched {
+                select {
+                    class: "select-input",
+                    style: "flex:2 1 130px;min-width:130px",
+                    value: "{value_val}",
+                    onchange: move |e| {
+                        if let Some(row) = rules.write().get_mut(idx) {
+                            *row = raw_to_rule("watched", "", &e.value());
+                        }
+                    },
+                    option { value: "true",  selected: value_val == "true",  "Yes" }
+                    option { value: "false", selected: value_val == "false", "No" }
                 }
             } else if is_trailer {
                 select {

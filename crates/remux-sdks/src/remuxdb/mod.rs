@@ -185,7 +185,7 @@ pub struct TrackDetail {
     pub is_forced: bool,
     #[serde(default)]
     pub is_hearing_impaired: bool,
-    #[serde(default)]
+    #[serde(default, alias = "external")]
     pub is_external: bool,
     #[serde(default)]
     pub is_anamorphic: bool,
@@ -304,7 +304,9 @@ pub async fn fetch_probe(
     episode: Option<i32>,
 ) -> Option<Vec<MediaInfo>> {
     let client = match RestClient::new(base_url.trim_end_matches('/')) {
-        Ok(c) => c,
+        Ok(c) => {
+            c.with_retry(crate::ExponentialBackoff::builder().build_with_max_retries(3))
+        }
         Err(e) => {
             warn!(error = %e, "remuxdb: invalid base url");
             return None;
@@ -535,7 +537,7 @@ impl From<&TrackDetail> for MediaStream {
             }
         };
         let video_range = match range_type {
-            VideoRangeType::Sdr | VideoRangeType::Unknown => VideoRange::Sdr,
+            VideoRangeType::Sdr | VideoRangeType::Other => VideoRange::Sdr,
             _ => VideoRange::Hdr,
         };
         MediaStream {
@@ -623,7 +625,11 @@ impl From<&MediaInfo> for MediaSourceInfo {
             container: version
                 .container
                 .as_deref()
-                .map(remux_utils::normalize_container),
+                .and_then(|s| {
+                    s.parse::<crate::remux::VideoContainer>()
+                        .ok()
+                })
+                .map(|c| c.canonical()),
             size: version.size,
             run_time_ticks: version
                 .duration
@@ -632,7 +638,16 @@ impl From<&MediaInfo> for MediaSourceInfo {
             media_streams: version
                 .tracks
                 .iter()
-                .map(MediaStream::from)
+                .filter(|t| !t.is_external)
+                .enumerate()
+                .map(|(pos, t)| {
+                    let mut s = MediaStream::from(t);
+                    // Use sequential container position rather than mediaInfo idx.
+                    // External tracks are not muxed into the container, so they
+                    // are excluded above and pos here matches what FFmpeg sees.
+                    s.index = pos as i64;
+                    s
+                })
                 .collect(),
             ..Default::default()
         }

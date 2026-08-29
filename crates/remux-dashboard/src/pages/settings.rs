@@ -21,6 +21,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut cultures: Signal<Vec<CultureDto>> = use_signal(Vec::new);
     let mut catalog_max_items = use_signal(|| 100_i64);
     let mut meta_concurrency = use_signal(|| 12_i64);
+    let mut delivery_concurrency = use_signal(|| 8_i64);
     let mut filter_digital_release = use_signal(|| true);
     let mut digital_release_buffer = use_signal(|| 0_i64);
     let mut subtitle_languages = use_signal(String::new);
@@ -59,6 +60,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                             .unwrap_or(100),
                     );
                     meta_concurrency.set(cfg.meta_concurrency);
+                    delivery_concurrency.set(cfg.delivery_concurrency);
                     filter_digital_release.set(cfg.filter_by_digital_release_date);
                     digital_release_buffer.set(cfg.digital_release_buffer_days);
                     subtitle_languages.set(
@@ -105,6 +107,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
             .clone();
         let max = *catalog_max_items.peek();
         let concurrency = *meta_concurrency.peek();
+        let delivery = *delivery_concurrency.peek();
         let filter_dr = *filter_digital_release.peek();
         let dr_buffer = *digital_release_buffer.peek();
         let sub_langs_str = subtitle_languages
@@ -122,6 +125,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
         cfg.quick_connect_available = Some(qc_enabled);
         cfg.catalog_max_items = Some(max);
         cfg.meta_concurrency = concurrency;
+        cfg.delivery_concurrency = delivery;
         cfg.filter_by_digital_release_date = filter_dr;
         cfg.digital_release_buffer_days = dr_buffer;
         cfg.subtitle_languages = Some(
@@ -244,6 +248,26 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                         }
 
                         div { class: "field",
+                            label { class: "field-label", r#for: "s-delivery-concurrency", "Delivery Concurrency" }
+                            input {
+                                id: "s-delivery-concurrency",
+                                r#type: "number",
+                                class: "field-input",
+                                min: "1",
+                                max: "200",
+                                value: "{delivery_concurrency}",
+                                oninput: move |e| {
+                                    if let Ok(n) = e.value().parse::<i64>() {
+                                        delivery_concurrency.set(n);
+                                    }
+                                },
+                            }
+                            p { class: "field-hint",
+                                "Number of media trackers whose queued watch activity is sent concurrently. One tracker's events are always sent in order, one at a time, so this only controls how many trackers are worked on at once. Default: 8."
+                            }
+                        }
+
+                        div { class: "field",
                             label { class: "field-label",
                                 input {
                                     r#type: "checkbox",
@@ -347,6 +371,8 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
     let mut h265_crf = use_signal(|| 28_u32);
     let mut normalize_audio_loudness = use_signal(|| false);
     let mut enable_video_transcoding = use_signal(|| true);
+    let mut enable_audio_transcoding = use_signal(|| true);
+    let mut enable_remuxing = use_signal(|| true);
     let mut subtitle_mode = use_signal(|| "Burn".to_string());
     let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
     let mut min_resume_pct = use_signal(|| 5_i64);
@@ -451,6 +477,14 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                         opts.enable_video_transcoding
                             .unwrap_or(true),
                     );
+                    enable_audio_transcoding.set(
+                        opts.enable_audio_transcoding
+                            .unwrap_or(true),
+                    );
+                    enable_remuxing.set(
+                        opts.enable_remuxing
+                            .unwrap_or(true),
+                    );
                     subtitle_mode.set(
                         opts.subtitle_mode
                             .unwrap_or(EmbeddedSubtitleHandling::Burn)
@@ -502,6 +536,8 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
             h264_crf: Some(*h264_crf.peek()),
             h265_crf: Some(*h265_crf.peek()),
             enable_video_transcoding: Some(*enable_video_transcoding.peek()),
+            enable_audio_transcoding: Some(*enable_audio_transcoding.peek()),
+            enable_remuxing: Some(*enable_remuxing.peek()),
             normalize_audio_loudness: Some(*normalize_audio_loudness.peek()),
             subtitle_mode: subtitle_mode
                 .peek()
@@ -546,7 +582,7 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                         div { class: "field",
                             label { class: "field-label", "Video Transcoding" }
                             div { class: "field-hint",
-                                "Allow the server to re-encode video streams. When disabled, the video track is always copied as-is (remux). Remuxing and audio transcoding are always available regardless of this setting."
+                                "Allow the server to re-encode video streams. When disabled, the video track is always copied as-is (remux). Per-user policy can restrict this further."
                             }
                             label { style: "display:flex;align-items:center;gap:8px",
                                 input {
@@ -555,6 +591,36 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                                     onchange: move |e| enable_video_transcoding.set(e.checked()),
                                 }
                                 "Enable video transcoding"
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", "Audio Transcoding" }
+                            div { class: "field-hint",
+                                "Allow the server to re-encode audio streams. When disabled, audio is always copied as-is. Per-user policy can restrict this further."
+                            }
+                            label { style: "display:flex;align-items:center;gap:8px",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *enable_audio_transcoding.read(),
+                                    onchange: move |e| enable_audio_transcoding.set(e.checked()),
+                                }
+                                "Enable audio transcoding"
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", "Remuxing" }
+                            div { class: "field-hint",
+                                "Allow the server to remux streams (copy video and audio into a different container). When disabled, only direct play is served. Per-user policy can restrict this further."
+                            }
+                            label { style: "display:flex;align-items:center;gap:8px",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *enable_remuxing.read(),
+                                    onchange: move |e| enable_remuxing.set(e.checked()),
+                                }
+                                "Enable remuxing"
                             }
                         }
 

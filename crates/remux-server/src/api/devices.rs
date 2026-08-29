@@ -42,10 +42,10 @@ pub async fn delete_device(
                     &dev.user_id,
                 )
                 .await?;
-                let _ = state
+                state
                     .ctx
-                    .ws_tx
-                    .send(crate::ws::WsEvent::SessionsChanged);
+                    .signals
+                    .emit(crate::signals::Event::SessionsChanged);
                 let target_user = db::User::get_by_id(
                     &state
                         .ctx
@@ -99,10 +99,10 @@ pub async fn delete_device(
                 ),
             )
             .await?;
-            let _ = state
+            state
                 .ctx
-                .ws_tx
-                .send(crate::ws::WsEvent::SessionsChanged);
+                .signals
+                .emit(crate::signals::Event::SessionsChanged);
             db::ActivityLog::insert(
                 &state
                     .ctx

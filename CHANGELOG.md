@@ -1,3 +1,60 @@
+# [0.27.0](https://github.com/lostb1t/remux/compare/v0.26.0...v0.27.0) (2026-08-27)
+
+
+### Bug Fixes
+
+* **api:** add GET+POST .../delete action routes for unfavorite and unplayed ([#329](https://github.com/lostb1t/remux/issues/329)) ([30175d9](https://github.com/lostb1t/remux/commit/30175d97254e625d1fa2efacee7a163891712f2e))
+* **api:** honor per-user view filtering in /UserViews (fixes [#307](https://github.com/lostb1t/remux/issues/307)) ([7f41366](https://github.com/lostb1t/remux/commit/7f4136601531afe8782dea39591b595d3c60e526))
+* **api:** playlist filtering, uuid format consistency and album runtime ([#260](https://github.com/lostb1t/remux/issues/260)) ([08abacd](https://github.com/lostb1t/remux/commit/08abacd24e9fa8fd89d3f547f3255e7985599be4))
+* apply query macro to structs ([#327](https://github.com/lostb1t/remux/issues/327)) ([8bf436e](https://github.com/lostb1t/remux/commit/8bf436ed61d192e8b02027e28e212e28736ec4f9))
+* **ci:** restore server compilation and formatting ([#295](https://github.com/lostb1t/remux/issues/295)) ([2a7d680](https://github.com/lostb1t/remux/commit/2a7d680b34780e675b65de6bc2a0069cbcf47ef3))
+* **collections:** use parent_id for group container add/remove ([#320](https://github.com/lostb1t/remux/issues/320)) ([c50dc9d](https://github.com/lostb1t/remux/commit/c50dc9deb79ee813ddb89d28546dd168b7522ee2))
+* **desktop:** statically link liblzma to remove Homebrew runtime dependency on macOS ([0e4a4ba](https://github.com/lostb1t/remux/commit/0e4a4baea0cdcabb8426c5569b8ecc87c9639735))
+* **filters:** roll up episode plays to series for Watched smart collections ([#354](https://github.com/lostb1t/remux/issues/354)) ([a5828e4](https://github.com/lostb1t/remux/commit/a5828e42e735561bcfff591d203e7ec6fe6fc1ac))
+* include filename stem in PlaybackInfo MediaSource path ([#352](https://github.com/lostb1t/remux/issues/352)) ([21e9a21](https://github.com/lostb1t/remux/commit/21e9a21850fdf8ec918e9f32691b4dc1fd390c52))
+* **items:** correct episode sort order for Android TV (fixes [#342](https://github.com/lostb1t/remux/issues/342)) ([9f7d1d2](https://github.com/lostb1t/remux/commit/9f7d1d2c259df7cf5bfcd691cd1910b1a38e8ff6))
+* **playback:** force AAC for TS-incompatible audio codecs and fix remuxdb stream indexing ([79774bc](https://github.com/lostb1t/remux/commit/79774bc6311a08b7a708eb36b8b7878616b15dbb))
+* **playback:** prefer item language for stream defaults ([#289](https://github.com/lostb1t/remux/issues/289)) ([7e6769c](https://github.com/lostb1t/remux/commit/7e6769c892a7be4ce2869ed29d43103adf4c9712))
+* **playback:** replace 20s no-streams placeholder with 10-hour video ([76fa176](https://github.com/lostb1t/remux/commit/76fa1767a4ac9bc7a9abcff9edcb2ef6f23b1785))
+* **playback:** skip streamOptions deserialization, advertise dtsh for DTS audio in HLS ([4087035](https://github.com/lostb1t/remux/commit/408703573accade0b6b745e7ca5794718a0b4d2d))
+* preserve episode/season progress and watched state across a library purge ([#249](https://github.com/lostb1t/remux/issues/249)) ([f5bac48](https://github.com/lostb1t/remux/commit/f5bac48b64ab38804a3316ac6544c17de1d118b8))
+* **sdks:** gate cache middleware to native to fix WASM dashboard build ([4db6184](https://github.com/lostb1t/remux/commit/4db6184b88c2a27a9a80557b6fbce130db2b08af))
+* **server:** preserve keyed locks across queued waiters ([#296](https://github.com/lostb1t/remux/issues/296)) ([283be1c](https://github.com/lostb1t/remux/commit/283be1cf286bf1cd0764e6d372d7e1778f59af9c))
+* **server:** stop advertising unsupported SyncPlay ([#301](https://github.com/lostb1t/remux/issues/301)) ([24d8200](https://github.com/lostb1t/remux/commit/24d820074ce942c19461fae1fd3eb09ff6526409))
+* **store:** make Store::insert atomic using moka entry API (fixes [#353](https://github.com/lostb1t/remux/issues/353)) ([a9c1529](https://github.com/lostb1t/remux/commit/a9c15299edc3db257d8afefd0847127dc4771ec5))
+* **stremio:** derive end_date from episodes when releaseInfo is absent (fixes [#340](https://github.com/lostb1t/remux/issues/340)) ([d104d79](https://github.com/lostb1t/remux/commit/d104d797bd3360175536482e8d67b281cfd765c9))
+* **stremio:** infer ended status and end_date from releaseInfo ([#335](https://github.com/lostb1t/remux/issues/335)) ([6b57800](https://github.com/lostb1t/remux/commit/6b57800e83df0ccdbde4559491914debe51b5113))
+* **subtitles:** expose matching torrent sidecars ([#278](https://github.com/lostb1t/remux/issues/278)) ([636c203](https://github.com/lostb1t/remux/commit/636c20351000ea953bcf3fa6197dd26782d308f9))
+* **subtitles:** normalize WebVTT timestamp separators ([#290](https://github.com/lostb1t/remux/issues/290)) ([a0398cc](https://github.com/lostb1t/remux/commit/a0398ccb26e76c6d3801b4a1b01499a2ce79a890))
+* **torrent:** preserve bundle files during stream deduplication ([#299](https://github.com/lostb1t/remux/issues/299)) ([f948c32](https://github.com/lostb1t/remux/commit/f948c323f5a0e6e7dc6bf7e48acaee12dc9b8009))
+* **torrent:** validate persisted tracker URLs ([#297](https://github.com/lostb1t/remux/issues/297)) ([4d1134a](https://github.com/lostb1t/remux/commit/4d1134a19431ff6cc3d4e01982f0d4d7694f2c06))
+* **web:** allow static file requests through to ServeDir regardless of Accept header ([0b0663d](https://github.com/lostb1t/remux/commit/0b0663d1ff0fe361bb70c0a2a81d8cc0584fe1c8))
+* **web:** make header controls clickable on webOS ([#300](https://github.com/lostb1t/remux/issues/300)) ([9906080](https://github.com/lostb1t/remux/commit/99060806564aaccab587c24b747625981a8f2e24))
+* **web:** preserve sources for direct item fetches ([#292](https://github.com/lostb1t/remux/issues/292)) ([e7ae7f9](https://github.com/lostb1t/remux/commit/e7ae7f9d3a60bfd0c510de23fce294a88dc5895a))
+* **web:** return 404 for unknown routes instead of serving SPA html ([52c0ca1](https://github.com/lostb1t/remux/commit/52c0ca1ca0801cde7edaa9acb62e65b02601da89))
+* **web:** serve client under /web with trailing-slash redirects ([#346](https://github.com/lostb1t/remux/issues/346)) ([e652ccc](https://github.com/lostb1t/remux/commit/e652ccc0d386c48c2b42d3b9e289e00d1a79d03f))
+
+
+### Features
+
+* **collections:** make ui elements draggable ([#286](https://github.com/lostb1t/remux/issues/286)) ([#293](https://github.com/lostb1t/remux/issues/293)) ([78b5189](https://github.com/lostb1t/remux/commit/78b5189ac73fc483914a9fbeb9922eab8ca137e5))
+* **dashboard:** add DatePlayed as a collection default sort option ([eca7ede](https://github.com/lostb1t/remux/commit/eca7edec5db20a0083d9bd0e5bce631e7f3807c9))
+* **filters:** add Favorite filter rule ([#315](https://github.com/lostb1t/remux/issues/315)) ([ce72cac](https://github.com/lostb1t/remux/commit/ce72cacc6234fb33bf324001e05ea04f8ac4fdf4))
+* **filters:** add MediaKind filter rule and apply policy to live TV endpoints (fixes [#344](https://github.com/lostb1t/remux/issues/344)) ([#348](https://github.com/lostb1t/remux/issues/348)) ([df1fdc1](https://github.com/lostb1t/remux/commit/df1fdc19ae6962267f31458bef0d32c809e4558c))
+* **filters:** add Watched filter rule ([#334](https://github.com/lostb1t/remux/issues/334)) ([f68a8ba](https://github.com/lostb1t/remux/commit/f68a8bac53d514ae6a4735a0c8305df7d87e7a30))
+* **migrations:** seed Probe Segments and IntroDb addons by default ([5a095c4](https://github.com/lostb1t/remux/commit/5a095c4efe2ca71a8d02dcb7f6c0a9497349d521))
+* **playback:** enforce audio/remux/media-playback policy flags ([#310](https://github.com/lostb1t/remux/issues/310)) ([6a950ee](https://github.com/lostb1t/remux/commit/6a950ee5f012f1b86161da5e76ff05d37991ec8e))
+* **probe:** HEAD-check cached streams, fall through to fallback on dead URL ([#328](https://github.com/lostb1t/remux/issues/328)) ([86aad12](https://github.com/lostb1t/remux/commit/86aad12672dbae76bf92934702f2f5898a960ad9))
+* **sdks:** add configurable retry middleware via reqwest-retry ([#324](https://github.com/lostb1t/remux/issues/324)) ([de32633](https://github.com/lostb1t/remux/commit/de32633bdb3aee7bca84114993a4773a146b8f8d))
+* **tracking:** queue watch activity as it happens ([#261](https://github.com/lostb1t/remux/issues/261)) ([0ceb2ad](https://github.com/lostb1t/remux/commit/0ceb2adef16dabab41a96aef37a567f8a83150a6))
+* **users:** add Allow media downloads policy toggle ([#332](https://github.com/lostb1t/remux/issues/332)) ([5f4942b](https://github.com/lostb1t/remux/commit/5f4942b46bbcfbb40d2c5f12d1f4ac48a8330ddc))
+
+
+### Performance Improvements
+
+* **playback:** avoid blocking probes for torrents ([#306](https://github.com/lostb1t/remux/issues/306)) ([c7e4439](https://github.com/lostb1t/remux/commit/c7e4439afd4b3f407d31968a1f8dd84129dfbd1c))
+* **tracking:** drain deliveries grouped by tracker ([#309](https://github.com/lostb1t/remux/issues/309)) ([6855415](https://github.com/lostb1t/remux/commit/6855415b3bbcbd540ddfb70015eee34f54cf0071))
+
 # [0.26.0](https://github.com/lostb1t/remux/compare/v0.25.0...v0.26.0) (2026-08-21)
 
 

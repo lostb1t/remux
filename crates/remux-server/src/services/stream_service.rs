@@ -546,7 +546,29 @@ impl StreamService {
             source.e_tag = cid;
             source.name = Some(name);
             source.has_segments = true;
-            source.path = Some(format!("/remux/{}", effective_stream.id));
+            // Include the release filename's stem when available (same
+            // convention as MediaSourceInfo::from(db::Media) in
+            // conversions.rs) so clients that surface `Path` as a display
+            // field show the real release name instead of a bare UUID.
+            // This path previously always dropped it, even when the addon
+            // supplied behaviorHints.filename and it was sitting right
+            // there in effective_stream.stream_info.
+            let stem = effective_stream
+                .stream_info
+                .as_ref()
+                .and_then(|si| {
+                    si.filename
+                        .as_deref()
+                })
+                .and_then(|f| {
+                    std::path::Path::new(f)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                });
+            source.path = Some(match stem {
+                Some(s) => format!("/remux/{}/{}", effective_stream.id, s),
+                None => format!("/remux/{}", effective_stream.id),
+            });
             source.is_remote = false;
             // Re-apply binge-group headers — ffmpeg probing produces a fresh
             // MediaSourceInfo and would otherwise drop provider hints.
@@ -816,7 +838,8 @@ fn media_info_from_probe(
         nzb,
         container: probe
             .container
-            .clone()
+            .as_ref()
+            .map(|c| c.to_string())
             .unwrap_or_default(),
         size: probe
             .size

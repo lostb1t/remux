@@ -69,7 +69,70 @@ pub(crate) struct KeyedLockGuard<K: Eq + Hash + Clone + Send + Sync + 'static> {
 
 impl<K: Eq + Hash + Clone + Send + Sync + 'static> Drop for KeyedLockGuard<K> {
     fn drop(&mut self) {
+        let mutex = OwnedMutexGuard::mutex(&self._guard);
         self.map
-            .remove(&self.key);
+            .remove_if(&self.key, |_, current| {
+                Arc::ptr_eq(current, mutex) && Arc::strong_count(current) == 2
+            });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::KeyedLock;
+    use std::sync::Arc;
+    use tokio::{sync::oneshot, time::Duration};
+
+    #[tokio::test]
+    async fn queued_waiter_keeps_the_key_locked_during_handoff() {
+        let locks = Arc::new(KeyedLock::new());
+        let first = locks
+            .lock("session")
+            .await;
+        let (acquired_tx, acquired_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let waiting_locks = locks.clone();
+        let waiter = tokio::spawn(async move {
+            let _second = waiting_locks
+                .lock("session")
+                .await;
+            acquired_tx
+                .send(())
+                .unwrap();
+            release_rx
+                .await
+                .unwrap();
+        });
+
+        while Arc::strong_count(
+            locks
+                .inner()
+                .get("session")
+                .unwrap()
+                .value(),
+        ) < 3
+        {
+            tokio::task::yield_now().await;
+        }
+
+        drop(first);
+        tokio::time::timeout(Duration::from_secs(1), acquired_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(locks.contains_key(&"session"));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), locks.lock("session"))
+                .await
+                .is_err()
+        );
+
+        release_tx
+            .send(())
+            .unwrap();
+        waiter
+            .await
+            .unwrap();
+        assert!(!locks.contains_key(&"session"));
     }
 }

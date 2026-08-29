@@ -14,6 +14,7 @@ use super::{
 use crate::{
     AppContext, api, common, db, sdks,
     sdks::{CachedEndpoint, ClientError},
+    services::MediaResolveService,
 };
 
 pub struct TmdbPreset;
@@ -495,7 +496,12 @@ fn with_imdb_resolved(
         .map(move |mut stub| {
             let c = client.clone();
             async move {
-                let imdb = resolve_imdb_from_ids(&stub.external_ids, is_tv, &c).await?;
+                let imdb = MediaResolveService::resolve_imdb_from_ids(
+                    &stub.external_ids,
+                    is_tv,
+                    &c,
+                )
+                .await?;
                 stub.id = common::stable_media_uuid(&stub.kind, imdb.as_str());
                 stub.external_ids
                     .imdb = Some(imdb);
@@ -752,11 +758,11 @@ fn tmdb_client(
     api_key: &str,
     base_url: &str,
 ) -> Result<sdks::RestClient<sdks::BearerAuth>> {
-    Ok(
-        sdks::RestClient::new(base_url)?.with_auth(sdks::BearerAuth {
+    Ok(sdks::RestClient::new(base_url)?
+        .with_auth(sdks::BearerAuth {
             token: api_key.to_string(),
-        }),
-    )
+        })
+        .with_retry(sdks::ExponentialBackoff::builder().build_with_max_retries(3)))
 }
 
 async fn tmdb_client_from_ctx(
@@ -802,33 +808,14 @@ async fn tmdb_series_seasons(
         )
         .await?;
 
-    let series_imdb: db::NonEmptyString = tv
-        .external_ids
-        .as_ref()
-        .and_then(|e| {
-            e.imdb_id
-                .as_deref()
-        })
-        .and_then(|s| db::NonEmptyString::try_new(s.to_string()).ok())
-        .or_else(|| {
-            series
-                .external_ids
-                .imdb
-                .clone()
-        })
-        .unwrap_or_else(|| {
-            db::NonEmptyString::try_new(format!("tmdb:{}", tmdb_id)).unwrap()
-        });
+    let series_key = series.series_canonical_key();
 
     let seasons: Vec<db::Media> = tv
         .seasons
         .iter()
         .map(|s| {
             let mut stub = db::Media::from(s);
-            stub.id = common::stable_media_uuid(
-                &db::MediaKind::Season,
-                &format!("{}:{}", series_imdb, s.season_number),
-            );
+            stub.id = db::Media::season_id(&series_key, s.season_number);
             stub.parent_id = Some(series.id);
             stub.grandparent_id = Some(series.id);
             stub
@@ -846,19 +833,17 @@ async fn tmdb_season_episodes(
     season: &db::Media,
     ctx: &AppContext,
 ) -> Result<Option<Vec<db::Media>>> {
-    let gp = season
-        .grandparent
-        .as_deref();
-    let series_tmdb_id = gp.and_then(|g| {
-        g.external_ids
-            .tmdb
-    });
-    let series_imdb = gp.and_then(|g| {
-        g.external_ids
-            .imdb
-            .clone()
-    });
-    let (Some(series_tmdb_id), Some(season_number)) = (series_tmdb_id, season.idx)
+    let (Some(gp), Some(season_number)) = (
+        season
+            .grandparent
+            .as_deref(),
+        season.idx,
+    ) else {
+        return Ok(None);
+    };
+    let Some(series_tmdb_id) = gp
+        .external_ids
+        .tmdb
     else {
         return Ok(None);
     };
@@ -879,30 +864,16 @@ async fn tmdb_season_episodes(
         )
         .await?;
 
+    let anchor = gp.series_canonical_key();
     let episodes: Vec<db::Media> = season_details
         .episodes
         .unwrap_or_default()
         .into_iter()
         .map(|ep| {
             let mut stub = db::Media::from(&ep);
-            let key = if let Some(ref imdb) = series_imdb {
-                format!("{}:{}:{}", imdb, ep.season_number, ep.episode_number)
-            } else {
-                format!(
-                    "{}:{}:{}",
-                    series_tmdb_id, ep.season_number, ep.episode_number
-                )
-            };
-            stub.id = common::stable_media_uuid(&db::MediaKind::Episode, &key);
-            let season_key = if let Some(ref imdb) = series_imdb {
-                format!("{}:{}", imdb, ep.season_number)
-            } else {
-                format!("{}:{}", series_tmdb_id, ep.season_number)
-            };
-            stub.parent_id = Some(common::stable_media_uuid(
-                &db::MediaKind::Season,
-                &season_key,
-            ));
+            stub.id =
+                db::Media::episode_id(&anchor, ep.season_number, ep.episode_number);
+            stub.parent_id = Some(db::Media::season_id(&anchor, ep.season_number));
             stub.grandparent_id = season.parent_id;
             stub
         })
@@ -1310,33 +1281,20 @@ async fn fetch_tmdb_meta(
             let tmdb_movie_id: Option<i64> = if let Some(id) = ids.tmdb {
                 Some(id)
             } else {
-                let (external_id, external_source) = if let Some(ref imdb) = ids.imdb {
-                    (
-                        imdb.clone()
-                            .into(),
-                        "imdb_id",
-                    )
-                } else if let Some(tvdb) = ids.tvdb {
-                    (tvdb.to_string(), "tvdb_id")
-                } else {
-                    return Ok(None);
-                };
-                client
-                    .execute(
-                        sdks::tmdb::FindByIdEndpoint {
+                match MediaResolveService::tmdb_search_key(ids, None).await {
+                    Some((external_id, external_source)) => {
+                        MediaResolveService::find_tmdb_id_by(
                             external_id,
-                            external_source: external_source.to_string(),
-                        }
-                        .with_cache(Duration::from_secs(360)),
-                    )
-                    .await
-                    .ok()
-                    .and_then(|r| {
-                        r.movie_results
-                            .into_iter()
-                            .next()
-                            .map(|m| m.id)
-                    })
+                            external_source,
+                            false,
+                            &client,
+                        )
+                        .await
+                        .ok()
+                        .flatten()
+                    }
+                    None => return Ok(None),
+                }
             };
 
             if let Some(tmdb_id) = tmdb_movie_id {
@@ -1521,33 +1479,20 @@ async fn fetch_tmdb_meta(
             let tmdb_series_id: Option<i64> = if let Some(id) = ids.tmdb {
                 Some(id)
             } else {
-                let (external_id, external_source) = if let Some(ref imdb) = ids.imdb {
-                    (
-                        imdb.clone()
-                            .into(),
-                        "imdb_id",
-                    )
-                } else if let Some(tvdb) = ids.tvdb {
-                    (tvdb.to_string(), "tvdb_id")
-                } else {
-                    return Ok(None);
-                };
-                client
-                    .execute(
-                        sdks::tmdb::FindByIdEndpoint {
+                match MediaResolveService::tmdb_search_key(ids, None).await {
+                    Some((external_id, external_source)) => {
+                        MediaResolveService::find_tmdb_id_by(
                             external_id,
-                            external_source: external_source.to_string(),
-                        }
-                        .with_cache(Duration::from_secs(360)),
-                    )
-                    .await
-                    .ok()
-                    .and_then(|r| {
-                        r.tv_results
-                            .into_iter()
-                            .next()
-                            .map(|s| s.id)
-                    })
+                            external_source,
+                            true,
+                            &client,
+                        )
+                        .await
+                        .ok()
+                        .flatten()
+                    }
+                    None => return Ok(None),
+                }
             };
 
             if let Some(tmdb_id) = tmdb_series_id {
@@ -1624,6 +1569,37 @@ async fn fetch_tmdb_meta(
                             vote_count: Some(tv_details.vote_count as u32),
                         }),
                 };
+                let tmdb_status = tv_details
+                    .status
+                    .as_ref();
+                let status = match tmdb_status {
+                    Some(sdks::tmdb::Status::Ended | sdks::tmdb::Status::Canceled) => {
+                        Some(db::MediaStatus::Ended)
+                    }
+                    Some(
+                        sdks::tmdb::Status::ReturningSeries | sdks::tmdb::Status::Pilot,
+                    ) => Some(db::MediaStatus::Continuing),
+                    Some(
+                        sdks::tmdb::Status::InProduction
+                        | sdks::tmdb::Status::Planned
+                        | sdks::tmdb::Status::PostProduction,
+                    ) => Some(db::MediaStatus::Unreleased),
+                    _ => None,
+                };
+                let end_date = if matches!(
+                    tmdb_status,
+                    Some(sdks::tmdb::Status::Ended | sdks::tmdb::Status::Canceled)
+                ) {
+                    tv_details
+                        .last_air_date
+                        .as_deref()
+                        .and_then(|s| {
+                            chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()
+                        })
+                        .and_then(|d| d.and_hms_opt(0, 0, 0))
+                } else {
+                    None
+                };
                 let mut patch = db::Media {
                     title: tv_details.name,
                     description: tv_details.overview,
@@ -1641,6 +1617,8 @@ async fn fetch_tmdb_meta(
                             .original_language
                             .clone(),
                     ),
+                    status,
+                    end_date,
                     ..Default::default()
                 };
                 if let Some(url) = tmdb_image(
@@ -1738,25 +1716,8 @@ async fn fetch_tmdb_meta(
             }
         }
         db::MediaKind::Episode => {
-            let mut series_tmdb_id = if let Some(tmdb) = media
-                .grandparent
-                .as_ref()
-                .and_then(|g| {
-                    g.external_ids
-                        .tmdb
-                }) {
-                Some(tmdb)
-            } else if let Some(sid) = media.grandparent_id {
-                db::Media::get_by_id(&ctx.db, &sid)
-                    .await?
-                    .filter(|m| m.kind == db::MediaKind::Series)
-                    .and_then(|m| {
-                        m.external_ids
-                            .tmdb
-                    })
-            } else {
-                None
-            };
+            let series_tmdb_id =
+                MediaResolveService::stored_series_tmdb_id(media, ctx).await?;
             let season_number = media.parent_idx;
             let episode_number = media.idx;
             if let (Some(tmdb_id), Some(s_n), Some(e_n)) =
@@ -1872,28 +1833,7 @@ async fn fetch_tmdb_season_meta(
     client: &sdks::RestClient<sdks::BearerAuth>,
     config: &crate::api::ServerConfiguration,
 ) -> Result<Option<db::Media>> {
-    // Try to get the series TMDB ID — prefer in-memory grandparent, fall back to DB.
-    let series_tmdb_id = if let Some(tmdb) = media
-        .grandparent
-        .as_ref()
-        .and_then(|g| {
-            g.external_ids
-                .tmdb
-        }) {
-        Some(tmdb)
-    } else if let Some(sid) = media
-        .grandparent_id
-        .or(media.parent_id)
-    {
-        db::Media::get_by_id(&ctx.db, &sid)
-            .await?
-            .and_then(|m| {
-                m.external_ids
-                    .tmdb
-            })
-    } else {
-        None
-    };
+    let series_tmdb_id = MediaResolveService::stored_series_tmdb_id(media, ctx).await?;
 
     let (Some(tmdb_id), Some(season_idx)) = (series_tmdb_id, media.idx) else {
         return Ok(None);
@@ -2064,24 +2004,6 @@ async fn tmdb_remote_images(
             .tmdb_base_url,
     )?;
 
-    let lookup_for_find = || -> Option<(String, &'static str)> {
-        let ids = &media.external_ids;
-        if let Some(tmdb_id) = ids.tmdb {
-            return Some((tmdb_id.to_string(), "tmdb_id"));
-        }
-        if let Some(ref imdb) = ids.imdb {
-            return Some((
-                imdb.clone()
-                    .into(),
-                "imdb_id",
-            ));
-        }
-        if let Some(tvdb_id) = ids.tvdb {
-            return Some((tvdb_id.to_string(), "tvdb_id"));
-        }
-        None
-    };
-
     fn map_image(
         type_label: &str,
         entry: &sdks::tmdb::ImageEntry,
@@ -2149,19 +2071,16 @@ async fn tmdb_remote_images(
                 .tmdb
             {
                 Some(id)
-            } else if let Some((external_id, external_source)) = lookup_for_find() {
-                let find = client
-                    .execute(
-                        sdks::tmdb::FindByIdEndpoint {
-                            external_id,
-                            external_source: external_source.to_string(),
-                        }
-                        .with_cache(Duration::from_secs(360)),
-                    )
-                    .await?;
-                find.movie_results
-                    .first()
-                    .map(|m| m.id)
+            } else if let Some((external_id, external_source)) =
+                MediaResolveService::tmdb_search_key(&media.external_ids, None).await
+            {
+                MediaResolveService::find_tmdb_id_by(
+                    external_id,
+                    external_source,
+                    false,
+                    &client,
+                )
+                .await?
             } else {
                 None
             };
@@ -2234,19 +2153,16 @@ async fn tmdb_remote_images(
                 .tmdb
             {
                 Some(id)
-            } else if let Some((external_id, external_source)) = lookup_for_find() {
-                let find = client
-                    .execute(
-                        sdks::tmdb::FindByIdEndpoint {
-                            external_id,
-                            external_source: external_source.to_string(),
-                        }
-                        .with_cache(Duration::from_secs(360)),
-                    )
-                    .await?;
-                find.tv_results
-                    .first()
-                    .map(|m| m.id)
+            } else if let Some((external_id, external_source)) =
+                MediaResolveService::tmdb_search_key(&media.external_ids, None).await
+            {
+                MediaResolveService::find_tmdb_id_by(
+                    external_id,
+                    external_source,
+                    true,
+                    &client,
+                )
+                .await?
             } else {
                 None
             };
@@ -2268,16 +2184,8 @@ async fn tmdb_remote_images(
             }
         }
         db::MediaKind::Episode => {
-            let series_tmdb_id = if let Some(sid) = media.grandparent_id {
-                db::Media::get_by_id(&ctx.db, &sid)
-                    .await?
-                    .and_then(|m| {
-                        m.external_ids
-                            .tmdb
-                    })
-            } else {
-                None
-            };
+            let series_tmdb_id =
+                MediaResolveService::stored_series_tmdb_id(media, ctx).await?;
             if let (Some(tmdb_id), Some(s_n), Some(e_n)) =
                 (series_tmdb_id, media.parent_idx, media.idx)
             {
@@ -2294,7 +2202,13 @@ async fn tmdb_remote_images(
                         .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
-                if let Some(images) = &ep.images {
+                if let Some(images) = ep
+                    .as_ref()
+                    .and_then(|e| {
+                        e.images
+                            .as_ref()
+                    })
+                {
                     extend_from_images(&mut out, images);
                 }
                 if out
@@ -2305,7 +2219,13 @@ async fn tmdb_remote_images(
                             != Some("Thumb")
                     })
                 {
-                    if let Some(p) = &ep.still_path {
+                    if let Some(p) = ep
+                        .as_ref()
+                        .and_then(|e| {
+                            e.still_path
+                                .as_ref()
+                        })
+                    {
                         let url = format!("https://image.tmdb.org/t/p/original{p}");
                         let thumb = format!("https://image.tmdb.org/t/p/w300{p}");
                         out.push(api::RemoteImageInfo {
@@ -2340,251 +2260,4 @@ async fn tmdb_remote_images(
     }
 
     Ok(out)
-}
-
-/// Resolve an IMDB ID from already-known external IDs without doing a title search.
-///
-/// Resolution order: direct IMDB → TMDB lookup → TVDB lookup via FindById.
-pub(crate) async fn resolve_imdb_from_ids<A: sdks::Auth + Clone>(
-    ids: &db::ExternalIds,
-    is_tv: bool,
-    client: &sdks::RestClient<A>,
-) -> Option<db::NonEmptyString> {
-    if let Some(ref imdb) = ids.imdb {
-        return Some(imdb.clone());
-    }
-
-    if let Some(tmdb_id) = ids.tmdb {
-        if is_tv {
-            match client
-                .execute(
-                    sdks::tmdb::SeriesEndpoint::new(tmdb_id, None)
-                        .with_cache(Duration::from_secs(86400)),
-                )
-                .await
-            {
-                Ok(series) => {
-                    if let Some(imdb) = series
-                        .external_ids
-                        .and_then(|e| e.imdb_id)
-                        .and_then(|s| db::NonEmptyString::try_new(s).ok())
-                    {
-                        return Some(imdb);
-                    }
-                    debug!(tmdb_id, "TMDB series has no imdb_id in external_ids");
-                }
-                Err(e) => warn!(tmdb_id, error = %e, "TMDB series lookup failed"),
-            }
-        } else {
-            match client
-                .execute(
-                    sdks::tmdb::MovieEndpoint::new(tmdb_id, None)
-                        .with_cache(Duration::from_secs(86400)),
-                )
-                .await
-            {
-                Ok(movie) => {
-                    if let Some(imdb) = movie
-                        .imdb_id
-                        .and_then(|s| db::NonEmptyString::try_new(s).ok())
-                    {
-                        return Some(imdb);
-                    }
-                    debug!(tmdb_id, "TMDB movie has no imdb_id");
-                }
-                Err(e) => warn!(tmdb_id, error = %e, "TMDB movie lookup failed"),
-            }
-        }
-    }
-
-    let effective_tvdb = if ids
-        .tvdb
-        .is_some()
-    {
-        ids.tvdb
-    } else if let Some(kitsu_id) = ids.kitsu {
-        match sdks::kitsu::client()
-            .execute(sdks::kitsu::MappingsEndpoint { kitsu_id })
-            .await
-        {
-            Ok(m) => {
-                let tvdb_id = m.tvdb_id();
-                debug!(kitsu_id, tvdb_id, "kitsu → tvdb");
-                tvdb_id
-            }
-            Err(e) => {
-                warn!(kitsu_id, error = %e, "kitsu mappings lookup failed");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    if let Some(tvdb_id) = effective_tvdb {
-        let find_resp = client
-            .execute(
-                sdks::tmdb::FindByIdEndpoint {
-                    external_id: tvdb_id.to_string(),
-                    external_source: "tvdb_id".to_string(),
-                }
-                .with_cache(Duration::from_secs(86400)),
-            )
-            .await
-            .ok()?;
-
-        // FindById returns a partial object without external_ids; use the TMDB id
-        // to fetch the full record which includes external_ids (via append_to_response).
-        if is_tv {
-            let tmdb_id = find_resp
-                .tv_results
-                .into_iter()
-                .next()?
-                .id;
-            let series = client
-                .execute(
-                    sdks::tmdb::SeriesEndpoint::new(tmdb_id, None)
-                        .with_cache(Duration::from_secs(86400)),
-                )
-                .await
-                .ok()?;
-            return series
-                .external_ids
-                .and_then(|e| e.imdb_id)
-                .and_then(|s| db::NonEmptyString::try_new(s).ok());
-        } else {
-            let tmdb_id = find_resp
-                .movie_results
-                .into_iter()
-                .next()?
-                .id;
-            let movie = client
-                .execute(
-                    sdks::tmdb::MovieEndpoint::new(tmdb_id, None)
-                        .with_cache(Duration::from_secs(86400)),
-                )
-                .await
-                .ok()?;
-            return movie
-                .imdb_id
-                .and_then(|s| db::NonEmptyString::try_new(s).ok());
-        }
-    }
-
-    None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn tmdb_test_client(base_url: &str) -> sdks::RestClient<sdks::BearerAuth> {
-        sdks::RestClient::new(base_url)
-            .unwrap()
-            .with_auth(sdks::BearerAuth {
-                token: String::new(),
-            })
-    }
-
-    fn mock_tv_series(server: &httpmock::MockServer, tmdb_id: i64, imdb_id: &str) {
-        let imdb = imdb_id.to_string();
-        server.mock(|when, then| {
-            when.path(format!("/tv/{tmdb_id}"));
-            then.status(200)
-                .json_body(serde_json::json!({
-                    "id": tmdb_id,
-                    "external_ids": { "imdb_id": imdb }
-                }));
-        });
-    }
-
-    #[tokio::test]
-    async fn resolve_imdb_from_ids_tvdb_black_summoner() {
-        let server = httpmock::MockServer::start();
-        server.mock(|when, then| {
-            when.path("/find/416588")
-                .query_param("external_source", "tvdb_id");
-            then.status(200)
-                .json_body(serde_json::json!({
-                    "tv_results": [{"id": 157842, "name": "Black Summoner"}],
-                    "movie_results": []
-                }));
-        });
-        mock_tv_series(&server, 157842, "tt21249100");
-
-        let ids = db::ExternalIds {
-            tvdb: Some(416588),
-            ..Default::default()
-        };
-        let result =
-            resolve_imdb_from_ids(&ids, true, &tmdb_test_client(&server.base_url()))
-                .await;
-        assert_eq!(
-            result
-                .as_deref()
-                .map(|s| s.as_str()),
-            Some("tt21249100"),
-            "Black Summoner tvdbid-416588"
-        );
-    }
-
-    #[tokio::test]
-    async fn resolve_imdb_from_ids_tvdb_bleach() {
-        let server = httpmock::MockServer::start();
-        server.mock(|when, then| {
-            when.path("/find/74796")
-                .query_param("external_source", "tvdb_id");
-            then.status(200)
-                .json_body(serde_json::json!({
-                    "tv_results": [{"id": 30984, "name": "Bleach"}],
-                    "movie_results": []
-                }));
-        });
-        mock_tv_series(&server, 30984, "tt0434665");
-
-        let ids = db::ExternalIds {
-            tvdb: Some(74796),
-            ..Default::default()
-        };
-        let result =
-            resolve_imdb_from_ids(&ids, true, &tmdb_test_client(&server.base_url()))
-                .await;
-        assert_eq!(
-            result
-                .as_deref()
-                .map(|s| s.as_str()),
-            Some("tt0434665"),
-            "Bleach tvdbid-74796"
-        );
-    }
-
-    #[tokio::test]
-    async fn resolve_imdb_from_ids_tvdb_blood_c() {
-        let server = httpmock::MockServer::start();
-        server.mock(|when, then| {
-            when.path("/find/249864")
-                .query_param("external_source", "tvdb_id");
-            then.status(200)
-                .json_body(serde_json::json!({
-                    "tv_results": [{"id": 43270, "name": "Blood-C"}],
-                    "movie_results": []
-                }));
-        });
-        mock_tv_series(&server, 43270, "tt1890725");
-
-        let ids = db::ExternalIds {
-            tvdb: Some(249864),
-            ..Default::default()
-        };
-        let result =
-            resolve_imdb_from_ids(&ids, true, &tmdb_test_client(&server.base_url()))
-                .await;
-        assert_eq!(
-            result
-                .as_deref()
-                .map(|s| s.as_str()),
-            Some("tt1890725"),
-            "Blood-C tvdbid-249864"
-        );
-    }
 }

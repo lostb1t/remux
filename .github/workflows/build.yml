@@ -134,7 +134,7 @@ jobs:
           retention-days: 2
 
   build-server:
-    name: Build server (${{ matrix.arch }})
+    name: Build server (${{ matrix.os_name }}-${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     env:
       SCCACHE_GHA_ENABLED: "true"
@@ -146,14 +146,29 @@ jobs:
           - runner: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             arch: amd64
+            os_name: linux
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             arch: arm64
+            os_name: linux
+          - runner: macos-latest
+            target: x86_64-apple-darwin
+            arch: amd64
+            os_name: macos
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            arch: arm64
+            os_name: macos
     steps:
-      - name: Install build dependencies
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends pkg-config libssl-dev
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
 
       - uses: actions/checkout@v4
         with:
@@ -186,7 +201,7 @@ jobs:
       - name: Upload server artifact
         uses: actions/upload-artifact@v4
         with:
-          name: server-linux-${{ matrix.arch }}
+          name: server-${{ matrix.os_name }}-${{ matrix.arch }}
           path: target/${{ matrix.target }}/release/remux-server
           retention-days: 1
 
@@ -208,6 +223,9 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact: remux-desktop-macos-aarch64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: remux-desktop-macos-x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: remux-desktop-windows-x86_64
@@ -481,7 +499,12 @@ jobs:
 
   merge-docker:
     name: Merge Docker manifests
-    needs: build-docker
+    needs: [build-docker, build-desktop, smoke-test-windows]
+    if: |
+      always() &&
+      needs.build-docker.result == 'success' &&
+      (needs.build-desktop.result == 'success' || needs.build-desktop.result == 'skipped') &&
+      (needs.smoke-test-windows.result == 'success' || needs.smoke-test-windows.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: read

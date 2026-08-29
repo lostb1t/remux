@@ -22,8 +22,6 @@ use anyhow;
 use axum_anyhow::ApiResult as Result;
 use remux_sdks::remux::IntroOptions;
 
-use super::mock_items;
-
 fn request_local_address(headers: &HeaderMap, fallback_port: u16) -> String {
     let scheme = headers
         .get("x-forwarded-proto")
@@ -271,15 +269,22 @@ pub async fn update_system_configuration(
     config.default_web_client = Some(crate::web_client::normalize_web_client(
         config.default_web_client,
     ));
-    // Apply P2P speed limits before saving so they take effect immediately.
-    if config
+    let p2p_enabled = config
         .p2p_enabled
-        .unwrap_or(true)
-    {
-        state
+        .unwrap_or(true);
+    state
+        .ctx
+        .set_p2p_enabled(p2p_enabled)
+        .await?;
+    if p2p_enabled {
+        if let Some(mgr) = state
             .ctx
             .torrent
-            .update_limits(
+            .read()
+            .await
+            .clone()
+        {
+            mgr.update_limits(
                 config
                     .p2p_upload_speed_kbps
                     .unwrap_or(0),
@@ -287,6 +292,7 @@ pub async fn update_system_configuration(
                     .p2p_download_speed_kbps
                     .unwrap_or(0),
             );
+        }
     }
     crate::db::Settings::set_config(
         &state
@@ -384,10 +390,10 @@ pub async fn system_endpoint(
 
 #[get("/syncplay/list")]
 pub async fn syncplay_list(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    mock_items(State(state)).await
+    Ok(Json(Vec::<serde_json::Value>::new()))
 }
 
 #[route("/quickconnect/enabled", method = "GET", method = "POST")]
@@ -1132,6 +1138,7 @@ mod test {
             .await;
 
         resp.assert_status_ok();
+        resp.assert_json(&json!([]));
     }
 
     // --- GET+POST /quickconnect/enabled ---

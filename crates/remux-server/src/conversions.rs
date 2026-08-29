@@ -18,7 +18,7 @@ use std::{
 // Heuristic metadata fallback for remote source URLs when ffprobe metadata is
 // unavailable. This keeps clients functional (stream selection/transcode
 // decisions) instead of exposing empty stream lists.
-fn infer_container_from_url(url: &str) -> Option<String> {
+fn infer_container_from_url(url: &str) -> Option<remux_sdks::remux::VideoContainer> {
     let path = url::Url::parse(url)
         .ok()
         .map(|u| {
@@ -35,12 +35,9 @@ fn infer_container_from_url(url: &str) -> Option<String> {
         .next()?
         .to_ascii_lowercase();
     if ext == "m3u8" {
-        return Some("ts".to_string());
+        return Some(remux_sdks::remux::VideoContainer::Other("hls".to_string()));
     }
-    remux_sdks::remux::VideoContainer::parse_known(&ext).map(|c| {
-        c.canonical()
-            .to_string()
-    })
+    remux_sdks::remux::VideoContainer::parse_known(&ext).map(|c| c.canonical())
 }
 
 fn infer_video_codec(text: &str) -> Option<String> {
@@ -396,8 +393,8 @@ pub fn subtitle_to_media_stream(sub: &SubtitleInfo) -> api::MediaStream {
         delivery_method: Some(api::SubtitleDeliveryMethod::External),
         is_external_url: Some(false),
         audio_spatial_format: Some("None".to_string()),
-        video_range: Some(api::VideoRange::Unknown),
-        video_range_type: Some(api::VideoRangeType::Unknown),
+        video_range: Some(api::VideoRange::Other),
+        video_range_type: Some(api::VideoRangeType::Other),
         localized_undefined: Some("Undefined".to_string()),
         localized_default: Some("Default".to_string()),
         localized_forced: Some("Forced".to_string()),
