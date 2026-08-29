@@ -2020,6 +2020,13 @@ impl AddonService {
             .iter()
             .filter_map(|r| {
                 if !r
+                    .row
+                    .resources
+                    .contains(&ResourceType::Meta)
+                {
+                    return None;
+                }
+                if !r
                     .tree
                     .as_ref()
                     .map(|t| t.supports(node))
@@ -2864,10 +2871,7 @@ impl AddonService {
         let probe_t = std::time::Instant::now();
         let (raw, probe_versions) = tokio::join!(
             self.get_streams(media, ctx, user_id),
-            tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                probe_versions_fut,
-            )
+            tokio::time::timeout(std::time::Duration::from_secs(5), probe_versions_fut,)
         );
         let raw = raw?;
         let probe_versions = match probe_versions {
@@ -3568,6 +3572,97 @@ mod tests {
                 "episode".to_string()
             )),
             Some(sdks::remux::MediaKind::Episode)
+        );
+    }
+
+    // --- get_direct_children resource guard ---
+
+    struct SpyTree {
+        called: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait]
+    impl TreeAddon for SpyTree {
+        fn supports(&self, root: &db::Media) -> bool {
+            matches!(root.kind, db::MediaKind::Series)
+        }
+
+        async fn get_children(
+            &self,
+            _root: &db::Media,
+            _ctx: &AppContext,
+        ) -> anyhow::Result<Option<Vec<db::Media>>> {
+            self.called
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(Some(vec![]))
+        }
+    }
+
+    fn stream_only_runtime_with_tree(
+        called: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> AddonRuntime {
+        let now = chrono::Utc::now().naive_utc();
+        AddonRuntime {
+            row: addon::Addon {
+                id: uuid::Uuid::new_v4(),
+                name: "stream-only".into(),
+                preset: AddonPresetRef {
+                    kind: "scripted".into(),
+                    config: serde_json::Value::Null.into(),
+                },
+                resources: vec![ResourceType::Stream], // no Meta
+                types: vec![],
+                enabled: true,
+                priority: 0,
+                created_at: now,
+                updated_at: now,
+                system: false,
+                is_default: false,
+                http_redirect_stream: false,
+                service_filter: vec![],
+            },
+            caps: AddonCapabilities {
+                tree: Some(std::sync::Arc::new(SpyTree { called })),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn get_direct_children_skips_addons_without_meta_resource() {
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let runtime = stream_only_runtime_with_tree(called.clone());
+
+        let service = AddonService {
+            inner: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(vec![runtime])),
+        };
+
+        let series = db::Media {
+            kind: db::MediaKind::Series,
+            ..Default::default()
+        };
+
+        // AppContext is required by the trait signature but is never reached when the
+        // addon is filtered out before get_children is called. Use new_test_server so
+        // port binding is handled correctly (same as all other integration tests).
+        let (_, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = guard
+            .0
+            .clone();
+
+        let children = service
+            .get_direct_children(&series, &ctx)
+            .await;
+
+        assert!(
+            children.is_empty(),
+            "stream-only addon should not contribute children"
+        );
+        assert!(
+            !called.load(std::sync::atomic::Ordering::SeqCst),
+            "stream-only addon's get_children should never be called"
         );
     }
 }

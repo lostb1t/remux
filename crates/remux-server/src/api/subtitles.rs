@@ -841,7 +841,7 @@ pub(crate) fn scored_external_subtitles<'a>(
             let count = lang_counts
                 .entry(key)
                 .or_insert(0);
-            if *count < 2 {
+            if *count < 10 {
                 *count += 1;
                 Some(s)
             } else {

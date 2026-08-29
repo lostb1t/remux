@@ -63,6 +63,7 @@ pub mod localization;
 pub mod playback;
 pub mod playback_session;
 pub mod services;
+pub mod signals;
 pub mod stream;
 pub mod tasks;
 mod torrent;
@@ -331,13 +332,19 @@ pub async fn init_app(
 
     let addons = addons::AddonService::from_db(&conn, &config).await?;
     let transcode_sessions_dir = resolve_transcode_dir(&config.data_dir);
-    let ctx = AppContext {
+    let (ws_tx, _) = tokio::sync::broadcast::channel::<ws::WsEvent>(128);
+    let mut signals = signals::Signals::default();
+    signals.register(ws::WebSocketSubscriber {
+        ws_tx: ws_tx.clone(),
+    });
+
+    let mut ctx = AppContext {
         config,
         db: conn.clone(),
         store: Store::new_weighted(128 * 1024 * 1024),
         sessions: playback_session::PlaybackSessionManager::new(transcode_sessions_dir),
         torrent: Arc::new(tokio::sync::RwLock::new(torrent_mgr.map(Arc::new))),
-        ws_tx: tokio::sync::broadcast::channel(128).0,
+        ws_tx,
         default_web_client: Arc::new(tokio::sync::RwLock::new(
             web_client::normalize_web_client(saved_config.default_web_client)
                 .as_str()
@@ -345,8 +352,11 @@ pub async fn init_app(
         )),
         web_paths,
         addons,
+        signals,
         started_at: Utc::now(),
     };
+    ctx.signals
+        .register(services::media_tracker::MediaTrackerSubscriber { ctx: ctx.clone() });
 
     // Sync intro items at startup (best-effort; errors are logged not fatal).
     if let Err(e) = intro::sync_intros(&ctx).await {
@@ -450,6 +460,7 @@ pub struct AppContext {
     /// Present in filesystem builds; `None` in desktop (assets are embedded).
     pub web_paths: Option<FilesystemPaths>,
     pub addons: addons::AddonService,
+    pub signals: signals::Signals,
     /// When this server process started.
     pub started_at: chrono::DateTime<chrono::Utc>,
 }
@@ -716,12 +727,28 @@ impl Default for Config {
 
 pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
     let uri = req.uri();
-    let mut path = uri
+    let path = uri
         .path()
         .replace("/emby", "");
-    if path.is_empty() {
-        path = "/".to_string();
-    }
+
+    // Trim trailing slashes, but keep "/" for root, and preserve the trailing slash
+    // on SPA mount prefixes (/web/, /admin/, /jellyfin/) so WebClientService and
+    // ServeDir can properly resolve relative asset URLs without infinite redirect loops.
+    let trimmed = path.trim_end_matches('/');
+    let path = if trimmed.is_empty() {
+        "/".to_string()
+    } else if trimmed.eq_ignore_ascii_case("/web")
+        || trimmed.eq_ignore_ascii_case("/admin")
+        || trimmed.eq_ignore_ascii_case("/jellyfin")
+    {
+        if path.ends_with('/') {
+            format!("{trimmed}/")
+        } else {
+            trimmed.to_string()
+        }
+    } else {
+        trimmed.to_string()
+    };
 
     // Keep file paths case-sensitive (Linux filesystems are case-sensitive).
     // Only normalize API-style routes that don't look like files, plus known
@@ -920,6 +947,74 @@ mod rewrite_uri_tests {
         let rewritten = rewrite(path);
         assert!(rewritten.starts_with("/sessions/play/"));
         assert!(rewritten.contains("YWJjMTIz%7Cabc"));
+    }
+
+    #[test]
+    fn strips_trailing_slashes_from_api_routes() {
+        assert_eq!(rewrite("/Items/"), "/items");
+        assert_eq!(rewrite("/items/"), "/items");
+        assert_eq!(rewrite("/Search/Hints/"), "/search/hints");
+        assert_eq!(rewrite("/Genres/"), "/genres");
+        assert_eq!(rewrite("/emby/Items/"), "/items");
+        assert_eq!(
+            rewrite("/Items/f27caa37-e514-2225-cced-ed48f6553502/"),
+            "/items/f27caa37-e514-2225-cced-ed48f6553502"
+        );
+        assert_eq!(
+            rewrite("/Users/f27caa37-e514-2225-cced-ed48f6553502/Items/"),
+            "/users/f27caa37-e514-2225-cced-ed48f6553502/items"
+        );
+    }
+
+    #[test]
+    fn strips_multiple_trailing_slashes() {
+        assert_eq!(rewrite("/Items///"), "/items");
+        assert_eq!(rewrite("/Genres//"), "/genres");
+    }
+
+    #[test]
+    fn preserves_root_and_emby_root() {
+        assert_eq!(rewrite("/"), "/");
+        assert_eq!(rewrite("///"), "/");
+        assert_eq!(rewrite("/emby"), "/");
+        assert_eq!(rewrite("/emby/"), "/");
+    }
+
+    #[test]
+    fn preserves_spa_mount_trailing_slashes() {
+        assert_eq!(rewrite("/web"), "/web");
+        assert_eq!(rewrite("/web/"), "/web/");
+        assert_eq!(rewrite("/admin"), "/admin");
+        assert_eq!(rewrite("/admin/"), "/admin/");
+        assert_eq!(rewrite("/jellyfin"), "/jellyfin");
+        assert_eq!(rewrite("/jellyfin/"), "/jellyfin/");
+    }
+
+    #[test]
+    fn preserves_query_string_with_trailing_slash() {
+        let req = http::Request::builder()
+            .method("GET")
+            .uri("/Items/?Limit=50&ParentId=123")
+            .body(())
+            .unwrap();
+        let rewritten = rewrite_request_uri(req);
+        assert_eq!(
+            rewritten
+                .uri()
+                .path(),
+            "/items"
+        );
+        assert_eq!(
+            rewritten
+                .uri()
+                .query(),
+            Some("Limit=50&ParentId=123")
+        );
+    }
+
+    #[test]
+    fn normalizes_file_endpoints_with_trailing_slash() {
+        assert_eq!(rewrite("/Videos/123/Stream.vtt/"), "/videos/123/stream.vtt");
     }
 }
 

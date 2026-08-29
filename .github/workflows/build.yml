@@ -500,6 +500,11 @@ jobs:
   merge-docker:
     name: Merge Docker manifests
     needs: [build-docker, build-desktop, smoke-test-windows]
+    if: |
+      always() &&
+      needs.build-docker.result == 'success' &&
+      (needs.build-desktop.result == 'success' || needs.build-desktop.result == 'skipped') &&
+      (needs.smoke-test-windows.result == 'success' || needs.smoke-test-windows.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: read

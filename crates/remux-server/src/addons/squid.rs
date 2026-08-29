@@ -90,15 +90,16 @@ fn normalize_codec(codec: &str) -> &str {
     }
 }
 
-fn mime_to_container(mime: &str) -> Option<String> {
+fn mime_to_container(mime: &str) -> Option<remux_sdks::remux::VideoContainer> {
+    use remux_sdks::remux::VideoContainer;
     if mime.contains("flac") {
-        Some("flac".to_string())
+        Some(VideoContainer::Other("flac".to_string()))
     } else if mime.contains("mp4") || mime.contains("m4a") {
-        Some("mp4".to_string())
+        Some(VideoContainer::Mp4)
     } else if mime.contains("webm") || mime.contains("opus") {
-        Some("webm".to_string())
+        Some(VideoContainer::Webm)
     } else if mime.contains("mpeg") || mime.contains("mp3") {
-        Some("mp3".to_string())
+        Some(VideoContainer::Other("mp3".to_string()))
     } else {
         None
     }

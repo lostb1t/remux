@@ -256,8 +256,9 @@ fn build_video_transcode(
     if video_codec == "copy" && audio_codec == "copy" {
         let src = source
             .container
-            .as_deref()
-            .unwrap_or("")
+            .as_ref()
+            .map(|c| c.to_string())
+            .unwrap_or_default()
             .to_lowercase();
         if src == container.to_lowercase() {
             return TranscodeDecision::DirectPlay;
@@ -496,6 +497,7 @@ pub(crate) fn apply_subtitle_delivery(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use remux_sdks::remux::VideoContainer;
 
     /// A source with no video stream routes to its own transcode branch, which
     /// builds its own URL. That URL is what the client fetches next, so it has
@@ -556,10 +558,10 @@ mod tests {
         );
     }
 
-    fn make_video_source(container: &str) -> api::MediaSourceInfo {
+    fn make_video_source(container: VideoContainer) -> api::MediaSourceInfo {
         api::MediaSourceInfo {
             id: Uuid::new_v4(),
-            container: Some(container.to_string()),
+            container: Some(container),
             media_streams: vec![
                 api::MediaStream {
                     codec: Some("h264".to_string()),
@@ -618,7 +620,7 @@ mod tests {
         let mut policy = remux_sdks::remux::UserPolicy::default();
         policy.enable_playback_remuxing = false;
         let session = make_session_with_policy(policy);
-        let source = make_video_source("ts");
+        let source = make_video_source(VideoContainer::Ts);
         let mut reasons = api::TranscodeReasons::default();
         reasons.insert(api::TranscodeReason::VideoCodecNotSupported(
             "hevc".to_string(),
@@ -648,7 +650,7 @@ mod tests {
             },
             user: db::User::default(),
         };
-        let source = make_video_source("ts");
+        let source = make_video_source(VideoContainer::Ts);
         let mut reasons = api::TranscodeReasons::default();
         reasons.insert(api::TranscodeReason::VideoCodecNotSupported(
             "hevc".to_string(),
@@ -674,7 +676,7 @@ mod tests {
         let mut policy = remux_sdks::remux::UserPolicy::default();
         policy.enable_audio_playback_transcoding = false;
         let session = make_session_with_policy(policy);
-        let source = make_video_source("ts");
+        let source = make_video_source(VideoContainer::Ts);
         // Both video AND audio need transcoding so the result is a real transcode
         // URL (video=h264). The audio codec must be copy despite needing a transcode.
         let mut reasons = api::TranscodeReasons::default();
@@ -714,7 +716,7 @@ mod tests {
             },
             user: db::User::default(),
         };
-        let source = make_video_source("ts");
+        let source = make_video_source(VideoContainer::Ts);
         let mut reasons = api::TranscodeReasons::default();
         reasons.insert(api::TranscodeReason::VideoCodecNotSupported(
             "hevc".to_string(),
@@ -750,7 +752,7 @@ mod tests {
         let mut policy = remux_sdks::remux::UserPolicy::default();
         policy.enable_video_playback_transcoding = false;
         let session = make_session_with_policy(policy);
-        let source = make_video_source("ts");
+        let source = make_video_source(VideoContainer::Ts);
         let mut reasons = api::TranscodeReasons::default();
         reasons.insert(api::TranscodeReason::VideoCodecNotSupported(
             "hevc".to_string(),
@@ -778,7 +780,7 @@ mod tests {
         policy.enable_video_playback_transcoding = false;
         let session = make_session_with_policy(policy);
         // Source is mkv, transcoding profile will pick ts → remux is needed
-        let source = make_video_source("mkv");
+        let source = make_video_source(VideoContainer::Mkv);
         let mut reasons = api::TranscodeReasons::default();
         reasons.insert(api::TranscodeReason::VideoCodecNotSupported(
             "hevc".to_string(),
@@ -794,5 +796,95 @@ mod tests {
             panic!("expected transcode outcome for container remux");
         };
         assert_eq!(outcome.container, "ts");
+    }
+
+    #[test]
+    fn test_burn_mode_transcodes_only_when_subtitle_actively_selected() {
+        let session =
+            make_session_with_policy(remux_sdks::remux::UserPolicy::default());
+        let mut source = make_video_source(VideoContainer::Mkv);
+        source.media_streams = vec![
+            api::MediaStream {
+                codec: Some("h264".to_string()),
+                type_: Some(api::MediaStreamType::Video),
+                index: 0,
+                ..Default::default()
+            },
+            api::MediaStream {
+                codec: Some("aac".to_string()),
+                type_: Some(api::MediaStreamType::Audio),
+                index: 1,
+                ..Default::default()
+            },
+            api::MediaStream {
+                codec: Some("hdmv_pgs_subtitle".to_string()),
+                type_: Some(api::MediaStreamType::Subtitle),
+                index: 2,
+                ..Default::default()
+            },
+        ];
+
+        let profile = api::DeviceProfile {
+            direct_play_profiles: vec![remux_sdks::remux::DirectPlayProfile {
+                container: Some(vec![remux_sdks::remux::VideoContainer::Mkv]),
+                video_codec: Some(vec![remux_sdks::remux::VideoCodec::H264]),
+                audio_codec: Some(vec![remux_sdks::remux::AudioCodec::Aac]),
+                type_: Some(remux_sdks::remux::DlnaProfileType::Video),
+            }],
+            subtitle_profiles: vec![remux_sdks::remux::SubtitleProfile {
+                format: Some("vtt".to_string()),
+                method: Some(remux_sdks::remux::SubtitleDeliveryMethod::External),
+            }],
+            ..Default::default()
+        };
+
+        let mut cfg = base_cfg(EncodingOptions::default());
+        cfg.device_profile = Some(profile);
+        cfg.subtitle_mode = EmbeddedSubtitleHandling::Burn;
+
+        // When NO subtitle is selected (None): DirectPlay (no transcode reasons)
+        let reasons = api::TranscodeReasons::default();
+        let query = api::PlaybackInfoQuery::default();
+        let decision =
+            build_transcode_decision(&source, &reasons, None, &query, &session, &cfg);
+        assert!(
+            matches!(decision, TranscodeDecision::DirectPlay),
+            "no subtitle selected in burn mode should remain direct play"
+        );
+
+        // When PGS subtitle (index 2) is actively selected: Transcode with video re-encoding
+        let mut burn_reasons = api::TranscodeReasons::default();
+        burn_reasons.insert(api::TranscodeReason::SubtitleCodecNotSupported(
+            "hdmv_pgs_subtitle".to_string(),
+        ));
+        let decision_sub = build_transcode_decision(
+            &source,
+            &burn_reasons,
+            Some(2),
+            &query,
+            &session,
+            &cfg,
+        );
+        match decision_sub {
+            TranscodeDecision::Transcode(outcome) => {
+                assert!(
+                    outcome
+                        .url
+                        .contains("VideoCodec=h264"),
+                    "PGS burn-in must trigger video transcoding: {}",
+                    outcome.url
+                );
+                assert!(
+                    outcome
+                        .url
+                        .contains("SubtitleMethod=Encode"),
+                    "PGS burn-in must set SubtitleMethod=Encode: {}",
+                    outcome.url
+                );
+            }
+            TranscodeDecision::DirectPlay => {
+                panic!("PGS subtitle selected in burn mode must trigger transcoding");
+            }
+        }
     }
 }
