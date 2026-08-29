@@ -1088,9 +1088,10 @@ html, body {
 }
 
 .toggle-description {
-  font-size: .78rem;
-  color: var(--text-muted);
-  line-height: 1.4;
+  font-family: var(--font-mono);
+  font-size: .65rem;
+  color: var(--text-dim);
+  line-height: 1.5;
 }
 
 .toggle {
