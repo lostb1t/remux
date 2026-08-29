@@ -98,7 +98,7 @@ impl Auth for JellyfinApiKeyAuth {
         );
         match HeaderValue::from_str(&val) {
             Ok(v) => req.header(header::AUTHORIZATION, v),
-            Err(_) => req,
+            Err(_) => req.header("X-Emby-Token", &self.api_key),
         }
     }
 }

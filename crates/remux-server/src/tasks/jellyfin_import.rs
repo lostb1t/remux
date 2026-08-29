@@ -169,7 +169,7 @@ impl Task for JellyfinImportTask {
                     let fetched = page
                         .items
                         .len() as i32;
-                    let total = page.total_record_count as i32;
+                    let total = page.total_record_count;
                     for it in page.items {
                         if seen.insert(
                             it.id
@@ -179,7 +179,7 @@ impl Task for JellyfinImportTask {
                         }
                     }
                     start += fetched;
-                    if start >= total || fetched < PAGE {
+                    if (start as i64) >= total || fetched < PAGE {
                         break;
                     }
                 }
@@ -569,22 +569,43 @@ impl Task for JellyfinImportTask {
                         series_tmdb,
                         series_tvdb,
                     ) {
-                        if let (Some(season_num), Some(ep_num)) =
-                            (item.parent_index_number, item.index_number)
-                        {
-                            sqlx::query_scalar(
-                                "SELECT id FROM media WHERE kind = 'episode' \
-                                 AND grandparent_id = ? AND parent_idx = ? AND idx = ? LIMIT 1",
-                            )
-                            .bind(series_uuid)
-                            .bind(season_num as i64)
-                            .bind(ep_num as i64)
-                            .fetch_optional(&ctx.db)
-                            .await
-                            .ok()
-                            .flatten()
-                        } else {
-                            None
+                        match kind {
+                            db::MediaKind::Episode => {
+                                if let (Some(season_num), Some(ep_num)) =
+                                    (item.parent_index_number, item.index_number)
+                                {
+                                    sqlx::query_scalar(
+                                        "SELECT id FROM media WHERE kind = 'episode' \
+                                         AND grandparent_id = ? AND parent_idx = ? AND idx = ? LIMIT 1",
+                                    )
+                                    .bind(series_uuid)
+                                    .bind(season_num as i64)
+                                    .bind(ep_num as i64)
+                                    .fetch_optional(&ctx.db)
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                } else {
+                                    None
+                                }
+                            }
+                            db::MediaKind::Season => {
+                                if let Some(season_num) = item.index_number {
+                                    sqlx::query_scalar(
+                                        "SELECT id FROM media WHERE kind = 'season' \
+                                         AND parent_id = ? AND idx = ? LIMIT 1",
+                                    )
+                                    .bind(series_uuid)
+                                    .bind(season_num as i64)
+                                    .fetch_optional(&ctx.db)
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
                         }
                     } else {
                         None
@@ -606,10 +627,11 @@ impl Task for JellyfinImportTask {
                                 item.index_number
                                     .unwrap_or(0)
                             ),
+                            // Jellyfin seasons use index_number for the season number
                             db::MediaKind::Season => format!(
                                 "{}:{}",
                                 series_key,
-                                item.parent_index_number
+                                item.index_number
                                     .unwrap_or(0)
                             ),
                             _ => series_key,
