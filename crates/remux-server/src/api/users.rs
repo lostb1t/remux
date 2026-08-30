@@ -1255,8 +1255,8 @@ pub async fn userviews(
 
     let library_filter = db::MediaFilter {
         kind: Some(vec![db::MediaKind::Collection, db::MediaKind::Folder]),
-        id: enabled_view_ids,
-        exclude_ids: excluded_view_ids,
+        id: enabled_view_ids.clone(),
+        exclude_ids: excluded_view_ids.clone(),
         promoted: Some(true),
         exclude_childless: true,
         user_id: Some(
@@ -1296,37 +1296,12 @@ pub async fn userviews(
 
     let mut libraries = library_result?.records;
 
-    // Limit to enabled folders when the policy restricts folder access.
-    if let Some(pol) = policy {
-        if !pol.enable_all_folders
-            && !pol
-                .enabled_folders
-                .is_empty()
-        {
-            let allowed: Vec<Uuid> = pol
-                .enabled_folders
-                .iter()
-                .filter_map(|s| Uuid::parse_str(s).ok())
-                .collect();
-            libraries.retain(|m| allowed.contains(&m.id));
-        }
+    // Safety net: reuse the same ID sets that were pushed into the DB query.
+    if let Some(ref allowed) = enabled_view_ids {
+        libraries.retain(|m| allowed.contains(&m.id));
     }
-
-    // Exclude hidden views unless the caller explicitly requests them.
-    if q.include_hidden != Some(true) {
-        if let Some(cfg) = config {
-            if !cfg
-                .my_media_excludes
-                .is_empty()
-            {
-                let excluded: Vec<Uuid> = cfg
-                    .my_media_excludes
-                    .iter()
-                    .filter_map(|s| Uuid::parse_str(s).ok())
-                    .collect();
-                libraries.retain(|m| !excluded.contains(&m.id));
-            }
-        }
+    if let Some(ref excluded) = excluded_view_ids {
+        libraries.retain(|m| !excluded.contains(&m.id));
     }
 
     // Stable-sort by OrderedViews: configured IDs come first in their saved
@@ -4097,7 +4072,8 @@ mod e2e_tests {
                 http::header::AUTHORIZATION,
                 HeaderValue::from_str(&user2_auth).unwrap(),
             )
-            .await;
+            .await
+            .assert_status_ok();
 
         // User2's /userviews must now include the Watched collection.
         let resp = server
