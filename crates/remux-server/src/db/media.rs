@@ -3236,11 +3236,6 @@ impl Media {
                 })
                 .unwrap_or(false);
 
-        // Detect when a Watched=true smart-filter rule is active. In that case the
-        // DatePlayed fast path (driving FROM user_media_state) doesn't work for
-        // partially watched series — they have no series-level UMS row so they never
-        // enter the result set. We pre-fetch the effective watched-ID/date map once
-        // and use it for both membership and ordering instead.
         let has_watched_true_rule = filter
             .filter_rules
             .iter()
@@ -3254,55 +3249,46 @@ impl Media {
             })
             .any(|r| matches!(r, sdks::remux::FilterRule::Watched { value: true }));
 
-        // Pre-fetch effective watched IDs + dates when the rollup path is needed:
-        // Watched=true filter rule AND DatePlayed sort AND a user_id is set.
-        // The query rolls episode plays up to their grandparent series so partially
-        // watched series appear with the date of their most recently watched episode.
-        let watched_rollup: Option<Vec<(Uuid, Option<NaiveDateTime>)>> =
-            if has_watched_true_rule
-                && filter
-                    .sort_by
-                    .iter()
-                    .any(|s| matches!(s, api::ItemSortBy::DatePlayed))
-            {
-                if let Some(uid) = &filter.user_id {
-                    let rows: Vec<(Vec<u8>, Option<NaiveDateTime>)> = sqlx::query_as(
-                        "SELECT COALESCE(ep.grandparent_id, ums.media_id) AS effective_id, \
-                         MAX(ums.played_at) AS effective_date \
-                         FROM user_media_state ums \
-                         LEFT JOIN media ep ON ep.id = ums.media_id AND ep.kind = 'episode' \
-                         WHERE ums.user_id = ? AND ums.play_count > 0 \
-                         GROUP BY effective_id",
-                    )
-                    .bind(uid)
-                    .fetch_all(db)
-                    .await?;
+        // When Watched=true filter is active AND DatePlayed sort is requested, inject a
+        // watched_dates CTE that computes effective watched dates once (rolling episode
+        // plays up to grandparent series). The main query drives FROM watched_dates → media
+        // (PK join), skipping all unwatched rows with no per-row subquery. ORDER BY uses
+        // wd.effective_date directly. The Watched filter rule itself is suppressed (the
+        // CTE JOIN already enforces membership). Without the CTE, the dp driving table
+        // can't be used because series with only episode-level plays have no direct UMS row.
+        let use_watched_cte = has_watched_true_rule
+            && filter
+                .user_id
+                .is_some()
+            && filter
+                .sort_by
+                .iter()
+                .any(|s| matches!(s, api::ItemSortBy::DatePlayed));
 
-                    let mapped = rows
-                        .into_iter()
-                        .filter_map(|(id_bytes, dt)| {
-                            Uuid::from_slice(&id_bytes)
-                                .ok()
-                                .map(|id| (id, dt))
-                        })
-                        .collect();
-                    Some(mapped)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+        let watched_cte_sql: Option<String> = if use_watched_cte {
+            filter.user_id.as_ref().map(|uid| {
+                format!(
+                    "WITH watched_dates AS (\
+                      SELECT COALESCE(ep.grandparent_id, ums.media_id) AS effective_id, \
+                             MAX(COALESCE(ums.last_played_at, ums.played_at)) AS effective_date \
+                      FROM user_media_state ums \
+                      LEFT JOIN media ep ON ep.id = ums.media_id AND ep.kind = 'episode' \
+                      WHERE ums.user_id = X'{}' AND ums.play_count > 0 \
+                      GROUP BY effective_id\
+                    ) ",
+                    uid.simple()
+                )
+            })
+        } else {
+            None
+        };
 
         // When sorting by DatePlayed, drive records_qb FROM user_media_state (dp) so
         // the result is already in last_played_at order — no correlated subquery per row,
-        // no separate sort pass. Column names in subsequent WHERE clauses (kind, parent_id,
-        // etc.) resolve unambiguously to media since dp only exposes (user_id, media_id,
-        // last_played_at). Applied to all query shapes so dp.last_played_at in ORDER BY
-        // is always valid when user_id is set.
-        // Disabled when watched_rollup is active: the fast path requires a direct
-        // user_media_state row which partially watched series don't have.
-        let date_played_uid = if watched_rollup.is_some() {
+        // no separate sort pass. Disabled when has_watched_true_rule: dp requires a direct
+        // UMS row; partially watched series (episode-only plays) have none, so they'd drop
+        // from results. The watched path uses the CTE approach above instead.
+        let date_played_uid = if has_watched_true_rule {
             None
         } else {
             filter
@@ -3446,31 +3432,43 @@ impl Media {
                 records_qb.push(" WHERE 1=1");
             }
         } else {
-            count_qb = sqlx::QueryBuilder::new(
-                "SELECT COUNT(*) as count FROM media WHERE 1=1",
-            );
-            if let Some(uid) = date_played_uid {
-                records_qb = sqlx::QueryBuilder::new(
-                    "SELECT media.* FROM user_media_state dp \
-                     CROSS JOIN media WHERE dp.user_id = ",
-                );
-                records_qb.push_bind(uid);
-                records_qb.push(" AND media.id = dp.media_id AND 1=1");
-            } else if pop_period.is_some() {
-                pop_joined = true;
-                // Build a CTE over the media table so the WHERE conditions loop
-                // below can fill it once. After the loop we close the CTE and
-                // wrap it in a UNION ALL: arm 1 drives from idx_pop_agg_covering
-                // (scored items in avg-DESC order via the index walk), arm 2
-                // streams unscored items via NOT EXISTS. SQLite evaluates UNION ALL
-                // arms as coroutines — no global sort, LIMIT stops after arm 1 if
-                // there are enough scored items.
-                records_qb = sqlx::QueryBuilder::new(
-                    "WITH filtered AS (SELECT media.* FROM media WHERE 1=1",
-                );
+            if let Some(ref cte) = watched_cte_sql {
+                count_qb = sqlx::QueryBuilder::new(format!(
+                    "{cte}SELECT COUNT(*) as count \
+                     FROM watched_dates wd JOIN media ON media.id = wd.effective_id WHERE 1=1"
+                ));
+                records_qb = sqlx::QueryBuilder::new(format!(
+                    "{cte}SELECT media.* \
+                     FROM watched_dates wd JOIN media ON media.id = wd.effective_id WHERE 1=1"
+                ));
             } else {
-                records_qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
-            }
+                count_qb = sqlx::QueryBuilder::new(
+                    "SELECT COUNT(*) as count FROM media WHERE 1=1",
+                );
+                if let Some(uid) = date_played_uid {
+                    records_qb = sqlx::QueryBuilder::new(
+                        "SELECT media.* FROM user_media_state dp \
+                     CROSS JOIN media WHERE dp.user_id = ",
+                    );
+                    records_qb.push_bind(uid);
+                    records_qb.push(" AND media.id = dp.media_id AND 1=1");
+                } else if pop_period.is_some() {
+                    pop_joined = true;
+                    // Build a CTE over the media table so the WHERE conditions loop
+                    // below can fill it once. After the loop we close the CTE and
+                    // wrap it in a UNION ALL: arm 1 drives from idx_pop_agg_covering
+                    // (scored items in avg-DESC order via the index walk), arm 2
+                    // streams unscored items via NOT EXISTS. SQLite evaluates UNION ALL
+                    // arms as coroutines — no global sort, LIMIT stops after arm 1 if
+                    // there are enough scored items.
+                    records_qb = sqlx::QueryBuilder::new(
+                        "WITH filtered AS (SELECT media.* FROM media WHERE 1=1",
+                    );
+                } else {
+                    records_qb =
+                        sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
+                }
+            } // end else (non-CTE path)
         }
 
         // Pre-fetch in-progress media IDs — JOIN media so kind and date filters are applied
@@ -3925,6 +3923,7 @@ impl Media {
                     filter
                         .user_id
                         .as_ref(),
+                    use_watched_cte,
                 );
             }
             if let Some(ref ids) = filter.exclude_ids {
@@ -4010,6 +4009,7 @@ impl Media {
                         filter
                             .user_id
                             .as_ref(),
+                        false,
                     );
                 }
             }
@@ -4172,27 +4172,12 @@ impl Media {
                             format!("COALESCE(runtime, 0) {}", dir)
                         }
                         api::ItemSortBy::DatePlayed => {
-                            if let Some(ref rollup) = watched_rollup {
-                                // Rollup path: no dp driving table. Order by the
-                                // pre-fetched effective date via a CASE WHEN so SQLite
-                                // can resolve each row's date without a subquery.
-                                // Dates come from our own DB pre-fetch, not user input.
-                                // NULL dates use the smallest sentinel so they always
-                                // sink to the bottom regardless of sort direction.
+                            if use_watched_cte {
+                                // CTE path: watched_dates is already JOINed into the query,
+                                // wd.effective_date holds the pre-computed effective play date
+                                // (rolling episode plays up to grandparent series).
                                 let null_date = "0001-01-01 00:00:00";
-                                let mut case = String::from("CASE media.id");
-                                for (id, dt) in rollup {
-                                    let date_str = dt
-                                        .map(|d| d.to_string())
-                                        .unwrap_or_else(|| null_date.into());
-                                    case.push_str(&format!(
-                                        " WHEN X'{}' THEN '{}'",
-                                        id.simple(),
-                                        date_str
-                                    ));
-                                }
-                                case.push_str(&format!(" ELSE '{}' END {}", null_date, dir));
-                                case
+                                format!("COALESCE(wd.effective_date, '{null_date}') {dir}")
                             } else if filter.user_id.is_some() {
                                 // dp alias from the UMS-driven records_qb above.
                                 format!("dp.last_played_at {}", dir)
@@ -4609,6 +4594,7 @@ impl Media {
                         filter
                             .user_id
                             .as_ref(),
+                        false,
                     );
                 }
                 cc_qb.push(" GROUP BY parent_id");
@@ -4660,6 +4646,7 @@ impl Media {
                         filter
                             .user_id
                             .as_ref(),
+                        false,
                     );
                     pl_qb.push(")");
                 } else {
@@ -4767,6 +4754,7 @@ impl Media {
                             filter
                                 .user_id
                                 .as_ref(),
+                            false,
                         );
                     }
                     if let Some(pf) = child_policy_filter {
@@ -4776,6 +4764,7 @@ impl Media {
                             filter
                                 .user_id
                                 .as_ref(),
+                            false,
                         );
                     }
                 }
@@ -7163,6 +7152,7 @@ pub fn apply_filter_rules(
     qb: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
     filter: &remux_sdks::remux::CollectionFilter,
     user_id: Option<&Uuid>,
+    skip_watched_true: bool,
 ) {
     use remux_sdks::remux::FilterMatchMode;
 
@@ -7181,7 +7171,7 @@ pub fn apply_filter_rules(
             let rules: Vec<_> = g
                 .rules
                 .iter()
-                .filter_map(|r| filter_rule_to_sql(r, user_id))
+                .filter_map(|r| filter_rule_to_sql(r, user_id, skip_watched_true))
                 .collect();
             if rules.is_empty() {
                 None
@@ -7236,8 +7226,15 @@ pub fn apply_filter_rules(
 fn filter_rule_to_sql(
     rule: &remux_sdks::remux::FilterRule,
     user_id: Option<&Uuid>,
+    skip_watched_true: bool,
 ) -> Option<(String, bool)> {
     use remux_sdks::remux::{FilterRule as R, NumericOp, SetOp};
+
+    if skip_watched_true {
+        if matches!(rule, R::Watched { value: true }) {
+            return None;
+        }
+    }
 
     fn esc(s: &str) -> String {
         s.replace('\'', "''")
@@ -7531,14 +7528,14 @@ fn filter_rule_to_sql(
                 .unwrap_or_default();
             let sql = if *value {
                 format!(
-                    "EXISTS (\
-                      SELECT 1 FROM user_media_state ums \
-                      WHERE ums.media_id = media.id{user_clause} AND ums.play_count > 0 \
-                      UNION ALL \
-                      SELECT 1 FROM user_media_state ums \
+                    "media.id IN (\
+                      SELECT ums.media_id FROM user_media_state ums \
+                      WHERE ums.play_count > 0{user_clause} \
+                      UNION \
+                      SELECT ep.grandparent_id FROM user_media_state ums \
                       JOIN media ep ON ep.id = ums.media_id \
-                      WHERE ep.grandparent_id = media.id{user_clause} \
-                        AND ep.kind = 'episode' AND ums.play_count > 0\
+                      WHERE ep.kind = 'episode' AND ep.grandparent_id IS NOT NULL \
+                        AND ums.play_count > 0{user_clause}\
                     )"
                 )
             } else {
@@ -9606,6 +9603,242 @@ mod tests {
         assert!(
             titles.is_empty(),
             "another user's favorite must not bleed through"
+        );
+    }
+
+    // ── Watched filter rule tests ─────────────────────────────────────
+
+    async fn watched_filter(
+        db: &sqlx::SqlitePool,
+        kind: MediaKind,
+        user_id: uuid::Uuid,
+        sort_by: Vec<api::ItemSortBy>,
+    ) -> Vec<String> {
+        let filter = remux_sdks::remux::CollectionFilter {
+            groups: vec![remux_sdks::remux::FilterGroup {
+                rules: vec![remux_sdks::remux::FilterRule::Watched { value: true }],
+                match_mode: remux_sdks::remux::FilterMatchMode::All,
+            }],
+            match_mode: remux_sdks::remux::FilterMatchMode::All,
+        };
+        Media::get_by_filter(
+            db,
+            &MediaFilter {
+                kind: Some(vec![kind]),
+                filter_rules: Some(filter),
+                user_id: Some(user_id),
+                sort_by,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .records
+        .into_iter()
+        .map(|m| m.title)
+        .collect()
+    }
+
+    /// Watched=true + DatePlayed sort for a user with no watched items must
+    /// return an empty list without panicking or returning a 500 (was: invalid
+    /// SQL "CASE media.id ELSE ... END" when the rollup is empty).
+    #[tokio::test]
+    async fn watched_empty_user_no_crash() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let uid = uuid::Uuid::new_v4();
+
+        let mut m = media_row(MediaKind::Movie, "Unwatched", "tt9990101");
+        m.save(db)
+            .await
+            .unwrap();
+
+        let titles = watched_filter(
+            db,
+            MediaKind::Movie,
+            uid,
+            vec![api::ItemSortBy::DatePlayed],
+        )
+        .await;
+
+        assert!(
+            titles.is_empty(),
+            "no watched items → empty result, not a crash"
+        );
+    }
+
+    /// Watched=true returns only movies with play_count > 0 for the requesting
+    /// user; unwatched movies and another user's watched movies are excluded.
+    #[tokio::test]
+    async fn watched_filter_returns_watched_movies() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let uid = uuid::Uuid::new_v4();
+        let other = uuid::Uuid::new_v4();
+
+        let mut a = media_row(MediaKind::Movie, "Alpha", "tt9990201");
+        a.save(db)
+            .await
+            .unwrap();
+        let mut b = media_row(MediaKind::Movie, "Beta", "tt9990202");
+        b.save(db)
+            .await
+            .unwrap();
+        let mut c = media_row(MediaKind::Movie, "Gamma", "tt9990203");
+        c.save(db)
+            .await
+            .unwrap();
+
+        insert_user_state(db, uid, a.id, 1, false).await;
+        insert_user_state(db, uid, b.id, 0, false).await; // not watched
+        insert_user_state(db, other, c.id, 1, false).await; // different user
+
+        let mut titles =
+            watched_filter(db, MediaKind::Movie, uid, vec![api::ItemSortBy::SortName])
+                .await;
+        titles.sort();
+
+        assert_eq!(titles, vec!["Alpha"], "only uid's watched movies");
+    }
+
+    /// A watched episode must cause its grandparent series to appear when
+    /// querying with Watched=true on the Series kind.
+    #[tokio::test]
+    async fn watched_episode_rolls_up_to_series() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let uid = uuid::Uuid::new_v4();
+
+        let mut series = media_row(MediaKind::Series, "Show", "tt9990301");
+        series
+            .save(db)
+            .await
+            .unwrap();
+
+        let ep_ext = ExternalIds {
+            imdb: Some(NonEmptyString::try_new("tt9990302".to_string()).unwrap()),
+            ..Default::default()
+        };
+        let ep_id = uuid::Uuid::from(&MediaIdRaw {
+            kind: MediaKind::Episode,
+            external_ids: ep_ext.clone(),
+            season: Some(1),
+            episode: Some(1),
+        });
+        let mut episode = Media {
+            id: ep_id,
+            title: "Pilot".to_string(),
+            kind: MediaKind::Episode,
+            external_ids: ep_ext,
+            grandparent_id: Some(series.id),
+            idx: Some(1),
+            ..Default::default()
+        };
+        episode
+            .save(db)
+            .await
+            .unwrap();
+
+        // Only the episode is watched — not the series row itself.
+        insert_user_state(db, uid, episode.id, 1, false).await;
+
+        let titles = watched_filter(
+            db,
+            MediaKind::Series,
+            uid,
+            vec![api::ItemSortBy::DatePlayed],
+        )
+        .await;
+
+        assert_eq!(
+            titles,
+            vec!["Show"],
+            "watched episode must roll up to series"
+        );
+    }
+
+    /// Watched=true + DatePlayed sort must complete well within 1 s even with
+    /// a large number of media rows and UMS rows. Run with:
+    ///   cargo test -p remux-server watched_date_played_perf -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "perf test — run manually to compare before/after"]
+    async fn watched_date_played_perf() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let uid = uuid::Uuid::new_v4();
+
+        let n_total: usize = 30_000;
+        let n_watched: usize = 3_000;
+        let page_size: u32 = 50; // realistic client page size
+        let mut ids = Vec::with_capacity(n_total);
+        for i in 0..n_total {
+            let imdb = format!("tt{:07}", 7_000_000 + i);
+            let mut m = media_row(MediaKind::Movie, &format!("Movie {i}"), &imdb);
+            m.save(db)
+                .await
+                .unwrap();
+            ids.push(m.id);
+        }
+        for id in ids
+            .iter()
+            .take(n_watched)
+        {
+            insert_user_state(db, uid, *id, 1, false).await;
+        }
+
+        let filter_rules = remux_sdks::remux::CollectionFilter {
+            groups: vec![remux_sdks::remux::FilterGroup {
+                rules: vec![remux_sdks::remux::FilterRule::Watched { value: true }],
+                match_mode: remux_sdks::remux::FilterMatchMode::All,
+            }],
+            match_mode: remux_sdks::remux::FilterMatchMode::All,
+        };
+
+        let start = std::time::Instant::now();
+        let result = Media::get_by_filter(
+            db,
+            &MediaFilter {
+                kind: Some(vec![MediaKind::Movie]),
+                filter_rules: Some(filter_rules),
+                user_id: Some(uid),
+                sort_by: vec![api::ItemSortBy::DatePlayed],
+                limit: Some(page_size),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let elapsed = start.elapsed();
+
+        assert_eq!(
+            result
+                .records
+                .len(),
+            page_size as usize,
+            "must return exactly limit rows"
+        );
+        println!(
+            "watched DatePlayed query over {n_total} rows (page {page_size}): {elapsed:?}"
+        );
+        assert!(
+            elapsed.as_millis() < 150,
+            "query took {elapsed:?}, expected < 150 ms — correlated subquery regression?"
         );
     }
 }
