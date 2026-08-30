@@ -3933,14 +3933,45 @@ impl Media {
             }
 
             if let Some(ref f) = filter.filter_rules {
-                apply_filter_rules(
-                    qb,
-                    f,
-                    filter
-                        .user_id
-                        .as_ref(),
-                    use_watched_cte,
-                );
+                // When the query targets child types (episodes/seasons), the
+                // collection filter rules describe which series qualify — not the
+                // episode rows themselves. Apply them via a grandparent subquery so
+                // only children of matching series are returned.
+                let all_episode_or_season = filter
+                    .kind
+                    .as_ref()
+                    .map(|k| {
+                        !k.is_empty()
+                            && k.iter()
+                                .all(|k| {
+                                    matches!(k, MediaKind::Episode | MediaKind::Season)
+                                })
+                    })
+                    .unwrap_or(false);
+
+                if all_episode_or_season {
+                    if let Some(fragment) = build_filter_rules_fragment(
+                        f,
+                        filter
+                            .user_id
+                            .as_ref(),
+                        false,
+                    ) {
+                        qb.push(format!(
+                            " AND grandparent_id IN \
+                            (SELECT id FROM media WHERE kind = 'series' AND {fragment})"
+                        ));
+                    }
+                } else {
+                    apply_filter_rules(
+                        qb,
+                        f,
+                        filter
+                            .user_id
+                            .as_ref(),
+                        use_watched_cte,
+                    );
+                }
             }
             if let Some(ref ids) = filter.exclude_ids {
                 if !ids.is_empty() {
@@ -7232,6 +7263,72 @@ pub fn apply_filter_rules(
         qb.push(")");
     }
     qb.push(")");
+}
+
+/// Build a self-contained SQL fragment string from a `CollectionFilter`.
+///
+/// Unlike `apply_filter_rules`, this returns a `String` rather than pushing to a
+/// `QueryBuilder`. This allows the fragment to be embedded as a subquery (e.g.
+/// `grandparent_id IN (SELECT id FROM media WHERE kind = 'series' AND <fragment>)`).
+/// All values are escaped inline via `esc()` — no bound parameters.
+///
+/// Returns `None` when there are no valid rule groups, meaning the filter places
+/// no restriction (all items qualify).
+fn build_filter_rules_fragment(
+    filter: &remux_sdks::remux::CollectionFilter,
+    user_id: Option<&Uuid>,
+    skip_watched_true: bool,
+) -> Option<String> {
+    use remux_sdks::remux::FilterMatchMode;
+
+    let group_sep = match filter.match_mode {
+        FilterMatchMode::All => " AND ",
+        FilterMatchMode::Any => " OR ",
+    };
+
+    let valid_groups: Vec<_> = filter
+        .groups
+        .iter()
+        .filter_map(|g| {
+            let rules: Vec<_> = g
+                .rules
+                .iter()
+                .filter_map(|r| filter_rule_to_sql(r, user_id, skip_watched_true))
+                .collect();
+            if rules.is_empty() {
+                None
+            } else {
+                Some((g, rules))
+            }
+        })
+        .collect();
+
+    if valid_groups.is_empty() {
+        return None;
+    }
+
+    let group_strs: Vec<String> = valid_groups
+        .iter()
+        .map(|(g, rules)| {
+            let rule_sep = match g.match_mode {
+                FilterMatchMode::All => " AND ",
+                FilterMatchMode::Any => " OR ",
+            };
+            let rule_strs: Vec<String> = rules
+                .iter()
+                .map(|(sql, negated)| {
+                    if *negated {
+                        format!("NOT ({sql})")
+                    } else {
+                        sql.clone()
+                    }
+                })
+                .collect();
+            format!("({})", rule_strs.join(rule_sep))
+        })
+        .collect();
+
+    Some(format!("({})", group_strs.join(group_sep)))
 }
 
 /// Translate one `FilterRule` into a raw SQL fragment.

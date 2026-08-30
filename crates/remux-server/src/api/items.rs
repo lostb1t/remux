@@ -636,10 +636,26 @@ pub async fn get_items(
                     .collect();
                 // Respect the client's IncludeItemTypes filter if provided,
                 // but constrain it to what this collection actually holds.
+                // When Recursive=true, expand the allowed set to include descendant
+                // types: a Series collection also permits Season and Episode.
+                // This lets child-type queries (Episode under Shows) through while
+                // still blocking unrelated types (Movie under Shows). get_by_filter
+                // then scopes descendants to the correct series via a grandparent
+                // subquery on the smart filter rules.
+                let allowed_types: Vec<api::MediaType> = if q.recursive {
+                    let mut expanded = collection_types.clone();
+                    if expanded.contains(&api::MediaType::Series) {
+                        expanded.push(api::MediaType::Season);
+                        expanded.push(api::MediaType::Episode);
+                    }
+                    expanded
+                } else {
+                    collection_types.clone()
+                };
                 if let Some(requested) = &q.include_item_types {
                     let intersection: Vec<_> = requested
                         .iter()
-                        .filter(|t| collection_types.contains(t))
+                        .filter(|t| allowed_types.contains(t))
                         .cloned()
                         .collect();
                     if intersection.is_empty() {
@@ -3672,6 +3688,237 @@ mod tests {
                 .unwrap_or(0)
                 > 0,
             "unfiltered query on series collection must return series"
+        );
+    }
+
+    async fn insert_episode(
+        db: &sqlx::SqlitePool,
+        title: &str,
+        series: &db::Media,
+    ) -> db::Media {
+        use std::sync::atomic::{AtomicI64, Ordering};
+        static EP_COUNTER: AtomicI64 = AtomicI64::new(1);
+        let idx = EP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let now = chrono::Utc::now().naive_utc();
+        let mut ep = db::Media {
+            title: title.to_string(),
+            kind: db::MediaKind::Episode,
+            parent_id: Some(series.id),
+            grandparent_id: Some(series.id),
+            idx: Some(idx),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        ep.save(db)
+            .await
+            .expect("insert_episode failed");
+        ep
+    }
+
+    async fn mark_played(db: &sqlx::SqlitePool, media: &db::Media) {
+        let user: db::User = sqlx::query_as("SELECT * FROM users LIMIT 1")
+            .fetch_one(db)
+            .await
+            .unwrap();
+        let mut ms = db::UserMediaState::get_or_new(db, &user, media)
+            .await
+            .unwrap();
+        ms.play_count = 1;
+        ms.save(db)
+            .await
+            .unwrap();
+    }
+
+    // Recursive=true + IncludeItemTypes=Episode + Filters=IsPlayed must return
+    // only played episodes under a smart series collection, not zero.
+    #[tokio::test]
+    async fn test_recursive_episode_isplayed_under_smart_collection() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let collection =
+            insert_smart_collection(db, "Shows", db::CollectionMediaKind::Series).await;
+        let series =
+            insert_media(db, "Breaking Bad", db::MediaKind::Series, "tt0903747").await;
+        let ep_played = insert_episode(db, "Pilot", &series).await;
+        let _ep_unplayed = insert_episode(db, "Cat's in the Bag", &series).await;
+        mark_played(db, &ep_played).await;
+
+        let user_id = get_user_id(&server, &auth).await;
+
+        let resp = server
+            .get(&format!("/users/{user_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[
+                (
+                    "parentId",
+                    collection
+                        .id
+                        .to_string()
+                        .as_str(),
+                ),
+                ("recursive", "true"),
+                ("includeItemTypes", "Episode"),
+                ("filters", "IsPlayed"),
+            ])
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["TotalRecordCount"]
+                .as_i64()
+                .unwrap_or(0),
+            1,
+            "must return exactly the 1 played episode"
+        );
+        let name = body["Items"][0]["Name"]
+            .as_str()
+            .unwrap_or("");
+        assert_eq!(name, "Pilot");
+    }
+
+    // Recursive=true + IncludeItemTypes=Episode with a tag-filtered collection
+    // must only return episodes from series that satisfy the filter, not all episodes.
+    #[tokio::test]
+    async fn test_recursive_episode_respects_collection_filter() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        // Collection only allows series tagged "action".
+        let collection = insert_smart_collection_with_filter(
+            db,
+            "Action Shows",
+            db::CollectionMediaKind::Series,
+            Some(tag_filter("action")),
+        )
+        .await;
+
+        let series_a =
+            insert_media(db, "Series A", db::MediaKind::Series, "tt9000001").await;
+        let series_b =
+            insert_media(db, "Series B", db::MediaKind::Series, "tt9000002").await;
+
+        // Tag only series A with "action".
+        sqlx::query("INSERT OR IGNORE INTO media_tags (media_id, tag) VALUES (?, ?)")
+            .bind(series_a.id)
+            .bind("action")
+            .execute(db)
+            .await
+            .unwrap();
+
+        let ep_a = insert_episode(db, "Episode A1", &series_a).await;
+        let _ep_b = insert_episode(db, "Episode B1", &series_b).await;
+
+        let user_id = get_user_id(&server, &auth).await;
+
+        let resp = server
+            .get(&format!("/users/{user_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[
+                (
+                    "parentId",
+                    collection
+                        .id
+                        .to_string()
+                        .as_str(),
+                ),
+                ("recursive", "true"),
+                ("includeItemTypes", "Episode"),
+            ])
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["TotalRecordCount"]
+                .as_i64()
+                .unwrap_or(0),
+            1,
+            "must only return episode from the tagged series"
+        );
+        let id = body["Items"][0]["Id"]
+            .as_str()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        assert_eq!(
+            id,
+            ep_a.id
+                .to_string()
+                .replace('-', "")
+        );
+    }
+
+    // Mixed IncludeItemTypes=Movie,Episode under a series-only smart collection with
+    // Filters=IsPlayed must return only played episodes — movies must be excluded.
+    #[tokio::test]
+    async fn test_recursive_mixed_types_movie_excluded_from_series_collection() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let collection =
+            insert_smart_collection(db, "Shows", db::CollectionMediaKind::Series).await;
+        let series =
+            insert_media(db, "The Wire", db::MediaKind::Series, "tt0306414").await;
+        let ep = insert_episode(db, "The Target", &series).await;
+        let movie =
+            insert_media(db, "Inception", db::MediaKind::Movie, "tt1375666").await;
+
+        mark_played(db, &ep).await;
+        mark_played(db, &movie).await;
+
+        let user_id = get_user_id(&server, &auth).await;
+
+        let resp = server
+            .get(&format!("/users/{user_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[
+                (
+                    "parentId",
+                    collection
+                        .id
+                        .to_string()
+                        .as_str(),
+                ),
+                ("recursive", "true"),
+                ("includeItemTypes", "Movie,Episode"),
+                ("filters", "IsPlayed"),
+            ])
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["TotalRecordCount"]
+                .as_i64()
+                .unwrap_or(0),
+            1,
+            "only the episode must be returned, not the movie"
+        );
+        assert_eq!(
+            body["Items"][0]["Type"]
+                .as_str()
+                .unwrap_or(""),
+            "Episode"
         );
     }
 
