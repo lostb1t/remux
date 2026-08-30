@@ -5297,4 +5297,119 @@ mod tests {
             "episode under series with rating>max must be blocked"
         );
     }
+
+    // Season has no own certification_age; it inherits via grandparent_id → series.
+    // max_parental_rating=13 must pass a season whose series is rated 13.
+    #[tokio::test]
+    async fn test_max_parental_rating_season_inherits_series_rating_pass() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(&server, &auth).await;
+
+        let mut series =
+            insert_media(db, "Teen Series", db::MediaKind::Series, "tt8900001").await;
+        series.certification_age = Some(13);
+        series
+            .save(db)
+            .await
+            .unwrap();
+
+        let now = chrono::Utc::now().naive_utc();
+        let mut season = db::Media {
+            title: "Season 1".to_string(),
+            kind: db::MediaKind::Season,
+            parent_id: Some(series.id),
+            grandparent_id: Some(series.id),
+            idx: Some(1),
+            released_at: Some(now - chrono::Duration::days(365)),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        season
+            .save(db)
+            .await
+            .unwrap();
+
+        set_max_parental_rating(db, 13).await;
+
+        let resp = server
+            .get(&format!("/users/{user_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[("includeItemTypes", "Season")])
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["TotalRecordCount"]
+                .as_i64()
+                .unwrap_or(0),
+            1,
+            "season whose series rating equals max must pass"
+        );
+    }
+
+    // max_parental_rating=13 must block a season whose series is rated 16.
+    #[tokio::test]
+    async fn test_max_parental_rating_season_inherits_series_rating_block() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(&server, &auth).await;
+
+        let mut series =
+            insert_media(db, "Adult Series", db::MediaKind::Series, "tt8900002").await;
+        series.certification_age = Some(16);
+        series
+            .save(db)
+            .await
+            .unwrap();
+
+        let now = chrono::Utc::now().naive_utc();
+        let mut season = db::Media {
+            title: "Season 1".to_string(),
+            kind: db::MediaKind::Season,
+            parent_id: Some(series.id),
+            grandparent_id: Some(series.id),
+            idx: Some(1),
+            released_at: Some(now - chrono::Duration::days(365)),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        season
+            .save(db)
+            .await
+            .unwrap();
+
+        set_max_parental_rating(db, 13).await;
+
+        let resp = server
+            .get(&format!("/users/{user_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[("includeItemTypes", "Season")])
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["TotalRecordCount"]
+                .as_i64()
+                .unwrap_or(0),
+            0,
+            "season whose series rating exceeds max must be blocked"
+        );
+    }
 }

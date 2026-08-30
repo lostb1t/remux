@@ -4022,7 +4022,7 @@ impl Media {
 
             if !container_only && has_policy {
                 if let Some(max_rating) = filter.max_parental_rating {
-                    qb.push(" AND COALESCE(certification_age, (SELECT p.certification_age FROM media p WHERE p.id = media.grandparent_id)) <= ")
+                    qb.push(" AND COALESCE(certification_age, (SELECT p.certification_age FROM media p WHERE p.id = COALESCE(media.grandparent_id, media.parent_id))) <= ")
                         .push_bind(max_rating)
                         .push("");
                 }
@@ -7409,10 +7409,10 @@ fn filter_rule_to_sql(
                     format!("certification_age = {value}")
                 }
                 NumericOp::Gt => format!(
-                    "COALESCE(certification_age, (SELECT p.certification_age FROM media p WHERE p.id = media.grandparent_id)) > {value}"
+                    "COALESCE(certification_age, (SELECT p.certification_age FROM media p WHERE p.id = COALESCE(media.grandparent_id, media.parent_id))) > {value}"
                 ),
                 NumericOp::Lt => format!(
-                    "COALESCE(certification_age, (SELECT p.certification_age FROM media p WHERE p.id = media.grandparent_id)) <= {value}"
+                    "COALESCE(certification_age, (SELECT p.certification_age FROM media p WHERE p.id = COALESCE(media.grandparent_id, media.parent_id))) <= {value}"
                 ),
             };
             Some((sql, negated))
