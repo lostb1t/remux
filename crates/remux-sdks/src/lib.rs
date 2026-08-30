@@ -12,6 +12,7 @@ pub mod trakt;
 use bytes::Bytes;
 use http::{Extensions, HeaderMap, HeaderValue, Method, header};
 use itertools::Itertools;
+use remux_utils::Secret;
 use reqwest_middleware::{ClientBuilder as MwClientBuilder, ClientWithMiddleware};
 pub use reqwest_retry::policies::ExponentialBackoff;
 use reqwest_retry::{RetryPolicy, RetryTransientMiddleware};
@@ -109,19 +110,19 @@ pub enum ClientError {
     Unauthorized,
     #[error("rate limited, retry after {retry_after_secs}s")]
     RateLimited { retry_after_secs: u64 },
-    #[error("http error (status={status}) endpoint={endpoint:?}: {message}")]
+    #[error("http error (status={status}): {message}")]
     Http {
         status: u16,
         message: String,
-        endpoint: Option<String>,
-        body: Option<String>,
+        endpoint: Option<Secret<String>>,
+        body: Option<Secret<String>>,
     },
-    #[error("json error (status={status}) endpoint={endpoint:?}: {source}")]
+    #[error("json error (status={status}): {source}")]
     Json {
         status: u16,
         source: serde_json::Error,
-        endpoint: Option<String>,
-        body: Option<String>,
+        endpoint: Option<Secret<String>>,
+        body: Option<Secret<String>>,
     },
     #[error(transparent)]
     Transport(#[from] reqwest::Error),
@@ -141,6 +142,30 @@ impl ClientError {
             ClientError::Http { message, .. } => message.clone(),
             other => other.to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod client_error_tests {
+    use super::*;
+
+    #[test]
+    fn error_formatting_redacts_credentialed_endpoints() {
+        let secret = "do-not-log-this-token";
+        let error = ClientError::Http {
+            status: 502,
+            message: "upstream unavailable".to_string(),
+            endpoint: Some(Secret::new(format!(
+                "https://addon.example/manifest.json?token={secret}"
+            ))),
+            body: None,
+        };
+        assert!(
+            !error
+                .to_string()
+                .contains(secret)
+        );
+        assert!(!format!("{error:?}").contains(secret));
     }
 }
 
@@ -167,8 +192,8 @@ fn default_error_mapper(status: u16, endpoint: &str, body: &str) -> ClientError 
         ClientError::Http {
             status,
             message,
-            endpoint: Some(endpoint.to_string()),
-            body: Some(body.to_string()),
+            endpoint: Some(Secret::new(endpoint.to_string())),
+            body: Some(Secret::new(body.to_string())),
         }
     }
 }
@@ -467,8 +492,8 @@ impl<A: Auth + Clone> RestClient<A> {
                 let bytes = serde_json::to_vec(&v).map_err(|e| ClientError::Json {
                     status: 0,
                     source: e,
-                    endpoint: Some(url.to_string()),
-                    body: Some(v.to_string()),
+                    endpoint: Some(Secret::new(url.to_string())),
+                    body: Some(Secret::new(v.to_string())),
                 })?;
                 req.header(
                     header::CONTENT_TYPE,
@@ -543,8 +568,8 @@ impl<A: Auth + Clone> RestClient<A> {
                     .map_err(|e| ClientError::Json {
                         status: s,
                         source: e,
-                        endpoint: Some(url.to_string()),
-                        body: Some(text.clone()),
+                        endpoint: Some(Secret::new(url.to_string())),
+                        body: Some(Secret::new(text.clone())),
                     })?;
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(ttl) = endpoint.should_cache(&arc) {
@@ -570,8 +595,8 @@ impl<A: Auth + Clone> RestClient<A> {
                     .map_err(|e| ClientError::Json {
                         status: s,
                         source: e,
-                        endpoint: Some(url.to_string()),
-                        body: Some(text.clone()),
+                        endpoint: Some(Secret::new(url.to_string())),
+                        body: Some(Secret::new(text.clone())),
                     })?;
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(ttl) = endpoint.should_cache(&arc) {
@@ -595,8 +620,8 @@ impl<A: Auth + Clone> RestClient<A> {
                     .map_err(|e| ClientError::Json {
                         status: s,
                         source: e,
-                        endpoint: Some(url.to_string()),
-                        body: Some(text.clone()),
+                        endpoint: Some(Secret::new(url.to_string())),
+                        body: Some(Secret::new(text.clone())),
                     })
             }
             s => Err((self.map_error)(s, &url.to_string(), &text)),
