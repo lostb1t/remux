@@ -4022,9 +4022,9 @@ impl Media {
 
             if !container_only && has_policy {
                 if let Some(max_rating) = filter.max_parental_rating {
-                    qb.push(" AND (certification_age IS NULL OR certification_age <= ")
+                    qb.push(" AND COALESCE(certification_age, (SELECT p.certification_age FROM media p WHERE p.id = media.grandparent_id)) <= ")
                         .push_bind(max_rating)
-                        .push(")");
+                        .push("");
                 }
 
                 if let Some(blocked) = &filter.blocked_tags {
@@ -7408,8 +7408,12 @@ fn filter_rule_to_sql(
                 NumericOp::Eq | NumericOp::NotEq => {
                     format!("certification_age = {value}")
                 }
-                NumericOp::Gt => format!("certification_age > {value}"),
-                NumericOp::Lt => format!("certification_age <= {value}"),
+                NumericOp::Gt => format!(
+                    "COALESCE(certification_age, (SELECT p.certification_age FROM media p WHERE p.id = media.grandparent_id)) > {value}"
+                ),
+                NumericOp::Lt => format!(
+                    "COALESCE(certification_age, (SELECT p.certification_age FROM media p WHERE p.id = media.grandparent_id)) <= {value}"
+                ),
             };
             Some((sql, negated))
         }

@@ -3403,7 +3403,7 @@ mod tests {
     use chrono::Utc;
     use http::header::HeaderValue;
     use remux_sdks::remux::{
-        CollectionFilter, FilterGroup, FilterMatchMode, FilterRule, SetOp,
+        CollectionFilter, FilterGroup, FilterMatchMode, FilterRule, NumericOp, SetOp,
         VideoContainer,
     };
     use uuid::Uuid;
@@ -5028,6 +5028,273 @@ mod tests {
             indices,
             vec![1, 2, 3],
             "episodes must be in episode-number order, got {indices:?}"
+        );
+    }
+
+    async fn set_max_parental_rating(db: &sqlx::SqlitePool, rating: i32) {
+        let mut user: db::User = sqlx::query_as("SELECT * FROM users LIMIT 1")
+            .fetch_one(db)
+            .await
+            .unwrap();
+        let mut policy = user
+            .policy
+            .as_ref()
+            .map(|p| {
+                p.0.clone()
+            })
+            .unwrap_or_default();
+        policy.max_parental_rating = Some(rating);
+        user.policy = Some(sqlx::types::Json(policy));
+        user.save(db)
+            .await
+            .unwrap();
+    }
+
+    fn parental_rating_filter(max_age: i64) -> CollectionFilter {
+        CollectionFilter {
+            match_mode: FilterMatchMode::All,
+            groups: vec![FilterGroup {
+                match_mode: FilterMatchMode::All,
+                rules: vec![FilterRule::ParentalRating {
+                    op: NumericOp::Lt,
+                    value: max_age,
+                }],
+            }],
+        }
+    }
+
+    // Episode with no certification_age; series has certification_age=13.
+    // max_parental_rating=13 must pass the episode through via grandparent fallback.
+    #[tokio::test]
+    async fn test_max_parental_rating_episode_inherits_series_rating_pass() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(&server, &auth).await;
+
+        let mut series =
+            insert_media(db, "Teen Drama", db::MediaKind::Series, "tt8800001").await;
+        series.certification_age = Some(13);
+        series
+            .save(db)
+            .await
+            .unwrap();
+        let _ep = insert_episode(db, "Pilot", &series).await;
+
+        set_max_parental_rating(db, 13).await;
+
+        let resp = server
+            .get(&format!("/users/{user_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[("includeItemTypes", "Episode")])
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["TotalRecordCount"]
+                .as_i64()
+                .unwrap_or(0),
+            1,
+            "episode whose series rating equals max must pass"
+        );
+    }
+
+    // Episode with no certification_age; series has certification_age=16.
+    // max_parental_rating=13 must block the episode via grandparent fallback.
+    #[tokio::test]
+    async fn test_max_parental_rating_episode_inherits_series_rating_block() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(&server, &auth).await;
+
+        let mut series =
+            insert_media(db, "Adult Drama", db::MediaKind::Series, "tt8800002").await;
+        series.certification_age = Some(16);
+        series
+            .save(db)
+            .await
+            .unwrap();
+        let _ep = insert_episode(db, "Pilot", &series).await;
+
+        set_max_parental_rating(db, 13).await;
+
+        let resp = server
+            .get(&format!("/users/{user_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[("includeItemTypes", "Episode")])
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["TotalRecordCount"]
+                .as_i64()
+                .unwrap_or(0),
+            0,
+            "episode whose series rating exceeds max must be blocked"
+        );
+    }
+
+    // Episode with no certification_age; series also has no certification_age.
+    // max_parental_rating must block the episode (unrated is not treated as safe).
+    #[tokio::test]
+    async fn test_max_parental_rating_unrated_series_blocks_episode() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(&server, &auth).await;
+
+        let series =
+            insert_media(db, "Unrated Show", db::MediaKind::Series, "tt8800003").await;
+        let _ep = insert_episode(db, "Pilot", &series).await;
+
+        set_max_parental_rating(db, 13).await;
+
+        let resp = server
+            .get(&format!("/users/{user_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[("includeItemTypes", "Episode")])
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["TotalRecordCount"]
+                .as_i64()
+                .unwrap_or(0),
+            0,
+            "episode with no rating and no series rating must be blocked"
+        );
+    }
+
+    // ParentalRating filter_rule with Lt=13: episode with unrated self but series=13 must pass.
+    #[tokio::test]
+    async fn test_filter_rule_parental_rating_episode_inherits_series_pass() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(&server, &auth).await;
+
+        let mut series =
+            insert_media(db, "Teen Show", db::MediaKind::Series, "tt8800004").await;
+        series.certification_age = Some(13);
+        series
+            .save(db)
+            .await
+            .unwrap();
+        let _ep = insert_episode(db, "Pilot", &series).await;
+
+        let collection = insert_smart_collection_with_filter(
+            db,
+            "Kids Shows",
+            db::CollectionMediaKind::Series,
+            Some(parental_rating_filter(13)),
+        )
+        .await;
+
+        let resp = server
+            .get(&format!("/users/{user_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[
+                (
+                    "parentId",
+                    collection
+                        .id
+                        .to_string()
+                        .as_str(),
+                ),
+                ("recursive", "true"),
+                ("includeItemTypes", "Episode"),
+            ])
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["TotalRecordCount"]
+                .as_i64()
+                .unwrap_or(0),
+            1,
+            "episode under series with rating<=max must appear"
+        );
+    }
+
+    // ParentalRating filter_rule with Lt=13: episode under series with rating=16 must be blocked.
+    #[tokio::test]
+    async fn test_filter_rule_parental_rating_episode_inherits_series_block() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(&server, &auth).await;
+
+        let mut series =
+            insert_media(db, "Adult Show", db::MediaKind::Series, "tt8800005").await;
+        series.certification_age = Some(16);
+        series
+            .save(db)
+            .await
+            .unwrap();
+        let _ep = insert_episode(db, "Pilot", &series).await;
+
+        let collection = insert_smart_collection_with_filter(
+            db,
+            "Kids Shows 2",
+            db::CollectionMediaKind::Series,
+            Some(parental_rating_filter(13)),
+        )
+        .await;
+
+        let resp = server
+            .get(&format!("/users/{user_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[
+                (
+                    "parentId",
+                    collection
+                        .id
+                        .to_string()
+                        .as_str(),
+                ),
+                ("recursive", "true"),
+                ("includeItemTypes", "Episode"),
+            ])
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["TotalRecordCount"]
+                .as_i64()
+                .unwrap_or(0),
+            0,
+            "episode under series with rating>max must be blocked"
         );
     }
 }
