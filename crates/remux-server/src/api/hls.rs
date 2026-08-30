@@ -401,11 +401,24 @@ async fn create_hls_session(
                 hw => Some(hw.to_string()),
             }
         };
+        let (http_request_headers, stream_addon_id) = resolved_media
+            .stream_info
+            .as_ref()
+            .and_then(|si| match &si.descriptor {
+                crate::stream::StreamDescriptor::Http {
+                    request_headers,
+                    addon_id,
+                    ..
+                } => Some((request_headers.clone(), *addon_id)),
+                _ => None,
+            })
+            .unwrap_or_default();
         let session = TranscodeSession::new(
             play_session_id.clone(),
             id,
             media_source_id,
             input_url.clone(),
+            http_request_headers,
             output_dir,
             video_codec.clone(),
             audio_codec.clone(),
@@ -433,6 +446,7 @@ async fn create_hls_session(
             source_frame_rate,
             session_video_bitrate,
             session_hw_accel,
+            stream_addon_id,
         );
 
         state
@@ -443,6 +457,11 @@ async fn create_hls_session(
         // Start transcoding in background
         let session_clone = session.clone();
         let encoding_opts = encoding_opts_hls.clone();
+        let http_request_headers = session
+            .read()
+            .await
+            .http_request_headers
+            .clone();
         let params = crate::playback::engine::TranscodeParams {
             input_url,
             output_dir: session
@@ -533,6 +552,7 @@ async fn create_hls_session(
             normalize_audio_loudness: encoding_opts
                 .normalize_audio_loudness
                 .unwrap_or(false),
+            http_request_headers,
         };
 
         // Spawn the transcode task with proper error handling
@@ -1073,7 +1093,15 @@ async fn hls_segment_inner(
                 let has_running_ffmpeg = s
                     .kill_tx
                     .is_some();
-                if !has_running_ffmpeg {
+                let session_state = s
+                    .state
+                    .clone();
+                let should_restart = has_running_ffmpeg
+                    || matches!(
+                        session_state,
+                        TranscodeState::Error(_) | TranscodeState::Complete
+                    );
+                if !should_restart {
                     drop(s);
                     // Another request already restarted — fall through to wait loop.
                 } else {
@@ -1097,6 +1125,12 @@ async fn hls_segment_inner(
                     let audio_stream_index = s.audio_stream_index;
                     let subtitle_stream_index = s.subtitle_stream_index;
                     let burn_subtitle = s.burn_subtitle;
+                    let http_request_headers = s
+                        .http_request_headers
+                        .clone();
+                    let needs_url_refresh = s.needs_url_refresh;
+                    let item_id = s.item_id;
+                    let stream_addon_id = s.stream_addon_id;
                     drop(s);
 
                     // Kill running FFmpeg and clean up stale segments (params
@@ -1121,6 +1155,64 @@ async fn hls_segment_inner(
                     }
                     let _ = std::fs::remove_dir_all(&output_dir);
                     let _ = std::fs::create_dir_all(&output_dir);
+
+                    // Refresh URL if needed (e.g., due to 403 error)
+                    let (input_url, http_request_headers) = if needs_url_refresh {
+                        // Check retry limit (max 5 attempts)
+                        let mut should_refresh = false;
+                        {
+                            let mut s = session
+                                .write()
+                                .await;
+                            if s.url_refresh_attempts < 5 {
+                                s.url_refresh_attempts += 1;
+                                should_refresh = true;
+                                debug!(session_id = %s.id, attempt = s.url_refresh_attempts, "Retrying URL refresh");
+                            } else {
+                                warn!(session_id = %s.id, "Max URL refresh attempts (5) reached, giving up");
+                            }
+                        }
+
+                        if should_refresh {
+                            if let Some(addon_id) = stream_addon_id {
+                                if let Some(addon_runtime) = state
+                                    .ctx
+                                    .addons
+                                    .get(addon_id)
+                                {
+                                    if let Some(stream_addon) = &addon_runtime.stream {
+                                        if let Ok(Some((new_url, new_headers))) =
+                                            stream_addon
+                                                .refresh_stream_url(item_id, &state.ctx)
+                                                .await
+                                        {
+                                            // Update session with refreshed URL
+                                            let mut s = session
+                                                .write()
+                                                .await;
+                                            s.input_url = new_url.clone();
+                                            s.http_request_headers =
+                                                new_headers.clone();
+                                            s.needs_url_refresh = false;
+                                            (new_url, new_headers)
+                                        } else {
+                                            (input_url, http_request_headers)
+                                        }
+                                    } else {
+                                        (input_url, http_request_headers)
+                                    }
+                                } else {
+                                    (input_url, http_request_headers)
+                                }
+                            } else {
+                                (input_url, http_request_headers)
+                            }
+                        } else {
+                            (input_url, http_request_headers)
+                        }
+                    } else {
+                        (input_url, http_request_headers)
+                    };
 
                     // Calculate the seek position from the runtimeTicks query param
                     // (cumulative ticks to start of this segment) provided by our
@@ -1216,6 +1308,7 @@ async fn hls_segment_inner(
                         normalize_audio_loudness: encoding_opts
                             .normalize_audio_loudness
                             .unwrap_or(false),
+                        http_request_headers,
                     };
 
                     // Reinitialise the session's state for the new transcode run.

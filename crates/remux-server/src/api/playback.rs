@@ -874,6 +874,13 @@ async fn videos_stream_inner(
     };
     let descriptor = si.descriptor;
 
+    let http_request_headers = match &descriptor {
+        crate::stream::StreamDescriptor::Http {
+            request_headers, ..
+        } => request_headers.clone(),
+        _ => std::collections::HashMap::new(),
+    };
+
     // Direct play: serve bytes directly through the StreamSource trait.
     // This handles HTTP, local files, torrents, and opendal without going through
     // our own HTTP proxy — TorrentSource resolves and streams inline.
@@ -1074,6 +1081,7 @@ async fn videos_stream_inner(
         normalize_audio_loudness: encoding_opts
             .normalize_audio_loudness
             .unwrap_or(false),
+        http_request_headers,
     };
 
     let stream = crate::playback::engine::start_progressive_transcode(params)?;

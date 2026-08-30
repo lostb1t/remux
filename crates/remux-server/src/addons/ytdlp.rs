@@ -71,7 +71,7 @@ impl AddonPreset for YtDlpPreset {
 
     fn from_cfg(
         &self,
-        _addon_id: Uuid,
+        addon_id: Uuid,
         cfg: &serde_json::Value,
         config: &crate::Config,
     ) -> Result<AddonCapabilities> {
@@ -96,6 +96,7 @@ impl AddonPreset for YtDlpPreset {
                 )
             });
         let addon = Arc::new(YtDlpAddon {
+            id: addon_id,
             cookies,
             executable: PathBuf::from("yt-dlp"),
             bgutil_script_path: config
@@ -152,6 +153,7 @@ inventory::submit! {
 }
 
 pub struct YtDlpAddon {
+    id: Uuid,
     cookies: Option<String>,
     executable: PathBuf,
     bgutil_script_path: PathBuf,
@@ -324,6 +326,12 @@ struct YtDlpFormat {
     ext: Option<String>,
     #[serde(default)]
     container: Option<String>,
+    #[serde(default)]
+    width: Option<u64>,
+    #[serde(default)]
+    height: Option<u64>,
+    #[serde(default)]
+    http_headers: Option<std::collections::HashMap<String, String>>,
 }
 
 impl YtDlpFormat {
@@ -337,6 +345,15 @@ impl YtDlpFormat {
             .as_deref()
             .map_or(false, |a| a != "none" && !a.is_empty());
         no_video && has_audio
+    }
+
+    fn is_playable(&self) -> bool {
+        self.url
+            .is_some()
+            && self
+                .acodec
+                .as_deref()
+                .is_some_and(|c| c != "none")
     }
 
     fn bitrate(&self) -> Option<i64> {
@@ -443,7 +460,12 @@ impl YtDlpAddon {
                     .as_http_url()
             })
         {
-            return Ok(url.to_owned());
+            // Never reuse a signed googlevideo URL — only reuse a YouTube watch page URL
+            if url.contains("youtube.com/watch")
+                || url.contains("music.youtube.com/watch")
+            {
+                return Ok(url.to_owned());
+            }
         }
         if let Some(id) = &media
             .external_ids
@@ -465,6 +487,53 @@ impl YtDlpAddon {
         video
             .webpage_url
             .ok_or_else(|| anyhow!("yt-dlp search returned no webpage_url for query"))
+    }
+
+    /// Extract YouTube video ID from a watch URL.
+    fn extract_youtube_id(url: &str) -> Option<String> {
+        // Handle youtube.com/watch?v=VIDEO_ID
+        if let Some(rest) = url.strip_prefix("https://www.youtube.com/watch?v=") {
+            let id = rest
+                .split('&')
+                .next()
+                .unwrap_or(rest);
+            if id.len() == 11
+                && id
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+            {
+                return Some(id.to_string());
+            }
+        }
+        // Handle music.youtube.com/watch?v=VIDEO_ID
+        if let Some(rest) = url.strip_prefix("https://music.youtube.com/watch?v=") {
+            let id = rest
+                .split('&')
+                .next()
+                .unwrap_or(rest);
+            if id.len() == 11
+                && id
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+            {
+                return Some(id.to_string());
+            }
+        }
+        // Handle youtu.be/VIDEO_ID
+        if let Some(rest) = url.strip_prefix("https://youtu.be/") {
+            let id = rest
+                .split('?')
+                .next()
+                .unwrap_or(rest);
+            if id.len() == 11
+                && id
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+            {
+                return Some(id.to_string());
+            }
+        }
+        None
     }
 
     async fn run_flat_playlist(
@@ -855,12 +924,20 @@ impl YtDlpAddon {
                 (Some(c), None) => c.to_uppercase(),
                 _ => f.label(),
             };
+            let request_headers = f
+                .http_headers
+                .clone()
+                .unwrap_or_default();
             crate::stream::StreamInfo {
-                descriptor: crate::stream::StreamDescriptor::http(
-                    f.url
+                descriptor: crate::stream::StreamDescriptor::Http {
+                    url: f
+                        .url
                         .clone()
                         .unwrap_or_default(),
-                ),
+                    request_headers,
+                    response_headers: Default::default(),
+                    addon_id: Some(self.id),
+                },
                 name: Some(f.label()),
                 probe_data: Some(api::MediaSourceInfo {
                     container: f
@@ -893,29 +970,72 @@ impl YtDlpAddon {
             }
         };
 
-        let audio_only: Vec<crate::stream::StreamInfo> = video
+        let playable: Vec<&YtDlpFormat> = video
             .formats
             .iter()
-            .filter(|f| {
-                f.url
-                    .is_some()
-                    && f.is_audio_only()
-            })
-            .map(&to_source)
+            .filter(|f| f.is_playable())
             .collect();
 
-        if !audio_only.is_empty() {
-            return Ok(audio_only);
+        if playable.is_empty() {
+            return Ok(vec![]);
         }
 
-        Ok(video
-            .formats
+        let audio_only: Vec<&YtDlpFormat> = playable
             .iter()
-            .filter(|f| {
-                f.url
-                    .is_some()
-            })
+            .filter(|f| f.is_audio_only())
+            .copied()
+            .collect();
+
+        let best = if !audio_only.is_empty() {
+            audio_only
+                .into_iter()
+                .max_by_key(|f| {
+                    f.bitrate()
+                        .unwrap_or(0)
+                })
+        } else {
+            playable
+                .into_iter()
+                .max_by(|a, b| {
+                    let a_abr = a
+                        .abr
+                        .unwrap_or(0.0);
+                    let b_abr = b
+                        .abr
+                        .unwrap_or(0.0);
+                    a_abr
+                        .partial_cmp(&b_abr)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| {
+                            // fallback for HLS muxed where abr is null
+                            a.tbr
+                                .partial_cmp(&b.tbr)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .then_with(|| {
+                            let a_pixels = a
+                                .width
+                                .unwrap_or(0)
+                                as u64
+                                * a.height
+                                    .unwrap_or(0)
+                                    as u64;
+                            let b_pixels = b
+                                .width
+                                .unwrap_or(0)
+                                as u64
+                                * b.height
+                                    .unwrap_or(0)
+                                    as u64;
+                            // smaller video wins ties
+                            b_pixels.cmp(&a_pixels)
+                        })
+                })
+        };
+
+        Ok(best
             .map(&to_source)
+            .into_iter()
             .collect())
     }
 }
@@ -989,6 +1109,82 @@ impl StreamAddon for YtDlpAddon {
     ) -> Result<Vec<crate::stream::StreamInfo>> {
         self.get_streams_for(media)
             .await
+    }
+
+    async fn refresh_stream_url(
+        &self,
+        media_id: Uuid,
+        ctx: &AppContext,
+    ) -> Result<Option<(String, std::collections::HashMap<String, String>)>> {
+        let mut media = match crate::db::Media::get_by_id(&ctx.db, &media_id).await {
+            Ok(Some(m)) => m,
+            Ok(None) => return Ok(None),
+            Err(_) => return Ok(None),
+        };
+
+        let url = match self
+            .resolve_watch_url(&media)
+            .await
+        {
+            Ok(u) => u,
+            Err(_) => return Ok(None),
+        };
+
+        // Extract YouTube ID from watch URL and persist it to avoid re-searching on retries
+        if let Some(video_id) = Self::extract_youtube_id(&url) {
+            if media
+                .external_ids
+                .youtube_id
+                .as_deref()
+                != Some(video_id.as_str())
+            {
+                media
+                    .external_ids
+                    .youtube_id = Some(video_id.clone());
+                if let Err(e) = media
+                    .save(&ctx.db)
+                    .await
+                {
+                    warn!(media_id = %media_id, error = %e, "Failed to persist youtube_id");
+                } else {
+                    debug!(media_id = %media_id, youtube_id = %video_id, "Persisted youtube_id for future refreshes");
+                }
+            }
+        }
+
+        let video = match self
+            .dump_json(&url)
+            .await
+        {
+            Ok(v) => v,
+            Err(_) => return Ok(None),
+        };
+
+        let best_audio = video
+            .formats
+            .iter()
+            .filter(|f| f.is_audio_only() && f.is_playable())
+            .max_by_key(|f| {
+                f.bitrate()
+                    .unwrap_or(0)
+            });
+
+        if let Some(f) = best_audio {
+            let headers = f
+                .http_headers
+                .clone()
+                .unwrap_or_default();
+            let url = f
+                .url
+                .clone()
+                .unwrap_or_default();
+            if url.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some((url, headers)))
+        } else {
+            Ok(None)
+        }
     }
 }
 

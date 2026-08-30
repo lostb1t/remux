@@ -21,6 +21,10 @@ pub struct TranscodeSession {
     pub media_source_id: Uuid,
     pub output_dir: PathBuf,
     pub input_url: String,
+    pub http_request_headers: std::collections::HashMap<String, String>,
+    pub needs_url_refresh: bool,
+    pub url_refresh_attempts: u32,
+    pub stream_addon_id: Option<Uuid>,
     pub state: TranscodeState,
     /// Broadcasts state transitions so waiters can react immediately.
     pub state_tx: Arc<watch::Sender<TranscodeState>>,
@@ -75,6 +79,7 @@ impl TranscodeSession {
         item_id: Uuid,
         media_source_id: Uuid,
         input_url: String,
+        http_request_headers: std::collections::HashMap<String, String>,
         output_dir: PathBuf,
         video_codec: String,
         audio_codec: String,
@@ -95,6 +100,7 @@ impl TranscodeSession {
         source_frame_rate: Option<f32>,
         video_bitrate: Option<u32>,
         hardware_acceleration_type: Option<String>,
+        stream_addon_id: Option<Uuid>,
     ) -> Arc<tokio::sync::RwLock<Self>> {
         let _ = std::fs::create_dir_all(&output_dir);
         let (state_tx, _) = watch::channel(TranscodeState::Starting);
@@ -104,6 +110,10 @@ impl TranscodeSession {
             media_source_id,
             output_dir,
             input_url,
+            http_request_headers,
+            needs_url_refresh: false,
+            url_refresh_attempts: 0,
+            stream_addon_id,
             state: TranscodeState::Starting,
             state_tx: Arc::new(state_tx),
             created_at: Instant::now(),

@@ -821,6 +821,15 @@ pub trait StreamAddon: Send + Sync {
             .detail("serve_stream not implemented for this addon")
             .build())
     }
+    /// Refresh stream URL and headers for a media item (e.g., when signed URL expires).
+    /// Default implementation returns None (no-op for addons that don't support refresh).
+    async fn refresh_stream_url(
+        &self,
+        media_id: Uuid,
+        ctx: &AppContext,
+    ) -> Result<Option<(String, std::collections::HashMap<String, String>)>> {
+        Ok(None)
+    }
 }
 
 #[async_trait]

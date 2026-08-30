@@ -316,6 +316,8 @@ pub struct TranscodeParams {
     /// Apply `loudnorm=I=-14:TP=-1:LRA=11` when transcoding audio. Has no effect
     /// when audio_codec is "copy". See EncodingOptions::normalize_audio_loudness.
     pub normalize_audio_loudness: bool,
+    /// HTTP request headers to pass to ffmpeg for http inputs.
+    pub http_request_headers: std::collections::HashMap<String, String>,
 }
 
 impl Default for TranscodeParams {
@@ -353,6 +355,7 @@ impl Default for TranscodeParams {
             h265_crf: 28,
             is_live: false,
             normalize_audio_loudness: false,
+            http_request_headers: std::collections::HashMap::new(),
         }
     }
 }
@@ -617,6 +620,20 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             do_vpp_tonemap,
         ),
     );
+
+    if !params
+        .http_request_headers
+        .is_empty()
+    {
+        // Build ffmpeg -headers string from the map provided by yt-dlp
+        let header_string = params
+            .http_request_headers
+            .iter()
+            .map(|(k, v)| format!("{k}: {v}"))
+            .collect::<Vec<_>>()
+            .join("\r\n");
+        args.extend(["-headers".into(), header_string]);
+    }
 
     // Input seek (fast, before -i) — not applicable to live streams
     if !params.is_live {
@@ -1228,16 +1245,29 @@ pub async fn start_transcode(
                     info!(session_id = %s.id, sw_fallback, "Transcode completed successfully");
                 }
                 Some(Ok(status)) => {
-                    let err_msg = format!(
-                        "ffmpeg exited with status {}: {}",
-                        status,
-                        stderr_out.trim()
-                    );
-                    error!(session_id = %s.id, error = %err_msg, "Transcode failed");
-                    s.state = TranscodeState::Error(err_msg.clone());
-                    let _ = s
-                        .state_tx
-                        .send(TranscodeState::Error(err_msg));
+                    let stderr_str = stderr_out
+                        .trim()
+                        .to_string();
+                    let is_403 =
+                        stderr_str.contains("403") || stderr_str.contains("Forbidden");
+                    if is_403 {
+                        warn!(session_id = %s.id, stderr = %stderr_str, "Transcode failed with 403, marking for URL refresh");
+                        s.needs_url_refresh = true;
+                        s.state = TranscodeState::Error("403 Forbidden".into());
+                        let _ = s
+                            .state_tx
+                            .send(TranscodeState::Error("403 Forbidden".into()));
+                    } else {
+                        let err_msg = format!(
+                            "ffmpeg exited with status {}: {}",
+                            status, &stderr_str
+                        );
+                        error!(session_id = %s.id, error = %err_msg, "Transcode failed");
+                        s.state = TranscodeState::Error(err_msg.clone());
+                        let _ = s
+                            .state_tx
+                            .send(TranscodeState::Error(err_msg));
+                    }
                 }
                 Some(Err(e)) => {
                     let err_msg = format!("Failed to wait for ffmpeg: {}", e);
@@ -1295,6 +1325,8 @@ pub struct ProgressiveTranscodeParams {
     /// Apply `loudnorm=I=-14:TP=-1:LRA=11` when transcoding audio. Has no effect
     /// when audio_codec is "copy". See EncodingOptions::normalize_audio_loudness.
     pub normalize_audio_loudness: bool,
+    /// HTTP request headers to pass to ffmpeg for http inputs.
+    pub http_request_headers: std::collections::HashMap<String, String>,
 }
 
 /// Build the ffmpeg CLI args for a progressive transcode piped to stdout.
@@ -1386,6 +1418,19 @@ pub(crate) fn build_progressive_args(
         "-reconnect_delay_max".into(),
         "5".into(),
     ];
+
+    if !params
+        .http_request_headers
+        .is_empty()
+    {
+        let header_string = params
+            .http_request_headers
+            .iter()
+            .map(|(k, v)| format!("{k}: {v}"))
+            .collect::<Vec<_>>()
+            .join("\r\n");
+        args.extend(["-headers".into(), header_string]);
+    }
 
     let burn_subtitle_filter = params.burn_subtitle
         && params
@@ -2204,6 +2249,7 @@ mod tests {
             h264_crf: 23,
             h265_crf: 28,
             normalize_audio_loudness: false,
+            http_request_headers: std::collections::HashMap::new(),
         }
     }
 
@@ -2430,6 +2476,10 @@ mod tests {
             media_source_id: Uuid::nil(),
             output_dir: PathBuf::from("/tmp/test_playlist"),
             input_url: "http://example.invalid/video".into(),
+            http_request_headers: std::collections::HashMap::new(),
+            needs_url_refresh: false,
+            url_refresh_attempts: 0,
+            stream_addon_id: None,
             state: TranscodeState::Running,
             state_tx: Arc::new(tokio::sync::watch::channel(TranscodeState::Running).0),
             created_at: std::time::Instant::now(),

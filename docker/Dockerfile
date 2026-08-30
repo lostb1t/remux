@@ -9,6 +9,7 @@ ARG IGC1_LEGACY_VER=1.0.17537.24
 ARG NEO_LEGACY_VER=24.35.30872.36
 ARG TARGETARCH
 ARG BGUTIL_POT_VER=0.8.1
+ARG DENO_VER=2.9.5
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV WEB_PATH=/app/jellyfin-web
@@ -41,6 +42,11 @@ RUN apt-get update \
         libfreetype6 \
         libssl3 \
     && pip3 install --break-system-packages yt-dlp "curl-cffi>=0.10,<0.15" \
+    && if [ "${TARGETARCH}" = "amd64" ]; then DENO_ARCH="x86_64"; else DENO_ARCH="aarch64"; fi \
+    && curl -fsSL https://dl.deno.land/release/v${DENO_VER}/deno-${DENO_ARCH}-unknown-linux-gnu.zip -o /tmp/deno.zip \
+    && python3 -c "import zipfile; zipfile.ZipFile('/tmp/deno.zip').extractall('/usr/local/bin')" \
+    && chmod +x /usr/local/bin/deno \
+    && rm /tmp/deno.zip \
     && if [ "${TARGETARCH}" = "amd64" ]; then BGUTIL_ARCH="x86_64"; else BGUTIL_ARCH="aarch64"; fi \
     && curl -fsSL "https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/download/v${BGUTIL_POT_VER}/bgutil-pot-linux-${BGUTIL_ARCH}" \
         -o /usr/local/bin/bgutil-pot \

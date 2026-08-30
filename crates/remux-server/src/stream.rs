@@ -71,6 +71,10 @@ pub enum StreamDescriptor {
         /// HTTP response headers to forward to the client.
         #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
         response_headers: std::collections::HashMap<String, String>,
+        /// Optional addon ID that owns this stream. If set, the stream is served
+        /// via the addon's `serve_stream` method instead of direct HTTP fetch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        addon_id: Option<Uuid>,
     },
     Local(PathBuf),
     Rtsp {
@@ -98,6 +102,7 @@ impl Default for StreamDescriptor {
             url: String::new(),
             request_headers: Default::default(),
             response_headers: Default::default(),
+            addon_id: None,
         }
     }
 }
@@ -108,6 +113,7 @@ impl StreamDescriptor {
             url: url.into(),
             request_headers: Default::default(),
             response_headers: Default::default(),
+            addon_id: None,
         }
     }
 
@@ -154,6 +160,7 @@ impl StreamDescriptor {
     pub fn addon_id(&self) -> Option<Uuid> {
         match self {
             Self::Opendal { addon_id, .. } => Some(*addon_id),
+            Self::Http { addon_id, .. } => *addon_id,
             _ => None,
         }
     }
@@ -187,6 +194,7 @@ impl StreamDescriptor {
                 url,
                 request_headers,
                 response_headers,
+                addon_id: _,
             } => Box::new(HttpSource {
                 url,
                 request_headers,
