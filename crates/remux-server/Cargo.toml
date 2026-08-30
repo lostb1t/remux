@@ -21,6 +21,10 @@ harness = false
 name = "items"
 harness = false
 
+[[bench]]
+name = "userviews"
+harness = false
+
 [dependencies]
 # 12 needed for milldeware compatibility
 reqwest = { version = "0.13", default-features = false, features = [

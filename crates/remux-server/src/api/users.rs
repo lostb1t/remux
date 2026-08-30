@@ -1204,16 +1204,69 @@ pub async fn userviews(
     session: auth::AuthSession,
     Query(q): Query<UserViewsQuery>,
 ) -> Result<impl IntoResponse> {
+    let config = session
+        .user
+        .configuration
+        .as_deref();
+    let policy = session
+        .user
+        .policy
+        .as_deref();
+
+    // When the policy restricts folder access, scope the DB query to only those
+    // views — this avoids counting children for every promoted collection.
+    let enabled_view_ids: Option<Vec<Uuid>> = policy.and_then(|pol| {
+        if !pol.enable_all_folders
+            && !pol
+                .enabled_folders
+                .is_empty()
+        {
+            Some(
+                pol.enabled_folders
+                    .iter()
+                    .filter_map(|s| Uuid::parse_str(s).ok())
+                    .collect(),
+            )
+        } else {
+            None
+        }
+    });
+
+    // Push hidden-view exclusions into the query so their children are never counted.
+    let excluded_view_ids: Option<Vec<Uuid>> = if q.include_hidden != Some(true) {
+        config.and_then(|cfg| {
+            if !cfg
+                .my_media_excludes
+                .is_empty()
+            {
+                Some(
+                    cfg.my_media_excludes
+                        .iter()
+                        .filter_map(|s| Uuid::parse_str(s).ok())
+                        .collect(),
+                )
+            } else {
+                None
+            }
+        })
+    } else {
+        None
+    };
+
     let library_filter = db::MediaFilter {
         kind: Some(vec![db::MediaKind::Collection, db::MediaKind::Folder]),
+        id: enabled_view_ids.clone(),
+        exclude_ids: excluded_view_ids.clone(),
         promoted: Some(true),
         exclude_childless: true,
+        user_id: Some(
+            session
+                .user
+                .id,
+        ),
         sort_by: vec![api::ItemSortBy::DisplayOrder],
         sort_order: vec![api::SortOrder::Ascending],
-        policy_filter: session
-            .user
-            .policy
-            .as_ref()
+        policy_filter: policy
             .and_then(|p| {
                 p.filter_rules
                     .as_ref()
@@ -1243,46 +1296,12 @@ pub async fn userviews(
 
     let mut libraries = library_result?.records;
 
-    let config = session
-        .user
-        .configuration
-        .as_deref();
-    let policy = session
-        .user
-        .policy
-        .as_deref();
-
-    // Limit to enabled folders when the policy restricts folder access.
-    if let Some(pol) = policy {
-        if !pol.enable_all_folders
-            && !pol
-                .enabled_folders
-                .is_empty()
-        {
-            let allowed: Vec<Uuid> = pol
-                .enabled_folders
-                .iter()
-                .filter_map(|s| Uuid::parse_str(s).ok())
-                .collect();
-            libraries.retain(|m| allowed.contains(&m.id));
-        }
+    // Safety net: reuse the same ID sets that were pushed into the DB query.
+    if let Some(ref allowed) = enabled_view_ids {
+        libraries.retain(|m| allowed.contains(&m.id));
     }
-
-    // Exclude hidden views unless the caller explicitly requests them.
-    if q.include_hidden != Some(true) {
-        if let Some(cfg) = config {
-            if !cfg
-                .my_media_excludes
-                .is_empty()
-            {
-                let excluded: Vec<Uuid> = cfg
-                    .my_media_excludes
-                    .iter()
-                    .filter_map(|s| Uuid::parse_str(s).ok())
-                    .collect();
-                libraries.retain(|m| !excluded.contains(&m.id));
-            }
-        }
+    if let Some(ref excluded) = excluded_view_ids {
+        libraries.retain(|m| !excluded.contains(&m.id));
     }
 
     // Stable-sort by OrderedViews: configured IDs come first in their saved
@@ -3944,6 +3963,140 @@ mod e2e_tests {
         assert!(
             pos_second < pos_first,
             "OrderedViews ordering not respected"
+        );
+    }
+
+    /// A "Watched" smart collection must not appear for a user who has no watched
+    /// items, even when another user has watched items that would match the filter.
+    #[tokio::test]
+    async fn test_userviews_watched_not_leaked() {
+        use remux_sdks::remux::{CollectionFilter, FilterGroup, FilterRule};
+
+        let (server, ctx, admin_token) = authenticated_server().await;
+        let admin_auth = auth_header_with_token(&admin_token);
+
+        // Insert a playable item.
+        let item = insert_test_source(&ctx.0).await;
+
+        // Insert a promoted smart collection that only shows watched items.
+        let watched_col = {
+            let mut m = db::Media {
+                title: "Watched".to_string(),
+                kind: db::MediaKind::Collection,
+                collection_kind: Some(db::CollectionKind::Smart),
+                promoted: true,
+                collection_smart_filter: Some(CollectionFilter {
+                    groups: vec![FilterGroup {
+                        rules: vec![FilterRule::Played { value: true }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            m.save(
+                &ctx.0
+                    .db,
+            )
+            .await
+            .unwrap();
+            m
+        };
+
+        // Create a second (non-admin) user.
+        let user2_resp = server
+            .post("/users/new")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&admin_auth).unwrap(),
+            )
+            .json(&json!({ "Name": "user2", "Password": "user2" }))
+            .await;
+        user2_resp.assert_status_ok();
+
+        let user2_token = server
+            .post("/users/authenticatebyname")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_static(AUTH_HEADER),
+            )
+            .json(&json!({ "Username": "user2", "Pw": "user2" }))
+            .await
+            .json::<serde_json::Value>()["AccessToken"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let user2_auth = auth_header_with_token(&user2_token);
+
+        let admin_id = get_user_id(&server, &admin_auth).await;
+
+        // Admin watches the item; user2 has not.
+        server
+            .post(&format!("/users/{}/playeditems/{}", admin_id, item.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&admin_auth).unwrap(),
+            )
+            .await;
+
+        // User2's /userviews must NOT include the Watched collection.
+        let resp = server
+            .get("/userviews")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&user2_auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let ids: Vec<Uuid> = resp.json::<serde_json::Value>()["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| {
+                v["Id"]
+                    .as_str()
+                    .and_then(|s| Uuid::parse_str(s).ok())
+            })
+            .collect();
+        assert!(
+            !ids.contains(&watched_col.id),
+            "Watched collection leaked from admin into user2's views"
+        );
+
+        let user2_id = get_user_id(&server, &user2_auth).await;
+
+        // Now user2 watches the item.
+        server
+            .post(&format!("/users/{}/playeditems/{}", user2_id, item.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&user2_auth).unwrap(),
+            )
+            .await
+            .assert_status_ok();
+
+        // User2's /userviews must now include the Watched collection.
+        let resp = server
+            .get("/userviews")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&user2_auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let ids: Vec<Uuid> = resp.json::<serde_json::Value>()["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| {
+                v["Id"]
+                    .as_str()
+                    .and_then(|s| Uuid::parse_str(s).ok())
+            })
+            .collect();
+        assert!(
+            ids.contains(&watched_col.id),
+            "Watched collection missing after user2 watches an item"
         );
     }
 }
