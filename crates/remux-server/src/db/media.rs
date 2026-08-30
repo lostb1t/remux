@@ -3236,18 +3236,34 @@ impl Media {
                 })
                 .unwrap_or(false);
 
+        // Only treat Played=true as a definite requirement when it appears inside an
+        // All-mode group within an All-mode top-level filter. If it's in an Any group,
+        // the rule is optional (other rules can satisfy the group), so the CTE path —
+        // which restricts the result set to only played items — would wrongly exclude
+        // non-played items that match the other rules in that group.
         let has_watched_true_rule = filter
             .filter_rules
-            .iter()
-            .flat_map(|cf| {
-                cf.groups
-                    .iter()
+            .as_ref()
+            .map(|cf| {
+                cf.match_mode == sdks::remux::FilterMatchMode::All
+                    && cf
+                        .groups
+                        .iter()
+                        .any(|g| {
+                            g.match_mode == sdks::remux::FilterMatchMode::All
+                                && g.rules
+                                    .iter()
+                                    .any(|r| {
+                                        matches!(
+                                            r,
+                                            sdks::remux::FilterRule::Played {
+                                                value: true
+                                            }
+                                        )
+                                    })
+                        })
             })
-            .flat_map(|g| {
-                g.rules
-                    .iter()
-            })
-            .any(|r| matches!(r, sdks::remux::FilterRule::Watched { value: true }));
+            .unwrap_or(false);
 
         // When Watched=true filter is active AND DatePlayed sort is requested, inject a
         // watched_dates CTE that computes effective watched dates once (rolling episode
@@ -7231,7 +7247,7 @@ fn filter_rule_to_sql(
     use remux_sdks::remux::{FilterRule as R, NumericOp, SetOp};
 
     if skip_watched_true {
-        if matches!(rule, R::Watched { value: true }) {
+        if matches!(rule, R::Played { value: true }) {
             return None;
         }
     }
@@ -7522,7 +7538,7 @@ fn filter_rule_to_sql(
             };
             Some((sql, false))
         }
-        R::Watched { value } => {
+        R::Played { value } => {
             let user_clause = user_id
                 .map(|id| format!(" AND ums.user_id = X'{}'", id.simple()))
                 .unwrap_or_default();
@@ -9616,7 +9632,7 @@ mod tests {
     ) -> Vec<String> {
         let filter = remux_sdks::remux::CollectionFilter {
             groups: vec![remux_sdks::remux::FilterGroup {
-                rules: vec![remux_sdks::remux::FilterRule::Watched { value: true }],
+                rules: vec![remux_sdks::remux::FilterRule::Played { value: true }],
                 match_mode: remux_sdks::remux::FilterMatchMode::All,
             }],
             match_mode: remux_sdks::remux::FilterMatchMode::All,
@@ -9804,7 +9820,7 @@ mod tests {
 
         let filter_rules = remux_sdks::remux::CollectionFilter {
             groups: vec![remux_sdks::remux::FilterGroup {
-                rules: vec![remux_sdks::remux::FilterRule::Watched { value: true }],
+                rules: vec![remux_sdks::remux::FilterRule::Played { value: true }],
                 match_mode: remux_sdks::remux::FilterMatchMode::All,
             }],
             match_mode: remux_sdks::remux::FilterMatchMode::All,

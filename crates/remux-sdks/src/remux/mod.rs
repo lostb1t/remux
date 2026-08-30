@@ -3385,8 +3385,9 @@ pub enum FilterRule {
     Favorite {
         value: bool,
     },
-    /// Matches items the requesting user has (or has not) watched (play_count > 0).
-    Watched {
+    /// Matches items the requesting user has (or has not) played (play_count > 0).
+    #[serde(alias = "watched")]
+    Played {
         value: bool,
     },
     /// Matches items whose media kind is (or is not) in the given set.
