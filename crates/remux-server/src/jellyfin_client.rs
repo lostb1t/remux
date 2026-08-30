@@ -22,7 +22,11 @@ pub trait JellyfinClient: Send {
                 s.is_empty()
                     || matches!(
                         s.first(),
-                        Some(ItemSortBy::SortName | ItemSortBy::Name)
+                        Some(
+                            ItemSortBy::SortName
+                                | ItemSortBy::Name
+                                | ItemSortBy::IsFolder
+                        )
                     )
             })
             .unwrap_or(true)
@@ -69,7 +73,11 @@ impl JellyfinClient for SenPlayer {
                     s.is_empty()
                         || matches!(
                             s.first(),
-                            Some(ItemSortBy::SortName | ItemSortBy::Name)
+                            Some(
+                                ItemSortBy::SortName
+                                    | ItemSortBy::Name
+                                    | ItemSortBy::IsFolder
+                            )
                         )
                 })
                 .unwrap_or(true)
