@@ -10,6 +10,9 @@ pub static CSS: &str = r##"
     to { transform: rotate(360deg); }
   }
 
+  /* ── ElegantFin: pull logo up so it clears the play button ── */
+  .detailLogo { top: 27vh !important; }
+
   /* ── Card listing: hide inline play button overlay ───────────── */
   .cardOverlayButton-br { display: none !important; }
 
