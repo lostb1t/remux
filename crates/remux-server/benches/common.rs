@@ -139,9 +139,47 @@ async fn seed_all(db: &sqlx::SqlitePool, user_id: Uuid) {
 
     seed_series(db, user_id, now, old_ts).await;
     seed_movies(db, user_id, now).await;
+    seed_userviews(db).await;
 
     sqlx::query("ANALYZE")
         .execute(db)
+        .await
+        .unwrap();
+}
+
+async fn seed_userviews(db: &sqlx::SqlitePool) {
+    use remux_server::sdks::remux::{
+        CollectionFilter, FilterGroup, FilterMatchMode, FilterRule,
+    };
+
+    let plain = db::Media {
+        title: "Movies".to_string(),
+        kind: db::MediaKind::Collection,
+        promoted: true,
+        ..Default::default()
+    };
+    let watched = db::Media {
+        title: "Watched".to_string(),
+        kind: db::MediaKind::Collection,
+        collection_kind: Some(db::CollectionKind::Smart),
+        promoted: true,
+        collection_smart_filter: Some(CollectionFilter {
+            groups: vec![FilterGroup {
+                rules: vec![FilterRule::Played { value: true }],
+                match_mode: FilterMatchMode::All,
+            }],
+            match_mode: FilterMatchMode::All,
+        }),
+        ..Default::default()
+    };
+
+    // seed plain collection via upsert (no smart filter to persist)
+    db::Media::upsert(db, &[plain])
+        .await
+        .unwrap();
+    // seed watched collection via save so collection_smart_filter is stored
+    let mut w = watched;
+    w.save(db)
         .await
         .unwrap();
 }
