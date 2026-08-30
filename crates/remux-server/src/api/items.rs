@@ -636,24 +636,32 @@ pub async fn get_items(
                     .collect();
                 // Respect the client's IncludeItemTypes filter if provided,
                 // but constrain it to what this collection actually holds.
-                // Exception: when Recursive=true the client may request descendant
-                // types (e.g. Episode under Shows). get_by_filter scopes them to the
-                // correct series via a grandparent subquery on the smart filter rules,
-                // so we must not drop them here.
+                // When Recursive=true, expand the allowed set to include descendant
+                // types: a Series collection also permits Season and Episode.
+                // This lets child-type queries (Episode under Shows) through while
+                // still blocking unrelated types (Movie under Shows). get_by_filter
+                // then scopes descendants to the correct series via a grandparent
+                // subquery on the smart filter rules.
+                let allowed_types: Vec<api::MediaType> = if q.recursive {
+                    let mut expanded = collection_types.clone();
+                    if expanded.contains(&api::MediaType::Series) {
+                        expanded.push(api::MediaType::Season);
+                        expanded.push(api::MediaType::Episode);
+                    }
+                    expanded
+                } else {
+                    collection_types.clone()
+                };
                 if let Some(requested) = &q.include_item_types {
-                    if q.recursive {
-                        requested.clone()
+                    let intersection: Vec<_> = requested
+                        .iter()
+                        .filter(|t| allowed_types.contains(t))
+                        .cloned()
+                        .collect();
+                    if intersection.is_empty() {
+                        vec![]
                     } else {
-                        let intersection: Vec<_> = requested
-                            .iter()
-                            .filter(|t| collection_types.contains(t))
-                            .cloned()
-                            .collect();
-                        if intersection.is_empty() {
-                            vec![]
-                        } else {
-                            intersection
-                        }
+                        intersection
                     }
                 } else {
                     collection_types
@@ -3851,6 +3859,66 @@ mod tests {
             ep_a.id
                 .to_string()
                 .replace('-', "")
+        );
+    }
+
+    // Mixed IncludeItemTypes=Movie,Episode under a series-only smart collection with
+    // Filters=IsPlayed must return only played episodes — movies must be excluded.
+    #[tokio::test]
+    async fn test_recursive_mixed_types_movie_excluded_from_series_collection() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let collection =
+            insert_smart_collection(db, "Shows", db::CollectionMediaKind::Series).await;
+        let series =
+            insert_media(db, "The Wire", db::MediaKind::Series, "tt0306414").await;
+        let ep = insert_episode(db, "The Target", &series).await;
+        let movie =
+            insert_media(db, "Inception", db::MediaKind::Movie, "tt1375666").await;
+
+        mark_played(db, &ep).await;
+        mark_played(db, &movie).await;
+
+        let user_id = get_user_id(&server, &auth).await;
+
+        let resp = server
+            .get(&format!("/users/{user_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[
+                (
+                    "parentId",
+                    collection
+                        .id
+                        .to_string()
+                        .as_str(),
+                ),
+                ("recursive", "true"),
+                ("includeItemTypes", "Movie,Episode"),
+                ("filters", "IsPlayed"),
+            ])
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["TotalRecordCount"]
+                .as_i64()
+                .unwrap_or(0),
+            1,
+            "only the episode must be returned, not the movie"
+        );
+        assert_eq!(
+            body["Items"][0]["Type"]
+                .as_str()
+                .unwrap_or(""),
+            "Episode"
         );
     }
 
