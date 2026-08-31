@@ -10,8 +10,13 @@ pub static CSS: &str = r##"
     to { transform: rotate(360deg); }
   }
 
-  /* ── ElegantFin: pull logo up so it clears the play button ── */
-  .detailLogo { top: 27vh !important; }
+  /* ── ElegantFin: pull logo up so it clears the play button (mobile only) ── */
+  @media (max-width: 768px) {
+    .detailLogo { top: 27vh !important; }
+  }
+
+  /* ── ElegantFin: reposition loading spinner ─────────────────── */
+  .docspinner { top: 80px; right: 21px; left: unset; width: 46px; height: 46px; }
 
   /* ── Card listing: hide inline play button overlay ───────────── */
   .cardOverlayButton-br { display: none !important; }
