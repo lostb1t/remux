@@ -3707,29 +3707,33 @@ impl Media {
                         .push(")");
                 }
 
-                // played=true — direct row OR at least one watched episode (series rollup)
+                // played=true — non-correlated IN. Two branches unioned:
+                //   1. Direct: episodes/movies/series marked played themselves.
+                //   2. Rollup: series whose episodes have play_count > 0.
+                // Replaces a per-row EXISTS(UNION ALL) that was O(series × episodes).
                 if user_state_filter.played == Some(true) {
                     qb.push(
-                        " AND EXISTS (\
-                          SELECT 1 FROM user_media_state ums \
-                          WHERE ums.media_id = media.id",
+                        " AND media.id IN (\
+                          SELECT ums.media_id \
+                          FROM user_media_state ums \
+                          WHERE ums.play_count > 0",
                     );
                     if let Some(user_id) = &user_state_filter.user_id {
                         qb.push(" AND ums.user_id = ")
                             .push_bind(user_id);
                     }
                     qb.push(
-                        " AND ums.play_count > 0 \
-                          UNION ALL \
-                          SELECT 1 FROM user_media_state ums \
-                          JOIN media ep ON ep.id = ums.media_id \
-                          WHERE ep.grandparent_id = media.id AND ep.kind = 'episode'",
+                        " UNION \
+                          SELECT ep.grandparent_id \
+                          FROM user_media_state ums \
+                          JOIN media ep ON ep.id = ums.media_id AND ep.kind = 'episode' \
+                          WHERE ums.play_count > 0",
                     );
                     if let Some(user_id) = &user_state_filter.user_id {
                         qb.push(" AND ums.user_id = ")
                             .push_bind(user_id);
                     }
-                    qb.push(" AND ums.play_count > 0)");
+                    qb.push(" AND ep.grandparent_id IS NOT NULL)");
                 }
 
                 // played=false (unplayed).
