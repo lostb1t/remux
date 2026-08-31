@@ -1,3 +1,58 @@
+# [0.28.0](https://github.com/lostb1t/remux/compare/v0.27.0...v0.28.0) (2026-08-31)
+
+
+### Bug Fixes
+
+* accept trailing slash for items search route ([#368](https://github.com/lostb1t/remux/issues/368)) ([0035731](https://github.com/lostb1t/remux/commit/003573186cc90f426f5d8e6d41726111dfd6ac7b))
+* **api:** improve Jellyfin API and DTO compatibility for Roku ([#365](https://github.com/lostb1t/remux/issues/365)) ([3dbdc98](https://github.com/lostb1t/remux/commit/3dbdc98c35e29bf87ee7bcafc74d2cb7193a4926))
+* **api:** scope UserViews child-counts to requesting user ([#389](https://github.com/lostb1t/remux/issues/389)) ([66d5274](https://github.com/lostb1t/remux/commit/66d52748eb826b30832ff07c84fd7a040ed71e4e))
+* **betterposters:** add hyphen separator before quality/age suffix on bare poster path ([c9bae48](https://github.com/lostb1t/remux/commit/c9bae488b837107393f26bd263a4ad65d32f21e1))
+* **betterposters:** seed form with option defaults; drop season/episode types ([3e081f4](https://github.com/lostb1t/remux/commit/3e081f4178b47fda02abc1cc4a8b60cd2e5b5123))
+* **ci:** run merge-docker when desktop jobs are skipped ([97f4805](https://github.com/lostb1t/remux/commit/97f480535e8ec606555246ca1d0faafed1bf2b15))
+* **dashboard:** convert remaining checkboxes to Switch ([51bed29](https://github.com/lostb1t/remux/commit/51bed297ae1fa3cca36c6a3291b62ee328ea22d5))
+* **dashboard:** match toggle-description style to field-hint ([e9d71d6](https://github.com/lostb1t/remux/commit/e9d71d6dafe353623a296560efe2d61e274fedcd))
+* **db:** parental rating falls back to series rating for episodes ([#393](https://github.com/lostb1t/remux/issues/393)) ([a059bd0](https://github.com/lostb1t/remux/commit/a059bd0cc7f2bf928a69e2547a8a8cfb65f72cec))
+* **db:** watched smart collection crash + perf (fixes [#384](https://github.com/lostb1t/remux/issues/384)) ([#387](https://github.com/lostb1t/remux/issues/387)) ([ec0ee98](https://github.com/lostb1t/remux/commit/ec0ee98904332c4fa1b4fd235698bba77c169a20))
+* **items:** recursive episode query under smart collection scopes via grandparent ([#391](https://github.com/lostb1t/remux/issues/391)) ([fba8d08](https://github.com/lostb1t/remux/commit/fba8d0822f154ec7416c33f4c9754bedcd53167c))
+* **jellyfin-import:** fix auth, paginate user items, and resolve episode states positionally ([#270](https://github.com/lostb1t/remux/issues/270)) ([0fb6a75](https://github.com/lostb1t/remux/commit/0fb6a75f92c04503719add7ae50fc46d3c61cfa9))
+* **music:** resolve search clicks to the clicked item, add artist art… ([#326](https://github.com/lostb1t/remux/issues/326)) ([702b61a](https://github.com/lostb1t/remux/commit/702b61a680b586150ed23f850531acd1c751242f))
+* **p2p:** live-toggle TorrentManager on p2p_enabled setting change ([#358](https://github.com/lostb1t/remux/issues/358)) ([f5f2fae](https://github.com/lostb1t/remux/commit/f5f2fae3ca6d8b855acdab6e4066d5050b27acf6))
+* **playback:** avoid forcing transcode for direct-playable containers ([#366](https://github.com/lostb1t/remux/issues/366)) ([f625b70](https://github.com/lostb1t/remux/commit/f625b7000e091b95d241ac3be0b10316aa88ed89))
+* **playback:** normalize copied HLS VOD audio ([#372](https://github.com/lostb1t/remux/issues/372)) ([34997a4](https://github.com/lostb1t/remux/commit/34997a418c4c58260a95d27290c027b812d073d1))
+* **playback:** support extensionless HLS segments ([#373](https://github.com/lostb1t/remux/issues/373)) ([4eeb7ad](https://github.com/lostb1t/remux/commit/4eeb7adc959fdd5095b9c40b13fe07a08a099634))
+* reduce remuxdb probe timeout from 10s to 5s ([e1ce158](https://github.com/lostb1t/remux/commit/e1ce15895067a4496f26d28567a47566c1640e4a))
+* **sdks:** redact ClientError endpoint/body via Secret<T> (closes [#374](https://github.com/lostb1t/remux/issues/374)) ([0da09f0](https://github.com/lostb1t/remux/commit/0da09f045d2bc658120bf22b177f9cd1d936b4e4))
+* **signals:** clamp backoff exponent, propagate db errors in media tracker ([cda36af](https://github.com/lostb1t/remux/commit/cda36af28175922506b45a102e89011627f36265))
+* skip addons without meta resource in get_direct_children (fixes [#377](https://github.com/lostb1t/remux/issues/377)) ([354ad11](https://github.com/lostb1t/remux/commit/354ad11bd8534adce5b60e0e896c99a00cb67ec9))
+* **web:** adjust ElegantFin mobile logo top to 25vh ([60e4bd2](https://github.com/lostb1t/remux/commit/60e4bd28dff9aa7c3e36f19309fde7f970487799))
+* **web:** adjust ElegantFin mobile logo top to 27vh ([05a2078](https://github.com/lostb1t/remux/commit/05a20783117715b717426b8f7538244f3fc5dc78))
+* **web:** apply detailLogo top offset globally ([6f31081](https://github.com/lostb1t/remux/commit/6f310811fb40c02856b9ecc011bb6e66b846d092))
+* **web:** pull ElegantFin mobile logo above play button ([1c84ffa](https://github.com/lostb1t/remux/commit/1c84ffa64f07b5275a5ef483fd3e1f2b976f88d3))
+
+
+### Features
+
+* add BetterPosters meta addon ([#382](https://github.com/lostb1t/remux/issues/382)) ([e3c2040](https://github.com/lostb1t/remux/commit/e3c20405163d9c64306a04845f14e26403bd8162))
+* **addons:** match service_filter against streamData.addon name ([3bc47b4](https://github.com/lostb1t/remux/commit/3bc47b4e30c2a9a1afd078f720f708706a803712))
+* **dashboard:** replace all checkboxes with Switch component ([a25e36a](https://github.com/lostb1t/remux/commit/a25e36ab4fd8c37f8a88b89672ecb2c25fa87059))
+* **dashboard:** show addon description on existing addon cards ([34bec9d](https://github.com/lostb1t/remux/commit/34bec9dd31af0c65f1f54ad513ca5f162d6c218e))
+* drag and drop polish ([#359](https://github.com/lostb1t/remux/issues/359)) ([278ef3b](https://github.com/lostb1t/remux/commit/278ef3b674e9a2e06a14a47f6af74dcfe571e15f))
+* **images:** implement RemoteImages/Download endpoint ([#361](https://github.com/lostb1t/remux/issues/361)) ([ee59112](https://github.com/lostb1t/remux/commit/ee59112b0edfdfb2c9c0640c0318a13d1aa45243))
+* introduce signal system ([#371](https://github.com/lostb1t/remux/issues/371)) ([ef0e40f](https://github.com/lostb1t/remux/commit/ef0e40ffdfb6dd48a02f6ca84c19da07315e92fa))
+* move healthcheck to dockerfile ([#383](https://github.com/lostb1t/remux/issues/383)) ([619adec](https://github.com/lostb1t/remux/commit/619adec9e045613a9490ecb83ac0d9ca64ed161a))
+* up remote sub count to 10 per language ([5d75fb0](https://github.com/lostb1t/remux/commit/5d75fb025152ed7a4ef4a2743e2eef8f63b6bb14))
+* **web:** hide card listing play button overlay via CSS patch ([3808f9c](https://github.com/lostb1t/remux/commit/3808f9cafd5aff18d40349526f8ab8cbda62a399))
+
+
+### Performance Improvements
+
+* **db:** replace correlated EXISTS with non-correlated IN for played filter ([#396](https://github.com/lostb1t/remux/issues/396)) ([e82c9b1](https://github.com/lostb1t/remux/commit/e82c9b1f5b4277ac826dbc59975ce137ebc5e48d))
+
+
+### Reverts
+
+* remove detailLogo top override from CSS patch ([f737acd](https://github.com/lostb1t/remux/commit/f737acdf3a93fc3b00c02ec2a7d069ad73f55d13))
+
 # [0.27.0](https://github.com/lostb1t/remux/compare/v0.26.0...v0.27.0) (2026-08-27)
 
 
