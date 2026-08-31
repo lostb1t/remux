@@ -67,6 +67,12 @@ jobs:
     needs: version
     uses: ./.github/workflows/test.yml
 
+  bench:
+    name: Bench
+    needs: [version, test]
+    uses: ./.github/workflows/bench.yml
+    secrets: inherit
+
   build:
     name: Build
     needs: [version, test]

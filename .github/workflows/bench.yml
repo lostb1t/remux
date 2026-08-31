@@ -1,15 +1,12 @@
 name: Bench
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    types: [opened, synchronize, reopened]
+  workflow_call:
   workflow_dispatch:
 
 jobs:
   bench:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+    if: true
     name: Benchmarks
     runs-on: ubuntu-latest
     env:
