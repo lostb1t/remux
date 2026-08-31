@@ -4,18 +4,18 @@ use std::sync::OnceLock;
 use uuid::Uuid;
 
 //
-// 20 000 series, 1 season × 12 episodes each → ~280 000 rows.
-// 5 000 user_media_state rows:
-//   Series   0– 2 499 : S1E1 played,      timestamp = 60 days ago  (old)
-//   Series 2 500– 3 749: S1E1 played,      timestamp = 7–90 days    (recent)
-//   Series 3 750– 4 999: S1E2 in-progress, timestamp = 7–90 days    (recent)
-//   Series 5 000–19 999: no state
+// 50 000 series, 1 season × 24 episodes each → ~1 250 000 rows.
+// 10 000 user_media_state rows:
+//   Series   0– 4 999 : S1E1 played,      timestamp = 60 days ago  (old)
+//   Series 5 000– 7 499: S1E1 played,      timestamp = 7–90 days    (recent)
+//   Series 7 500– 9 999: S1E2 in-progress, timestamp = 7–90 days    (recent)
+//   Series 10 000–49 999: no state
 
-const TOTAL_SERIES: usize = 20_000;
-const ACTIVE_SERIES: usize = 5_000;
-const OLD_ACTIVE: usize = 2_500;
-const IN_PROGRESS_START: usize = 3_750;
-const EPISODES: i64 = 12;
+const TOTAL_SERIES: usize = 50_000;
+const ACTIVE_SERIES: usize = 10_000;
+const OLD_ACTIVE: usize = 5_000;
+const IN_PROGRESS_START: usize = 7_500;
+const EPISODES: i64 = 24;
 
 //
 // 10 000 movies, created_at spread over the last 730 days.
@@ -207,6 +207,8 @@ async fn seed_series(
             season: None,
             episode: None,
         });
+        // released_at required: release date filter excludes items without it.
+        let released_days_ago = (i as i64 * 730) / TOTAL_SERIES as i64 + 30;
         items.push(db::Media {
             id: series_id,
             title: format!("Bench Series {i}"),
@@ -215,6 +217,7 @@ async fn seed_series(
                 imdb: Some(imdb.clone()),
                 ..Default::default()
             },
+            released_at: Some(now - chrono::Duration::days(released_days_ago)),
             ..Default::default()
         });
 

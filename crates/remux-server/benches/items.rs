@@ -4,7 +4,7 @@ extern crate codspeed_divan_compat as divan;
 mod common;
 
 use common::{BenchQuery, IntoBench, run_bench};
-use remux_server::sdks::remux::{GetItemsQuery, ItemSortBy, MediaType};
+use remux_server::sdks::remux::{GetItemsQuery, ItemFilter, ItemSortBy, MediaType};
 
 fn main() {
     divan::main();
@@ -38,5 +38,16 @@ fn items_browse(bencher: divan::Bencher, q: &BenchQuery) {
     GetItemsQuery { limit: Some(200), ..Default::default() }.into_bench("/useritems/resume"),
 ])]
 fn resume(bencher: divan::Bencher, q: &BenchQuery) {
+    run_bench(bencher, &q.url);
+}
+
+// Regression bench for #395: IsPlayed on Series uses a correlated EXISTS(UNION ALL)
+// that does a per-row episode scan — O(series × episodes). Must stay fast.
+#[divan::bench(args = [
+    GetItemsQuery { include_item_types: Some(vec![MediaType::Series]), filters: Some(vec![ItemFilter::IsPlayed]),   limit: Some(100), ..Default::default() }.into_bench("/items"),
+    GetItemsQuery { include_item_types: Some(vec![MediaType::Series]), filters: Some(vec![ItemFilter::IsUnplayed]), limit: Some(100), ..Default::default() }.into_bench("/items"),
+    GetItemsQuery { include_item_types: Some(vec![MediaType::Movie]),  filters: Some(vec![ItemFilter::IsPlayed]),   limit: Some(100), ..Default::default() }.into_bench("/items"),
+])]
+fn items_played_filter(bencher: divan::Bencher, q: &BenchQuery) {
     run_bench(bencher, &q.url);
 }
