@@ -163,11 +163,16 @@ fn build_path(genre: bool, rating: bool, quality: bool, age_rating: bool) -> Str
         (false, false) => "poster-n",
     };
     let mut path = base.to_string();
-    if quality {
-        path.push('q');
-    }
-    if age_rating {
-        path.push('a');
+    if quality || age_rating {
+        if !path.contains('-') {
+            path.push('-');
+        }
+        if quality {
+            path.push('q');
+        }
+        if age_rating {
+            path.push('a');
+        }
     }
     path
 }
@@ -406,9 +411,9 @@ mod tests {
         assert_eq!(build_path(true, false, false, false), "poster-g");
         assert_eq!(build_path(false, true, false, false), "poster-r");
         assert_eq!(build_path(false, false, false, false), "poster-n");
-        assert_eq!(build_path(true, true, true, false), "posterq");
-        assert_eq!(build_path(true, true, false, true), "postera");
-        assert_eq!(build_path(true, true, true, true), "posterqa");
+        assert_eq!(build_path(true, true, true, false), "poster-q");
+        assert_eq!(build_path(true, true, false, true), "poster-a");
+        assert_eq!(build_path(true, true, true, true), "poster-qa");
         assert_eq!(build_path(false, false, true, true), "poster-nqa");
     }
 
