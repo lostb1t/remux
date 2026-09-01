@@ -1309,19 +1309,18 @@ async fn fetch_tmdb_meta(
                         .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
-                let external_ids = db::ExternalIds {
+                let mut external_ids = db::ExternalIds {
                     tmdb: Some(movie_details.id),
                     imdb: movie_details
                         .imdb_id
                         .as_deref()
-                        .and_then(|s| db::NonEmptyString::try_new(s.to_string()).ok())
-                        .or_else(|| {
-                            ids.imdb
-                                .clone()
-                        }),
-                    tvdb: ids.tvdb,
+                        .and_then(|s| db::NonEmptyString::try_new(s.to_string()).ok()),
                     ..Default::default()
                 };
+                // Keep the IDs the row already has. TMDB knows nothing about
+                // kitsu/custom_stremio_id, and a Kitsu import's stable UUID is
+                // derived from them — dropping them fails validate on upsert.
+                external_ids.merge(ids, false);
                 let logo = movie_details
                     .images
                     .as_ref()
@@ -1510,7 +1509,7 @@ async fn fetch_tmdb_meta(
                 let tmdb_ext = tv_details
                     .external_ids
                     .as_ref();
-                let external_ids = db::ExternalIds {
+                let mut external_ids = db::ExternalIds {
                     tmdb: Some(tv_details.id),
                     imdb: tmdb_ext
                         .and_then(|e| {
@@ -1521,6 +1520,10 @@ async fn fetch_tmdb_meta(
                     tvdb: tmdb_ext.and_then(|e| e.tvdb_id),
                     ..Default::default()
                 };
+                // Keep the IDs the row already has. TMDB knows nothing about
+                // kitsu/custom_stremio_id, and a Kitsu import's stable UUID is
+                // derived from them — dropping them fails validate on upsert.
+                external_ids.merge(ids, false);
                 let country = tv_details
                     .origin_country
                     .into_iter()
