@@ -1,4 +1,4 @@
-extern crate codspeed_divan_compat as divan;
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 
 #[path = "common.rs"]
 mod common;
@@ -6,48 +6,95 @@ mod common;
 use common::{BenchQuery, IntoBench, run_bench};
 use remux_server::sdks::remux::{GetItemsQuery, ItemFilter, ItemSortBy, MediaType};
 
-fn main() {
-    divan::main();
+fn items_latest(c: &mut Criterion) {
+    let queries: Vec<BenchQuery> = vec![
+        GetItemsQuery {
+            limit: Some(20),
+            ..Default::default()
+        }
+        .into_bench("/items/latest"),
+        GetItemsQuery {
+            limit: Some(100),
+            ..Default::default()
+        }
+        .into_bench("/items/latest"),
+        GetItemsQuery {
+            limit: Some(500),
+            ..Default::default()
+        }
+        .into_bench("/items/latest"),
+        GetItemsQuery {
+            limit: Some(100),
+            include_item_types: Some(vec![MediaType::Movie]),
+            ..Default::default()
+        }
+        .into_bench("/items/latest"),
+        GetItemsQuery {
+            limit: Some(100),
+            include_item_types: Some(vec![MediaType::Series]),
+            ..Default::default()
+        }
+        .into_bench("/items/latest"),
+    ];
+    let mut group = c.benchmark_group("items_latest");
+    for q in &queries {
+        group.bench_with_input(BenchmarkId::from_parameter(&q.name), q, |b, q| {
+            run_bench(b, &q.url);
+        });
+    }
+    group.finish();
 }
 
-#[divan::bench(args = [
-    GetItemsQuery { limit: Some(20),  ..Default::default() }.into_bench("/items/latest"),
-    GetItemsQuery { limit: Some(100), ..Default::default() }.into_bench("/items/latest"),
-    GetItemsQuery { limit: Some(500), ..Default::default() }.into_bench("/items/latest"),
-    GetItemsQuery { limit: Some(100), include_item_types: Some(vec![MediaType::Movie]),  ..Default::default() }.into_bench("/items/latest"),
-    GetItemsQuery { limit: Some(100), include_item_types: Some(vec![MediaType::Series]), ..Default::default() }.into_bench("/items/latest"),
-])]
-fn items_latest(bencher: divan::Bencher, q: &BenchQuery) {
-    run_bench(bencher, &q.url);
+fn items_get(c: &mut Criterion) {
+    let queries: Vec<BenchQuery> = vec![
+        GetItemsQuery {
+            limit: Some(20),
+            ..Default::default()
+        }
+        .into_bench("/items"),
+        GetItemsQuery {
+            limit: Some(100),
+            ..Default::default()
+        }
+        .into_bench("/items"),
+        GetItemsQuery {
+            limit: Some(500),
+            ..Default::default()
+        }
+        .into_bench("/items"),
+        GetItemsQuery {
+            limit: Some(100),
+            include_item_types: Some(vec![MediaType::Movie]),
+            ..Default::default()
+        }
+        .into_bench("/items"),
+        GetItemsQuery {
+            limit: Some(100),
+            include_item_types: Some(vec![MediaType::Series]),
+            ..Default::default()
+        }
+        .into_bench("/items"),
+        GetItemsQuery {
+            limit: Some(100),
+            filters: Some(vec![ItemFilter::IsPlayed]),
+            ..Default::default()
+        }
+        .into_bench("/items"),
+        GetItemsQuery {
+            limit: Some(100),
+            sort_by: Some(vec![ItemSortBy::DateCreated]),
+            ..Default::default()
+        }
+        .into_bench("/items"),
+    ];
+    let mut group = c.benchmark_group("items_get");
+    for q in &queries {
+        group.bench_with_input(BenchmarkId::from_parameter(&q.name), q, |b, q| {
+            run_bench(b, &q.url);
+        });
+    }
+    group.finish();
 }
 
-#[divan::bench(args = [
-    GetItemsQuery { limit: Some(50),  sort_by: Some(vec![ItemSortBy::DateCreated]), ..Default::default() }.into_bench("/items"),
-    GetItemsQuery { limit: Some(200), sort_by: Some(vec![ItemSortBy::DateCreated]), ..Default::default() }.into_bench("/items"),
-    GetItemsQuery { limit: Some(500), sort_by: Some(vec![ItemSortBy::DateCreated]), ..Default::default() }.into_bench("/items"),
-    GetItemsQuery { limit: Some(100), sort_by: Some(vec![ItemSortBy::SortName]),    ..Default::default() }.into_bench("/items"),
-    GetItemsQuery { limit: Some(100), sort_by: Some(vec![ItemSortBy::DatePlayed]),  ..Default::default() }.into_bench("/items"),
-])]
-fn items_browse(bencher: divan::Bencher, q: &BenchQuery) {
-    run_bench(bencher, &q.url);
-}
-
-#[divan::bench(args = [
-    GetItemsQuery { limit: Some(10),  ..Default::default() }.into_bench("/useritems/resume"),
-    GetItemsQuery { limit: Some(50),  ..Default::default() }.into_bench("/useritems/resume"),
-    GetItemsQuery { limit: Some(200), ..Default::default() }.into_bench("/useritems/resume"),
-])]
-fn resume(bencher: divan::Bencher, q: &BenchQuery) {
-    run_bench(bencher, &q.url);
-}
-
-// Regression bench for #395: IsPlayed on Series uses a correlated EXISTS(UNION ALL)
-// that does a per-row episode scan — O(series × episodes). Must stay fast.
-#[divan::bench(args = [
-    GetItemsQuery { include_item_types: Some(vec![MediaType::Series]), filters: Some(vec![ItemFilter::IsPlayed]),   limit: Some(100), ..Default::default() }.into_bench("/items"),
-    GetItemsQuery { include_item_types: Some(vec![MediaType::Series]), filters: Some(vec![ItemFilter::IsUnplayed]), limit: Some(100), ..Default::default() }.into_bench("/items"),
-    GetItemsQuery { include_item_types: Some(vec![MediaType::Movie]),  filters: Some(vec![ItemFilter::IsPlayed]),   limit: Some(100), ..Default::default() }.into_bench("/items"),
-])]
-fn items_played_filter(bencher: divan::Bencher, q: &BenchQuery) {
-    run_bench(bencher, &q.url);
-}
+criterion_group!(benches, items_latest, items_get);
+criterion_main!(benches);

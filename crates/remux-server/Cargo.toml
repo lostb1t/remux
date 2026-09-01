@@ -143,6 +143,6 @@ desktop = ["include_dir"]
 
 [dev-dependencies]
 axum-test = "18.7.0"
-codspeed-divan-compat = "4"
+criterion = { version = "0.5", features = ["html_reports"] }
 chrono = { version = "0.4", features = ["serde"] }
 httpmock = "0.7"

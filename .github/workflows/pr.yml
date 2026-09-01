@@ -9,3 +9,35 @@ jobs:
     if: github.event.pull_request.draft == false
     name: Test
     uses: ./.github/workflows/test.yml
+
+  bench:
+    if: github.event.pull_request.draft == false
+    name: Bench
+    runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Run benchmarks
+        run: cargo bench -p remux-server --bench shows --bench items -- --output-format bencher 2>&1 | tee output.txt
+
+      - name: Compare against baseline
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: cargo
+          output-file-path: output.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: false
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: dev/bench
+          alert-threshold: "125%"
+          fail-on-alert: true
+          comment-on-alert: false

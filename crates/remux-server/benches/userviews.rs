@@ -1,15 +1,15 @@
-extern crate codspeed_divan_compat as divan;
+use criterion::{Criterion, criterion_group, criterion_main};
 
 #[path = "common.rs"]
 mod common;
 
 use common::run_bench;
 
-fn main() {
-    divan::main();
+fn userviews(c: &mut Criterion) {
+    c.bench_function("userviews", |b| {
+        run_bench(b, "/userviews");
+    });
 }
 
-#[divan::bench]
-fn userviews(bencher: divan::Bencher) {
-    run_bench(bencher, "/userviews");
-}
+criterion_group!(benches, userviews);
+criterion_main!(benches);

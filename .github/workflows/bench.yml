@@ -4,6 +4,9 @@ on:
   workflow_call:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   bench:
     name: Benchmarks
@@ -21,4 +24,17 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Run benchmarks
-        run: cargo bench -p remux-server --bench shows --bench items
+        run: cargo bench -p remux-server --bench shows --bench items -- --output-format bencher 2>&1 | tee output.txt
+
+      - name: Store benchmark result
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: cargo
+          output-file-path: output.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: dev/bench
+          alert-threshold: "125%"
+          fail-on-alert: false
+          comment-on-alert: false

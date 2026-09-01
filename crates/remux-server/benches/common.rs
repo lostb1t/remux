@@ -428,18 +428,18 @@ impl IntoBench for remux_server::sdks::remux::GetItemsQuery {
     }
 }
 
-pub fn run_bench(bencher: codspeed_divan_compat::Bencher, url: &str) {
+pub fn run_bench(b: &mut criterion::Bencher, url: &str) {
     let f = fixture();
     let full_url = format!("{}{}", f.base_url, url);
     let auth = auth_header(&f.token);
-    bencher.bench(|| {
+    b.iter(|| {
         f.rt.block_on(async {
             f.client
                 .get(&full_url)
                 .header(reqwest::header::AUTHORIZATION, &auth)
                 .send()
                 .await
-                .unwrap();
+                .unwrap()
         })
     });
 }
