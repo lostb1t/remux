@@ -542,7 +542,7 @@ async fn shows_nextup_all(
     .into_response())
 }
 
-/// Upcoming episodes sorted by premiere date, newest first.
+/// Upcoming episodes sorted by premiere date, soonest first.
 /// The digital_released_before filter is intentionally skipped so episodes
 /// that have aired but are not yet digitally available are included.
 #[get("/shows/upcoming")]
@@ -567,7 +567,7 @@ pub async fn shows_upcoming(
 
     // Resolve the ParentId if provided. Clients often send the TV library view UUID
     // (a Collection/Folder). We map it to the right filter field:
-    //   Collection/Folder → fetch series in collection → grandparent_ids
+    //   Manual collection → fetch series via media_relations (role='collection') → grandparent_ids
     //   Series            → grandparent_id
     //   Season            → parent_id
     //   not in DB (virtual view UUID) → no filter
@@ -602,6 +602,10 @@ pub async fn shows_upcoming(
         }
     }
 
+    let policy = session
+        .user
+        .policy
+        .as_ref();
     let result = db::Media::get_by_filter(
         &state
             .ctx
@@ -622,6 +626,25 @@ pub async fn shows_upcoming(
             total_count: q
                 .enable_total_record_count
                 .unwrap_or(true),
+            max_parental_rating: policy.and_then(|p| p.max_parental_rating),
+            blocked_tags: policy
+                .map(|p| {
+                    p.blocked_tags
+                        .clone()
+                })
+                .filter(|v| !v.is_empty()),
+            allowed_tags: policy
+                .map(|p| {
+                    p.allowed_tags
+                        .clone()
+                })
+                .filter(|v| !v.is_empty()),
+            policy_filter: policy
+                .and_then(|p| {
+                    p.filter_rules
+                        .as_ref()
+                })
+                .cloned(),
             ..Default::default()
         },
     )
