@@ -1270,6 +1270,9 @@ pub struct MediaFilter {
     /// within the past year are always hidden (theatrical-only, digital date unknown).
     /// Older items without a digital date fall back to `released_at`.
     pub digital_released_before: Option<NaiveDateTime>,
+    /// If set, only return items whose `released_at` is on or after this date.
+    /// Used by /shows/upcoming to surface future-airing episodes.
+    pub released_after: Option<NaiveDateTime>,
     /// Sort order for results. Mapped from Jellyfin's ItemSortBy.
     pub sort_by: Vec<api::ItemSortBy>,
     pub sort_order: Vec<api::SortOrder>,
@@ -1297,6 +1300,8 @@ pub struct MediaFilter {
     pub program_kinds: Option<Vec<ProgramKind>>,
     /// Filter episodes/seasons/tracks by their grandparent (series, artist, etc.).
     pub grandparent_id: Option<Uuid>,
+    /// Filter by multiple grandparent IDs (OR). Used e.g. for upcoming episodes scoped to a collection's series.
+    pub grandparent_ids: Option<Vec<Uuid>>,
     /// Pre-fetched parent item. When set, `get_by_filter` uses it to detect
     /// manual collections and switches to a JOIN on media_relations.
     /// If `parent_id` is set but this is `None`, the non-JOIN path is used.
@@ -3646,6 +3651,11 @@ impl Media {
                 qb.push(" AND grandparent_id = ")
                     .push_bind(grandparent_id);
             }
+            if let Some(ids) = &filter.grandparent_ids {
+                if !ids.is_empty() {
+                    qb.push_in("grandparent_id", ids);
+                }
+            }
             if let Some(promoted) = &filter.promoted {
                 qb.push(" AND promoted = ")
                     .push_bind(promoted);
@@ -3959,6 +3969,11 @@ impl Media {
                         needs_parent_fallback,
                     );
                 }
+            }
+
+            if let Some(after) = filter.released_after {
+                qb.push(" AND released_at >= ")
+                    .push_bind(after);
             }
 
             if let Some(ref f) = filter.filter_rules {
