@@ -1,11 +1,16 @@
 use std::{io::Cursor, path::PathBuf};
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
-use image::{DynamicImage, ImageFormat, Rgb, RgbImage};
+use image::{DynamicImage, ImageFormat, Rgb, RgbImage, Rgba, RgbaImage};
 use imageproc::drawing::draw_text_mut;
 use uuid::Uuid;
 
-use crate::{api::image::detect_content_type, db, db::ImageKind};
+use crate::{
+    api::image::detect_content_type,
+    db,
+    db::ImageKind,
+    sdks::remux::{CollectionImageConfig, CollectionOverlay},
+};
 
 /// Width/height of generated library placeholder images (16:9).
 const OUT_W: u32 = 960;
@@ -17,8 +22,27 @@ const OVERLAY_ALPHA: f32 = 0x78 as f32 / 255.0;
 /// Maximum text width as a fraction of image width before scaling down.
 const MAX_TEXT_FRACTION: f32 = 0.90;
 
-static FONT_DATA: &[u8] = include_bytes!("../../assets/fonts/LiberationSans-Bold.ttf");
+/// TMDB image base URL for logo downloads.
+const TMDB_IMAGE_BASE: &str = "https://image.tmdb.org/t/p/w300";
 
+/// Standard poster dimensions (2:3 ratio) used in fan layout.
+const POSTER_W: u32 = 190;
+const POSTER_H: u32 = 285;
+
+/// Side of the square buffer used for rotation (must exceed sqrt(POSTER_W²+POSTER_H²) ≈ 342).
+const ROTATION_CANVAS: u32 = 380;
+
+/// Rounded-corner radius on each poster (pixels).
+const CORNER_RADIUS: u32 = 10;
+
+/// Left text area: left edge of posters starts here (fan occupies right ~55% of canvas).
+const TEXT_AREA_END: u32 = (OUT_W as f32 * 0.42) as u32;
+
+static FONT_BOLD: &[u8] = include_bytes!("../../assets/fonts/LiberationSans-Bold.ttf");
+static FONT_REGULAR: &[u8] =
+    include_bytes!("../../assets/fonts/LiberationSans-Regular.ttf");
+
+#[allow(clippy::incompatible_msrv)]
 static HTTP_CLIENT: std::sync::LazyLock<reqwest::Client> =
     std::sync::LazyLock::new(|| {
         reqwest::Client::builder()
@@ -155,20 +179,25 @@ impl ImageService {
     }
 
     /// Generate the library placeholder image, write it to disk, save the path
-    /// to `media_images` in the DB, and return the JPEG bytes.
+    /// to `media_images` in the DB, and return the bytes.
     pub async fn library_image(
         data_dir: &std::path::Path,
         id: Uuid,
         name: &str,
         db: &sqlx::SqlitePool,
     ) -> anyhow::Result<Vec<u8>> {
-        let path = Self::image_path(data_dir, id, "primary", "jpg");
-
-        if path.exists() {
-            return Ok(tokio::fs::read(&path).await?);
+        // Check for an existing generated file (either jpg or png).
+        for ext in ["jpg", "png"] {
+            let p = Self::image_path(data_dir, id, "primary", ext);
+            if p.exists() {
+                return Ok(tokio::fs::read(&p).await?);
+            }
         }
 
         let bytes = Self::generate(id, name, db).await?;
+        let ct = detect_content_type(&bytes);
+        let ext = ext_for_content_type(ct);
+        let path = Self::image_path(data_dir, id, "primary", ext);
         Self::write_image_to_disk(&path, &bytes).await?;
         // INSERT OR IGNORE — don't replace if already exists (stable UUID for cache)
         sqlx::query(
@@ -333,77 +362,194 @@ impl ImageService {
         Ok(())
     }
 
+    /// Regenerate the collection image: delete cached file and DB row, then
+    /// re-generate on next request. Call after `collection_image_config` changes.
+    pub async fn invalidate_collection_image(
+        data_dir: &std::path::Path,
+        id: Uuid,
+        db: &sqlx::SqlitePool,
+    ) -> anyhow::Result<()> {
+        Self::delete_image(data_dir, id, ImageKind::Primary, db).await
+    }
+
     async fn generate(
         id: Uuid,
         name: &str,
         db: &sqlx::SqlitePool,
     ) -> anyhow::Result<Vec<u8>> {
-        let bg = match find_backdrop_url(id, db).await {
-            Err(_) => solid_background(),
-            Ok(src) => {
-                let result = if src.contains("://") {
-                    Self::fetch_and_resize(&src).await
-                } else {
-                    Self::read_local_and_resize(&src).await
-                };
-                match result {
-                    Ok(img) => apply_dark_overlay(img),
-                    Err(_) => solid_background(),
+        let collection = db::Media::get_by_id(db, &id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("collection {id} not found"))?;
+        let config = collection
+            .collection_image_config
+            .clone();
+
+        let poster_urls = collect_poster_urls(id, &collection, db).await;
+
+        if poster_urls.is_empty() && config.is_none() {
+            // Fallback: single backdrop with label (original behaviour).
+            let bg = match find_backdrop_url_from_collection(&collection, db).await {
+                Ok(src) => {
+                    let result = if src.contains("://") {
+                        Self::fetch_rgb(&src).await
+                    } else {
+                        Self::read_rgb(&src).await
+                    };
+                    match result {
+                        Ok(img) => {
+                            let resized = image::imageops::resize(
+                                &img,
+                                OUT_W,
+                                OUT_H,
+                                image::imageops::FilterType::Lanczos3,
+                            );
+                            apply_dark_overlay(resized)
+                        }
+                        Err(_) => solid_background(),
+                    }
+                }
+                Err(_) => solid_background(),
+            };
+            let img = draw_label(bg, name)?;
+            return encode_jpeg(img);
+        }
+
+        let posters = Self::load_poster_images(&poster_urls).await;
+
+        // Pre-fetch streaming logo (async) so the blocking closure has it ready.
+        let logo_image: Option<RgbaImage> = match config
+            .as_ref()
+            .map(|c| &c.overlay)
+        {
+            Some(CollectionOverlay::StreamingLogo {
+                logo_path: Some(path),
+                ..
+            }) => {
+                let url = format!("{TMDB_IMAGE_BASE}{path}");
+                async {
+                    let bytes = HTTP_CLIENT
+                        .get(&url)
+                        .send()
+                        .await?
+                        .bytes()
+                        .await?;
+                    anyhow::Ok(image::load_from_memory(&bytes)?.into_rgba8())
+                }
+                .await
+                .ok()
+            }
+            _ => None,
+        };
+
+        // CPU-bound fan composition + PNG encode runs on the blocking pool.
+        let name_owned = name.to_string();
+        let config_owned = config;
+        let bytes = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
+            let mut canvas =
+                RgbaImage::from_pixel(OUT_W, OUT_H, Rgba([18, 18, 22, 255]));
+
+            let n = posters
+                .len()
+                .min(4);
+            if n > 0 {
+                let positions = fan_positions(n);
+                for idx in (0..n).rev() {
+                    let (cx, cy, angle_deg) = positions[idx];
+                    let resized = image::imageops::resize(
+                        &posters[idx],
+                        POSTER_W,
+                        POSTER_H,
+                        image::imageops::FilterType::Lanczos3,
+                    );
+                    rotate_and_stamp(&mut canvas, resized, cx, cy, angle_deg);
                 }
             }
-        };
-        let img = draw_label(bg, name)?;
-        encode_jpeg(img)
+
+            let overlay = config_owned
+                .as_ref()
+                .map(|c| &c.overlay)
+                .unwrap_or(&CollectionOverlay::None);
+            apply_overlay_sync(&mut canvas, overlay, &name_owned, logo_image)?;
+
+            encode_png_rgba(canvas)
+        })
+        .await??;
+
+        Ok(bytes)
+    }
+
+    async fn load_poster_images(urls: &[String]) -> Vec<RgbaImage> {
+        let mut out = Vec::new();
+        for url in urls
+            .iter()
+            .take(4)
+        {
+            let img = if url.contains("://") {
+                Self::fetch_rgba(url).await
+            } else {
+                Self::read_rgba(url).await
+            };
+            if let Ok(img) = img {
+                out.push(img);
+            }
+        }
+        out
+    }
+
+    async fn fetch_rgb(url: &str) -> anyhow::Result<RgbImage> {
+        let bytes = HTTP_CLIENT
+            .get(url)
+            .send()
+            .await?
+            .bytes()
+            .await?;
+        Ok(image::load_from_memory(&bytes)?.into_rgb8())
+    }
+
+    async fn read_rgb(path: &str) -> anyhow::Result<RgbImage> {
+        let bytes = tokio::fs::read(path).await?;
+        Ok(image::load_from_memory(&bytes)?.into_rgb8())
+    }
+
+    async fn fetch_rgba(url: &str) -> anyhow::Result<RgbaImage> {
+        let bytes = HTTP_CLIENT
+            .get(url)
+            .send()
+            .await?
+            .bytes()
+            .await?;
+        Ok(image::load_from_memory(&bytes)?.into_rgba8())
+    }
+
+    async fn read_rgba(path: &str) -> anyhow::Result<RgbaImage> {
+        let bytes = tokio::fs::read(path).await?;
+        Ok(image::load_from_memory(&bytes)?.into_rgba8())
     }
 
     async fn fetch_and_resize(url: &str) -> anyhow::Result<RgbImage> {
-        let resp = HTTP_CLIENT
-            .get(url)
-            .send()
-            .await?;
-        let bytes = resp
-            .bytes()
-            .await?;
-        let decoded = image::load_from_memory(&bytes)?.into_rgb8();
-        let resized = image::imageops::resize(
-            &decoded,
+        let img = Self::fetch_rgb(url).await?;
+        Ok(image::imageops::resize(
+            &img,
             OUT_W,
             OUT_H,
             image::imageops::FilterType::Lanczos3,
-        );
-        Ok(resized)
+        ))
     }
 
     async fn read_local_and_resize(path: &str) -> anyhow::Result<RgbImage> {
-        let bytes = tokio::fs::read(path).await?;
-        let decoded = image::load_from_memory(&bytes)?.into_rgb8();
-        let resized = image::imageops::resize(
-            &decoded,
+        let img = Self::read_rgb(path).await?;
+        Ok(image::imageops::resize(
+            &img,
             OUT_W,
             OUT_H,
             image::imageops::FilterType::Lanczos3,
-        );
-        Ok(resized)
+        ))
     }
 }
 
-/// Query up to 8 items belonging to the collection and return the first
-/// backdrop/poster URL found (backdrops preferred).
-///
-/// Smart collections (kind = Collection) contain items matched by
-/// `collection_media_kind`, not by `parent_id`. Folder items use `parent_id`.
-async fn find_backdrop_url(
-    collection_id: Uuid,
-    db: &sqlx::SqlitePool,
-) -> anyhow::Result<String> {
-    // Look up the collection itself to understand its kind.
-    let collection = db::Media::get_by_id(db, &collection_id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("collection {collection_id} not found"))?;
-
-    let filter = match &collection.kind {
+fn collection_item_filter(collection: &db::Media) -> db::MediaFilter {
+    match &collection.kind {
         db::MediaKind::Collection => {
-            // Smart collection — items are matched by their media kind.
             let kinds = match &collection.collection_media_kind {
                 Some(db::CollectionMediaKind::Movie) => vec![db::MediaKind::Movie],
                 Some(db::CollectionMediaKind::Series) => vec![db::MediaKind::Series],
@@ -427,21 +573,62 @@ async fn find_backdrop_url(
                 ..Default::default()
             }
         }
-        _ => {
-            // Folder or other container — items have parent_id = collection_id.
-            db::MediaFilter {
-                parent_id: Some(collection_id),
-                limit: Some(8),
-                ..Default::default()
-            }
-        }
-    };
+        _ => db::MediaFilter {
+            parent_id: Some(collection.id),
+            limit: Some(8),
+            ..Default::default()
+        },
+    }
+}
 
+/// Collect up to 4 poster image paths/URLs from collection items.
+async fn collect_poster_urls(
+    _id: Uuid,
+    collection: &db::Media,
+    db: &sqlx::SqlitePool,
+) -> Vec<String> {
+    let filter = db::MediaFilter {
+        limit: Some(4),
+        ..collection_item_filter(collection)
+    };
+    let Ok(result) = db::Media::get_by_filter(db, &filter).await else {
+        return Vec::new();
+    };
+    result
+        .records
+        .iter()
+        .filter_map(|m| {
+            m.images
+                .get(ImageKind::Primary)
+                .map(|i| {
+                    i.path
+                        .clone()
+                })
+                .or_else(|| {
+                    m.images
+                        .get(ImageKind::Backdrop)
+                        .map(|i| {
+                            i.path
+                                .clone()
+                        })
+                })
+        })
+        .collect()
+}
+
+/// Find a backdrop or poster URL from collection items (for the legacy single-image path).
+async fn find_backdrop_url_from_collection(
+    collection: &db::Media,
+    db: &sqlx::SqlitePool,
+) -> anyhow::Result<String> {
+    let filter = db::MediaFilter {
+        limit: Some(8),
+        ..collection_item_filter(collection)
+    };
     let items = db::Media::get_by_filter(db, &filter)
         .await?
         .records;
 
-    // Prefer backdrop, then fall back to primary (poster).
     items
         .iter()
         .find_map(|m| {
@@ -465,14 +652,264 @@ async fn find_backdrop_url(
                 })
         })
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no backdrop or poster found for collection {collection_id}"
-            )
+            anyhow::anyhow!("no image found for collection {}", collection.id)
         })
 }
 
+/// Fan layout positions (canvas center_x, center_y, clockwise angle°) for n posters.
+fn fan_positions(n: usize) -> Vec<(i64, i64, f32)> {
+    match n {
+        1 => vec![(720, 270, 0.0)],
+        2 => vec![(635, 278, -7.0), (785, 255, 9.0)],
+        3 => vec![(585, 282, -11.0), (710, 262, 0.0), (830, 248, 11.0)],
+        _ => vec![
+            (545, 292, -13.0),
+            (655, 275, -4.0),
+            (758, 258, 6.0),
+            (855, 248, 14.0),
+        ],
+    }
+}
+
+/// Apply rounded corners (CORNER_RADIUS px) to an RGBA image in-place.
+fn apply_rounded_corners(img: &mut RgbaImage) {
+    let w = img.width();
+    let h = img.height();
+    let r = CORNER_RADIUS as f32;
+    for py in 0..h {
+        for px in 0..w {
+            let fx = px as f32;
+            let fy = py as f32;
+            let in_corner = (fx < r && fy < r)
+                || (fx > w as f32 - r - 1.0 && fy < r)
+                || (fx < r && fy > h as f32 - r - 1.0)
+                || (fx > w as f32 - r - 1.0 && fy > h as f32 - r - 1.0);
+            if in_corner {
+                let cx = if fx < r { r } else { w as f32 - r - 1.0 };
+                let cy = if fy < r { r } else { h as f32 - r - 1.0 };
+                if ((fx - cx).powi(2) + (fy - cy).powi(2)).sqrt() > r {
+                    img.get_pixel_mut(px, py)[3] = 0;
+                }
+            }
+        }
+    }
+}
+
+/// Rotate `poster` by `angle_deg` (clockwise) and stamp it onto `canvas`
+/// so its centre lands at (`cx`, `cy`).
+fn rotate_and_stamp(
+    canvas: &mut RgbaImage,
+    mut poster: RgbaImage,
+    cx: i64,
+    cy: i64,
+    angle_deg: f32,
+) {
+    apply_rounded_corners(&mut poster);
+
+    // Embed the poster centred in a square big enough that rotation never clips it.
+    let buf_size = ROTATION_CANVAS;
+    let ox = ((buf_size - POSTER_W) / 2) as i64;
+    let oy = ((buf_size - POSTER_H) / 2) as i64;
+    let mut buf = RgbaImage::new(buf_size, buf_size);
+    image::imageops::overlay(&mut buf, &poster, ox, oy);
+
+    // Bilinear inverse-mapping rotation (no external imageproc dep needed).
+    let bx = buf_size as i32;
+    let by = buf_size as i32;
+    let half_x = buf_size as f32 / 2.0;
+    let half_y = buf_size as f32 / 2.0;
+    let theta = angle_deg * std::f32::consts::PI / 180.0;
+    let cos_a = theta.cos();
+    let sin_a = theta.sin();
+    let mut rotated = RgbaImage::new(buf_size, buf_size);
+    for oy in 0..buf_size {
+        for ox in 0..buf_size {
+            let fx = ox as f32 - half_x;
+            let fy = oy as f32 - half_y;
+            // Inverse rotation (CW angle → CCW inverse)
+            let src_x = fx * cos_a + fy * sin_a + half_x;
+            let src_y = -fx * sin_a + fy * cos_a + half_y;
+            if src_x >= 0.0
+                && src_x < (bx - 1) as f32
+                && src_y >= 0.0
+                && src_y < (by - 1) as f32
+            {
+                let x0 = src_x as u32;
+                let y0 = src_y as u32;
+                let x1 = (x0 + 1).min(buf_size - 1);
+                let y1 = (y0 + 1).min(buf_size - 1);
+                let fx2 = src_x.fract();
+                let fy2 = src_y.fract();
+                let p00 = buf
+                    .get_pixel(x0, y0)
+                    .0;
+                let p10 = buf
+                    .get_pixel(x1, y0)
+                    .0;
+                let p01 = buf
+                    .get_pixel(x0, y1)
+                    .0;
+                let p11 = buf
+                    .get_pixel(x1, y1)
+                    .0;
+                let interp = |a: u8, b: u8, c: u8, d: u8| -> u8 {
+                    let top = a as f32 + (b as f32 - a as f32) * fx2;
+                    let bot = c as f32 + (d as f32 - c as f32) * fx2;
+                    (top + (bot - top) * fy2) as u8
+                };
+                rotated.put_pixel(
+                    ox,
+                    oy,
+                    Rgba([
+                        interp(p00[0], p10[0], p01[0], p11[0]),
+                        interp(p00[1], p10[1], p01[1], p11[1]),
+                        interp(p00[2], p10[2], p01[2], p11[2]),
+                        interp(p00[3], p10[3], p01[3], p11[3]),
+                    ]),
+                );
+            }
+        }
+    }
+
+    let stamp_x = cx - buf_size as i64 / 2;
+    let stamp_y = cy - buf_size as i64 / 2;
+    image::imageops::overlay(canvas, &rotated, stamp_x, stamp_y);
+}
+
+/// Sync overlay renderer — called from inside `spawn_blocking`.
+/// `logo_image` is the already-downloaded streaming logo (if any).
+fn apply_overlay_sync(
+    canvas: &mut RgbaImage,
+    overlay: &CollectionOverlay,
+    fallback_name: &str,
+    logo_image: Option<RgbaImage>,
+) -> anyhow::Result<()> {
+    match overlay {
+        CollectionOverlay::None => {}
+        CollectionOverlay::Text {
+            text,
+            font_size,
+            font_family,
+        } => {
+            let label = text
+                .as_deref()
+                .unwrap_or(fallback_name);
+            let size = (*font_size).unwrap_or(90) as f32;
+            let bold = font_family
+                .as_deref()
+                .map(|f| f != "regular")
+                .unwrap_or(true);
+            let font_bytes: &[u8] = if bold { FONT_BOLD } else { FONT_REGULAR };
+            let font = FontRef::try_from_slice(font_bytes)
+                .map_err(|e| anyhow::anyhow!("font load: {e:?}"))?;
+
+            let left_margin = 50i32;
+            let max_w = TEXT_AREA_END as f32 - left_margin as f32;
+            let scale = PxScale::from(size);
+
+            let lines = wrap_words(&font, scale, label, max_w);
+
+            let sf = font.as_scaled(scale);
+            let line_h = sf.ascent() - sf.descent();
+            let line_gap = line_h * 0.18;
+            let step = line_h + line_gap;
+            let total_h = step * lines.len() as f32 - line_gap;
+            let start_y = ((OUT_H as f32 - total_h) / 2.0) as i32;
+
+            for (i, line) in lines
+                .iter()
+                .enumerate()
+            {
+                let y = start_y + (i as f32 * step) as i32;
+                draw_text_mut(
+                    canvas,
+                    Rgba([255, 255, 255, 255]),
+                    left_margin,
+                    y,
+                    scale,
+                    &font,
+                    line,
+                );
+            }
+        }
+        CollectionOverlay::StreamingLogo { provider_name, .. } => {
+            if let Some(logo) = logo_image {
+                let max_logo_h = OUT_H / 3;
+                let max_logo_w = OUT_W / 3;
+                let scale = (max_logo_h as f32 / logo.height() as f32)
+                    .min(max_logo_w as f32 / logo.width() as f32);
+                let lw = (logo.width() as f32 * scale) as u32;
+                let lh = (logo.height() as f32 * scale) as u32;
+                let scaled = image::imageops::resize(
+                    &logo,
+                    lw,
+                    lh,
+                    image::imageops::FilterType::Lanczos3,
+                );
+                let margin = 20i64;
+                let lx = OUT_W as i64 - lw as i64 - margin;
+                let ly = OUT_H as i64 - lh as i64 - margin;
+                image::imageops::overlay(canvas, &scaled, lx, ly);
+            } else {
+                let label = provider_name
+                    .as_deref()
+                    .unwrap_or("Streaming");
+                let font = FontRef::try_from_slice(FONT_BOLD)
+                    .map_err(|e| anyhow::anyhow!("font: {e:?}"))?;
+                let scale = PxScale::from(60.0);
+                let tw = measure_text_width(&font, scale, label);
+                let sf = font.as_scaled(scale);
+                let th = sf.ascent() - sf.descent();
+                let x = ((OUT_W as f32 - tw) / 2.0) as i32;
+                let y = ((OUT_H as f32 - th) / 2.0) as i32;
+                draw_text_mut(
+                    canvas,
+                    Rgba([255, 255, 255, 255]),
+                    x,
+                    y,
+                    scale,
+                    &font,
+                    label,
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Break `text` into lines where each line fits within `max_w` pixels at `scale`.
+fn wrap_words(
+    font: &FontRef<'_>,
+    scale: PxScale,
+    text: &str,
+    max_w: f32,
+) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        let candidate = if current.is_empty() {
+            word.to_string()
+        } else {
+            format!("{current} {word}")
+        };
+        if !current.is_empty() && measure_text_width(font, scale, &candidate) > max_w {
+            lines.push(current);
+            current = word.to_string();
+        } else {
+            current = candidate;
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(text.to_string());
+    }
+    lines
+}
+
 fn solid_background() -> RgbImage {
-    RgbImage::from_pixel(OUT_W, OUT_H, image::Rgb([30, 30, 30]))
+    RgbImage::from_pixel(OUT_W, OUT_H, Rgb([30, 30, 30]))
 }
 
 /// Blend a semi-transparent black overlay over the image to darken it,
@@ -489,7 +926,7 @@ fn apply_dark_overlay(mut img: RgbImage) -> RgbImage {
 
 /// Render the library name centered on the image in white text.
 fn draw_label(mut img: RgbImage, name: &str) -> anyhow::Result<RgbImage> {
-    let font = FontRef::try_from_slice(FONT_DATA)
+    let font = FontRef::try_from_slice(FONT_BOLD)
         .map_err(|e| anyhow::anyhow!("font load failed: {e:?}"))?;
 
     // Start at ~20% of image height and scale down until it fits within 90% width.
@@ -541,6 +978,12 @@ fn ext_for_content_type(ct: &str) -> &'static str {
 fn encode_jpeg(img: RgbImage) -> anyhow::Result<Vec<u8>> {
     let mut buf = Cursor::new(Vec::new());
     img.write_to(&mut buf, ImageFormat::Jpeg)?;
+    Ok(buf.into_inner())
+}
+
+fn encode_png_rgba(img: RgbaImage) -> anyhow::Result<Vec<u8>> {
+    let mut buf = Cursor::new(Vec::new());
+    img.write_to(&mut buf, ImageFormat::Png)?;
     Ok(buf.into_inner())
 }
 

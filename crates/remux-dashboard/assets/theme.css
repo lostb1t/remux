@@ -768,6 +768,17 @@ html, body {
 .card-body.tight .loading-text { padding: 16px 20px; }
 .card-body.tight .empty-state  { padding: 24px 20px; }
 
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner {
+  display: inline-block;
+  width: 28px;
+  height: 28px;
+  border: 3px solid rgba(255,255,255,0.25);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+
 /* ── Sidebar layout ──────────────────────────────────────────────── */
 .layout {
   display: flex;

@@ -503,6 +503,7 @@ impl Endpoint for TrendingTvEndpoint {
 pub struct WatchProvider {
     pub provider_id: i64,
     pub provider_name: String,
+    pub logo_path: Option<String>,
 }
 
 /// Per-country availability from `/watch/providers`.
@@ -552,6 +553,32 @@ impl Endpoint for TvWatchProvidersEndpoint {
 
     fn path(&self) -> String {
         format!("tv/{}/watch/providers", self.series_id)
+    }
+}
+
+/// Response for `GET /watch/providers/movie` and `GET /watch/providers/tv`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct AllWatchProvidersResponse {
+    #[serde(default)]
+    pub results: Vec<WatchProvider>,
+}
+
+/// `GET /watch/providers/movie` — list all streaming providers for movies.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AllMovieWatchProvidersEndpoint {
+    pub language: Option<String>,
+    pub watch_region: Option<String>,
+}
+
+impl Endpoint for AllMovieWatchProvidersEndpoint {
+    type Output = AllWatchProvidersResponse;
+
+    fn path(&self) -> String {
+        "watch/providers/movie".to_string()
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }
 

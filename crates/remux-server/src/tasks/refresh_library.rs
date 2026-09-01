@@ -11,7 +11,7 @@ use super::{
         remove_stale_catalog_memberships,
     },
 };
-use crate::{AppContext, db};
+use crate::{AppContext, db, services::image::ImageService};
 use remux_sdks::stremio::ResourceType;
 
 pub struct RefreshLibraryTask;
@@ -211,6 +211,83 @@ impl Task for RefreshLibraryTask {
             }
         }
 
+        // Bust the generated poster cache for all collections so the grid
+        // reflects any newly imported items on the next request.
+        invalidate_collection_images(&ctx).await;
+
         Ok(())
+    }
+}
+
+async fn invalidate_collection_images(ctx: &AppContext) {
+    let filter = db::MediaFilter {
+        kind: Some(vec![db::MediaKind::Collection]),
+        ..Default::default()
+    };
+    let Ok(result) = db::Media::get_by_filter(&ctx.db, &filter).await else {
+        return;
+    };
+    for col in &result.records {
+        // Only invalidate generated images for collections that use the image
+        // configurator. Collections with no image_config may have a manually
+        // uploaded image that must not be deleted.
+        if col
+            .collection_image_config
+            .is_none()
+        {
+            continue;
+        }
+        let _ = ImageService::invalidate_collection_image(
+            &ctx.config
+                .data_dir,
+            col.id,
+            &ctx.db,
+        )
+        .await;
+    }
+    if result.total_count
+        > result
+            .records
+            .len()
+    {
+        // There are more collections; page through them.
+        let mut offset = result
+            .records
+            .len() as u32;
+        loop {
+            let filter = db::MediaFilter {
+                kind: Some(vec![db::MediaKind::Collection]),
+                offset: Some(offset),
+                ..Default::default()
+            };
+            let Ok(page) = db::Media::get_by_filter(&ctx.db, &filter).await else {
+                break;
+            };
+            for col in &page.records {
+                if col
+                    .collection_image_config
+                    .is_none()
+                {
+                    continue;
+                }
+                let _ = ImageService::invalidate_collection_image(
+                    &ctx.config
+                        .data_dir,
+                    col.id,
+                    &ctx.db,
+                )
+                .await;
+            }
+            offset += page
+                .records
+                .len() as u32;
+            if page
+                .records
+                .is_empty()
+                || offset as usize >= result.total_count
+            {
+                break;
+            }
+        }
     }
 }

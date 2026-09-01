@@ -1,10 +1,11 @@
 use crate::{components::*, state::AppState};
 use dioxus::prelude::*;
 use remux_sdks::remux::{
-    BaseItemDto, CollectionFilter, CollectionType, CreateVirtualFolder,
-    CreateVirtualFolderPayload, DeleteVirtualFolder, FilterGroup, FilterMatchMode,
-    GetItems, GetItemsQuery, ItemSortBy, MediaType, PatchItem, PatchItemPayload,
-    SortOrder,
+    BaseItemDto, CollectionFilter, CollectionImageConfig, CollectionOverlay,
+    CollectionType, CreateVirtualFolder, CreateVirtualFolderPayload,
+    DeleteVirtualFolder, FilterGroup, FilterMatchMode, GetItems, GetItemsQuery,
+    GetWatchProviders, ItemSortBy, MediaType, PatchItem, PatchItemPayload, SortOrder,
+    WatchProviderItem,
 };
 use std::collections::HashMap;
 
@@ -431,6 +432,82 @@ pub fn CollectionForm(
             .map(|s| s.to_string())
             .unwrap_or_else(|| "Descending".to_string())
     });
+
+    // Image config state
+    let existing_overlay = existing
+        .as_ref()
+        .and_then(|f| {
+            f.remux
+                .as_ref()
+        })
+        .and_then(|r| {
+            r.image_config
+                .as_ref()
+        })
+        .map(|c| &c.overlay);
+    let mut overlay_type = use_signal(|| match existing_overlay {
+        Some(CollectionOverlay::Text { .. }) => "text".to_string(),
+        Some(CollectionOverlay::StreamingLogo { .. }) => "logo".to_string(),
+        _ => "none".to_string(),
+    });
+    let mut overlay_text = use_signal(|| {
+        if let Some(CollectionOverlay::Text { text, .. }) = existing_overlay {
+            text.clone()
+                .unwrap_or_default()
+        } else {
+            String::new()
+        }
+    });
+    let mut overlay_font_size = use_signal(|| {
+        if let Some(CollectionOverlay::Text { font_size, .. }) = existing_overlay {
+            font_size
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "80".to_string())
+        } else {
+            "80".to_string()
+        }
+    });
+    let mut overlay_font_family = use_signal(|| {
+        if let Some(CollectionOverlay::Text { font_family, .. }) = existing_overlay {
+            font_family
+                .clone()
+                .unwrap_or_else(|| "bold".to_string())
+        } else {
+            "bold".to_string()
+        }
+    });
+    let mut logo_provider_id: Signal<Option<i64>> = use_signal(|| {
+        if let Some(CollectionOverlay::StreamingLogo { provider_id, .. }) =
+            existing_overlay
+        {
+            Some(*provider_id)
+        } else {
+            None
+        }
+    });
+    let mut logo_provider_name: Signal<Option<String>> = use_signal(|| {
+        if let Some(CollectionOverlay::StreamingLogo { provider_name, .. }) =
+            existing_overlay
+        {
+            provider_name.clone()
+        } else {
+            None
+        }
+    });
+    let mut logo_path: Signal<Option<String>> = use_signal(|| {
+        if let Some(CollectionOverlay::StreamingLogo { logo_path, .. }) =
+            existing_overlay
+        {
+            logo_path.clone()
+        } else {
+            None
+        }
+    });
+    let mut watch_providers: Signal<Vec<WatchProviderItem>> = use_signal(Vec::new);
+    let mut providers_loading = use_signal(|| false);
+    let mut previewing = use_signal(|| false);
+    let mut image_bust: Signal<u32> = use_signal(|| 0);
+
     let mut saving = use_signal(|| false);
     let mut err = use_signal(|| Option::<String>::None);
 
@@ -470,6 +547,9 @@ pub fn CollectionForm(
                 .clone()
         })
         .unwrap_or_default();
+
+    let app_state_providers = app_state.clone();
+    let app_state_preview = app_state.clone();
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
@@ -531,6 +611,48 @@ pub fn CollectionForm(
                         .unwrap_or(SortOrder::Ascending)]
                 })
         };
+        // Build image config payload.
+        let ot = overlay_type
+            .peek()
+            .clone();
+        let image_config_payload = Some(CollectionImageConfig {
+            overlay: match ot.as_str() {
+                "text" => CollectionOverlay::Text {
+                    text: {
+                        let t = overlay_text
+                            .peek()
+                            .clone();
+                        if t.is_empty() {
+                            None
+                        } else {
+                            Some(t)
+                        }
+                    },
+                    font_size: overlay_font_size
+                        .peek()
+                        .parse::<u32>()
+                        .ok(),
+                    font_family: Some(
+                        overlay_font_family
+                            .peek()
+                            .clone(),
+                    ),
+                },
+                "logo" => CollectionOverlay::StreamingLogo {
+                    provider_id: logo_provider_id
+                        .peek()
+                        .unwrap_or(0),
+                    provider_name: logo_provider_name
+                        .peek()
+                        .clone(),
+                    logo_path: logo_path
+                        .peek()
+                        .clone(),
+                },
+                _ => CollectionOverlay::None,
+            },
+        });
+
         saving.set(true);
         err.set(None);
         let pending_bytes = pending_image_bytes
@@ -562,6 +684,7 @@ pub fn CollectionForm(
                             }),
                             collection_default_sort: default_sort_payload,
                             collection_default_sort_order: default_sort_order_payload,
+                            image_config: image_config_payload,
                         },
                     })
                     .await;
@@ -622,6 +745,7 @@ pub fn CollectionForm(
                             }),
                             collection_default_sort: default_sort_payload,
                             collection_default_sort_order: default_sort_order_payload,
+                            image_config: image_config_payload,
                         },
                     })
                     .await;
@@ -713,16 +837,41 @@ pub fn CollectionForm(
                     div { style: "display:flex;flex-direction:column;gap:8px",
                         // Preview: local pick takes priority over server image
                         if let Some(preview) = pending_image_preview.read().as_ref() {
-                            img {
-                                src: "{preview}",
-                                style: "width:100%;max-height:180px;object-fit:cover;border-radius:6px;border:1px solid var(--border)",
+                            div { style: "position:relative",
+                                img {
+                                    src: "{preview}",
+                                    style: "width:100%;max-height:180px;object-fit:cover;border-radius:6px;border:1px solid var(--border)",
+                                }
                             }
                         } else if let Some(url) = &current_image_url {
                             if *has_image.read() {
-                                img {
-                                    src: "{url}",
-                                    style: "width:100%;max-height:180px;object-fit:cover;border-radius:6px;border:1px solid var(--border)",
-                                    onerror: move |_| has_image.set(false),
+                                {
+                                    let bust = *image_bust.read();
+                                    let src = if bust > 0 {
+                                        format!("{url}&_cb={bust}")
+                                    } else {
+                                        url.clone()
+                                    };
+                                    let is_previewing = *previewing.read();
+                                    rsx! {
+                                        div { style: "position:relative",
+                                            img {
+                                                src: "{src}",
+                                                style: "width:100%;max-height:180px;object-fit:cover;border-radius:6px;border:1px solid var(--border);display:block",
+                                                onload: move |_| previewing.set(false),
+                                                onerror: move |_| {
+                                                    has_image.set(false);
+                                                    previewing.set(false);
+                                                },
+                                            }
+                                            if is_previewing {
+                                                div {
+                                                    style: "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.45);border-radius:6px",
+                                                    span { class: "spinner" }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -783,6 +932,168 @@ pub fn CollectionForm(
                                     "Remove image"
                                 }
                             }
+                        }
+                    }
+                }
+            }
+
+            // Image poster configurator (edit mode only)
+            if is_edit {
+                div { class: "field",
+                    label { class: "field-label", "Poster Overlay" }
+                    p { class: "field-hint",
+                        "Generated poster uses item posters as a grid. Select an overlay to add on top."
+                    }
+                    select {
+                        class: "select-input",
+                        value: "{overlay_type}",
+                        onchange: move |e| {
+                            let v = e.value();
+                            // Load providers when switching to logo mode
+                            if v == "logo" && watch_providers.read().is_empty() && !*providers_loading.read() {
+                                providers_loading.set(true);
+                                let client = app_state_providers.clone();
+                                spawn(async move {
+                                    if let Ok(providers) = client
+                                        .execute(GetWatchProviders)
+                                        .await
+                                    {
+                                        watch_providers.set(providers);
+                                    }
+                                    providers_loading.set(false);
+                                });
+                            }
+                            overlay_type.set(v);
+                        },
+                        option { value: "none", selected: *overlay_type.read() == "none", "None" }
+                        option { value: "text", selected: *overlay_type.read() == "text", "Text" }
+                        option { value: "logo", selected: *overlay_type.read() == "logo", "Streaming Logo" }
+                    }
+
+                    if *overlay_type.read() == "text" {
+                        div { style: "display:flex;flex-direction:column;gap:8px;margin-top:8px",
+                            input {
+                                r#type: "text",
+                                class: "field-input",
+                                placeholder: "Custom text (leave blank to use collection name)",
+                                value: "{overlay_text}",
+                                oninput: move |e| overlay_text.set(e.value()),
+                            }
+                            div { style: "display:flex;gap:8px",
+                                select {
+                                    class: "select-input",
+                                    style: "flex:1",
+                                    value: "{overlay_font_family}",
+                                    onchange: move |e| overlay_font_family.set(e.value()),
+                                    option { value: "bold",    selected: *overlay_font_family.read() == "bold",    "Bold" }
+                                    option { value: "regular", selected: *overlay_font_family.read() == "regular", "Regular" }
+                                }
+                                input {
+                                    r#type: "number",
+                                    class: "field-input",
+                                    style: "flex:0 0 90px",
+                                    placeholder: "80",
+                                    min: "20",
+                                    max: "300",
+                                    value: "{overlay_font_size}",
+                                    oninput: move |e| overlay_font_size.set(e.value()),
+                                }
+                            }
+                        }
+                    }
+
+                    if *overlay_type.read() == "logo" {
+                        div { style: "margin-top:8px",
+                            if *providers_loading.read() {
+                                span { class: "loading-text", "Loading providers…" }
+                            } else {
+                                select {
+                                    class: "select-input",
+                                    value: logo_provider_id.read().as_ref().map(|id| id.to_string()).unwrap_or_default(),
+                                    onchange: move |e| {
+                                        let val = e.value();
+                                        if let Ok(pid) = val.parse::<i64>() {
+                                            logo_provider_id.set(Some(pid));
+                                            // Find logo_path and name from the list
+                                            let providers = watch_providers.read();
+                                            if let Some(p) = providers.iter().find(|p| p.provider_id == pid) {
+                                                logo_provider_name.set(Some(p.provider_name.clone()));
+                                                logo_path.set(p.logo_path.clone());
+                                            }
+                                        } else {
+                                            logo_provider_id.set(None);
+                                            logo_provider_name.set(None);
+                                            logo_path.set(None);
+                                        }
+                                    },
+                                    option { value: "", "— Select provider —" }
+                                    for p in watch_providers.read().iter() {
+                                        option {
+                                            value: "{p.provider_id}",
+                                            selected: *logo_provider_id.read() == Some(p.provider_id),
+                                            "{p.provider_name}"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+            }
+
+            if is_edit {
+                if let Some(id) = existing_item_id.clone() {
+                    div { class: "field",
+                        button {
+                            r#type: "button",
+                            class: "btn btn-ghost",
+                            style: "height:30px;font-size:.68rem;padding:0 10px",
+                            disabled: *previewing.read(),
+                            onclick: {
+                                let client = app_state_preview.clone();
+                                move |_| {
+                                    let ot = overlay_type.peek().clone();
+                                    let cfg = CollectionImageConfig {
+                                        overlay: match ot.as_str() {
+                                            "text" => CollectionOverlay::Text {
+                                                text: {
+                                                    let t = overlay_text.peek().clone();
+                                                    if t.is_empty() { None } else { Some(t) }
+                                                },
+                                                font_size: overlay_font_size.peek().parse::<u32>().ok(),
+                                                font_family: Some(overlay_font_family.peek().clone()),
+                                            },
+                                            "logo" => CollectionOverlay::StreamingLogo {
+                                                provider_id: logo_provider_id.peek().unwrap_or(0),
+                                                provider_name: logo_provider_name.peek().clone(),
+                                                logo_path: logo_path.peek().clone(),
+                                            },
+                                            _ => CollectionOverlay::None,
+                                        },
+                                    };
+                                    previewing.set(true);
+                                    let client = client.clone();
+                                    let id = id.clone();
+                                    spawn(async move {
+                                        let _ = client
+                                            .execute(PatchItem {
+                                                item_id: id,
+                                                payload: PatchItemPayload {
+                                                    image_config: Some(cfg),
+                                                    ..Default::default()
+                                                },
+                                            })
+                                            .await;
+                                        // Bump bust so the img fetches the new URL.
+                                        // Keep previewing=true — onload/onerror clears it
+                                        // once the server has actually generated the image.
+                                        let next = *image_bust.read() + 1;
+                                        image_bust.set(next);
+                                    });
+                                }
+                            },
+                            if *previewing.read() { "Updating…" } else { "Update preview" }
                         }
                     }
                 }
