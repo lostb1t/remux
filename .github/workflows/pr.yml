@@ -13,7 +13,7 @@ jobs:
   bench:
     if: github.event.pull_request.draft == false
     name: Bench
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
