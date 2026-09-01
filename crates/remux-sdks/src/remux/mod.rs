@@ -372,11 +372,9 @@ pub struct RemuxBrandingExtensions {
 #[dto]
 pub struct BrandingOptions {
     pub login_disclaimer: Option<String>,
-    #[default(Some(concat!(
-        "@import url(\"https://cdn.jsdelivr.net/gh/lscambo13/ElegantFin@main/Theme/ElegantFin-jellyfin-theme-build-latest-minified.css\");\n\n",
-        ".trackSelections {\n    order: 1;\n}\n\n",
-        ".docspinner {\n    top: 80px;\n    right: 21px;\n    left: unset;\n    width: 46px;\n    height: 46px;\n}"
-    ).to_string()))]
+    #[default(Some(
+        "@import url(\"https://cdn.jsdelivr.net/gh/lscambo13/ElegantFin@main/Theme/ElegantFin-jellyfin-theme-build-latest-minified.css\");".to_string()
+    ))]
     pub custom_css: Option<String>,
     pub splashscreen_enabled: Option<bool>,
     #[serde(rename = "remux")]
@@ -4717,6 +4715,7 @@ pub struct CreatePlaylistDto {
     pub ids: Vec<Uuid>,
     pub user_id: Option<Uuid>,
     pub media_type: Option<MediaType>,
+    pub is_public: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -4724,6 +4723,7 @@ pub struct CreatePlaylistDto {
 pub struct UpdatePlaylistDto {
     pub name: Option<String>,
     pub ids: Option<Vec<Uuid>>,
+    pub is_public: Option<bool>,
 }
 
 impl Endpoint for PublicSystemInfo {

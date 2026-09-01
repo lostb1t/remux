@@ -74,16 +74,6 @@ impl AddonPreset for BetterPostersPreset {
                     kind: AddonOptionType::Boolean,
                 },
                 AddonOption {
-                    id: "language".to_string(),
-                    name: "Language".to_string(),
-                    description: Some("Language for text overlays on the poster.".to_string()),
-                    required: false,
-                    default: None,
-                    kind: AddonOptionType::Select {
-                        options: language_options(),
-                    },
-                },
-                AddonOption {
                     id: "rating_source".to_string(),
                     name: "Rating Source".to_string(),
                     description: Some("Which rating source to display. Only applies when Rating Overlay is enabled.".to_string()),
@@ -109,7 +99,6 @@ impl AddonPreset for BetterPostersPreset {
             quality: cfg_bool(cfg, "quality", false),
             age_rating: cfg_bool(cfg, "age_rating", false),
             trend_tags: cfg_bool(cfg, "trend_tags", true),
-            language: cfg_str(cfg, "language"),
             rating_source: cfg_str(cfg, "rating_source"),
         });
         Ok(AddonCapabilities {
@@ -130,7 +119,6 @@ pub struct BetterPostersAddon {
     quality: bool,
     age_rating: bool,
     trend_tags: bool,
-    language: Option<String>,
     rating_source: Option<String>,
 }
 
@@ -177,7 +165,23 @@ fn build_path(genre: bool, rating: bool, quality: bool, age_rating: bool) -> Str
     path
 }
 
-fn build_url(imdb_id: &str, addon: &BetterPostersAddon) -> String {
+/// Extract the ISO 639-1 2-letter code from a BCP 47 language tag (e.g. "it-IT" → "it").
+/// Returns None for English or unrecognised values (btttr.cc defaults to English).
+fn lang_param(metadata_language: Option<&str>) -> Option<&str> {
+    let lang = metadata_language?;
+    let code = lang.get(..2)?;
+    if code.eq_ignore_ascii_case("en") {
+        None
+    } else {
+        Some(code)
+    }
+}
+
+fn build_url(
+    imdb_id: &str,
+    addon: &BetterPostersAddon,
+    metadata_language: Option<&str>,
+) -> String {
     let path = build_path(addon.genre, addon.rating, addon.quality, addon.age_rating);
     let base = format!(
         "https://btttr.cc/{}/imdb/poster-default/{}.jpg",
@@ -189,7 +193,7 @@ fn build_url(imdb_id: &str, addon: &BetterPostersAddon) -> String {
     if !addon.trend_tags {
         params.push("tag=none".to_string());
     }
-    if let Some(lang) = &addon.language {
+    if let Some(lang) = lang_param(metadata_language) {
         params.push(format!("lang={}", lang));
     }
     if addon.rating {
@@ -203,115 +207,6 @@ fn build_url(imdb_id: &str, addon: &BetterPostersAddon) -> String {
     } else {
         format!("{}?{}", base, params.join("&"))
     }
-}
-
-fn language_options() -> Vec<AddonSelectOption> {
-    vec![
-        AddonSelectOption {
-            label: "English".to_string(),
-            value: "".to_string(),
-        },
-        AddonSelectOption {
-            label: "Arabic".to_string(),
-            value: "ar".to_string(),
-        },
-        AddonSelectOption {
-            label: "Bulgarian".to_string(),
-            value: "bg".to_string(),
-        },
-        AddonSelectOption {
-            label: "Czech".to_string(),
-            value: "cs".to_string(),
-        },
-        AddonSelectOption {
-            label: "Danish".to_string(),
-            value: "da".to_string(),
-        },
-        AddonSelectOption {
-            label: "German".to_string(),
-            value: "de".to_string(),
-        },
-        AddonSelectOption {
-            label: "Greek".to_string(),
-            value: "el".to_string(),
-        },
-        AddonSelectOption {
-            label: "Spanish".to_string(),
-            value: "es".to_string(),
-        },
-        AddonSelectOption {
-            label: "Finnish".to_string(),
-            value: "fi".to_string(),
-        },
-        AddonSelectOption {
-            label: "French".to_string(),
-            value: "fr".to_string(),
-        },
-        AddonSelectOption {
-            label: "Hebrew".to_string(),
-            value: "he".to_string(),
-        },
-        AddonSelectOption {
-            label: "Hungarian".to_string(),
-            value: "hu".to_string(),
-        },
-        AddonSelectOption {
-            label: "Italian".to_string(),
-            value: "it".to_string(),
-        },
-        AddonSelectOption {
-            label: "Japanese".to_string(),
-            value: "ja".to_string(),
-        },
-        AddonSelectOption {
-            label: "Korean".to_string(),
-            value: "ko".to_string(),
-        },
-        AddonSelectOption {
-            label: "Dutch".to_string(),
-            value: "nl".to_string(),
-        },
-        AddonSelectOption {
-            label: "Norwegian".to_string(),
-            value: "no".to_string(),
-        },
-        AddonSelectOption {
-            label: "Polish".to_string(),
-            value: "pl".to_string(),
-        },
-        AddonSelectOption {
-            label: "Portuguese".to_string(),
-            value: "pt".to_string(),
-        },
-        AddonSelectOption {
-            label: "Romanian".to_string(),
-            value: "ro".to_string(),
-        },
-        AddonSelectOption {
-            label: "Russian".to_string(),
-            value: "ru".to_string(),
-        },
-        AddonSelectOption {
-            label: "Swedish".to_string(),
-            value: "sv".to_string(),
-        },
-        AddonSelectOption {
-            label: "Thai".to_string(),
-            value: "th".to_string(),
-        },
-        AddonSelectOption {
-            label: "Turkish".to_string(),
-            value: "tr".to_string(),
-        },
-        AddonSelectOption {
-            label: "Ukrainian".to_string(),
-            value: "uk".to_string(),
-        },
-        AddonSelectOption {
-            label: "Chinese (Simplified)".to_string(),
-            value: "zh".to_string(),
-        },
-    ]
 }
 
 fn rating_source_options() -> Vec<AddonSelectOption> {
@@ -372,7 +267,7 @@ impl super::MetaAddon for BetterPostersAddon {
         &self,
         media: &db::Media,
         _ctx: &AppContext,
-        _config: &crate::api::ServerConfiguration,
+        config: &crate::api::ServerConfiguration,
     ) -> Result<Option<db::Media>> {
         let Some(ref imdb_id) = media
             .external_ids
@@ -380,7 +275,10 @@ impl super::MetaAddon for BetterPostersAddon {
         else {
             return Ok(None);
         };
-        let url = build_url(imdb_id, self);
+        let lang = config
+            .preferred_metadata_language
+            .as_deref();
+        let url = build_url(imdb_id, self, lang);
         let mut patch = db::Media {
             id: media.id,
             kind: media
@@ -425,30 +323,44 @@ mod tests {
             quality: false,
             age_rating: false,
             trend_tags: true,
-            language: None,
             rating_source: None,
         };
         assert_eq!(
-            build_url("tt0111161", &addon),
+            build_url("tt0111161", &addon, None),
             "https://btttr.cc/poster/imdb/poster-default/tt0111161.jpg"
         );
     }
 
     #[test]
-    fn build_url_with_all_params() {
+    fn build_url_with_metadata_language() {
         let addon = BetterPostersAddon {
             genre: false,
             rating: true,
             quality: true,
             age_rating: false,
             trend_tags: false,
-            language: Some("de".to_string()),
             rating_source: Some("IM".to_string()),
         };
-        let url = build_url("tt0111161", &addon);
+        let url = build_url("tt0111161", &addon, Some("it-IT"));
         assert_eq!(
             url,
-            "https://btttr.cc/poster-rq/imdb/poster-default/tt0111161.jpg?tag=none&lang=de&rs=IM"
+            "https://btttr.cc/poster-rq/imdb/poster-default/tt0111161.jpg?tag=none&lang=it&rs=IM"
+        );
+    }
+
+    #[test]
+    fn build_url_english_skips_lang_param() {
+        let addon = BetterPostersAddon {
+            genre: true,
+            rating: true,
+            quality: false,
+            age_rating: false,
+            trend_tags: true,
+            rating_source: None,
+        };
+        assert_eq!(
+            build_url("tt0111161", &addon, Some("en-US")),
+            "https://btttr.cc/poster/imdb/poster-default/tt0111161.jpg"
         );
     }
 
@@ -460,11 +372,9 @@ mod tests {
             quality: false,
             age_rating: false,
             trend_tags: true,
-            language: None,
             rating_source: Some("IM".to_string()),
         };
-        let url = build_url("tt0111161", &addon);
-        // rs= must not appear
+        let url = build_url("tt0111161", &addon, None);
         assert!(!url.contains("rs="));
     }
 }

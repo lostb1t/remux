@@ -6,7 +6,6 @@ on:
 
 jobs:
   bench:
-    if: true
     name: Benchmarks
     runs-on: ubuntu-latest
     env:
@@ -21,12 +20,5 @@ jobs:
       - name: Set up sccache
         uses: mozilla-actions/sccache-action@v0.0.9
 
-      - name: Install cargo-codspeed
-        uses: cargo-bins/cargo-binstall@main
-      - run: cargo binstall cargo-codspeed --no-confirm
-
       - name: Run benchmarks
-        uses: CodSpeedHQ/action@v3
-        with:
-          run: cargo codspeed build -p remux-server --bench shows --bench items && cargo codspeed run -p remux-server --bench shows --bench items
-          token: ${{ secrets.CODSPEED_TOKEN }}
+        run: cargo bench -p remux-server --bench shows --bench items
