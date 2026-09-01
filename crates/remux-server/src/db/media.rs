@@ -3663,6 +3663,8 @@ impl Media {
                         qb.push(" AND (kind != 'playlist' OR public = 1 OR user_id = ");
                         qb.push_bind(uid);
                         qb.push(")");
+                    } else {
+                        qb.push(" AND (kind != 'playlist' OR public = 1)");
                     }
                 }
             }
