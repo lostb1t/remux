@@ -15,6 +15,42 @@ use crate::{
 use axum_anyhow::ApiResult as Result;
 use tracing::warn;
 
+fn require_playlist_read(media: &db::Media, session: &auth::AuthSession) -> Result<()> {
+    if !media.public
+        && media.user_id
+            != Some(
+                session
+                    .user
+                    .id,
+            )
+        && !session
+            .user
+            .is_admin
+    {
+        return Err(anyhow::anyhow!("Access denied").context_forbidden("Access denied"));
+    }
+    Ok(())
+}
+
+fn require_playlist_write(
+    media: &db::Media,
+    session: &auth::AuthSession,
+) -> Result<()> {
+    if media.user_id
+        != Some(
+            session
+                .user
+                .id,
+        )
+        && !session
+            .user
+            .is_admin
+    {
+        return Err(anyhow::anyhow!("Access denied").context_forbidden("Access denied"));
+    }
+    Ok(())
+}
+
 /// Restrict playlist membership to directly-playable leaf items: tracks,
 /// movies, episodes and TV channels. Containers (albums, artists, series,
 /// seasons, collections, ...) have no playable content of their own and would
@@ -59,7 +95,7 @@ pub struct CreatePlaylistQuery {
 #[post("/playlists")]
 pub async fn create_playlist(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Query(q): Query<CreatePlaylistQuery>,
     body: Option<Json<api::CreatePlaylistDto>>,
 ) -> Result<impl IntoResponse> {
@@ -84,6 +120,14 @@ pub async fn create_playlist(
         id: get_uuid(),
         title: name,
         kind: db::MediaKind::Playlist,
+        user_id: Some(
+            session
+                .user
+                .id,
+        ),
+        public: body
+            .is_public
+            .unwrap_or(false),
         ..Default::default()
     };
     media
@@ -128,7 +172,7 @@ pub async fn create_playlist(
 #[get("/playlists/{id}")]
 pub async fn get_playlist(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     let media = db::Media::get_by_id(
@@ -141,6 +185,20 @@ pub async fn get_playlist(
     .context_bad_request("DB error")?
     .filter(|m| m.kind == db::MediaKind::Playlist)
     .context_not_found("Playlist not found")?;
+
+    if !media.public
+        && media.user_id
+            != Some(
+                session
+                    .user
+                    .id,
+            )
+        && !session
+            .user
+            .is_admin
+    {
+        return Err(anyhow::anyhow!("Access denied").context_forbidden("Access denied"));
+    }
 
     let rels = db::MediaRelation::get_playlist_items(
         &state
@@ -155,7 +213,7 @@ pub async fn get_playlist(
         .collect();
 
     Ok(Json(serde_json::json!({
-        "OpenAccess": true,
+        "OpenAccess": media.public,
         "Shares": [],
         "ItemIds": item_ids,
     })))
@@ -164,7 +222,7 @@ pub async fn get_playlist(
 #[post("/playlists/{id}")]
 pub async fn update_playlist(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Path(id): Path<Uuid>,
     Json(body): Json<api::UpdatePlaylistDto>,
 ) -> Result<impl IntoResponse> {
@@ -179,16 +237,32 @@ pub async fn update_playlist(
     .filter(|m| m.kind == db::MediaKind::Playlist)
     .context_not_found("Playlist not found")?;
 
+    if media.user_id
+        != Some(
+            session
+                .user
+                .id,
+        )
+        && !session
+            .user
+            .is_admin
+    {
+        return Err(anyhow::anyhow!("Access denied").context_forbidden("Access denied"));
+    }
+
     if let Some(name) = body.name {
         media.title = name;
-        media
-            .save(
-                &state
-                    .ctx
-                    .db,
-            )
-            .await?;
     }
+    if let Some(is_public) = body.is_public {
+        media.public = is_public;
+    }
+    media
+        .save(
+            &state
+                .ctx
+                .db,
+        )
+        .await?;
 
     if let Some(ids) = body.ids {
         sqlx::query(
@@ -227,11 +301,11 @@ pub struct PlaylistItemsQuery {
 #[get("/playlists/{id}/items")]
 pub async fn get_playlist_items(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Path(id): Path<Uuid>,
     Query(q): Query<PlaylistItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    db::Media::get_by_id(
+    let media = db::Media::get_by_id(
         &state
             .ctx
             .db,
@@ -241,6 +315,7 @@ pub async fn get_playlist_items(
     .context_bad_request("DB error")?
     .filter(|m| m.kind == db::MediaKind::Playlist)
     .context_not_found("Playlist not found")?;
+    require_playlist_read(&media, &session)?;
 
     let relations = db::MediaRelation::get_playlist_items(
         &state
@@ -324,11 +399,11 @@ pub struct AddItemsQuery {
 #[post("/playlists/{id}/items")]
 pub async fn add_playlist_items(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Path(id): Path<Uuid>,
     Query(q): Query<AddItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    db::Media::get_by_id(
+    let media = db::Media::get_by_id(
         &state
             .ctx
             .db,
@@ -338,6 +413,7 @@ pub async fn add_playlist_items(
     .context_bad_request("DB error")?
     .filter(|m| m.kind == db::MediaKind::Playlist)
     .context_not_found("Playlist not found")?;
+    require_playlist_write(&media, &session)?;
 
     let resolved =
         crate::services::MediaResolveService::resolve_ids(&q.ids, &state.ctx).await;
@@ -366,16 +442,16 @@ pub struct RemoveItemsQuery {
     pub entry_ids: CommaSeparatedList<Uuid>,
 }
 
-/// GET /Playlists/{id}/Users/{userId}
-/// Returns edit permissions for the given user on this playlist.
-/// remux grants CanEdit to every authenticated user for now.
-#[get("/playlists/{id}/users/{user_id}")]
-pub async fn get_playlist_user(
+/// GET /Playlists/{id}/Users
+/// Returns the share list — always empty since we don't support per-user shares.
+/// Owner-only.
+#[get("/playlists/{id}/users")]
+pub async fn get_playlist_users(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
-    Path((id, user_id)): Path<(Uuid, Uuid)>,
+    session: auth::AuthSession,
+    Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    db::Media::get_by_id(
+    let media = db::Media::get_by_id(
         &state
             .ctx
             .db,
@@ -385,20 +461,88 @@ pub async fn get_playlist_user(
     .filter(|m| m.kind == db::MediaKind::Playlist)
     .context_not_found("Playlist not found")?;
 
+    if media.user_id
+        != Some(
+            session
+                .user
+                .id,
+        )
+        && !session
+            .user
+            .is_admin
+    {
+        return Err(anyhow::anyhow!("Access denied").context_forbidden("Access denied"));
+    }
+
+    Ok(Json(serde_json::json!([])))
+}
+
+/// GET /Playlists/{id}/Users/{userId}
+#[get("/playlists/{id}/users/{user_id}")]
+pub async fn get_playlist_user(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path((id, user_id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    let media = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &id,
+    )
+    .await?
+    .filter(|m| m.kind == db::MediaKind::Playlist)
+    .context_not_found("Playlist not found")?;
+
+    let is_owner = media.user_id
+        == Some(
+            session
+                .user
+                .id,
+        )
+        || session
+            .user
+            .is_admin;
+    let can_edit = is_owner
+        && user_id
+            == session
+                .user
+                .id;
+
     Ok(Json(serde_json::json!({
-        "UserId": user_id.to_string(),
-        "CanEdit": true
+        "UserId": user_id,
+        "CanEdit": can_edit
     })))
+}
+
+/// POST /Playlists/{id}/Users/{userId} — stub; we don't implement per-user shares.
+#[post("/playlists/{id}/users/{user_id}")]
+pub async fn update_playlist_user(
+    _state: State<AppState>,
+    _session: auth::AuthSession,
+    Path((_id, _user_id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// DELETE /Playlists/{id}/Users/{userId} — stub; we don't implement per-user shares.
+#[delete("/playlists/{id}/users/{user_id}")]
+pub async fn remove_playlist_user(
+    _state: State<AppState>,
+    _session: auth::AuthSession,
+    Path((_id, _user_id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[delete("/playlists/{id}/items")]
 pub async fn remove_playlist_items(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Path(id): Path<Uuid>,
     Query(q): Query<RemoveItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    db::Media::get_by_id(
+    let media = db::Media::get_by_id(
         &state
             .ctx
             .db,
@@ -408,6 +552,7 @@ pub async fn remove_playlist_items(
     .context_bad_request("DB error")?
     .filter(|m| m.kind == db::MediaKind::Playlist)
     .context_not_found("Playlist not found")?;
+    require_playlist_write(&media, &session)?;
 
     db::MediaRelation::delete_by_relation_ids(
         &state
@@ -430,10 +575,10 @@ pub async fn remove_playlist_items(
 #[post("/playlists/{id}/items/{item_id}/move/{new_index}")]
 pub async fn move_playlist_item(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Path((id, item_id, new_index)): Path<(Uuid, Uuid, usize)>,
 ) -> Result<impl IntoResponse> {
-    db::Media::get_by_id(
+    let media = db::Media::get_by_id(
         &state
             .ctx
             .db,
@@ -443,6 +588,7 @@ pub async fn move_playlist_item(
     .context_bad_request("DB error")?
     .filter(|m| m.kind == db::MediaKind::Playlist)
     .context_not_found("Playlist not found")?;
+    require_playlist_write(&media, &session)?;
 
     db::MediaRelation::move_playlist_item(
         &state
@@ -455,4 +601,164 @@ pub async fn move_playlist_item(
     .await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::SqlitePool;
+
+    async fn test_db() -> SqlitePool {
+        let db = db::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        db::migrate(&db)
+            .await
+            .unwrap();
+        db
+    }
+
+    async fn insert_user(db: &SqlitePool) -> db::User {
+        let mut user = db::User {
+            id: uuid::Uuid::new_v4(),
+            username: format!("user_{}", uuid::Uuid::new_v4()),
+            password_hash: "test"
+                .to_string()
+                .into(),
+            ..Default::default()
+        };
+        user.save(db)
+            .await
+            .unwrap();
+        user
+    }
+
+    async fn insert_playlist(
+        db: &SqlitePool,
+        owner: &db::User,
+        public: bool,
+    ) -> db::Media {
+        let mut pl = db::Media {
+            id: uuid::Uuid::new_v4(),
+            title: "Test Playlist".to_string(),
+            kind: db::MediaKind::Playlist,
+            user_id: Some(owner.id),
+            public,
+            ..Default::default()
+        };
+        pl.save(db)
+            .await
+            .unwrap();
+        pl
+    }
+
+    async fn visible_playlist_ids(
+        db: &SqlitePool,
+        user_id: uuid::Uuid,
+    ) -> Vec<uuid::Uuid> {
+        db::Media::get_by_filter(
+            db,
+            &db::MediaFilter {
+                kind: Some(vec![db::MediaKind::Playlist]),
+                user_id: Some(user_id),
+                total_count: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .records
+        .into_iter()
+        .map(|m| m.id)
+        .collect()
+    }
+
+    #[tokio::test]
+    async fn owner_sees_their_private_playlist() {
+        let db = test_db().await;
+        let owner = insert_user(&db).await;
+        let pl = insert_playlist(&db, &owner, false).await;
+
+        assert!(
+            visible_playlist_ids(&db, owner.id)
+                .await
+                .contains(&pl.id),
+            "owner should see their own private playlist"
+        );
+    }
+
+    #[tokio::test]
+    async fn other_user_cannot_see_private_playlist() {
+        let db = test_db().await;
+        let owner = insert_user(&db).await;
+        let other = insert_user(&db).await;
+        let pl = insert_playlist(&db, &owner, false).await;
+
+        assert!(
+            !visible_playlist_ids(&db, other.id)
+                .await
+                .contains(&pl.id),
+            "other user must not see private playlist"
+        );
+    }
+
+    #[tokio::test]
+    async fn public_playlist_visible_to_all_users() {
+        let db = test_db().await;
+        let owner = insert_user(&db).await;
+        let other = insert_user(&db).await;
+        let pl = insert_playlist(&db, &owner, true).await;
+
+        assert!(
+            visible_playlist_ids(&db, owner.id)
+                .await
+                .contains(&pl.id),
+            "owner should see public playlist"
+        );
+        assert!(
+            visible_playlist_ids(&db, other.id)
+                .await
+                .contains(&pl.id),
+            "other user should see public playlist"
+        );
+    }
+
+    #[tokio::test]
+    async fn stored_playlist_has_owner_and_privacy() {
+        let db = test_db().await;
+        let owner = insert_user(&db).await;
+        let pl = insert_playlist(&db, &owner, false).await;
+
+        let stored = db::Media::get_by_id(&db, &pl.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.user_id, Some(owner.id));
+        assert!(!stored.public);
+    }
+
+    #[tokio::test]
+    async fn making_playlist_public_exposes_it_to_others() {
+        let db = test_db().await;
+        let owner = insert_user(&db).await;
+        let other = insert_user(&db).await;
+        let mut pl = insert_playlist(&db, &owner, false).await;
+
+        assert!(
+            !visible_playlist_ids(&db, other.id)
+                .await
+                .contains(&pl.id)
+        );
+
+        pl.public = true;
+        pl.save(&db)
+            .await
+            .unwrap();
+
+        assert!(
+            visible_playlist_ids(&db, other.id)
+                .await
+                .contains(&pl.id)
+        );
+    }
 }
