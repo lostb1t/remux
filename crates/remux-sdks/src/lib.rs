@@ -398,9 +398,10 @@ fn build_mw(retry: Option<Arc<dyn RetryPolicy + Send + Sync>>) -> ClientWithMidd
     let builder = MwClientBuilder::new(SHARED_HTTP_CLIENT.clone());
     match retry {
         Some(policy) => builder
-            .with(RetryTransientMiddleware::new_with_policy(DynRetryPolicy(
-                policy,
-            )))
+            .with(
+                RetryTransientMiddleware::new_with_policy(DynRetryPolicy(policy))
+                    .with_retry_log_level(tracing::Level::DEBUG),
+            )
             .build(),
         None => builder.build(),
     }
