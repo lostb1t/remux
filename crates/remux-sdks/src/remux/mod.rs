@@ -3489,11 +3489,40 @@ impl Default for CollectionOverlay {
     }
 }
 
+/// Poster layout for a collection's generated image.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum_macros::Display,
+    strum_macros::EnumString,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum CollectionPosterLayout {
+    /// Diagonal staircase — all posters at the same angle, stepping right and down.
+    #[default]
+    Cascade,
+    /// Three-column grid — all posters tilted ~30°, middle column raised to break the regularity.
+    Mosaic,
+    /// Clean horizontal shelf with minimal spacing.
+    Row,
+    /// Wide artistic scatter with bold angles.
+    Scatter,
+}
+
 /// Stored in `media.collection_image_config` (JSON).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct CollectionImageConfig {
     #[serde(default)]
     pub overlay: CollectionOverlay,
+    #[serde(default)]
+    pub layout: CollectionPosterLayout,
 }
 
 #[dto]

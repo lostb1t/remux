@@ -2,10 +2,10 @@ use crate::{components::*, state::AppState};
 use dioxus::prelude::*;
 use remux_sdks::remux::{
     BaseItemDto, CollectionFilter, CollectionImageConfig, CollectionOverlay,
-    CollectionType, CreateVirtualFolder, CreateVirtualFolderPayload,
-    DeleteVirtualFolder, FilterGroup, FilterMatchMode, GetItems, GetItemsQuery,
-    GetWatchProviders, ItemSortBy, MediaType, PatchItem, PatchItemPayload, SortOrder,
-    WatchProviderItem,
+    CollectionPosterLayout, CollectionType, CreateVirtualFolder,
+    CreateVirtualFolderPayload, DeleteVirtualFolder, FilterGroup, FilterMatchMode,
+    GetItems, GetItemsQuery, GetWatchProviders, ItemSortBy, MediaType, PatchItem,
+    PatchItemPayload, SortOrder, WatchProviderItem,
 };
 use std::collections::HashMap;
 
@@ -434,7 +434,7 @@ pub fn CollectionForm(
     });
 
     // Image config state
-    let existing_overlay = existing
+    let existing_image_config = existing
         .as_ref()
         .and_then(|f| {
             f.remux
@@ -443,8 +443,15 @@ pub fn CollectionForm(
         .and_then(|r| {
             r.image_config
                 .as_ref()
+        });
+    let existing_overlay = existing_image_config.map(|c| &c.overlay);
+    let existing_layout = existing_image_config
+        .map(|c| {
+            c.layout
+                .to_string()
         })
-        .map(|c| &c.overlay);
+        .unwrap_or_else(|| "cascade".to_string());
+    let mut poster_layout = use_signal(|| existing_layout);
     let mut overlay_type = use_signal(|| match existing_overlay {
         Some(CollectionOverlay::Text { .. }) => "text".to_string(),
         Some(CollectionOverlay::StreamingLogo { .. }) => "logo".to_string(),
@@ -616,6 +623,10 @@ pub fn CollectionForm(
             .peek()
             .clone();
         let image_config_payload = Some(CollectionImageConfig {
+            layout: poster_layout
+                .peek()
+                .parse::<CollectionPosterLayout>()
+                .unwrap_or_default(),
             overlay: match ot.as_str() {
                 "text" => CollectionOverlay::Text {
                     text: {
@@ -940,6 +951,19 @@ pub fn CollectionForm(
             // Image poster configurator (edit mode only)
             if is_edit {
                 div { class: "field",
+                    label { class: "field-label", "Poster Layout" }
+                    p { class: "field-hint", "Choose how the item posters are arranged in the generated image." }
+                    select {
+                        class: "select-input",
+                        value: "{poster_layout}",
+                        oninput: move |e| poster_layout.set(e.value()),
+                        option { value: "cascade", selected: *poster_layout.read() == "cascade", "Cascade" }
+                        option { value: "mosaic", selected: *poster_layout.read() == "mosaic", "Mosaic" }
+                        option { value: "row", selected: *poster_layout.read() == "row", "Row" }
+                        option { value: "scatter", selected: *poster_layout.read() == "scatter", "Scatter" }
+                    }
+                }
+                div { class: "field",
                     label { class: "field-label", "Poster Overlay" }
                     p { class: "field-hint",
                         "Generated poster uses item posters as a grid. Select an overlay to add on top."
@@ -1055,6 +1079,10 @@ pub fn CollectionForm(
                                 move |_| {
                                     let ot = overlay_type.peek().clone();
                                     let cfg = CollectionImageConfig {
+                                        layout: poster_layout
+                                            .peek()
+                                            .parse::<CollectionPosterLayout>()
+                                            .unwrap_or_default(),
                                         overlay: match ot.as_str() {
                                             "text" => CollectionOverlay::Text {
                                                 text: {

@@ -9,7 +9,7 @@ use crate::{
     api::image::detect_content_type,
     db,
     db::ImageKind,
-    sdks::remux::{CollectionImageConfig, CollectionOverlay},
+    sdks::remux::{CollectionImageConfig, CollectionOverlay, CollectionPosterLayout},
 };
 
 /// Width/height of generated library placeholder images (16:9).
@@ -384,7 +384,17 @@ impl ImageService {
             .collection_image_config
             .clone();
 
-        let poster_urls = collect_poster_urls(id, &collection, db).await;
+        let poster_limit = config
+            .as_ref()
+            .map(|c| {
+                if c.layout == CollectionPosterLayout::Mosaic {
+                    9u32
+                } else {
+                    4u32
+                }
+            })
+            .unwrap_or(4);
+        let poster_urls = collect_poster_urls(id, &collection, db, poster_limit).await;
 
         if poster_urls.is_empty() && config.is_none() {
             // Fallback: single backdrop with label (original behaviour).
@@ -448,17 +458,31 @@ impl ImageService {
             let mut canvas =
                 RgbaImage::from_pixel(OUT_W, OUT_H, Rgba([18, 18, 22, 255]));
 
+            let layout = config_owned
+                .as_ref()
+                .map(|c| c.layout)
+                .unwrap_or_default();
+            let max_n = if layout == CollectionPosterLayout::Mosaic {
+                9
+            } else {
+                4
+            };
             let n = posters
                 .len()
-                .min(4);
+                .min(max_n);
             if n > 0 {
-                let positions = fan_positions(n);
+                let positions = layout_positions(layout, n);
                 for idx in (0..n).rev() {
                     let (cx, cy, angle_deg) = positions[idx];
+                    let (pw, ph) = if layout == CollectionPosterLayout::Mosaic {
+                        (160u32, 240u32)
+                    } else {
+                        (POSTER_W, POSTER_H)
+                    };
                     let resized = image::imageops::resize(
                         &posters[idx],
-                        POSTER_W,
-                        POSTER_H,
+                        pw,
+                        ph,
                         image::imageops::FilterType::Lanczos3,
                     );
                     rotate_and_stamp(&mut canvas, resized, cx, cy, angle_deg);
@@ -586,9 +610,10 @@ async fn collect_poster_urls(
     _id: Uuid,
     collection: &db::Media,
     db: &sqlx::SqlitePool,
+    limit: u32,
 ) -> Vec<String> {
     let filter = db::MediaFilter {
-        limit: Some(4),
+        limit: Some(limit),
         ..collection_item_filter(collection)
     };
     let Ok(result) = db::Media::get_by_filter(db, &filter).await else {
@@ -656,18 +681,104 @@ async fn find_backdrop_url_from_collection(
         })
 }
 
-/// Fan layout positions (canvas center_x, center_y, clockwise angle°) for n posters.
-fn fan_positions(n: usize) -> Vec<(i64, i64, f32)> {
-    match n {
-        1 => vec![(720, 270, 0.0)],
-        2 => vec![(635, 278, -7.0), (785, 255, 9.0)],
-        3 => vec![(585, 282, -11.0), (710, 262, 0.0), (830, 248, 11.0)],
-        _ => vec![
-            (545, 292, -13.0),
-            (655, 275, -4.0),
-            (758, 258, 6.0),
-            (855, 248, 14.0),
-        ],
+/// Poster positions (canvas center_x, center_y, clockwise angle°) for a given layout and n posters.
+fn layout_positions(layout: CollectionPosterLayout, n: usize) -> Vec<(i64, i64, f32)> {
+    match layout {
+        // Diagonal staircase: all posters share one angle, stepping right and down.
+        CollectionPosterLayout::Cascade => match n {
+            1 => vec![(720, 270, 0.0)],
+            2 => vec![(630, 248, 8.0), (800, 295, 8.0)],
+            3 => vec![(570, 225, 8.0), (710, 270, 8.0), (850, 315, 8.0)],
+            _ => vec![
+                (535, 215, 8.0),
+                (645, 250, 8.0),
+                (755, 285, 8.0),
+                (855, 318, 8.0),
+            ],
+        },
+        // Scattered posters, each at its own angle, 3 loose columns.
+        // Matches the reference: organic spread, top/right/bottom edges clip.
+        // Filled inside-out so any n looks balanced. positions[0] = frontmost.
+        CollectionPosterLayout::Mosaic => match n {
+            1 => vec![(690, 305, -5.0)],
+            2 => vec![(875, 300, 7.0), (690, 305, -5.0)],
+            3 => vec![(875, 300, 7.0), (510, 310, -14.0), (690, 305, -5.0)],
+            4 => vec![
+                (875, 300, 7.0),
+                (510, 310, -14.0),
+                (700, 115, 8.0),
+                (690, 305, -5.0),
+            ],
+            5 => vec![
+                (875, 300, 7.0),
+                (510, 310, -14.0),
+                (700, 115, 8.0),
+                (520, 140, -10.0),
+                (690, 305, -5.0),
+            ],
+            6 => vec![
+                (875, 300, 7.0),
+                (510, 310, -14.0),
+                (700, 115, 8.0),
+                (520, 140, -10.0),
+                (880, 140, 4.0),
+                (690, 305, -5.0),
+            ],
+            7 => vec![
+                (875, 300, 7.0),
+                (510, 310, -14.0),
+                (700, 115, 8.0),
+                (520, 140, -10.0),
+                (880, 140, 4.0),
+                (610, 460, -5.0),
+                (690, 305, -5.0),
+            ],
+            8 => vec![
+                (875, 300, 7.0),
+                (510, 310, -14.0),
+                (700, 115, 8.0),
+                (520, 140, -10.0),
+                (880, 140, 4.0),
+                (610, 460, -5.0),
+                (770, 465, 5.0),
+                (690, 305, -5.0),
+            ],
+            _ => vec![
+                (440, 460, -8.0), // bot-left — behind
+                (875, 300, 7.0),
+                (510, 310, -14.0),
+                (700, 115, 8.0),
+                (520, 140, -10.0),
+                (880, 140, 4.0),
+                (610, 460, -5.0),
+                (770, 465, 5.0),
+                (690, 305, -5.0), // center — frontmost
+            ],
+        },
+        // Clean horizontal shelf, barely overlapping.
+        CollectionPosterLayout::Row => match n {
+            1 => vec![(720, 270, 0.0)],
+            2 => vec![(645, 270, 0.0), (795, 270, 0.0)],
+            3 => vec![(570, 270, 0.0), (715, 270, 0.0), (860, 270, 0.0)],
+            _ => vec![
+                (515, 270, 0.0),
+                (638, 270, 0.0),
+                (762, 270, 0.0),
+                (885, 270, 0.0),
+            ],
+        },
+        // Wide artistic scatter with bold angles and height variation.
+        CollectionPosterLayout::Scatter => match n {
+            1 => vec![(720, 270, 0.0)],
+            2 => vec![(628, 288, -14.0), (808, 248, 16.0)],
+            3 => vec![(570, 298, -17.0), (718, 245, 10.0), (850, 285, -11.0)],
+            _ => vec![
+                (545, 302, -19.0),
+                (668, 240, 13.0),
+                (778, 296, -9.0),
+                (882, 244, 17.0),
+            ],
+        },
     }
 }
 
@@ -706,10 +817,13 @@ fn rotate_and_stamp(
 ) {
     apply_rounded_corners(&mut poster);
 
+    let pw = poster.width();
+    let ph = poster.height();
+
     // Embed the poster centred in a square big enough that rotation never clips it.
     let buf_size = ROTATION_CANVAS;
-    let ox = ((buf_size - POSTER_W) / 2) as i64;
-    let oy = ((buf_size - POSTER_H) / 2) as i64;
+    let ox = ((buf_size - pw) / 2) as i64;
+    let oy = ((buf_size - ph) / 2) as i64;
     let mut buf = RgbaImage::new(buf_size, buf_size);
     image::imageops::overlay(&mut buf, &poster, ox, oy);
 
