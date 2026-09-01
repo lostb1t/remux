@@ -1,3 +1,11 @@
+## [0.28.1](https://github.com/lostb1t/remux/compare/v0.28.0...v0.28.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* **betterposters:** use preferred_metadata_language instead of per-addon language setting ([6eab756](https://github.com/lostb1t/remux/commit/6eab756e2105abad1d97144835a9484629b88ab8))
+* **web:** move docspinner css to patch; drop trackSelections override ([5bd649f](https://github.com/lostb1t/remux/commit/5bd649f31ac00c8d02c80fb803753814c8a2c177))
+
 # [0.28.0](https://github.com/lostb1t/remux/compare/v0.27.0...v0.28.0) (2026-08-31)
 
 
