@@ -189,6 +189,12 @@ fn build_video_transcode(
         || reasons.contains(&api::TranscodeReason::ContainerBitrateExceedsLimit)
         || reasons.contains(&api::TranscodeReason::VideoRangeTypeNotSupported(
             String::new(),
+        ))
+        || reasons.contains(&api::TranscodeReason::VideoProfileNotSupported(
+            String::new(),
+        ))
+        || reasons.contains(&api::TranscodeReason::VideoBitDepthNotSupported(
+            String::new(),
         ));
 
     // When video re-encoding is not allowed (server setting or user policy),
@@ -796,6 +802,39 @@ mod tests {
             panic!("expected transcode outcome for container remux");
         };
         assert_eq!(outcome.container, "ts");
+    }
+
+    #[test]
+    fn video_profile_not_supported_forces_a_real_video_transcode() {
+        // Detecting the reason is not enough — build_video_transcode must also
+        // act on it, or a device-profile rejection (e.g. Hi10p) would still
+        // direct-play as VideoCodec=copy despite being reported as unsupported.
+        let session =
+            make_session_with_policy(remux_sdks::remux::UserPolicy::default());
+        let source = make_video_source(VideoContainer::Mkv);
+        let mut reasons = api::TranscodeReasons::default();
+        reasons.insert(api::TranscodeReason::VideoProfileNotSupported(
+            "High 10".to_string(),
+        ));
+        let TranscodeDecision::Transcode(outcome) = build_transcode_decision(
+            &source,
+            &reasons,
+            None,
+            &force_transcode_query(),
+            &session,
+            &base_cfg(EncodingOptions::default()),
+        ) else {
+            panic!(
+                "VideoProfileNotSupported must trigger a transcode, not direct play"
+            );
+        };
+        assert!(
+            outcome
+                .url
+                .contains("VideoCodec=h264"),
+            "VideoProfileNotSupported must force real video re-encoding, not copy: {}",
+            outcome.url
+        );
     }
 
     #[test]

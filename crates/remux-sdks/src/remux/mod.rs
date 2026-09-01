@@ -1968,6 +1968,8 @@ pub enum TranscodeReason {
     SubtitleCodecNotSupported(String),
     VideoRangeTypeNotSupported(String),
     VideoCodecTagNotSupported(String),
+    VideoProfileNotSupported(String),
+    VideoBitDepthNotSupported(String),
     ContainerBitrateExceedsLimit,
 }
 
@@ -1980,6 +1982,8 @@ impl TranscodeReason {
             Self::SubtitleCodecNotSupported(_) => "SubtitleCodecNotSupported",
             Self::VideoRangeTypeNotSupported(_) => "VideoRangeTypeNotSupported",
             Self::VideoCodecTagNotSupported(_) => "VideoCodecTagNotSupported",
+            Self::VideoProfileNotSupported(_) => "VideoProfileNotSupported",
+            Self::VideoBitDepthNotSupported(_) => "VideoBitDepthNotSupported",
             Self::ContainerBitrateExceedsLimit => "ContainerBitrateExceedsLimit",
         }
     }
@@ -1999,6 +2003,12 @@ impl std::fmt::Debug for TranscodeReason {
             }
             Self::VideoCodecTagNotSupported(d) => {
                 write!(f, "VideoCodecTagNotSupported({d})")
+            }
+            Self::VideoProfileNotSupported(d) => {
+                write!(f, "VideoProfileNotSupported({d})")
+            }
+            Self::VideoBitDepthNotSupported(d) => {
+                write!(f, "VideoBitDepthNotSupported({d})")
             }
             Self::ContainerBitrateExceedsLimit => {
                 write!(f, "ContainerBitrateExceedsLimit")
@@ -2091,6 +2101,12 @@ impl TranscodeReasons {
                 }
                 "VideoCodecTagNotSupported" => {
                     Some(TranscodeReason::VideoCodecTagNotSupported(String::new()))
+                }
+                "VideoProfileNotSupported" => {
+                    Some(TranscodeReason::VideoProfileNotSupported(String::new()))
+                }
+                "VideoBitDepthNotSupported" => {
+                    Some(TranscodeReason::VideoBitDepthNotSupported(String::new()))
                 }
                 "ContainerBitrateExceedsLimit" => {
                     Some(TranscodeReason::ContainerBitrateExceedsLimit)
