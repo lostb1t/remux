@@ -1034,10 +1034,13 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
     item.external_urls = external_urls;
 
     // several dlients require at least one stream
+    // `Stream` is here because Android TV refetches an item by MediaSource id
+    // when switching versions; without it that response has no MediaSources.
     if !hide_sources
         && (media.kind == db::MediaKind::Movie
             || media.kind == db::MediaKind::Episode
-            || media.kind == db::MediaKind::Track)
+            || media.kind == db::MediaKind::Track
+            || media.kind == db::MediaKind::Stream)
     {
         item.can_download = Some(true);
         item.media_sources = match media
@@ -1210,4 +1213,34 @@ pub struct RemoteSubtitleInfo {
     pub is_hash_match: Option<bool>,
     pub ai_translated: Option<bool>,
     pub machine_translated: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: `GET /Items/{id}` on a MediaSource id — what Android TV
+    /// requests when switching versions — omitted `MediaSources` entirely,
+    /// which the client dereferences unguarded and crashes on.
+    #[test]
+    fn db_media_to_item_emits_media_sources_for_a_stream_row() {
+        let row = db::Media {
+            kind: db::MediaKind::Stream,
+            title: "1080p WEB-DL".into(),
+            ..Default::default()
+        };
+        // What `item_for_user` does for a Stream: the row is its own source.
+        let mut media = row.clone();
+        media.sources = Some(vec![row]);
+
+        let item = db_media_to_item(media, false);
+        let sources = item
+            .media_sources
+            .expect("a Stream row must carry MediaSources, not omit the field");
+        assert_eq!(
+            sources.len(),
+            1,
+            "clients select MediaSources[0] with no PlaybackInfo round-trip"
+        );
+    }
 }
