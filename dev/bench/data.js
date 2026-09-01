@@ -1,0 +1,144 @@
+window.BENCHMARK_DATA = {
+  "lastUpdate": 1788248801467,
+  "repoUrl": "https://github.com/lostb1t/remux",
+  "entries": {
+    "Benchmark": [
+      {
+        "commit": {
+          "author": {
+            "name": "lostbit",
+            "username": "lostb1t",
+            "email": "coding-mosses0z@icloud.com"
+          },
+          "committer": {
+            "name": "lostbit",
+            "username": "lostb1t",
+            "email": "coding-mosses0z@icloud.com"
+          },
+          "id": "9bff6dc53dcbf10f15fd538faf71b0390cb8d69b",
+          "message": "chore(bench): replace codspeed/divan with Criterion + github-action-benchmark",
+          "timestamp": "2026-09-01T07:17:55Z",
+          "url": "https://github.com/lostb1t/remux/commit/9bff6dc53dcbf10f15fd538faf71b0390cb8d69b"
+        },
+        "date": 1788248800450,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "items_latest/limit=20&recursive=false",
+            "value": 315903849,
+            "range": "± 10288314",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&recursive=false",
+            "value": 345898351,
+            "range": "± 11511341",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=500&recursive=false",
+            "value": 415273412,
+            "range": "± 10656043",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&include_item_types=Movie&recursive=false",
+            "value": 117787466,
+            "range": "± 6506482",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&include_item_types=Series&recursive=false",
+            "value": 220331587,
+            "range": "± 7657053",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=20&recursive=false",
+            "value": 264014216,
+            "range": "± 12370444",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&recursive=false",
+            "value": 244180299,
+            "range": "± 10875690",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=500&recursive=false",
+            "value": 273314159,
+            "range": "± 12196020",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&include_item_types=Movie&recursive=false",
+            "value": 224739034,
+            "range": "± 8218292",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&include_item_types=Series&recursive=false",
+            "value": 312075944,
+            "range": "± 9471113",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&filters=IsPlayed&recursive=false",
+            "value": 128562704,
+            "range": "± 8667465",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&sort_by=DateCreated&recursive=false",
+            "value": 355249011,
+            "range": "± 6885868",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=50&recursive=false",
+            "value": 306392710,
+            "range": "± 6513876",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=200&recursive=false",
+            "value": 318077640,
+            "range": "± 9370624",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=500&recursive=false",
+            "value": 318607090,
+            "range": "± 8053319",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/limit=500&enable_resumable=true&recursive=false",
+            "value": 313638447,
+            "range": "± 11291838",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/limit=500&enable_resumable=false&recursive=false",
+            "value": 309953776,
+            "range": "± 8386251",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/epoch",
+            "value": 320923621,
+            "range": "± 9311696",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/30days",
+            "value": 111725329,
+            "range": "± 4552506",
+            "unit": "ns/iter"
+          }
+        ]
+      }
+    ]
+  }
+}
