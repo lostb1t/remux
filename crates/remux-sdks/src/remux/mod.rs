@@ -3057,6 +3057,13 @@ pub struct UpdateUserPassword {
     pub reset_password: Option<bool>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct MediaStreamRemuxExt {
+    /// HEVC only: whether extradata carries VPS/SPS/PPS out-of-band. Picks
+    /// between the `hvc1` and `hev1` sample-entry tags on stream copy.
+    pub hevc_params_out_of_band: Option<bool>,
+}
+
 #[dto]
 pub struct MediaStream {
     pub aspect_ratio: Option<String>,
@@ -3128,6 +3135,8 @@ pub struct MediaStream {
     pub video_range: Option<VideoRange>,
     pub video_range_type: Option<VideoRangeType>,
     pub width: Option<i64>,
+    #[serde(rename = "remux")]
+    pub remux: Option<MediaStreamRemuxExt>,
 }
 
 impl MediaStream {

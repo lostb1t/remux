@@ -50,6 +50,9 @@ pub struct TranscodeSession {
     pub source_video_codec: Option<String>,
     /// Codec name of the source audio stream (e.g. "eac3", "aac").
     pub source_audio_codec: Option<String>,
+    /// Whether an HEVC source's extradata carries out-of-band VPS/SPS/PPS,
+    /// used to pick the `hvc1`/`hev1` sample-entry tag on stream copy.
+    pub source_hevc_params_out_of_band: Option<bool>,
     /// Profile of the source video stream (e.g. "Main 10"), used to generate
     /// the correct HLS CODECS attribute string for HEVC.
     pub source_video_profile: Option<String>,
@@ -87,6 +90,7 @@ impl TranscodeSession {
         is_live: bool,
         source_video_codec: Option<String>,
         source_audio_codec: Option<String>,
+        source_hevc_params_out_of_band: Option<bool>,
         source_video_profile: Option<String>,
         source_video_level: Option<f64>,
         source_video_range_type: Option<remux_sdks::remux::VideoRangeType>,
@@ -123,6 +127,7 @@ impl TranscodeSession {
             is_live,
             source_video_codec,
             source_audio_codec,
+            source_hevc_params_out_of_band,
             source_video_profile,
             source_video_level,
             source_video_range_type,

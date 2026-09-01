@@ -991,6 +991,13 @@ async fn videos_stream_inner(
     let source_video_range_type = source_video_stream
         .as_ref()
         .and_then(|s| s.video_range_type);
+    let source_hevc_params_out_of_band = source_video_stream
+        .as_ref()
+        .and_then(|s| {
+            s.remux
+                .as_ref()
+        })
+        .and_then(|r| r.hevc_params_out_of_band);
     let source_audio_codec = media
         .probe_data
         .as_ref()
@@ -1042,6 +1049,7 @@ async fn videos_stream_inner(
         encoding_preset: encoding_opts.encoding_preset,
         source_video_codec,
         source_audio_codec,
+        source_hevc_params_out_of_band,
         accelerator: hw_accel::from_encoding_opts(&encoding_opts),
         source_video_range_type,
         enable_tonemapping: encoding_opts

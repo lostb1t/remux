@@ -289,6 +289,9 @@ pub struct TranscodeParams {
     /// Codec of the source audio stream (e.g. "aac", "ac3"), used to apply
     /// codec-specific bitstream filters such as `aac_adtstoasc` when copying.
     pub source_audio_codec: Option<String>,
+    /// Whether an HEVC source's extradata carries out-of-band VPS/SPS/PPS,
+    /// used to pick the sample-entry tag on copy (see `hevc_copy_tag`).
+    pub source_hevc_params_out_of_band: Option<bool>,
     pub accelerator: Box<dyn Accelerator>,
     /// HDR type of the source video, used to decide whether tone-mapping or
     /// SDR colour-space override is needed.
@@ -340,6 +343,7 @@ impl Default for TranscodeParams {
             encoding_preset: None,
             source_video_codec: None,
             source_audio_codec: None,
+            source_hevc_params_out_of_band: None,
             accelerator: Box::new(NoAccel),
             source_video_range_type: None,
             enable_tonemapping: false,
@@ -354,6 +358,18 @@ impl Default for TranscodeParams {
             is_live: false,
             normalize_audio_loudness: false,
         }
+    }
+}
+
+/// Sample-entry tag for a stream-copied HEVC track. `hvc1` demands out-of-band
+/// parameter sets; with a header-only source record ffmpeg copies it through
+/// and writes an empty `hvcC` that strict parsers (ExoPlayer) reject, so use
+/// `hev1`, which allows them in-band. Defaults to `hvc1` when unknown.
+fn hevc_copy_tag(source_hevc_params_out_of_band: Option<bool>) -> &'static str {
+    if source_hevc_params_out_of_band == Some(false) {
+        "hev1"
+    } else {
+        "hvc1"
     }
 }
 
@@ -827,7 +843,10 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
 
     if ffmpeg_video_codec == "copy" {
         if is_hevc_copy {
-            args.extend(["-tag:v".into(), "hvc1".into()]);
+            args.extend([
+                "-tag:v".into(),
+                hevc_copy_tag(params.source_hevc_params_out_of_band).into(),
+            ]);
             // Strip embedded Dolby Vision RPU NALs only when the source is actually DoVi;
             // dovi_rpu only supports hevc/av1 and will crash ffmpeg on any other codec.
             let is_dovi = matches!(
@@ -1296,6 +1315,8 @@ pub struct ProgressiveTranscodeParams {
     pub encoding_preset: Option<EncodingPreset>,
     pub source_video_codec: Option<String>,
     pub source_audio_codec: Option<String>,
+    /// See `TranscodeParams::source_hevc_params_out_of_band`.
+    pub source_hevc_params_out_of_band: Option<bool>,
     pub accelerator: Box<dyn Accelerator>,
     pub source_video_range_type: Option<VideoRangeType>,
     pub enable_tonemapping: bool,
@@ -1596,7 +1617,7 @@ pub(crate) fn build_progressive_args(
     // Video
     args.extend(["-c:v".into(), ffmpeg_video_codec.clone()]);
     if ffmpeg_video_codec == "copy" {
-        // Apply hvc1 codec tag for HEVC Apple compatibility
+        // Apply hvc1/hev1 codec tag for HEVC Apple/HLS compatibility.
         if params
             .source_video_codec
             .as_deref()
@@ -1608,7 +1629,10 @@ pub(crate) fn build_progressive_args(
             .map(VideoCodec::is_hevc)
             .unwrap_or(false)
         {
-            args.extend(["-tag:v".into(), "hvc1".into()]);
+            args.extend([
+                "-tag:v".into(),
+                hevc_copy_tag(params.source_hevc_params_out_of_band).into(),
+            ]);
         }
     } else if is_hw {
         if let Some(bitrate) = params.video_bitrate {
@@ -1896,8 +1920,14 @@ pub fn generate_variant_playlist(
 }
 
 /// Generate the HEVC codec string for HLS CODECS attribute.
-/// Matches Jellyfin's `HlsCodecStringHelpers.GetH265String()`.
-fn hevc_hls_codec_string(profile: Option<&str>, level: Option<f64>) -> String {
+/// Matches Jellyfin's `HlsCodecStringHelpers.GetH265String()`. `tag` must be the
+/// sample-entry fourcc the segments actually carry, or clients that validate
+/// CODECS against the bitstream (Safari via MSE) refuse the stream.
+fn hevc_hls_codec_string(
+    tag: &str,
+    profile: Option<&str>,
+    level: Option<f64>,
+) -> String {
     let profile_part = match profile {
         Some(p)
             if p.eq_ignore_ascii_case("main 10")
@@ -1908,7 +1938,7 @@ fn hevc_hls_codec_string(profile: Option<&str>, level: Option<f64>) -> String {
         _ => "1.4",
     };
     let level_val = level.unwrap_or(150.0) as i32;
-    format!("hvc1.{}.L{}.B0", profile_part, level_val)
+    format!("{}.{}.L{}.B0", tag, profile_part, level_val)
 }
 
 /// Generate a master HLS playlist that references the variant playlist.
@@ -1934,6 +1964,7 @@ pub fn generate_master_playlist(session: &TranscodeSession) -> String {
                 .unwrap_or(false)
             {
                 hevc_hls_codec_string(
+                    hevc_copy_tag(session.source_hevc_params_out_of_band),
                     session
                         .source_video_profile
                         .as_deref(),
@@ -1944,7 +1975,9 @@ pub fn generate_master_playlist(session: &TranscodeSession) -> String {
             }
         }
         "h264" | "libx264" => "avc1.640028".to_string(),
+        // No -tag:v is forced when encoding, so ffmpeg writes its default hvc1.
         "hevc" | "libx265" => hevc_hls_codec_string(
+            "hvc1",
             session
                 .source_video_profile
                 .as_deref(),
@@ -2216,6 +2249,7 @@ mod tests {
             encoding_preset: None,
             source_video_codec: None,
             source_audio_codec: None,
+            source_hevc_params_out_of_band: None,
             accelerator: Box::new(NoAccel),
             source_video_range_type: None,
             enable_tonemapping: false,
@@ -2382,6 +2416,31 @@ mod tests {
     }
 
     #[test]
+    fn hls_hevc_copy_with_out_of_band_params_uses_hvc1() {
+        let dir = PathBuf::from("/tmp/test_hvc1_oob");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "copy".into(),
+            source_video_codec: Some("hevc".into()),
+            source_hevc_params_out_of_band: Some(true),
+            ..default_hls(dir)
+        });
+        assert_eq!(arg_after(&args, "-tag:v"), Some("hvc1"));
+    }
+
+    #[test]
+    fn hls_hevc_copy_without_out_of_band_params_uses_hev1() {
+        // Forcing hvc1 here would write an empty hvcC that ExoPlayer rejects.
+        let dir = PathBuf::from("/tmp/test_hev1_fallback");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "copy".into(),
+            source_video_codec: Some("hevc".into()),
+            source_hevc_params_out_of_band: Some(false),
+            ..default_hls(dir)
+        });
+        assert_eq!(arg_after(&args, "-tag:v"), Some("hev1"));
+    }
+
+    #[test]
     fn hls_libx264_transcode_flags() {
         let dir = PathBuf::from("/tmp/test_x264");
         let args = build_hls_args(&TranscodeParams {
@@ -2475,6 +2534,7 @@ mod tests {
             is_live: false,
             source_video_codec: Some("h264".into()),
             source_audio_codec: Some("aac".into()),
+            source_hevc_params_out_of_band: None,
             source_video_profile: None,
             source_video_level: None,
             source_video_range_type: None,
@@ -2490,6 +2550,84 @@ mod tests {
         assert!(playlist.contains("#EXT-X-START:TIME-OFFSET=30.000000,PRECISE=YES"));
         assert!(playlist.contains("segment_00000.ts?PlaySessionId=play-session&runtimeTicks=0&actualSegmentLengthTicks=60000000"));
         assert!(playlist.contains("segment_00005.ts?PlaySessionId=play-session&runtimeTicks=300000000&actualSegmentLengthTicks=60000000"));
+    }
+
+    fn hevc_session(
+        video_codec: &str,
+        params_out_of_band: Option<bool>,
+    ) -> TranscodeSession {
+        TranscodeSession {
+            id: "play-session".into(),
+            item_id: Uuid::nil(),
+            media_source_id: Uuid::nil(),
+            output_dir: PathBuf::from("/tmp/test_master"),
+            input_url: "http://example.invalid/video".into(),
+            state: TranscodeState::Running,
+            state_tx: Arc::new(tokio::sync::watch::channel(TranscodeState::Running).0),
+            created_at: std::time::Instant::now(),
+            video_codec: video_codec.into(),
+            audio_codec: "aac".into(),
+            audio_stream_index: None,
+            subtitle_stream_index: None,
+            burn_subtitle: false,
+            segment_length: 6,
+            transcode_reasons: TranscodeReasons::default(),
+            kill_tx: None,
+            wait_done: Arc::new(tokio::sync::Notify::new()),
+            last_segment_index: Arc::new(AtomicU32::new(0)),
+            start_time_secs: 0,
+            playback_offset_secs: Arc::new(AtomicU32::new(0)),
+            runtime_ticks: 120i64
+                .to_ticks(TickUnit::Seconds)
+                .unwrap(),
+            is_live: false,
+            source_video_codec: Some("hevc".into()),
+            source_audio_codec: Some("aac".into()),
+            source_hevc_params_out_of_band: params_out_of_band,
+            source_video_profile: Some("Main 10".into()),
+            source_video_level: Some(120.0),
+            source_video_range_type: None,
+            source_video_width: None,
+            source_video_height: None,
+            source_frame_rate: None,
+            video_bitrate: None,
+            hardware_acceleration_type: None,
+        }
+    }
+
+    #[test]
+    fn master_playlist_codecs_matches_the_hev1_sample_entry_on_copy() {
+        // The CODECS attribute has to name the fourcc build_hls_args wrote, or
+        // Safari validates the manifest against the segments and refuses.
+        let playlist = generate_master_playlist(&hevc_session("copy", Some(false)));
+        assert!(
+            playlist.contains("hev1.2.4.L120.B0"),
+            "expected hev1 CODECS: {playlist}"
+        );
+        assert!(!playlist.contains("hvc1."), "playlist: {playlist}");
+    }
+
+    #[test]
+    fn master_playlist_codecs_stays_hvc1_when_params_are_out_of_band() {
+        for oob in [Some(true), None] {
+            let playlist = generate_master_playlist(&hevc_session("copy", oob));
+            assert!(
+                playlist.contains("hvc1.2.4.L120.B0"),
+                "expected hvc1 CODECS for {oob:?}: {playlist}"
+            );
+        }
+    }
+
+    #[test]
+    fn master_playlist_codecs_stays_hvc1_when_encoding_hevc() {
+        // The encode path forces no -tag:v, so ffmpeg writes hvc1 regardless of
+        // what the *source* extradata looked like.
+        let playlist = generate_master_playlist(&hevc_session("hevc", Some(false)));
+        assert!(
+            playlist.contains("hvc1.2.4.L120.B0"),
+            "expected hvc1 CODECS: {playlist}"
+        );
+        assert!(!playlist.contains("hev1."), "playlist: {playlist}");
     }
 
     #[test]
@@ -2971,6 +3109,16 @@ mod tests {
             ..default_progressive()
         });
         assert_eq!(arg_after(&args, "-tag:v"), Some("hvc1"));
+    }
+
+    #[test]
+    fn progressive_hevc_copy_without_out_of_band_params_uses_hev1() {
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
+            source_video_codec: Some("hevc".into()),
+            source_hevc_params_out_of_band: Some(false),
+            ..default_progressive()
+        });
+        assert_eq!(arg_after(&args, "-tag:v"), Some("hev1"));
     }
 
     #[test]
