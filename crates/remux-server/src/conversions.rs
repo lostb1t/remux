@@ -51,32 +51,11 @@ pub(crate) struct FilenameProbeGuess {
 }
 
 fn map_hunch_video_codec(s: &str) -> Option<String> {
-    let codec = match s {
-        "H.264" => remux_sdks::remux::VideoCodec::H264,
-        "H.265" => remux_sdks::remux::VideoCodec::Hevc,
-        "VP9" => remux_sdks::remux::VideoCodec::Vp9,
-        "AV1" => remux_sdks::remux::VideoCodec::Av1,
-        "MPEG-2" => remux_sdks::remux::VideoCodec::Mpeg2,
-        _ => return None,
-    };
-    Some(codec.to_string())
+    remux_sdks::remux::VideoCodec::parse_known(s).map(|c| c.to_string())
 }
 
 fn map_hunch_audio_codec(s: &str) -> Option<String> {
-    let codec = match s {
-        "AAC" => remux_sdks::remux::AudioCodec::Aac,
-        "FLAC" => remux_sdks::remux::AudioCodec::Flac,
-        "MP3" => remux_sdks::remux::AudioCodec::Mp3,
-        "Opus" => remux_sdks::remux::AudioCodec::Opus,
-        "Vorbis" => remux_sdks::remux::AudioCodec::Vorbis,
-        "PCM" | "LPCM" => remux_sdks::remux::AudioCodec::Pcm,
-        "Dolby Digital" => remux_sdks::remux::AudioCodec::Ac3,
-        "Dolby Digital Plus" => remux_sdks::remux::AudioCodec::Eac3,
-        "Dolby TrueHD" => remux_sdks::remux::AudioCodec::TrueHd,
-        "DTS" | "DTS:X" | "DTS-HD" => remux_sdks::remux::AudioCodec::Dts,
-        _ => return None,
-    };
-    Some(codec.to_string())
+    remux_sdks::remux::AudioCodec::parse_known(s).map(|c| c.to_string())
 }
 
 fn screen_size_to_dimensions(s: &str) -> Option<(i64, i64)> {
