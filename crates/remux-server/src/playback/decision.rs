@@ -294,10 +294,18 @@ fn build_video_transcode(
         .start_time_ticks
         .map(|t| format!("&StartTimeTicks={t}"))
         .unwrap_or_default();
+    // The DeviceProfile only exists on this request, but the tag is needed
+    // later when the HLS session builds its ffmpeg args — carry the resolved
+    // value on the URL, like every other per-playback decision above.
+    let video_codec_tag = q
+        .device_profile
+        .as_ref()
+        .map(|p| format!("&VideoCodecTag={}", p.hevc_copy_tag()))
+        .unwrap_or_default();
 
     let url = if protocol.eq_ignore_ascii_case("hls") {
         format!(
-            "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}{}{}{}&ApiKey={}",
+            "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}{}{}{}{}&ApiKey={}",
             cfg.item_id,
             cfg.play_session_id,
             source.id,
@@ -309,6 +317,7 @@ fn build_video_transcode(
             sub_idx,
             sub_method,
             start_time,
+            video_codec_tag,
             session
                 .device
                 .access_token
@@ -316,7 +325,7 @@ fn build_video_transcode(
         )
     } else {
         format!(
-            "/videos/{}/stream.{}?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}{}{}{}&ApiKey={}",
+            "/videos/{}/stream.{}?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}{}{}{}{}&ApiKey={}",
             cfg.item_id,
             container,
             cfg.play_session_id,
@@ -329,6 +338,7 @@ fn build_video_transcode(
             sub_idx,
             sub_method,
             start_time,
+            video_codec_tag,
             session
                 .device
                 .access_token
