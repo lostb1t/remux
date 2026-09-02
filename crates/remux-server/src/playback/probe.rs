@@ -138,6 +138,24 @@ fn video_resolution_text(width: Option<i64>, height: Option<i64>) -> Option<Stri
     }
 }
 
+/// Conventional channel-layout name for a channel count, matching what
+/// ffprobe's own `channel_layout` normally reports (and what Jellyfin shows)
+/// — used only when the real `channel_layout` string isn't available, so a
+/// stereo track doesn't get labelled the far less readable "2 ch".
+fn channel_count_label(channels: i64) -> Option<&'static str> {
+    match channels {
+        1 => Some("Mono"),
+        2 => Some("Stereo"),
+        3 => Some("2.1"),
+        4 => Some("4.0"),
+        5 => Some("5.0"),
+        6 => Some("5.1"),
+        7 => Some("6.1"),
+        8 => Some("7.1"),
+        _ => None,
+    }
+}
+
 fn append_tags_to_title(title: &str, tags: &[String]) -> String {
     let mut result = title.to_string();
     for tag in tags {
@@ -214,7 +232,11 @@ pub(crate) fn display_title_audio(m: &StreamMeta) -> Option<String> {
     if let Some(layout) = m.channel_layout {
         attrs.push(first_to_upper(layout));
     } else if let Some(ch) = m.channels {
-        attrs.push(format!("{} ch", ch));
+        attrs.push(
+            channel_count_label(ch)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{ch} ch")),
+        );
     }
 
     if m.is_default {
@@ -1334,6 +1356,46 @@ mod probe_tests {
         assert_eq!(bit_depth_from_pix_fmt("yuv420p"), Some(8));
         assert_eq!(bit_depth_from_pix_fmt("yuvj420p"), Some(8));
         assert_eq!(bit_depth_from_pix_fmt(""), None);
+    }
+
+    #[test]
+    fn display_title_audio_uses_conventional_layout_name_without_channel_layout() {
+        // Matches Jellyfin/ffprobe convention ("Stereo", not "2 ch") when the
+        // real channel_layout string isn't available (RemuxDB miss, filename
+        // guess) — only the channel count is known.
+        let meta = StreamMeta {
+            codec: Some("ac3"),
+            channels: Some(2),
+            ..Default::default()
+        };
+        assert_eq!(
+            display_title_audio(&meta).as_deref(),
+            Some("Dolby Digital - Stereo")
+        );
+    }
+
+    #[test]
+    fn display_title_audio_prefers_real_channel_layout_over_derived_label() {
+        let meta = StreamMeta {
+            codec: Some("ac3"),
+            channels: Some(2),
+            channel_layout: Some("stereo"),
+            ..Default::default()
+        };
+        assert_eq!(
+            display_title_audio(&meta).as_deref(),
+            Some("Dolby Digital - Stereo")
+        );
+    }
+
+    #[test]
+    fn display_title_audio_falls_back_to_channel_count_for_unusual_counts() {
+        let meta = StreamMeta {
+            codec: Some("aac"),
+            channels: Some(10),
+            ..Default::default()
+        };
+        assert_eq!(display_title_audio(&meta).as_deref(), Some("AAC - 10 ch"));
     }
 
     #[test]

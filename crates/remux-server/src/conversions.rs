@@ -861,7 +861,7 @@ mod tests {
             audio
                 .display_title
                 .as_deref(),
-            Some("DTS - 8 ch")
+            Some("DTS - 7.1")
         );
     }
 
