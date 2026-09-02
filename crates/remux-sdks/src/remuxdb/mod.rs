@@ -637,6 +637,7 @@ impl From<&MediaInfo> for MediaSourceInfo {
                     s.split(',')
                         .next()
                 })
+                .map(str::trim)
                 .and_then(|s| {
                     s.parse::<crate::remux::VideoContainer>()
                         .ok()
@@ -694,6 +695,21 @@ mod tests {
         // "matroska,webm" — other RemuxDB submitters aren't guaranteed to
         // canonicalize it before submitting, so we must on ingestion.
         let info = media_info_with_container("matroska,webm");
+        let source = MediaSourceInfo::from(&info);
+        assert_eq!(source.container, Some(crate::remux::VideoContainer::Mkv));
+    }
+
+    #[test]
+    fn container_trims_whitespace_around_comma_joined_tokens() {
+        // Crowd-sourced submitters aren't guaranteed to format this
+        // identically to ffprobe's own output — a stray space must not
+        // silently drop the container (VideoContainer's FromStr does not
+        // trim, so " matroska,webm" would otherwise fail to parse).
+        let info = media_info_with_container(" matroska,webm");
+        let source = MediaSourceInfo::from(&info);
+        assert_eq!(source.container, Some(crate::remux::VideoContainer::Mkv));
+
+        let info = media_info_with_container("matroska, webm");
         let source = MediaSourceInfo::from(&info);
         assert_eq!(source.container, Some(crate::remux::VideoContainer::Mkv));
     }
