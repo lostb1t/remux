@@ -36,7 +36,6 @@ isolang = { version = "2.4.0", features = ["list_languages", "lowercase_names"] 
 nutype = { version = "0.6", features = ["serde", "regex"] }
 regex = "1"
 
-# `RetryAfterMiddleware` sleeps; wasm has no tokio timer and is guarded out.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1", features = ["time"] }
 

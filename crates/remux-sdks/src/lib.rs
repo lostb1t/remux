@@ -405,8 +405,6 @@ fn build_mw(retry: Option<Arc<dyn RetryPolicy + Send + Sync>>) -> ClientWithMidd
         ),
         None => builder,
     };
-    // Innermost, so a retry attempt above pays the Retry-After delay before
-    // reissuing rather than racing ahead on its own exponential curve.
     #[cfg(not(target_arch = "wasm32"))]
     let builder = builder.with(rate_limit::RetryAfterMiddleware);
     builder.build()
