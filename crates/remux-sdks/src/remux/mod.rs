@@ -2570,16 +2570,39 @@ impl MediaSourceInfo {
     }
 }
 
+/// Where a `MediaSourceInfo`'s `media_streams`/container/bitrate facts came
+/// from. `Ffprobe` and `RemuxDb` are measured/matched and trustworthy —
+/// consumers may treat them as a completed probe. `FilenameGuess` is a
+/// best-effort parse of the release filename and must never count as a
+/// completed probe: it must not block a real ffprobe attempt or a RemuxDB
+/// lookup, and must never be used for playback/transcode decisions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProbeOrigin {
+    Ffprobe,
+    RemuxDb,
+    FilenameGuess,
+}
+
 #[dto]
 pub struct MediaSourceRemuxInfo {
     pub provider_info: Option<serde_json::Value>,
-    /// Set when `media_streams` on this source were not measured (no ffprobe,
-    /// no RemuxDB match) but guessed from the release filename. Approximate —
-    /// never used for playback/transcode decisions, display only.
-    pub probe_estimated: Option<bool>,
+    pub source: Option<ProbeOrigin>,
 }
 
 impl MediaSourceInfo {
+    /// True when this source's facts are a filename guess, not a completed
+    /// probe. Callers deciding whether to skip a real probe/RemuxDB lookup
+    /// must check this — `video_stream().is_some()` alone is not enough.
+    pub fn is_filename_guess(&self) -> bool {
+        matches!(
+            self.remux
+                .as_ref()
+                .and_then(|r| r.source),
+            Some(ProbeOrigin::FilenameGuess)
+        )
+    }
+
     pub fn video_stream(&self) -> Option<&MediaStream> {
         self.media_streams
             .iter()

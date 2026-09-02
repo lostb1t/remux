@@ -14,6 +14,7 @@ use std::{
     collections::HashMap,
     convert::{TryFrom, TryInto},
 };
+use tracing::warn;
 
 // Heuristic metadata fallback for remote source URLs when ffprobe metadata is
 // unavailable. This keeps clients functional (stream selection/transcode
@@ -196,12 +197,17 @@ pub(crate) fn guess_media_source_from_filename(filename: &str) -> FilenameProbeG
 /// (RemuxDB miss and never probed) with best-effort facts: codec/resolution/etc.
 /// guessed from the release filename, plus an overall bitrate derived from the
 /// addon-reported file size and the item's known runtime (bitrate = size*8 /
-/// duration — no filename parsing involved for that part). Response-shaping
-/// only for this one request — never writes to `db::Media`, never touches the
-/// playback/transcode path.
-pub(crate) fn apply_filename_probe_fallback(
+/// duration — no filename parsing involved for that part). Persists the
+/// result into `db::Media.probe_data` tagged `ProbeOrigin::FilenameGuess` so
+/// later requests don't re-guess — but that tag is exactly what keeps this
+/// out of the playback/transcode path: `MediaSourceInfo::is_filename_guess()`
+/// is checked everywhere a real ffprobe/RemuxDB result would otherwise be
+/// trusted (see `probe_stream` in playback::probe), so a guess here can never
+/// block or stand in for a real probe.
+pub(crate) async fn apply_filename_probe_fallback(
     base_item: &mut api::BaseItemDto,
     sources: &[db::Media],
+    db: &sqlx::SqlitePool,
 ) {
     let Some(infos) = base_item
         .media_sources
@@ -265,10 +271,31 @@ pub(crate) fn apply_filename_probe_fallback(
             }
         }
 
-        if estimated {
-            info.remux
-                .get_or_insert_with(Default::default)
-                .probe_estimated = Some(true);
+        if !estimated {
+            continue;
+        }
+        info.remux
+            .get_or_insert_with(Default::default)
+            .source = Some(api::ProbeOrigin::FilenameGuess);
+
+        let persisted = api::MediaSourceInfo {
+            media_streams: info
+                .media_streams
+                .clone(),
+            container: info
+                .container
+                .clone(),
+            bitrate: info.bitrate,
+            size: info.size,
+            run_time_ticks: info.run_time_ticks,
+            remux: Some(api::MediaSourceRemuxInfo {
+                source: Some(api::ProbeOrigin::FilenameGuess),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        if let Err(e) = db::Media::save_probe_data(db, &source.id, &persisted).await {
+            warn!(id = %source.id, error = %e, "failed to persist filename-guessed probe data");
         }
     }
 }
@@ -295,12 +322,25 @@ impl From<db::Media> for api::MediaSourceInfo {
                     .and_then(infer_container_from_url)
             });
 
+        // Carry the persisted probe-source tag forward — without this, a
+        // FilenameGuess (or Ffprobe/RemuxDb) tag stored on probe_data would
+        // silently vanish from the response every time this From impl
+        // rebuilds `remux`, making the estimate indistinguishable from real
+        // data to any client checking it.
+        let probe_source = source
+            .probe_data
+            .as_ref()
+            .and_then(|p| {
+                p.remux
+                    .as_ref()
+            })
+            .and_then(|r| r.source);
         let remux = Some(api::MediaSourceRemuxInfo {
             provider_info: source
                 .stream_info
                 .as_ref()
                 .and_then(|si| serde_json::to_value(si).ok()),
-            ..Default::default()
+            source: probe_source,
         });
 
         let path = Some({
@@ -821,7 +861,7 @@ mod tests {
             audio
                 .display_title
                 .as_deref(),
-            Some("DTS - 8 ch")
+            Some("DTS - 7.1")
         );
     }
 
@@ -873,9 +913,17 @@ mod tests {
         assert_eq!(video.video_range, None);
     }
 
-    #[test]
-    fn apply_filename_probe_fallback_fills_empty_source_from_filename() {
+    #[tokio::test]
+    async fn apply_filename_probe_fallback_fills_empty_source_from_filename() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
         let source = db::Media {
+            id: uuid::Uuid::new_v4(),
+            kind: db::MediaKind::Stream,
             stream_info: Some(crate::stream::StreamInfo {
                 filename: Some(
                     "Movie.2023.1080p.WEB-DL.x264.AAC.5.1-GROUP.mp4".to_string(),
@@ -884,12 +932,15 @@ mod tests {
             }),
             ..Default::default()
         };
+        db::Media::upsert(db, &[source.clone()])
+            .await
+            .unwrap();
         let mut base_item = api::BaseItemDto {
             media_sources: Some(vec![api::MediaSourceInfo::default()]),
             ..Default::default()
         };
 
-        apply_filename_probe_fallback(&mut base_item, &[source]);
+        apply_filename_probe_fallback(&mut base_item, &[source.clone()], db).await;
 
         let info = &base_item
             .media_sources
@@ -903,14 +954,38 @@ mod tests {
         assert_eq!(
             info.remux
                 .as_ref()
-                .and_then(|r| r.probe_estimated),
-            Some(true)
+                .and_then(|r| r.source),
+            Some(api::ProbeOrigin::FilenameGuess)
         );
+
+        // The guess must have been persisted, tagged, so a later request
+        // doesn't re-guess and so playback-side gates can see it's not real.
+        let saved = db::Media::get_by_id(db, &source.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let saved_probe = saved
+            .probe_data
+            .expect("probe_data should be persisted");
+        assert!(
+            !saved_probe
+                .media_streams
+                .is_empty()
+        );
+        assert!(saved_probe.is_filename_guess());
     }
 
-    #[test]
-    fn apply_filename_probe_fallback_never_overrides_real_probe_data() {
+    #[tokio::test]
+    async fn apply_filename_probe_fallback_never_overrides_real_probe_data() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
         let source = db::Media {
+            id: uuid::Uuid::new_v4(),
+            kind: db::MediaKind::Stream,
             stream_info: Some(crate::stream::StreamInfo {
                 filename: Some(
                     "Movie.2023.1080p.WEB-DL.x264.AAC.5.1-GROUP.mp4".to_string(),
@@ -932,7 +1007,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_filename_probe_fallback(&mut base_item, &[source]);
+        apply_filename_probe_fallback(&mut base_item, &[source], db).await;
 
         let info = &base_item
             .media_sources
@@ -941,14 +1016,21 @@ mod tests {
         assert_eq!(
             info.remux
                 .as_ref()
-                .and_then(|r| r.probe_estimated),
+                .and_then(|r| r.source),
             None
         );
     }
 
-    #[test]
-    fn apply_filename_probe_fallback_skips_source_with_no_filename() {
+    #[tokio::test]
+    async fn apply_filename_probe_fallback_skips_source_with_no_filename() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
         let source = db::Media {
+            id: uuid::Uuid::new_v4(),
             stream_info: Some(crate::stream::StreamInfo::default()),
             ..Default::default()
         };
@@ -957,7 +1039,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_filename_probe_fallback(&mut base_item, &[source]);
+        apply_filename_probe_fallback(&mut base_item, &[source], db).await;
 
         let info = &base_item
             .media_sources
@@ -968,16 +1050,27 @@ mod tests {
         );
     }
 
-    #[test]
-    fn apply_filename_probe_fallback_derives_bitrate_from_size_and_runtime() {
+    #[tokio::test]
+    async fn apply_filename_probe_fallback_derives_bitrate_from_size_and_runtime() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
         // 900 MB over 1 hour -> 2 Mbps.
         let source = db::Media {
+            id: uuid::Uuid::new_v4(),
+            kind: db::MediaKind::Stream,
             stream_info: Some(crate::stream::StreamInfo {
                 size: Some(900_000_000),
                 ..Default::default()
             }),
             ..Default::default()
         };
+        db::Media::upsert(db, &[source.clone()])
+            .await
+            .unwrap();
         let mut base_item = api::BaseItemDto {
             media_sources: Some(vec![api::MediaSourceInfo {
                 run_time_ticks: Some(3600 * 10_000_000),
@@ -986,7 +1079,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_filename_probe_fallback(&mut base_item, &[source]);
+        apply_filename_probe_fallback(&mut base_item, &[source.clone()], db).await;
 
         let info = &base_item
             .media_sources
@@ -996,14 +1089,32 @@ mod tests {
         assert_eq!(
             info.remux
                 .as_ref()
-                .and_then(|r| r.probe_estimated),
-            Some(true)
+                .and_then(|r| r.source),
+            Some(api::ProbeOrigin::FilenameGuess)
+        );
+
+        let saved = db::Media::get_by_id(db, &source.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            saved
+                .probe_data
+                .and_then(|p| p.bitrate),
+            Some(2_000_000)
         );
     }
 
-    #[test]
-    fn apply_filename_probe_fallback_never_overrides_real_bitrate() {
+    #[tokio::test]
+    async fn apply_filename_probe_fallback_never_overrides_real_bitrate() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
         let source = db::Media {
+            id: uuid::Uuid::new_v4(),
             stream_info: Some(crate::stream::StreamInfo {
                 size: Some(900_000_000),
                 ..Default::default()
@@ -1019,7 +1130,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_filename_probe_fallback(&mut base_item, &[source]);
+        apply_filename_probe_fallback(&mut base_item, &[source], db).await;
 
         let info = &base_item
             .media_sources

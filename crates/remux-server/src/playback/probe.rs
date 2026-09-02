@@ -138,6 +138,24 @@ fn video_resolution_text(width: Option<i64>, height: Option<i64>) -> Option<Stri
     }
 }
 
+/// Conventional channel-layout name for a channel count, matching what
+/// ffprobe's own `channel_layout` normally reports (and what Jellyfin shows)
+/// — used only when the real `channel_layout` string isn't available, so a
+/// stereo track doesn't get labelled the far less readable "2 ch".
+fn channel_count_label(channels: i64) -> Option<&'static str> {
+    match channels {
+        1 => Some("Mono"),
+        2 => Some("Stereo"),
+        3 => Some("2.1"),
+        4 => Some("4.0"),
+        5 => Some("5.0"),
+        6 => Some("5.1"),
+        7 => Some("6.1"),
+        8 => Some("7.1"),
+        _ => None,
+    }
+}
+
 fn append_tags_to_title(title: &str, tags: &[String]) -> String {
     let mut result = title.to_string();
     for tag in tags {
@@ -214,7 +232,11 @@ pub(crate) fn display_title_audio(m: &StreamMeta) -> Option<String> {
     if let Some(layout) = m.channel_layout {
         attrs.push(first_to_upper(layout));
     } else if let Some(ch) = m.channels {
-        attrs.push(format!("{} ch", ch));
+        attrs.push(
+            channel_count_label(ch)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{ch} ch")),
+        );
     }
 
     if m.is_default {
@@ -624,10 +646,12 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
             .tags
             .get("language")
             .map(|s| normalize_lang(s.as_str()));
-        let title = s
-            .tags
-            .get("title")
-            .cloned();
+        // Deliberately not reading the container's embedded stream `tags:title`
+        // — some release groups stuff their own branding/tag into it (e.g.
+        // "BEN.THE.MEN"), which then leaked both into the API's raw Title
+        // field and into DisplayTitle via append_tags_to_title. DisplayTitle
+        // is built purely from real attributes (resolution/codec/etc.) for
+        // every stream type now, matching what subtitles already did.
 
         match codec_type {
             "video" => {
@@ -705,7 +729,7 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     is_forced,
                     is_external: false,
                     is_hearing_impaired: false,
-                    title: title.as_deref(),
+                    title: None,
                 };
 
                 let bit_depth = s
@@ -751,7 +775,7 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     video_range_type: Some(video_range_type),
                     display_title: display_title_video(&meta),
                     language: language.map(str::to_string),
-                    title,
+                    title: None,
                     ..Default::default()
                 });
                 video_idx += 1;
@@ -813,7 +837,7 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     is_forced,
                     is_external: false,
                     is_hearing_impaired: false,
-                    title: title.as_deref(),
+                    title: None,
                 };
 
                 streams.push(api::MediaStream {
@@ -835,7 +859,7 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     localized_external: Some("External".to_string()),
                     display_title: display_title_audio(&meta),
                     language: language.map(str::to_string),
-                    title,
+                    title: None,
                     ..Default::default()
                 });
                 audio_idx += 1;
@@ -889,7 +913,7 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     is_forced,
                     is_external: false,
                     is_hearing_impaired,
-                    title: None, // don't use raw stream title; build purely from attributes
+                    title: None,
                 };
 
                 let mut stream = api::MediaStream {
@@ -911,7 +935,7 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     localized_hearing_impaired: Some("Hearing Impaired".to_string()),
                     display_title: display_title_subtitle(&meta),
                     language: language.map(str::to_string),
-                    title,
+                    title: None,
                     supports_external_stream: true,
                     delivery_method,
                     ..Default::default()
@@ -941,6 +965,10 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
             run_time_ticks,
             bitrate: overall_bitrate,
             size: file_size,
+            remux: Some(api::MediaSourceRemuxInfo {
+                source: Some(api::ProbeOrigin::Ffprobe),
+                ..Default::default()
+            }),
             ..Default::default()
         },
         segments,
@@ -973,6 +1001,17 @@ pub(crate) async fn resolve_stream_root(
     }
 }
 
+/// Whether cached `probe_data` counts as a completed probe that a playback
+/// request may reuse instead of running ffprobe again. A filename guess
+/// (`ProbeOrigin::FilenameGuess`) is never a completed probe — it must not
+/// block a real ffprobe attempt, even if it happens to carry a "video stream".
+fn is_reusable_probe_cache(cached: &api::MediaSourceInfo) -> bool {
+    cached
+        .video_stream()
+        .is_some()
+        && !cached.is_filename_guess()
+}
+
 /// Resolve probe data for a single source: cache hit → skip → live probe with fallback.
 /// Uncached P2P sources return inferred stream metadata immediately so
 /// `PlaybackInfo` is not blocked waiting for torrent pieces; ordinary network
@@ -993,10 +1032,7 @@ pub(crate) async fn probe_stream(
         return Ok((api::MediaSourceInfo::from(stream.clone()), stream.clone()));
     }
     if let Some(cached) = &stream.probe_data {
-        if cached
-            .video_stream()
-            .is_some()
-        {
+        if is_reusable_probe_cache(cached) {
             let alive = match stream
                 .stream_info
                 .as_ref()
@@ -1016,7 +1052,7 @@ pub(crate) async fn probe_stream(
             }
             debug!(id = %stream.id, "probe cache hit but url dead, falling through to fallback");
         } else {
-            debug!(id = %stream.id, "probe cache stale (no video stream), re-probing");
+            debug!(id = %stream.id, "probe cache stale or filename-guess only, re-probing");
         }
     } else if stream
         .stream_info
@@ -1320,6 +1356,114 @@ mod probe_tests {
         assert_eq!(bit_depth_from_pix_fmt("yuv420p"), Some(8));
         assert_eq!(bit_depth_from_pix_fmt("yuvj420p"), Some(8));
         assert_eq!(bit_depth_from_pix_fmt(""), None);
+    }
+
+    #[test]
+    fn display_title_audio_uses_conventional_layout_name_without_channel_layout() {
+        // Matches Jellyfin/ffprobe convention ("Stereo", not "2 ch") when the
+        // real channel_layout string isn't available (RemuxDB miss, filename
+        // guess) — only the channel count is known.
+        let meta = StreamMeta {
+            codec: Some("ac3"),
+            channels: Some(2),
+            ..Default::default()
+        };
+        assert_eq!(
+            display_title_audio(&meta).as_deref(),
+            Some("Dolby Digital - Stereo")
+        );
+    }
+
+    #[test]
+    fn display_title_audio_prefers_real_channel_layout_over_derived_label() {
+        let meta = StreamMeta {
+            codec: Some("ac3"),
+            channels: Some(2),
+            channel_layout: Some("stereo"),
+            ..Default::default()
+        };
+        assert_eq!(
+            display_title_audio(&meta).as_deref(),
+            Some("Dolby Digital - Stereo")
+        );
+    }
+
+    #[test]
+    fn display_title_audio_falls_back_to_channel_count_for_unusual_counts() {
+        let meta = StreamMeta {
+            codec: Some("aac"),
+            channels: Some(10),
+            ..Default::default()
+        };
+        assert_eq!(display_title_audio(&meta).as_deref(), Some("AAC - 10 ch"));
+    }
+
+    #[test]
+    fn is_reusable_probe_cache_accepts_real_probe_with_video() {
+        let real = api::MediaSourceInfo {
+            media_streams: vec![api::MediaStream {
+                type_: Some(api::MediaStreamType::Video),
+                ..Default::default()
+            }],
+            remux: Some(api::MediaSourceRemuxInfo {
+                source: Some(api::ProbeOrigin::Ffprobe),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(is_reusable_probe_cache(&real));
+    }
+
+    #[test]
+    fn is_reusable_probe_cache_accepts_remuxdb_match_with_video() {
+        let remuxdb = api::MediaSourceInfo {
+            media_streams: vec![api::MediaStream {
+                type_: Some(api::MediaStreamType::Video),
+                ..Default::default()
+            }],
+            remux: Some(api::MediaSourceRemuxInfo {
+                source: Some(api::ProbeOrigin::RemuxDb),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(is_reusable_probe_cache(&remuxdb));
+    }
+
+    #[test]
+    fn is_reusable_probe_cache_rejects_filename_guess_even_with_video_stream() {
+        // The exact bug this predicate exists to prevent: a filename guess
+        // that happens to include a "video stream" must never be treated as
+        // a completed probe, or a real ffprobe never runs for this source.
+        let guess = api::MediaSourceInfo {
+            media_streams: vec![api::MediaStream {
+                type_: Some(api::MediaStreamType::Video),
+                codec: Some("hevc".to_string()),
+                ..Default::default()
+            }],
+            remux: Some(api::MediaSourceRemuxInfo {
+                source: Some(api::ProbeOrigin::FilenameGuess),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(!is_reusable_probe_cache(&guess));
+    }
+
+    #[test]
+    fn is_reusable_probe_cache_rejects_no_video_stream() {
+        let audio_only = api::MediaSourceInfo {
+            media_streams: vec![api::MediaStream {
+                type_: Some(api::MediaStreamType::Audio),
+                ..Default::default()
+            }],
+            remux: Some(api::MediaSourceRemuxInfo {
+                source: Some(api::ProbeOrigin::Ffprobe),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(!is_reusable_probe_cache(&audio_only));
     }
     use crate::stream::{StreamDescriptor, StreamInfo};
     use remux_sdks::remux::{MediaSegments, MediaStream, MediaStreamType};

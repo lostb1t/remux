@@ -495,11 +495,16 @@ impl StreamService {
                         .server_input(stream.id, port)
                 });
             let skip_probe = sel.probe_only_first && idx > 0;
+            // A filename guess is never a completed probe — it must not skip
+            // submitting a freshly-probed result to RemuxDB.
             let was_cached = stream
                 .probe_data
                 .as_ref()
-                .and_then(|pd| pd.video_stream())
-                .is_some();
+                .is_some_and(|pd| {
+                    pd.video_stream()
+                        .is_some()
+                        && !pd.is_filename_guess()
+                });
             let timeout_secs = if stream
                 .stream_info
                 .as_ref()
@@ -571,13 +576,20 @@ impl StreamService {
             });
             source.is_remote = false;
             // Re-apply binge-group headers — ffmpeg probing produces a fresh
-            // MediaSourceInfo and would otherwise drop provider hints.
+            // MediaSourceInfo and would otherwise drop provider hints. Must
+            // preserve whatever probe_source tag probe_stream() already set
+            // (Ffprobe from a real probe, or carried over from cached data) —
+            // a blanket ..Default::default() here would silently erase it.
+            let probe_source = source
+                .remux
+                .as_ref()
+                .and_then(|r| r.source);
             source.remux = Some(api::MediaSourceRemuxInfo {
                 provider_info: stream
                     .stream_info
                     .as_ref()
                     .and_then(|si| serde_json::to_value(si).ok()),
-                ..Default::default()
+                source: probe_source,
             });
 
             let remuxdb_enabled = probe_cfg
