@@ -3216,6 +3216,20 @@ impl Media {
         db: &SqlitePool,
         filter: &MediaFilter,
     ) -> Result<FilterResult<Media>> {
+        use tokio_util::future::FutureExt;
+        Self::get_by_filter_inner(db, filter)
+            .timeout(std::time::Duration::from_secs(30))
+            .await
+            .map_err(|_| {
+                error!(?filter, "get_by_filter timed out after 30s");
+                anyhow!("get_by_filter timed out after 30s: {filter:?}")
+            })?
+    }
+
+    async fn get_by_filter_inner(
+        db: &SqlitePool,
+        filter: &MediaFilter,
+    ) -> Result<FilterResult<Media>> {
         let is_manual_collection = filter
             .parent
             .as_ref()
