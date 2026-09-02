@@ -514,11 +514,26 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             .as_ref(),
     );
 
+    let burn_subtitle_filter = params.burn_subtitle
+        && params
+            .subtitle_stream_index
+            .is_some();
+
     // Tone-map decisions (only apply to HDR + transcode, never to copy).
-    let do_vpp_tonemap =
-        hdr && params.enable_vpp_tonemapping && accel.supports_vpp_tonemap();
+    //
+    // VPP (hardware) tonemap requires hw-decoded frames to flow straight
+    // through to the encoder. Subtitle burn-in always routes through the CPU
+    // overlay filter (yuv420p), which VPP tonemap filters (e.g. tonemap_vaapi)
+    // can't consume — see issue #378. Fall back to software tonemapping in
+    // that case instead of silently dropping tonemap and washing out HDR.
+    let do_vpp_tonemap = hdr
+        && params.enable_vpp_tonemapping
+        && accel.supports_vpp_tonemap()
+        && !burn_subtitle_filter;
     let do_sw_tonemap = hdr
-        && (params.enable_tonemapping || accel.prefers_sw_tonemap())
+        && (params.enable_tonemapping
+            || accel.prefers_sw_tonemap()
+            || (params.enable_vpp_tonemapping && burn_subtitle_filter))
         && !do_vpp_tonemap;
 
     let ffmpeg_video_codec = {
@@ -602,11 +617,6 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         "-probesize".into(),
         "1000000".into(),
     ];
-
-    let burn_subtitle_filter = params.burn_subtitle
-        && params
-            .subtitle_stream_index
-            .is_some();
 
     args.extend(
         accel.decode_input_args(
@@ -1161,6 +1171,11 @@ pub async fn start_transcode(
                 let _ = std::fs::remove_dir_all(&params.output_dir);
                 let _ = std::fs::create_dir_all(&params.output_dir);
                 params.accelerator = Box::new(NoAccel);
+                // VPP tonemap can't run without HW; preserve the user's intent by
+                // activating software tonemapping so HDR content isn't washed out.
+                if params.enable_vpp_tonemapping {
+                    params.enable_tonemapping = true;
+                }
                 sw_fallback = true;
                 continue;
             }
@@ -1311,10 +1326,24 @@ pub(crate) fn build_progressive_args(
             .as_ref(),
     );
 
-    let do_vpp_tonemap =
-        hdr && params.enable_vpp_tonemapping && accel.supports_vpp_tonemap();
+    let burn_subtitle_filter = params.burn_subtitle
+        && params
+            .subtitle_stream_index
+            .is_some();
+
+    // VPP (hardware) tonemap requires hw-decoded frames to flow straight
+    // through to the encoder. Subtitle burn-in always routes through the CPU
+    // overlay filter (yuv420p), which VPP tonemap filters (e.g. tonemap_vaapi)
+    // can't consume — see issue #378. Fall back to software tonemapping in
+    // that case instead of silently dropping tonemap and washing out HDR.
+    let do_vpp_tonemap = hdr
+        && params.enable_vpp_tonemapping
+        && accel.supports_vpp_tonemap()
+        && !burn_subtitle_filter;
     let do_sw_tonemap = hdr
-        && (params.enable_tonemapping || accel.prefers_sw_tonemap())
+        && (params.enable_tonemapping
+            || accel.prefers_sw_tonemap()
+            || (params.enable_vpp_tonemapping && burn_subtitle_filter))
         && !do_vpp_tonemap;
 
     let ffmpeg_video_codec = {
@@ -1386,11 +1415,6 @@ pub(crate) fn build_progressive_args(
         "-reconnect_delay_max".into(),
         "5".into(),
     ];
-
-    let burn_subtitle_filter = params.burn_subtitle
-        && params
-            .subtitle_stream_index
-            .is_some();
 
     args.extend(
         accel.decode_input_args(
@@ -2769,6 +2793,123 @@ mod tests {
             "expected hwmap in vf: {vf}"
         );
         assert!(vf.contains("format=qsv"), "expected format=qsv in vf: {vf}");
+    }
+
+    fn qsv() -> hw_accel::Qsv {
+        hw_accel::Qsv {
+            vaapi_device: "/dev/dri/renderD128".into(),
+            vaapi_driver: "iHD".into(),
+        }
+    }
+
+    #[test]
+    fn hls_qsv_vpp_tonemap_without_subtitle_uses_tonemap_vaapi() {
+        // Baseline: VPP tonemap without subtitle burn uses tonemap_vaapi in -vf
+        // (not SW tonemap), and decode stays hardware end to end.
+        let dir = PathBuf::from("/tmp/test_qsv_vpp_nosub");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(qsv()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_vpp_tonemapping: true,
+            tonemapping_algorithm: "hable".into(),
+            ..default_hls(dir)
+        });
+
+        let vf = arg_after(&args, "-vf").expect("-vf missing");
+        assert!(
+            vf.contains("tonemap_vaapi"),
+            "expected tonemap_vaapi in vf: {vf}"
+        );
+        assert!(
+            !vf.contains("tonemapx"),
+            "should not use SW tonemapx when VPP available: {vf}"
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-hwaccel_output_format" && w[1] == "vaapi"),
+            "decode should stay hardware when VPP tonemap runs uninterrupted"
+        );
+    }
+
+    #[test]
+    fn hls_qsv_vpp_tonemap_with_subtitle_falls_back_to_sw_tonemap_and_sw_decode() {
+        // Issue #378: QSV + HDR10 + VPP tonemap + subtitle burn-in.
+        // tonemap_vaapi requires VAAPI frames; the CPU overlay outputs yuv420p —
+        // incompatible. The fix must be consistent end to end: decode falls back
+        // to software (no -hwaccel_output_format vaapi) to match the CPU filter
+        // graph, which uses SW tonemapx instead of tonemap_vaapi.
+        let dir = PathBuf::from("/tmp/test_qsv_vpp_sub");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(qsv()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_vpp_tonemapping: true,
+            tonemapping_algorithm: "hable".into(),
+            tonemapping_desat: 0.0,
+            tonemapping_peak: 0.0,
+            burn_subtitle: true,
+            subtitle_stream_index: Some(2),
+            ..default_hls(dir)
+        });
+
+        let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
+        assert!(
+            fc.contains("tonemapx"),
+            "should use SW tonemapx when VPP+subtitle: {fc}"
+        );
+        assert!(
+            !fc.contains("tonemap_vaapi"),
+            "tonemap_vaapi incompatible with CPU overlay frames: {fc}"
+        );
+        assert!(fc.contains("overlay"), "must still burn subtitle: {fc}");
+        assert!(
+            fc.contains("format=nv12"),
+            "nv12 suffix needed for QSV encoder: {fc}"
+        );
+        // The critical part missed by treating this as a filter-string-only fix:
+        // the decoder must not still be requesting VAAPI hw frames while the
+        // filter graph runs pure CPU filters on them.
+        assert!(
+            !args
+                .windows(2)
+                .any(|w| w[0] == "-hwaccel_output_format" && w[1] == "vaapi"),
+            "decode must fall back to software when the filter graph is CPU-only, \
+             otherwise ffmpeg receives VAAPI frames it can't feed into tonemapx: {args:?}"
+        );
+    }
+
+    #[test]
+    fn progressive_qsv_vpp_tonemap_with_subtitle_falls_back_to_sw_tonemap_and_sw_decode()
+     {
+        // Same #378 scenario via the progressive (stdout) path, which has its
+        // own copy of the tonemap decision logic.
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(qsv()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_vpp_tonemapping: true,
+            tonemapping_algorithm: "hable".into(),
+            burn_subtitle: true,
+            subtitle_stream_index: Some(2),
+            ..default_progressive()
+        });
+
+        let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
+        assert!(
+            fc.contains("tonemapx"),
+            "should use SW tonemapx when VPP+subtitle: {fc}"
+        );
+        assert!(
+            !fc.contains("tonemap_vaapi"),
+            "tonemap_vaapi incompatible with CPU overlay frames: {fc}"
+        );
+        assert!(
+            !args
+                .windows(2)
+                .any(|w| w[0] == "-hwaccel_output_format" && w[1] == "vaapi"),
+            "decode must fall back to software in the progressive path too: {args:?}"
+        );
     }
 
     #[test]
