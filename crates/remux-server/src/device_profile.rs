@@ -349,7 +349,13 @@ impl CodecProfileExt for CodecProfile {
                         TranscodeReason::VideoProfileNotSupported(detail)
                     }
                     "BitDepth" => TranscodeReason::VideoBitDepthNotSupported(detail),
-                    _ => TranscodeReason::VideoCodecNotSupported(detail),
+                    _ => {
+                        if matches!(stream.type_, Some(MediaStreamType::Audio)) {
+                            TranscodeReason::AudioCodecNotSupported(detail)
+                        } else {
+                            TranscodeReason::VideoCodecNotSupported(detail)
+                        }
+                    }
                 };
                 reasons.insert(reason);
             }
@@ -695,6 +701,62 @@ mod tests {
         assert!(
             reasons.is_empty(),
             "plain High-profile H264 should remain direct-play eligible: {reasons:?}"
+        );
+    }
+
+    #[test]
+    fn audio_channel_limit_does_not_force_video_reencode() {
+        // A device that only supports 2-channel audio should trigger an audio
+        // transcode (AudioCodecNotSupported), not a video re-encode. Before the
+        // fix, the catch-all `_ => VideoCodecNotSupported` in check_reasons was
+        // reached for "AudioChannels", causing a full h264 re-encode on 5.1 files.
+        let profile = DeviceProfile {
+            direct_play_profiles: vec![DirectPlayProfile {
+                container: Some(vec![VideoContainer::Mkv]),
+                video_codec: Some(vec![VideoCodec::H264]),
+                audio_codec: Some(vec![AudioCodec::Aac]),
+                type_: Some(DlnaProfileType::Video),
+            }],
+            codec_profiles: vec![CodecProfile {
+                type_: Some(DlnaProfileType::Audio),
+                codec: Some(vec!["aac".to_string()]),
+                conditions: vec![ProfileCondition {
+                    condition: Some("LessThanEqual".to_string()),
+                    property: Some("AudioChannels".to_string()),
+                    value: Some("2".to_string()),
+                    is_required: Some(false),
+                }],
+            }],
+            ..Default::default()
+        };
+        let source = MediaSourceInfo {
+            container: Some(VideoContainer::Mkv),
+            media_streams: vec![
+                MediaStream {
+                    codec: Some("h264".to_string()),
+                    type_: Some(MediaStreamType::Video),
+                    index: 0,
+                    profile: Some("High".to_string()),
+                    ..Default::default()
+                },
+                MediaStream {
+                    codec: Some("aac".to_string()),
+                    type_: Some(MediaStreamType::Audio),
+                    index: 1,
+                    channels: Some(6),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let reasons = profile.check_direct_play(&source);
+        assert!(
+            reasons.contains(&TranscodeReason::AudioCodecNotSupported(String::new())),
+            "a 5.1 channel limit violation should produce AudioCodecNotSupported: {reasons:?}"
+        );
+        assert!(
+            !reasons.contains(&TranscodeReason::VideoCodecNotSupported(String::new())),
+            "an audio-only constraint must not produce VideoCodecNotSupported: {reasons:?}"
         );
     }
 }
