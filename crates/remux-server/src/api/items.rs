@@ -1809,7 +1809,11 @@ async fn item_for_user(
                 .sources
                 .as_deref()
                 .unwrap_or(&[]),
-        );
+            &state
+                .ctx
+                .db,
+        )
+        .await;
     }
 
     if !transcoding_enabled {
