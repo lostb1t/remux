@@ -70,22 +70,8 @@ impl reqwest_middleware::Middleware for RetryAfterMiddleware {
             retry_after_secs = delay.as_secs(),
             "upstream returned 429; backing off before this request returns"
         );
-
-        let status = response.status();
-        let headers = response
-            .headers()
-            .clone();
-        let body = response
-            .bytes()
-            .await
-            .unwrap_or_default();
-
         tokio::time::sleep(delay).await;
-
-        let mut rebuilt = http::Response::new(body);
-        *rebuilt.status_mut() = status;
-        *rebuilt.headers_mut() = headers;
-        Ok(reqwest::Response::from(rebuilt))
+        Ok(response)
     }
 }
 
