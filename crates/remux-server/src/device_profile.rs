@@ -98,7 +98,14 @@ impl DeviceProfileExt for DeviceProfile {
                     continue;
                 }
             }
-            let reasons = profile.check_reasons(media_source);
+            let mut reasons = profile.check_reasons(media_source);
+            // Codec profile conditions (video profile, bit depth, etc.) are a
+            // further restriction independent of container/codec-name matching —
+            // a profile can't count as a full direct-play match until these pass
+            // too. Checking them only in the "nothing matched" fallback below
+            // would let e.g. Hi10p through as plain "h264" whenever some
+            // direct-play profile already accepts the container and codec name.
+            check_codec_profiles(self, media_source, &mut reasons);
             if reasons.is_empty() {
                 return reasons;
             }
@@ -119,17 +126,14 @@ impl DeviceProfileExt for DeviceProfile {
                 }
             });
         }
-        let mut reasons = best.unwrap_or_else(|| {
+        best.unwrap_or_else(|| {
             let mut r = TranscodeReasons::default();
             r.insert(TranscodeReason::ContainerNotSupported(
                 "no matching profile".into(),
             ));
+            check_codec_profiles(self, media_source, &mut r);
             r
-        });
-
-        check_codec_profiles(self, media_source, &mut reasons);
-
-        reasons
+        })
     }
 }
 
@@ -341,6 +345,10 @@ impl CodecProfileExt for CodecProfile {
                     "VideoCodecTag" => {
                         TranscodeReason::VideoCodecTagNotSupported(detail)
                     }
+                    "VideoProfile" | "Profile" => {
+                        TranscodeReason::VideoProfileNotSupported(detail)
+                    }
+                    "BitDepth" => TranscodeReason::VideoBitDepthNotSupported(detail),
                     _ => TranscodeReason::VideoCodecNotSupported(detail),
                 };
                 reasons.insert(reason);
@@ -499,9 +507,10 @@ impl ProfileConditionExt for ProfileCondition {
 mod tests {
     use super::DeviceProfileExt;
     use remux_sdks::remux::{
-        AudioCodec, DeviceProfile, DirectPlayProfile, DlnaProfileType, MediaSourceInfo,
-        MediaStream, MediaStreamType, SubtitleDeliveryMethod, SubtitleProfile,
-        TranscodeReason, VideoCodec, VideoContainer,
+        AudioCodec, CodecProfile, DeviceProfile, DirectPlayProfile, DlnaProfileType,
+        MediaSourceInfo, MediaStream, MediaStreamType, ProfileCondition,
+        SubtitleDeliveryMethod, SubtitleProfile, TranscodeReason, VideoCodec,
+        VideoContainer,
     };
 
     #[test]
@@ -616,6 +625,76 @@ mod tests {
         assert!(
             reasons.is_empty(),
             "direct play should be permitted for MKV even when embedded subtitle codec is not in profile: {reasons:?}"
+        );
+    }
+
+    /// Mirrors a real Android TV device profile: a `DirectPlayProfile` accepts
+    /// H264 by codec name alone, but a `CodecProfile` further restricts which
+    /// H264 *profiles* are allowed (High/Main/Baseline — no High 10). Hi10p
+    /// anime must be rejected here, not silently direct-played as plain h264.
+    fn hi10p_rejecting_profile() -> DeviceProfile {
+        DeviceProfile {
+            direct_play_profiles: vec![DirectPlayProfile {
+                container: Some(vec![VideoContainer::Mkv]),
+                video_codec: Some(vec![VideoCodec::H264]),
+                audio_codec: Some(vec![AudioCodec::Aac]),
+                type_: Some(DlnaProfileType::Video),
+            }],
+            codec_profiles: vec![CodecProfile {
+                type_: Some(DlnaProfileType::Video),
+                codec: Some(vec!["h264".to_string()]),
+                conditions: vec![ProfileCondition {
+                    condition: Some("EqualsAny".to_string()),
+                    property: Some("VideoProfile".to_string()),
+                    value: Some("high|main|baseline|constrained baseline".to_string()),
+                    is_required: Some(false),
+                }],
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn h264_source(profile: &str) -> MediaSourceInfo {
+        MediaSourceInfo {
+            container: Some(VideoContainer::Mkv),
+            media_streams: vec![
+                MediaStream {
+                    codec: Some("h264".to_string()),
+                    type_: Some(MediaStreamType::Video),
+                    index: 0,
+                    profile: Some(profile.to_string()),
+                    ..Default::default()
+                },
+                MediaStream {
+                    codec: Some("aac".to_string()),
+                    type_: Some(MediaStreamType::Audio),
+                    index: 1,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn hi10p_h264_is_rejected_despite_matching_codec_name() {
+        let reasons =
+            hi10p_rejecting_profile().check_direct_play(&h264_source("High 10"));
+        assert!(
+            reasons.contains(&TranscodeReason::VideoProfileNotSupported(String::new())),
+            "Hi10p (High 10 profile) must be rejected even though the container \
+             and codec name alone would pass direct play: {reasons:?}"
+        );
+    }
+
+    #[test]
+    fn plain_high_profile_h264_still_direct_plays() {
+        // Regression guard: the CodecProfile check must not reject ordinary
+        // H264 content that actually is in an allowed profile.
+        let reasons = hi10p_rejecting_profile().check_direct_play(&h264_source("High"));
+        assert!(
+            reasons.is_empty(),
+            "plain High-profile H264 should remain direct-play eligible: {reasons:?}"
         );
     }
 }
