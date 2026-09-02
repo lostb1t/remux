@@ -2420,7 +2420,7 @@ fn parse_collection_type(s: &str) -> Option<db::CollectionMediaKind> {
 #[get("/genres")]
 pub async fn genres(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
     let parent = if let Some(pid) = q.parent_id {
@@ -2477,6 +2477,10 @@ pub async fn genres(
     } else {
         vec![db::MediaKind::Genre, db::MediaKind::MusicGenre]
     };
+    let smart_filter = parent
+        .as_ref()
+        .and_then(|p| p.parse_smart_filter())
+        .cloned();
 
     let result = db::Media::get_by_filter(
         &state
@@ -2488,6 +2492,14 @@ pub async fn genres(
             offset: q.start_index,
             total_count: true,
             genre_related_kinds,
+            parent_id: q.parent_id,
+            parent,
+            filter_rules: smart_filter,
+            user_id: Some(
+                session
+                    .user
+                    .id,
+            ),
             sort_by: q
                 .sort_by
                 .unwrap_or_default(),
@@ -3445,6 +3457,19 @@ mod tests {
         }
     }
 
+    fn catalog_filter(catalog_id: Uuid) -> CollectionFilter {
+        CollectionFilter {
+            match_mode: FilterMatchMode::All,
+            groups: vec![FilterGroup {
+                match_mode: FilterMatchMode::All,
+                rules: vec![FilterRule::Catalog {
+                    op: SetOp::In,
+                    catalog_ids: vec![catalog_id],
+                }],
+            }],
+        }
+    }
+
     async fn insert_smart_collection_with_filter(
         db: &sqlx::SqlitePool,
         title: &str,
@@ -3504,6 +3529,178 @@ mod tests {
             .await
             .expect("insert_media failed");
         m
+    }
+
+    async fn add_genre(db: &sqlx::SqlitePool, media_id: Uuid, genre: &str) {
+        let pairs = db::build_genre_relations_from_names(
+            media_id,
+            &[genre.to_string()],
+            db::MediaKind::Genre,
+        );
+        let genres: Vec<_> = pairs
+            .iter()
+            .map(|(_, media)| media.clone())
+            .collect();
+        let relations: Vec<_> = pairs
+            .into_iter()
+            .map(|(relation, _)| relation)
+            .collect();
+        db::Media::upsert(db, &genres)
+            .await
+            .unwrap();
+        db::MediaRelation::upsert(db, &relations)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn genres_for_smart_collection_only_include_matching_items() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let catalog_id = Uuid::new_v4();
+
+        let collection = insert_smart_collection_with_filter(
+            db,
+            "Music Videos",
+            db::CollectionMediaKind::Series,
+            Some(catalog_filter(catalog_id)),
+        )
+        .await;
+        let included =
+            insert_media(db, "Included Series", db::MediaKind::Series, "tt1000001")
+                .await;
+        let unrelated =
+            insert_media(db, "Unrelated Series", db::MediaKind::Series, "tt1000002")
+                .await;
+        db::MediaRelation::upsert(
+            db,
+            &[db::MediaRelation {
+                left_media_id: catalog_id,
+                right_media_id: included.id,
+                role: Some(db::RelationRole::Catalog),
+                ..Default::default()
+            }],
+        )
+        .await
+        .unwrap();
+        add_genre(db, included.id, "Live").await;
+        add_genre(db, unrelated.id, "Gaming").await;
+
+        let response: serde_json::Value = server
+            .get("/genres")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_param(
+                "ParentId",
+                collection
+                    .id
+                    .to_string(),
+            )
+            .await
+            .json();
+        let names: Vec<&str> = response["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["Name"].as_str())
+            .collect();
+
+        assert_eq!(names, vec!["Live"]);
+        assert_eq!(response["TotalRecordCount"], 1);
+    }
+
+    #[tokio::test]
+    async fn genres_for_smart_collection_scope_user_rules_to_requester() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let requester = db::User::get_by_username(db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+        let mut other_user = db::User::new_with_password(
+            String::new(),
+            "other-user".into(),
+            "test",
+            None,
+        )
+        .unwrap();
+        other_user
+            .save(db)
+            .await
+            .unwrap();
+
+        let collection = insert_smart_collection_with_filter(
+            db,
+            "Favorite Videos",
+            db::CollectionMediaKind::Series,
+            Some(CollectionFilter {
+                match_mode: FilterMatchMode::All,
+                groups: vec![FilterGroup {
+                    match_mode: FilterMatchMode::All,
+                    rules: vec![FilterRule::Favorite { value: true }],
+                }],
+            }),
+        )
+        .await;
+        let requester_item =
+            insert_media(db, "Requester Video", db::MediaKind::Series, "tt1000003")
+                .await;
+        let other_user_item =
+            insert_media(db, "Other User Video", db::MediaKind::Series, "tt1000004")
+                .await;
+        add_genre(db, requester_item.id, "Official Video").await;
+        add_genre(db, other_user_item.id, "Tutorials").await;
+
+        let mut requester_state =
+            db::UserMediaState::get_or_new(db, &requester, &requester_item)
+                .await
+                .unwrap();
+        requester_state.favorite = true;
+        requester_state
+            .save(db)
+            .await
+            .unwrap();
+        let mut other_user_state =
+            db::UserMediaState::get_or_new(db, &other_user, &other_user_item)
+                .await
+                .unwrap();
+        other_user_state.favorite = true;
+        other_user_state
+            .save(db)
+            .await
+            .unwrap();
+
+        let response: serde_json::Value = server
+            .get("/genres")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_param(
+                "ParentId",
+                collection
+                    .id
+                    .to_string(),
+            )
+            .await
+            .json();
+        let names: Vec<&str> = response["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["Name"].as_str())
+            .collect();
+
+        assert_eq!(names, vec!["Official Video"]);
+        assert_eq!(response["TotalRecordCount"], 1);
     }
 
     async fn insert_smart_collection(

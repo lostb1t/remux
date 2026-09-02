@@ -203,6 +203,47 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
         .await
         .unwrap_or_default();
 
+    // `apply_meta` deliberately omits provider genre relations when Genres is
+    // locked. If another relation type (for example Cast) is still pending,
+    // the replacement logic below must not interpret those omitted genres as
+    // deletions. Resolve the existing right-hand media kinds once and retain
+    // genre links for every item whose Genres field is locked.
+    let genre_locked_ids: std::collections::HashSet<Uuid> = items_with_rels
+        .iter()
+        .filter(|item| item.is_field_locked(&db::MetadataField::Genres))
+        .map(|item| item.id)
+        .collect();
+    let locked_relation_right_ids: Vec<Uuid> = existing
+        .iter()
+        .filter(|relation| genre_locked_ids.contains(&relation.left_media_id))
+        .map(|relation| relation.right_media_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let locked_genre_right_ids: Option<std::collections::HashSet<Uuid>> =
+        if locked_relation_right_ids.is_empty() {
+            Some(std::collections::HashSet::new())
+        } else {
+            match db::Media::get_by_ids(&ctx.db, &locked_relation_right_ids).await {
+                Ok(media) => Some(
+                    media
+                        .into_iter()
+                        .filter(|right| {
+                            matches!(
+                                right.kind,
+                                db::MediaKind::Genre | db::MediaKind::MusicGenre
+                            )
+                        })
+                        .map(|right| right.id)
+                        .collect(),
+                ),
+                Err(e) => {
+                    warn!(error = %e, "failed to resolve locked genre relations; preserving all locked-item relations");
+                    None
+                }
+            }
+        };
+
     type RelKey = (Uuid, Uuid, Option<db::RelationRole>);
 
     let existing_map: std::collections::HashMap<RelKey, &db::MediaRelation> = existing
@@ -218,7 +259,16 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
     let to_delete: Vec<Uuid> = existing
         .iter()
         .filter(|r| {
-            !desired_keys.contains(&(r.left_media_id, r.right_media_id, r.role))
+            if desired_keys.contains(&(r.left_media_id, r.right_media_id, r.role)) {
+                return false;
+            }
+            if !genre_locked_ids.contains(&r.left_media_id) {
+                return true;
+            }
+            match &locked_genre_right_ids {
+                Some(genre_ids) => !genre_ids.contains(&r.right_media_id),
+                None => false,
+            }
         })
         .map(|r| r.relation_id)
         .collect();
@@ -3555,6 +3605,75 @@ mod tests {
                 .as_deref(),
             Some("Provider Overview"),
             "unlocked Overview must still be updated"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_pending_relations_preserves_locked_genres() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let item = db::Media {
+            id: Uuid::new_v4(),
+            title: "Locked Genres Series".to_string(),
+            kind: db::MediaKind::Series,
+            locked_fields: vec![db::MetadataField::Genres],
+            ..Default::default()
+        };
+        let genre = db::Media {
+            id: Uuid::new_v4(),
+            title: "Acoustic".to_string(),
+            kind: db::MediaKind::Genre,
+            ..Default::default()
+        };
+        let actor = db::Media {
+            id: Uuid::new_v4(),
+            title: "Actor".to_string(),
+            kind: db::MediaKind::Person,
+            external_ids: db::ExternalIds {
+                tmdb: Some(42),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let item_id = item.id;
+        let genre_id = genre.id;
+        db::Media::upsert(&ctx.db, &[item.clone(), genre.clone(), actor.clone()])
+            .await
+            .unwrap();
+        db::MediaRelation::upsert(
+            &ctx.db,
+            &[db::MediaRelation {
+                left_media_id: item.id,
+                right_media_id: genre.id,
+                ..Default::default()
+            }],
+        )
+        .await
+        .unwrap();
+
+        let refreshed = db::Media {
+            relations: Some(vec![(
+                db::MediaRelation {
+                    left_media_id: item.id,
+                    right_media_id: actor.id,
+                    role: Some(db::RelationRole::Actor),
+                    ..Default::default()
+                },
+                actor,
+            )]),
+            ..item
+        };
+        save_pending_relations(ctx, &[refreshed]).await;
+
+        let relations = db::MediaRelation::get_by_left_ids(&ctx.db, &[item_id])
+            .await
+            .unwrap();
+        assert!(
+            relations
+                .iter()
+                .any(|relation| relation.right_media_id == genre_id)
         );
     }
 
