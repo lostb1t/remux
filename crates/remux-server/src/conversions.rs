@@ -94,6 +94,18 @@ fn hunch_video_range_type(other: &[&str]) -> Option<api::VideoRangeType> {
         })
 }
 
+/// Coarse `VideoRange` companion for `VideoRangeType`, mirroring how the real
+/// ffprobe path (playback::probe) always derives both together. We only ever
+/// assert `Hdr` on positive filename evidence — absence of an HDR tag doesn't
+/// mean SDR, it just means hunch found nothing, so it stays `None` (unknown).
+fn video_range_from_type(t: Option<&api::VideoRangeType>) -> Option<api::VideoRange> {
+    match t? {
+        api::VideoRangeType::Sdr => Some(api::VideoRange::Sdr),
+        api::VideoRangeType::Other => Some(api::VideoRange::Other),
+        _ => Some(api::VideoRange::Hdr),
+    }
+}
+
 pub(crate) fn guess_media_source_from_filename(filename: &str) -> FilenameProbeGuess {
     let parsed = hunch::hunch(filename);
     let mut media_streams = Vec::new();
@@ -119,10 +131,12 @@ pub(crate) fn guess_media_source_from_filename(filename: &str) -> FilenameProbeG
         || video_range_type.is_some()
         || bit_depth.is_some()
     {
+        let video_range = video_range_from_type(video_range_type.as_ref());
         let display_title = display_title_video(&StreamMeta {
             codec: video_codec.as_deref(),
             width,
             height,
+            video_range: video_range.as_ref(),
             ..Default::default()
         });
         media_streams.push(api::MediaStream {
@@ -131,6 +145,7 @@ pub(crate) fn guess_media_source_from_filename(filename: &str) -> FilenameProbeG
             codec: video_codec,
             width,
             height,
+            video_range,
             video_range_type,
             bit_depth,
             display_title,
@@ -775,6 +790,7 @@ mod tests {
         assert_eq!(video.height, Some(2160));
         assert_eq!(video.bit_depth, Some(10));
         assert_eq!(video.video_range_type, Some(api::VideoRangeType::Hdr10));
+        assert_eq!(video.video_range, Some(api::VideoRange::Hdr));
         assert_eq!(
             video.is_default,
             Some(false),
@@ -784,7 +800,7 @@ mod tests {
             video
                 .display_title
                 .as_deref(),
-            Some("4K HEVC")
+            Some("4K HEVC Hdr")
         );
 
         let audio = &guess.media_streams[1];
@@ -842,6 +858,19 @@ mod tests {
                 .media_streams
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn guess_media_source_from_filename_no_hdr_evidence_leaves_video_range_unknown() {
+        // Absence of an HDR tag doesn't mean SDR — it just means hunch found
+        // nothing, so video_range must stay None (unknown), not assert Sdr.
+        let guess = guess_media_source_from_filename(
+            "Movie.2023.1080p.WEB-DL.x264.AAC.5.1-GROUP.mp4",
+        );
+
+        let video = &guess.media_streams[0];
+        assert_eq!(video.video_range_type, None);
+        assert_eq!(video.video_range, None);
     }
 
     #[test]
