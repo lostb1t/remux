@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_RETRY_AFTER: Duration = Duration::from_secs(60);
 
-const MAX_RETRY_AFTER: Duration = Duration::from_secs(300);
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(48 * 60 * 60);
 
 pub(crate) fn retry_after(headers: &HeaderMap, now: SystemTime) -> Duration {
     headers
@@ -142,6 +142,21 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!(retry_after(&headers, UNIX_EPOCH), MAX_RETRY_AFTER);
+    }
+
+    #[test]
+    fn honours_a_multi_hour_backoff() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::RETRY_AFTER,
+            "21600"
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(
+            retry_after(&headers, UNIX_EPOCH),
+            Duration::from_secs(21600)
+        );
     }
 
     #[test]
