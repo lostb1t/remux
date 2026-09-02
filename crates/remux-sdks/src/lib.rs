@@ -9,6 +9,8 @@ pub mod stremio;
 pub mod tmdb;
 pub mod trakt;
 
+mod rate_limit;
+
 use bytes::Bytes;
 use http::{Extensions, HeaderMap, HeaderValue, Method, header};
 use itertools::Itertools;
@@ -396,15 +398,16 @@ fn build_mw(retry: Option<Arc<dyn RetryPolicy + Send + Sync>>) -> ClientWithMidd
         MwClientBuilder::new(SHARED_HTTP_CLIENT.clone()).with(InMemoryCacheMiddleware);
     #[cfg(target_arch = "wasm32")]
     let builder = MwClientBuilder::new(SHARED_HTTP_CLIENT.clone());
-    match retry {
-        Some(policy) => builder
-            .with(
-                RetryTransientMiddleware::new_with_policy(DynRetryPolicy(policy))
-                    .with_retry_log_level(tracing::Level::DEBUG),
-            )
-            .build(),
-        None => builder.build(),
-    }
+    let builder = match retry {
+        Some(policy) => builder.with(
+            RetryTransientMiddleware::new_with_policy(DynRetryPolicy(policy))
+                .with_retry_log_level(tracing::Level::DEBUG),
+        ),
+        None => builder,
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let builder = builder.with(rate_limit::RetryAfterMiddleware);
+    builder.build()
 }
 
 #[derive(Clone)]
@@ -536,18 +539,9 @@ impl<A: Auth + Clone> RestClient<A> {
             .status()
             .as_u16();
         if status == 429 {
-            let retry_after_secs = resp
-                .headers()
-                .get("Retry-After")
-                .and_then(|v| {
-                    v.to_str()
-                        .ok()
-                })
-                .and_then(|s| {
-                    s.parse::<u64>()
-                        .ok()
-                })
-                .unwrap_or(60);
+            let retry_after_secs =
+                rate_limit::retry_after(resp.headers(), std::time::SystemTime::now())
+                    .as_secs();
             return Err(ClientError::RateLimited { retry_after_secs });
         }
         let text = resp
