@@ -577,6 +577,7 @@ impl StreamService {
                     .stream_info
                     .as_ref()
                     .and_then(|si| serde_json::to_value(si).ok()),
+                ..Default::default()
             });
 
             let remuxdb_enabled = probe_cfg

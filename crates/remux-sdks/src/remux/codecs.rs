@@ -54,7 +54,9 @@ pub enum VideoCodec {
         to_string = "h264",
         serialize = "h264",
         serialize = "avc",
-        serialize = "avc1"
+        serialize = "avc1",
+        // hunch (filename release-tag parser) label.
+        serialize = "H.264"
     )]
     H264,
     #[strum(
@@ -62,7 +64,9 @@ pub enum VideoCodec {
         serialize = "hevc",
         serialize = "h265",
         serialize = "hvc1",
-        serialize = "hev1"
+        serialize = "hev1",
+        // hunch label.
+        serialize = "H.265"
     )]
     Hevc,
     #[strum(
@@ -81,7 +85,9 @@ pub enum VideoCodec {
     #[strum(
         to_string = "mpeg2video",
         serialize = "mpeg2video",
-        serialize = "mpeg2"
+        serialize = "mpeg2",
+        // hunch label.
+        serialize = "MPEG-2"
     )]
     Mpeg2,
     #[strum(default, to_string = "{0}")]
@@ -91,6 +97,17 @@ pub enum VideoCodec {
 impl VideoCodec {
     pub fn is_hevc(&self) -> bool {
         matches!(self, Self::Hevc)
+    }
+
+    pub fn is_known(&self) -> bool {
+        !matches!(self, Self::Other(_))
+    }
+
+    /// Parse and return `Some` only for a recognized variant (never `Other`).
+    pub fn parse_known(s: &str) -> Option<Self> {
+        <Self as std::str::FromStr>::from_str(s)
+            .ok()
+            .filter(|c| c.is_known())
     }
 }
 
@@ -106,13 +123,37 @@ pub enum AudioCodec {
         serialize = "aac_latm"
     )]
     Aac,
-    #[strum(to_string = "ac3", serialize = "ac3", serialize = "a52")]
+    #[strum(
+        to_string = "ac3",
+        serialize = "ac3",
+        serialize = "a52",
+        // hunch label.
+        serialize = "Dolby Digital"
+    )]
     Ac3,
-    #[strum(to_string = "eac3", serialize = "eac3", serialize = "ec3")]
+    #[strum(
+        to_string = "eac3",
+        serialize = "eac3",
+        serialize = "ec3",
+        // hunch label.
+        serialize = "Dolby Digital Plus"
+    )]
     Eac3,
-    #[strum(to_string = "truehd", serialize = "truehd")]
+    #[strum(
+        to_string = "truehd",
+        serialize = "truehd",
+        // hunch label.
+        serialize = "Dolby TrueHD"
+    )]
     TrueHd,
-    #[strum(to_string = "dts", serialize = "dts", serialize = "dca")]
+    #[strum(
+        to_string = "dts",
+        serialize = "dts",
+        serialize = "dca",
+        // hunch labels — DTS:X and DTS-HD are extensions of base DTS.
+        serialize = "DTS:X",
+        serialize = "DTS-HD"
+    )]
     Dts,
     #[strum(to_string = "flac", serialize = "flac")]
     Flac,
@@ -132,7 +173,9 @@ pub enum AudioCodec {
         serialize = "pcm_s32le",
         serialize = "pcm_f32le",
         serialize = "pcm_s16be",
-        serialize = "pcm_u8"
+        serialize = "pcm_u8",
+        // hunch label.
+        serialize = "LPCM"
     )]
     Pcm,
     #[strum(default, to_string = "{0}")]
@@ -301,6 +344,17 @@ impl AudioCodec {
 
     pub fn needs_adts_reframe(&self) -> bool {
         matches!(self, Self::Aac)
+    }
+
+    pub fn is_known(&self) -> bool {
+        !matches!(self, Self::Other(_))
+    }
+
+    /// Parse and return `Some` only for a recognized variant (never `Other`).
+    pub fn parse_known(s: &str) -> Option<Self> {
+        <Self as std::str::FromStr>::from_str(s)
+            .ok()
+            .filter(|c| c.is_known())
     }
 }
 
