@@ -1802,6 +1802,16 @@ async fn item_for_user(
         .await?;
     let mut base_item = api::db_media_to_item(media.clone(), false);
 
+    if needs_streams {
+        crate::conversions::apply_filename_probe_fallback(
+            &mut base_item,
+            media
+                .sources
+                .as_deref()
+                .unwrap_or(&[]),
+        );
+    }
+
     if !transcoding_enabled {
         if let Some(sources) = base_item
             .media_sources

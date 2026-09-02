@@ -2573,6 +2573,10 @@ impl MediaSourceInfo {
 #[dto]
 pub struct MediaSourceRemuxInfo {
     pub provider_info: Option<serde_json::Value>,
+    /// Set when `media_streams` on this source were not measured (no ffprobe,
+    /// no RemuxDB match) but guessed from the release filename. Approximate —
+    /// never used for playback/transcode decisions, display only.
+    pub probe_estimated: Option<bool>,
 }
 
 impl MediaSourceInfo {

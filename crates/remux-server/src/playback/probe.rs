@@ -152,6 +152,7 @@ fn append_tags_to_title(title: &str, tags: &[String]) -> String {
     result
 }
 
+#[derive(Default)]
 pub(crate) struct StreamMeta<'a> {
     pub language: Option<&'a str>,
     pub codec: Option<&'a str>,
