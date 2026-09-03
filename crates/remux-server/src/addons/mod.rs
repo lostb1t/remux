@@ -1910,15 +1910,16 @@ impl AddonService {
         // Calling it inside apply_meta would re-apply the prefix on every patch.
         apply_title_format(media);
 
-        // Recompute stable UUID once external IDs are resolved by meta enrichment.
-        // Season/Episode UUIDs are anchored to parent_id, not external IDs — skip them.
+        // External IDs resolved by meta enrichment may now match a row already
+        // in the DB under a different id (e.g. discovered via a different
+        // addon first) — adopt it rather than drifting into a duplicate.
+        // Season/Episode identity is anchored to parent_id, not external IDs —
+        // skip them.
         if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
-            let raw = media.media_id_raw();
-            if raw
-                .canonical()
-                .is_some()
+            if let Some(existing_id) =
+                db::Media::find_existing_id_by_ext(&ctx.db, media).await
             {
-                media.id = uuid::Uuid::from(&raw);
+                media.id = existing_id;
             }
         }
         if media.kind == db::MediaKind::Person {

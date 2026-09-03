@@ -2040,6 +2040,30 @@ impl Media {
         }
     }
 
+    /// `media_id_raw`, but for Season/Episode substitutes `ancestor_ext` (the
+    /// grandparent series' `external_ids`) in place of the row's own —
+    /// which for Season/Episode is normally empty (`custom_stremio_type`
+    /// aside), so leaving it as-is would let "Season 1" of two unrelated
+    /// shows collide on the same identity. Pass `None` when the ancestor
+    /// can't be loaded; the result then falls back to `media_id_raw()`.
+    ///
+    /// Used exclusively for identity-based `user_media_state` reattachment
+    /// (`UserMediaState::get_or_new` / `remap_orphaned_for`), not for
+    /// dedup — Season/Episode rows are never deduped against each other,
+    /// their ids are minted deterministically via `season_id`/`episode_id`.
+    pub fn identity_raw(
+        &self,
+        ancestor_ext: Option<&ExternalIds>,
+    ) -> super::MediaIdRaw {
+        let mut raw = self.media_id_raw();
+        if matches!(self.kind, MediaKind::Season | MediaKind::Episode) {
+            if let Some(ext) = ancestor_ext {
+                raw.external_ids = ext.clone();
+            }
+        }
+        raw
+    }
+
     /// All Stremio-formatted IDs this item could be requested under. Convenience wrapper
     /// over `ExternalIds::candidate_ids` that maps Season/Episode index fields correctly.
     pub fn candidate_ids(&self, grandparent_ext: Option<&ExternalIds>) -> Vec<String> {
@@ -2193,26 +2217,16 @@ impl Media {
             )));
         }
 
-        if matches!(self.kind, MediaKind::Movie | MediaKind::Series) {
-            let raw = self.media_id_raw();
-            if raw
+        if matches!(self.kind, MediaKind::Movie | MediaKind::Series)
+            && self
+                .media_id_raw()
                 .canonical()
                 .is_none()
-            {
-                return Err(MediaError::ValidationError(format!(
-                    "{:?} '{}' has no canonical external ID — cannot assign stable UUID",
-                    self.kind, self.title,
-                )));
-            }
-            let expected = Uuid::from(&raw);
-            if expected != self.id
-                && !Self::ext_id_uuid_candidates(self).contains(&self.id)
-            {
-                return Err(MediaError::ValidationError(format!(
-                    "{:?} '{}' UUID mismatch: id={} expected={}",
-                    self.kind, self.title, self.id, expected
-                )));
-            }
+        {
+            return Err(MediaError::ValidationError(format!(
+                "{:?} '{}' has no canonical external ID",
+                self.kind, self.title,
+            )));
         }
         if self.kind == MediaKind::Person {
             if let Some(tmdb_id) = self
@@ -2711,31 +2725,171 @@ impl Media {
         Ok(())
     }
 
+    /// Look up an existing DB row that shares any strong external ID with the
+    /// given kind/IDs, matching against *stored* `external_ids` directly
+    /// (indexed — see migration `202609030002`) rather than recomputing a
+    /// derived UUID from `ext`. Fixes the asymmetry where a stored row with
+    /// more external IDs than the incoming item was invisible to dedup: the
+    /// old scheme only ever generated candidate UUIDs from the incoming
+    /// item's own IDs, so a stored row that had *gained* an ID since it was
+    /// written (e.g. a Kitsu-only row later matched to an IMDB id) could never
+    /// be found by an incoming item that only knew the new ID.
+    ///
+    /// Covers every root-level kind that carries its own external id:
+    /// Movie/Series/TvProgram (imdb/tmdb/tvdb/kitsu/custom_stremio_id),
+    /// Artist (deezer_artist), Album/Track (deezer_album/deezer_track,
+    /// youtube_id). Returns `None` for Season/Episode (identity is
+    /// positional — see `Media::identity_raw`) and Person without querying.
+    ///
+    /// On multiple distinct matches (different IDs pointing at different
+    /// rows), the strongest ID wins (same priority as `stable_media_uuid`:
+    /// imdb ▸ custom_stremio_id ▸ tmdb ▸ tvdb ▸ kitsu, or deezer ▸ youtube_id
+    /// for music) and the conflict is logged — this is intentionally not
+    /// resolved by merging the rows.
+    pub async fn find_by_external_ids(
+        db: &SqlitePool,
+        kind: &MediaKind,
+        ext: &ExternalIds,
+    ) -> Option<Uuid> {
+        // `json_extract` returns SQLite's INTEGER storage class for a numeric
+        // JSON value — comparing that against a TEXT-bound '123' never matches
+        // (SQLite doesn't coerce across storage classes in a bare `=`), so
+        // integer-valued fields must bind as an integer, not a stringified one.
+        enum ProbeValue {
+            Text(String),
+            Int(i64),
+        }
+
+        // (json path, bound value) in priority order — mirrors stable_media_uuid
+        // for Movie/Series/TvProgram; Artist/Album/Track have no priority
+        // conflict since each carries at most one provider's id in practice.
+        let mut probes: Vec<(&'static str, ProbeValue)> = Vec::with_capacity(5);
+        match kind {
+            MediaKind::Movie | MediaKind::Series | MediaKind::TvProgram => {
+                if let Some(ref imdb) = ext.imdb {
+                    probes.push(("$.imdb", ProbeValue::Text(imdb.to_string())));
+                }
+                if let Some(ref cid) = ext.custom_stremio_id {
+                    probes.push(("$.custom_stremio_id", ProbeValue::Text(cid.clone())));
+                }
+                if let Some(tmdb) = ext.tmdb {
+                    probes.push(("$.tmdb", ProbeValue::Int(tmdb)));
+                }
+                if let Some(tvdb) = ext.tvdb {
+                    probes.push(("$.tvdb", ProbeValue::Int(tvdb)));
+                }
+                if let Some(kitsu) = ext.kitsu {
+                    probes.push(("$.kitsu", ProbeValue::Int(kitsu)));
+                }
+            }
+            MediaKind::Artist => {
+                if let Some(id) = ext.deezer_artist {
+                    probes.push(("$.deezer_artist", ProbeValue::Int(id)));
+                }
+            }
+            MediaKind::Album => {
+                if let Some(id) = ext.deezer_album {
+                    probes.push(("$.deezer_album", ProbeValue::Int(id)));
+                }
+                if let Some(ref yid) = ext.youtube_id {
+                    probes.push(("$.youtube_id", ProbeValue::Text(yid.clone())));
+                }
+            }
+            MediaKind::Track => {
+                if let Some(id) = ext.deezer_track {
+                    probes.push(("$.deezer_track", ProbeValue::Int(id)));
+                }
+                if let Some(ref yid) = ext.youtube_id {
+                    probes.push(("$.youtube_id", ProbeValue::Text(yid.clone())));
+                }
+            }
+            // Season/Episode identity is positional (parent series + index),
+            // not a single external id — never deduped this way, their ids
+            // are minted deterministically via `season_id`/`episode_id`.
+            _ => return None,
+        }
+        if probes.is_empty() {
+            return None;
+        }
+
+        let mut qb =
+            sqlx::QueryBuilder::new("SELECT DISTINCT id FROM media WHERE kind = ");
+        qb.push_bind(kind.to_string());
+        qb.push(" AND (");
+        for (i, (path, value)) in probes
+            .iter()
+            .enumerate()
+        {
+            if i > 0 {
+                qb.push(" OR ");
+            }
+            qb.push("json_extract(external_ids, '")
+                .push(path)
+                .push("') = ");
+            match value {
+                ProbeValue::Text(s) => qb.push_bind(s.clone()),
+                ProbeValue::Int(n) => qb.push_bind(*n),
+            };
+        }
+        qb.push(")");
+
+        let rows: Vec<Uuid> = qb
+            .build_query_scalar()
+            .fetch_all(db)
+            .await
+            .unwrap_or_default();
+
+        match rows.len() {
+            0 => None,
+            1 => Some(rows[0]),
+            _ => {
+                // Ambiguous: probe each ID individually, in priority order,
+                // and take the first hit — guaranteed to be one of `rows`.
+                for (path, value) in &probes {
+                    let sql = format!(
+                        "SELECT id FROM media WHERE kind = ?1 AND json_extract(external_ids, '{path}') = ?2 LIMIT 1"
+                    );
+                    let result = match value {
+                        ProbeValue::Text(s) => {
+                            sqlx::query_scalar::<_, Uuid>(&sql)
+                                .bind(kind.to_string())
+                                .bind(s)
+                                .fetch_optional(db)
+                                .await
+                        }
+                        ProbeValue::Int(n) => {
+                            sqlx::query_scalar::<_, Uuid>(&sql)
+                                .bind(kind.to_string())
+                                .bind(n)
+                                .fetch_optional(db)
+                                .await
+                        }
+                    };
+                    if let Ok(Some(id)) = result {
+                        warn!(
+                            ?rows,
+                            winner = %id,
+                            kind = %kind,
+                            "find_by_external_ids: incoming item's IDs point at multiple distinct rows; \
+                             strongest ID wins"
+                        );
+                        return Some(id);
+                    }
+                }
+                None
+            }
+        }
+    }
+
     /// Look up an existing DB row that shares any external ID with `self`.
     /// Returns the existing row's UUID so the caller can adopt it before upserting,
     /// preventing duplicate rows when the same content arrives with different canonical IDs.
     ///
-    /// Only called for root-level items (Movie, Series, Artist, Album, Track).
-    /// Season / Episode deduplication uses `(parent_id, kind, idx)` instead.
+    /// Only meaningful for root-level items (Movie, Series, TvProgram, Artist,
+    /// Album, Track) — see `find_by_external_ids`. Season/Episode
+    /// deduplication uses `(parent_id, kind, idx)` instead.
     pub async fn find_existing_id_by_ext(db: &SqlitePool, item: &Self) -> Option<Uuid> {
-        let candidates = Self::ext_id_uuid_candidates(item);
-        if candidates.is_empty() {
-            return None;
-        }
-        let placeholders = candidates
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!("SELECT id FROM media WHERE id IN ({placeholders}) LIMIT 1");
-        let mut q = sqlx::query_scalar::<_, Uuid>(&sql);
-        for uuid in &candidates {
-            q = q.bind(*uuid);
-        }
-        q.fetch_optional(db)
-            .await
-            .ok()
-            .flatten()
+        Self::find_by_external_ids(db, &item.kind, &item.external_ids).await
     }
 
     /// Stable anchor key for season/episode UUID derivation: the series'
@@ -2772,136 +2926,6 @@ impl Media {
             &MediaKind::Episode,
             &format!("{series_key}:{season_idx}:{ep_idx}"),
         )
-    }
-
-    /// Legacy parent-anchored season UUID (pre-flattening scheme):
-    /// `stable_media_uuid(Season, "{series_uuid}:{season_idx}")`. Only used to
-    /// build migration candidates for rows stored under the old scheme.
-    pub fn season_id_nested(series_uuid: Uuid, season_idx: i64) -> Uuid {
-        crate::common::stable_media_uuid(
-            &MediaKind::Season,
-            &format!("{series_uuid}:{season_idx}"),
-        )
-    }
-
-    /// Legacy parent-anchored episode UUID (pre-flattening scheme):
-    /// `stable_media_uuid(Episode, "{season_uuid}:{ep_idx}")`. Only used to
-    /// build migration candidates for rows stored under the old scheme.
-    pub fn episode_id_nested(season_uuid: Uuid, ep_idx: i64) -> Uuid {
-        crate::common::stable_media_uuid(
-            &MediaKind::Episode,
-            &format!("{season_uuid}:{ep_idx}"),
-        )
-    }
-
-    /// Compute all candidate UUIDs an existing DB row could have been stored under
-    /// for the given item's external IDs. Used by `find_existing_id_by_ext` (dedup)
-    /// and `UserMediaState::get_or_new` (legacy state lookup).
-    ///
-    /// Each external ID is turned into the stable UUID it would produce if it were
-    /// the canonical key at insert time. Seasons/Episodes additionally get the
-    /// parent-anchored UUIDs the Stremio importer writes (recomputed from
-    /// `grandparent_id` + indices) plus flat keys from the grandparent series'
-    /// external IDs. The item's own current UUID is excluded so only *different*
-    /// rows can match.
-    pub fn ext_id_uuid_candidates(item: &Self) -> Vec<Uuid> {
-        use crate::common::stable_media_uuid;
-        let kind = &item.kind;
-        let ext = &item.external_ids;
-        let mut candidates: Vec<Uuid> = Vec::new();
-        match kind {
-            MediaKind::Movie | MediaKind::Series | MediaKind::TvProgram => {
-                if let Some(imdb) = ext
-                    .imdb
-                    .as_deref()
-                {
-                    candidates.push(stable_media_uuid(kind, imdb));
-                }
-                if let Some(custom) = ext
-                    .custom_stremio_id
-                    .as_deref()
-                {
-                    candidates.push(stable_media_uuid(kind, custom));
-                }
-                if let Some(tmdb) = ext.tmdb {
-                    candidates.push(stable_media_uuid(kind, &format!("tmdb:{tmdb}")));
-                }
-                if let Some(tvdb) = ext.tvdb {
-                    candidates.push(stable_media_uuid(kind, &format!("tvdb:{tvdb}")));
-                }
-                if let Some(kitsu) = ext.kitsu {
-                    candidates.push(stable_media_uuid(kind, &format!("kitsu:{kitsu}")));
-                }
-            }
-            MediaKind::Season | MediaKind::Episode => {
-                // Season/Episode UUIDs are not derived from a single external ID:
-                // the Stremio path anchors them to the series UUID
-                // (season = f(series_id, season_idx), episode = f(season_id, ep_idx)),
-                // while other paths use flat keys like f(imdb, season, episode).
-                // After a library purge + repopulate the anchors can change, so we
-                // emit every UUID the row could plausibly be stored under:
-                //
-                // 1. the parent/nested scheme the Stremio importer writes
-                // 2. flat keys derived from the grandparent series' external IDs
-                // 3. the episode's own raw Stremio ID (used as a candidate upstream)
-                let (season_idx, episode_idx) = match kind {
-                    MediaKind::Season => (item.idx, None),
-                    _ => (item.parent_idx, item.idx),
-                };
-                let Some(s) = season_idx else {
-                    return candidates;
-                };
-
-                // (1) nested: season_uuid = stable(Season, "{series_id}:{s}")
-                let series_id = item
-                    .grandparent_id
-                    .or(item.parent_id);
-                if let Some(series_id) = series_id {
-                    let season_uuid = Self::season_id_nested(series_id, s);
-                    match kind {
-                        MediaKind::Season => candidates.push(season_uuid),
-                        _ => {
-                            if let Some(e) = episode_idx {
-                                candidates
-                                    .push(Self::episode_id_nested(season_uuid, e));
-                            }
-                        }
-                    }
-                }
-
-                // (2) flat keys derived from the same candidate_ids() the addon/
-                // route matching uses: every (series external ID, season[, episode])
-                // combination, plus the episode's own Stremio ID.
-                let gp_ext = item
-                    .grandparent
-                    .as_deref()
-                    .map(|gp| &gp.external_ids);
-                for id_str in item.candidate_ids(gp_ext) {
-                    candidates.push(stable_media_uuid(kind, &id_str));
-                }
-
-                // (3) the episode's own Stremio ID is already covered by
-                // candidate_ids() above.
-            }
-            MediaKind::Artist => {
-                if let Some(id) = ext.deezer_artist {
-                    candidates.push(stable_media_uuid(kind, &id.to_string()));
-                }
-            }
-            MediaKind::Album => {
-                if let Some(id) = ext.deezer_album {
-                    candidates.push(stable_media_uuid(kind, &id.to_string()));
-                }
-            }
-            MediaKind::Track => {
-                if let Some(id) = ext.deezer_track {
-                    candidates.push(stable_media_uuid(kind, &id.to_string()));
-                }
-            }
-            _ => {}
-        }
-        candidates.retain(|u| *u != item.id);
-        candidates
     }
 
     /// Update all `parent_id` / `grandparent_id` references from `old_id` to `new_id`
@@ -6762,24 +6786,6 @@ impl TryFrom<sdks::stremio::Meta> for Media {
         };
 
         let mut media = media;
-        {
-            let raw = super::MediaIdRaw {
-                kind: media
-                    .kind
-                    .clone(),
-                external_ids: media
-                    .external_ids
-                    .clone(),
-                season: None,
-                episode: None,
-            };
-            if raw
-                .canonical()
-                .is_some()
-            {
-                media.id = Uuid::from(&raw);
-            }
-        }
         if let Some(url) = meta
             .poster
             .or(meta.thumbnail)
@@ -6815,22 +6821,6 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
         media
             .external_ids
             .custom_stremio_id = Some(custom_id.clone());
-        {
-            let raw = super::MediaIdRaw {
-                kind: media
-                    .kind
-                    .clone(),
-                external_ids: media
-                    .external_ids
-                    .clone(),
-                season: None,
-                episode: None,
-            };
-            media.id = raw
-                .canonical()
-                .map(|_| Uuid::from(&raw))
-                .unwrap_or_else(Uuid::new_v4);
-        }
         let series_key = media.series_canonical_key();
         let mut media_instances = vec![media.clone()];
         if let MediaKind::Series = media.kind {
@@ -6919,22 +6909,6 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
 
     let imdb_id = imdb_id.unwrap();
 
-    {
-        let raw = super::MediaIdRaw {
-            kind: media
-                .kind
-                .clone(),
-            external_ids: media
-                .external_ids
-                .clone(),
-            season: None,
-            episode: None,
-        };
-        media.id = raw
-            .canonical()
-            .map(|_| Uuid::from(&raw))
-            .unwrap_or_else(Uuid::new_v4);
-    }
     let series_key = media.series_canonical_key();
 
     let mut media_instances = Vec::new();
@@ -7977,115 +7951,6 @@ mod tests {
                 "episode id must not depend on the series UUID"
             );
         }
-    }
-
-    /// The recall side of #235: episode state rows must be findable under every
-    /// UUID the importer could have written — the nested parent-anchored scheme
-    /// (old), flat external-ID keys (new), and the episode's own Stremio ID.
-    #[test]
-    fn episode_uuid_candidates_cover_nested_flat_and_stremio_id() {
-        let series_id = Uuid::from_u128(77);
-        let mut series = Media {
-            id: series_id,
-            kind: MediaKind::Series,
-            external_ids: ExternalIds {
-                imdb: Some(NonEmptyString::try_new("tt1234567".to_string()).unwrap()),
-                custom_stremio_id: Some("fk:27".to_string()),
-                tmdb: Some(12345),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        series.id = Uuid::from(&MediaIdRaw {
-            kind: series
-                .kind
-                .clone(),
-            external_ids: series
-                .external_ids
-                .clone(),
-            season: None,
-            episode: None,
-        });
-
-        let season_id = crate::common::stable_media_uuid(
-            &MediaKind::Season,
-            &format!("{}:1", series_id),
-        );
-        let episode = Media {
-            id: crate::common::stable_media_uuid(&MediaKind::Episode, &"deadbeef"),
-            kind: MediaKind::Episode,
-            idx: Some(3),
-            parent_idx: Some(1),
-            parent_id: Some(season_id),
-            grandparent_id: Some(series_id),
-            external_ids: ExternalIds {
-                custom_stremio_id: Some("fk-ep-3".to_string()),
-                ..Default::default()
-            },
-            grandparent: Some(Box::new(series.clone())),
-            ..Default::default()
-        };
-
-        let candidates = Media::ext_id_uuid_candidates(&episode);
-
-        // (1) nested / old Stremio scheme
-        let nested = crate::common::stable_media_uuid(
-            &MediaKind::Episode,
-            &format!("{season_id}:3"),
-        );
-        assert!(candidates.contains(&nested), "missing nested candidate");
-
-        // (2) flat keys from every grandparent external ID
-        for key in ["tt1234567:1:3", "fk:27:1:3", "tmdb:12345:1:3"] {
-            let flat = crate::common::stable_media_uuid(&MediaKind::Episode, key);
-            assert!(candidates.contains(&flat), "missing flat candidate {key}");
-        }
-
-        // (3) the episode's own Stremio ID
-        let own = crate::common::stable_media_uuid(&MediaKind::Episode, "fk-ep-3");
-        assert!(
-            candidates.contains(&own),
-            "missing own stremio-id candidate"
-        );
-
-        // The current id itself must never be returned as a candidate.
-        assert!(!candidates.contains(&episode.id));
-    }
-
-    #[test]
-    fn season_uuid_candidates_cover_nested_and_flat() {
-        let series_id = Uuid::from_u128(88);
-        let series = Media {
-            id: series_id,
-            kind: MediaKind::Series,
-            external_ids: ExternalIds {
-                imdb: Some(NonEmptyString::try_new("tt1234567".to_string()).unwrap()),
-                custom_stremio_id: Some("fk:27".to_string()),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let season = Media {
-            id: crate::common::stable_media_uuid(&MediaKind::Season, &"deadbeef"),
-            kind: MediaKind::Season,
-            idx: Some(1),
-            parent_id: Some(series_id),
-            grandparent_id: Some(series_id),
-            grandparent: Some(Box::new(series)),
-            ..Default::default()
-        };
-        let candidates = Media::ext_id_uuid_candidates(&season);
-
-        let nested = crate::common::stable_media_uuid(
-            &MediaKind::Season,
-            &format!("{series_id}:1"),
-        );
-        assert!(candidates.contains(&nested), "missing nested candidate");
-        for key in ["tt1234567:1", "fk:27:1"] {
-            let flat = crate::common::stable_media_uuid(&MediaKind::Season, key);
-            assert!(candidates.contains(&flat), "missing flat candidate {key}");
-        }
-        assert!(!candidates.contains(&season.id));
     }
 
     #[test]
@@ -9626,9 +9491,13 @@ mod tests {
             );
         }
 
-        /// `external_ids` has been found holding `''`, which `sqlx` cannot decode.
+        /// The `idx_media_ext_*` expression indexes (migration `202609030002`)
+        /// make SQLite validate `external_ids` as JSON on every write — it
+        /// errors while maintaining the index rather than silently accepting
+        /// malformed JSON. `widen_external_ids`'s `json_valid` fallback stays
+        /// only to repair rows written before those indexes existed.
         #[tokio::test]
-        async fn a_row_holding_invalid_json_is_repaired() {
+        async fn malformed_external_ids_are_rejected_by_the_db() {
             let (_s, guard) = new_test_server()
                 .await
                 .unwrap();
@@ -9641,30 +9510,16 @@ mod tests {
                 },
             )
             .await;
-            sqlx::query("UPDATE media SET external_ids = '' WHERE id = ?1")
+
+            let err = sqlx::query("UPDATE media SET external_ids = '' WHERE id = ?1")
                 .bind(id)
                 .execute(&ctx.db)
                 .await
-                .unwrap();
-
-            let merged = Media::widen_external_ids(
-                &ctx.db,
-                &id,
-                &ExternalIds {
-                    tmdb: Some(949),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap()
-            .unwrap();
-
-            assert_eq!(merged.tmdb, Some(949));
-            assert_eq!(
-                stored(ctx, &id)
-                    .await
-                    .tmdb,
-                Some(949)
+                .unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("malformed JSON"),
+                "unexpected error: {err}"
             );
         }
     }
@@ -10040,5 +9895,239 @@ mod tests {
             elapsed.as_millis() < 150,
             "query took {elapsed:?}, expected < 150 ms — correlated subquery regression?"
         );
+    }
+}
+
+#[cfg(test)]
+mod dedup_tests {
+    use super::*;
+    use crate::{db::MediaIdRaw, integration_test::new_test_server};
+
+    /// Phase 2: a stored row richer than the incoming item must still be
+    /// found. Stored has `{imdb, kitsu}`, keyed under its kitsu-derived id;
+    /// incoming only carries `{imdb}`. The old candidate-UUID scheme only
+    /// ever generated candidates from the incoming item, so this always
+    /// missed — the bug this phase fixes.
+    #[tokio::test]
+    async fn finds_a_stored_row_richer_than_the_incoming_item() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let imdb = NonEmptyString::try_new("tt37532356".to_string()).unwrap();
+        let stored_ext = ExternalIds {
+            imdb: Some(imdb.clone()),
+            kitsu: Some(50023),
+            ..Default::default()
+        };
+        let stored_raw = MediaIdRaw {
+            kind: MediaKind::Series,
+            external_ids: stored_ext.clone(),
+            season: None,
+            episode: None,
+        };
+        let mut stored = Media {
+            id: Uuid::from(&stored_raw),
+            title: "Stored".into(),
+            kind: MediaKind::Series,
+            external_ids: stored_ext,
+            ..Default::default()
+        };
+        stored
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let incoming_ext = ExternalIds {
+            imdb: Some(imdb),
+            ..Default::default()
+        };
+
+        let found =
+            Media::find_by_external_ids(&ctx.db, &MediaKind::Series, &incoming_ext)
+                .await
+                .expect("stored row should be found by its imdb id alone");
+        assert_eq!(found, stored.id);
+
+        let incoming = Media {
+            id: Uuid::new_v4(),
+            title: "Incoming".into(),
+            kind: MediaKind::Series,
+            external_ids: incoming_ext,
+            ..Default::default()
+        };
+        let existing = Media::find_existing_id_by_ext(&ctx.db, &incoming).await;
+        assert_eq!(
+            existing,
+            Some(stored.id),
+            "find_existing_id_by_ext must delegate to the external-id lookup"
+        );
+    }
+
+    /// Multi-match: incoming carries two ids that resolve to two different
+    /// stored rows. The stronger id (imdb over custom_stremio_id) wins, per
+    /// priority. Both stored rows carry an id from {imdb, custom_stremio_id}
+    /// so each independently satisfies `validate()`'s "Movie requires imdb"
+    /// rule (tmdb/tvdb/kitsu alone do not).
+    #[tokio::test]
+    async fn strongest_id_wins_on_ambiguous_match() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let imdb_ext = ExternalIds {
+            imdb: Some(NonEmptyString::try_new("tt9999999".to_string()).unwrap()),
+            ..Default::default()
+        };
+        let imdb_raw = MediaIdRaw {
+            kind: MediaKind::Movie,
+            external_ids: imdb_ext.clone(),
+            season: None,
+            episode: None,
+        };
+        let mut imdb_row = Media {
+            id: Uuid::from(&imdb_raw),
+            title: "By imdb".into(),
+            kind: MediaKind::Movie,
+            external_ids: imdb_ext.clone(),
+            ..Default::default()
+        };
+        imdb_row
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let stremio_ext = ExternalIds {
+            custom_stremio_id: Some("addon:other".to_string()),
+            ..Default::default()
+        };
+        let stremio_raw = MediaIdRaw {
+            kind: MediaKind::Movie,
+            external_ids: stremio_ext.clone(),
+            season: None,
+            episode: None,
+        };
+        let mut stremio_row = Media {
+            id: Uuid::from(&stremio_raw),
+            title: "By stremio id".into(),
+            kind: MediaKind::Movie,
+            external_ids: stremio_ext.clone(),
+            ..Default::default()
+        };
+        stremio_row
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let incoming_ext = ExternalIds {
+            imdb: imdb_ext.imdb,
+            custom_stremio_id: stremio_ext.custom_stremio_id,
+            ..Default::default()
+        };
+
+        let found =
+            Media::find_by_external_ids(&ctx.db, &MediaKind::Movie, &incoming_ext)
+                .await
+                .expect("ambiguous match should still resolve");
+        assert_eq!(found, imdb_row.id, "imdb outranks custom_stremio_id");
+    }
+
+    /// Regression: `json_extract` returns SQLite's INTEGER storage class for
+    /// a numeric field like tmdb/tvdb/kitsu/deezer_*. Binding the probe as
+    /// TEXT made the comparison `INTEGER = '123'` — SQLite never coerces
+    /// across storage classes in a bare `=`, so this could never match.
+    #[tokio::test]
+    async fn matches_a_stored_row_by_tmdb_id_alone() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let mut stored = Media {
+            id: Uuid::new_v4(),
+            title: "Heat".into(),
+            kind: MediaKind::Movie,
+            external_ids: ExternalIds {
+                imdb: Some(NonEmptyString::try_new("tt0113277".to_string()).unwrap()),
+                tmdb: Some(949),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        stored
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let incoming_ext = ExternalIds {
+            tmdb: Some(949),
+            ..Default::default()
+        };
+        let found =
+            Media::find_by_external_ids(&ctx.db, &MediaKind::Movie, &incoming_ext)
+                .await;
+        assert_eq!(found, Some(stored.id));
+    }
+
+    /// Phase 4: Artist/Album/Track dedup now runs through the same indexed
+    /// external-id lookup as Movie/Series, not the deleted UUID-candidate
+    /// fallback.
+    #[tokio::test]
+    async fn finds_a_stored_artist_by_deezer_id() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let ext = ExternalIds {
+            deezer_artist: Some(123456),
+            ..Default::default()
+        };
+        let mut artist = Media {
+            id: Uuid::new_v4(),
+            title: "Test Artist".into(),
+            kind: MediaKind::Artist,
+            external_ids: ext.clone(),
+            ..Default::default()
+        };
+        artist
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let found =
+            Media::find_by_external_ids(&ctx.db, &MediaKind::Artist, &ext).await;
+        assert_eq!(found, Some(artist.id));
+    }
+
+    /// Album/Track accept either a deezer id or a youtube id (see
+    /// `validate()`); both must be reachable by `find_by_external_ids`.
+    #[tokio::test]
+    async fn finds_a_stored_album_by_youtube_id_alone() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let ext = ExternalIds {
+            youtube_id: Some("PLxyz".to_string()),
+            ..Default::default()
+        };
+        let mut album = Media {
+            id: Uuid::new_v4(),
+            title: "Test Album".into(),
+            kind: MediaKind::Album,
+            external_ids: ext.clone(),
+            ..Default::default()
+        };
+        album
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let found = Media::find_by_external_ids(&ctx.db, &MediaKind::Album, &ext).await;
+        assert_eq!(found, Some(album.id));
     }
 }

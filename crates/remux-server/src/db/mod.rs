@@ -114,6 +114,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<()> {
         .await?;
 
     migrate_channel_ids(pool).await?;
+    if let Err(e) = backfill_user_media_raw(pool).await {
+        warn!(error = %e, "failed to backfill user_media_state.media_raw");
+    }
     vacuum_if_needed(pool).await?;
     // Ensure query-planner statistics are fresh on every startup. PRAGMA optimize
     // only re-analyzes tables/indexes where stats are significantly out of date,
@@ -175,6 +178,43 @@ async fn backfill_certification_age(pool: &SqlitePool) -> Result<()> {
                 .execute(pool)
                 .await?;
         }
+    }
+
+    Ok(())
+}
+
+/// Populate `user_media_state.media_raw` for rows written before it existed,
+/// so identity-based reattachment (`UserMediaState::get_or_new`) covers them
+/// too. Also rebuilds rows still holding the old full-JSON format (starts
+/// with `{`) into the compact `identity_key()` format matching now expects —
+/// see `MediaIdRaw::identity_key` for why the format changed. Idempotent:
+/// once every row is in the new format, the `WHERE` guard matches nothing.
+async fn backfill_user_media_raw(pool: &SqlitePool) -> Result<()> {
+    let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT user_id, media_id FROM user_media_state \
+         WHERE media_raw IS NULL OR media_raw LIKE '{%'",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    for (user_id, media_id) in rows {
+        let Ok(Some(media)) = Media::get_by_id(pool, &media_id).await else {
+            continue;
+        };
+        let ancestor_ext = user::load_ancestor_ext(pool, &media).await;
+        let raw = media.identity_raw(ancestor_ext.as_ref());
+        let Some(raw_json) = raw.identity_key() else {
+            continue;
+        };
+        sqlx::query(
+            "UPDATE user_media_state SET media_raw = ? WHERE user_id = ? AND media_id = ?",
+        )
+        .bind(raw_json)
+        .bind(user_id)
+        .bind(media_id)
+        .execute(pool)
+        .await
+        .ok();
     }
 
     Ok(())

@@ -357,7 +357,19 @@ impl MediaIdRaw {
                 .candidate_ids(&self.kind, None, None, None)
                 .into_iter()
                 .next(),
-            MediaKind::Season | MediaKind::Episode => None,
+            // Season/Episode carry no meaningful external id of their own;
+            // `Media::identity_raw` substitutes the grandparent series'
+            // `external_ids` here before calling `canonical()`, so this
+            // checks the *series'* identity using the same priority fields —
+            // `season`/`episode` (not consulted here) disambiguate via
+            // `identity_key()`, not this string. A row that still carries
+            // its own (near-always id-less) `external_ids` correctly falls
+            // through to `None`.
+            MediaKind::Season | MediaKind::Episode => self
+                .external_ids
+                .candidate_ids(&MediaKind::Series, None, None, None)
+                .into_iter()
+                .next(),
             MediaKind::Artist => self
                 .external_ids
                 .deezer_artist
@@ -365,17 +377,48 @@ impl MediaIdRaw {
             MediaKind::Album => self
                 .external_ids
                 .deezer_album
-                .map(|id| id.to_string()),
+                .map(|id| id.to_string())
+                .or_else(|| {
+                    self.external_ids
+                        .youtube_id
+                        .clone()
+                }),
             MediaKind::Track => self
                 .external_ids
                 .deezer_track
-                .map(|id| id.to_string()),
+                .map(|id| id.to_string())
+                .or_else(|| {
+                    self.external_ids
+                        .youtube_id
+                        .clone()
+                }),
             MediaKind::Person => self
                 .external_ids
                 .tmdb
                 .map(|id| id.to_string()),
             _ => None,
         }
+    }
+
+    /// A compact `"{kind}:{canonical}[:{season}[:{episode}]]"` identity
+    /// string — what `user_media_state.media_raw` actually stores and is
+    /// matched on.
+    ///
+    /// Deliberately not the full JSON of `self`: two writers that each know
+    /// only a *subset* of an item's external ids (e.g. Jellyfin import,
+    /// which only ever sees Imdb/Tmdb/Tvdb, never a Stremio-sourced item's
+    /// `custom_stremio_id`) would serialize to different JSON even when
+    /// they agree on the canonical id — silently failing to match on exact
+    /// string equality. This string only encodes what `canonical()` already
+    /// reduced everything to, so any two callers that agree on the winning
+    /// id (and, for Season/Episode, the position) always match.
+    pub fn identity_key(&self) -> Option<String> {
+        let canonical = self.canonical()?;
+        Some(match (self.season, self.episode) {
+            (Some(s), Some(e)) => format!("{}:{canonical}:{s}:{e}", self.kind),
+            (Some(s), None) => format!("{}:{canonical}:{s}", self.kind),
+            _ => format!("{}:{canonical}", self.kind),
+        })
     }
 }
 
@@ -466,6 +509,37 @@ pub struct UserMediaStateFilter {
     pub offset: Option<u32>,
 }
 
+/// The grandparent series' `ExternalIds` for a Season/Episode row, used to
+/// build an identity that won't collide across shows (see `Media::identity_raw`).
+/// Prefers an already-preloaded `media.grandparent`; otherwise loads it via
+/// `grandparent_id`/`parent_id`. Returns `None` for non-Season/Episode kinds,
+/// or when no ancestor can be resolved.
+pub(super) async fn load_ancestor_ext(
+    db: &SqlitePool,
+    media: &super::Media,
+) -> Option<super::ExternalIds> {
+    if !matches!(
+        media.kind,
+        super::MediaKind::Season | super::MediaKind::Episode
+    ) {
+        return None;
+    }
+    if let Some(gp) = &media.grandparent {
+        return Some(
+            gp.external_ids
+                .clone(),
+        );
+    }
+    let gp_id = media
+        .grandparent_id
+        .or(media.parent_id)?;
+    super::Media::get_by_id(db, &gp_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|gp| gp.external_ids)
+}
+
 impl UserMediaState {
     pub async fn get_by_user_and_media(
         db: &SqlitePool,
@@ -488,72 +562,59 @@ impl UserMediaState {
         user: &User,
         media: &super::Media,
     ) -> Result<Self> {
-        // Include the current UUID plus all stable UUIDs this item could have been
-        // stored under (one per external ID). ORDER BY puts the current ID first so
-        // no migration fires for the common case.
-        let mut all_ids: Vec<Uuid> = Vec::with_capacity(6);
-        all_ids.push(media.id);
-        all_ids.extend(super::Media::ext_id_uuid_candidates(media));
-        // For episodes/seasons the flat candidates are derived from the grandparent
-        // series' external IDs, which are usually not preloaded on the media row.
-        // Load them so a purged+repopulated library can still find old state rows.
-        if matches!(
-            media.kind,
-            super::MediaKind::Season | super::MediaKind::Episode
-        ) && media
-            .grandparent
-            .is_none()
-        {
-            if let Some(gp_id) = media
-                .grandparent_id
-                .or(media.parent_id)
-            {
-                if let Ok(Some(gp)) = super::Media::get_by_id(db, &gp_id).await {
-                    let mut with_gp = media.clone();
-                    with_gp.grandparent = Some(Box::new(gp));
-                    all_ids.extend(super::Media::ext_id_uuid_candidates(&with_gp));
-                }
-            }
-        }
+        let ancestor_ext = load_ancestor_ext(db, media).await;
+        let raw = media.identity_raw(ancestor_ext.as_ref());
+        let media_raw_json = raw.identity_key();
 
-        let placeholders = all_ids
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "SELECT * FROM user_media_state \
-             WHERE user_id = ? AND media_id IN ({placeholders}) \
-             ORDER BY (media_id = ?) DESC LIMIT 1"
-        );
-        let mut q = sqlx::query_as::<_, Self>(&sql).bind(user.id);
-        for uuid in &all_ids {
-            q = q.bind(*uuid);
-        }
-        q = q.bind(media.id);
-
-        if let Some(mut row) = q
+        if let Some(ref raw_json) = media_raw_json {
+            if let Some(mut row) = sqlx::query_as::<_, Self>(
+                "SELECT * FROM user_media_state WHERE user_id = ? AND media_raw = ? LIMIT 1",
+            )
+            .bind(user.id)
+            .bind(raw_json)
             .fetch_optional(db)
             .await?
-        {
-            if row.media_id != media.id {
-                sqlx::query(
-                    "UPDATE user_media_state SET media_id = ? WHERE user_id = ? AND media_id = ?",
-                )
-                .bind(media.id)
-                .bind(user.id)
-                .bind(row.media_id)
-                .execute(db)
-                .await
-                .ok();
-                row.media_id = media.id;
+            {
+                if row.media_id != media.id {
+                    sqlx::query(
+                        "UPDATE user_media_state SET media_id = ? WHERE user_id = ? AND media_id = ?",
+                    )
+                    .bind(media.id)
+                    .bind(user.id)
+                    .bind(row.media_id)
+                    .execute(db)
+                    .await
+                    .ok();
+                    row.media_id = media.id;
+                }
+                return Ok(row);
             }
+            return Ok(Self {
+                user_id: user.id,
+                media_id: media.id,
+                media_raw: media_raw_json,
+                ..Default::default()
+            });
+        }
+
+        // No external identity anywhere in the ancestry (item and — for
+        // Season/Episode — its series both lack one). Nothing to reattach by;
+        // the only sane match is the exact id this call was made with.
+        if let Some(row) = sqlx::query_as::<_, Self>(
+            "SELECT * FROM user_media_state WHERE user_id = ? AND media_id = ?",
+        )
+        .bind(user.id)
+        .bind(media.id)
+        .fetch_optional(db)
+        .await?
+        {
             return Ok(row);
         }
 
         Ok(Self {
             user_id: user.id,
             media_id: media.id,
+            media_raw: None,
             ..Default::default()
         })
     }
@@ -565,48 +626,26 @@ impl UserMediaState {
     /// rather than waiting for each user to play the item before their state is
     /// migrated lazily by `get_or_new`, this sweeps the whole table immediately.
     pub async fn remap_orphaned_for(db: &SqlitePool, items: &[super::Media]) {
-        let pairs: Vec<(uuid::Uuid, uuid::Uuid)> = items
-            .iter()
-            .flat_map(|item| {
-                super::Media::ext_id_uuid_candidates(item)
-                    .into_iter()
-                    .map(|old| (old, item.id))
-            })
-            .collect();
-
-        if pairs.is_empty() {
-            return;
-        }
-
-        // Each pair needs 3 bind slots (WHEN ?, THEN ?, IN ?).
-        // SQLite's limit is 999; use 300 pairs per batch to stay well under it.
-        for chunk in pairs.chunks(300) {
-            let mut sql =
-                String::from("UPDATE user_media_state SET media_id = CASE media_id");
-            for _ in chunk {
-                sql.push_str(" WHEN ? THEN ?");
-            }
-            sql.push_str(" END WHERE media_id IN (");
-            for i in 0..chunk.len() {
-                if i > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-
-            let mut q = sqlx::query(&sql);
-            for (old, new) in chunk {
-                q = q
-                    .bind(old)
-                    .bind(new);
-            }
-            for (old, _) in chunk {
-                q = q.bind(old);
-            }
-            q.execute(db)
-                .await
-                .ok();
+        // Identity-keyed, so one UPDATE per item is exact — no candidate
+        // fan-out, no risk of matching an unrelated row. Season/Episode use
+        // their series' external ids (via `load_ancestor_ext`) rather than
+        // their own, which are normally empty.
+        for item in items {
+            let ancestor_ext = load_ancestor_ext(db, item).await;
+            let raw = item.identity_raw(ancestor_ext.as_ref());
+            let Some(raw_json) = raw.identity_key() else {
+                continue;
+            };
+            sqlx::query(
+                "UPDATE user_media_state SET media_id = ? \
+                 WHERE media_raw = ? AND media_id != ?",
+            )
+            .bind(item.id)
+            .bind(raw_json)
+            .bind(item.id)
+            .execute(db)
+            .await
+            .ok();
         }
     }
 
@@ -1242,5 +1281,317 @@ mod playback_threshold_tests {
         .await
         .unwrap();
         assert!(!crossed, "no runtime means no threshold was applied");
+    }
+}
+
+#[cfg(test)]
+mod identity_reattach_tests {
+    use super::*;
+    use crate::{db, integration_test::new_test_server};
+
+    /// Phase 1: `get_or_new` must reattach state by `media_raw` identity, not
+    /// just by UUID, so a purge + reimport under a fresh uuid4 doesn't
+    /// silently detach favourites/play count.
+    #[tokio::test]
+    async fn purge_and_reimport_reattaches_state_by_external_ids() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let user = db::User::get_by_username(&ctx.db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+        let media = crate::integration_test::seed_movie(ctx).await;
+
+        let mut state = UserMediaState::get_or_new(&ctx.db, &user, &media)
+            .await
+            .unwrap();
+        state.favorite = true;
+        state.play_count = 3;
+        state
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        // Purge: delete the row entirely, as a library rescan would.
+        db::Media::delete(&ctx.db, &media.id)
+            .await
+            .unwrap();
+
+        // Re-import: same external ids, but a fresh uuid4 rather than the
+        // derived id — what every new row gets once Phase 3 lands.
+        let mut reimported = db::Media {
+            id: Uuid::new_v4(),
+            title: media
+                .title
+                .clone(),
+            kind: media
+                .kind
+                .clone(),
+            runtime: media.runtime,
+            external_ids: media
+                .external_ids
+                .clone(),
+            ..Default::default()
+        };
+        assert_ne!(
+            reimported.id, media.id,
+            "must simulate a genuinely different id"
+        );
+        reimported
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let reattached = UserMediaState::get_or_new(&ctx.db, &user, &reimported)
+            .await
+            .unwrap();
+        assert!(
+            reattached.favorite,
+            "favorite should survive the purge+reimport"
+        );
+        assert_eq!(
+            reattached.play_count, 3,
+            "play count should survive the purge+reimport"
+        );
+        assert_eq!(
+            reattached.media_id, reimported.id,
+            "state should now point at the new row"
+        );
+    }
+
+    /// Same scenario, but via `remap_orphaned_for`'s bulk sweep rather than
+    /// the lazy `get_or_new` path.
+    #[tokio::test]
+    async fn remap_orphaned_for_reattaches_state_by_external_ids() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let user = db::User::get_by_username(&ctx.db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+        let media = crate::integration_test::seed_movie(ctx).await;
+
+        let mut state = UserMediaState::get_or_new(&ctx.db, &user, &media)
+            .await
+            .unwrap();
+        state.favorite = true;
+        state.play_count = 5;
+        state
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        db::Media::delete(&ctx.db, &media.id)
+            .await
+            .unwrap();
+
+        let mut reimported = db::Media {
+            id: Uuid::new_v4(),
+            title: media
+                .title
+                .clone(),
+            kind: media
+                .kind
+                .clone(),
+            runtime: media.runtime,
+            external_ids: media
+                .external_ids
+                .clone(),
+            ..Default::default()
+        };
+        reimported
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        UserMediaState::remap_orphaned_for(&ctx.db, std::slice::from_ref(&reimported))
+            .await;
+
+        let row: UserMediaState = sqlx::query_as(
+            "SELECT * FROM user_media_state WHERE user_id = ? AND media_id = ?",
+        )
+        .bind(user.id)
+        .bind(reimported.id)
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap();
+        assert!(row.favorite);
+        assert_eq!(row.play_count, 5);
+    }
+
+    /// Season/Episode have no meaningful external id of their own — their
+    /// reattachment identity is the *series'* external ids plus
+    /// season/episode index (`Media::identity_raw`). This purges the whole
+    /// series/season/episode tree and reimports it under entirely fresh
+    /// uuid4s (same series external ids), and asserts episode state still
+    /// reattaches — not just Movie/Series.
+    #[tokio::test]
+    async fn episode_state_reattaches_via_series_identity_after_purge() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let user = db::User::get_by_username(&ctx.db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+        let episode = crate::integration_test::seed_episode(ctx).await;
+        let series_id = episode
+            .grandparent_id
+            .unwrap();
+        let series = db::Media::get_by_id(&ctx.db, &series_id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let mut state = UserMediaState::get_or_new(&ctx.db, &user, &episode)
+            .await
+            .unwrap();
+        state.favorite = true;
+        state.play_count = 2;
+        state
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        // Purge the whole tree, child-first, as a library rescan would.
+        db::Media::delete(&ctx.db, &episode.id)
+            .await
+            .unwrap();
+        db::Media::delete(
+            &ctx.db,
+            &episode
+                .parent_id
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        db::Media::delete(&ctx.db, &series_id)
+            .await
+            .unwrap();
+
+        // Reimport under entirely fresh uuid4s, same series external ids.
+        let mut new_series = db::Media {
+            id: Uuid::new_v4(),
+            title: series
+                .title
+                .clone(),
+            kind: db::MediaKind::Series,
+            external_ids: series
+                .external_ids
+                .clone(),
+            ..Default::default()
+        };
+        new_series
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        let mut new_season = db::Media {
+            id: Uuid::new_v4(),
+            title: "Season 1".into(),
+            kind: db::MediaKind::Season,
+            parent_id: Some(new_series.id),
+            grandparent_id: Some(new_series.id),
+            idx: Some(1),
+            ..Default::default()
+        };
+        new_season
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        let new_episode = db::Media {
+            id: Uuid::new_v4(),
+            title: "The Target".into(),
+            kind: db::MediaKind::Episode,
+            parent_id: Some(new_season.id),
+            grandparent_id: Some(new_series.id),
+            idx: Some(1),
+            parent_idx: Some(1),
+            ..Default::default()
+        };
+
+        let reattached = UserMediaState::get_or_new(&ctx.db, &user, &new_episode)
+            .await
+            .unwrap();
+        assert!(
+            reattached.favorite,
+            "favorite should survive the purge+reimport"
+        );
+        assert_eq!(reattached.play_count, 2);
+        assert_eq!(reattached.media_id, new_episode.id);
+    }
+
+    /// A writer that only knows a *subset* of an item's external ids (e.g.
+    /// `tasks::jellyfin_import`, which only ever sees Imdb/Tmdb/Tvdb) must
+    /// still match a real row that carries more fields. `media_raw` used to
+    /// be the full JSON of `MediaIdRaw`, so a real row with an extra field
+    /// (here `custom_stremio_id`) serialized differently and silently never
+    /// matched — `identity_key()` fixes this by reducing both sides to just
+    /// the canonical id.
+    #[tokio::test]
+    async fn a_partial_identity_write_matches_a_fuller_real_row() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let user = db::User::get_by_username(&ctx.db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Simulates a jellyfin_import-style write: only imdb known, made
+        // before the real media row exists (media_id is a throwaway guess).
+        let partial_raw = db::MediaIdRaw {
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt0113277".to_string()).ok(),
+                ..Default::default()
+            },
+            season: None,
+            episode: None,
+        };
+        let mut pre_existing = UserMediaState {
+            user_id: user.id,
+            media_id: Uuid::new_v4(),
+            media_raw: partial_raw.identity_key(),
+            favorite: true,
+            play_count: 4,
+            ..Default::default()
+        };
+        pre_existing
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        // The real row, resolved later, knows more: imdb plus a stremio id.
+        let mut media = db::Media {
+            id: Uuid::new_v4(),
+            title: "Heat".into(),
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt0113277".to_string()).ok(),
+                custom_stremio_id: Some("tt0113277".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        media
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let found = UserMediaState::get_or_new(&ctx.db, &user, &media)
+            .await
+            .unwrap();
+        assert!(
+            found.favorite,
+            "the partial-identity write should have been found despite the extra field"
+        );
+        assert_eq!(found.play_count, 4);
+        assert_eq!(found.media_id, media.id);
     }
 }
