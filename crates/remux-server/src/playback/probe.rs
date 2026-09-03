@@ -1013,9 +1013,6 @@ fn is_reusable_probe_cache(cached: &api::MediaSourceInfo) -> bool {
 }
 
 /// Resolve probe data for a single source: cache hit → skip → live probe with fallback.
-/// Uncached P2P sources return inferred stream metadata immediately so
-/// `PlaybackInfo` is not blocked waiting for torrent pieces; ordinary network
-/// sources still use authoritative probing for codec decisions.
 pub(crate) async fn probe_stream(
     stream: &db::Media,
     url_opt: Option<String>,
@@ -1054,16 +1051,6 @@ pub(crate) async fn probe_stream(
         } else {
             debug!(id = %stream.id, "probe cache stale or filename-guess only, re-probing");
         }
-    } else if stream
-        .stream_info
-        .as_ref()
-        .is_some_and(|stream_info| stream_info.is_p2p())
-    {
-        // Probing a torrent URL requests media pieces. PlaybackInfo and version
-        // dropdowns must remain metadata-only, so defer authoritative probing
-        // until the playback-owned HLS path starts the selected source.
-        debug!(id = %stream.id, "uncached P2P source — returning inferred metadata without downloading pieces");
-        return Ok((api::MediaSourceInfo::from(stream.clone()), stream.clone()));
     }
     probe_with_fallback(
         stream.clone(),
@@ -1141,41 +1128,9 @@ fn select_candidates(
         .collect()
 }
 
-fn probe_attempt_timeout(primary: &db::Media, configured_secs: u64) -> u64 {
-    if primary
-        .stream_info
-        .as_ref()
-        .is_some_and(|info| info.is_p2p())
-    {
-        configured_secs.min(30)
-    } else {
-        configured_secs
-    }
-}
-
-fn probe_overall_deadline(
-    primary: &db::Media,
-    attempt_timeout_secs: u64,
-    candidate_count: usize,
-) -> Option<std::time::Duration> {
-    primary
-        .stream_info
-        .as_ref()
-        .is_some_and(|info| info.is_p2p())
-        .then(|| {
-            std::time::Duration::from_secs(
-                attempt_timeout_secs * (candidate_count as u64).min(4) + 5,
-            )
-        })
-}
-
 /// Probe a stream URL, retrying with the next matching candidate on failure.
 ///
 /// Returns a 500 error if all candidates fail to probe.
-///
-/// Probes are sequential, but both the per-source timeout and total fallback
-/// duration are bounded so a large candidate pool cannot multiply startup
-/// latency without limit.
 async fn probe_with_fallback<F>(
     primary: db::Media,
     primary_url: Option<String>,
@@ -1215,25 +1170,8 @@ where
         .collect();
     let total_available = probe_pool.len();
     let mut attempts = 0usize;
-    // Bound P2P probing so one unreachable swarm cannot dominate the fallback
-    // sequence. Local and HTTP/debrid sources retain the administrator's
-    // configured timeout.
-    let effective_timeout = probe_attempt_timeout(&primary, timeout_secs);
-    // P2P fallback probing is bounded across the candidate pool. Direct HTTP,
-    // debrid, and local sources retain their existing fallback behavior.
-    let overall_deadline =
-        probe_overall_deadline(&primary, effective_timeout, all_to_try.len());
-    let overall_start = std::time::Instant::now();
 
     for (stream, url_opt) in all_to_try {
-        if overall_deadline.is_some_and(|deadline| overall_start.elapsed() >= deadline)
-        {
-            warn!(
-                timeout = ?overall_deadline,
-                attempts, "probe overall deadline exceeded"
-            );
-            break;
-        }
         let is_retry = stream.id != primary.id;
         let url = match url_opt {
             Some(u) => u,
@@ -1244,7 +1182,7 @@ where
         };
         attempts += 1;
         if is_retry {
-            debug!(
+            info!(
                 failed_id = %primary.id,
                 next_id = %stream.id,
                 next_url = %url,
@@ -1256,7 +1194,7 @@ where
         let db2 = db.clone();
         let f = probe_fn.clone();
         let probe_result = tokio::time::timeout(
-            std::time::Duration::from_secs(effective_timeout),
+            std::time::Duration::from_secs(timeout_secs),
             tokio::task::spawn_blocking(move || f(url2)),
         )
         .await;
@@ -1332,7 +1270,7 @@ where
                 warn!(url = %url, error = %e, "probe task panicked");
             }
             Err(_) => {
-                warn!(url = %url, timeout = effective_timeout, "probe timed out");
+                warn!(url = %url, timeout = timeout_secs, "probe timed out");
             }
         }
     }
@@ -1584,23 +1522,6 @@ mod probe_tests {
     }
 
     #[test]
-    fn probe_timeout_cap_does_not_override_non_p2p_configuration() {
-        assert_eq!(
-            probe_attempt_timeout(&http_media("http://example.com"), 75),
-            75
-        );
-        assert_eq!(probe_attempt_timeout(&p2p_media(), 75), 30);
-        assert_eq!(
-            probe_overall_deadline(&http_media("http://example.com"), 75, 10),
-            None
-        );
-        assert_eq!(
-            probe_overall_deadline(&p2p_media(), 30, 10),
-            Some(std::time::Duration::from_secs(125))
-        );
-    }
-
-    #[test]
     fn resolution_mismatch_excluded_when_restricted() {
         let primary =
             http_media_with_filename("http://a.example.com", "Movie.1080p.BluRay.mkv");
@@ -1672,6 +1593,36 @@ mod probe_tests {
             effective.id, primary_id,
             "primary succeeded — effective stream must be the primary"
         );
+    }
+
+    #[tokio::test]
+    async fn uncached_p2p_source_follows_the_normal_probe_flow() {
+        let db = test_db().await;
+        let primary = p2p_media();
+        let primary_id = primary.id;
+        let all = vec![primary.clone()];
+
+        let result = probe_with_fallback(
+            primary,
+            Some("http://127.0.0.1:3000/stream/torrent".to_string()),
+            10,
+            false,
+            0,
+            &all,
+            false,
+            3000,
+            &db,
+            queued_probe(vec![video_probe()]),
+        )
+        .await;
+
+        let (probed, effective) = result.unwrap();
+        assert!(
+            probed
+                .video_stream()
+                .is_some()
+        );
+        assert_eq!(effective.id, primary_id);
     }
 
     #[tokio::test]
