@@ -1318,6 +1318,8 @@ pub struct MediaFilter {
     /// when empty.
     pub exclude_childless: bool,
     pub exclude_ids: Option<Vec<Uuid>>,
+    /// Emby `AnyProviderIdEquals` — item must match ANY listed provider ID.
+    pub any_provider_ids: Option<api::AnyProviderIds>,
 }
 
 /// Normalise any country string to an ISO 3166-1 alpha-2 code (e.g. "US").
@@ -3969,6 +3971,44 @@ impl Media {
                     .push_bind(format!("%{}%", s));
             }
 
+            if let Some(ids) = &filter.any_provider_ids {
+                if ids.is_empty() {
+                    qb.push(" AND 0");
+                } else {
+                    qb.push(" AND (");
+                    let mut first = true;
+                    for tmdb in &ids.tmdb {
+                        if !first {
+                            qb.push(" OR ");
+                        }
+                        first = false;
+                        qb.push(
+                            "CAST(json_extract(external_ids, '$.tmdb') AS TEXT) = ",
+                        )
+                        .push_bind(tmdb.to_string());
+                    }
+                    for imdb in &ids.imdb {
+                        if !first {
+                            qb.push(" OR ");
+                        }
+                        first = false;
+                        qb.push("json_extract(external_ids, '$.imdb') = ")
+                            .push_bind(imdb);
+                    }
+                    for tvdb in &ids.tvdb {
+                        if !first {
+                            qb.push(" OR ");
+                        }
+                        first = false;
+                        qb.push(
+                            "CAST(json_extract(external_ids, '$.tvdb') AS TEXT) = ",
+                        )
+                        .push_bind(tvdb.to_string());
+                    }
+                    qb.push(")");
+                }
+            }
+
             if let Some(idx) = &filter.index_number {
                 qb.push(" AND idx = ")
                     .push_bind(idx);
@@ -5793,6 +5833,7 @@ impl Media {
                     && !filter
                         .include_childless
                         .unwrap_or(false),
+                any_provider_ids: filter.any_provider_ids(),
                 ..Default::default()
             },
         )
