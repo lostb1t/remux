@@ -965,7 +965,18 @@ impl MediaResolveService {
                 return Ok(Some(media));
             }
         }
-        Self::persist_from_store(id, ctx).await
+        // Boxed: `persist_from_store` is a large, rarely-taken chain (addon
+        // fetch, metadata merge, child sync) only reached for a not-yet-
+        // persisted item (e.g. a search result). Every fast-path return
+        // above skips it, but an unboxed call still bakes its locals into
+        // this function's state machine — and `resolve_item` is itself
+        // called from deep within the playback request handler, not a
+        // near-root background task, so the extra size was enough to
+        // overflow the stack specifically for search-result playback.
+        // Boxing moves that whole subtree onto the heap, same fix pattern
+        // as `drop_empty_group_containers` for the `get_by_filter_inner`
+        // overflow.
+        Box::pin(Self::persist_from_store(id, ctx)).await
     }
 
     /// Resolves a batch of possibly-transient UUIDs to their stable persisted IDs.
