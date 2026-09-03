@@ -5623,4 +5623,226 @@ mod tests {
             "season whose series rating exceeds max must be blocked"
         );
     }
+
+    async fn insert_media_with_provider_ids(
+        db: &sqlx::SqlitePool,
+        title: &str,
+        kind: db::MediaKind,
+        imdb: &str,
+        tmdb: Option<i64>,
+        tvdb: Option<i64>,
+    ) -> db::Media {
+        let now = Utc::now().naive_utc();
+        let ext = ExternalIds {
+            imdb: Some(NonEmptyString::try_new(imdb.to_string()).unwrap()),
+            tmdb,
+            tvdb,
+            ..Default::default()
+        };
+        let id = Uuid::from(&MediaIdRaw {
+            kind: kind.clone(),
+            external_ids: ext.clone(),
+            season: None,
+            episode: None,
+        });
+        let released = now - chrono::Duration::days(800);
+        let mut m = db::Media {
+            id,
+            title: title.to_string(),
+            kind,
+            external_ids: ext,
+            created_at: now,
+            updated_at: now,
+            released_at: Some(released),
+            digital_released_at: Some(released),
+            ..Default::default()
+        };
+        m.save(db)
+            .await
+            .expect("insert_media_with_provider_ids failed");
+        m
+    }
+
+    fn item_ids(body: &serde_json::Value) -> Vec<String> {
+        body["Items"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .filter_map(|item| {
+                item["Id"]
+                    .as_str()
+                    .map(|id| id.to_ascii_lowercase())
+            })
+            .collect()
+    }
+
+    fn jellyfin_id(id: Uuid) -> String {
+        id.to_string()
+            .replace('-', "")
+            .to_ascii_lowercase()
+    }
+
+    #[tokio::test]
+    async fn any_provider_id_equals_finds_movie_by_tmdb() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let movie = insert_media_with_provider_ids(
+            db,
+            "Inception",
+            db::MediaKind::Movie,
+            "tt1375666",
+            Some(27205),
+            None,
+        )
+        .await;
+        let stored = db::Media::get_by_id(db, &movie.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored
+                .external_ids
+                .tmdb,
+            Some(27205)
+        );
+        let _other = insert_media_with_provider_ids(
+            db,
+            "The Matrix",
+            db::MediaKind::Movie,
+            "tt0133093",
+            Some(603),
+            None,
+        )
+        .await;
+
+        let user_id = get_user_id(&server, &auth).await;
+        let resp = server
+            .get(&format!("/users/{user_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[
+                ("anyProviderIdEquals", "Tmdb.27205"),
+                ("includeItemTypes", "Movie"),
+                ("recursive", "true"),
+                ("fields", "ProviderIds"),
+            ])
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["TotalRecordCount"]
+                .as_i64()
+                .unwrap_or(0),
+            1,
+            "http body: {body}"
+        );
+        assert_eq!(item_ids(&body), vec![jellyfin_id(movie.id)]);
+        assert_eq!(
+            body["Items"][0]["ProviderIds"]["Tmdb"].as_str(),
+            Some("27205")
+        );
+    }
+
+    #[tokio::test]
+    async fn any_provider_id_equals_matches_any_listed_provider() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let movie = insert_media_with_provider_ids(
+            db,
+            "Inception",
+            db::MediaKind::Movie,
+            "tt1375666",
+            Some(27205),
+            None,
+        )
+        .await;
+        let series = insert_media_with_provider_ids(
+            db,
+            "The Wire",
+            db::MediaKind::Series,
+            "tt0306414",
+            Some(1438),
+            Some(79126),
+        )
+        .await;
+
+        let user_id = get_user_id(&server, &auth).await;
+        let resp = server
+            .get("/items")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[
+                ("AnyProviderIdEquals", "Tmdb.999,Imdb.tt1375666,Tvdb.79126"),
+                ("Recursive", "true"),
+            ])
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let mut ids = item_ids(&body);
+        ids.sort();
+        let mut expected = vec![jellyfin_id(movie.id), jellyfin_id(series.id)];
+        expected.sort();
+        assert_eq!(ids, expected);
+    }
+
+    #[tokio::test]
+    async fn any_provider_id_equals_unknown_id_returns_empty() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let _movie = insert_media_with_provider_ids(
+            db,
+            "Inception",
+            db::MediaKind::Movie,
+            "tt1375666",
+            Some(27205),
+            None,
+        )
+        .await;
+
+        let user_id = get_user_id(&server, &auth).await;
+        let resp = server
+            .get(&format!("/users/{user_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[
+                ("AnyProviderIdEquals", "Tmdb.1"),
+                ("IncludeItemTypes", "Movie"),
+                ("Recursive", "true"),
+            ])
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["TotalRecordCount"]
+                .as_i64()
+                .unwrap_or(-1),
+            0
+        );
+        assert!(
+            body["Items"]
+                .as_array()
+                .map(|items| items.is_empty())
+                .unwrap_or(false)
+        );
+    }
 }

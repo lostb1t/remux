@@ -1,8 +1,10 @@
 pub mod codecs;
+pub mod provider_ids;
 pub use codecs::{
     AudioCodec, AudioContainer, DlnaProfileType, SubtitleCodec, TranscodingProtocol,
     VideoCodec, VideoContainer,
 };
+pub use provider_ids::AnyProviderIds;
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use http::{HeaderValue, Method};
@@ -1274,6 +1276,14 @@ pub struct GetItemsQuery {
     pub start_index: Option<u32>,
     pub limit: Option<u32>,
     pub search_term: Option<String>,
+    /// Emby/Jellyfin `AnyProviderIdEquals` — `Tmdb.123,Imdb.tt456,Tvdb.789`.
+    #[serde(
+        deserialize_with = "deserialize_separated_str",
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub any_provider_id_equals: Option<Vec<String>>,
     pub parent_id: Option<Uuid>,
     pub season_id: Option<Uuid>,
     /// Internal server-side constraint. This is not a Jellyfin query parameter.
@@ -1507,6 +1517,15 @@ impl GetItemsQuery {
         //}
 
         requested
+    }
+
+    /// `None` when the client did not send `AnyProviderIdEquals`.
+    /// `Some` (possibly empty) when it did, so callers can return no rows
+    /// instead of ignoring a malformed filter.
+    pub fn any_provider_ids(&self) -> Option<AnyProviderIds> {
+        self.any_provider_id_equals
+            .as_ref()
+            .map(|tokens| AnyProviderIds::parse(tokens))
     }
 }
 
@@ -6606,6 +6625,24 @@ pub struct RefreshItemQuery {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn get_items_query_deserializes_any_provider_id_equals() {
+        let q: GetItemsQuery = serde_json::from_value(serde_json::json!({
+            "AnyProviderIdEquals": "Tmdb.27205,Imdb.tt1375666"
+        }))
+        .unwrap();
+        assert_eq!(
+            q.any_provider_id_equals
+                .as_deref(),
+            Some(["Tmdb.27205".to_string(), "Imdb.tt1375666".to_string()].as_slice())
+        );
+        let ids = q
+            .any_provider_ids()
+            .unwrap();
+        assert_eq!(ids.tmdb, vec![27205]);
+        assert_eq!(ids.imdb, vec!["tt1375666".to_string()]);
+    }
 
     #[test]
     fn user_policy_does_not_advertise_unimplemented_sync_play() {
