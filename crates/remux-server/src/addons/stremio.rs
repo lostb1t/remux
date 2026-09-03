@@ -55,14 +55,38 @@ impl AddonPreset for StremioPreset {
                 ResourceType::Stream,
             ],
             supported_types_user: vec![MediaKind::Movie, MediaKind::Series],
-            options: vec![AddonOption {
-                id: "manifest_url".to_string(),
-                name: "Manifest URL".to_string(),
-                description: Some("Full URL to the addon's manifest.json".to_string()),
-                required: true,
-                default: None,
-                kind: AddonOptionType::Url,
-            }],
+            options: vec![
+                AddonOption {
+                    id: "manifest_url".to_string(),
+                    name: "Manifest URL".to_string(),
+                    description: Some("Full URL to the addon's manifest.json".to_string()),
+                    required: true,
+                    default: None,
+                    kind: AddonOptionType::Url,
+                },
+                AddonOption {
+                    id: "strict_stream_matching".to_string(),
+                    name: "Strict stream matching".to_string(),
+                    description: Some(
+                        "Filter streams by title, year, and episode filename. Enable only for addons that return unrelated or mismatched results."
+                            .to_string(),
+                    ),
+                    required: false,
+                    default: Some(serde_json::Value::Bool(false)),
+                    kind: AddonOptionType::Boolean,
+                },
+                AddonOption {
+                    id: "resolve_debrid_packs_as_torrents".to_string(),
+                    name: "Resolve debrid packs as torrents".to_string(),
+                    description: Some(
+                        "Convert unresolved debrid season packs into native torrents so remux can select the episode. This bypasses debrid playback and uses direct P2P."
+                            .to_string(),
+                    ),
+                    required: false,
+                    default: Some(serde_json::Value::Bool(false)),
+                    kind: AddonOptionType::Boolean,
+                },
+            ],
         }
     }
 
@@ -79,9 +103,19 @@ impl AddonPreset for StremioPreset {
             .to_string();
         let manifest_url = StremioManifestUrl::try_new(raw_url)
             .map_err(|e| anyhow!("Invalid manifest_url: {e}"))?;
+        let strict_stream_matching = cfg
+            .get("strict_stream_matching")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let resolve_debrid_packs_as_torrents = cfg
+            .get("resolve_debrid_packs_as_torrents")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         let client = super::make_http_client();
         let addon = Arc::new(StremioAddon {
             manifest_url,
+            strict_stream_matching,
+            resolve_debrid_packs_as_torrents,
             client,
             medias_cache: Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
@@ -192,6 +226,8 @@ where
 
 pub struct StremioAddon {
     manifest_url: StremioManifestUrl,
+    strict_stream_matching: bool,
+    resolve_debrid_packs_as_torrents: bool,
     client: reqwest::Client,
     /// Raw Stremio `Meta` cached per series lookup-id for the duration of one tree sync.
     /// Shared between the tree-children path and `stremio_meta_fetch` so the API is
@@ -546,7 +582,15 @@ impl StreamAddon for StremioAddon {
         id_prefixes: Option<&[String]>,
     ) -> Result<Vec<crate::stream::StreamInfo>> {
         let svc = self.service()?;
-        stremio_streams(&svc, &self.manifest_url, media, id_prefixes).await
+        stremio_streams(
+            &svc,
+            &self.manifest_url,
+            media,
+            id_prefixes,
+            self.strict_stream_matching,
+            self.resolve_debrid_packs_as_torrents,
+        )
+        .await
     }
 }
 
@@ -1408,11 +1452,204 @@ fn rewrite_aio_url(url: &str, manifest_url: &StremioManifestUrl) -> String {
     parsed.to_string()
 }
 
+fn stream_identifying_text(s: &sdks::stremio::Stream) -> String {
+    let mut parts = Vec::new();
+    let meta = stremio_stream_metadata(s);
+    if let Some(ref fn_) = meta.filename {
+        parts.push(fn_.as_str());
+    }
+    if let Some(ref folder) = s.folder_name {
+        parts.push(folder.as_str());
+    }
+    if let Some(ref desc) = s.description {
+        parts.push(desc.as_str());
+    }
+    if let Some(ref name) = s.name {
+        parts.push(name.as_str());
+    }
+    parts.join(" ")
+}
+
+fn extract_year(text: &str) -> Option<u32> {
+    static YEAR_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| {
+            regex::Regex::new(r"(?i)(?:^|[\s._\-\[(])(19\d\d|20\d\d)(?:[\s._\-\])]|$)")
+                .unwrap()
+        });
+    for cap in YEAR_RE.captures_iter(text) {
+        if let Some(m) = cap.get(1) {
+            if let Ok(y) = m
+                .as_str()
+                .parse::<u32>()
+            {
+                if (1920..=2040).contains(&y) && y != 1080 && y != 2160 {
+                    return Some(y);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn stremio_stream_matches_media(s: &sdks::stremio::Stream, media: &db::Media) -> bool {
+    let meta = stremio_stream_metadata(s);
+    let filename = meta
+        .filename
+        .as_deref()
+        .unwrap_or_default();
+
+    if let Some(ext) = filename
+        .rsplit('.')
+        .next()
+    {
+        if matches!(
+            ext.to_ascii_lowercase()
+                .as_str(),
+            "z01"
+                | "z02"
+                | "zip"
+                | "rar"
+                | "r00"
+                | "r01"
+                | "7z"
+                | "tar"
+                | "gz"
+                | "txt"
+                | "nfo"
+                | "exe"
+        ) {
+            return false;
+        }
+    }
+
+    let text = stream_identifying_text(s);
+    if text
+        .trim()
+        .is_empty()
+    {
+        return true;
+    }
+
+    // Release year mismatch check (e.g. 1999 anime vs 2023 live action remake)
+    let target_year: Option<u32> = match media.kind {
+        db::MediaKind::Episode => media
+            .grandparent
+            .as_ref()
+            .and_then(|gp| gp.released_at)
+            .or(media.released_at)
+            .map(|d| chrono::Datelike::year(&d) as u32),
+        _ => media
+            .released_at
+            .map(|d| chrono::Datelike::year(&d) as u32),
+    };
+    if let Some(target_y) = target_year {
+        if let Some(stream_y) = extract_year(&text) {
+            if stream_y != target_y && (stream_y as i32 - target_y as i32).abs() > 1 {
+                tracing::debug!(
+                    stream_year = stream_y,
+                    target_year = target_y,
+                    "stremio stream rejected: year mismatch"
+                );
+                return false;
+            }
+        }
+    }
+
+    match media.kind {
+        db::MediaKind::Episode => {
+            let series_title = media
+                .grandparent
+                .as_ref()
+                .map(|gp| {
+                    gp.title
+                        .as_str()
+                })
+                .unwrap_or(&media.title);
+            let target_season = media
+                .parent_idx
+                .unwrap_or(1) as u32;
+            let target_episode = media
+                .idx
+                .unwrap_or(1) as u32;
+
+            // 1. Series Title verification:
+            let series_tokens = crate::common::significant_tokens(series_title);
+            let ep_tokens = crate::common::significant_tokens(&media.title);
+            let norm_text = crate::common::normalize_for_match(&text);
+
+            let matches_title = (series_tokens.is_empty() && ep_tokens.is_empty())
+                || crate::common::contains_all_tokens(&norm_text, &series_tokens)
+                || crate::common::contains_all_tokens(&norm_text, &ep_tokens);
+            if !matches_title {
+                tracing::debug!(
+                    stream_text = %text,
+                    %series_title,
+                    "stremio stream rejected: does not match series title"
+                );
+                return false;
+            }
+
+            // 2. Episode verification:
+            // If the stream references a specific episode in its filename or descriptor,
+            // verify it matches the target episode.
+            if !filename.is_empty() {
+                let wanted_se = format!("S{:02}E{:02}", target_season, target_episode);
+                if let Some((parsed_season, parsed_ep)) =
+                    crate::torrent::parse_season_episode(filename)
+                {
+                    if let Some(s) = parsed_season {
+                        if s != target_season {
+                            tracing::debug!(
+                                %filename,
+                                target_season,
+                                parsed_season = s,
+                                "stremio stream rejected: season mismatch"
+                            );
+                            return false;
+                        }
+                    }
+                    if parsed_ep != target_episode
+                        && !crate::torrent::matches_episode_pattern(
+                            filename, &wanted_se,
+                        )
+                    {
+                        tracing::debug!(
+                            %filename,
+                            target_episode,
+                            parsed_episode = parsed_ep,
+                            "stremio stream rejected: episode mismatch"
+                        );
+                        return false;
+                    }
+                }
+            }
+
+            true
+        }
+        db::MediaKind::Movie => {
+            let movie_tokens = crate::common::significant_tokens(&media.title);
+            let norm_text = crate::common::normalize_for_match(&text);
+            if !crate::common::contains_all_tokens(&norm_text, &movie_tokens) {
+                tracing::debug!(
+                    stream_text = %text,
+                    movie_title = %media.title,
+                    "stremio stream rejected: does not match movie title"
+                );
+                return false;
+            }
+            true
+        }
+        _ => true,
+    }
+}
+
 async fn stremio_streams(
     svc: &stremio_service::StremioService,
     manifest_url: &StremioManifestUrl,
     media: &db::Media,
     id_prefixes: Option<&[String]>,
+    strict_stream_matching: bool,
+    resolve_debrid_packs_as_torrents: bool,
 ) -> Result<Vec<crate::stream::StreamInfo>> {
     let gp_ext = media
         .grandparent
@@ -1438,15 +1675,52 @@ async fn stremio_streams(
         .stremio_media_type(&media.kind);
 
     let mut last_err: Option<anyhow::Error> = None;
-    let mut streams_opt: Option<Vec<sdks::stremio::Stream>> = None;
+    let mut valid_streams: Vec<sdks::stremio::Stream> = Vec::new();
+    let mut seen_keys = std::collections::HashSet::new();
+
     for id in ids_to_try {
         match svc
             .get_streams(media_type.clone(), id)
             .await
         {
             Ok(s) => {
-                streams_opt = Some(s);
-                break;
+                for stream in s {
+                    if stream.is_valid()
+                        && (!strict_stream_matching
+                            || stremio_stream_matches_media(&stream, media))
+                    {
+                        let metadata = stremio_stream_metadata(&stream);
+                        let filename = metadata
+                            .filename
+                            .as_deref()
+                            .unwrap_or_default()
+                            .trim()
+                            .to_ascii_lowercase();
+                        let dedup_key = if let Some(url) = stream
+                            .url
+                            .as_deref()
+                            .or(stream
+                                .external_url
+                                .as_deref())
+                        {
+                            format!("http:{}", url.trim())
+                        } else if let Some(info_hash) = stream
+                            .info_hash
+                            .as_deref()
+                        {
+                            let file = metadata
+                                .file_idx
+                                .map(|index| format!("#{index}"))
+                                .unwrap_or(filename);
+                            format!("torrent:{}:{file}", info_hash.to_ascii_lowercase())
+                        } else {
+                            filename
+                        };
+                        if dedup_key.is_empty() || seen_keys.insert(dedup_key) {
+                            valid_streams.push(stream);
+                        }
+                    }
+                }
             }
             Err(e) if is_404(&e) => {
                 last_err = Some(e);
@@ -1454,20 +1728,44 @@ async fn stremio_streams(
             Err(e) => return Err(e),
         }
     }
-    let streams = match streams_opt {
-        Some(s) => s,
-        None => return Err(last_err.unwrap_or_else(|| anyhow!("no streams found"))),
-    };
+    if valid_streams.is_empty() {
+        return Err(last_err.unwrap_or_else(|| anyhow!("no streams found")));
+    }
 
-    Ok(streams
+    Ok(valid_streams
         .into_iter()
-        .filter(|s| s.is_valid())
         .filter_map(|s| {
             let sd = s
                 .stream_data
                 .as_ref();
             let metadata = stremio_stream_metadata(&s);
-            let descriptor = if s.is_torrent() {
+            let unresolved_pack_hash = if resolve_debrid_packs_as_torrents
+                && media.kind == db::MediaKind::Episode
+            {
+                sd.and_then(|data| {
+                    data.torrent
+                        .as_ref()
+                })
+                .filter(|torrent| {
+                    torrent
+                        .file_idx
+                        .is_some_and(|index| index < 0)
+                })
+                .and_then(|torrent| {
+                    torrent
+                        .info_hash
+                        .as_deref()
+                })
+                .filter(|hash| {
+                    hash.len() == 40
+                        && hash
+                            .bytes()
+                            .all(|byte| byte.is_ascii_hexdigit())
+                })
+            } else {
+                None
+            };
+            let descriptor = if s.is_torrent() || unresolved_pack_hash.is_some() {
                 let trackers = extract_trackers(
                     s.sources
                         .as_deref()
@@ -1480,12 +1778,42 @@ async fn stremio_streams(
                 );
                 crate::stream::StreamDescriptor::Torrent {
                     info_hash: s
-                        .info_hash()?
+                        .info_hash()
+                        .or(unresolved_pack_hash)?
                         .to_ascii_lowercase(),
-                    file_hint: metadata
-                        .filename
-                        .clone(),
-                    file_idx: metadata.file_idx,
+                    file_hint: if unresolved_pack_hash.is_some() {
+                        let series_title = media
+                            .grandparent
+                            .as_deref()
+                            .map(|series| {
+                                series
+                                    .title
+                                    .as_str()
+                            })
+                            .unwrap_or(
+                                media
+                                    .title
+                                    .as_str(),
+                            );
+                        Some(format!(
+                            "{series_title} S{:02}E{:02}",
+                            media
+                                .parent_idx
+                                .unwrap_or(1),
+                            media
+                                .idx
+                                .unwrap_or(1)
+                        ))
+                    } else {
+                        metadata
+                            .filename
+                            .clone()
+                    },
+                    file_idx: if unresolved_pack_hash.is_some() {
+                        None
+                    } else {
+                        metadata.file_idx
+                    },
                     trackers,
                 }
             } else {
@@ -1848,7 +2176,7 @@ mod tests {
         });
         media.grandparent = Some(Box::new(grandparent));
 
-        let streams = stremio_streams(&svc, &manifest_url, &media, None)
+        let streams = stremio_streams(&svc, &manifest_url, &media, None, false, false)
             .await
             .unwrap();
 
@@ -1884,12 +2212,69 @@ mod tests {
         });
         media.grandparent = Some(Box::new(grandparent));
 
-        let streams = stremio_streams(&svc, &manifest_url, &media, None)
+        let streams = stremio_streams(&svc, &manifest_url, &media, None, false, false)
             .await
             .unwrap();
 
         assert_eq!(streams.len(), 1);
         reconstructed.assert();
+    }
+
+    #[tokio::test]
+    async fn unresolved_debrid_pack_can_be_resolved_as_native_torrent() {
+        let server = httpmock::MockServer::start();
+        server.mock(|when, then| {
+            when.path("/stream/series/tt0388629:1:1.json");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "streams": [{
+                        "url": "https://example.com/debrid/season-pack",
+                        "behaviorHints": { "filename": "One Piece Season 01" },
+                        "streamData": {
+                            "torrent": {
+                                "infoHash": "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+                                "fileIdx": -1
+                            }
+                        }
+                    }]
+                }));
+        });
+
+        let svc =
+            stremio_service::StremioService::from_url(&server.base_url()).unwrap();
+        let manifest_url = StremioManifestUrl::try_new(server.base_url()).unwrap();
+        let grandparent = db::Media {
+            title: "One Piece".to_string(),
+            kind: db::MediaKind::Series,
+            external_ids: db::ExternalIds {
+                imdb: Some(
+                    db::NonEmptyString::try_new("tt0388629".to_string()).unwrap(),
+                ),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut media = episode_media(db::ExternalIds::default());
+        media.grandparent = Some(Box::new(grandparent));
+
+        let streams = stremio_streams(&svc, &manifest_url, &media, None, false, true)
+            .await
+            .unwrap();
+
+        assert_eq!(streams.len(), 1);
+        match &streams[0].descriptor {
+            crate::stream::StreamDescriptor::Torrent {
+                info_hash,
+                file_hint,
+                file_idx,
+                ..
+            } => {
+                assert_eq!(info_hash, "abcdef0123456789abcdef0123456789abcdef01");
+                assert_eq!(file_hint.as_deref(), Some("One Piece S01E01"));
+                assert_eq!(*file_idx, None);
+            }
+            descriptor => panic!("expected torrent descriptor, got {descriptor:?}"),
+        }
     }
 
     #[test]
@@ -1930,5 +2315,99 @@ mod tests {
             Vec::<TrackerUrl>::new()
         );
         assert_eq!(extract_trackers(&[]), Vec::<TrackerUrl>::new());
+    }
+
+    #[test]
+    fn stremio_stream_matches_media_filters_sopranos_and_wrong_episodes() {
+        let grandparent = db::Media {
+            title: "One Piece".to_string(),
+            kind: db::MediaKind::Series,
+            ..Default::default()
+        };
+        let mut episode = db::Media {
+            title: "I'm Luffy! The Man Who Will Become the Pirate King!".to_string(),
+            kind: db::MediaKind::Episode,
+            parent_idx: Some(1),
+            idx: Some(1),
+            ..Default::default()
+        };
+        episode.grandparent = Some(Box::new(grandparent));
+
+        let make_stream =
+            |name: &str, desc: &str, filename: &str| -> sdks::stremio::Stream {
+                serde_json::from_value(serde_json::json!({
+                    "name": name,
+                    "description": desc,
+                    "behaviorHints": {
+                        "filename": filename
+                    }
+                }))
+                .unwrap()
+            };
+
+        // Unrelated series (Sopranos) -> must be rejected
+        let sopranos_stream = make_stream(
+            "Comet",
+            "The.Sopranos.S01E01.The.Sopranos.1080p.BluRay.REMUX.mkv",
+            "The.Sopranos.S01E01.The.Sopranos.1080p.BluRay.REMUX.mkv",
+        );
+        assert!(!stremio_stream_matches_media(&sopranos_stream, &episode));
+
+        // Wrong episode of One Piece (508) -> must be rejected
+        let wrong_ep_stream = make_stream(
+            "SeaDex",
+            "One Piece - 508 v2 [F-R].mkv",
+            "One Piece - 508 v2 [F-R][64511665].mkv",
+        );
+        assert!(!stremio_stream_matches_media(&wrong_ep_stream, &episode));
+
+        // Wrong episode of One Piece (352) -> must be rejected
+        let wrong_ep_stream2 =
+            make_stream("ElfCache", "One Piece 0352.mkv", "One Piece 0352.mkv");
+        assert!(!stremio_stream_matches_media(&wrong_ep_stream2, &episode));
+
+        // Archive file (.z01) -> must be rejected
+        let archive_stream = make_stream("Comet", "", "One Piece.z01");
+        assert!(!stremio_stream_matches_media(&archive_stream, &episode));
+
+        // Target episode (S01E01) -> must match!
+        let correct_stream = make_stream(
+            "Torrentio",
+            "[A&C] One Piece S01E01 (0001) [43DA846C].mkv",
+            "[A&C] One Piece S01E01 (0001) (DVD HEVC 480p) [43DA846C].mkv",
+        );
+        assert!(stremio_stream_matches_media(&correct_stream, &episode));
+
+        // Absolute numbering target episode (0001) -> must match!
+        let correct_stream_abs = make_stream(
+            "Torrentio",
+            "One Piece - 0001 (DVD 540p) [F-R].mkv",
+            "One Piece - 0001 (DVD 540p) [F-R][bb5cdb70].mkv",
+        );
+        assert!(stremio_stream_matches_media(&correct_stream_abs, &episode));
+
+        let unresolved_pack: sdks::stremio::Stream =
+            serde_json::from_value(serde_json::json!({
+                "url": "https://example.com/season-pack",
+                "behaviorHints": { "filename": "One Piece Season 01" },
+                "streamData": {
+                    "torrent": { "infoHash": "abc", "fileIdx": -1 }
+                }
+            }))
+            .unwrap();
+        assert!(stremio_stream_matches_media(&unresolved_pack, &episode));
+
+        let mut tokenless_episode = episode.clone();
+        tokenless_episode.title = "A".to_string();
+        tokenless_episode
+            .grandparent
+            .as_mut()
+            .unwrap()
+            .title = "I".to_string();
+        let tokenless_stream = make_stream("Addon", "S01E01", "S01E01.mkv");
+        assert!(stremio_stream_matches_media(
+            &tokenless_stream,
+            &tokenless_episode
+        ));
     }
 }

@@ -9,7 +9,11 @@ use super::{
     AddonCapabilities, AddonKind, AddonMetadata, AddonOption, AddonOptionType,
     AddonPreset, AddonPresetRegistration, MediaKind, ResourceType, StreamAddon,
 };
-use crate::{AppContext, api, db};
+use crate::{
+    AppContext, api,
+    common::{contains_all_tokens, normalize_for_match, significant_tokens},
+    db,
+};
 
 const MAX_RESULTS: usize = 10;
 const MAX_CANDIDATES: usize = 100;
@@ -321,17 +325,23 @@ impl TorznabAddon {
         let episode = media
             .idx
             .unwrap_or(1);
+        let series_title = media
+            .grandparent
+            .as_ref()
+            .map(|gp| {
+                gp.title
+                    .as_str()
+            })
+            .unwrap_or(&media.title);
         let se = format!("S{:02}E{:02}", season, episode);
-        let query = format!("{} {}", media.title, se);
+        let query = format!("{} {}", series_title, se);
 
-        debug!(query, title = %media.title, %se, "torznab episode stream lookup");
+        debug!(query, title = %series_title, %se, "torznab episode stream lookup");
 
         let search = MediaSearch {
-            title: media
-                .title
-                .clone(),
+            title: series_title.to_string(),
             extra: Some(se.clone()),
-            title_tokens: significant_tokens(&media.title),
+            title_tokens: significant_tokens(series_title),
             extra_tokens: vec![se.to_ascii_lowercase()],
         };
 
@@ -804,54 +814,6 @@ fn infer_quality(title: &str) -> Option<&'static str> {
         .or_else(|| infer_video_quality(title))
 }
 
-fn significant_tokens(input: &str) -> Vec<String> {
-    normalize_for_match(input)
-        .split_whitespace()
-        .filter(|t| t.len() > 1)
-        .filter(|t| {
-            !matches!(
-                *t,
-                "a" | "an"
-                    | "and"
-                    | "by"
-                    | "feat"
-                    | "ft"
-                    | "in"
-                    | "of"
-                    | "on"
-                    | "remaster"
-                    | "remastered"
-                    | "the"
-                    | "with"
-            )
-        })
-        .map(str::to_string)
-        .collect()
-}
-
-fn normalize_for_match(input: &str) -> String {
-    input
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                ' '
-            }
-        })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn contains_all_tokens(haystack: &str, tokens: &[String]) -> bool {
-    !tokens.is_empty()
-        && tokens
-            .iter()
-            .all(|t| haystack.contains(t.as_str()))
-}
-
 fn magnet_to_descriptor(
     magnet: &str,
     file_hint: Option<String>,
@@ -1008,5 +970,33 @@ mod tests {
         assert_eq!(infer_video_quality("Show.S01E01.4K.HDR"), Some("4K"));
         assert_eq!(infer_video_quality("Movie.720p.WEB-DL"), Some("720p"));
         assert_eq!(infer_video_quality("Movie.BluRay.x264"), None);
+    }
+
+    #[test]
+    fn test_torznab_episode_search_uses_series_title() {
+        let series_title = "The Sopranos";
+        let se = "S01E01";
+        let search = MediaSearch {
+            title: series_title.to_string(),
+            extra: Some(se.to_string()),
+            title_tokens: significant_tokens(series_title),
+            extra_tokens: vec![se.to_ascii_lowercase()],
+        };
+
+        let sopranos_item = TorznabItem {
+            title: "The.Sopranos.S01E01.1080p.BluRay.x264".to_string(),
+            category: Some("5040".to_string()),
+            seeders: 10,
+            ..Default::default()
+        };
+        let unrelated_pilot = TorznabItem {
+            title: "Some.Other.Show.Pilot.S01E01.720p.HDTV".to_string(),
+            category: Some("5040".to_string()),
+            seeders: 50,
+            ..Default::default()
+        };
+
+        assert!(item_matches_title(&sopranos_item, &search));
+        assert!(!item_matches_title(&unrelated_pilot, &search));
     }
 }

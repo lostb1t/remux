@@ -973,7 +973,13 @@ impl Stream {
             return true;
         }
 
-        let url = match &self.url {
+        let url = match self
+            .url
+            .as_ref()
+            .or(self
+                .external_url
+                .as_ref())
+        {
             Some(u) => u,
             None => return false,
         };
@@ -1061,8 +1067,17 @@ pub fn client(base: &str) -> Result<RestClient, url::ParseError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MediaType, Meta, ReleaseInfo, parse_duration_lossy};
+    use super::{MediaType, Meta, ReleaseInfo, Stream, parse_duration_lossy};
     use std::time::Duration;
+
+    #[test]
+    fn external_url_stream_is_valid() {
+        let stream: Stream = serde_json::from_value(serde_json::json!({
+            "externalUrl": "https://example.com/video.mkv"
+        }))
+        .unwrap();
+        assert!(stream.is_valid());
+    }
 
     #[test]
     fn parses_standard_duration_strings() {

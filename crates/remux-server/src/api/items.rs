@@ -883,7 +883,7 @@ pub async fn items_flat(
     Ok(Json::<Vec<api::BaseItemDto>>(items.items))
 }
 
-#[get("/items")]
+#[get("/items", "/items/")]
 pub async fn items(
     State(state): State<AppState>,
     session: auth::AuthSession,
@@ -1561,12 +1561,10 @@ async fn item_for_user(
     state: AppState,
     session: auth::AuthSession,
     id: Uuid,
-    fields: Option<&[api::ItemFields]>,
+    _fields: Option<&[api::ItemFields]>,
     target_user_id: Option<Uuid>,
 ) -> Result<Option<api::BaseItemDto>> {
-    let want_streams = fields
-        .map(|f| f.contains(&api::ItemFields::MediaSources))
-        .unwrap_or(true);
+    let want_streams = true;
     let server_config = db::Settings::get_config_or_default(
         &state
             .ctx
