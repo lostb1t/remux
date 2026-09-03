@@ -4354,6 +4354,38 @@ impl Media {
                     );
                 }
             }
+
+            // Hide specific collections from browse views per the user's
+            // policy — the one deliberate exception to "policy filters don't
+            // apply to containers" (see AGENTS.md). Applied here (in SQL,
+            // gated the opposite way — only when container_only) rather than
+            // as a post-query Rust filter, so it composes correctly with
+            // LIMIT/OFFSET and count_qb's total stays accurate.
+            if container_only {
+                if let Some(ref pf) = filter.policy_filter {
+                    let (deny, allow) = collection_visibility_filters(pf);
+                    if let Some(allow) = &allow {
+                        if allow.is_empty() {
+                            qb.push(" AND 0");
+                        } else {
+                            qb.push(" AND media.id IN (");
+                            let mut sep = qb.separated(", ");
+                            for id in allow {
+                                sep.push_bind(*id);
+                            }
+                            qb.push(")");
+                        }
+                    }
+                    if !deny.is_empty() {
+                        qb.push(" AND media.id NOT IN (");
+                        let mut sep = qb.separated(", ");
+                        for id in &deny {
+                            sep.push_bind(*id);
+                        }
+                        qb.push(")");
+                    }
+                }
+            }
         }
 
         // Close the filtered CTE and build the UNION ALL structure.
@@ -5414,39 +5446,18 @@ impl Media {
         // Drop empty containers when requested. child_count is already populated
         // for all container kinds (including smart/catalog) by the branches above.
         // A structural collection-of-collections is visible only when it has a
-        // non-empty descendant collection.
+        // non-empty descendant collection. Collections hidden by policy (see
+        // `collection_visibility_filters`) were already excluded in SQL above,
+        // so a group container whose only child is a hidden collection
+        // correctly evaluates as empty here too.
         let sql_total = count?;
-
-        // Hide specific collections from browse views per the user's policy —
-        // see `collection_visibility_filters`. Runs before the childless-group
-        // check below so a group container whose only child is a hidden
-        // collection correctly evaluates as empty too.
-        let mut collections_were_filtered = false;
-        if let Some(ref pf) = filter.policy_filter {
-            let (deny, allow) = collection_visibility_filters(pf);
-            if !deny.is_empty() || allow.is_some() {
-                let before = records.len();
-                records.retain(|m| {
-                    if m.kind != MediaKind::Collection {
-                        return true;
-                    }
-                    if let Some(ref allow) = allow {
-                        if !allow.contains(&m.id) {
-                            return false;
-                        }
-                    }
-                    !deny.contains(&m.id)
-                });
-                collections_were_filtered = records.len() != before;
-            }
-        }
 
         if filter.exclude_childless {
             Box::pin(Self::drop_empty_group_containers(db, &mut records, filter))
                 .await?;
         }
 
-        let total_count = if filter.exclude_childless || collections_were_filtered {
+        let total_count = if filter.exclude_childless {
             records.len()
         } else {
             sql_total
@@ -7450,9 +7461,11 @@ pub fn push_release_date_filter(
 /// (see AGENTS.md): it hides the *collection row itself* from browse views
 /// (userviews, boxset listings), never its member content, which stays
 /// visible everywhere else it would otherwise appear. Applied by
-/// `get_by_filter_inner` as a post-query Rust-side retain rather than
-/// threaded through the several SQL-building branches, since it only ever
-/// needs to run once, on the final `Collection`-kind result set.
+/// `get_by_filter_inner` as a SQL `WHERE` condition (gated on `container_only`,
+/// the opposite of the general policy-filter gate) inside the `count_qb` /
+/// `records_qb` loop, so it composes correctly with LIMIT/OFFSET and
+/// `count_qb`'s total — a post-query Rust-side retain would silently produce
+/// short pages and an inaccurate total once a query is paginated.
 fn collection_visibility_filters(
     pf: &remux_sdks::remux::CollectionFilter,
 ) -> (HashSet<Uuid>, Option<HashSet<Uuid>>) {

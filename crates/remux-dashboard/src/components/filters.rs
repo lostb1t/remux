@@ -452,21 +452,21 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
         "catalog" => FilterRule::Catalog {
             op: set_op,
             catalog_ids: value_str
-                .split(", ")
+                .split(',')
                 .filter_map(|s| Uuid::parse_str(s.trim()).ok())
                 .collect(),
         },
         "collection_id" => FilterRule::CollectionId {
             op: set_op,
             ids: value_str
-                .split(", ")
+                .split(',')
                 .filter_map(|s| Uuid::parse_str(s.trim()).ok())
                 .collect(),
         },
         "collection_member" => FilterRule::CollectionMember {
             op: set_op,
             collection_ids: value_str
-                .split(", ")
+                .split(',')
                 .filter_map(|s| Uuid::parse_str(s.trim()).ok())
                 .collect(),
         },
@@ -760,6 +760,9 @@ pub fn FilterRuleRow(
     #[props(default)] allowed_fields: Vec<&'static str>,
 ) -> Element {
     let app_state = use_context::<AppState>();
+    let (field_val, op_val, value_val) = rule_to_raw(&rule);
+    let is_collection_id =
+        field_val == "collection_id" || field_val == "collection_member";
     let client_for_ratings = app_state.clone();
     let client_for_catalogs = app_state.clone();
     let client_for_collections = app_state.clone();
@@ -812,9 +815,14 @@ pub fn FilterRuleRow(
 
     // Eagerly fetch every collection's name so chips for an already-saved
     // rule (a raw UUID with no label yet in the search-driven label_cache)
-    // render as a name immediately instead of a bare UUID.
+    // render as a name immediately instead of a bare UUID. Only fetched for
+    // rows that actually need it — otherwise every rule row in the editor
+    // would fire this same request redundantly.
     let mut collection_options: Signal<Vec<(String, String)>> = use_signal(Vec::new);
     use_effect(move || {
+        if !is_collection_id {
+            return;
+        }
         let client = client_for_collections.clone();
         spawn(async move {
             let Ok(r) = client
@@ -834,6 +842,14 @@ pub fn FilterRuleRow(
             let options = r
                 .items
                 .into_iter()
+                // Group containers ("collection of collections") aren't
+                // selectable collection targets — same exclusion as the
+                // search picker in fetch_suggestions.
+                .filter(|item| {
+                    item.collection_type
+                        .as_ref()
+                        != Some(&remux_sdks::remux::CollectionType::Boxsets)
+                })
                 .filter_map(|item| {
                     item.name
                         .map(|n| {
@@ -849,13 +865,10 @@ pub fn FilterRuleRow(
         });
     });
 
-    let (field_val, op_val, value_val) = rule_to_raw(&rule);
     let ops = ops_for_field(&field_val);
     let is_trailer = field_val == "has_trailer";
     let is_parental_rating = field_val == "parental_rating";
     let is_catalog = field_val == "catalog";
-    let is_collection_id =
-        field_val == "collection_id" || field_val == "collection_member";
     let is_favorite = field_val == "favorite";
     let is_watched = field_val == "played";
     let is_media_kind = field_val == "media_kind";
