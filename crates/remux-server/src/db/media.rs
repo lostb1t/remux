@@ -1971,6 +1971,16 @@ pub enum MediaError {
     ValidationError(String),
 }
 
+// `json_extract` returns SQLite's INTEGER storage class for a numeric JSON
+// value — comparing that against a TEXT-bound '123' never matches (SQLite
+// doesn't coerce across storage classes in a bare `=`), so integer-valued
+// fields must bind as an integer, not a stringified one. Used by
+// `Media::find_by_external_ids` and `Media::resolve_ambiguous_external_id`.
+enum IdValue {
+    Text(String),
+    Int(i64),
+}
+
 impl Media {
     pub fn is_live(&self) -> bool {
         self.kind == MediaKind::TvChannel
@@ -2753,15 +2763,6 @@ impl Media {
         kind: &MediaKind,
         ext: &ExternalIds,
     ) -> Option<Uuid> {
-        // `json_extract` returns SQLite's INTEGER storage class for a numeric
-        // JSON value — comparing that against a TEXT-bound '123' never matches
-        // (SQLite doesn't coerce across storage classes in a bare `=`), so
-        // integer-valued fields must bind as an integer, not a stringified one.
-        enum IdValue {
-            Text(String),
-            Int(i64),
-        }
-
         // (json path, bound value) in priority order — mirrors stable_media_uuid
         // for Movie/Series/TvProgram; Artist/Album/Track have no priority
         // conflict since each carries at most one provider's id in practice.
@@ -2844,63 +2845,85 @@ impl Media {
         match rows.len() {
             0 => None,
             1 => Some(rows[0]),
+            // Ambiguous match is rare (multiple distinct rows share an
+            // external id) — extracted into its own `Box::pin`'d fn so its
+            // locals live in a separately heap-allocated future rather than
+            // being inlined into this function's state machine. Inlined
+            // here, the extra QueryBuilder/query locals would be counted
+            // into every caller's stack footprint even on the common
+            // single-match path (the same state-machine-bloat shape that
+            // caused the `get_by_filter_inner` stack overflow) — and this
+            // function sits directly in the search-result playback path
+            // (`resolve_item` -> `persist_from_store`), which a
+            // library-browsed item's fast path never touches.
             _ => {
-                // Ambiguous: same WHERE, but ranked by priority via
-                // `ORDER BY CASE ... END LIMIT 1` — one query picks the
-                // strongest match directly, instead of probing each field
-                // with a separate round trip.
-                let mut qb =
-                    sqlx::QueryBuilder::new("SELECT id FROM media WHERE kind = ");
-                qb.push_bind(kind.to_string());
-                qb.push(" AND (");
-                for (i, (path, value)) in id_fields
-                    .iter()
-                    .enumerate()
-                {
-                    if i > 0 {
-                        qb.push(" OR ");
-                    }
-                    qb.push("json_extract(external_ids, '")
-                        .push(path)
-                        .push("') = ");
-                    match value {
-                        IdValue::Text(s) => qb.push_bind(s.clone()),
-                        IdValue::Int(n) => qb.push_bind(*n),
-                    };
-                }
-                qb.push(") ORDER BY CASE");
-                for (i, (path, value)) in id_fields
-                    .iter()
-                    .enumerate()
-                {
-                    qb.push(" WHEN json_extract(external_ids, '")
-                        .push(path)
-                        .push("') = ");
-                    match value {
-                        IdValue::Text(s) => qb.push_bind(s.clone()),
-                        IdValue::Int(n) => qb.push_bind(*n),
-                    };
-                    qb.push(format!(" THEN {i}"));
-                }
-                qb.push(" ELSE 999 END LIMIT 1");
-
-                let winner: Option<Uuid> = qb
-                    .build_query_scalar()
-                    .fetch_optional(db)
-                    .await
-                    .unwrap_or(None);
-                if let Some(id) = winner {
-                    warn!(
-                        ?rows,
-                        winner = %id,
-                        kind = %kind,
-                        "find_by_external_ids: incoming item's IDs point at multiple distinct rows; \
-                         strongest ID wins"
-                    );
-                }
-                winner
+                Box::pin(Self::resolve_ambiguous_external_id(
+                    db, kind, rows, id_fields,
+                ))
+                .await
             }
         }
+    }
+
+    async fn resolve_ambiguous_external_id(
+        db: &SqlitePool,
+        kind: &MediaKind,
+        rows: Vec<Uuid>,
+        id_fields: Vec<(&'static str, IdValue)>,
+    ) -> Option<Uuid> {
+        // Same WHERE as the caller, but ranked by priority via
+        // `ORDER BY CASE ... END LIMIT 1` — one query picks the
+        // strongest match directly, instead of probing each field
+        // with a separate round trip.
+        let mut qb = sqlx::QueryBuilder::new("SELECT id FROM media WHERE kind = ");
+        qb.push_bind(kind.to_string());
+        qb.push(" AND (");
+        for (i, (path, value)) in id_fields
+            .iter()
+            .enumerate()
+        {
+            if i > 0 {
+                qb.push(" OR ");
+            }
+            qb.push("json_extract(external_ids, '")
+                .push(path)
+                .push("') = ");
+            match value {
+                IdValue::Text(s) => qb.push_bind(s.clone()),
+                IdValue::Int(n) => qb.push_bind(*n),
+            };
+        }
+        qb.push(") ORDER BY CASE");
+        for (i, (path, value)) in id_fields
+            .iter()
+            .enumerate()
+        {
+            qb.push(" WHEN json_extract(external_ids, '")
+                .push(path)
+                .push("') = ");
+            match value {
+                IdValue::Text(s) => qb.push_bind(s.clone()),
+                IdValue::Int(n) => qb.push_bind(*n),
+            };
+            qb.push(format!(" THEN {i}"));
+        }
+        qb.push(" ELSE 999 END LIMIT 1");
+
+        let winner: Option<Uuid> = qb
+            .build_query_scalar()
+            .fetch_optional(db)
+            .await
+            .unwrap_or(None);
+        if let Some(id) = winner {
+            warn!(
+                ?rows,
+                winner = %id,
+                kind = %kind,
+                "find_by_external_ids: incoming item's IDs point at multiple distinct rows; \
+                 strongest ID wins"
+            );
+        }
+        winner
     }
 
     /// Look up an existing DB row that shares any external ID with `self`.
