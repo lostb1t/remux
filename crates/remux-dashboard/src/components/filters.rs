@@ -762,6 +762,7 @@ pub fn FilterRuleRow(
     let app_state = use_context::<AppState>();
     let client_for_ratings = app_state.clone();
     let client_for_catalogs = app_state.clone();
+    let client_for_collections = app_state.clone();
     let mut parental_ratings: Signal<Vec<ParentalRating>> = use_signal(Vec::new);
     use_effect(move || {
         let client = client_for_ratings.clone();
@@ -806,6 +807,45 @@ pub fn FilterRuleRow(
                 }
             }
             catalog_options.set(options);
+        });
+    });
+
+    // Eagerly fetch every collection's name so chips for an already-saved
+    // rule (a raw UUID with no label yet in the search-driven label_cache)
+    // render as a name immediately instead of a bare UUID.
+    let mut collection_options: Signal<Vec<(String, String)>> = use_signal(Vec::new);
+    use_effect(move || {
+        let client = client_for_collections.clone();
+        spawn(async move {
+            let Ok(r) = client
+                .execute(remux_sdks::remux::GetItems(
+                    remux_sdks::remux::GetItemsQuery {
+                        include_item_types: Some(vec![
+                            remux_sdks::remux::MediaType::BoxSet,
+                        ]),
+                        include_childless: Some(true),
+                        ..Default::default()
+                    },
+                ))
+                .await
+            else {
+                return;
+            };
+            let options = r
+                .items
+                .into_iter()
+                .filter_map(|item| {
+                    item.name
+                        .map(|n| {
+                            (
+                                n,
+                                item.id
+                                    .to_string(),
+                            )
+                        })
+                })
+                .collect();
+            collection_options.set(options);
         });
     });
 
@@ -1002,6 +1042,7 @@ pub fn FilterRuleRow(
                     values: rule_values(&rule),
                     idx,
                     rules,
+                    value_labels: Some(collection_options),
                 }
             } else if is_favorite {
                 select {
