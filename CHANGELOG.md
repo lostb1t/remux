@@ -1,3 +1,25 @@
+# [0.29.0](https://github.com/lostb1t/remux/compare/v0.28.1...v0.29.0) (2026-09-03)
+
+
+### Bug Fixes
+
+* **db:** timeout get_by_filter after 30s instead of hanging on lock contention ([9d5339b](https://github.com/lostb1t/remux/commit/9d5339b87025c9cc4940e4cc0dce7226adc22d16))
+* **playback:** audio codec profile failures no longer force video re-encode ([76567e2](https://github.com/lostb1t/remux/commit/76567e219b901a2965801966efe8fb9eaedf7e1e))
+* **playback:** evaluate codec profiles for every direct play candidate ([#406](https://github.com/lostb1t/remux/issues/406)) ([979a166](https://github.com/lostb1t/remux/commit/979a1660aed3cc5d7c4b6a6bb5d24d7974d04785))
+* scope smart collection genres to matching items ([#404](https://github.com/lostb1t/remux/issues/404)) ([8ebc1c3](https://github.com/lostb1t/remux/commit/8ebc1c3638d6f3f0654b633b943ceac0b408a8ef))
+* **sdks:** honor Retry-After on 429 instead of retrying on a blind backoff curve ([#415](https://github.com/lostb1t/remux/issues/415)) ([0f4b028](https://github.com/lostb1t/remux/commit/0f4b02828538f2b12eeab61eaf3b840e7594dfc2))
+* **sdks:** log retry attempts at debug instead of warn ([af4948f](https://github.com/lostb1t/remux/commit/af4948fb88251fd902c5d94b29f72a411acf83ad))
+* **transcode:** SW decode fallback when VPP tonemap can't survive subtitle burn-in ([#408](https://github.com/lostb1t/remux/issues/408)) ([6bc53fe](https://github.com/lostb1t/remux/commit/6bc53fe1b91af32f253427a2130a13c78b1e09dd))
+
+
+### Features
+
+* **dashboard:** add favicon ([#394](https://github.com/lostb1t/remux/issues/394)) ([b631c83](https://github.com/lostb1t/remux/commit/b631c836f64446bf01c1c2ef83c76c3e3138ad9f))
+* **items:** fall back to filename-guessed media info on item details ([#409](https://github.com/lostb1t/remux/issues/409)) ([88fd1ad](https://github.com/lostb1t/remux/commit/88fd1ad4f82c00e58880842133187ca4bf29d56c))
+* **playlists:** add ownership, public visibility, and admin collection management ([#401](https://github.com/lostb1t/remux/issues/401)) ([d672efd](https://github.com/lostb1t/remux/commit/d672efd812ab0839e5862c578c4800043de78e06))
+* **probe:** tag probe_data with its origin (ffprobe/remuxdb/filename-guess) ([#410](https://github.com/lostb1t/remux/issues/410)) ([149917c](https://github.com/lostb1t/remux/commit/149917c130ac28967e2dc06f6f7d8af2fd2d2f6f))
+* **shows:** implement /shows/upcoming ([#398](https://github.com/lostb1t/remux/issues/398)) ([3c680ad](https://github.com/lostb1t/remux/commit/3c680ad2308433a3c22c6d3f11c4fad6e6079ae5))
+
 ## [0.28.1](https://github.com/lostb1t/remux/compare/v0.28.0...v0.28.1) (2026-08-31)
 
 
