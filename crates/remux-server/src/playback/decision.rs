@@ -259,7 +259,10 @@ fn build_video_transcode(
     // If policy constraints reduced both codecs to copy, this would be a no-op
     // remux. If the source container already matches the transcoding target
     // there is nothing to do — upgrade to direct play.
-    if video_codec == "copy" && audio_codec == "copy" {
+    let needs_hevc_retag = reasons.contains(
+        &api::TranscodeReason::VideoCodecTagNotSupported(String::new()),
+    );
+    if video_codec == "copy" && audio_codec == "copy" && !needs_hevc_retag {
         let src = source
             .container
             .as_ref()
@@ -786,6 +789,37 @@ mod tests {
         assert!(
             matches!(decision, TranscodeDecision::DirectPlay),
             "no-op remux should be upgraded to direct play"
+        );
+    }
+
+    #[test]
+    fn hevc_tag_mismatch_same_container_still_remuxes() {
+        // Rewriting hvc1/hev1 is the sole purpose of this remux. Returning
+        // direct play merely because the container already matches would leave
+        // the incompatible sample entry untouched.
+        let session =
+            make_session_with_policy(remux_sdks::remux::UserPolicy::default());
+        let mut source = make_video_source(VideoContainer::Ts);
+        source.media_streams[0].codec = Some("hevc".to_string());
+        let mut reasons = api::TranscodeReasons::default();
+        reasons.insert(api::TranscodeReason::VideoCodecTagNotSupported(
+            "hev1".to_string(),
+        ));
+
+        let TranscodeDecision::Transcode(outcome) = build_transcode_decision(
+            &source,
+            &reasons,
+            None,
+            &force_transcode_query(),
+            &session,
+            &base_cfg(EncodingOptions::default()),
+        ) else {
+            panic!("an HEVC sample-entry mismatch must remux, not direct play");
+        };
+        assert!(
+            outcome
+                .url
+                .contains("VideoCodec=copy")
         );
     }
 
