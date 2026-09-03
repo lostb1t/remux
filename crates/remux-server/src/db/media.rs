@@ -39,7 +39,7 @@ use serde_with::skip_serializing_none;
 use sqlx::{Row, SqlitePool};
 use std::{
     self,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env, fs,
     path::Path,
     str::FromStr,
@@ -3214,6 +3214,80 @@ impl Media {
         Ok(out)
     }
 
+    /// Whether a collection-of-collections has a reachable child collection
+    /// that would itself be visible. Group containers hold their children via
+    /// `parent_id`, unlike regular manual collections, which use relations.
+    ///
+    /// Walk groups iteratively to avoid recursion and to guard against a
+    /// malformed parent cycle. The number of promoted groups is small, while
+    /// the leaf checks reuse the normal collection query paths so smart and
+    /// policy filters keep their usual semantics.
+    async fn group_container_has_visible_content(
+        db: &SqlitePool,
+        group_id: Uuid,
+        user_id: Option<Uuid>,
+        policy_filter: Option<remux_sdks::remux::CollectionFilter>,
+    ) -> Result<bool> {
+        let mut pending = vec![group_id];
+        let mut visited = HashSet::new();
+
+        while let Some(parent_id) = pending.pop() {
+            if !visited.insert(parent_id) {
+                continue;
+            }
+
+            let children = Box::pin(Self::get_by_filter(
+                db,
+                &MediaFilter {
+                    kind: Some(vec![MediaKind::Collection]),
+                    parent_id: Some(parent_id),
+                    include_child_count: true,
+                    user_id,
+                    policy_filter: policy_filter.clone(),
+                    ..Default::default()
+                },
+            ))
+            .await?
+            .records;
+
+            for child in children {
+                if child.is_group_container() {
+                    pending.push(child.id);
+                    continue;
+                }
+
+                let visible = match child.collection_kind {
+                    Some(CollectionKind::Smart) => child
+                        .child_count
+                        .is_some_and(|count| count > 0),
+                    Some(CollectionKind::Manual) => !Box::pin(Self::get_by_filter(
+                        db,
+                        &MediaFilter {
+                            parent_id: Some(child.id),
+                            parent: Some(child),
+                            limit: Some(1),
+                            user_id,
+                            policy_filter: policy_filter.clone(),
+                            ..Default::default()
+                        },
+                    ))
+                    .await?
+                    .records
+                    .is_empty(),
+                    // Preserve legacy collections whose storage convention
+                    // predates explicit collection kinds.
+                    None => true,
+                };
+
+                if visible {
+                    return Ok(true);
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
     pub async fn get_by_filter(
         db: &SqlitePool,
         filter: &MediaFilter,
@@ -5242,10 +5316,31 @@ impl Media {
 
         // Drop empty containers when requested. child_count is already populated
         // for all container kinds (including smart/catalog) by the branches above.
-        // Structural "collection of collections" containers always show.
+        // A structural collection-of-collections is visible only when it has a
+        // non-empty descendant collection.
         let sql_total = count?;
 
         if filter.exclude_childless {
+            let mut nonempty_groups = HashSet::new();
+            for group_id in records
+                .iter()
+                .filter(|m| m.is_group_container())
+                .map(|m| m.id)
+            {
+                if Self::group_container_has_visible_content(
+                    db,
+                    group_id,
+                    filter.user_id,
+                    filter
+                        .policy_filter
+                        .clone(),
+                )
+                .await?
+                {
+                    nonempty_groups.insert(group_id);
+                }
+            }
+
             records.retain(|m| {
                 if !matches!(
                     m.kind,
@@ -5254,7 +5349,7 @@ impl Media {
                     return true;
                 }
                 if m.is_group_container() {
-                    return true;
+                    return nonempty_groups.contains(&m.id);
                 }
                 m.child_count
                     .map_or(true, |c| c > 0)

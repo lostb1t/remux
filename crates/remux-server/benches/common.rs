@@ -149,7 +149,7 @@ async fn seed_all(db: &sqlx::SqlitePool, user_id: Uuid) {
 
 async fn seed_userviews(db: &sqlx::SqlitePool) {
     use remux_server::sdks::remux::{
-        CollectionFilter, FilterGroup, FilterMatchMode, FilterRule,
+        CollectionFilter, FilterGroup, FilterMatchMode, FilterRule, SetOp,
     };
 
     let plain = db::Media {
@@ -182,6 +182,48 @@ async fn seed_userviews(db: &sqlx::SqlitePool) {
     w.save(db)
         .await
         .unwrap();
+
+    // Exercise the #414 visibility path with a realistic set of promoted
+    // group containers whose smart subcollections all resolve to no content.
+    for i in 0..10 {
+        let mut group = db::Media {
+            title: format!("Empty group {i}"),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Manual),
+            collection_media_kind: Some(db::CollectionMediaKind::Collection),
+            promoted: true,
+            ..Default::default()
+        };
+        group
+            .save(db)
+            .await
+            .unwrap();
+
+        for j in 0..3 {
+            let mut child = db::Media {
+                title: format!("Empty group {i} child {j}"),
+                kind: db::MediaKind::Collection,
+                collection_kind: Some(db::CollectionKind::Smart),
+                collection_media_kind: Some(db::CollectionMediaKind::Movie),
+                collection_smart_filter: Some(CollectionFilter {
+                    groups: vec![FilterGroup {
+                        rules: vec![FilterRule::Tag {
+                            op: SetOp::In,
+                            values: vec!["bench:missing".to_string()],
+                        }],
+                        match_mode: FilterMatchMode::All,
+                    }],
+                    match_mode: FilterMatchMode::All,
+                }),
+                parent_id: Some(group.id),
+                ..Default::default()
+            };
+            child
+                .save(db)
+                .await
+                .unwrap();
+        }
+    }
 }
 
 async fn seed_series(
