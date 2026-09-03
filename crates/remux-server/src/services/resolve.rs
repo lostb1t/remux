@@ -640,12 +640,12 @@ impl MediaResolveService {
                 }
                 warn!(%id, kind = ?media.kind, "persist_from_store: IMDB resolution failed, saving without IMDB ID");
             }
-            let raw = media.media_id_raw();
-            if raw
-                .canonical()
-                .is_some()
+            // External IDs resolved above may match a row already in the DB —
+            // adopt its id rather than persisting a duplicate.
+            if let Some(existing_id) =
+                db::Media::find_existing_id_by_ext(&ctx.db, &media).await
             {
-                media.id = uuid::Uuid::from(&raw);
+                media.id = existing_id;
             }
         }
 
