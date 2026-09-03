@@ -183,16 +183,14 @@ async fn fetch_suggestions(
                     .items
                     .into_iter()
                     .filter(|item| {
-                        let promoted = item
-                            .remux
+                        // Group containers ("collection of collections") don't
+                        // belong in a collection-id list. Promoted status is
+                        // irrelevant here — a collection being featured on the
+                        // homepage doesn't stop it from being a valid filter
+                        // target — see #412.
+                        item.collection_type
                             .as_ref()
-                            .and_then(|r| r.promoted)
-                            .unwrap_or(false);
-                        let is_group = item
-                            .collection_type
-                            .as_ref()
-                            == Some(&remux_sdks::remux::CollectionType::Boxsets);
-                        !promoted && !is_group
+                            != Some(&remux_sdks::remux::CollectionType::Boxsets)
                     })
                     .filter(|item| {
                         item.name
