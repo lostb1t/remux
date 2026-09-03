@@ -184,20 +184,53 @@ async fn backfill_certification_age(pool: &SqlitePool) -> Result<()> {
 }
 
 /// Populate `user_media_state.media_raw` for rows written before it existed,
-/// so identity-based reattachment (`UserMediaState::get_or_new`) covers them
-/// too. Also rebuilds rows still holding the old full-JSON format (starts
-/// with `{`) into the compact `identity_key()` format matching now expects —
-/// see `MediaIdRaw::identity_key` for why the format changed. Idempotent:
-/// once every row is in the new format, the `WHERE` guard matches nothing.
-async fn backfill_user_media_raw(pool: &SqlitePool) -> Result<()> {
-    let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
-        "SELECT user_id, media_id FROM user_media_state \
-         WHERE media_raw IS NULL OR media_raw LIKE '{%'",
+/// and rebuild rows still holding the old full-JSON format (starts with `{`)
+/// into the compact `identity_key()` format matching now expects — see
+/// `MediaIdRaw::identity_key` for why the format changed. Idempotent: once
+/// every row is in the new format, both `WHERE` guards below match nothing.
+pub(crate) async fn backfill_user_media_raw(pool: &SqlitePool) -> Result<()> {
+    // Old-JSON rows can be converted in place — the identity was already
+    // fully captured at write time, so this needs no live `media` row.
+    // That matters: this is what makes orphaned rows recoverable too — the
+    // exact rows a library purge leaves behind, where `media_id` no longer
+    // resolves to anything and a `Media::get_by_id`-based rebuild (below)
+    // would just skip them, leaving them permanently unmatchable once the
+    // item is reimported under a new id.
+    let json_rows: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
+        "SELECT user_id, media_id, media_raw FROM user_media_state WHERE media_raw LIKE '{%'",
     )
     .fetch_all(pool)
     .await?;
 
-    for (user_id, media_id) in rows {
+    for (user_id, media_id, old_json) in json_rows {
+        let Ok(raw) = serde_json::from_str::<MediaIdRaw>(&old_json) else {
+            continue;
+        };
+        let Some(raw_json) = raw.identity_key() else {
+            continue;
+        };
+        sqlx::query(
+            "UPDATE user_media_state SET media_raw = ? WHERE user_id = ? AND media_id = ?",
+        )
+        .bind(raw_json)
+        .bind(user_id)
+        .bind(media_id)
+        .execute(pool)
+        .await
+        .ok();
+    }
+
+    // NULL rows have no stored identity to transcode — the only source left
+    // is the current media row, so these can only be backfilled while it
+    // still exists. Rows whose media has since been purged stay NULL; there
+    // is no data left to derive an identity from.
+    let null_rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT user_id, media_id FROM user_media_state WHERE media_raw IS NULL",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    for (user_id, media_id) in null_rows {
         let Ok(Some(media)) = Media::get_by_id(pool, &media_id).await else {
             continue;
         };
