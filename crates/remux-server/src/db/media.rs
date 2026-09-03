@@ -7833,19 +7833,12 @@ fn filter_rule_to_sql(
             let sql = "media.parent_id IS NOT NULL".to_string();
             Some((sql, !value))
         }
-        R::CollectionMember { op, collection_ids } if !collection_ids.is_empty() => {
-            let in_clause = collection_ids
-                .iter()
-                .map(|id| format!("X'{}'", id.simple()))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let sql = format!(
-                "media.id IN (SELECT mr.right_media_id FROM media_relations mr \
-                 WHERE mr.role = 'collection' AND mr.left_media_id IN ({in_clause}))"
-            );
-            let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
-            Some((sql, negated))
-        }
+        // Disabled: only ever matches manual collections (media_relations has
+        // no rows for smart collections — their contents are computed from
+        // their own filter at query time, never materialized), so this
+        // silently filtered nothing for anyone using it on a smart collection.
+        // No-op regardless of content so any rule already saved in a user's
+        // policy stops being applied rather than half-working.
         R::CollectionMember { .. } => None,
         R::CollectionId { op, ids } if !ids.is_empty() => {
             let in_clause = ids

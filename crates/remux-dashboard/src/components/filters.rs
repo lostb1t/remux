@@ -163,7 +163,7 @@ async fn fetch_suggestions(
             }
             results
         }
-        "collection_id" => {
+        "collection_id" | "collection_member" => {
             let q_lower = query.to_lowercase();
             match client
                 .execute(remux_sdks::remux::GetItems(
@@ -233,6 +233,7 @@ fn field_label(key: &str) -> &'static str {
         "person" => "Person",
         "catalog" => "Catalog",
         "collection_id" => "Collection",
+        "collection_member" => "Collection",
         "favorite" => "Favorite",
         "played" => "Played",
         "media_kind" => "Media Kind",
@@ -458,6 +459,13 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
         "collection_id" => FilterRule::CollectionId {
             op: set_op,
             ids: value_str
+                .split(", ")
+                .filter_map(|s| Uuid::parse_str(s.trim()).ok())
+                .collect(),
+        },
+        "collection_member" => FilterRule::CollectionMember {
+            op: set_op,
+            collection_ids: value_str
                 .split(", ")
                 .filter_map(|s| Uuid::parse_str(s.trim()).ok())
                 .collect(),
@@ -806,7 +814,8 @@ pub fn FilterRuleRow(
     let is_trailer = field_val == "has_trailer";
     let is_parental_rating = field_val == "parental_rating";
     let is_catalog = field_val == "catalog";
-    let is_collection_id = field_val == "collection_id";
+    let is_collection_id =
+        field_val == "collection_id" || field_val == "collection_member";
     let is_favorite = field_val == "favorite";
     let is_watched = field_val == "played";
     let is_media_kind = field_val == "media_kind";
@@ -859,6 +868,7 @@ pub fn FilterRuleRow(
             .collect()
     };
 
+    let show_collection_id = allowed_fields.contains(&"collection_id");
     let show_field = move |key: &'static str| {
         allowed_fields.is_empty() || allowed_fields.contains(&key)
     };
@@ -893,7 +903,15 @@ pub fn FilterRuleRow(
                 if show_field("original_language") { option { value: "original_language", selected: field_val == "original_language", { field_label("original_language") } } }
                 if show_field("person")          { option { value: "person",           selected: field_val == "person",           { field_label("person") } } }
                 if show_field("catalog")         { option { value: "catalog",          selected: field_val == "catalog",          { field_label("catalog") } } }
-                if show_field("collection_id")   { option { value: "collection_id",    selected: field_val == "collection_id",    { field_label("collection_id") } } }
+                // "collection_id" (matches a *collection's own id*) is only meaningful
+                // when picking collections for a group container, so it's opt-in only —
+                // never shown by the "no restriction" default every other field uses.
+                //
+                // A general "belongs to this collection" filter (collection_member) isn't
+                // offered at all: it only works for manual collections — smart collections
+                // have no stored membership (their contents are computed from their own
+                // filter at query time), so picking one would silently filter nothing.
+                if show_collection_id { option { value: "collection_id",    selected: field_val == "collection_id",    { field_label("collection_id") } } }
                 if show_field("favorite")        { option { value: "favorite",         selected: field_val == "favorite",         { field_label("favorite") } } }
                 if show_field("played")         { option { value: "played",          selected: field_val == "played",          { field_label("played") } } }
                 if show_field("media_kind")      { option { value: "media_kind",       selected: field_val == "media_kind",       { field_label("media_kind") } } }
@@ -982,7 +1000,7 @@ pub fn FilterRuleRow(
                 }
             } else if is_collection_id {
                 ChipInput {
-                    field_key: "collection_id".to_string(),
+                    field_key: field_val.clone(),
                     op_val: op_val.clone(),
                     values: rule_values(&rule),
                     idx,
