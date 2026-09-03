@@ -903,6 +903,7 @@ pub struct Stream {
     pub parsed_file: Option<ParsedFile>,
     pub name: Option<String>,
     pub description: Option<String>,
+    pub title: Option<String>,
     pub behavior_hints: Option<BehaviorHints>,
     pub stream_data: Option<StreamData>,
 }

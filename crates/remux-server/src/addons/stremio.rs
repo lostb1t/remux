@@ -1559,7 +1559,18 @@ async fn stremio_streams(
                     .description
                     .clone(),
                 filename: metadata.filename,
-                seeders: metadata.seeders,
+                seeders: metadata
+                    .seeders
+                    .or_else(|| {
+                        parse_seeders_from_strings(&[
+                            s.name
+                                .as_deref(),
+                            s.description
+                                .as_deref(),
+                            s.title
+                                .as_deref(),
+                        ])
+                    }),
                 size: sd
                     .and_then(|d| d.size)
                     .or(s.size),
@@ -1614,6 +1625,48 @@ async fn stremio_streams(
         .collect())
 }
 
+fn parse_seeders_from_strings(candidates: &[Option<&str>]) -> Option<i64> {
+    candidates
+        .iter()
+        .filter_map(|candidate| *candidate)
+        .find_map(parse_seeders)
+}
+
+fn parse_seeders(value: &str) -> Option<i64> {
+    if let Some(index) = value.find('👤') {
+        let remainder = &value[index + '👤'.len_utf8()..];
+        if let Some(seeders) = first_unsigned_integer(remainder) {
+            return Some(seeders);
+        }
+    }
+
+    let lowercase = value.to_ascii_lowercase();
+    for label in ["seeders", "seeds"] {
+        if let Some(index) = lowercase.find(label) {
+            let remainder = &value[index + label.len()..];
+            if let Some(seeders) = first_unsigned_integer(remainder) {
+                return Some(seeders);
+            }
+        }
+    }
+    None
+}
+
+fn first_unsigned_integer(value: &str) -> Option<i64> {
+    let digits: String = value
+        .chars()
+        .skip_while(|character| !character.is_ascii_digit())
+        .take_while(char::is_ascii_digit)
+        .collect();
+    (!digits.is_empty())
+        .then(|| {
+            digits
+                .parse()
+                .ok()
+        })
+        .flatten()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1664,6 +1717,22 @@ mod tests {
         );
         assert_eq!(metadata.seeders, Some(84));
         assert_eq!(metadata.file_idx, Some(7));
+    }
+
+    #[test]
+    fn parses_explicit_seeder_counts_from_stream_text() {
+        assert_eq!(parse_seeders("👤 42"), Some(42));
+        assert_eq!(parse_seeders("Seeds: 0"), Some(0));
+        assert_eq!(parse_seeders("seeders 123 | size 2024 MB"), Some(123));
+        assert_eq!(parse_seeders("Peers: 99"), None);
+    }
+
+    #[test]
+    fn checks_all_stream_text_fields_for_seeders() {
+        assert_eq!(
+            parse_seeders_from_strings(&[None, Some("1080p"), Some("Seeds: 17")]),
+            Some(17)
+        );
     }
 
     #[test]
