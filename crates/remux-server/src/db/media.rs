@@ -3241,6 +3241,7 @@ impl Media {
                 &MediaFilter {
                     kind: Some(vec![MediaKind::Collection]),
                     parent_id: Some(parent_id),
+                    include_child_count: true,
                     user_id,
                     policy_filter: policy_filter.clone(),
                     ..Default::default()
@@ -3256,19 +3257,9 @@ impl Media {
                 }
 
                 let visible = match child.collection_kind {
-                    Some(CollectionKind::Smart) => !Box::pin(Self::get_by_filter(
-                        db,
-                        &MediaFilter {
-                            id: Some(vec![child.id]),
-                            exclude_childless: true,
-                            user_id,
-                            policy_filter: policy_filter.clone(),
-                            ..Default::default()
-                        },
-                    ))
-                    .await?
-                    .records
-                    .is_empty(),
+                    Some(CollectionKind::Smart) => child
+                        .child_count
+                        .is_some_and(|count| count > 0),
                     Some(CollectionKind::Manual) => !Box::pin(Self::get_by_filter(
                         db,
                         &MediaFilter {

@@ -4210,6 +4210,7 @@ mod tests {
             kind: db::MediaKind::Collection,
             collection_kind: Some(db::CollectionKind::Smart),
             collection_media_kind: Some(db::CollectionMediaKind::Movie),
+            collection_smart_filter: Some(tag_filter("provider:NobodyHasThis")),
             promoted: false,
             ..Default::default()
         };
@@ -4282,6 +4283,7 @@ mod tests {
             kind: db::MediaKind::Collection,
             collection_kind: Some(db::CollectionKind::Smart),
             collection_media_kind: Some(db::CollectionMediaKind::Movie),
+            collection_smart_filter: Some(tag_filter("provider:NobodyHasThis")),
             parent_id: Some(nested.id),
             ..Default::default()
         };
