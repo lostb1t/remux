@@ -6898,6 +6898,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                                 ep.id
                                     .clone(),
                             ),
+                            tvdb: ep.tvdb_id,
                             ..Default::default()
                         };
                         episode.parent_id = Some(season_id);
@@ -7007,6 +7008,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                             ep.id
                                 .clone(),
                         ),
+                        tvdb: ep.tvdb_id,
                         ..Default::default()
                     };
                     episode.grandparent_id = Some(media.id);
@@ -7172,6 +7174,11 @@ pub fn stremio_meta_episode(
                 ep.id
                     .clone(),
             ),
+            // The only id here that names the episode to anyone else. The
+            // stremio id is ours, and TMDB's season listing carries no
+            // `external_ids` per episode, so without this an episode reaches a
+            // provider identified by nothing at all.
+            tvdb: ep.tvdb_id,
             ..Default::default()
         };
         // UUID anchored to stable canonical series key + season/episode indices
@@ -7977,6 +7984,129 @@ mod tests {
                 "episode id must not depend on the series UUID"
             );
         }
+    }
+
+    /// Cinemeta sends `tvdb_id` on every video and it is the only id an
+    /// episode row carries that names it to anyone outside remux. The wire
+    /// name is snake_case against the struct's `rename_all`, so this covers
+    /// the deserialise as much as the mapping.
+    #[test]
+    fn an_episode_keeps_the_tvdb_id_cinemeta_sent() {
+        let ext = ExternalIds {
+            imdb: Some(NonEmptyString::try_new("tt0045373".to_string()).unwrap()),
+            ..Default::default()
+        };
+        let series_key = Media::series_canonical_key_ext(&ext).unwrap();
+        let season_id = crate::common::stable_media_uuid(
+            &MediaKind::Season,
+            &format!("{series_key}:0"),
+        );
+        let video: sdks::stremio::Episode = serde_json::from_value(serde_json::json!({
+            "id": "tt0045373:0:1",
+            "name": "Bob Hope Special - April 9 1950",
+            "season": 0,
+            "number": 1,
+            "episode": 1,
+            "tvdb_id": 5711666,
+        }))
+        .expect("fixture video");
+
+        assert_eq!(
+            video.tvdb_id,
+            Some(5711666),
+            "the wire name is tvdb_id, not tvdbId"
+        );
+
+        let ep = stremio_meta_episode(&video, Uuid::from_u128(1), season_id, 0, &ext)
+            .unwrap();
+        assert_eq!(
+            ep.external_ids
+                .tvdb,
+            Some(5711666)
+        );
+        assert_eq!(
+            ep.external_ids
+                .custom_stremio_id
+                .as_deref(),
+            Some("tt0045373:0:1"),
+            "the stremio id is still what the row is keyed on"
+        );
+    }
+
+    /// `stremio_meta_to_medias` builds episodes by its own route rather than
+    /// through `stremio_meta_episode`, so the id has to survive that path too.
+    #[test]
+    fn a_whole_series_import_keeps_its_episode_tvdb_ids() {
+        let meta: sdks::stremio::Meta = serde_json::from_value(serde_json::json!({
+            "id": "tt0045373",
+            "imdb_id": "tt0045373",
+            "type": "series",
+            "name": "The Bob Hope Show",
+            "videos": [
+                { "id": "tt0045373:0:1", "season": 0, "episode": 1,
+                  "number": 1, "tvdb_id": 5711666 },
+                { "id": "tt0045373:0:2", "season": 0, "episode": 2,
+                  "number": 2 },
+            ],
+        }))
+        .expect("fixture meta");
+
+        let medias = stremio_meta_to_medias(meta).expect("converts");
+        let episodes: Vec<&Media> = medias
+            .iter()
+            .filter(|m| m.kind == MediaKind::Episode)
+            .collect();
+        assert_eq!(episodes.len(), 2);
+
+        let first = episodes
+            .iter()
+            .find(|m| m.idx == Some(1))
+            .expect("episode 1");
+        assert_eq!(
+            first
+                .external_ids
+                .tvdb,
+            Some(5711666),
+            "the id was dropped on the whole-series path"
+        );
+        assert_eq!(
+            episodes
+                .iter()
+                .find(|m| m.idx == Some(2))
+                .expect("episode 2")
+                .external_ids
+                .tvdb,
+            None
+        );
+    }
+
+    /// A video without one must not invent it.
+    #[test]
+    fn an_episode_with_no_tvdb_id_carries_none() {
+        let ext = ExternalIds {
+            imdb: Some(NonEmptyString::try_new("tt1234567".to_string()).unwrap()),
+            ..Default::default()
+        };
+        let video: sdks::stremio::Episode = serde_json::from_value(serde_json::json!({
+            "id": "tt1234567:2:3",
+            "season": 2,
+            "episode": 3,
+        }))
+        .expect("fixture video");
+
+        let ep = stremio_meta_episode(
+            &video,
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            2,
+            &ext,
+        )
+        .unwrap();
+        assert_eq!(
+            ep.external_ids
+                .tvdb,
+            None
+        );
     }
 
     /// The recall side of #235: episode state rows must be findable under every
