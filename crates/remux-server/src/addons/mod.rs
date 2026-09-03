@@ -1869,6 +1869,7 @@ impl AddonService {
             return Ok(());
         }
 
+        let fetch_started = std::time::Instant::now();
         let results = futures::future::join_all(
             applicable
                 .iter()
@@ -1880,6 +1881,14 @@ impl AddonService {
                 }),
         )
         .await;
+        debug!(
+            id = %media.id,
+            title = %media.title,
+            kind = %media.kind,
+            addons = applicable.len(),
+            elapsed = ?fetch_started.elapsed(),
+            "refresh_meta: addon meta_fetch done"
+        );
 
         // Accumulate all addon patches into a fresh empty object so the
         // highest-priority addon (first in list, lowest priority number) wins
@@ -2126,13 +2135,19 @@ impl AddonService {
     /// Load a map of `(kind_str, idx) → existing_uuid` for all direct children
     /// of `parent_id` that have a non-null idx. Used to adopt existing UUIDs
     /// for children arriving with a different computed UUID.
+    /// Maps `(kind, idx)` -> `(id, refreshed_at)` for existing children of `parent_id`.
+    /// Callers must adopt *both* fields when re-matching a freshly-parsed child from
+    /// an addon to an existing row — the addon has no concept of `refreshed_at`, so a
+    /// child that only adopts `id` always looks unrefreshed to `child_refresh_force`,
+    /// forcing every episode to be refetched on every single pass.
     async fn child_uuid_map(
         &self,
         db: &sqlx::SqlitePool,
         parent_id: Uuid,
-    ) -> std::collections::HashMap<(String, i64), Uuid> {
-        sqlx::query_as::<_, (String, Option<i64>, Uuid)>(
-            "SELECT CAST(kind AS TEXT), idx, id FROM media WHERE parent_id = ? AND idx IS NOT NULL",
+    ) -> std::collections::HashMap<(String, i64), (Uuid, Option<chrono::NaiveDateTime>)>
+    {
+        sqlx::query_as::<_, (String, Option<i64>, Uuid, Option<chrono::NaiveDateTime>)>(
+            "SELECT CAST(kind AS TEXT), idx, id, refreshed_at FROM media WHERE parent_id = ? AND idx IS NOT NULL",
         )
         .bind(parent_id)
         .fetch_all(db)
@@ -2140,11 +2155,32 @@ impl AddonService {
         .inspect_err(|e| error!(parent_id = %parent_id, error = %e, "child_uuid_map query failed"))
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|(k, idx, id)| idx.map(|i| ((k, i), id)))
+        .filter_map(|(k, idx, id, refreshed_at)| idx.map(|i| ((k, i), (id, refreshed_at))))
         .collect()
     }
 
     pub(crate) async fn process_meta_item(
+        &self,
+        media: db::Media,
+        ctx: AppContext,
+        force_refresh: bool,
+        config: Arc<api::ServerConfiguration>,
+    ) -> Uuid {
+        let title = media
+            .title
+            .clone();
+        let kind = media
+            .kind
+            .clone();
+        let started = std::time::Instant::now();
+        let id = self
+            .process_meta_item_inner(media, ctx, force_refresh, config)
+            .await;
+        debug!(%id, %title, %kind, elapsed = ?started.elapsed(), "process_meta_item done");
+        id
+    }
+
+    async fn process_meta_item_inner(
         &self,
         mut media: db::Media,
         ctx: AppContext,
@@ -2258,30 +2294,49 @@ impl AddonService {
             .child_uuid_map(&ctx.db, actual_root_id)
             .await;
 
-        // Load ALL grandchild UUIDs in one query keyed by (parent_id, kind, idx).
-        // Avoids one query per season (O(n_seasons) → O(1) queries).
-        let existing_l2: std::collections::HashMap<(Uuid, String, i64), Uuid> =
-            sqlx::query_as::<_, (Uuid, String, Option<i64>, Uuid)>(
-                "SELECT parent_id, CAST(kind AS TEXT), idx, id
-                 FROM media WHERE grandparent_id = ? AND idx IS NOT NULL",
-            )
-            .bind(actual_root_id)
-            .fetch_all(&ctx.db)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|(pid, k, idx, id)| idx.map(|i| ((pid, k, i), id)))
-            .collect();
+        // Load ALL grandchild UUIDs (and refreshed_at) in one query keyed by
+        // (parent_id, kind, idx). Avoids one query per season (O(n_seasons) → O(1)
+        // queries). refreshed_at must travel with the id — see child_uuid_map's
+        // doc comment for why leaving it behind defeats child_refresh_force.
+        let existing_l2: std::collections::HashMap<
+            (Uuid, String, i64),
+            (Uuid, Option<chrono::NaiveDateTime>),
+        > = sqlx::query_as::<
+            _,
+            (
+                Uuid,
+                String,
+                Option<i64>,
+                Uuid,
+                Option<chrono::NaiveDateTime>,
+            ),
+        >(
+            "SELECT parent_id, CAST(kind AS TEXT), idx, id, refreshed_at
+             FROM media WHERE grandparent_id = ? AND idx IS NOT NULL",
+        )
+        .bind(actual_root_id)
+        .fetch_all(&ctx.db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(pid, k, idx, id, refreshed_at)| {
+            idx.map(|i| ((pid, k, i), (id, refreshed_at)))
+        })
+        .collect();
 
         let mut level1: Vec<db::Media> = Vec::with_capacity(raw_level1.len());
         for mut child in raw_level1 {
             child.parent_id = Some(actual_root_id);
             child.grandparent = Some(Box::new(gp_stub.clone()));
 
-            // Adopt the existing DB UUID for this (kind, idx) position if found.
-            // The new child UUID may differ from what's stored (due to UUID scheme changes
-            // or root remapping) — adopting the stored UUID avoids duplicate rows and
-            // keeps grandchild parent_id references intact.
+            // Adopt the existing DB UUID (and refreshed_at) for this (kind, idx)
+            // position if found. The new child UUID may differ from what's stored
+            // (due to UUID scheme changes or root remapping) — adopting the stored
+            // UUID avoids duplicate rows and keeps grandchild parent_id references
+            // intact. `refreshed_at` must also be adopted: this `child` was just
+            // freshly parsed from the addon's raw response, which has no concept
+            // of it, so leaving it unset makes `child_refresh_force` below treat
+            // an already-refreshed child as brand new every single pass.
             if let Some(idx) = child.idx {
                 let key = (
                     child
@@ -2289,7 +2344,10 @@ impl AddonService {
                         .to_string(),
                     idx,
                 );
-                if let Some(&existing_id) = existing_l1.get(&key) {
+                if let Some(&(existing_id, existing_refreshed_at)) =
+                    existing_l1.get(&key)
+                {
+                    child.refreshed_at = existing_refreshed_at;
                     if existing_id != child.id {
                         // When the root was remapped, cascade any references to the new
                         // child UUID (which was never in the DB) before adopting.
@@ -2356,7 +2414,11 @@ impl AddonService {
                 gc.grandparent_id = Some(actual_root_id);
                 gc.grandparent = Some(Box::new(gp_stub.clone()));
 
-                // Adopt existing UUID from the pre-loaded grandchild map.
+                // Adopt existing UUID + refreshed_at from the pre-loaded grandchild
+                // map. `gc` is freshly parsed from the addon's raw response, which
+                // has no concept of refreshed_at — without adopting it here too,
+                // child_refresh_force below always treats this episode as never
+                // refreshed, refetching it on every single pass.
                 if let Some(idx) = gc.idx {
                     let key = (
                         actual_child_id,
@@ -2364,8 +2426,11 @@ impl AddonService {
                             .to_string(),
                         idx,
                     );
-                    if let Some(&existing_id) = existing_l2.get(&key) {
+                    if let Some(&(existing_id, existing_refreshed_at)) =
+                        existing_l2.get(&key)
+                    {
                         gc.id = existing_id;
+                        gc.refreshed_at = existing_refreshed_at;
                     }
                 }
 
