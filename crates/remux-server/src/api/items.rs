@@ -4182,6 +4182,217 @@ mod tests {
         );
     }
 
+    // Regression #414: a promoted collection-of-collections must disappear
+    // from /UserViews when every child collection is empty.
+    #[tokio::test]
+    async fn userviews_hides_group_container_with_only_empty_subcollections() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let mut group = db::Media {
+            title: "Empty group".to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Manual),
+            collection_media_kind: Some(db::CollectionMediaKind::Collection),
+            promoted: true,
+            ..Default::default()
+        };
+        group
+            .save(db)
+            .await
+            .unwrap();
+
+        let mut child = db::Media {
+            title: "Empty child".to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Smart),
+            collection_media_kind: Some(db::CollectionMediaKind::Movie),
+            promoted: false,
+            ..Default::default()
+        };
+        child
+            .save(db)
+            .await
+            .unwrap();
+        db::Media::set_parent_id(db, &[child.id], Some(group.id))
+            .await
+            .unwrap();
+
+        let body: serde_json::Value = server
+            .get("/userviews")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let group_id = group
+            .id
+            .to_string()
+            .replace('-', "");
+
+        assert!(
+            !body["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["Id"].as_str() == Some(group_id.as_str())),
+            "group container with only empty subcollections must not appear in /UserViews; got: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn userviews_hides_nested_empty_group_containers() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let mut root = db::Media {
+            title: "Empty root group".to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Manual),
+            collection_media_kind: Some(db::CollectionMediaKind::Collection),
+            promoted: true,
+            ..Default::default()
+        };
+        root.save(db)
+            .await
+            .unwrap();
+
+        let mut nested = db::Media {
+            title: "Empty nested group".to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Manual),
+            collection_media_kind: Some(db::CollectionMediaKind::Collection),
+            parent_id: Some(root.id),
+            ..Default::default()
+        };
+        nested
+            .save(db)
+            .await
+            .unwrap();
+
+        let mut leaf = db::Media {
+            title: "Empty nested child".to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Smart),
+            collection_media_kind: Some(db::CollectionMediaKind::Movie),
+            parent_id: Some(nested.id),
+            ..Default::default()
+        };
+        leaf.save(db)
+            .await
+            .unwrap();
+
+        let body: serde_json::Value = server
+            .get("/userviews")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let root_id = root
+            .id
+            .to_string()
+            .replace('-', "");
+
+        assert!(
+            !body["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["Id"].as_str() == Some(root_id.as_str())),
+            "nested empty group containers must not appear in /UserViews; got: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn userviews_keeps_group_container_with_populated_subcollection() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let mut group = db::Media {
+            title: "Populated group".to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Manual),
+            collection_media_kind: Some(db::CollectionMediaKind::Collection),
+            promoted: true,
+            ..Default::default()
+        };
+        group
+            .save(db)
+            .await
+            .unwrap();
+
+        let mut child = db::Media {
+            title: "Populated child".to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Manual),
+            collection_media_kind: Some(db::CollectionMediaKind::Movie),
+            parent_id: Some(group.id),
+            ..Default::default()
+        };
+        child
+            .save(db)
+            .await
+            .unwrap();
+
+        let external_ids = ExternalIds {
+            imdb: Some(NonEmptyString::try_new("tt_issue414".to_string()).unwrap()),
+            ..Default::default()
+        };
+        let mut movie = db::Media {
+            id: Uuid::from(&MediaIdRaw {
+                kind: db::MediaKind::Movie,
+                external_ids: external_ids.clone(),
+                season: None,
+                episode: None,
+            }),
+            title: "Collection member".to_string(),
+            kind: db::MediaKind::Movie,
+            external_ids,
+            ..Default::default()
+        };
+        movie
+            .save(db)
+            .await
+            .unwrap();
+        db::MediaRelation::add_collection_items(db, &child.id, &[movie.id])
+            .await
+            .unwrap();
+
+        let body: serde_json::Value = server
+            .get("/userviews")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let group_id = group
+            .id
+            .to_string()
+            .replace('-', "");
+
+        assert!(
+            body["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["Id"].as_str() == Some(group_id.as_str())),
+            "group container with a populated subcollection must appear in /UserViews; got: {body}"
+        );
+    }
+
     // Regression: GET /Items?parentId=<alias-uuid> used db::Media::get_by_id for the parent
     // lookup, which does a straight WHERE id = $1 and cannot follow alias mappings in the
     // in-memory store. Stremio addons expose series under a virtual alias UUID; children are
