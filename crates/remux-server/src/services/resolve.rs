@@ -436,18 +436,51 @@ impl MediaResolveService {
             return Ok(changed);
         }
 
-        let (Some(season), Some(number), Some(series_tmdb)) = (
-            episode.parent_idx,
-            episode.idx,
-            series
-                .external_ids
-                .tmdb,
-        ) else {
+        let (Some(season), Some(number)) = (episode.parent_idx, episode.idx) else {
             return Ok(changed);
         };
-        let Some(patch) =
-            Self::episode_external_ids(series_tmdb, season, number, &client).await?
-        else {
+
+        // TMDB first: one response carries both of the episode's ids when it
+        // has them, and the series' tmdb id was just resolved above.
+        let mut patch = match series
+            .external_ids
+            .tmdb
+        {
+            Some(series_tmdb) => {
+                Self::episode_external_ids(series_tmdb, season, number, &client).await?
+            }
+            None => None,
+        };
+
+        // TheTVDB carries episodes TMDB has no ids for, which is most of a
+        // long-running show. Asked whenever TMDB left the two ids that name an
+        // episode elsewhere unfilled, not merely when it answered nothing at
+        // all: TMDB routinely holds an episode record whose `external_ids` are
+        // empty, and that answer carries its own tmdb id, so treating it as a
+        // result would skip the source that has what is missing.
+        let episode_still_unnamed = patch
+            .as_ref()
+            .map_or(true, |p| {
+                p.tvdb
+                    .is_none()
+                    && p.imdb
+                        .is_none()
+            });
+        if episode_still_unnamed
+            && let Some(tvdb) = Self::episode_tvdb_id(series, season, number, ctx).await
+        {
+            match patch.as_mut() {
+                Some(p) => p.tvdb = Some(tvdb),
+                None => {
+                    patch = Some(db::ExternalIds {
+                        tvdb: Some(tvdb),
+                        ..Default::default()
+                    })
+                }
+            }
+        }
+
+        let Some(patch) = patch else {
             return Ok(changed);
         };
 
@@ -467,6 +500,71 @@ impl MediaResolveService {
             changed = true;
         }
         Ok(changed)
+    }
+
+    /// The episode's own tvdb id from TheTVDB, for an episode TMDB does not
+    /// carry. Keyed on the series' tvdb id, which nearly every series has, and
+    /// season and episode number.
+    ///
+    /// `None` whenever no key is configured, which is the default: TheTVDB has
+    /// no bundled key to fall back on, so this is dark until an operator sets
+    /// one.
+    async fn episode_tvdb_id(
+        series: &db::Media,
+        season: i64,
+        number: i64,
+        ctx: &AppContext,
+    ) -> Option<i64> {
+        let Some(series_tvdb) = series
+            .external_ids
+            .tvdb
+        else {
+            tracing::debug!(series = %series.title, "no series tvdb id to ask about");
+            return None;
+        };
+        let Some(client) = crate::common::tvdb_client(ctx).await else {
+            tracing::debug!("no tvdb client: key unset or login failed");
+            return None;
+        };
+        match client
+            .execute(
+                sdks::tvdb::SeriesEpisodesEndpoint {
+                    series_id: series_tvdb,
+                    season_type: sdks::tvdb::SeasonType::Default,
+                    season: Some(season),
+                    episode_number: Some(number),
+                }
+                .with_cache(ID_CACHE_TTL)
+                .should_cache(|r: &sdks::tvdb::EpisodesResponse| {
+                    Some(
+                        if r.episode_id()
+                            .is_none()
+                        {
+                            ID_MISS_CACHE_TTL
+                        } else {
+                            ID_CACHE_TTL
+                        },
+                    )
+                }),
+            )
+            .await
+        {
+            Ok(res) => {
+                let id = res.episode_id();
+                tracing::debug!(
+                    series_tvdb,
+                    season,
+                    number,
+                    ?id,
+                    "tvdb episode lookup"
+                );
+                id
+            }
+            Err(e) => {
+                tracing::warn!(series_tvdb, season, number, error = %e, "tvdb lookup failed");
+                None
+            }
+        }
     }
 
     async fn fill_series_tmdb(
