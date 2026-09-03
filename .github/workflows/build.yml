@@ -269,7 +269,7 @@ jobs:
           cargo set-version "${{ inputs.cargo_version }}"
 
       - name: Install cargo-bundle
-        run: cargo binstall cargo-bundle --no-confirm --force
+        run: cargo binstall cargo-bundle --no-confirm --force --locked
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
