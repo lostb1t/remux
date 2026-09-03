@@ -357,7 +357,19 @@ impl MediaIdRaw {
                 .candidate_ids(&self.kind, None, None, None)
                 .into_iter()
                 .next(),
-            MediaKind::Season | MediaKind::Episode => None,
+            // Season/Episode carry no meaningful external id of their own;
+            // `Media::identity_raw` substitutes the grandparent series'
+            // `external_ids` here before calling `canonical()`, so this
+            // checks the *series'* identity using the same priority fields —
+            // `season`/`episode` (not consulted here) disambiguate via
+            // `identity_key()`, not this string. A row that still carries
+            // its own (near-always id-less) `external_ids` correctly falls
+            // through to `None`.
+            MediaKind::Season | MediaKind::Episode => self
+                .external_ids
+                .candidate_ids(&MediaKind::Series, None, None, None)
+                .into_iter()
+                .next(),
             MediaKind::Artist => self
                 .external_ids
                 .deezer_artist
@@ -365,17 +377,48 @@ impl MediaIdRaw {
             MediaKind::Album => self
                 .external_ids
                 .deezer_album
-                .map(|id| id.to_string()),
+                .map(|id| id.to_string())
+                .or_else(|| {
+                    self.external_ids
+                        .youtube_id
+                        .clone()
+                }),
             MediaKind::Track => self
                 .external_ids
                 .deezer_track
-                .map(|id| id.to_string()),
+                .map(|id| id.to_string())
+                .or_else(|| {
+                    self.external_ids
+                        .youtube_id
+                        .clone()
+                }),
             MediaKind::Person => self
                 .external_ids
                 .tmdb
                 .map(|id| id.to_string()),
             _ => None,
         }
+    }
+
+    /// A compact `"{kind}:{canonical}[:{season}[:{episode}]]"` identity
+    /// string — what `user_media_state.media_raw` actually stores and is
+    /// matched on.
+    ///
+    /// Deliberately not the full JSON of `self`: two writers that each know
+    /// only a *subset* of an item's external ids (e.g. Jellyfin import,
+    /// which only ever sees Imdb/Tmdb/Tvdb, never a Stremio-sourced item's
+    /// `custom_stremio_id`) would serialize to different JSON even when
+    /// they agree on the canonical id — silently failing to match on exact
+    /// string equality. This string only encodes what `canonical()` already
+    /// reduced everything to, so any two callers that agree on the winning
+    /// id (and, for Season/Episode, the position) always match.
+    pub fn identity_key(&self) -> Option<String> {
+        let canonical = self.canonical()?;
+        Some(match (self.season, self.episode) {
+            (Some(s), Some(e)) => format!("{}:{canonical}:{s}:{e}", self.kind),
+            (Some(s), None) => format!("{}:{canonical}:{s}", self.kind),
+            _ => format!("{}:{canonical}", self.kind),
+        })
     }
 }
 
@@ -466,6 +509,37 @@ pub struct UserMediaStateFilter {
     pub offset: Option<u32>,
 }
 
+/// The grandparent series' `ExternalIds` for a Season/Episode row, used to
+/// build an identity that won't collide across shows (see `Media::identity_raw`).
+/// Prefers an already-preloaded `media.grandparent`; otherwise loads it via
+/// `grandparent_id`/`parent_id`. Returns `None` for non-Season/Episode kinds,
+/// or when no ancestor can be resolved.
+pub(super) async fn load_ancestor_ext(
+    db: &SqlitePool,
+    media: &super::Media,
+) -> Option<super::ExternalIds> {
+    if !matches!(
+        media.kind,
+        super::MediaKind::Season | super::MediaKind::Episode
+    ) {
+        return None;
+    }
+    if let Some(gp) = &media.grandparent {
+        return Some(
+            gp.external_ids
+                .clone(),
+        );
+    }
+    let gp_id = media
+        .grandparent_id
+        .or(media.parent_id)?;
+    super::Media::get_by_id(db, &gp_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|gp| gp.external_ids)
+}
+
 impl UserMediaState {
     pub async fn get_by_user_and_media(
         db: &SqlitePool,
@@ -483,77 +557,201 @@ impl UserMediaState {
         Ok(row)
     }
 
+    /// Moves `old_row` (currently sitting under some other `media_id`) onto
+    /// `new_media_id` for `user_id`. A row can already exist there too — the
+    /// user interacted with the reimported item before this row got
+    /// remapped — in which case blindly overwriting either side with the
+    /// other loses data (and a plain UPDATE would violate the
+    /// `(user_id, media_id)` primary key). Instead: favourites/play counts
+    /// are monotonic (OR / MAX — they should never regress), everything
+    /// else defers to whichever side has the more recent `last_played_at`.
+    /// Runs in a transaction so the delete+upsert can't interleave with a
+    /// concurrent write to either row.
+    async fn merge_rows(
+        db: &SqlitePool,
+        user_id: Uuid,
+        old_row: Self,
+        new_media_id: Uuid,
+    ) -> Result<Self> {
+        let mut tx = db
+            .begin()
+            .await?;
+
+        let existing: Option<Self> = sqlx::query_as(
+            "SELECT * FROM user_media_state WHERE user_id = ? AND media_id = ?",
+        )
+        .bind(user_id)
+        .bind(new_media_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let merged = match existing {
+            None => Self {
+                media_id: new_media_id,
+                ..old_row.clone()
+            },
+            Some(existing) => {
+                let (primary, other) =
+                    if existing.last_played_at >= old_row.last_played_at {
+                        (&existing, &old_row)
+                    } else {
+                        (&old_row, &existing)
+                    };
+                Self {
+                    user_id,
+                    media_id: new_media_id,
+                    media_raw: primary
+                        .media_raw
+                        .clone()
+                        .or_else(|| {
+                            other
+                                .media_raw
+                                .clone()
+                        }),
+                    stream_id: primary
+                        .stream_id
+                        .or(other.stream_id),
+                    favorite: existing.favorite || old_row.favorite,
+                    play_count: existing
+                        .play_count
+                        .max(old_row.play_count),
+                    played_at: existing
+                        .played_at
+                        .max(old_row.played_at),
+                    playback_position: primary.playback_position,
+                    last_played_at: existing
+                        .last_played_at
+                        .max(old_row.last_played_at),
+                    subtitle_idx: primary.subtitle_idx,
+                    audio_idx: primary.audio_idx,
+                    rating: primary
+                        .rating
+                        .or(other.rating),
+                }
+            }
+        };
+
+        if old_row.media_id != new_media_id {
+            sqlx::query(
+                "DELETE FROM user_media_state WHERE user_id = ? AND media_id = ?",
+            )
+            .bind(user_id)
+            .bind(old_row.media_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO user_media_state (
+                user_id, media_id, media_raw, stream_id, favorite, play_count,
+                played_at, playback_position, last_played_at, subtitle_idx, audio_idx, rating
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            ON CONFLICT(user_id, media_id) DO UPDATE SET
+                media_raw = excluded.media_raw,
+                stream_id = excluded.stream_id,
+                favorite = excluded.favorite,
+                play_count = excluded.play_count,
+                played_at = excluded.played_at,
+                playback_position = excluded.playback_position,
+                last_played_at = excluded.last_played_at,
+                subtitle_idx = excluded.subtitle_idx,
+                audio_idx = excluded.audio_idx,
+                rating = excluded.rating
+            "#,
+        )
+        .bind(merged.user_id)
+        .bind(merged.media_id)
+        .bind(&merged.media_raw)
+        .bind(merged.stream_id)
+        .bind(merged.favorite)
+        .bind(merged.play_count)
+        .bind(merged.played_at)
+        .bind(merged.playback_position)
+        .bind(merged.last_played_at)
+        .bind(merged.subtitle_idx)
+        .bind(merged.audio_idx)
+        .bind(merged.rating)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit()
+            .await?;
+        Ok(merged)
+    }
+
     pub async fn get_or_new(
         db: &SqlitePool,
         user: &User,
         media: &super::Media,
     ) -> Result<Self> {
-        // Include the current UUID plus all stable UUIDs this item could have been
-        // stored under (one per external ID). ORDER BY puts the current ID first so
-        // no migration fires for the common case.
-        let mut all_ids: Vec<Uuid> = Vec::with_capacity(6);
-        all_ids.push(media.id);
-        all_ids.extend(super::Media::ext_id_uuid_candidates(media));
-        // For episodes/seasons the flat candidates are derived from the grandparent
-        // series' external IDs, which are usually not preloaded on the media row.
-        // Load them so a purged+repopulated library can still find old state rows.
-        if matches!(
-            media.kind,
-            super::MediaKind::Season | super::MediaKind::Episode
-        ) && media
-            .grandparent
-            .is_none()
-        {
-            if let Some(gp_id) = media
-                .grandparent_id
-                .or(media.parent_id)
-            {
-                if let Ok(Some(gp)) = super::Media::get_by_id(db, &gp_id).await {
-                    let mut with_gp = media.clone();
-                    with_gp.grandparent = Some(Box::new(gp));
-                    all_ids.extend(super::Media::ext_id_uuid_candidates(&with_gp));
-                }
-            }
-        }
+        let ancestor_ext = load_ancestor_ext(db, media).await;
+        let raw = media.identity_raw(ancestor_ext.as_ref());
+        let media_raw_json = raw.identity_key();
 
-        let placeholders = all_ids
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "SELECT * FROM user_media_state \
-             WHERE user_id = ? AND media_id IN ({placeholders}) \
-             ORDER BY (media_id = ?) DESC LIMIT 1"
-        );
-        let mut q = sqlx::query_as::<_, Self>(&sql).bind(user.id);
-        for uuid in &all_ids {
-            q = q.bind(*uuid);
-        }
-        q = q.bind(media.id);
-
-        if let Some(mut row) = q
+        if let Some(ref raw_json) = media_raw_json {
+            if let Some(row) = sqlx::query_as::<_, Self>(
+                "SELECT * FROM user_media_state WHERE user_id = ? AND media_raw = ? LIMIT 1",
+            )
+            .bind(user.id)
+            .bind(raw_json)
             .fetch_optional(db)
             .await?
-        {
-            if row.media_id != media.id {
-                sqlx::query(
-                    "UPDATE user_media_state SET media_id = ? WHERE user_id = ? AND media_id = ?",
-                )
-                .bind(media.id)
-                .bind(user.id)
-                .bind(row.media_id)
-                .execute(db)
-                .await
-                .ok();
-                row.media_id = media.id;
+            {
+                if row.media_id != media.id {
+                    return Self::merge_rows(db, user.id, row, media.id).await;
+                }
+                return Ok(row);
             }
+
+            // media_raw found nothing, but a row can already exist for this
+            // exact (user_id, media_id) with a stale/missing media_raw — e.g.
+            // written before this scheme existed, or before backfill ran.
+            // Without this, save() would upsert a blank state over it.
+            if let Some(mut row) = sqlx::query_as::<_, Self>(
+                "SELECT * FROM user_media_state WHERE user_id = ? AND media_id = ?",
+            )
+            .bind(user.id)
+            .bind(media.id)
+            .fetch_optional(db)
+            .await?
+            {
+                if row
+                    .media_raw
+                    .is_none()
+                {
+                    row.media_raw = media_raw_json;
+                }
+                return Ok(row);
+            }
+
+            return Ok(Self {
+                user_id: user.id,
+                media_id: media.id,
+                media_raw: media_raw_json,
+                ..Default::default()
+            });
+        }
+
+        // No external identity anywhere in the ancestry (item and — for
+        // Season/Episode — its series both lack one). Nothing to reattach by;
+        // the only sane match is the exact id this call was made with.
+        if let Some(row) = sqlx::query_as::<_, Self>(
+            "SELECT * FROM user_media_state WHERE user_id = ? AND media_id = ?",
+        )
+        .bind(user.id)
+        .bind(media.id)
+        .fetch_optional(db)
+        .await?
+        {
             return Ok(row);
         }
 
         Ok(Self {
             user_id: user.id,
             media_id: media.id,
+            media_raw: None,
             ..Default::default()
         })
     }
@@ -565,22 +763,135 @@ impl UserMediaState {
     /// rather than waiting for each user to play the item before their state is
     /// migrated lazily by `get_or_new`, this sweeps the whole table immediately.
     pub async fn remap_orphaned_for(db: &SqlitePool, items: &[super::Media]) {
-        let pairs: Vec<(uuid::Uuid, uuid::Uuid)> = items
+        // Identity-keyed, so each item contributes exactly one (media_raw,
+        // new_id) pair — no candidate fan-out, no risk of matching an
+        // unrelated row. Season/Episode use their series' external ids (via
+        // `load_ancestor_ext`) rather than their own, which are normally
+        // empty.
+        let mut raw_to_new: HashMap<String, Uuid> = HashMap::with_capacity(items.len());
+        for item in items {
+            let ancestor_ext = load_ancestor_ext(db, item).await;
+            let raw = item.identity_raw(ancestor_ext.as_ref());
+            if let Some(raw_json) = raw.identity_key() {
+                raw_to_new.insert(raw_json, item.id);
+            }
+        }
+        if raw_to_new.is_empty() {
+            return;
+        }
+
+        // Every row currently sitting under one of these identities (any
+        // user), regardless of what media_id it's at right now.
+        let raw_jsons: Vec<&String> = raw_to_new
+            .keys()
+            .collect();
+        let placeholders = raw_jsons
             .iter()
-            .flat_map(|item| {
-                super::Media::ext_id_uuid_candidates(item)
-                    .into_iter()
-                    .map(|old| (old, item.id))
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT * FROM user_media_state WHERE media_raw IN ({placeholders})"
+        );
+        let mut q = sqlx::query_as::<_, Self>(&sql);
+        for r in &raw_jsons {
+            q = q.bind(r.as_str());
+        }
+        let stale_rows: Vec<Self> = q
+            .fetch_all(db)
+            .await
+            .unwrap_or_default();
+
+        let moves: Vec<Self> = stale_rows
+            .into_iter()
+            .filter(|row| {
+                row.media_raw
+                    .as_deref()
+                    .and_then(|r| raw_to_new.get(r))
+                    .is_some_and(|&new_id| new_id != row.media_id)
             })
             .collect();
+        if moves.is_empty() {
+            return;
+        }
 
-        if pairs.is_empty() {
+        // (user_id, target new media_id) pairs that already have a row —
+        // those are collisions: the user interacted with the reimported item
+        // before this sweep ran. A blind UPDATE there would violate the
+        // (user_id, media_id) primary key, or silently clobber one side.
+        let new_ids: Vec<Uuid> = moves
+            .iter()
+            .filter_map(|row| {
+                row.media_raw
+                    .as_deref()
+                    .and_then(|r| raw_to_new.get(r))
+                    .copied()
+            })
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let placeholders = new_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT user_id, media_id FROM user_media_state WHERE media_id IN ({placeholders})"
+        );
+        let mut q = sqlx::query_as::<_, (Uuid, Uuid)>(&sql);
+        for id in &new_ids {
+            q = q.bind(id);
+        }
+        let existing: std::collections::HashSet<(Uuid, Uuid)> = q
+            .fetch_all(db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+
+        // An old media_id is only safe to batch if *every* row sitting under
+        // it is non-colliding; if even one user collides, handle all of that
+        // id's rows individually via `merge_rows` so the batch can't race a
+        // concurrent per-row merge on the same old id.
+        let mut colliding_old_ids: std::collections::HashSet<Uuid> =
+            std::collections::HashSet::new();
+        for row in &moves {
+            let new_id = raw_to_new[row
+                .media_raw
+                .as_deref()
+                .expect("moves only contains rows with a matched media_raw")];
+            if existing.contains(&(row.user_id, new_id)) {
+                colliding_old_ids.insert(row.media_id);
+            }
+        }
+
+        let mut batch_pairs: Vec<(Uuid, Uuid)> = Vec::with_capacity(moves.len());
+        for row in moves {
+            let new_id = raw_to_new[row
+                .media_raw
+                .as_deref()
+                .expect("moves only contains rows with a matched media_raw")];
+            if colliding_old_ids.contains(&row.media_id) {
+                let user_id = row.user_id;
+                let old_id = row.media_id;
+                if let Err(e) = Self::merge_rows(db, user_id, row, new_id).await {
+                    warn!(
+                        %user_id, old_id = %old_id, new_id = %new_id, error = %e,
+                        "remap_orphaned_for: per-row merge failed"
+                    );
+                }
+            } else {
+                batch_pairs.push((row.media_id, new_id));
+            }
+        }
+
+        if batch_pairs.is_empty() {
             return;
         }
 
         // Each pair needs 3 bind slots (WHEN ?, THEN ?, IN ?).
         // SQLite's limit is 999; use 300 pairs per batch to stay well under it.
-        for chunk in pairs.chunks(300) {
+        for chunk in batch_pairs.chunks(300) {
             let mut sql =
                 String::from("UPDATE user_media_state SET media_id = CASE media_id");
             for _ in chunk {
@@ -596,13 +907,13 @@ impl UserMediaState {
             sql.push(')');
 
             let mut q = sqlx::query(&sql);
-            for (old, new) in chunk {
+            for (old_id, new_id) in chunk {
                 q = q
-                    .bind(old)
-                    .bind(new);
+                    .bind(old_id)
+                    .bind(new_id);
             }
-            for (old, _) in chunk {
-                q = q.bind(old);
+            for (old_id, _) in chunk {
+                q = q.bind(old_id);
             }
             q.execute(db)
                 .await
@@ -1242,5 +1553,618 @@ mod playback_threshold_tests {
         .await
         .unwrap();
         assert!(!crossed, "no runtime means no threshold was applied");
+    }
+}
+
+#[cfg(test)]
+mod identity_reattach_tests {
+    use super::*;
+    use crate::{db, integration_test::new_test_server};
+
+    /// Phase 1: `get_or_new` must reattach state by `media_raw` identity, not
+    /// just by UUID, so a purge + reimport under a fresh uuid4 doesn't
+    /// silently detach favourites/play count.
+    #[tokio::test]
+    async fn purge_and_reimport_reattaches_state_by_external_ids() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let user = db::User::get_by_username(&ctx.db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+        let media = crate::integration_test::seed_movie(ctx).await;
+
+        let mut state = UserMediaState::get_or_new(&ctx.db, &user, &media)
+            .await
+            .unwrap();
+        state.favorite = true;
+        state.play_count = 3;
+        state
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        // Purge: delete the row entirely, as a library rescan would.
+        db::Media::delete(&ctx.db, &media.id)
+            .await
+            .unwrap();
+
+        // Re-import: same external ids, but a fresh uuid4 rather than the
+        // derived id — what every new row gets once Phase 3 lands.
+        let mut reimported = db::Media {
+            id: Uuid::new_v4(),
+            title: media
+                .title
+                .clone(),
+            kind: media
+                .kind
+                .clone(),
+            runtime: media.runtime,
+            external_ids: media
+                .external_ids
+                .clone(),
+            ..Default::default()
+        };
+        assert_ne!(
+            reimported.id, media.id,
+            "must simulate a genuinely different id"
+        );
+        reimported
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let reattached = UserMediaState::get_or_new(&ctx.db, &user, &reimported)
+            .await
+            .unwrap();
+        assert!(
+            reattached.favorite,
+            "favorite should survive the purge+reimport"
+        );
+        assert_eq!(
+            reattached.play_count, 3,
+            "play count should survive the purge+reimport"
+        );
+        assert_eq!(
+            reattached.media_id, reimported.id,
+            "state should now point at the new row"
+        );
+    }
+
+    /// Same scenario, but via `remap_orphaned_for`'s bulk sweep rather than
+    /// the lazy `get_or_new` path.
+    #[tokio::test]
+    async fn remap_orphaned_for_reattaches_state_by_external_ids() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let user = db::User::get_by_username(&ctx.db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+        let media = crate::integration_test::seed_movie(ctx).await;
+
+        let mut state = UserMediaState::get_or_new(&ctx.db, &user, &media)
+            .await
+            .unwrap();
+        state.favorite = true;
+        state.play_count = 5;
+        state
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        db::Media::delete(&ctx.db, &media.id)
+            .await
+            .unwrap();
+
+        let mut reimported = db::Media {
+            id: Uuid::new_v4(),
+            title: media
+                .title
+                .clone(),
+            kind: media
+                .kind
+                .clone(),
+            runtime: media.runtime,
+            external_ids: media
+                .external_ids
+                .clone(),
+            ..Default::default()
+        };
+        reimported
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        UserMediaState::remap_orphaned_for(&ctx.db, std::slice::from_ref(&reimported))
+            .await;
+
+        let row: UserMediaState = sqlx::query_as(
+            "SELECT * FROM user_media_state WHERE user_id = ? AND media_id = ?",
+        )
+        .bind(user.id)
+        .bind(reimported.id)
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap();
+        assert!(row.favorite);
+        assert_eq!(row.play_count, 5);
+    }
+
+    /// Season/Episode have no meaningful external id of their own — their
+    /// reattachment identity is the *series'* external ids plus
+    /// season/episode index (`Media::identity_raw`). This purges the whole
+    /// series/season/episode tree and reimports it under entirely fresh
+    /// uuid4s (same series external ids), and asserts episode state still
+    /// reattaches — not just Movie/Series.
+    #[tokio::test]
+    async fn episode_state_reattaches_via_series_identity_after_purge() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let user = db::User::get_by_username(&ctx.db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+        let episode = crate::integration_test::seed_episode(ctx).await;
+        let series_id = episode
+            .grandparent_id
+            .unwrap();
+        let series = db::Media::get_by_id(&ctx.db, &series_id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let mut state = UserMediaState::get_or_new(&ctx.db, &user, &episode)
+            .await
+            .unwrap();
+        state.favorite = true;
+        state.play_count = 2;
+        state
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        // Purge the whole tree, child-first, as a library rescan would.
+        db::Media::delete(&ctx.db, &episode.id)
+            .await
+            .unwrap();
+        db::Media::delete(
+            &ctx.db,
+            &episode
+                .parent_id
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        db::Media::delete(&ctx.db, &series_id)
+            .await
+            .unwrap();
+
+        // Reimport under entirely fresh uuid4s, same series external ids.
+        let mut new_series = db::Media {
+            id: Uuid::new_v4(),
+            title: series
+                .title
+                .clone(),
+            kind: db::MediaKind::Series,
+            external_ids: series
+                .external_ids
+                .clone(),
+            ..Default::default()
+        };
+        new_series
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        let mut new_season = db::Media {
+            id: Uuid::new_v4(),
+            title: "Season 1".into(),
+            kind: db::MediaKind::Season,
+            parent_id: Some(new_series.id),
+            grandparent_id: Some(new_series.id),
+            idx: Some(1),
+            ..Default::default()
+        };
+        new_season
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        let new_episode = db::Media {
+            id: Uuid::new_v4(),
+            title: "The Target".into(),
+            kind: db::MediaKind::Episode,
+            parent_id: Some(new_season.id),
+            grandparent_id: Some(new_series.id),
+            idx: Some(1),
+            parent_idx: Some(1),
+            ..Default::default()
+        };
+
+        let reattached = UserMediaState::get_or_new(&ctx.db, &user, &new_episode)
+            .await
+            .unwrap();
+        assert!(
+            reattached.favorite,
+            "favorite should survive the purge+reimport"
+        );
+        assert_eq!(reattached.play_count, 2);
+        assert_eq!(reattached.media_id, new_episode.id);
+    }
+
+    /// A writer that only knows a *subset* of an item's external ids (e.g.
+    /// `tasks::jellyfin_import`, which only ever sees Imdb/Tmdb/Tvdb) must
+    /// still match a real row that carries more fields. `media_raw` used to
+    /// be the full JSON of `MediaIdRaw`, so a real row with an extra field
+    /// (here `custom_stremio_id`) serialized differently and silently never
+    /// matched — `identity_key()` fixes this by reducing both sides to just
+    /// the canonical id.
+    #[tokio::test]
+    async fn a_partial_identity_write_matches_a_fuller_real_row() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let user = db::User::get_by_username(&ctx.db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Simulates a jellyfin_import-style write: only imdb known, made
+        // before the real media row exists (media_id is a throwaway guess).
+        let partial_raw = db::MediaIdRaw {
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt0113277".to_string()).ok(),
+                ..Default::default()
+            },
+            season: None,
+            episode: None,
+        };
+        let mut pre_existing = UserMediaState {
+            user_id: user.id,
+            media_id: Uuid::new_v4(),
+            media_raw: partial_raw.identity_key(),
+            favorite: true,
+            play_count: 4,
+            ..Default::default()
+        };
+        pre_existing
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        // The real row, resolved later, knows more: imdb plus a stremio id.
+        let mut media = db::Media {
+            id: Uuid::new_v4(),
+            title: "Heat".into(),
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt0113277".to_string()).ok(),
+                custom_stremio_id: Some("tt0113277".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        media
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let found = UserMediaState::get_or_new(&ctx.db, &user, &media)
+            .await
+            .unwrap();
+        assert!(
+            found.favorite,
+            "the partial-identity write should have been found despite the extra field"
+        );
+        assert_eq!(found.play_count, 4);
+        assert_eq!(found.media_id, media.id);
+    }
+
+    /// A row already sitting at the exact `(user_id, media_id)` this call was
+    /// made with — but with a stale/missing `media_raw` (legacy row, or
+    /// written before backfill ran) — must never be replaced by a blank
+    /// default just because the `media_raw` lookup missed. Regression: an
+    /// earlier version of `get_or_new` fell straight to `Self::default()`
+    /// here, and the caller's next `.save()` would upsert that over the
+    /// existing row, silently clearing favorite/play_count/position.
+    #[tokio::test]
+    async fn a_legacy_row_with_no_media_raw_is_not_overwritten_by_a_blank_default() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let user = db::User::get_by_username(&ctx.db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+        let media = crate::integration_test::seed_movie(ctx).await;
+
+        sqlx::query(
+            "INSERT INTO user_media_state (user_id, media_id, media_raw, favorite, play_count) \
+             VALUES (?, ?, NULL, 1, 7)",
+        )
+        .bind(user.id)
+        .bind(media.id)
+        .execute(&ctx.db)
+        .await
+        .unwrap();
+
+        let found = UserMediaState::get_or_new(&ctx.db, &user, &media)
+            .await
+            .unwrap();
+        assert!(
+            found.favorite,
+            "the legacy row must be found, not replaced by a blank default"
+        );
+        assert_eq!(found.play_count, 7);
+
+        found
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        let row: UserMediaState = sqlx::query_as(
+            "SELECT * FROM user_media_state WHERE user_id = ? AND media_id = ?",
+        )
+        .bind(user.id)
+        .bind(media.id)
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap();
+        assert!(row.favorite, "save() must not have wiped it");
+        assert_eq!(row.play_count, 7);
+    }
+
+    /// A row can already exist at the *target* id when `get_or_new` goes to
+    /// move an identity-matched row there — e.g. the user watched the
+    /// reimported item before this sweep ran. Regression: an earlier version
+    /// blindly `UPDATE`d the old row's `media_id`, which either violates the
+    /// `(user_id, media_id)` primary key (silently swallowed via `.ok()`) or,
+    /// once returned and `save()`d, upserts the old row's data over the
+    /// newer one — losing whichever side didn't win. Favourites/play counts
+    /// must be unioned, not overwritten.
+    #[tokio::test]
+    async fn get_or_new_merges_instead_of_clobbering_on_id_collision() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let user = db::User::get_by_username(&ctx.db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+        let media = crate::integration_test::seed_movie(ctx).await;
+
+        let old_time = chrono::Utc::now().naive_utc() - chrono::Duration::hours(2);
+        let new_time = chrono::Utc::now().naive_utc();
+
+        // The old row: identity-matched, richer progress, but stale timing.
+        let raw = media.identity_raw(None);
+        sqlx::query(
+            "INSERT INTO user_media_state \
+             (user_id, media_id, media_raw, favorite, play_count, last_played_at) \
+             VALUES (?, ?, ?, 1, 5, ?)",
+        )
+        .bind(user.id)
+        .bind(media.id)
+        .bind(raw.identity_key())
+        .bind(old_time)
+        .execute(&ctx.db)
+        .await
+        .unwrap();
+
+        db::Media::delete(&ctx.db, &media.id)
+            .await
+            .unwrap();
+
+        // Reimported under a fresh id — and the user already interacted
+        // with it under the new id before any remap ran.
+        let mut reimported = db::Media {
+            id: Uuid::new_v4(),
+            title: media
+                .title
+                .clone(),
+            kind: media
+                .kind
+                .clone(),
+            runtime: media.runtime,
+            external_ids: media
+                .external_ids
+                .clone(),
+            ..Default::default()
+        };
+        reimported
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO user_media_state \
+             (user_id, media_id, favorite, play_count, last_played_at) \
+             VALUES (?, ?, 0, 2, ?)",
+        )
+        .bind(user.id)
+        .bind(reimported.id)
+        .bind(new_time)
+        .execute(&ctx.db)
+        .await
+        .unwrap();
+
+        let merged = UserMediaState::get_or_new(&ctx.db, &user, &reimported)
+            .await
+            .unwrap();
+        assert!(
+            merged.favorite,
+            "favorite is monotonic — must survive from the old row"
+        );
+        assert_eq!(
+            merged.play_count, 5,
+            "play_count must take the max, not whichever side happened to win"
+        );
+        assert_eq!(merged.media_id, reimported.id);
+
+        // No duplicate/orphaned row should remain at the old id, and the
+        // merge must actually be persisted, not just returned in memory.
+        let remaining: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT media_id FROM user_media_state WHERE user_id = ?",
+        )
+        .bind(user.id)
+        .fetch_all(&ctx.db)
+        .await
+        .unwrap();
+        assert_eq!(
+            remaining,
+            vec![reimported.id],
+            "exactly one row should remain, at the new id"
+        );
+    }
+
+    /// Same collision scenario as above, but through the bulk
+    /// `remap_orphaned_for` sweep rather than the lazy `get_or_new` path.
+    #[tokio::test]
+    async fn remap_orphaned_for_merges_instead_of_clobbering_on_id_collision() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let user = db::User::get_by_username(&ctx.db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+        let media = crate::integration_test::seed_movie(ctx).await;
+
+        let raw = media.identity_raw(None);
+        sqlx::query(
+            "INSERT INTO user_media_state \
+             (user_id, media_id, media_raw, favorite, play_count) \
+             VALUES (?, ?, ?, 0, 3)",
+        )
+        .bind(user.id)
+        .bind(media.id)
+        .bind(raw.identity_key())
+        .execute(&ctx.db)
+        .await
+        .unwrap();
+
+        db::Media::delete(&ctx.db, &media.id)
+            .await
+            .unwrap();
+
+        let mut reimported = db::Media {
+            id: Uuid::new_v4(),
+            title: media
+                .title
+                .clone(),
+            kind: media
+                .kind
+                .clone(),
+            runtime: media.runtime,
+            external_ids: media
+                .external_ids
+                .clone(),
+            ..Default::default()
+        };
+        reimported
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO user_media_state (user_id, media_id, favorite, play_count) \
+             VALUES (?, ?, 1, 1)",
+        )
+        .bind(user.id)
+        .bind(reimported.id)
+        .execute(&ctx.db)
+        .await
+        .unwrap();
+
+        UserMediaState::remap_orphaned_for(&ctx.db, std::slice::from_ref(&reimported))
+            .await;
+
+        let rows: Vec<UserMediaState> =
+            sqlx::query_as("SELECT * FROM user_media_state WHERE user_id = ?")
+                .bind(user.id)
+                .fetch_all(&ctx.db)
+                .await
+                .unwrap();
+        assert_eq!(rows.len(), 1, "the collision must resolve to one row");
+        assert_eq!(rows[0].media_id, reimported.id);
+        assert!(rows[0].favorite, "favorite from either side must survive");
+        assert_eq!(rows[0].play_count, 3, "play_count must take the max");
+    }
+
+    /// A row orphaned by a purge (its `media_id` no longer resolves to any
+    /// `media` row) written in the old full-JSON `media_raw` format must
+    /// still be reattachable once the item is reimported. Regression: the
+    /// backfill used to rebuild `media_raw` by re-deriving identity from the
+    /// *current* `media` row (`Media::get_by_id`), which returns `None` for
+    /// an orphaned row — silently skipping exactly the rows a purge leaves
+    /// behind, and permanently stranding their watch state.
+    #[tokio::test]
+    async fn backfill_converts_orphaned_legacy_json_rows() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let user = db::User::get_by_username(&ctx.db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let ext = db::ExternalIds {
+            imdb: db::NonEmptyString::try_new("tt0113277".to_string()).ok(),
+            ..Default::default()
+        };
+        let old_raw = db::MediaIdRaw {
+            kind: db::MediaKind::Movie,
+            external_ids: ext.clone(),
+            season: None,
+            episode: None,
+        };
+        // A media_id with no corresponding row in `media` at all — exactly
+        // what's left after a purge — carrying the pre-Phase-4 full-JSON
+        // media_raw format.
+        let orphaned_media_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO user_media_state \
+             (user_id, media_id, media_raw, favorite, play_count) \
+             VALUES (?, ?, ?, 1, 9)",
+        )
+        .bind(user.id)
+        .bind(orphaned_media_id)
+        .bind(serde_json::to_string(&old_raw).unwrap())
+        .execute(&ctx.db)
+        .await
+        .unwrap();
+
+        db::backfill_user_media_raw(&ctx.db)
+            .await
+            .unwrap();
+
+        let mut reimported = db::Media {
+            id: Uuid::new_v4(),
+            title: "Heat".into(),
+            kind: db::MediaKind::Movie,
+            external_ids: ext,
+            ..Default::default()
+        };
+        reimported
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let reattached = UserMediaState::get_or_new(&ctx.db, &user, &reimported)
+            .await
+            .unwrap();
+        assert!(
+            reattached.favorite,
+            "the orphaned legacy row should have been found via the backfilled identity"
+        );
+        assert_eq!(reattached.play_count, 9);
     }
 }
