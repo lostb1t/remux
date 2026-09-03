@@ -13,9 +13,12 @@ pub struct AnyProviderIds {
     pub tvdb: Vec<i64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, strum_macros::EnumString)]
+/// The external-ID namespace named by an Emby `AnyProviderIdEquals` token.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, strum_macros::EnumString, strum_macros::Display,
+)]
 #[strum(serialize_all = "lowercase", ascii_case_insensitive)]
-enum ProviderAlias {
+pub enum ExternalIdProvider {
     #[strum(serialize = "tmdb", serialize = "themoviedb", serialize = "tmdbid")]
     Tmdb,
     #[strum(serialize = "imdb", serialize = "imdbid")]
@@ -59,11 +62,11 @@ impl AnyProviderIds {
         if value.is_empty() {
             return;
         }
-        let Ok(kind) = ProviderAlias::from_str(provider.trim()) else {
+        let Ok(kind) = ExternalIdProvider::from_str(provider.trim()) else {
             return;
         };
         match kind {
-            ProviderAlias::Tmdb => {
+            ExternalIdProvider::Tmdb => {
                 if let Ok(n) = value.parse::<i64>() {
                     if n > 0
                         && !self
@@ -75,7 +78,7 @@ impl AnyProviderIds {
                     }
                 }
             }
-            ProviderAlias::Imdb => {
+            ExternalIdProvider::Imdb => {
                 if !self
                     .imdb
                     .iter()
@@ -85,7 +88,7 @@ impl AnyProviderIds {
                         .push(value.to_string());
                 }
             }
-            ProviderAlias::Tvdb => {
+            ExternalIdProvider::Tvdb => {
                 if let Ok(n) = value.parse::<i64>() {
                     if n > 0
                         && !self
