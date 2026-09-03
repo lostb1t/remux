@@ -18,7 +18,7 @@ pub struct AnyProviderIds {
     Debug, Clone, Copy, PartialEq, Eq, strum_macros::EnumString, strum_macros::Display,
 )]
 #[strum(serialize_all = "lowercase", ascii_case_insensitive)]
-enum ExternalIdProvider {
+pub enum ExternalIdProvider {
     #[strum(serialize = "tmdb", serialize = "themoviedb", serialize = "tmdbid")]
     Tmdb,
     #[strum(serialize = "imdb", serialize = "imdbid")]

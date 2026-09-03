@@ -4,7 +4,7 @@ pub use codecs::{
     AudioCodec, AudioContainer, DlnaProfileType, SubtitleCodec, TranscodingProtocol,
     VideoCodec, VideoContainer,
 };
-pub use provider_ids::AnyProviderIds;
+pub use provider_ids::{AnyProviderIds, ExternalIdProvider};
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use http::{HeaderValue, Method};
