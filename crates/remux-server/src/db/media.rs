@@ -4354,6 +4354,38 @@ impl Media {
                     );
                 }
             }
+
+            // Hide specific collections from browse views per the user's
+            // policy — the one deliberate exception to "policy filters don't
+            // apply to containers" (see AGENTS.md). Applied here (in SQL,
+            // gated the opposite way — only when container_only) rather than
+            // as a post-query Rust filter, so it composes correctly with
+            // LIMIT/OFFSET and count_qb's total stays accurate.
+            if container_only {
+                if let Some(ref pf) = filter.policy_filter {
+                    let (deny, allow) = collection_visibility_filters(pf);
+                    if let Some(allow) = &allow {
+                        if allow.is_empty() {
+                            qb.push(" AND 0");
+                        } else {
+                            qb.push(" AND media.id IN (");
+                            let mut sep = qb.separated(", ");
+                            for id in allow {
+                                sep.push_bind(*id);
+                            }
+                            qb.push(")");
+                        }
+                    }
+                    if !deny.is_empty() {
+                        qb.push(" AND media.id NOT IN (");
+                        let mut sep = qb.separated(", ");
+                        for id in &deny {
+                            sep.push_bind(*id);
+                        }
+                        qb.push(")");
+                    }
+                }
+            }
         }
 
         // Close the filtered CTE and build the UNION ALL structure.
@@ -5414,7 +5446,10 @@ impl Media {
         // Drop empty containers when requested. child_count is already populated
         // for all container kinds (including smart/catalog) by the branches above.
         // A structural collection-of-collections is visible only when it has a
-        // non-empty descendant collection.
+        // non-empty descendant collection. Collections hidden by policy (see
+        // `collection_visibility_filters`) were already excluded in SQL above,
+        // so a group container whose only child is a hidden collection
+        // correctly evaluates as empty here too.
         let sql_total = count?;
 
         if filter.exclude_childless {
@@ -7420,6 +7455,49 @@ pub fn push_release_date_filter(
     }
 }
 
+/// Collects `CollectionId` rules from a policy filter into (deny, allow) id
+/// sets, ignoring the filter's AND/OR group structure — this is a deliberate,
+/// narrow exception to "policy filters don't apply to container queries"
+/// (see AGENTS.md): it hides the *collection row itself* from browse views
+/// (userviews, boxset listings), never its member content, which stays
+/// visible everywhere else it would otherwise appear. Applied by
+/// `get_by_filter_inner` as a SQL `WHERE` condition (gated on `container_only`,
+/// the opposite of the general policy-filter gate) inside the `count_qb` /
+/// `records_qb` loop, so it composes correctly with LIMIT/OFFSET and
+/// `count_qb`'s total — a post-query Rust-side retain would silently produce
+/// short pages and an inaccurate total once a query is paginated.
+fn collection_visibility_filters(
+    pf: &remux_sdks::remux::CollectionFilter,
+) -> (HashSet<Uuid>, Option<HashSet<Uuid>>) {
+    use remux_sdks::remux::{FilterRule, SetOp};
+
+    let mut deny = HashSet::new();
+    let mut allow: Option<HashSet<Uuid>> = None;
+    for group in &pf.groups {
+        for rule in &group.rules {
+            if let FilterRule::CollectionId { op, ids } = rule {
+                if ids.is_empty() {
+                    continue;
+                }
+                if matches!(op, SetOp::IsNot | SetOp::NotIn) {
+                    deny.extend(
+                        ids.iter()
+                            .copied(),
+                    );
+                } else {
+                    allow
+                        .get_or_insert_with(HashSet::new)
+                        .extend(
+                            ids.iter()
+                                .copied(),
+                        );
+                }
+            }
+        }
+    }
+    (deny, allow)
+}
+
 /// Append WHERE clauses for a set of `FilterRule`s onto a query builder.
 ///
 /// Called once for both the count and records builders inside `get_by_filter`.
@@ -7833,19 +7911,12 @@ fn filter_rule_to_sql(
             let sql = "media.parent_id IS NOT NULL".to_string();
             Some((sql, !value))
         }
-        R::CollectionMember { op, collection_ids } if !collection_ids.is_empty() => {
-            let in_clause = collection_ids
-                .iter()
-                .map(|id| format!("X'{}'", id.simple()))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let sql = format!(
-                "media.id IN (SELECT mr.right_media_id FROM media_relations mr \
-                 WHERE mr.role = 'collection' AND mr.left_media_id IN ({in_clause}))"
-            );
-            let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
-            Some((sql, negated))
-        }
+        // Disabled: only ever matches manual collections (media_relations has
+        // no rows for smart collections — their contents are computed from
+        // their own filter at query time, never materialized), so this
+        // silently filtered nothing for anyone using it on a smart collection.
+        // No-op regardless of content so any rule already saved in a user's
+        // policy stops being applied rather than half-working.
         R::CollectionMember { .. } => None,
         R::CollectionId { op, ids } if !ids.is_empty() => {
             let in_clause = ids

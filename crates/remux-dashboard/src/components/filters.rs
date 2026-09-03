@@ -163,7 +163,7 @@ async fn fetch_suggestions(
             }
             results
         }
-        "collection_id" => {
+        "collection_id" | "collection_member" => {
             let q_lower = query.to_lowercase();
             match client
                 .execute(remux_sdks::remux::GetItems(
@@ -233,6 +233,7 @@ fn field_label(key: &str) -> &'static str {
         "person" => "Person",
         "catalog" => "Catalog",
         "collection_id" => "Collection",
+        "collection_member" => "Collection",
         "favorite" => "Favorite",
         "played" => "Played",
         "media_kind" => "Media Kind",
@@ -451,14 +452,21 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
         "catalog" => FilterRule::Catalog {
             op: set_op,
             catalog_ids: value_str
-                .split(", ")
+                .split(',')
                 .filter_map(|s| Uuid::parse_str(s.trim()).ok())
                 .collect(),
         },
         "collection_id" => FilterRule::CollectionId {
             op: set_op,
             ids: value_str
-                .split(", ")
+                .split(',')
+                .filter_map(|s| Uuid::parse_str(s.trim()).ok())
+                .collect(),
+        },
+        "collection_member" => FilterRule::CollectionMember {
+            op: set_op,
+            collection_ids: value_str
+                .split(',')
                 .filter_map(|s| Uuid::parse_str(s.trim()).ok())
                 .collect(),
         },
@@ -752,8 +760,12 @@ pub fn FilterRuleRow(
     #[props(default)] allowed_fields: Vec<&'static str>,
 ) -> Element {
     let app_state = use_context::<AppState>();
+    let (field_val, op_val, value_val) = rule_to_raw(&rule);
+    let is_collection_id =
+        field_val == "collection_id" || field_val == "collection_member";
     let client_for_ratings = app_state.clone();
     let client_for_catalogs = app_state.clone();
+    let client_for_collections = app_state.clone();
     let mut parental_ratings: Signal<Vec<ParentalRating>> = use_signal(Vec::new);
     use_effect(move || {
         let client = client_for_ratings.clone();
@@ -801,12 +813,62 @@ pub fn FilterRuleRow(
         });
     });
 
-    let (field_val, op_val, value_val) = rule_to_raw(&rule);
+    // Eagerly fetch every collection's name so chips for an already-saved
+    // rule (a raw UUID with no label yet in the search-driven label_cache)
+    // render as a name immediately instead of a bare UUID. Only fetched for
+    // rows that actually need it — otherwise every rule row in the editor
+    // would fire this same request redundantly.
+    let mut collection_options: Signal<Vec<(String, String)>> = use_signal(Vec::new);
+    use_effect(move || {
+        if !is_collection_id {
+            return;
+        }
+        let client = client_for_collections.clone();
+        spawn(async move {
+            let Ok(r) = client
+                .execute(remux_sdks::remux::GetItems(
+                    remux_sdks::remux::GetItemsQuery {
+                        include_item_types: Some(vec![
+                            remux_sdks::remux::MediaType::BoxSet,
+                        ]),
+                        include_childless: Some(true),
+                        ..Default::default()
+                    },
+                ))
+                .await
+            else {
+                return;
+            };
+            let options = r
+                .items
+                .into_iter()
+                // Group containers ("collection of collections") aren't
+                // selectable collection targets — same exclusion as the
+                // search picker in fetch_suggestions.
+                .filter(|item| {
+                    item.collection_type
+                        .as_ref()
+                        != Some(&remux_sdks::remux::CollectionType::Boxsets)
+                })
+                .filter_map(|item| {
+                    item.name
+                        .map(|n| {
+                            (
+                                n,
+                                item.id
+                                    .to_string(),
+                            )
+                        })
+                })
+                .collect();
+            collection_options.set(options);
+        });
+    });
+
     let ops = ops_for_field(&field_val);
     let is_trailer = field_val == "has_trailer";
     let is_parental_rating = field_val == "parental_rating";
     let is_catalog = field_val == "catalog";
-    let is_collection_id = field_val == "collection_id";
     let is_favorite = field_val == "favorite";
     let is_watched = field_val == "played";
     let is_media_kind = field_val == "media_kind";
@@ -893,6 +955,12 @@ pub fn FilterRuleRow(
                 if show_field("original_language") { option { value: "original_language", selected: field_val == "original_language", { field_label("original_language") } } }
                 if show_field("person")          { option { value: "person",           selected: field_val == "person",           { field_label("person") } } }
                 if show_field("catalog")         { option { value: "catalog",          selected: field_val == "catalog",          { field_label("catalog") } } }
+                // "collection_id" matches a *collection's own id* — used both to pick
+                // which collections belong in a group container, and (server-side, as
+                // the one deliberate exception to "policy filters don't touch container
+                // queries") to hide specific collections from a user's browse views.
+                // It never filters content items, so a hidden collection's members
+                // stay visible everywhere else they'd otherwise appear.
                 if show_field("collection_id")   { option { value: "collection_id",    selected: field_val == "collection_id",    { field_label("collection_id") } } }
                 if show_field("favorite")        { option { value: "favorite",         selected: field_val == "favorite",         { field_label("favorite") } } }
                 if show_field("played")         { option { value: "played",          selected: field_val == "played",          { field_label("played") } } }
@@ -982,11 +1050,12 @@ pub fn FilterRuleRow(
                 }
             } else if is_collection_id {
                 ChipInput {
-                    field_key: "collection_id".to_string(),
+                    field_key: field_val.clone(),
                     op_val: op_val.clone(),
                     values: rule_values(&rule),
                     idx,
                     rules,
+                    value_labels: Some(collection_options),
                 }
             } else if is_favorite {
                 select {

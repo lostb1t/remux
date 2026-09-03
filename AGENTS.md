@@ -43,6 +43,8 @@ When the user says "commit and close issue", include `(fixes #N)` in the commit 
 
 Filter rules must **not** apply to collection/folder container queries — only to content items. See `get_by_filter` in the db layer.
 
+The one deliberate exception is `CollectionId`: a user policy can use it to hide specific collections from that user's browse views (userviews, boxset listings). It matches the *collection row itself*, never its member content, so a hidden collection's items stay visible everywhere else they'd otherwise appear (other collections, search, general browsing) — this is enforced with a Rust-side post-query filter in `get_by_filter_inner` (`collection_visibility_filters`), not a SQL clause threaded through the container-query path. Do not use `CollectionMember`-style "content that belongs to collection X" filtering for this: it operates on `media_relations`, which only exists for manually-curated collections — smart collections have no stored membership, so it silently filters nothing for them.
+
 ## API conventions
 
 - API handler paths must always be lowercase (e.g. `#[get("/useritems/{id}")]`, not `/UserItems/{Id}`).
