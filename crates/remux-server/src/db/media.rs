@@ -5417,12 +5417,36 @@ impl Media {
         // non-empty descendant collection.
         let sql_total = count?;
 
+        // Hide specific collections from browse views per the user's policy —
+        // see `collection_visibility_filters`. Runs before the childless-group
+        // check below so a group container whose only child is a hidden
+        // collection correctly evaluates as empty too.
+        let mut collections_were_filtered = false;
+        if let Some(ref pf) = filter.policy_filter {
+            let (deny, allow) = collection_visibility_filters(pf);
+            if !deny.is_empty() || allow.is_some() {
+                let before = records.len();
+                records.retain(|m| {
+                    if m.kind != MediaKind::Collection {
+                        return true;
+                    }
+                    if let Some(ref allow) = allow {
+                        if !allow.contains(&m.id) {
+                            return false;
+                        }
+                    }
+                    !deny.contains(&m.id)
+                });
+                collections_were_filtered = records.len() != before;
+            }
+        }
+
         if filter.exclude_childless {
             Box::pin(Self::drop_empty_group_containers(db, &mut records, filter))
                 .await?;
         }
 
-        let total_count = if filter.exclude_childless {
+        let total_count = if filter.exclude_childless || collections_were_filtered {
             records.len()
         } else {
             sql_total
@@ -7418,6 +7442,47 @@ pub fn push_release_date_filter(
             " AND NOT ({a}kind = 'movie' AND {a}released_at > date('now', '-1 year'))))"
         ));
     }
+}
+
+/// Collects `CollectionId` rules from a policy filter into (deny, allow) id
+/// sets, ignoring the filter's AND/OR group structure — this is a deliberate,
+/// narrow exception to "policy filters don't apply to container queries"
+/// (see AGENTS.md): it hides the *collection row itself* from browse views
+/// (userviews, boxset listings), never its member content, which stays
+/// visible everywhere else it would otherwise appear. Applied by
+/// `get_by_filter_inner` as a post-query Rust-side retain rather than
+/// threaded through the several SQL-building branches, since it only ever
+/// needs to run once, on the final `Collection`-kind result set.
+fn collection_visibility_filters(
+    pf: &remux_sdks::remux::CollectionFilter,
+) -> (HashSet<Uuid>, Option<HashSet<Uuid>>) {
+    use remux_sdks::remux::{FilterRule, SetOp};
+
+    let mut deny = HashSet::new();
+    let mut allow: Option<HashSet<Uuid>> = None;
+    for group in &pf.groups {
+        for rule in &group.rules {
+            if let FilterRule::CollectionId { op, ids } = rule {
+                if ids.is_empty() {
+                    continue;
+                }
+                if matches!(op, SetOp::IsNot | SetOp::NotIn) {
+                    deny.extend(
+                        ids.iter()
+                            .copied(),
+                    );
+                } else {
+                    allow
+                        .get_or_insert_with(HashSet::new)
+                        .extend(
+                            ids.iter()
+                                .copied(),
+                        );
+                }
+            }
+        }
+    }
+    (deny, allow)
 }
 
 /// Append WHERE clauses for a set of `FilterRule`s onto a query builder.

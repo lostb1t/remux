@@ -868,7 +868,6 @@ pub fn FilterRuleRow(
             .collect()
     };
 
-    let show_collection_id = allowed_fields.contains(&"collection_id");
     let show_field = move |key: &'static str| {
         allowed_fields.is_empty() || allowed_fields.contains(&key)
     };
@@ -903,15 +902,13 @@ pub fn FilterRuleRow(
                 if show_field("original_language") { option { value: "original_language", selected: field_val == "original_language", { field_label("original_language") } } }
                 if show_field("person")          { option { value: "person",           selected: field_val == "person",           { field_label("person") } } }
                 if show_field("catalog")         { option { value: "catalog",          selected: field_val == "catalog",          { field_label("catalog") } } }
-                // "collection_id" (matches a *collection's own id*) is only meaningful
-                // when picking collections for a group container, so it's opt-in only —
-                // never shown by the "no restriction" default every other field uses.
-                //
-                // A general "belongs to this collection" filter (collection_member) isn't
-                // offered at all: it only works for manual collections — smart collections
-                // have no stored membership (their contents are computed from their own
-                // filter at query time), so picking one would silently filter nothing.
-                if show_collection_id { option { value: "collection_id",    selected: field_val == "collection_id",    { field_label("collection_id") } } }
+                // "collection_id" matches a *collection's own id* — used both to pick
+                // which collections belong in a group container, and (server-side, as
+                // the one deliberate exception to "policy filters don't touch container
+                // queries") to hide specific collections from a user's browse views.
+                // It never filters content items, so a hidden collection's members
+                // stay visible everywhere else they'd otherwise appear.
+                if show_field("collection_id")   { option { value: "collection_id",    selected: field_val == "collection_id",    { field_label("collection_id") } } }
                 if show_field("favorite")        { option { value: "favorite",         selected: field_val == "favorite",         { field_label("favorite") } } }
                 if show_field("played")         { option { value: "played",          selected: field_val == "played",          { field_label("played") } } }
                 if show_field("media_kind")      { option { value: "media_kind",       selected: field_val == "media_kind",       { field_label("media_kind") } } }
