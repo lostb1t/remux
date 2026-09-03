@@ -2755,7 +2755,7 @@ impl Media {
         // JSON value — comparing that against a TEXT-bound '123' never matches
         // (SQLite doesn't coerce across storage classes in a bare `=`), so
         // integer-valued fields must bind as an integer, not a stringified one.
-        enum ProbeValue {
+        enum IdValue {
             Text(String),
             Int(i64),
         }
@@ -2763,44 +2763,44 @@ impl Media {
         // (json path, bound value) in priority order — mirrors stable_media_uuid
         // for Movie/Series/TvProgram; Artist/Album/Track have no priority
         // conflict since each carries at most one provider's id in practice.
-        let mut probes: Vec<(&'static str, ProbeValue)> = Vec::with_capacity(5);
+        let mut id_fields: Vec<(&'static str, IdValue)> = Vec::with_capacity(5);
         match kind {
             MediaKind::Movie | MediaKind::Series | MediaKind::TvProgram => {
                 if let Some(ref imdb) = ext.imdb {
-                    probes.push(("$.imdb", ProbeValue::Text(imdb.to_string())));
+                    id_fields.push(("$.imdb", IdValue::Text(imdb.to_string())));
                 }
                 if let Some(ref cid) = ext.custom_stremio_id {
-                    probes.push(("$.custom_stremio_id", ProbeValue::Text(cid.clone())));
+                    id_fields.push(("$.custom_stremio_id", IdValue::Text(cid.clone())));
                 }
                 if let Some(tmdb) = ext.tmdb {
-                    probes.push(("$.tmdb", ProbeValue::Int(tmdb)));
+                    id_fields.push(("$.tmdb", IdValue::Int(tmdb)));
                 }
                 if let Some(tvdb) = ext.tvdb {
-                    probes.push(("$.tvdb", ProbeValue::Int(tvdb)));
+                    id_fields.push(("$.tvdb", IdValue::Int(tvdb)));
                 }
                 if let Some(kitsu) = ext.kitsu {
-                    probes.push(("$.kitsu", ProbeValue::Int(kitsu)));
+                    id_fields.push(("$.kitsu", IdValue::Int(kitsu)));
                 }
             }
             MediaKind::Artist => {
                 if let Some(id) = ext.deezer_artist {
-                    probes.push(("$.deezer_artist", ProbeValue::Int(id)));
+                    id_fields.push(("$.deezer_artist", IdValue::Int(id)));
                 }
             }
             MediaKind::Album => {
                 if let Some(id) = ext.deezer_album {
-                    probes.push(("$.deezer_album", ProbeValue::Int(id)));
+                    id_fields.push(("$.deezer_album", IdValue::Int(id)));
                 }
                 if let Some(ref yid) = ext.youtube_id {
-                    probes.push(("$.youtube_id", ProbeValue::Text(yid.clone())));
+                    id_fields.push(("$.youtube_id", IdValue::Text(yid.clone())));
                 }
             }
             MediaKind::Track => {
                 if let Some(id) = ext.deezer_track {
-                    probes.push(("$.deezer_track", ProbeValue::Int(id)));
+                    id_fields.push(("$.deezer_track", IdValue::Int(id)));
                 }
                 if let Some(ref yid) = ext.youtube_id {
-                    probes.push(("$.youtube_id", ProbeValue::Text(yid.clone())));
+                    id_fields.push(("$.youtube_id", IdValue::Text(yid.clone())));
                 }
             }
             // Season/Episode identity is positional (parent series + index),
@@ -2808,7 +2808,7 @@ impl Media {
             // are minted deterministically via `season_id`/`episode_id`.
             _ => return None,
         }
-        if probes.is_empty() {
+        if id_fields.is_empty() {
             return None;
         }
 
@@ -2816,7 +2816,7 @@ impl Media {
             sqlx::QueryBuilder::new("SELECT DISTINCT id FROM media WHERE kind = ");
         qb.push_bind(kind.to_string());
         qb.push(" AND (");
-        for (i, (path, value)) in probes
+        for (i, (path, value)) in id_fields
             .iter()
             .enumerate()
         {
@@ -2827,8 +2827,8 @@ impl Media {
                 .push(path)
                 .push("') = ");
             match value {
-                ProbeValue::Text(s) => qb.push_bind(s.clone()),
-                ProbeValue::Int(n) => qb.push_bind(*n),
+                IdValue::Text(s) => qb.push_bind(s.clone()),
+                IdValue::Int(n) => qb.push_bind(*n),
             };
         }
         qb.push(")");
@@ -2843,40 +2843,60 @@ impl Media {
             0 => None,
             1 => Some(rows[0]),
             _ => {
-                // Ambiguous: probe each ID individually, in priority order,
-                // and take the first hit — guaranteed to be one of `rows`.
-                for (path, value) in &probes {
-                    let sql = format!(
-                        "SELECT id FROM media WHERE kind = ?1 AND json_extract(external_ids, '{path}') = ?2 LIMIT 1"
-                    );
-                    let result = match value {
-                        ProbeValue::Text(s) => {
-                            sqlx::query_scalar::<_, Uuid>(&sql)
-                                .bind(kind.to_string())
-                                .bind(s)
-                                .fetch_optional(db)
-                                .await
-                        }
-                        ProbeValue::Int(n) => {
-                            sqlx::query_scalar::<_, Uuid>(&sql)
-                                .bind(kind.to_string())
-                                .bind(n)
-                                .fetch_optional(db)
-                                .await
-                        }
-                    };
-                    if let Ok(Some(id)) = result {
-                        warn!(
-                            ?rows,
-                            winner = %id,
-                            kind = %kind,
-                            "find_by_external_ids: incoming item's IDs point at multiple distinct rows; \
-                             strongest ID wins"
-                        );
-                        return Some(id);
+                // Ambiguous: same WHERE, but ranked by priority via
+                // `ORDER BY CASE ... END LIMIT 1` — one query picks the
+                // strongest match directly, instead of probing each field
+                // with a separate round trip.
+                let mut qb =
+                    sqlx::QueryBuilder::new("SELECT id FROM media WHERE kind = ");
+                qb.push_bind(kind.to_string());
+                qb.push(" AND (");
+                for (i, (path, value)) in id_fields
+                    .iter()
+                    .enumerate()
+                {
+                    if i > 0 {
+                        qb.push(" OR ");
                     }
+                    qb.push("json_extract(external_ids, '")
+                        .push(path)
+                        .push("') = ");
+                    match value {
+                        IdValue::Text(s) => qb.push_bind(s.clone()),
+                        IdValue::Int(n) => qb.push_bind(*n),
+                    };
                 }
-                None
+                qb.push(") ORDER BY CASE");
+                for (i, (path, value)) in id_fields
+                    .iter()
+                    .enumerate()
+                {
+                    qb.push(" WHEN json_extract(external_ids, '")
+                        .push(path)
+                        .push("') = ");
+                    match value {
+                        IdValue::Text(s) => qb.push_bind(s.clone()),
+                        IdValue::Int(n) => qb.push_bind(*n),
+                    };
+                    qb.push(format!(" THEN {i}"));
+                }
+                qb.push(" ELSE 999 END LIMIT 1");
+
+                let winner: Option<Uuid> = qb
+                    .build_query_scalar()
+                    .fetch_optional(db)
+                    .await
+                    .unwrap_or(None);
+                if let Some(id) = winner {
+                    warn!(
+                        ?rows,
+                        winner = %id,
+                        kind = %kind,
+                        "find_by_external_ids: incoming item's IDs point at multiple distinct rows; \
+                         strongest ID wins"
+                    );
+                }
+                winner
             }
         }
     }
@@ -9968,8 +9988,8 @@ mod dedup_tests {
     /// Multi-match: incoming carries two ids that resolve to two different
     /// stored rows. The stronger id (imdb over custom_stremio_id) wins, per
     /// priority. Both stored rows carry an id from {imdb, custom_stremio_id}
-    /// so each independently satisfies `validate()`'s "Movie requires imdb"
-    /// rule (tmdb/tvdb/kitsu alone do not).
+    /// so each independently satisfies `validate()`'s Movie rule (imdb OR
+    /// custom_stremio_id — tmdb/tvdb/kitsu alone do not).
     #[tokio::test]
     async fn strongest_id_wins_on_ambiguous_match() {
         let (_s, guard) = new_test_server()

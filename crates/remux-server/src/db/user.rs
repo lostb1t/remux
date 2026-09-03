@@ -589,6 +589,28 @@ impl UserMediaState {
                 }
                 return Ok(row);
             }
+
+            // media_raw found nothing, but a row can already exist for this
+            // exact (user_id, media_id) with a stale/missing media_raw — e.g.
+            // written before this scheme existed, or before backfill ran.
+            // Without this, save() would upsert a blank state over it.
+            if let Some(mut row) = sqlx::query_as::<_, Self>(
+                "SELECT * FROM user_media_state WHERE user_id = ? AND media_id = ?",
+            )
+            .bind(user.id)
+            .bind(media.id)
+            .fetch_optional(db)
+            .await?
+            {
+                if row
+                    .media_raw
+                    .is_none()
+                {
+                    row.media_raw = media_raw_json;
+                }
+                return Ok(row);
+            }
+
             return Ok(Self {
                 user_id: user.id,
                 media_id: media.id,
@@ -626,26 +648,56 @@ impl UserMediaState {
     /// rather than waiting for each user to play the item before their state is
     /// migrated lazily by `get_or_new`, this sweeps the whole table immediately.
     pub async fn remap_orphaned_for(db: &SqlitePool, items: &[super::Media]) {
-        // Identity-keyed, so one UPDATE per item is exact — no candidate
-        // fan-out, no risk of matching an unrelated row. Season/Episode use
-        // their series' external ids (via `load_ancestor_ext`) rather than
-        // their own, which are normally empty.
+        // Identity-keyed, so each item contributes exactly one (media_raw,
+        // new_id) pair — no candidate fan-out, no risk of matching an
+        // unrelated row. Season/Episode use their series' external ids (via
+        // `load_ancestor_ext`) rather than their own, which are normally
+        // empty. Resolving the pairs still needs one pass (async ancestor
+        // lookups), but the actual writes are batched below rather than one
+        // UPDATE per item — callers pass up to `CHUNK_SIZE` items here per
+        // library-refresh chunk.
+        let mut pairs: Vec<(String, Uuid)> = Vec::with_capacity(items.len());
         for item in items {
             let ancestor_ext = load_ancestor_ext(db, item).await;
             let raw = item.identity_raw(ancestor_ext.as_ref());
-            let Some(raw_json) = raw.identity_key() else {
-                continue;
-            };
-            sqlx::query(
-                "UPDATE user_media_state SET media_id = ? \
-                 WHERE media_raw = ? AND media_id != ?",
-            )
-            .bind(item.id)
-            .bind(raw_json)
-            .bind(item.id)
-            .execute(db)
-            .await
-            .ok();
+            if let Some(raw_json) = raw.identity_key() {
+                pairs.push((raw_json, item.id));
+            }
+        }
+
+        if pairs.is_empty() {
+            return;
+        }
+
+        // Each pair needs 3 bind slots (WHEN ?, THEN ?, IN ?).
+        // SQLite's limit is 999; use 300 pairs per batch to stay well under it.
+        for chunk in pairs.chunks(300) {
+            let mut sql =
+                String::from("UPDATE user_media_state SET media_id = CASE media_raw");
+            for _ in chunk {
+                sql.push_str(" WHEN ? THEN ?");
+            }
+            sql.push_str(" END WHERE media_raw IN (");
+            for i in 0..chunk.len() {
+                if i > 0 {
+                    sql.push(',');
+                }
+                sql.push('?');
+            }
+            sql.push(')');
+
+            let mut q = sqlx::query(&sql);
+            for (raw_json, new_id) in chunk {
+                q = q
+                    .bind(raw_json)
+                    .bind(new_id);
+            }
+            for (raw_json, _) in chunk {
+                q = q.bind(raw_json);
+            }
+            q.execute(db)
+                .await
+                .ok();
         }
     }
 
@@ -1593,5 +1645,59 @@ mod identity_reattach_tests {
         );
         assert_eq!(found.play_count, 4);
         assert_eq!(found.media_id, media.id);
+    }
+
+    /// A row already sitting at the exact `(user_id, media_id)` this call was
+    /// made with — but with a stale/missing `media_raw` (legacy row, or
+    /// written before backfill ran) — must never be replaced by a blank
+    /// default just because the `media_raw` lookup missed. Regression: an
+    /// earlier version of `get_or_new` fell straight to `Self::default()`
+    /// here, and the caller's next `.save()` would upsert that over the
+    /// existing row, silently clearing favorite/play_count/position.
+    #[tokio::test]
+    async fn a_legacy_row_with_no_media_raw_is_not_overwritten_by_a_blank_default() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let user = db::User::get_by_username(&ctx.db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+        let media = crate::integration_test::seed_movie(ctx).await;
+
+        sqlx::query(
+            "INSERT INTO user_media_state (user_id, media_id, media_raw, favorite, play_count) \
+             VALUES (?, ?, NULL, 1, 7)",
+        )
+        .bind(user.id)
+        .bind(media.id)
+        .execute(&ctx.db)
+        .await
+        .unwrap();
+
+        let found = UserMediaState::get_or_new(&ctx.db, &user, &media)
+            .await
+            .unwrap();
+        assert!(
+            found.favorite,
+            "the legacy row must be found, not replaced by a blank default"
+        );
+        assert_eq!(found.play_count, 7);
+
+        found
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        let row: UserMediaState = sqlx::query_as(
+            "SELECT * FROM user_media_state WHERE user_id = ? AND media_id = ?",
+        )
+        .bind(user.id)
+        .bind(media.id)
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap();
+        assert!(row.favorite, "save() must not have wiped it");
+        assert_eq!(row.play_count, 7);
     }
 }
