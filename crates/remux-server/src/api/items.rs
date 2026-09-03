@@ -5664,9 +5664,10 @@ mod tests {
     }
 
     fn item_ids(body: &serde_json::Value) -> Vec<String> {
-        body["Items"]
-            .as_array()
-            .unwrap_or(&vec![])
+        let Some(items) = body["Items"].as_array() else {
+            return Vec::new();
+        };
+        items
             .iter()
             .filter_map(|item| {
                 item["Id"]

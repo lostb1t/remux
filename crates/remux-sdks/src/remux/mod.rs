@@ -1276,7 +1276,7 @@ pub struct GetItemsQuery {
     pub start_index: Option<u32>,
     pub limit: Option<u32>,
     pub search_term: Option<String>,
-    /// Emby/Jellyfin `AnyProviderIdEquals` — `Tmdb.123,Imdb.tt456,Tvdb.789`.
+    /// Emby `AnyProviderIdEquals` — `Tmdb.123,Imdb.tt456,Tvdb.789`.
     #[serde(
         deserialize_with = "deserialize_separated_str",
         serialize_with = "serialize_comma_opt",
@@ -1519,7 +1519,7 @@ impl GetItemsQuery {
         requested
     }
 
-    /// `None` when the client did not send `AnyProviderIdEquals`.
+    /// `None` when the client did not send Emby `AnyProviderIdEquals`.
     /// `Some` (possibly empty) when it did, so callers can return no rows
     /// instead of ignoring a malformed filter.
     pub fn any_provider_ids(&self) -> Option<AnyProviderIds> {

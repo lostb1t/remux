@@ -1318,7 +1318,7 @@ pub struct MediaFilter {
     /// when empty.
     pub exclude_childless: bool,
     pub exclude_ids: Option<Vec<Uuid>>,
-    /// Jellyfin/Emby `AnyProviderIdEquals` — item must match ANY listed provider ID.
+    /// Emby `AnyProviderIdEquals` — item must match ANY listed provider ID.
     pub any_provider_ids: Option<api::AnyProviderIds>,
 }
 

@@ -1,4 +1,6 @@
-/// Parsed Emby/Jellyfin `AnyProviderIdEquals` tokens.
+use std::str::FromStr;
+
+/// Parsed Emby `AnyProviderIdEquals` tokens.
 ///
 /// Clients such as Infuse, UHF, and EPlayer look up library items by
 /// `Tmdb.{id}`, `Imdb.tt…`, and `Tvdb.{id}`. Matching is OR across tokens.
@@ -9,6 +11,17 @@ pub struct AnyProviderIds {
     pub tmdb: Vec<i64>,
     pub imdb: Vec<String>,
     pub tvdb: Vec<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum_macros::EnumString)]
+#[strum(serialize_all = "lowercase", ascii_case_insensitive)]
+enum ProviderAlias {
+    #[strum(serialize = "tmdb", serialize = "themoviedb", serialize = "tmdbid")]
+    Tmdb,
+    #[strum(serialize = "imdb", serialize = "imdbid")]
+    Imdb,
+    #[strum(serialize = "tvdb", serialize = "thetvdb", serialize = "tvdbid")]
+    Tvdb,
 }
 
 impl AnyProviderIds {
@@ -42,15 +55,15 @@ impl AnyProviderIds {
         else {
             return;
         };
-        let provider = provider
-            .trim()
-            .to_ascii_lowercase();
         let value = value.trim();
         if value.is_empty() {
             return;
         }
-        match provider.as_str() {
-            "tmdb" | "themoviedb" | "tmdbid" => {
+        let Ok(kind) = ProviderAlias::from_str(provider.trim()) else {
+            return;
+        };
+        match kind {
+            ProviderAlias::Tmdb => {
                 if let Ok(n) = value.parse::<i64>() {
                     if n > 0
                         && !self
@@ -62,7 +75,7 @@ impl AnyProviderIds {
                     }
                 }
             }
-            "imdb" | "imdbid" => {
+            ProviderAlias::Imdb => {
                 if !self
                     .imdb
                     .iter()
@@ -72,7 +85,7 @@ impl AnyProviderIds {
                         .push(value.to_string());
                 }
             }
-            "tvdb" | "thetvdb" | "tvdbid" => {
+            ProviderAlias::Tvdb => {
                 if let Ok(n) = value.parse::<i64>() {
                     if n > 0
                         && !self
@@ -84,7 +97,6 @@ impl AnyProviderIds {
                     }
                 }
             }
-            _ => {}
         }
     }
 }
