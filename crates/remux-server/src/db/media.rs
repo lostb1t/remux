@@ -3258,6 +3258,59 @@ impl Media {
         Ok(out)
     }
 
+    /// Drops empty containers from `records` in place — the `exclude_childless`
+    /// branch of `get_by_filter_inner`, pulled into its own boxed async fn.
+    ///
+    /// Regression: inlined directly in `get_by_filter_inner`, this branch's
+    /// locals (`nonempty_groups`, the loop and its nested awaits) got folded
+    /// into `get_by_filter_inner`'s own generated state machine — Rust sizes
+    /// an async fn's future to the union of live locals across *every* await
+    /// point, including ones in branches not taken at runtime. That was
+    /// enough extra stack per call to overflow deep chains elsewhere in the
+    /// request path (e.g. plain `/items` and `/latest` listings that never
+    /// take this branch at all). Boxing it here keeps those locals in a
+    /// separate, heap-allocated future instead.
+    async fn drop_empty_group_containers(
+        db: &SqlitePool,
+        records: &mut Vec<Self>,
+        filter: &MediaFilter,
+    ) -> Result<()> {
+        let mut nonempty_groups = HashSet::new();
+        for group_id in records
+            .iter()
+            .filter(|m| m.is_group_container())
+            .map(|m| m.id)
+        {
+            if Self::group_container_has_visible_content(
+                db,
+                group_id,
+                filter.user_id,
+                filter
+                    .policy_filter
+                    .clone(),
+            )
+            .await?
+            {
+                nonempty_groups.insert(group_id);
+            }
+        }
+
+        records.retain(|m| {
+            if !matches!(
+                m.kind,
+                MediaKind::Collection | MediaKind::Folder | MediaKind::Playlist
+            ) {
+                return true;
+            }
+            if m.is_group_container() {
+                return nonempty_groups.contains(&m.id);
+            }
+            m.child_count
+                .map_or(true, |c| c > 0)
+        });
+        Ok(())
+    }
+
     /// Whether a collection-of-collections has a reachable child collection
     /// that would itself be visible. Group containers hold their children via
     /// `parent_id`, unlike regular manual collections, which use relations.
@@ -5365,39 +5418,8 @@ impl Media {
         let sql_total = count?;
 
         if filter.exclude_childless {
-            let mut nonempty_groups = HashSet::new();
-            for group_id in records
-                .iter()
-                .filter(|m| m.is_group_container())
-                .map(|m| m.id)
-            {
-                if Self::group_container_has_visible_content(
-                    db,
-                    group_id,
-                    filter.user_id,
-                    filter
-                        .policy_filter
-                        .clone(),
-                )
-                .await?
-                {
-                    nonempty_groups.insert(group_id);
-                }
-            }
-
-            records.retain(|m| {
-                if !matches!(
-                    m.kind,
-                    MediaKind::Collection | MediaKind::Folder | MediaKind::Playlist
-                ) {
-                    return true;
-                }
-                if m.is_group_container() {
-                    return nonempty_groups.contains(&m.id);
-                }
-                m.child_count
-                    .map_or(true, |c| c > 0)
-            });
+            Box::pin(Self::drop_empty_group_containers(db, &mut records, filter))
+                .await?;
         }
 
         let total_count = if filter.exclude_childless {
