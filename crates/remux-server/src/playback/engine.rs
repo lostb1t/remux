@@ -153,8 +153,14 @@ fn send_signal(pid: u32, sig: libc::c_int) {
 #[cfg(not(unix))]
 fn send_signal(_pid: u32, _sig: i32) {}
 
-/// Spawn the buffer-throttle task. It pauses/resumes ffmpeg so it never
-/// encodes more than MAX_BUFFER_SECS ahead of what the client has requested.
+/// Spawn the buffer-throttle task.
+///
+/// For VOD: pauses/resumes ffmpeg via SIGSTOP/SIGCONT so it never encodes more than
+/// MAX_BUFFER_SECS ahead of the client's download position, preventing unbounded disk use.
+///
+/// For live streams: skips throttling entirely — the upstream network stream is the
+/// natural rate limiter and ffmpeg can't meaningfully get ahead. Segment cleanup still
+/// runs so old segments are pruned as the client downloads them.
 fn spawn_buffer_monitor(
     output_dir: PathBuf,
     segment_length: u32,
@@ -162,6 +168,7 @@ fn spawn_buffer_monitor(
     ffmpeg_pid: Arc<AtomicU32>,
     mut stop_rx: tokio::sync::oneshot::Receiver<()>,
     play_session_id: String,
+    is_live: bool,
 ) {
     tokio::spawn(async move {
         let mut paused = false;
@@ -173,35 +180,37 @@ fn spawn_buffer_monitor(
             }
             ticks += 1;
 
-            let pid = ffmpeg_pid.load(Ordering::Relaxed);
-            let produced = count_segments(&output_dir);
-            let buffered_secs = produced * segment_length;
-            // playback_offset_secs is how far the client has actually played
-            // relative to the start of this transcode session (from progress reports).
             let playback_secs = playback_offset_secs.load(Ordering::Relaxed);
 
-            let ahead = buffered_secs.saturating_sub(playback_secs);
+            // VOD only: pause ffmpeg when it's too far ahead of the client's download
+            // position, resume when the client has caught up.
+            if !is_live {
+                let pid = ffmpeg_pid.load(Ordering::Relaxed);
+                let produced = count_segments(&output_dir);
+                let buffered_secs = produced * segment_length;
+                let ahead = buffered_secs.saturating_sub(playback_secs);
 
-            if pid != 0 && !paused && ahead >= MAX_BUFFER_SECS {
-                debug!(play_session_id, pid, ahead, "Buffer full — pausing ffmpeg");
-                #[cfg(unix)]
-                send_signal(pid, libc::SIGSTOP);
-                paused = true;
-            } else if pid != 0
-                && paused
-                && ahead < MAX_BUFFER_SECS.saturating_sub(segment_length * 2)
-            {
-                debug!(
-                    play_session_id,
-                    pid, ahead, "Buffer drained — resuming ffmpeg"
-                );
-                #[cfg(unix)]
-                send_signal(pid, libc::SIGCONT);
-                paused = false;
+                if pid != 0 && !paused && ahead >= MAX_BUFFER_SECS {
+                    debug!(play_session_id, pid, ahead, "Buffer full — pausing ffmpeg");
+                    #[cfg(unix)]
+                    send_signal(pid, libc::SIGSTOP);
+                    paused = true;
+                } else if pid != 0
+                    && paused
+                    && ahead < MAX_BUFFER_SECS.saturating_sub(segment_length * 2)
+                {
+                    debug!(
+                        play_session_id,
+                        pid, ahead, "Buffer drained — resuming ffmpeg"
+                    );
+                    #[cfg(unix)]
+                    send_signal(pid, libc::SIGCONT);
+                    paused = false;
+                }
             }
 
             // Every 30 seconds, delete segments that are more than SEGMENT_KEEP_SECS
-            // behind the current playback position.
+            // behind the current download position.
             if ticks % 30 == 0 && playback_secs > SEGMENT_KEEP_SECS {
                 let cutoff_idx = (playback_secs - SEGMENT_KEEP_SECS) / segment_length;
                 delete_old_segments(&output_dir, cutoff_idx);
@@ -1132,6 +1141,7 @@ pub async fn start_transcode(
                     ffmpeg_pid.clone(),
                     monitor_stop_rx,
                     s.id.clone(),
+                    params.is_live,
                 );
                 s.output_dir
                     .clone()
@@ -1213,8 +1223,24 @@ pub async fn start_transcode(
                                 stderr = %stderr_str,
                                 "live stream ffmpeg exited unexpectedly, restarting"
                             );
+                            // Re-arm kill_tx with a sleep-abort channel so kill_transcode
+                            // can interrupt the delay and the task doesn't become orphaned.
+                            let (sleep_kill_tx, sleep_kill_rx) =
+                                tokio::sync::oneshot::channel::<()>();
+                            s.kill_tx = Some(sleep_kill_tx);
                             drop(s);
-                            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                            let killed = tokio::select! {
+                                _ = sleep_kill_rx => true,
+                                _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => false,
+                            };
+                            if killed {
+                                session_clone
+                                    .write()
+                                    .await
+                                    .wait_done
+                                    .notify_one();
+                                break;
+                            }
                             continue;
                         } else {
                             let err_msg = format!(
