@@ -361,10 +361,13 @@ impl Default for TranscodeParams {
     }
 }
 
-/// Sample-entry tag for a stream-copied HEVC track, as resolved from the
-/// client's DeviceProfile at PlaybackInfo time (see
-/// `DeviceProfileExt::hevc_copy_tag`). Defaults to `hvc1` — today's behaviour —
-/// whenever the client didn't tell us, so nothing that plays now can regress.
+/// Sample-entry tag for a stream-copied HEVC track. The real decision belongs
+/// to `DeviceProfileExt::hevc_copy_tag`, which weighs the client's declared
+/// constraints against the source's own fourcc at PlaybackInfo time and hands
+/// the answer down on the transcode URL. This only narrows that answer back to
+/// the two legal values, falling back to `hvc1` for requests that carry no tag
+/// at all — a direct hit on the stream endpoint, or a session predating the
+/// parameter.
 fn hevc_copy_tag(tag: Option<&str>) -> &str {
     match tag {
         Some(t) if t.eq_ignore_ascii_case("hev1") => "hev1",
