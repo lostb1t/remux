@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788475721667,
+  "lastUpdate": 1788511265496,
   "repoUrl": "https://github.com/lostb1t/remux",
   "entries": {
     "Benchmark": [
@@ -1631,6 +1631,142 @@ window.BENCHMARK_DATA = {
             "name": "nextup_date_cutoff/30days",
             "value": 70071712,
             "range": "± 5123364",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "lostbit",
+            "username": "lostb1t",
+            "email": "coding-mosses0z@icloud.com"
+          },
+          "committer": {
+            "name": "lostbit",
+            "username": "lostb1t",
+            "email": "coding-mosses0z@icloud.com"
+          },
+          "id": "5c2ea4679c6f04aaf64de17ee54a608477d1004b",
+          "message": "fix: catalog membership dropped after id dedup, and empty promoted collection groups hidden\n\nprocess_meta_batch discarded the final UUID when find_existing_id_by_ext\nadopted an existing row (dedup by external ID), so import_catalog_items\nrecorded catalog relations and stale-member diffs against a pre-remap id\nthat was never written, silently dropping membership (fixes #426).\n\ngroup_container_has_visible_content hid a freshly promoted\ncollection-of-collections that has no sub-collections yet, conflating\nthat with #414's actual case of a group whose existing children are all\nempty (fixes #425).",
+          "timestamp": "2026-09-04T08:23:10Z",
+          "url": "https://github.com/lostb1t/remux/commit/5c2ea4679c6f04aaf64de17ee54a608477d1004b"
+        },
+        "date": 1788511263941,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "items_latest/limit=20&recursive=false",
+            "value": 219991799,
+            "range": "± 14772825",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&recursive=false",
+            "value": 241725113,
+            "range": "± 17923232",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=500&recursive=false",
+            "value": 282702360,
+            "range": "± 18309865",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&include_item_types=Movie&recursive=false",
+            "value": 74166960,
+            "range": "± 6568006",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&include_item_types=Series&recursive=false",
+            "value": 86757711,
+            "range": "± 10255263",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=20&recursive=false",
+            "value": 169075964,
+            "range": "± 20344405",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&recursive=false",
+            "value": 141646548,
+            "range": "± 12925081",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=500&recursive=false",
+            "value": 164451309,
+            "range": "± 14705328",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&include_item_types=Movie&recursive=false",
+            "value": 141537731,
+            "range": "± 7721477",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&include_item_types=Series&recursive=false",
+            "value": 187332566,
+            "range": "± 9483477",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&filters=IsPlayed&recursive=false",
+            "value": 86667267,
+            "range": "± 9820099",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&sort_by=DateCreated&recursive=false",
+            "value": 224250989,
+            "range": "± 6884772",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=50&recursive=false",
+            "value": 225040760,
+            "range": "± 8770174",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=200&recursive=false",
+            "value": 225575261,
+            "range": "± 10126784",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=500&recursive=false",
+            "value": 225559164,
+            "range": "± 10096183",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/limit=500&enable_resumable=true&recursive=false",
+            "value": 223628637,
+            "range": "± 9318776",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/limit=500&enable_resumable=false&recursive=false",
+            "value": 234065523,
+            "range": "± 11804209",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/epoch",
+            "value": 236269158,
+            "range": "± 12709035",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/30days",
+            "value": 69080635,
+            "range": "± 4996972",
             "unit": "ns/iter"
           }
         ]
