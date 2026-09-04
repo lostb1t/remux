@@ -295,7 +295,11 @@ impl StreamInfo {
                 info_hash,
                 file_idx,
                 ..
-            } => Some((info_hash.as_str(), file_idx.map(|i| i as i32))),
+            } => Some((
+                info_hash.as_str(),
+                // Indices beyond i32 can't be represented in RemuxDB; treat as unknown.
+                file_idx.and_then(|i| i32::try_from(i).ok()),
+            )),
             _ => self
                 .torrent_info_hash
                 .as_deref()
