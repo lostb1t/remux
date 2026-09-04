@@ -1,4 +1,4 @@
-use std::{io::Cursor, path::PathBuf};
+use std::{collections::HashSet, io::Cursor, path::PathBuf};
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use futures::StreamExt;
@@ -35,9 +35,9 @@ const POSTER_H: u32 = 285;
 
 /// A four-by-four poster sheet gives the grid enough depth to overflow the frame.
 const GRID_POSTER_LIMIT: usize = 16;
-/// The grid cycles its sources, so downloading more than eight full posters
-/// adds latency without a meaningful visual improvement in the cropped plane.
-const GRID_SOURCE_POSTER_LIMIT: usize = 8;
+/// A grid cell should use its own source poster whenever the collection has
+/// enough artwork. Repeating posters makes the projected sheet look synthetic.
+const GRID_SOURCE_POSTER_LIMIT: usize = GRID_POSTER_LIMIT;
 const GRID_COLUMNS: usize = 4;
 const GRID_POSTER_W: u32 = 161;
 const GRID_POSTER_H: u32 = 241;
@@ -693,20 +693,22 @@ fn collection_item_filter(collection: &db::Media) -> db::MediaFilter {
     }
 }
 
-/// Collect up to 4 poster image paths/URLs from collection items.
+/// Collect distinct poster image paths/URLs from collection items.
 async fn collect_poster_urls(
     _id: Uuid,
     collection: &db::Media,
     db: &sqlx::SqlitePool,
     limit: u32,
 ) -> Vec<String> {
+    // Inspect extra records so duplicate artwork does not consume a grid cell.
     let filter = db::MediaFilter {
-        limit: Some(limit),
+        limit: Some(limit.saturating_mul(2)),
         ..collection_item_filter(collection)
     };
     let Ok(result) = db::Media::get_by_filter(db, &filter).await else {
         return Vec::new();
     };
+    let mut seen = HashSet::new();
     result
         .records
         .iter()
@@ -726,6 +728,8 @@ async fn collect_poster_urls(
                         })
                 })
         })
+        .filter(|path| seen.insert(path.clone()))
+        .take(limit as usize)
         .collect()
 }
 
@@ -862,7 +866,7 @@ fn stamp_grid(canvas: &mut RgbaImage, posters: &[RgbaImage]) {
     // therefore clipped, leaving roughly the right third of the image visible.
     let (a, b, c, d) = (0.78f32, -0.12f32, 0.12f32, 0.75f32);
     let determinant = a * d - b * c;
-    let centre_x = 930.0;
+    let centre_x = 875.0;
     let centre_y = 270.0;
     let half_w = grid_w as f32 / 2.0;
     let half_h = grid_h as f32 / 2.0;
