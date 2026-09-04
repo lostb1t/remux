@@ -450,7 +450,7 @@ pub fn CollectionForm(
             c.layout
                 .to_string()
         })
-        .unwrap_or_else(|| "cascade".to_string());
+        .unwrap_or_else(|| "grid".to_string());
     let mut poster_layout = use_signal(|| existing_layout);
     let mut overlay_type = use_signal(|| match existing_overlay {
         Some(CollectionOverlay::Text { .. }) => "text".to_string(),
@@ -477,7 +477,16 @@ pub fn CollectionForm(
     let mut overlay_font_family = use_signal(|| {
         if let Some(CollectionOverlay::Text { font_family, .. }) = existing_overlay {
             font_family
-                .clone()
+                .map(|family| family.to_string())
+                .unwrap_or_else(|| "roboto".to_string())
+        } else {
+            "roboto".to_string()
+        }
+    });
+    let mut overlay_font_weight = use_signal(|| {
+        if let Some(CollectionOverlay::Text { font_weight, .. }) = existing_overlay {
+            font_weight
+                .map(|weight| weight.to_string())
                 .unwrap_or_else(|| "bold".to_string())
         } else {
             "bold".to_string()
@@ -540,11 +549,27 @@ pub fn CollectionForm(
         .clone();
     let current_image_url = existing_item_id
         .as_ref()
-        .zip(existing_image_tag.as_ref())
-        .map(|(id, tag)| format!("{server_base}/Items/{id}/Images/Primary?tag={tag}"));
+        .map(|id| {
+            existing_image_tag
+                .as_ref()
+                .map(|tag| format!("{server_base}/Items/{id}/Images/Primary?tag={tag}"))
+                .unwrap_or_else(|| format!("{server_base}/Items/{id}/Images/Primary"))
+        });
     let mut pending_image_bytes: Signal<Option<Vec<u8>>> = use_signal(|| None);
     let mut pending_image_preview: Signal<Option<String>> = use_signal(|| None);
     let mut has_image = use_signal(|| existing_image_tag.is_some());
+    let existing_custom_image_source = existing
+        .as_ref()
+        .and_then(|item| {
+            item.image_tags
+                .as_ref()
+        })
+        .and_then(|tags| {
+            tags.backdrop
+                .as_ref()
+        })
+        .is_some();
+    let mut has_custom_image_source = use_signal(|| existing_custom_image_source);
     let client_for_delete = app_state.clone();
     let app_state_delete = app_state.clone();
     let delete_name = existing
@@ -643,11 +668,14 @@ pub fn CollectionForm(
                         .peek()
                         .parse::<u32>()
                         .ok(),
-                    font_family: Some(
-                        overlay_font_family
-                            .peek()
-                            .clone(),
-                    ),
+                    font_family: overlay_font_family
+                        .peek()
+                        .parse()
+                        .ok(),
+                    font_weight: overlay_font_weight
+                        .peek()
+                        .parse()
+                        .ok(),
                 },
                 "logo" => CollectionOverlay::StreamingLogo {
                     provider_id: logo_provider_id
@@ -785,6 +813,22 @@ pub fn CollectionForm(
         });
     };
 
+    let pending_preview_label = {
+        let text = overlay_text.read();
+        if text.is_empty() {
+            title
+                .read()
+                .clone()
+        } else {
+            text.clone()
+        }
+    };
+    let pending_preview_font_size = overlay_font_size
+        .read()
+        .parse::<u32>()
+        .unwrap_or(80)
+        / 2;
+
     rsx! {
         p { class: "modal-title",
             if is_edit { "Edit Collection" } else { "New Collection" }
@@ -853,6 +897,18 @@ pub fn CollectionForm(
                                     src: "{preview}",
                                     style: "width:100%;max-height:180px;object-fit:cover;border-radius:6px;border:1px solid var(--border)",
                                 }
+                                if *overlay_type.read() == "text" {
+                                    div {
+                                        style: "position:absolute;left:10.4%;right:10%;top:50%;transform:translateY(-50%);color:white;font-size:{pending_preview_font_size}px;font-weight:700;line-height:1.08;pointer-events:none;text-shadow:0 2px 12px rgba(0,0,0,.6);overflow-wrap:anywhere",
+                                        "{pending_preview_label}"
+                                    }
+                                }
+                                if *previewing.read() {
+                                    div {
+                                        style: "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.45);border-radius:6px",
+                                        span { class: "spinner" }
+                                    }
+                                }
                             }
                         } else if let Some(url) = &current_image_url {
                             if *has_image.read() {
@@ -909,6 +965,7 @@ pub fn CollectionForm(
                                                     pending_image_preview.set(Some(data_url));
                                                     pending_image_bytes.set(Some(bytes));
                                                     has_image.set(true);
+                                                    has_custom_image_source.set(true);
                                                 }
                                             }
                                         });
@@ -937,10 +994,94 @@ pub fn CollectionForm(
                                                 pending_image_bytes.set(None);
                                                 pending_image_preview.set(None);
                                                 has_image.set(false);
+                                                has_custom_image_source.set(false);
                                             });
                                         }
                                     },
                                     "Remove image"
+                                }
+                            }
+                            if let Some(id) = existing_item_id.clone() {
+                                button {
+                                    r#type: "button",
+                                    class: "btn btn-ghost",
+                                    style: "height:30px;font-size:.68rem;padding:0 10px",
+                                    disabled: *previewing.read(),
+                                    onclick: {
+                                        let client = app_state_preview.clone();
+                                        move |_| {
+                                            let ot = overlay_type.peek().clone();
+                                            let cfg = CollectionImageConfig {
+                                                layout: poster_layout
+                                                    .peek()
+                                                    .parse::<CollectionPosterLayout>()
+                                                    .unwrap_or_default(),
+                                                overlay: match ot.as_str() {
+                                                    "text" => CollectionOverlay::Text {
+                                                        text: {
+                                                            let t = overlay_text.peek().clone();
+                                                            if t.is_empty() { None } else { Some(t) }
+                                                        },
+                                                        font_size: overlay_font_size.peek().parse::<u32>().ok(),
+                                                        font_family: overlay_font_family.peek().parse().ok(),
+                                                        font_weight: overlay_font_weight.peek().parse().ok(),
+                                                    },
+                                                    "logo" => CollectionOverlay::StreamingLogo {
+                                                        provider_id: logo_provider_id.peek().unwrap_or(0),
+                                                        provider_name: logo_provider_name.peek().clone(),
+                                                        logo_path: logo_path.peek().clone(),
+                                                    },
+                                                    _ => CollectionOverlay::None,
+                                                },
+                                            };
+                                            let pending_image = pending_image_bytes.peek().clone();
+                                            previewing.set(true);
+                                            let client = client.clone();
+                                            let id = id.clone();
+                                            spawn(async move {
+                                                match client
+                                                    .execute(PatchItem {
+                                                        item_id: id.clone(),
+                                                        payload: PatchItemPayload {
+                                                            image_config: Some(cfg),
+                                                            ..Default::default()
+                                                        },
+                                                    })
+                                                    .await
+                                                {
+                                                    Ok(_) => {
+                                                        if let Some(bytes) = pending_image {
+                                                            let content_type = crate::state::detect_image_content_type(&bytes);
+                                                            if let Err(e) = client
+                                                                .execute(remux_sdks::remux::UploadItemImage {
+                                                                    item_id: id,
+                                                                    image_type: "Primary".to_string(),
+                                                                    bytes,
+                                                                    content_type,
+                                                                })
+                                                                .await
+                                                            {
+                                                                err.set(Some(e.user_message()));
+                                                                previewing.set(false);
+                                                                return;
+                                                            }
+                                                            pending_image_bytes.set(None);
+                                                            pending_image_preview.set(None);
+                                                            has_image.set(true);
+                                                            has_custom_image_source.set(true);
+                                                        }
+                                                        let next = *image_bust.read() + 1;
+                                                        image_bust.set(next);
+                                                    }
+                                                    Err(e) => {
+                                                        err.set(Some(e.user_message()));
+                                                        previewing.set(false);
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    },
+                                    if *previewing.read() { "Updating…" } else { "Update preview" }
                                 }
                             }
                         }
@@ -950,17 +1091,18 @@ pub fn CollectionForm(
 
             // Image poster configurator (edit mode only)
             if is_edit {
-                div { class: "field",
-                    label { class: "field-label", "Poster Layout" }
-                    p { class: "field-hint", "Choose how the item posters are arranged in the generated image." }
-                    select {
-                        class: "select-input",
-                        value: "{poster_layout}",
-                        oninput: move |e| poster_layout.set(e.value()),
-                        option { value: "cascade", selected: *poster_layout.read() == "cascade", "Cascade" }
-                        option { value: "grid", selected: *poster_layout.read() == "grid", "Grid" }
-                        option { value: "row", selected: *poster_layout.read() == "row", "Row" }
-                        option { value: "scatter", selected: *poster_layout.read() == "scatter", "Scatter" }
+                if !*has_custom_image_source.read() {
+                    div { class: "field",
+                        label { class: "field-label", "Poster Layout" }
+                        p { class: "field-hint", "Choose how the item posters are arranged in the generated image." }
+                        select {
+                            class: "select-input",
+                            value: "{poster_layout}",
+                            oninput: move |e| poster_layout.set(e.value()),
+                            option { value: "grid", selected: *poster_layout.read() == "grid", "Grid" }
+                            option { value: "row", selected: *poster_layout.read() == "row", "Row" }
+                            option { value: "scatter", selected: *poster_layout.read() == "scatter", "Scatter" }
+                        }
                     }
                 }
                 div { class: "field",
@@ -1009,19 +1151,35 @@ pub fn CollectionForm(
                                     style: "flex:1",
                                     value: "{overlay_font_family}",
                                     onchange: move |e| overlay_font_family.set(e.value()),
-                                    option { value: "bold",    selected: *overlay_font_family.read() == "bold",    "Bold" }
-                                    option { value: "regular", selected: *overlay_font_family.read() == "regular", "Regular" }
+                                    option { value: "roboto",           selected: *overlay_font_family.read() == "roboto",           "Roboto" }
+                                    option { value: "open_sans",        selected: *overlay_font_family.read() == "open_sans",        "Open Sans" }
+                                    option { value: "lato",             selected: *overlay_font_family.read() == "lato",             "Lato" }
+                                    option { value: "montserrat",       selected: *overlay_font_family.read() == "montserrat",       "Montserrat" }
+                                    option { value: "poppins",          selected: *overlay_font_family.read() == "poppins",          "Poppins" }
+                                    option { value: "oswald",           selected: *overlay_font_family.read() == "oswald",           "Oswald" }
+                                    option { value: "raleway",          selected: *overlay_font_family.read() == "raleway",          "Raleway" }
+                                    option { value: "merriweather",     selected: *overlay_font_family.read() == "merriweather",     "Merriweather" }
+                                    option { value: "playfair_display", selected: *overlay_font_family.read() == "playfair_display", "Playfair Display" }
+                                    option { value: "bebas_neue",       selected: *overlay_font_family.read() == "bebas_neue",       "Bebas Neue" }
+                                }
+                                select {
+                                    class: "select-input",
+                                    style: "flex:0 0 96px",
+                                    value: "{overlay_font_weight}",
+                                    onchange: move |e| overlay_font_weight.set(e.value()),
+                                    option { value: "regular", selected: *overlay_font_weight.read() == "regular", "Regular" }
+                                    option { value: "bold", selected: *overlay_font_weight.read() == "bold", "Bold" }
                                 }
                                 input {
-                                    r#type: "number",
-                                    class: "field-input",
-                                    style: "flex:0 0 90px",
-                                    placeholder: "80",
-                                    min: "20",
-                                    max: "300",
+                                    r#type: "range",
+                                    style: "flex:1;accent-color:var(--accent)",
+                                    min: "32",
+                                    max: "160",
+                                    step: "2",
                                     value: "{overlay_font_size}",
                                     oninput: move |e| overlay_font_size.set(e.value()),
                                 }
+                                span { style: "flex:0 0 42px;text-align:right;font-variant-numeric:tabular-nums", "{overlay_font_size}px" }
                             }
                         }
                     }
@@ -1064,67 +1222,6 @@ pub fn CollectionForm(
                     }
                 }
 
-            }
-
-            if is_edit {
-                if let Some(id) = existing_item_id.clone() {
-                    div { class: "field",
-                        button {
-                            r#type: "button",
-                            class: "btn btn-ghost",
-                            style: "height:30px;font-size:.68rem;padding:0 10px",
-                            disabled: *previewing.read(),
-                            onclick: {
-                                let client = app_state_preview.clone();
-                                move |_| {
-                                    let ot = overlay_type.peek().clone();
-                                    let cfg = CollectionImageConfig {
-                                        layout: poster_layout
-                                            .peek()
-                                            .parse::<CollectionPosterLayout>()
-                                            .unwrap_or_default(),
-                                        overlay: match ot.as_str() {
-                                            "text" => CollectionOverlay::Text {
-                                                text: {
-                                                    let t = overlay_text.peek().clone();
-                                                    if t.is_empty() { None } else { Some(t) }
-                                                },
-                                                font_size: overlay_font_size.peek().parse::<u32>().ok(),
-                                                font_family: Some(overlay_font_family.peek().clone()),
-                                            },
-                                            "logo" => CollectionOverlay::StreamingLogo {
-                                                provider_id: logo_provider_id.peek().unwrap_or(0),
-                                                provider_name: logo_provider_name.peek().clone(),
-                                                logo_path: logo_path.peek().clone(),
-                                            },
-                                            _ => CollectionOverlay::None,
-                                        },
-                                    };
-                                    previewing.set(true);
-                                    let client = client.clone();
-                                    let id = id.clone();
-                                    spawn(async move {
-                                        let _ = client
-                                            .execute(PatchItem {
-                                                item_id: id,
-                                                payload: PatchItemPayload {
-                                                    image_config: Some(cfg),
-                                                    ..Default::default()
-                                                },
-                                            })
-                                            .await;
-                                        // Bump bust so the img fetches the new URL.
-                                        // Keep previewing=true — onload/onerror clears it
-                                        // once the server has actually generated the image.
-                                        let next = *image_bust.read() + 1;
-                                        image_bust.set(next);
-                                    });
-                                }
-                            },
-                            if *previewing.read() { "Updating…" } else { "Update preview" }
-                        }
-                    }
-                }
             }
 
             ToggleRow {

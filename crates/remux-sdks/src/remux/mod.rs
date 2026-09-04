@@ -3472,8 +3472,10 @@ pub enum CollectionOverlay {
         text: Option<String>,
         /// Font size in pixels (default 80).
         font_size: Option<u32>,
-        /// "bold" or "regular" (default "bold").
-        font_family: Option<String>,
+        /// Typeface used by the overlay (defaults to Roboto).
+        font_family: Option<CollectionFontFamily>,
+        /// Weight used by the overlay (defaults to bold).
+        font_weight: Option<CollectionFontWeight>,
     },
     StreamingLogo {
         provider_id: i64,
@@ -3481,6 +3483,58 @@ pub enum CollectionOverlay {
         /// TMDB logo path, e.g. "/t2yyOv40HZeVlLjYsCsPHnWLk4W.jpg"
         logo_path: Option<String>,
     },
+}
+
+/// Typeface choices bundled for collection image text overlays.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum_macros::Display,
+    strum_macros::EnumString,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum CollectionFontFamily {
+    #[default]
+    #[serde(alias = "bold", alias = "regular")]
+    #[strum(serialize = "roboto", serialize = "bold", serialize = "regular")]
+    Roboto,
+    OpenSans,
+    Lato,
+    Montserrat,
+    Poppins,
+    Oswald,
+    Raleway,
+    Merriweather,
+    PlayfairDisplay,
+    BebasNeue,
+}
+
+/// Weight choices for collection image text overlays.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum_macros::Display,
+    strum_macros::EnumString,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum CollectionFontWeight {
+    Regular,
+    #[default]
+    Bold,
 }
 
 impl Default for CollectionOverlay {
@@ -3505,12 +3559,10 @@ impl Default for CollectionOverlay {
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum CollectionPosterLayout {
-    /// Diagonal staircase — all posters at the same angle, stepping right and down.
-    #[default]
-    Cascade,
     /// Five-by-five poster grid, skewed as a single oversized background plane.
-    #[serde(alias = "mosaic")]
-    #[strum(serialize = "grid", serialize = "mosaic")]
+    #[default]
+    #[serde(alias = "cascade", alias = "mosaic")]
+    #[strum(serialize = "grid", serialize = "cascade", serialize = "mosaic")]
     Grid,
     /// Clean horizontal shelf with minimal spacing.
     Row,

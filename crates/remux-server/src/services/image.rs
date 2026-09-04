@@ -9,7 +9,10 @@ use crate::{
     api::image::detect_content_type,
     db,
     db::ImageKind,
-    sdks::remux::{CollectionImageConfig, CollectionOverlay, CollectionPosterLayout},
+    sdks::remux::{
+        CollectionFontFamily, CollectionFontWeight, CollectionImageConfig,
+        CollectionOverlay, CollectionPosterLayout,
+    },
 };
 
 /// Width/height of generated library placeholder images (16:9).
@@ -49,8 +52,17 @@ const CORNER_RADIUS: u32 = 10;
 const TEXT_AREA_END: u32 = (OUT_W as f32 * 0.42) as u32;
 
 static FONT_BOLD: &[u8] = include_bytes!("../../assets/fonts/LiberationSans-Bold.ttf");
-static FONT_REGULAR: &[u8] =
-    include_bytes!("../../assets/fonts/LiberationSans-Regular.ttf");
+static FONT_ROBOTO: &[u8] = include_bytes!("../../assets/fonts/Roboto.ttf");
+static FONT_OPEN_SANS: &[u8] = include_bytes!("../../assets/fonts/OpenSans.ttf");
+static FONT_LATO: &[u8] = include_bytes!("../../assets/fonts/Lato.ttf");
+static FONT_MONTSERRAT: &[u8] = include_bytes!("../../assets/fonts/Montserrat.ttf");
+static FONT_POPPINS: &[u8] = include_bytes!("../../assets/fonts/Poppins.ttf");
+static FONT_OSWALD: &[u8] = include_bytes!("../../assets/fonts/Oswald.ttf");
+static FONT_RALEWAY: &[u8] = include_bytes!("../../assets/fonts/Raleway.ttf");
+static FONT_MERRIWEATHER: &[u8] = include_bytes!("../../assets/fonts/Merriweather.ttf");
+static FONT_PLAYFAIR_DISPLAY: &[u8] =
+    include_bytes!("../../assets/fonts/PlayfairDisplay.ttf");
+static FONT_BEBAS_NEUE: &[u8] = include_bytes!("../../assets/fonts/BebasNeue.ttf");
 
 #[allow(clippy::incompatible_msrv)]
 static HTTP_CLIENT: std::sync::LazyLock<reqwest::Client> =
@@ -61,6 +73,21 @@ static HTTP_CLIENT: std::sync::LazyLock<reqwest::Client> =
             .build()
             .expect("failed to build image http client")
     });
+
+fn collection_font_bytes(font: CollectionFontFamily) -> &'static [u8] {
+    match font {
+        CollectionFontFamily::Roboto => FONT_ROBOTO,
+        CollectionFontFamily::OpenSans => FONT_OPEN_SANS,
+        CollectionFontFamily::Lato => FONT_LATO,
+        CollectionFontFamily::Montserrat => FONT_MONTSERRAT,
+        CollectionFontFamily::Poppins => FONT_POPPINS,
+        CollectionFontFamily::Oswald => FONT_OSWALD,
+        CollectionFontFamily::Raleway => FONT_RALEWAY,
+        CollectionFontFamily::Merriweather => FONT_MERRIWEATHER,
+        CollectionFontFamily::PlayfairDisplay => FONT_PLAYFAIR_DISPLAY,
+        CollectionFontFamily::BebasNeue => FONT_BEBAS_NEUE,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Image processing options
@@ -437,6 +464,29 @@ impl ImageService {
         let posters =
             Self::load_poster_images(&poster_urls, poster_limit as usize).await;
 
+        // A custom collection image is stored as a backdrop source so the
+        // primary image can be regenerated when its overlay changes.
+        let custom_background = if config.is_some() {
+            if let Some(image) = collection
+                .images
+                .get(ImageKind::Backdrop)
+            {
+                let result = if image
+                    .path
+                    .contains("://")
+                {
+                    Self::fetch_rgba(&image.path).await
+                } else {
+                    Self::read_rgba(&image.path).await
+                };
+                result.ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // Pre-fetch streaming logo (async) so the blocking closure has it ready.
         let logo_image: Option<RgbaImage> = match config
             .as_ref()
@@ -466,8 +516,20 @@ impl ImageService {
         let name_owned = name.to_string();
         let config_owned = config;
         let bytes = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
-            let mut canvas =
-                RgbaImage::from_pixel(OUT_W, OUT_H, Rgba([18, 18, 22, 255]));
+            let has_custom_background = custom_background.is_some();
+            let mut canvas = custom_background
+                .map(|image| {
+                    DynamicImage::ImageRgba8(image)
+                        .resize_to_fill(
+                            OUT_W,
+                            OUT_H,
+                            image::imageops::FilterType::Lanczos3,
+                        )
+                        .into_rgba8()
+                })
+                .unwrap_or_else(|| {
+                    RgbaImage::from_pixel(OUT_W, OUT_H, Rgba([18, 18, 22, 255]))
+                });
 
             let layout = config_owned
                 .as_ref()
@@ -481,7 +543,7 @@ impl ImageService {
             let n = posters
                 .len()
                 .min(max_n);
-            if n > 0 {
+            if n > 0 && !has_custom_background {
                 if layout == CollectionPosterLayout::Grid {
                     stamp_grid(&mut canvas, &posters[..n]);
                 } else {
@@ -694,18 +756,6 @@ async fn find_backdrop_url_from_collection(
 /// Poster positions (canvas center_x, center_y, clockwise angle°) for a given layout and n posters.
 fn layout_positions(layout: CollectionPosterLayout, n: usize) -> Vec<(i64, i64, f32)> {
     match layout {
-        // Diagonal staircase: all posters share one angle, stepping right and down.
-        CollectionPosterLayout::Cascade => match n {
-            1 => vec![(720, 270, 0.0)],
-            2 => vec![(630, 248, 8.0), (800, 295, 8.0)],
-            3 => vec![(570, 225, 8.0), (710, 270, 8.0), (850, 315, 8.0)],
-            _ => vec![
-                (535, 215, 8.0),
-                (645, 250, 8.0),
-                (755, 285, 8.0),
-                (855, 318, 8.0),
-            ],
-        },
         // Grid is rendered as one transformed 5×5 plane by `stamp_grid`.
         CollectionPosterLayout::Grid => Vec::new(),
         // Clean horizontal shelf, barely overlapping.
@@ -954,18 +1004,21 @@ fn apply_overlay_sync(
             text,
             font_size,
             font_family,
+            font_weight,
         } => {
             let label = text
                 .as_deref()
                 .unwrap_or(fallback_name);
             let size = (*font_size).unwrap_or(90) as f32;
-            let bold = font_family
-                .as_deref()
-                .map(|f| f != "regular")
-                .unwrap_or(true);
-            let font_bytes: &[u8] = if bold { FONT_BOLD } else { FONT_REGULAR };
-            let font = FontRef::try_from_slice(font_bytes)
+            let font_bytes = collection_font_bytes(font_family.unwrap_or_default());
+            let mut font = FontRef::try_from_slice(font_bytes)
                 .map_err(|e| anyhow::anyhow!("font load: {e:?}"))?;
+            use ab_glyph::VariableFont;
+            let weight = match font_weight.unwrap_or_default() {
+                CollectionFontWeight::Regular => 400.0,
+                CollectionFontWeight::Bold => 700.0,
+            };
+            let _ = font.set_variation(b"wght", weight);
 
             let max_w = TEXT_AREA_END as f32 - TEXT_LEFT_MARGIN as f32;
             let scale = PxScale::from(size);
