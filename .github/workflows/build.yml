@@ -133,12 +133,42 @@ jobs:
           path: target/dx/remux-dashboard/release/web/public/
           retention-days: 2
 
+  server-targets:
+    # Computes build-server's matrix so the macOS legs can be left out of the
+    # list entirely for docker-only builds (desktop: false) — a job-level
+    # `if:` can't reference `matrix.*` (only github/inputs/needs/vars are
+    # available there), so excluding a leg has to happen in the matrix data
+    # itself, not via a condition on the job.
+    name: Compute server build matrix
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.set.outputs.include }}
+    steps:
+      - name: Set matrix
+        id: set
+        run: |
+          if [ "${{ inputs.desktop }}" = "true" ]; then
+            include='[
+              {"runner":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","arch":"amd64","os_name":"linux"},
+              {"runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu","arch":"arm64","os_name":"linux"},
+              {"runner":"macos-latest","target":"x86_64-apple-darwin","arch":"amd64","os_name":"macos"},
+              {"runner":"macos-latest","target":"aarch64-apple-darwin","arch":"arm64","os_name":"macos"}
+            ]'
+          else
+            include='[
+              {"runner":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","arch":"amd64","os_name":"linux"},
+              {"runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu","arch":"arm64","os_name":"linux"}
+            ]'
+          fi
+          echo "include=$(echo "$include" | jq -c .)" >> "$GITHUB_OUTPUT"
+
   build-server:
     # macOS legs produce the standalone server binaries release.yml/nightly.yml
     # attach to a release — build-docker only ever pulls server-linux-*, and
     # build-desktop bundles remux-desktop directly rather than downloading
-    # these artifacts. Skip them for docker-only builds (desktop: false).
-    if: inputs.desktop || matrix.os_name == 'linux'
+    # these artifacts. Excluded from the matrix entirely for docker-only
+    # builds (desktop: false) by server-targets above.
+    needs: server-targets
     name: Build server (${{ matrix.os_name }}-${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     env:
@@ -147,23 +177,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            arch: amd64
-            os_name: linux
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            arch: arm64
-            os_name: linux
-          - runner: macos-latest
-            target: x86_64-apple-darwin
-            arch: amd64
-            os_name: macos
-          - runner: macos-latest
-            target: aarch64-apple-darwin
-            arch: arm64
-            os_name: macos
+        include: ${{ fromJSON(needs.server-targets.outputs.include) }}
     steps:
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
