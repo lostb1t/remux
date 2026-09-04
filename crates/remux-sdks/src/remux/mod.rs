@@ -3508,8 +3508,10 @@ pub enum CollectionPosterLayout {
     /// Diagonal staircase — all posters at the same angle, stepping right and down.
     #[default]
     Cascade,
-    /// Three-column grid — all posters tilted ~30°, middle column raised to break the regularity.
-    Mosaic,
+    /// Five-by-five poster grid, skewed as a single oversized background plane.
+    #[serde(alias = "mosaic")]
+    #[strum(serialize = "grid", serialize = "mosaic")]
+    Grid,
     /// Clean horizontal shelf with minimal spacing.
     Row,
     /// Wide artistic scatter with bold angles.

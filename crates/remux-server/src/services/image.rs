@@ -29,6 +29,16 @@ const TMDB_IMAGE_BASE: &str = "https://image.tmdb.org/t/p/w300";
 const POSTER_W: u32 = 190;
 const POSTER_H: u32 = 285;
 
+/// A five-by-five poster sheet gives the grid enough depth to overflow the frame.
+const GRID_POSTER_LIMIT: usize = 25;
+const GRID_COLUMNS: usize = 5;
+const GRID_POSTER_W: u32 = 161;
+const GRID_POSTER_H: u32 = 241;
+const GRID_GUTTER: u32 = 10;
+
+/// Inset for text overlays, so copy does not sit flush with the image edge.
+const TEXT_LEFT_MARGIN: i32 = 100;
+
 /// Side of the square buffer used for rotation (must exceed sqrt(POSTER_W²+POSTER_H²) ≈ 342).
 const ROTATION_CANVAS: u32 = 380;
 
@@ -387,8 +397,8 @@ impl ImageService {
         let poster_limit = config
             .as_ref()
             .map(|c| {
-                if c.layout == CollectionPosterLayout::Mosaic {
-                    9u32
+                if c.layout == CollectionPosterLayout::Grid {
+                    GRID_POSTER_LIMIT as u32
                 } else {
                     4u32
                 }
@@ -424,7 +434,8 @@ impl ImageService {
             return encode_jpeg(img);
         }
 
-        let posters = Self::load_poster_images(&poster_urls).await;
+        let posters =
+            Self::load_poster_images(&poster_urls, poster_limit as usize).await;
 
         // Pre-fetch streaming logo (async) so the blocking closure has it ready.
         let logo_image: Option<RgbaImage> = match config
@@ -462,8 +473,8 @@ impl ImageService {
                 .as_ref()
                 .map(|c| c.layout)
                 .unwrap_or_default();
-            let max_n = if layout == CollectionPosterLayout::Mosaic {
-                9
+            let max_n = if layout == CollectionPosterLayout::Grid {
+                GRID_POSTER_LIMIT
             } else {
                 4
             };
@@ -471,21 +482,20 @@ impl ImageService {
                 .len()
                 .min(max_n);
             if n > 0 {
-                let positions = layout_positions(layout, n);
-                for idx in (0..n).rev() {
-                    let (cx, cy, angle_deg) = positions[idx];
-                    let (pw, ph) = if layout == CollectionPosterLayout::Mosaic {
-                        (160u32, 240u32)
-                    } else {
-                        (POSTER_W, POSTER_H)
-                    };
-                    let resized = image::imageops::resize(
-                        &posters[idx],
-                        pw,
-                        ph,
-                        image::imageops::FilterType::Lanczos3,
-                    );
-                    rotate_and_stamp(&mut canvas, resized, cx, cy, angle_deg);
+                if layout == CollectionPosterLayout::Grid {
+                    stamp_grid(&mut canvas, &posters[..n]);
+                } else {
+                    let positions = layout_positions(layout, n);
+                    for idx in (0..n).rev() {
+                        let (cx, cy, angle_deg) = positions[idx];
+                        let resized = image::imageops::resize(
+                            &posters[idx],
+                            POSTER_W,
+                            POSTER_H,
+                            image::imageops::FilterType::Lanczos3,
+                        );
+                        rotate_and_stamp(&mut canvas, resized, cx, cy, angle_deg);
+                    }
                 }
             }
 
@@ -502,11 +512,11 @@ impl ImageService {
         Ok(bytes)
     }
 
-    async fn load_poster_images(urls: &[String]) -> Vec<RgbaImage> {
+    async fn load_poster_images(urls: &[String], limit: usize) -> Vec<RgbaImage> {
         let mut out = Vec::new();
         for url in urls
             .iter()
-            .take(4)
+            .take(limit)
         {
             let img = if url.contains("://") {
                 Self::fetch_rgba(url).await
@@ -696,65 +706,8 @@ fn layout_positions(layout: CollectionPosterLayout, n: usize) -> Vec<(i64, i64, 
                 (855, 318, 8.0),
             ],
         },
-        // Scattered posters, each at its own angle, 3 loose columns.
-        // Matches the reference: organic spread, top/right/bottom edges clip.
-        // Filled inside-out so any n looks balanced. positions[0] = frontmost.
-        CollectionPosterLayout::Mosaic => match n {
-            1 => vec![(690, 305, -5.0)],
-            2 => vec![(875, 300, 7.0), (690, 305, -5.0)],
-            3 => vec![(875, 300, 7.0), (510, 310, -14.0), (690, 305, -5.0)],
-            4 => vec![
-                (875, 300, 7.0),
-                (510, 310, -14.0),
-                (700, 115, 8.0),
-                (690, 305, -5.0),
-            ],
-            5 => vec![
-                (875, 300, 7.0),
-                (510, 310, -14.0),
-                (700, 115, 8.0),
-                (520, 140, -10.0),
-                (690, 305, -5.0),
-            ],
-            6 => vec![
-                (875, 300, 7.0),
-                (510, 310, -14.0),
-                (700, 115, 8.0),
-                (520, 140, -10.0),
-                (880, 140, 4.0),
-                (690, 305, -5.0),
-            ],
-            7 => vec![
-                (875, 300, 7.0),
-                (510, 310, -14.0),
-                (700, 115, 8.0),
-                (520, 140, -10.0),
-                (880, 140, 4.0),
-                (610, 460, -5.0),
-                (690, 305, -5.0),
-            ],
-            8 => vec![
-                (875, 300, 7.0),
-                (510, 310, -14.0),
-                (700, 115, 8.0),
-                (520, 140, -10.0),
-                (880, 140, 4.0),
-                (610, 460, -5.0),
-                (770, 465, 5.0),
-                (690, 305, -5.0),
-            ],
-            _ => vec![
-                (440, 460, -8.0), // bot-left — behind
-                (875, 300, 7.0),
-                (510, 310, -14.0),
-                (700, 115, 8.0),
-                (520, 140, -10.0),
-                (880, 140, 4.0),
-                (610, 460, -5.0),
-                (770, 465, 5.0),
-                (690, 305, -5.0), // center — frontmost
-            ],
-        },
+        // Grid is rendered as one transformed 5×5 plane by `stamp_grid`.
+        CollectionPosterLayout::Grid => Vec::new(),
         // Clean horizontal shelf, barely overlapping.
         CollectionPosterLayout::Row => match n {
             1 => vec![(720, 270, 0.0)],
@@ -804,6 +757,103 @@ fn apply_rounded_corners(img: &mut RgbaImage) {
             }
         }
     }
+}
+
+/// Build a non-overlapping 5×5 poster sheet, then project it as a single
+/// skewed plane. The plane starts beyond the text area and is intentionally
+/// larger than the output canvas, so it reads as a background element.
+fn stamp_grid(canvas: &mut RgbaImage, posters: &[RgbaImage]) {
+    let (grid_w, grid_h) = grid_dimensions();
+    let mut grid = RgbaImage::new(grid_w, grid_h);
+
+    // Smaller collections still need a complete background plane. Reuse their
+    // available posters cyclically instead of leaving most of the grid blank.
+    for idx in 0..GRID_POSTER_LIMIT {
+        let poster = &posters[idx % posters.len()];
+        let col = idx % GRID_COLUMNS;
+        let row = idx / GRID_COLUMNS;
+        let x = col as u32 * (GRID_POSTER_W + GRID_GUTTER);
+        let y = row as u32 * (GRID_POSTER_H + GRID_GUTTER);
+        let mut poster = image::imageops::resize(
+            poster,
+            GRID_POSTER_W,
+            GRID_POSTER_H,
+            image::imageops::FilterType::Lanczos3,
+        );
+        apply_rounded_corners(&mut poster);
+        image::imageops::overlay(&mut grid, &poster, x.into(), y.into());
+    }
+
+    // An affine projection with a subtle clockwise rotation and horizontal
+    // shear. Its centre sits off the right edge; most of the 5×5 sheet is
+    // therefore clipped, leaving roughly the right third of the image visible.
+    let (a, b, c, d) = (0.78f32, -0.12f32, 0.12f32, 0.75f32);
+    let determinant = a * d - b * c;
+    let centre_x = 930.0;
+    let centre_y = 270.0;
+    let half_w = grid_w as f32 / 2.0;
+    let half_h = grid_h as f32 / 2.0;
+    let mut projected = RgbaImage::new(OUT_W, OUT_H);
+
+    for y in 0..OUT_H {
+        for x in 0..OUT_W {
+            let dx = x as f32 - centre_x;
+            let dy = y as f32 - centre_y;
+            let src_x = (d * dx - b * dy) / determinant + half_w;
+            let src_y = (-c * dx + a * dy) / determinant + half_h;
+            if src_x < 0.0
+                || src_y < 0.0
+                || src_x >= (grid_w - 1) as f32
+                || src_y >= (grid_h - 1) as f32
+            {
+                continue;
+            }
+
+            let x0 = src_x as u32;
+            let y0 = src_y as u32;
+            let x1 = x0 + 1;
+            let y1 = y0 + 1;
+            let tx = src_x.fract();
+            let ty = src_y.fract();
+            let interpolate = |p00: u8, p10: u8, p01: u8, p11: u8| {
+                let top = p00 as f32 + (p10 as f32 - p00 as f32) * tx;
+                let bottom = p01 as f32 + (p11 as f32 - p01 as f32) * tx;
+                (top + (bottom - top) * ty) as u8
+            };
+            let p00 = grid
+                .get_pixel(x0, y0)
+                .0;
+            let p10 = grid
+                .get_pixel(x1, y0)
+                .0;
+            let p01 = grid
+                .get_pixel(x0, y1)
+                .0;
+            let p11 = grid
+                .get_pixel(x1, y1)
+                .0;
+            projected.put_pixel(
+                x,
+                y,
+                Rgba([
+                    interpolate(p00[0], p10[0], p01[0], p11[0]),
+                    interpolate(p00[1], p10[1], p01[1], p11[1]),
+                    interpolate(p00[2], p10[2], p01[2], p11[2]),
+                    interpolate(p00[3], p10[3], p01[3], p11[3]),
+                ]),
+            );
+        }
+    }
+
+    image::imageops::overlay(canvas, &projected, 0, 0);
+}
+
+fn grid_dimensions() -> (u32, u32) {
+    let rows = GRID_POSTER_LIMIT.div_ceil(GRID_COLUMNS) as u32;
+    (
+        GRID_COLUMNS as u32 * GRID_POSTER_W + (GRID_COLUMNS as u32 - 1) * GRID_GUTTER,
+        rows * GRID_POSTER_H + (rows - 1) * GRID_GUTTER,
+    )
 }
 
 /// Rotate `poster` by `angle_deg` (clockwise) and stamp it onto `canvas`
@@ -917,8 +967,7 @@ fn apply_overlay_sync(
             let font = FontRef::try_from_slice(font_bytes)
                 .map_err(|e| anyhow::anyhow!("font load: {e:?}"))?;
 
-            let left_margin = 50i32;
-            let max_w = TEXT_AREA_END as f32 - left_margin as f32;
+            let max_w = TEXT_AREA_END as f32 - TEXT_LEFT_MARGIN as f32;
             let scale = PxScale::from(size);
 
             let lines = wrap_words(&font, scale, label, max_w);
@@ -938,7 +987,7 @@ fn apply_overlay_sync(
                 draw_text_mut(
                     canvas,
                     Rgba([255, 255, 255, 255]),
-                    left_margin,
+                    TEXT_LEFT_MARGIN,
                     y,
                     scale,
                     &font,
@@ -1208,4 +1257,20 @@ fn apply_sizing(img: DynamicImage, opts: &ImageProcessOptions) -> DynamicImage {
     }
 
     img
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grid_is_five_by_five_with_gutters() {
+        assert_eq!(
+            grid_dimensions(),
+            (
+                5 * GRID_POSTER_W + 4 * GRID_GUTTER,
+                5 * GRID_POSTER_H + 4 * GRID_GUTTER,
+            )
+        );
+    }
 }

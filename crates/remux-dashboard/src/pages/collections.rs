@@ -958,7 +958,7 @@ pub fn CollectionForm(
                         value: "{poster_layout}",
                         oninput: move |e| poster_layout.set(e.value()),
                         option { value: "cascade", selected: *poster_layout.read() == "cascade", "Cascade" }
-                        option { value: "mosaic", selected: *poster_layout.read() == "mosaic", "Mosaic" }
+                        option { value: "grid", selected: *poster_layout.read() == "grid", "Grid" }
                         option { value: "row", selected: *poster_layout.read() == "row", "Row" }
                         option { value: "scatter", selected: *poster_layout.read() == "scatter", "Scatter" }
                     }
