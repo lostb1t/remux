@@ -110,7 +110,7 @@ where
         // preserve the original order across the two vecs, so new items would
         // otherwise always get the lowest weights within a chunk regardless of where
         // they actually appeared in the catalog.
-        let item_weights: Vec<(Uuid, i64)> = items
+        let mut item_weights: Vec<(Uuid, i64)> = items
             .iter()
             .map(|item| {
                 let w = catalog_position;
@@ -137,17 +137,40 @@ where
             .map(|m| m.id)
             .collect();
 
-        if let Err(e) = ctx
+        // process_meta_batch can adopt an existing row's UUID for any of these
+        // items (dedup by external ID) instead of writing under the id we
+        // computed above — the row lands in `media` under the *adopted* id.
+        // `item_weights`/`imported_ids` were snapshotted from the pre-call id,
+        // so anything keyed on them (catalog membership rows below, the
+        // stale-member diff, series reconciliation) must be remapped through
+        // this or it silently targets a row that was never written.
+        let id_remap = match ctx
             .addons
             .process_meta_batch(new_items.clone(), ctx, true, None)
             .await
         {
-            error!(catalog = media_id, error = %e, "failed to process new items chunk");
-            continue;
+            Ok(map) => map,
+            Err(e) => {
+                error!(catalog = media_id, error = %e, "failed to process new items chunk");
+                continue;
+            }
+        };
+        let remap = |id: Uuid| {
+            id_remap
+                .get(&id)
+                .copied()
+                .unwrap_or(id)
+        };
+        for (item_id, _) in item_weights.iter_mut() {
+            *item_id = remap(*item_id);
         }
+        imported_ids = imported_ids
+            .into_iter()
+            .map(remap)
+            .collect();
 
         for id in new_series_ids {
-            db::reconcile_series_played_state(&ctx.db, id).await;
+            db::reconcile_series_played_state(&ctx.db, remap(id)).await;
         }
 
         // Re-upsert already-known TV channels too (skipping the metadata-fetch step

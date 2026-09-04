@@ -4182,6 +4182,54 @@ mod tests {
         );
     }
 
+    // Regression #425: a promoted collection-of-collections with no
+    // sub-collections at all yet (just created) must still show — #414 only
+    // meant to hide a group container whose *existing* children are all
+    // empty, not one that hasn't been populated yet.
+    #[tokio::test]
+    async fn userviews_keeps_freshly_promoted_group_container_with_no_children_yet() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let mut group = db::Media {
+            title: "Fresh group".to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Manual),
+            collection_media_kind: Some(db::CollectionMediaKind::Collection),
+            promoted: true,
+            ..Default::default()
+        };
+        group
+            .save(db)
+            .await
+            .unwrap();
+
+        let body: serde_json::Value = server
+            .get("/userviews")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let group_id = group
+            .id
+            .to_string()
+            .replace('-', "");
+
+        assert!(
+            body["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["Id"].as_str() == Some(group_id.as_str())),
+            "a group container with no sub-collections yet must still appear in /UserViews; got: {body}"
+        );
+    }
+
     // Regression #414: a promoted collection-of-collections must disappear
     // from /UserViews when every child collection is empty.
     #[tokio::test]

@@ -24,6 +24,7 @@ use async_trait::async_trait;
 use futures::Stream;
 use sqlx::SqlitePool;
 use std::{
+    collections::HashMap,
     pin::Pin,
     sync::Arc,
     time::{Duration, Instant},
@@ -2030,13 +2031,22 @@ impl AddonService {
         }
     }
 
+    /// Processes each item's metadata/tree and upserts it, returning the map of
+    /// `original_id -> final_id` for every item that was passed in.
+    ///
+    /// The two ids differ whenever `process_meta_item_inner` adopts an existing
+    /// row's UUID via `find_existing_id_by_ext` (dedup by external ID) instead of
+    /// writing under the caller-computed id. Callers that recorded anything keyed
+    /// on the pre-call id (catalog membership rows, stale-member diffs, etc.) MUST
+    /// remap through this before using it — the row was upserted under `final_id`,
+    /// not `original_id`.
     pub async fn process_meta_batch(
         &self,
         media: Vec<db::Media>,
         ctx: &AppContext,
         force_refresh: bool,
         on_item_done: Option<Arc<dyn Fn() + Send + Sync>>,
-    ) -> Result<()> {
+    ) -> Result<HashMap<Uuid, Uuid>> {
         use futures::StreamExt;
 
         let config = db::Settings::get_config_or_default(&ctx.db).await;
@@ -2046,26 +2056,35 @@ impl AddonService {
         let svc = self.clone();
         let ctx_owned = ctx.clone();
 
-        futures::stream::iter(media)
-            .map(move |m| {
-                let svc = svc.clone();
-                let ctx = ctx_owned.clone();
-                let cfg = Arc::clone(&config);
-                async move {
-                    svc.process_meta_item(m, ctx, force_refresh, cfg)
-                        .await
-                }
-            })
-            .buffer_unordered(concurrency)
-            .for_each(move |_| {
-                if let Some(ref f) = on_item_done {
-                    f();
-                }
-                async {}
-            })
-            .await;
+        let mut stream = std::pin::pin!(
+            futures::stream::iter(media)
+                .map(move |m| {
+                    let svc = svc.clone();
+                    let ctx = ctx_owned.clone();
+                    let cfg = Arc::clone(&config);
+                    let original_id = m.id;
+                    async move {
+                        let final_id = svc
+                            .process_meta_item(m, ctx, force_refresh, cfg)
+                            .await;
+                        (original_id, final_id)
+                    }
+                })
+                .buffer_unordered(concurrency)
+        );
 
-        Ok(())
+        let mut id_map = HashMap::new();
+        while let Some((original_id, final_id)) = stream
+            .next()
+            .await
+        {
+            if let Some(ref f) = on_item_done {
+                f();
+            }
+            id_map.insert(original_id, final_id);
+        }
+
+        Ok(id_map)
     }
 
     /// Fetch the direct children of `node` from the first applicable tree addon.

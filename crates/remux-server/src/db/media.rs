@@ -3334,9 +3334,19 @@ impl Media {
         Ok(())
     }
 
-    /// Whether a collection-of-collections has a reachable child collection
-    /// that would itself be visible. Group containers hold their children via
-    /// `parent_id`, unlike regular manual collections, which use relations.
+    /// Whether a collection-of-collections should show in `/userviews`.
+    /// Group containers hold their children via `parent_id`, unlike regular
+    /// manual collections, which use relations.
+    ///
+    /// #414's intent was narrower than "hide any group container that
+    /// resolves to nothing": *"collection can be [...] have collections as
+    /// children. if they are all empty the parent should not show"* — i.e.
+    /// hide only when sub-collections exist and every one of them is empty.
+    /// A group container that hasn't been populated with any sub-collection
+    /// yet (just promoted, nothing added) is a different case and shows like
+    /// any other not-yet-populated library — so the root's own child list
+    /// being empty short-circuits to visible before the "all empty" check
+    /// ever applies.
     ///
     /// Walk groups iteratively to avoid recursion and to guard against a
     /// malformed parent cycle. The number of promoted groups is small, while
@@ -3350,6 +3360,7 @@ impl Media {
     ) -> Result<bool> {
         let mut pending = vec![group_id];
         let mut visited = HashSet::new();
+        let mut is_root = true;
 
         while let Some(parent_id) = pending.pop() {
             if !visited.insert(parent_id) {
@@ -3369,6 +3380,11 @@ impl Media {
             ))
             .await?
             .records;
+
+            if is_root && children.is_empty() {
+                return Ok(true);
+            }
+            is_root = false;
 
             for child in children {
                 if child.is_group_container() {
