@@ -3559,7 +3559,7 @@ impl Default for CollectionOverlay {
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum CollectionPosterLayout {
-    /// Five-by-five poster grid, skewed as a single oversized background plane.
+    /// Four-by-four poster grid, skewed as a single oversized background plane.
     #[default]
     #[serde(alias = "cascade", alias = "mosaic")]
     #[strum(serialize = "grid", serialize = "cascade", serialize = "mosaic")]

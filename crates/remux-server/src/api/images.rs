@@ -339,22 +339,29 @@ async fn upload_item_image_inner(
     kind: ImageKind,
     image: api::image::JellyfinImage,
 ) -> Result<impl IntoResponse> {
-    let media = db::Media::get_by_id(
-        &state
-            .ctx
-            .db,
-        &id,
-    )
-    .await?
-    .context_not_found("item not found")?;
-    let is_collection_source = kind == ImageKind::Primary
-        && matches!(
-            media.kind,
-            db::MediaKind::Collection | db::MediaKind::Folder
+    let (is_collection_source, title) = {
+        let media = db::Media::get_by_id(
+            &state
+                .ctx
+                .db,
+            &id,
         )
-        && media
-            .collection_image_config
-            .is_some();
+        .await?
+        .context_not_found("item not found")?;
+        (
+            kind == ImageKind::Primary
+                && matches!(
+                    media.kind,
+                    db::MediaKind::Collection | db::MediaKind::Folder
+                )
+                && media
+                    .collection_image_config
+                    .is_some(),
+            media
+                .title
+                .clone(),
+        )
+    };
     let storage_kind = if is_collection_source {
         ImageKind::Backdrop
     } else {
@@ -398,7 +405,7 @@ async fn upload_item_image_inner(
                 .config
                 .data_dir,
             id,
-            &media.title,
+            &title,
             &state
                 .ctx
                 .db,
@@ -436,22 +443,26 @@ async fn delete_item_image_inner(
     id: Uuid,
     kind: ImageKind,
 ) -> Result<impl IntoResponse> {
-    let media = db::Media::get_by_id(
-        &state
-            .ctx
-            .db,
-        &id,
-    )
-    .await?;
-    let has_collection_source = kind == ImageKind::Primary
-        && media
-            .as_ref()
-            .is_some_and(|item| {
-                matches!(item.kind, db::MediaKind::Collection | db::MediaKind::Folder)
-                    && item
+    let has_collection_source = {
+        let media = db::Media::get_by_id(
+            &state
+                .ctx
+                .db,
+            &id,
+        )
+        .await?;
+        kind == ImageKind::Primary
+            && media
+                .as_ref()
+                .is_some_and(|item| {
+                    matches!(
+                        item.kind,
+                        db::MediaKind::Collection | db::MediaKind::Folder
+                    ) && item
                         .collection_image_config
                         .is_some()
-            });
+                })
+    };
     ImageService::delete_image(
         &state
             .ctx

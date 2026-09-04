@@ -1,6 +1,7 @@
 use std::{io::Cursor, path::PathBuf};
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
+use futures::StreamExt;
 use image::{DynamicImage, ImageFormat, Rgb, RgbImage, Rgba, RgbaImage};
 use imageproc::drawing::draw_text_mut;
 use uuid::Uuid;
@@ -32,9 +33,12 @@ const TMDB_IMAGE_BASE: &str = "https://image.tmdb.org/t/p/w300";
 const POSTER_W: u32 = 190;
 const POSTER_H: u32 = 285;
 
-/// A five-by-five poster sheet gives the grid enough depth to overflow the frame.
-const GRID_POSTER_LIMIT: usize = 25;
-const GRID_COLUMNS: usize = 5;
+/// A four-by-four poster sheet gives the grid enough depth to overflow the frame.
+const GRID_POSTER_LIMIT: usize = 16;
+/// The grid cycles its sources, so downloading more than eight full posters
+/// adds latency without a meaningful visual improvement in the cropped plane.
+const GRID_SOURCE_POSTER_LIMIT: usize = 8;
+const GRID_COLUMNS: usize = 4;
 const GRID_POSTER_W: u32 = 161;
 const GRID_POSTER_H: u32 = 241;
 const GRID_GUTTER: u32 = 10;
@@ -421,17 +425,47 @@ impl ImageService {
             .collection_image_config
             .clone();
 
+        // Resolve a custom background before looking up the poster grid. It is
+        // the entire composition when present, so poster downloads would be
+        // wasted work.
+        let custom_background_path = config
+            .as_ref()
+            .and_then(|_| {
+                collection
+                    .images
+                    .get(ImageKind::Backdrop)
+                    .map(|image| {
+                        image
+                            .path
+                            .clone()
+                    })
+            });
+        let custom_background = if let Some(path) = custom_background_path {
+            let result = if path.contains("://") {
+                Self::fetch_rgba(&path).await
+            } else {
+                Self::read_rgba(&path).await
+            };
+            result.ok()
+        } else {
+            None
+        };
+
         let poster_limit = config
             .as_ref()
             .map(|c| {
                 if c.layout == CollectionPosterLayout::Grid {
-                    GRID_POSTER_LIMIT as u32
+                    GRID_SOURCE_POSTER_LIMIT as u32
                 } else {
                     4u32
                 }
             })
             .unwrap_or(4);
-        let poster_urls = collect_poster_urls(id, &collection, db, poster_limit).await;
+        let poster_urls = if custom_background.is_none() {
+            collect_poster_urls(id, &collection, db, poster_limit).await
+        } else {
+            Vec::new()
+        };
 
         if poster_urls.is_empty() && config.is_none() {
             // Fallback: single backdrop with label (original behaviour).
@@ -463,29 +497,6 @@ impl ImageService {
 
         let posters =
             Self::load_poster_images(&poster_urls, poster_limit as usize).await;
-
-        // A custom collection image is stored as a backdrop source so the
-        // primary image can be regenerated when its overlay changes.
-        let custom_background = if config.is_some() {
-            if let Some(image) = collection
-                .images
-                .get(ImageKind::Backdrop)
-            {
-                let result = if image
-                    .path
-                    .contains("://")
-                {
-                    Self::fetch_rgba(&image.path).await
-                } else {
-                    Self::read_rgba(&image.path).await
-                };
-                result.ok()
-            } else {
-                None
-            }
-        } else {
-            None
-        };
 
         // Pre-fetch streaming logo (async) so the blocking closure has it ready.
         let logo_image: Option<RgbaImage> = match config
@@ -567,7 +578,7 @@ impl ImageService {
                 .unwrap_or(&CollectionOverlay::None);
             apply_overlay_sync(&mut canvas, overlay, &name_owned, logo_image)?;
 
-            encode_png_rgba(canvas)
+            encode_jpeg_rgba(canvas)
         })
         .await??;
 
@@ -575,21 +586,26 @@ impl ImageService {
     }
 
     async fn load_poster_images(urls: &[String], limit: usize) -> Vec<RgbaImage> {
-        let mut out = Vec::new();
-        for url in urls
-            .iter()
-            .take(limit)
-        {
-            let img = if url.contains("://") {
-                Self::fetch_rgba(url).await
-            } else {
-                Self::read_rgba(url).await
-            };
-            if let Ok(img) = img {
-                out.push(img);
-            }
-        }
-        out
+        futures::stream::iter(
+            urls.iter()
+                .take(limit)
+                .cloned()
+                .map(|url| async move {
+                    let img = if url.contains("://") {
+                        Self::fetch_rgba(&url).await
+                    } else {
+                        Self::read_rgba(&url).await
+                    };
+                    img
+                }),
+        )
+        // Keep source order stable while downloading up to eight images at
+        // once. The old serial loop made a single generated image wait for
+        // every remote poster in sequence.
+        .buffered(8)
+        .filter_map(|image| async move { image.ok() })
+        .collect()
+        .await
     }
 
     async fn fetch_rgb(url: &str) -> anyhow::Result<RgbImage> {
@@ -756,7 +772,7 @@ async fn find_backdrop_url_from_collection(
 /// Poster positions (canvas center_x, center_y, clockwise angle°) for a given layout and n posters.
 fn layout_positions(layout: CollectionPosterLayout, n: usize) -> Vec<(i64, i64, f32)> {
     match layout {
-        // Grid is rendered as one transformed 5×5 plane by `stamp_grid`.
+        // Grid is rendered as one transformed 4×4 plane by `stamp_grid`.
         CollectionPosterLayout::Grid => Vec::new(),
         // Clean horizontal shelf, barely overlapping.
         CollectionPosterLayout::Row => match n {
@@ -809,33 +825,40 @@ fn apply_rounded_corners(img: &mut RgbaImage) {
     }
 }
 
-/// Build a non-overlapping 5×5 poster sheet, then project it as a single
+/// Build a non-overlapping 4×4 poster sheet, then project it as a single
 /// skewed plane. The plane starts beyond the text area and is intentionally
 /// larger than the output canvas, so it reads as a background element.
 fn stamp_grid(canvas: &mut RgbaImage, posters: &[RgbaImage]) {
     let (grid_w, grid_h) = grid_dimensions();
     let mut grid = RgbaImage::new(grid_w, grid_h);
 
+    let prepared_posters: Vec<RgbaImage> = posters
+        .iter()
+        .map(|poster| {
+            let mut resized = image::imageops::resize(
+                poster,
+                GRID_POSTER_W,
+                GRID_POSTER_H,
+                image::imageops::FilterType::Lanczos3,
+            );
+            apply_rounded_corners(&mut resized);
+            resized
+        })
+        .collect();
+
     // Smaller collections still need a complete background plane. Reuse their
-    // available posters cyclically instead of leaving most of the grid blank.
+    // prepared posters cyclically instead of resizing the same image per cell.
     for idx in 0..GRID_POSTER_LIMIT {
-        let poster = &posters[idx % posters.len()];
+        let poster = &prepared_posters[idx % prepared_posters.len()];
         let col = idx % GRID_COLUMNS;
         let row = idx / GRID_COLUMNS;
         let x = col as u32 * (GRID_POSTER_W + GRID_GUTTER);
         let y = row as u32 * (GRID_POSTER_H + GRID_GUTTER);
-        let mut poster = image::imageops::resize(
-            poster,
-            GRID_POSTER_W,
-            GRID_POSTER_H,
-            image::imageops::FilterType::Lanczos3,
-        );
-        apply_rounded_corners(&mut poster);
-        image::imageops::overlay(&mut grid, &poster, x.into(), y.into());
+        image::imageops::overlay(&mut grid, poster, x.into(), y.into());
     }
 
     // An affine projection with a subtle clockwise rotation and horizontal
-    // shear. Its centre sits off the right edge; most of the 5×5 sheet is
+    // shear. Its centre sits off the right edge; most of the 4×4 sheet is
     // therefore clipped, leaving roughly the right third of the image visible.
     let (a, b, c, d) = (0.78f32, -0.12f32, 0.12f32, 0.75f32);
     let determinant = a * d - b * c;
@@ -1197,9 +1220,14 @@ fn encode_jpeg(img: RgbImage) -> anyhow::Result<Vec<u8>> {
     Ok(buf.into_inner())
 }
 
-fn encode_png_rgba(img: RgbaImage) -> anyhow::Result<Vec<u8>> {
+/// Generated collection art is fully opaque photographic content. JPEG avoids
+/// the disproportionately expensive lossless PNG compression of a poster grid.
+fn encode_jpeg_rgba(img: RgbaImage) -> anyhow::Result<Vec<u8>> {
     let mut buf = Cursor::new(Vec::new());
-    img.write_to(&mut buf, ImageFormat::Png)?;
+    let rgb = DynamicImage::ImageRgba8(img).into_rgb8();
+    use image::codecs::jpeg::JpegEncoder;
+    JpegEncoder::new_with_quality(&mut buf, 90)
+        .encode_image(&DynamicImage::ImageRgb8(rgb))?;
     Ok(buf.into_inner())
 }
 
@@ -1317,12 +1345,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn grid_is_five_by_five_with_gutters() {
+    fn grid_is_four_by_four_with_gutters() {
         assert_eq!(
             grid_dimensions(),
             (
-                5 * GRID_POSTER_W + 4 * GRID_GUTTER,
-                5 * GRID_POSTER_H + 4 * GRID_GUTTER,
+                4 * GRID_POSTER_W + 3 * GRID_GUTTER,
+                4 * GRID_POSTER_H + 3 * GRID_GUTTER,
             )
         );
     }

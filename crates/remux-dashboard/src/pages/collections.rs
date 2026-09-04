@@ -447,8 +447,12 @@ pub fn CollectionForm(
     let existing_overlay = existing_image_config.map(|c| &c.overlay);
     let existing_layout = existing_image_config
         .map(|c| {
-            c.layout
-                .to_string()
+            match c.layout {
+                CollectionPosterLayout::Grid => "grid",
+                CollectionPosterLayout::Row => "row",
+                CollectionPosterLayout::Scatter => "scatter",
+            }
+            .to_string()
         })
         .unwrap_or_else(|| "grid".to_string());
     let mut poster_layout = use_signal(|| existing_layout);
