@@ -35,9 +35,7 @@ use libc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::{
-    AppContext, api, common::ProgressReporter, db, sdks, stream::StreamDescriptor,
-};
+use crate::{AppContext, api, common::ProgressReporter, db, sdks};
 pub use addon::{Addon, CatalogState, set_user_addon_override, user_addon_override};
 use remux_sdks::remuxdb;
 
@@ -2818,19 +2816,7 @@ fn match_probe_version<'a>(
 
     // Torrent: match by info_hash + file_idx. Covers both raw Torrent descriptors and
     // debrid Http streams where the hash comes from AIOStreams streamData.
-    let (hash, hash_file_idx) = match si.descriptor {
-        StreamDescriptor::Torrent {
-            ref info_hash,
-            file_idx,
-            ..
-        } => (Some(info_hash.as_str()), file_idx.map(|i| i as i32)),
-        _ => (
-            si.torrent_info_hash
-                .as_deref(),
-            si.torrent_file_idx,
-        ),
-    };
-    if let Some(hash) = hash {
+    if let Some((hash, hash_file_idx)) = si.torrent_identity() {
         if let Some(v) = versions
             .iter()
             .find(|v| {

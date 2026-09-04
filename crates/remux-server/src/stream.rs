@@ -266,7 +266,7 @@ pub struct StreamInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_addon: Option<String>,
     /// Torrent info-hash for the source release (from AIOStreams streamData).
-    /// Stored independently of the descriptor so debrid Http streams can match by hash.
+    /// Stored independently of the descriptor so debrid Http streams can match and submit by hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub torrent_info_hash: Option<String>,
     /// File index within the torrent (from AIOStreams streamData).
@@ -281,6 +281,30 @@ pub struct StreamInfo {
 impl StreamInfo {
     pub fn is_p2p(&self) -> bool {
         matches!(self.descriptor, StreamDescriptor::Torrent { .. })
+    }
+
+    /// Torrent identity used for RemuxDB lookup and submission.
+    ///
+    /// A `Torrent` descriptor is authoritative. Any other transport (notably a
+    /// debrid `Http` stream) falls back to the identity preserved from
+    /// AIOStreams `streamData.torrent`. `None` when the stream has no torrent
+    /// identity at all.
+    pub fn torrent_identity(&self) -> Option<(&str, Option<i32>)> {
+        match &self.descriptor {
+            StreamDescriptor::Torrent {
+                info_hash,
+                file_idx,
+                ..
+            } => Some((
+                info_hash.as_str(),
+                // Indices beyond i32 can't be represented in RemuxDB; treat as unknown.
+                file_idx.and_then(|i| i32::try_from(i).ok()),
+            )),
+            _ => self
+                .torrent_info_hash
+                .as_deref()
+                .map(|hash| (hash, self.torrent_file_idx)),
+        }
     }
 
     pub fn resolution_tag(&self) -> Option<String> {
