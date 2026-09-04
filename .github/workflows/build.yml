@@ -134,6 +134,11 @@ jobs:
           retention-days: 2
 
   build-server:
+    # macOS legs produce the standalone server binaries release.yml/nightly.yml
+    # attach to a release — build-docker only ever pulls server-linux-*, and
+    # build-desktop bundles remux-desktop directly rather than downloading
+    # these artifacts. Skip them for docker-only builds (desktop: false).
+    if: inputs.desktop || matrix.os_name == 'linux'
     name: Build server (${{ matrix.os_name }}-${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     env:
