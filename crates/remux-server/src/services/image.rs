@@ -172,7 +172,7 @@ impl ImageProcessOptions {
     /// Stable cache key derived from source identifier + all transform params.
     fn cache_key(&self, source: &str) -> String {
         let key_data = format!(
-            "{}|fw={:?}|fh={:?}|w={:?}|h={:?}|mw={:?}|mh={:?}|q={:?}|bl={:?}|bg={:?}|fmt={:?}",
+            "v2|{}|fw={:?}|fh={:?}|w={:?}|h={:?}|mw={:?}|mh={:?}|q={:?}|bl={:?}|bg={:?}|fmt={:?}",
             source,
             self.fill_width,
             self.fill_height,
@@ -1282,7 +1282,10 @@ fn apply_sizing(img: DynamicImage, opts: &ImageProcessOptions) -> DynamicImage {
     let orig_w = img.width();
     let orig_h = img.height();
 
-    // Priority 1: fill — scale down to fit inside box, no upscale, maintain AR.
+    // Priority 1: fill — cover the requested box, including upscaling local
+    // generated art when the client asks for a larger rendition. With both
+    // dimensions supplied this deliberately crops the excess so the response
+    // has the exact dimensions requested by Jellyfin clients.
     if opts
         .fill_width
         .is_some()
@@ -1290,23 +1293,18 @@ fn apply_sizing(img: DynamicImage, opts: &ImageProcessOptions) -> DynamicImage {
             .fill_height
             .is_some()
     {
-        let scale_x = opts
-            .fill_width
-            .map(|fw| fw as f32 / orig_w as f32)
-            .unwrap_or(f32::MAX);
-        let scale_y = opts
-            .fill_height
-            .map(|fh| fh as f32 / orig_h as f32)
-            .unwrap_or(f32::MAX);
-        let scale = scale_x
-            .min(scale_y)
-            .min(1.0);
-        if scale < 1.0 {
-            let nw = ((orig_w as f32 * scale) as u32).max(1);
-            let nh = ((orig_h as f32 * scale) as u32).max(1);
-            return img.resize(nw, nh, image::imageops::FilterType::Lanczos3);
-        }
-        return img;
+        return match (opts.fill_width, opts.fill_height) {
+            (Some(width), Some(height)) => {
+                img.resize_to_fill(width, height, image::imageops::FilterType::Lanczos3)
+            }
+            (Some(width), None) => {
+                img.resize(width, u32::MAX, image::imageops::FilterType::Lanczos3)
+            }
+            (None, Some(height)) => {
+                img.resize(u32::MAX, height, image::imageops::FilterType::Lanczos3)
+            }
+            (None, None) => unreachable!("fill sizing requires a dimension"),
+        };
     }
 
     // Priority 2: exact width / height (missing dimension maintains AR).
@@ -1353,5 +1351,19 @@ mod tests {
                 4 * GRID_POSTER_H + 3 * GRID_GUTTER,
             )
         );
+    }
+
+    #[test]
+    fn fill_dimensions_upscale_and_crop_to_the_requested_size() {
+        let source = DynamicImage::new_rgba8(960, 540);
+        let opts = ImageProcessOptions {
+            fill_width: Some(1170),
+            fill_height: Some(657),
+            ..Default::default()
+        };
+
+        let result = apply_sizing(source, &opts);
+
+        assert_eq!((result.width(), result.height()), (1170, 657));
     }
 }

@@ -103,12 +103,25 @@ async fn items_images_inner(
                     .to_string()
                     .parse()
                     .unwrap_or(ImageKind::Primary);
+                let is_collection = matches!(media.kind, db::MediaKind::Collection);
                 // If Thumb is requested but not stored, fall back to Primary.
+                // Collection artwork is generated and stored as Primary, but
+                // clients also request it as a wide Backdrop. Use the generated
+                // rendition when a collection has no dedicated backdrop.
                 let img_row = media
                     .images
                     .get(kind)
                     .or_else(|| {
                         if kind == ImageKind::Thumb {
+                            media
+                                .images
+                                .get(ImageKind::Primary)
+                        } else {
+                            None
+                        }
+                    })
+                    .or_else(|| {
+                        if kind == ImageKind::Backdrop && is_collection {
                             media
                                 .images
                                 .get(ImageKind::Primary)
@@ -140,11 +153,11 @@ async fn items_images_inner(
                     }
                 } else if matches!(
                     image_type,
-                    api::ImageType::Primary | api::ImageType::Thumb
-                ) && matches!(
-                    media.kind,
-                    db::MediaKind::Collection | db::MediaKind::Folder
-                ) {
+                    api::ImageType::Primary
+                        | api::ImageType::Thumb
+                        | api::ImageType::Backdrop
+                ) && is_collection
+                {
                     let b = ImageService::library_image(
                         &state
                             .ctx
