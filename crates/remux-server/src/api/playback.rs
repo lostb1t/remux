@@ -881,19 +881,32 @@ async fn videos_stream_inner(
         .unwrap_or(false)
     {
         // If the producing addon has http_redirect_stream enabled, issue a 302
-        // directly to the stream URL instead of proxying bytes through remux.
+        // directly to the stream URL instead of proxying bytes through remux —
+        // unless the URL's host is only reachable from remux's own network, in
+        // which case a client redirected there would just fail to connect.
         if let (Some(addon_id), crate::stream::StreamDescriptor::Http { url, .. }) =
             (si.addon_id, &descriptor)
         {
-            if state
-                .ctx
-                .addons
-                .get(addon_id)
-                .map(|a| {
-                    a.row
-                        .http_redirect_stream
+            // Fail closed: a URL we can't parse, or one with no host, is not
+            // confirmed reachable by the client either — treat it as internal
+            // rather than defaulting to allowing the redirect.
+            let host_is_internal = url::Url::parse(url)
+                .ok()
+                .and_then(|u| {
+                    u.host_str()
+                        .map(crate::stream::is_internal_host)
                 })
-                .unwrap_or(false)
+                .unwrap_or(true);
+            if !host_is_internal
+                && state
+                    .ctx
+                    .addons
+                    .get(addon_id)
+                    .map(|a| {
+                        a.row
+                            .http_redirect_stream
+                    })
+                    .unwrap_or(false)
             {
                 return Ok(axum::response::Redirect::temporary(url).into_response());
             }
@@ -1320,6 +1333,84 @@ mod tests {
             resp.header("location"),
             stream_url,
             "redirect Location must point directly to the source stream URL"
+        );
+    }
+
+    /// A stream URL whose host is only reachable from remux's own network
+    /// (here, a bare Docker-style hostname) must never be handed to the
+    /// client as a redirect target, even with `http_redirect_stream` enabled —
+    /// it falls back to proxying instead.
+    #[tokio::test]
+    async fn http_redirect_stream_skips_redirect_for_internal_host() {
+        use crate::{addons::addon::Addon, stream};
+        use chrono::Utc;
+        use remux_sdks::{remux::AddonPresetRef, stremio::ResourceType};
+        use uuid::Uuid;
+
+        let (server, guard, token) = authenticated_server().await;
+        let ctx = &guard.0;
+        let now = Utc::now().naive_utc();
+        let addon_id = Uuid::new_v4();
+        let stream_url = "http://internal-addon-service:1234/movie.mp4";
+
+        let addon = Addon {
+            id: addon_id,
+            name: "redirect-test-addon-internal".to_string(),
+            preset: AddonPresetRef {
+                kind: "stremio".to_string(),
+                config: serde_json::json!({
+                    "manifest_url": "https://example.com/addon/manifest.json"
+                })
+                .into(),
+            },
+            resources: vec![ResourceType::Stream],
+            types: vec![],
+            enabled: true,
+            priority: 0,
+            system: false,
+            is_default: false,
+            http_redirect_stream: true,
+            service_filter: vec![],
+            created_at: now,
+            updated_at: now,
+        };
+        addon
+            .insert(&ctx.db)
+            .await
+            .unwrap();
+
+        ctx.addons
+            .reload(&ctx.db, &ctx.config)
+            .await
+            .unwrap();
+
+        let mut media = crate::db::Media {
+            title: "Redirect Test Internal".to_string(),
+            kind: crate::db::MediaKind::Stream,
+            stream_info: Some(stream::StreamInfo {
+                descriptor: stream::StreamDescriptor::http(stream_url),
+                addon_id: Some(addon_id),
+                ..Default::default()
+            }),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        media
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let resp = server
+            .get(&format!("/videos/{}/stream", media.id))
+            .add_query_params([("Static", "true"), ("ApiKey", &token)])
+            .expect_failure()
+            .await;
+
+        assert_ne!(
+            resp.status_code(),
+            StatusCode::TEMPORARY_REDIRECT,
+            "must not redirect a client to an internal-only host"
         );
     }
 

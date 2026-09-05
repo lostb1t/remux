@@ -1313,8 +1313,9 @@ async fn stremio_subtitles(
 // Stream helpers
 // ---------------------------------------------------------------------------
 
-/// Rewrite a URL whose host is `aiostreams` to use the stremio addon's origin.
-/// AIO running in Docker uses this internal hostname; we remap it at descriptor
+/// Rewrite a URL whose host is unreachable outside the addon's own network
+/// (e.g. AIOStreams in Docker returning its internal `aiostreams` hostname) to
+/// use the stremio addon's manifest origin instead. Applied at descriptor
 /// construction time so callers never see the unresolvable internal address.
 /// Extract tracker URLs from a Stremio stream's `sources` array.
 ///
@@ -1394,7 +1395,7 @@ fn rewrite_aio_url(url: &str, manifest_url: &StremioManifestUrl) -> String {
     };
     if !parsed
         .host_str()
-        .map(|h| h.eq_ignore_ascii_case("aiostreams"))
+        .map(crate::stream::is_internal_host)
         .unwrap_or(false)
     {
         return url.to_string();
@@ -1693,6 +1694,35 @@ mod tests {
                 .contains("manifest.json"),
             "manifest.json not stripped: {url}"
         );
+    }
+
+    #[test]
+    fn rewrite_aio_url_remaps_internal_host_to_manifest_origin() {
+        let manifest_url =
+            StremioManifestUrl::try_new("https://addon.example.com:8443/manifest.json")
+                .unwrap();
+        let rewritten =
+            rewrite_aio_url("http://aiostreams:3000/stream/foo.mkv", &manifest_url);
+        assert_eq!(rewritten, "https://addon.example.com:8443/stream/foo.mkv");
+    }
+
+    #[test]
+    fn rewrite_aio_url_remaps_private_ip_host() {
+        let manifest_url =
+            StremioManifestUrl::try_new("https://addon.example.com/manifest.json")
+                .unwrap();
+        let rewritten =
+            rewrite_aio_url("http://192.168.1.50:11470/stream/foo.mkv", &manifest_url);
+        assert_eq!(rewritten, "https://addon.example.com/stream/foo.mkv");
+    }
+
+    #[test]
+    fn rewrite_aio_url_leaves_public_host_untouched() {
+        let manifest_url =
+            StremioManifestUrl::try_new("https://addon.example.com/manifest.json")
+                .unwrap();
+        let url = "https://cdn.example.net/stream/foo.mkv";
+        assert_eq!(rewrite_aio_url(url, &manifest_url), url);
     }
 
     fn mock_manifest(server: &httpmock::MockServer) {
