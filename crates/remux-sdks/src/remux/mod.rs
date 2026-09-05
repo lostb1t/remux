@@ -1,8 +1,10 @@
 pub mod codecs;
+pub mod provider_ids;
 pub use codecs::{
     AudioCodec, AudioContainer, DlnaProfileType, SubtitleCodec, TranscodingProtocol,
     VideoCodec, VideoContainer,
 };
+pub use provider_ids::{AnyProviderIds, ExternalIdProvider};
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use http::{HeaderValue, Method};
@@ -1275,6 +1277,14 @@ pub struct GetItemsQuery {
     pub start_index: Option<u32>,
     pub limit: Option<u32>,
     pub search_term: Option<String>,
+    /// Emby `AnyProviderIdEquals` — `Tmdb.123,Imdb.tt456,Tvdb.789`.
+    #[serde(
+        deserialize_with = "deserialize_separated_str",
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub any_provider_id_equals: Option<Vec<String>>,
     pub parent_id: Option<Uuid>,
     pub season_id: Option<Uuid>,
     /// Internal server-side constraint. This is not a Jellyfin query parameter.
@@ -1508,6 +1518,15 @@ impl GetItemsQuery {
         //}
 
         requested
+    }
+
+    /// `None` when the client did not send Emby `AnyProviderIdEquals`.
+    /// `Some` (possibly empty) when it did, so callers can return no rows
+    /// instead of ignoring a malformed filter.
+    pub fn any_provider_ids(&self) -> Option<AnyProviderIds> {
+        self.any_provider_id_equals
+            .as_ref()
+            .map(|tokens| AnyProviderIds::parse(tokens))
     }
 }
 
@@ -1969,6 +1988,8 @@ pub enum TranscodeReason {
     SubtitleCodecNotSupported(String),
     VideoRangeTypeNotSupported(String),
     VideoCodecTagNotSupported(String),
+    VideoProfileNotSupported(String),
+    VideoBitDepthNotSupported(String),
     ContainerBitrateExceedsLimit,
 }
 
@@ -1981,6 +2002,8 @@ impl TranscodeReason {
             Self::SubtitleCodecNotSupported(_) => "SubtitleCodecNotSupported",
             Self::VideoRangeTypeNotSupported(_) => "VideoRangeTypeNotSupported",
             Self::VideoCodecTagNotSupported(_) => "VideoCodecTagNotSupported",
+            Self::VideoProfileNotSupported(_) => "VideoProfileNotSupported",
+            Self::VideoBitDepthNotSupported(_) => "VideoBitDepthNotSupported",
             Self::ContainerBitrateExceedsLimit => "ContainerBitrateExceedsLimit",
         }
     }
@@ -2000,6 +2023,12 @@ impl std::fmt::Debug for TranscodeReason {
             }
             Self::VideoCodecTagNotSupported(d) => {
                 write!(f, "VideoCodecTagNotSupported({d})")
+            }
+            Self::VideoProfileNotSupported(d) => {
+                write!(f, "VideoProfileNotSupported({d})")
+            }
+            Self::VideoBitDepthNotSupported(d) => {
+                write!(f, "VideoBitDepthNotSupported({d})")
             }
             Self::ContainerBitrateExceedsLimit => {
                 write!(f, "ContainerBitrateExceedsLimit")
@@ -2092,6 +2121,12 @@ impl TranscodeReasons {
                 }
                 "VideoCodecTagNotSupported" => {
                     Some(TranscodeReason::VideoCodecTagNotSupported(String::new()))
+                }
+                "VideoProfileNotSupported" => {
+                    Some(TranscodeReason::VideoProfileNotSupported(String::new()))
+                }
+                "VideoBitDepthNotSupported" => {
+                    Some(TranscodeReason::VideoBitDepthNotSupported(String::new()))
                 }
                 "ContainerBitrateExceedsLimit" => {
                     Some(TranscodeReason::ContainerBitrateExceedsLimit)
@@ -2555,12 +2590,39 @@ impl MediaSourceInfo {
     }
 }
 
+/// Where a `MediaSourceInfo`'s `media_streams`/container/bitrate facts came
+/// from. `Ffprobe` and `RemuxDb` are measured/matched and trustworthy —
+/// consumers may treat them as a completed probe. `FilenameGuess` is a
+/// best-effort parse of the release filename and must never count as a
+/// completed probe: it must not block a real ffprobe attempt or a RemuxDB
+/// lookup, and must never be used for playback/transcode decisions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProbeOrigin {
+    Ffprobe,
+    RemuxDb,
+    FilenameGuess,
+}
+
 #[dto]
 pub struct MediaSourceRemuxInfo {
     pub provider_info: Option<serde_json::Value>,
+    pub source: Option<ProbeOrigin>,
 }
 
 impl MediaSourceInfo {
+    /// True when this source's facts are a filename guess, not a completed
+    /// probe. Callers deciding whether to skip a real probe/RemuxDB lookup
+    /// must check this — `video_stream().is_some()` alone is not enough.
+    pub fn is_filename_guess(&self) -> bool {
+        matches!(
+            self.remux
+                .as_ref()
+                .and_then(|r| r.source),
+            Some(ProbeOrigin::FilenameGuess)
+        )
+    }
+
     pub fn video_stream(&self) -> Option<&MediaStream> {
         self.media_streams
             .iter()
@@ -6723,6 +6785,24 @@ impl Endpoint for RegenerateCollectionImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn get_items_query_deserializes_any_provider_id_equals() {
+        let q: GetItemsQuery = serde_json::from_value(serde_json::json!({
+            "AnyProviderIdEquals": "Tmdb.27205,Imdb.tt1375666"
+        }))
+        .unwrap();
+        assert_eq!(
+            q.any_provider_id_equals
+                .as_deref(),
+            Some(["Tmdb.27205".to_string(), "Imdb.tt1375666".to_string()].as_slice())
+        );
+        let ids = q
+            .any_provider_ids()
+            .unwrap();
+        assert_eq!(ids.tmdb, vec![27205]);
+        assert_eq!(ids.imdb, vec!["tt1375666".to_string()]);
+    }
 
     #[test]
     fn user_policy_does_not_advertise_unimplemented_sync_play() {

@@ -17,13 +17,36 @@ permissions:
   pull-requests: write
 
 jobs:
+  resolve-ref:
+    if: inputs.cleanup == false
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.pr.outputs.sha }}
+    steps:
+      # workflow_dispatch runs against whatever branch is selected in the "Run
+      # workflow" dropdown (main, by default) — it has no inherent link to
+      # pr_number. Without this, build.yml's checkout steps fall back to that
+      # dispatch ref instead of the PR's actual head commit, so the resulting
+      # image silently doesn't contain the PR's changes.
+      - name: Resolve PR head SHA
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sha=$(gh pr view "${{ inputs.pr_number }}" \
+            --repo "${{ github.repository }}" \
+            --json headRefOid -q .headRefOid)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: resolve-ref
     if: inputs.cleanup == false
     uses: ./.github/workflows/build.yml
     with:
       version: pr-${{ inputs.pr_number }}
       docker_tags: "-t ghcr.io/lostb1t/remux:pr-${{ inputs.pr_number }}"
       desktop: false
+      ref: ${{ needs.resolve-ref.outputs.sha }}
     secrets: inherit
 
   comment:

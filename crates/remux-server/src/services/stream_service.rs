@@ -1,7 +1,6 @@
 use crate::{
     AppContext, api, db,
     playback::probe::{probe_stream, resolve_stream_root},
-    stream::StreamDescriptor,
 };
 use remux_sdks::{
     remux::{MediaStreamType, StreamFilter, VideoRangeType},
@@ -495,11 +494,16 @@ impl StreamService {
                         .server_input(stream.id, port)
                 });
             let skip_probe = sel.probe_only_first && idx > 0;
+            // A filename guess is never a completed probe — it must not skip
+            // submitting a freshly-probed result to RemuxDB.
             let was_cached = stream
                 .probe_data
                 .as_ref()
-                .and_then(|pd| pd.video_stream())
-                .is_some();
+                .is_some_and(|pd| {
+                    pd.video_stream()
+                        .is_some()
+                        && !pd.is_filename_guess()
+                });
             let timeout_secs = if stream
                 .stream_info
                 .as_ref()
@@ -571,12 +575,20 @@ impl StreamService {
             });
             source.is_remote = false;
             // Re-apply binge-group headers — ffmpeg probing produces a fresh
-            // MediaSourceInfo and would otherwise drop provider hints.
+            // MediaSourceInfo and would otherwise drop provider hints. Must
+            // preserve whatever probe_source tag probe_stream() already set
+            // (Ffprobe from a real probe, or carried over from cached data) —
+            // a blanket ..Default::default() here would silently erase it.
+            let probe_source = source
+                .remux
+                .as_ref()
+                .and_then(|r| r.source);
             source.remux = Some(api::MediaSourceRemuxInfo {
                 provider_info: stream
                     .stream_info
                     .as_ref()
                     .and_then(|si| serde_json::to_value(si).ok()),
+                source: probe_source,
             });
 
             let remuxdb_enabled = probe_cfg
@@ -711,13 +723,9 @@ fn media_info_from_probe(
         .as_ref()
     {
         Some(si) => {
-            let (hash, idx) = match &si.descriptor {
-                StreamDescriptor::Torrent {
-                    info_hash,
-                    file_idx,
-                    ..
-                } => (Some(info_hash.clone()), file_idx.map(|i| i as i32)),
-                _ => (None, None),
+            let (hash, idx) = match si.torrent_identity() {
+                Some((hash, idx)) => (Some(hash.to_owned()), idx),
+                None => (None, None),
             };
             let nzb = si
                 .usenet_guid
@@ -861,4 +869,143 @@ fn media_info_from_probe(
         external_ids,
         tracks,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stream::{StreamDescriptor, StreamInfo};
+
+    const DEBRID_HASH: &str = "63259f55cd5c31826321286ae1fde40c931dee1d";
+    const DESCRIPTOR_HASH: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    /// Minimal successful probe: only `size` is required by `media_info_from_probe`.
+    fn probe_with_size(size: i64) -> api::MediaSourceInfo {
+        api::MediaSourceInfo {
+            size: Some(size),
+            ..Default::default()
+        }
+    }
+
+    fn stream_media(info: StreamInfo) -> db::Media {
+        db::Media {
+            title: "Example".to_string(),
+            stream_info: Some(info),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn media_info_from_probe_preserves_torrent_identity_for_http_debrid_stream() {
+        let stream = stream_media(StreamInfo {
+            descriptor: StreamDescriptor::http("https://debrid.example/playback/123"),
+            torrent_info_hash: Some(DEBRID_HASH.to_string()),
+            torrent_file_idx: Some(4),
+            filename: Some("Example.2026.2160p.mkv".to_string()),
+            ..Default::default()
+        });
+        let payload = media_info_from_probe(
+            &probe_with_size(12_340_295_313),
+            &stream,
+            None,
+        )
+        .expect("HTTP debrid stream with preserved torrent identity must be submitted");
+        assert_eq!(
+            payload
+                .torrent_info_hash
+                .as_deref(),
+            Some(DEBRID_HASH)
+        );
+        assert_eq!(payload.torrent_file_idx, Some(4));
+        assert!(
+            payload
+                .nzb
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn media_info_from_probe_prefers_torrent_descriptor_identity() {
+        let stream = stream_media(StreamInfo {
+            descriptor: StreamDescriptor::Torrent {
+                info_hash: DESCRIPTOR_HASH.to_string(),
+                file_hint: None,
+                file_idx: Some(7),
+                trackers: vec![],
+            },
+            torrent_info_hash: Some(DEBRID_HASH.to_string()),
+            torrent_file_idx: Some(4),
+            ..Default::default()
+        });
+        let payload =
+            media_info_from_probe(&probe_with_size(1), &stream, None).unwrap();
+        assert_eq!(
+            payload
+                .torrent_info_hash
+                .as_deref(),
+            Some(DESCRIPTOR_HASH)
+        );
+        assert_eq!(payload.torrent_file_idx, Some(7));
+    }
+
+    #[test]
+    fn media_info_from_probe_http_debrid_without_file_idx_still_submits() {
+        let stream = stream_media(StreamInfo {
+            descriptor: StreamDescriptor::http("https://debrid.example/playback/123"),
+            torrent_info_hash: Some(DEBRID_HASH.to_string()),
+            torrent_file_idx: None,
+            ..Default::default()
+        });
+        let payload =
+            media_info_from_probe(&probe_with_size(1), &stream, None).unwrap();
+        assert_eq!(
+            payload
+                .torrent_info_hash
+                .as_deref(),
+            Some(DEBRID_HASH)
+        );
+        assert_eq!(payload.torrent_file_idx, None);
+    }
+
+    #[test]
+    fn media_info_from_probe_nzb_only_stream_submits_without_torrent_identity() {
+        let stream = stream_media(StreamInfo {
+            descriptor: StreamDescriptor::http("https://usenet.example/file"),
+            usenet_guid: Some("guid-123".to_string()),
+            usenet_indexer: Some("NZBgeek".to_string()),
+            filename: Some("Example.2026.1080p.mkv".to_string()),
+            ..Default::default()
+        });
+        let payload = media_info_from_probe(&probe_with_size(1), &stream, None)
+            .expect("usenet stream must still be submitted");
+        let nzb = payload
+            .nzb
+            .expect("nzb submission populated");
+        assert_eq!(nzb.indexer, "NZBgeek");
+        assert_eq!(nzb.indexer_guid, "guid-123");
+        assert_eq!(
+            nzb.title
+                .as_deref(),
+            Some("Example.2026.1080p.mkv")
+        );
+        assert!(
+            payload
+                .torrent_info_hash
+                .is_none()
+        );
+        assert!(
+            payload
+                .torrent_file_idx
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn media_info_from_probe_skips_http_stream_without_any_identity() {
+        let stream = stream_media(StreamInfo {
+            descriptor: StreamDescriptor::http("https://cdn.example/file.mkv"),
+            ..Default::default()
+        });
+        assert!(media_info_from_probe(&probe_with_size(1), &stream, None).is_none());
+    }
 }

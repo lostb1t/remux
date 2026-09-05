@@ -24,6 +24,7 @@ use async_trait::async_trait;
 use futures::Stream;
 use sqlx::SqlitePool;
 use std::{
+    collections::HashMap,
     pin::Pin,
     sync::Arc,
     time::{Duration, Instant},
@@ -34,9 +35,7 @@ use libc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::{
-    AppContext, api, common::ProgressReporter, db, sdks, stream::StreamDescriptor,
-};
+use crate::{AppContext, api, common::ProgressReporter, db, sdks};
 pub use addon::{Addon, CatalogState, set_user_addon_override, user_addon_override};
 use remux_sdks::remuxdb;
 
@@ -203,6 +202,47 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
         .await
         .unwrap_or_default();
 
+    // `apply_meta` deliberately omits provider genre relations when Genres is
+    // locked. If another relation type (for example Cast) is still pending,
+    // the replacement logic below must not interpret those omitted genres as
+    // deletions. Resolve the existing right-hand media kinds once and retain
+    // genre links for every item whose Genres field is locked.
+    let genre_locked_ids: std::collections::HashSet<Uuid> = items_with_rels
+        .iter()
+        .filter(|item| item.is_field_locked(&db::MetadataField::Genres))
+        .map(|item| item.id)
+        .collect();
+    let locked_relation_right_ids: Vec<Uuid> = existing
+        .iter()
+        .filter(|relation| genre_locked_ids.contains(&relation.left_media_id))
+        .map(|relation| relation.right_media_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let locked_genre_right_ids: Option<std::collections::HashSet<Uuid>> =
+        if locked_relation_right_ids.is_empty() {
+            Some(std::collections::HashSet::new())
+        } else {
+            match db::Media::get_by_ids(&ctx.db, &locked_relation_right_ids).await {
+                Ok(media) => Some(
+                    media
+                        .into_iter()
+                        .filter(|right| {
+                            matches!(
+                                right.kind,
+                                db::MediaKind::Genre | db::MediaKind::MusicGenre
+                            )
+                        })
+                        .map(|right| right.id)
+                        .collect(),
+                ),
+                Err(e) => {
+                    warn!(error = %e, "failed to resolve locked genre relations; preserving all locked-item relations");
+                    None
+                }
+            }
+        };
+
     type RelKey = (Uuid, Uuid, Option<db::RelationRole>);
 
     let existing_map: std::collections::HashMap<RelKey, &db::MediaRelation> = existing
@@ -218,7 +258,16 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
     let to_delete: Vec<Uuid> = existing
         .iter()
         .filter(|r| {
-            !desired_keys.contains(&(r.left_media_id, r.right_media_id, r.role))
+            if desired_keys.contains(&(r.left_media_id, r.right_media_id, r.role)) {
+                return false;
+            }
+            if !genre_locked_ids.contains(&r.left_media_id) {
+                return true;
+            }
+            match &locked_genre_right_ids {
+                Some(genre_ids) => !genre_ids.contains(&r.right_media_id),
+                None => false,
+            }
         })
         .map(|r| r.relation_id)
         .collect();
@@ -1819,6 +1868,7 @@ impl AddonService {
             return Ok(());
         }
 
+        let fetch_started = std::time::Instant::now();
         let results = futures::future::join_all(
             applicable
                 .iter()
@@ -1830,6 +1880,14 @@ impl AddonService {
                 }),
         )
         .await;
+        debug!(
+            id = %media.id,
+            title = %media.title,
+            kind = %media.kind,
+            addons = applicable.len(),
+            elapsed = ?fetch_started.elapsed(),
+            "refresh_meta: addon meta_fetch done"
+        );
 
         // Accumulate all addon patches into a fresh empty object so the
         // highest-priority addon (first in list, lowest priority number) wins
@@ -1860,15 +1918,16 @@ impl AddonService {
         // Calling it inside apply_meta would re-apply the prefix on every patch.
         apply_title_format(media);
 
-        // Recompute stable UUID once external IDs are resolved by meta enrichment.
-        // Season/Episode UUIDs are anchored to parent_id, not external IDs — skip them.
+        // External IDs resolved by meta enrichment may now match a row already
+        // in the DB under a different id (e.g. discovered via a different
+        // addon first) — adopt it rather than drifting into a duplicate.
+        // Season/Episode identity is anchored to parent_id, not external IDs —
+        // skip them.
         if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
-            let raw = media.media_id_raw();
-            if raw
-                .canonical()
-                .is_some()
+            if let Some(existing_id) =
+                db::Media::find_existing_id_by_ext(&ctx.db, media).await
             {
-                media.id = uuid::Uuid::from(&raw);
+                media.id = existing_id;
             }
         }
         if media.kind == db::MediaKind::Person {
@@ -1970,13 +2029,22 @@ impl AddonService {
         }
     }
 
+    /// Processes each item's metadata/tree and upserts it, returning the map of
+    /// `original_id -> final_id` for every item that was passed in.
+    ///
+    /// The two ids differ whenever `process_meta_item_inner` adopts an existing
+    /// row's UUID via `find_existing_id_by_ext` (dedup by external ID) instead of
+    /// writing under the caller-computed id. Callers that recorded anything keyed
+    /// on the pre-call id (catalog membership rows, stale-member diffs, etc.) MUST
+    /// remap through this before using it — the row was upserted under `final_id`,
+    /// not `original_id`.
     pub async fn process_meta_batch(
         &self,
         media: Vec<db::Media>,
         ctx: &AppContext,
         force_refresh: bool,
         on_item_done: Option<Arc<dyn Fn() + Send + Sync>>,
-    ) -> Result<()> {
+    ) -> Result<HashMap<Uuid, Uuid>> {
         use futures::StreamExt;
 
         let config = db::Settings::get_config_or_default(&ctx.db).await;
@@ -1986,26 +2054,35 @@ impl AddonService {
         let svc = self.clone();
         let ctx_owned = ctx.clone();
 
-        futures::stream::iter(media)
-            .map(move |m| {
-                let svc = svc.clone();
-                let ctx = ctx_owned.clone();
-                let cfg = Arc::clone(&config);
-                async move {
-                    svc.process_meta_item(m, ctx, force_refresh, cfg)
-                        .await
-                }
-            })
-            .buffer_unordered(concurrency)
-            .for_each(move |_| {
-                if let Some(ref f) = on_item_done {
-                    f();
-                }
-                async {}
-            })
-            .await;
+        let mut stream = std::pin::pin!(
+            futures::stream::iter(media)
+                .map(move |m| {
+                    let svc = svc.clone();
+                    let ctx = ctx_owned.clone();
+                    let cfg = Arc::clone(&config);
+                    let original_id = m.id;
+                    async move {
+                        let final_id = svc
+                            .process_meta_item(m, ctx, force_refresh, cfg)
+                            .await;
+                        (original_id, final_id)
+                    }
+                })
+                .buffer_unordered(concurrency)
+        );
 
-        Ok(())
+        let mut id_map = HashMap::new();
+        while let Some((original_id, final_id)) = stream
+            .next()
+            .await
+        {
+            if let Some(ref f) = on_item_done {
+                f();
+            }
+            id_map.insert(original_id, final_id);
+        }
+
+        Ok(id_map)
     }
 
     /// Fetch the direct children of `node` from the first applicable tree addon.
@@ -2075,13 +2152,19 @@ impl AddonService {
     /// Load a map of `(kind_str, idx) → existing_uuid` for all direct children
     /// of `parent_id` that have a non-null idx. Used to adopt existing UUIDs
     /// for children arriving with a different computed UUID.
+    /// Maps `(kind, idx)` -> `(id, refreshed_at)` for existing children of `parent_id`.
+    /// Callers must adopt *both* fields when re-matching a freshly-parsed child from
+    /// an addon to an existing row — the addon has no concept of `refreshed_at`, so a
+    /// child that only adopts `id` always looks unrefreshed to `child_refresh_force`,
+    /// forcing every episode to be refetched on every single pass.
     async fn child_uuid_map(
         &self,
         db: &sqlx::SqlitePool,
         parent_id: Uuid,
-    ) -> std::collections::HashMap<(String, i64), Uuid> {
-        sqlx::query_as::<_, (String, Option<i64>, Uuid)>(
-            "SELECT CAST(kind AS TEXT), idx, id FROM media WHERE parent_id = ? AND idx IS NOT NULL",
+    ) -> std::collections::HashMap<(String, i64), (Uuid, Option<chrono::NaiveDateTime>)>
+    {
+        sqlx::query_as::<_, (String, Option<i64>, Uuid, Option<chrono::NaiveDateTime>)>(
+            "SELECT CAST(kind AS TEXT), idx, id, refreshed_at FROM media WHERE parent_id = ? AND idx IS NOT NULL",
         )
         .bind(parent_id)
         .fetch_all(db)
@@ -2089,11 +2172,32 @@ impl AddonService {
         .inspect_err(|e| error!(parent_id = %parent_id, error = %e, "child_uuid_map query failed"))
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|(k, idx, id)| idx.map(|i| ((k, i), id)))
+        .filter_map(|(k, idx, id, refreshed_at)| idx.map(|i| ((k, i), (id, refreshed_at))))
         .collect()
     }
 
     pub(crate) async fn process_meta_item(
+        &self,
+        media: db::Media,
+        ctx: AppContext,
+        force_refresh: bool,
+        config: Arc<api::ServerConfiguration>,
+    ) -> Uuid {
+        let title = media
+            .title
+            .clone();
+        let kind = media
+            .kind
+            .clone();
+        let started = std::time::Instant::now();
+        let id = self
+            .process_meta_item_inner(media, ctx, force_refresh, config)
+            .await;
+        debug!(%id, %title, %kind, elapsed = ?started.elapsed(), "process_meta_item done");
+        id
+    }
+
+    async fn process_meta_item_inner(
         &self,
         mut media: db::Media,
         ctx: AppContext,
@@ -2207,30 +2311,49 @@ impl AddonService {
             .child_uuid_map(&ctx.db, actual_root_id)
             .await;
 
-        // Load ALL grandchild UUIDs in one query keyed by (parent_id, kind, idx).
-        // Avoids one query per season (O(n_seasons) → O(1) queries).
-        let existing_l2: std::collections::HashMap<(Uuid, String, i64), Uuid> =
-            sqlx::query_as::<_, (Uuid, String, Option<i64>, Uuid)>(
-                "SELECT parent_id, CAST(kind AS TEXT), idx, id
-                 FROM media WHERE grandparent_id = ? AND idx IS NOT NULL",
-            )
-            .bind(actual_root_id)
-            .fetch_all(&ctx.db)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|(pid, k, idx, id)| idx.map(|i| ((pid, k, i), id)))
-            .collect();
+        // Load ALL grandchild UUIDs (and refreshed_at) in one query keyed by
+        // (parent_id, kind, idx). Avoids one query per season (O(n_seasons) → O(1)
+        // queries). refreshed_at must travel with the id — see child_uuid_map's
+        // doc comment for why leaving it behind defeats child_refresh_force.
+        let existing_l2: std::collections::HashMap<
+            (Uuid, String, i64),
+            (Uuid, Option<chrono::NaiveDateTime>),
+        > = sqlx::query_as::<
+            _,
+            (
+                Uuid,
+                String,
+                Option<i64>,
+                Uuid,
+                Option<chrono::NaiveDateTime>,
+            ),
+        >(
+            "SELECT parent_id, CAST(kind AS TEXT), idx, id, refreshed_at
+             FROM media WHERE grandparent_id = ? AND idx IS NOT NULL",
+        )
+        .bind(actual_root_id)
+        .fetch_all(&ctx.db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(pid, k, idx, id, refreshed_at)| {
+            idx.map(|i| ((pid, k, i), (id, refreshed_at)))
+        })
+        .collect();
 
         let mut level1: Vec<db::Media> = Vec::with_capacity(raw_level1.len());
         for mut child in raw_level1 {
             child.parent_id = Some(actual_root_id);
             child.grandparent = Some(Box::new(gp_stub.clone()));
 
-            // Adopt the existing DB UUID for this (kind, idx) position if found.
-            // The new child UUID may differ from what's stored (due to UUID scheme changes
-            // or root remapping) — adopting the stored UUID avoids duplicate rows and
-            // keeps grandchild parent_id references intact.
+            // Adopt the existing DB UUID (and refreshed_at) for this (kind, idx)
+            // position if found. The new child UUID may differ from what's stored
+            // (due to UUID scheme changes or root remapping) — adopting the stored
+            // UUID avoids duplicate rows and keeps grandchild parent_id references
+            // intact. `refreshed_at` must also be adopted: this `child` was just
+            // freshly parsed from the addon's raw response, which has no concept
+            // of it, so leaving it unset makes `child_refresh_force` below treat
+            // an already-refreshed child as brand new every single pass.
             if let Some(idx) = child.idx {
                 let key = (
                     child
@@ -2238,7 +2361,10 @@ impl AddonService {
                         .to_string(),
                     idx,
                 );
-                if let Some(&existing_id) = existing_l1.get(&key) {
+                if let Some(&(existing_id, existing_refreshed_at)) =
+                    existing_l1.get(&key)
+                {
+                    child.refreshed_at = existing_refreshed_at;
                     if existing_id != child.id {
                         // When the root was remapped, cascade any references to the new
                         // child UUID (which was never in the DB) before adopting.
@@ -2305,7 +2431,11 @@ impl AddonService {
                 gc.grandparent_id = Some(actual_root_id);
                 gc.grandparent = Some(Box::new(gp_stub.clone()));
 
-                // Adopt existing UUID from the pre-loaded grandchild map.
+                // Adopt existing UUID + refreshed_at from the pre-loaded grandchild
+                // map. `gc` is freshly parsed from the addon's raw response, which
+                // has no concept of refreshed_at — without adopting it here too,
+                // child_refresh_force below always treats this episode as never
+                // refreshed, refetching it on every single pass.
                 if let Some(idx) = gc.idx {
                     let key = (
                         actual_child_id,
@@ -2313,8 +2443,11 @@ impl AddonService {
                             .to_string(),
                         idx,
                     );
-                    if let Some(&existing_id) = existing_l2.get(&key) {
+                    if let Some(&(existing_id, existing_refreshed_at)) =
+                        existing_l2.get(&key)
+                    {
                         gc.id = existing_id;
+                        gc.refreshed_at = existing_refreshed_at;
                     }
                 }
 
@@ -2683,19 +2816,7 @@ fn match_probe_version<'a>(
 
     // Torrent: match by info_hash + file_idx. Covers both raw Torrent descriptors and
     // debrid Http streams where the hash comes from AIOStreams streamData.
-    let (hash, hash_file_idx) = match si.descriptor {
-        StreamDescriptor::Torrent {
-            ref info_hash,
-            file_idx,
-            ..
-        } => (Some(info_hash.as_str()), file_idx.map(|i| i as i32)),
-        _ => (
-            si.torrent_info_hash
-                .as_deref(),
-            si.torrent_file_idx,
-        ),
-    };
-    if let Some(hash) = hash {
+    if let Some((hash, hash_file_idx)) = si.torrent_identity() {
         if let Some(v) = versions
             .iter()
             .find(|v| {
@@ -3555,6 +3676,75 @@ mod tests {
                 .as_deref(),
             Some("Provider Overview"),
             "unlocked Overview must still be updated"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_pending_relations_preserves_locked_genres() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let item = db::Media {
+            id: Uuid::new_v4(),
+            title: "Locked Genres Series".to_string(),
+            kind: db::MediaKind::Series,
+            locked_fields: vec![db::MetadataField::Genres],
+            ..Default::default()
+        };
+        let genre = db::Media {
+            id: Uuid::new_v4(),
+            title: "Acoustic".to_string(),
+            kind: db::MediaKind::Genre,
+            ..Default::default()
+        };
+        let actor = db::Media {
+            id: Uuid::new_v4(),
+            title: "Actor".to_string(),
+            kind: db::MediaKind::Person,
+            external_ids: db::ExternalIds {
+                tmdb: Some(42),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let item_id = item.id;
+        let genre_id = genre.id;
+        db::Media::upsert(&ctx.db, &[item.clone(), genre.clone(), actor.clone()])
+            .await
+            .unwrap();
+        db::MediaRelation::upsert(
+            &ctx.db,
+            &[db::MediaRelation {
+                left_media_id: item.id,
+                right_media_id: genre.id,
+                ..Default::default()
+            }],
+        )
+        .await
+        .unwrap();
+
+        let refreshed = db::Media {
+            relations: Some(vec![(
+                db::MediaRelation {
+                    left_media_id: item.id,
+                    right_media_id: actor.id,
+                    role: Some(db::RelationRole::Actor),
+                    ..Default::default()
+                },
+                actor,
+            )]),
+            ..item
+        };
+        save_pending_relations(ctx, &[refreshed]).await;
+
+        let relations = db::MediaRelation::get_by_left_ids(&ctx.db, &[item_id])
+            .await
+            .unwrap();
+        assert!(
+            relations
+                .iter()
+                .any(|relation| relation.right_media_id == genre_id)
         );
     }
 

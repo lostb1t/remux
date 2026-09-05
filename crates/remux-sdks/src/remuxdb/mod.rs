@@ -175,7 +175,7 @@ impl MediaInfoPayload {
 }
 
 /// Flat track returned by `GET /api/media/info`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TrackDetail {
     pub kind: String,
     pub idx: i32,
@@ -556,9 +556,11 @@ impl From<&TrackDetail> for MediaStream {
             profile: t
                 .profile
                 .clone(),
-            title: t
-                .title
-                .clone(),
+            // Deliberately not copying the submitter's raw track title —
+            // some release groups abuse the embedded stream title tag for
+            // branding (matches the policy in playback::probe's own ffprobe
+            // conversion). DisplayTitle is synthesized from real attributes.
+            title: None,
             language: t
                 .language
                 .clone(),
@@ -622,9 +624,20 @@ impl From<&TrackDetail> for MediaStream {
 impl From<&MediaInfo> for MediaSourceInfo {
     fn from(version: &MediaInfo) -> Self {
         MediaSourceInfo {
+            // RemuxDB is crowd-sourced — submitters aren't guaranteed to
+            // canonicalize ffprobe's raw comma-joined format_name (e.g.
+            // "matroska,webm") before submitting, so take the first token
+            // ourselves. Without this, VideoContainer's Other(String)
+            // catch-all silently accepts the raw string instead of failing,
+            // and it round-trips straight back out in the API response.
             container: version
                 .container
                 .as_deref()
+                .and_then(|s| {
+                    s.split(',')
+                        .next()
+                })
+                .map(str::trim)
                 .and_then(|s| {
                     s.parse::<crate::remux::VideoContainer>()
                         .ok()
@@ -649,7 +662,96 @@ impl From<&MediaInfo> for MediaSourceInfo {
                     s
                 })
                 .collect(),
+            remux: Some(crate::remux::MediaSourceRemuxInfo {
+                source: Some(crate::remux::ProbeOrigin::RemuxDb),
+                ..Default::default()
+            }),
             ..Default::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn media_info_with_container(container: &str) -> MediaInfo {
+        MediaInfo {
+            content_hash: None,
+            container: Some(container.to_string()),
+            duration: None,
+            size: None,
+            bitrate: None,
+            virtual_chapters: false,
+            chapters: vec![],
+            sources: vec![],
+            tracks: vec![],
+        }
+    }
+
+    #[test]
+    fn container_normalizes_ffprobes_raw_comma_joined_format_name() {
+        // ffprobe's format.format_name for an mkv file is literally
+        // "matroska,webm" — other RemuxDB submitters aren't guaranteed to
+        // canonicalize it before submitting, so we must on ingestion.
+        let info = media_info_with_container("matroska,webm");
+        let source = MediaSourceInfo::from(&info);
+        assert_eq!(source.container, Some(crate::remux::VideoContainer::Mkv));
+    }
+
+    #[test]
+    fn container_trims_whitespace_around_comma_joined_tokens() {
+        // Crowd-sourced submitters aren't guaranteed to format this
+        // identically to ffprobe's own output — a stray space must not
+        // silently drop the container (VideoContainer's FromStr does not
+        // trim, so " matroska,webm" would otherwise fail to parse).
+        let info = media_info_with_container(" matroska,webm");
+        let source = MediaSourceInfo::from(&info);
+        assert_eq!(source.container, Some(crate::remux::VideoContainer::Mkv));
+
+        let info = media_info_with_container("matroska, webm");
+        let source = MediaSourceInfo::from(&info);
+        assert_eq!(source.container, Some(crate::remux::VideoContainer::Mkv));
+    }
+
+    #[test]
+    fn container_normalizes_mp4_family_format_name() {
+        let info = media_info_with_container("mov,mp4,m4a,3gp,3g2,mj2");
+        let source = MediaSourceInfo::from(&info);
+        assert_eq!(source.container, Some(crate::remux::VideoContainer::Mp4));
+    }
+
+    #[test]
+    fn container_accepts_already_canonical_value() {
+        let info = media_info_with_container("mkv");
+        let source = MediaSourceInfo::from(&info);
+        assert_eq!(source.container, Some(crate::remux::VideoContainer::Mkv));
+    }
+
+    #[test]
+    fn from_media_info_tags_probe_origin_remuxdb() {
+        let info = media_info_with_container("mkv");
+        let source = MediaSourceInfo::from(&info);
+        assert_eq!(
+            source
+                .remux
+                .and_then(|r| r.source),
+            Some(crate::remux::ProbeOrigin::RemuxDb)
+        );
+    }
+
+    #[test]
+    fn track_detail_never_carries_submitters_raw_title_through() {
+        // Some release groups abuse the embedded stream title tag for
+        // branding (e.g. "BEN.THE.MEN"). Whatever a submitter puts in
+        // TrackDetail.title must never reach our MediaStream.title.
+        let track = TrackDetail {
+            kind: "video".to_string(),
+            title: Some("BEN.THE.MEN".to_string()),
+            codec: Some("h264".to_string()),
+            ..Default::default()
+        };
+        let stream = MediaStream::from(&track);
+        assert_eq!(stream.title, None);
     }
 }

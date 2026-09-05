@@ -180,6 +180,8 @@ impl Task for RefreshLibraryTask {
         let mut processed = 0u32;
         let mut last_id: Option<Uuid> = None;
         let meta_progress = progress.scaled(70.0, 100.0);
+        info!("starting metadata refresh pass");
+        let meta_start = std::time::Instant::now();
         loop {
             let (batch, count) = db::Media::get_refreshable(
                 &ctx.db,
@@ -191,6 +193,7 @@ impl Task for RefreshLibraryTask {
 
             if let Some(c) = count {
                 total = Some(c.max(1));
+                info!(total = c, "refreshable items found");
             }
             if batch.is_empty() {
                 break;
@@ -199,10 +202,18 @@ impl Task for RefreshLibraryTask {
             last_id = batch
                 .last()
                 .map(|m| m.id);
+            let batch_start = std::time::Instant::now();
             ctx.addons
                 .process_meta_batch(batch, &ctx, false, None)
                 .await?;
             processed += fetched;
+            info!(
+                fetched,
+                processed,
+                total = ?total,
+                elapsed = ?batch_start.elapsed(),
+                "metadata batch processed"
+            );
             if let Some(t) = total {
                 meta_progress.report(processed as usize, t as usize);
             }
@@ -210,6 +221,7 @@ impl Task for RefreshLibraryTask {
                 break;
             }
         }
+        info!(elapsed = ?meta_start.elapsed(), processed, "metadata refresh pass complete");
 
         // Bust the generated poster cache for all collections so the grid
         // reflects any newly imported items on the next request.

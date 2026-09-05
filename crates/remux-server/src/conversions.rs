@@ -14,6 +14,7 @@ use std::{
     collections::HashMap,
     convert::{TryFrom, TryInto},
 };
+use tracing::warn;
 
 // Heuristic metadata fallback for remote source URLs when ffprobe metadata is
 // unavailable. This keeps clients functional (stream selection/transcode
@@ -40,97 +41,263 @@ fn infer_container_from_url(url: &str) -> Option<remux_sdks::remux::VideoContain
     remux_sdks::remux::VideoContainer::parse_known(&ext).map(|c| c.canonical())
 }
 
-fn infer_video_codec(text: &str) -> Option<String> {
-    if text.contains("hevc") || text.contains("h265") || text.contains("x265") {
-        Some("hevc".to_string())
-    } else if text.contains("av1") {
-        Some("av1".to_string())
-    } else if text.contains("vp9") {
-        Some("vp9".to_string())
-    } else if text.contains("h264") || text.contains("x264") || text.contains("avc") {
-        Some("h264".to_string())
-    } else {
-        None
+/// Best-effort media-info guess parsed from a release filename (e.g.
+/// "Movie.2023.2160p.UHD.BluRay.x265.DTS-HD.MA.7.1-GROUP.mkv") via the
+/// `hunch` crate. Used only to fill in MediaStreams/container on the item
+/// details response when neither RemuxDB nor a prior ffprobe has real data —
+/// never persisted, never consulted for playback/transcode decisions.
+pub(crate) struct FilenameProbeGuess {
+    pub container: Option<api::VideoContainer>,
+    pub media_streams: Vec<api::MediaStream>,
+}
+
+fn map_hunch_video_codec(s: &str) -> Option<String> {
+    remux_sdks::remux::VideoCodec::parse_known(s).map(|c| c.to_string())
+}
+
+fn map_hunch_audio_codec(s: &str) -> Option<String> {
+    remux_sdks::remux::AudioCodec::parse_known(s).map(|c| c.to_string())
+}
+
+fn screen_size_to_dimensions(s: &str) -> Option<(i64, i64)> {
+    match s {
+        "2160p" => Some((3840, 2160)),
+        "1080p" => Some((1920, 1080)),
+        "720p" => Some((1280, 720)),
+        "480p" => Some((854, 480)),
+        "360p" => Some((640, 360)),
+        _ => None,
     }
 }
 
-fn infer_audio_codec(text: &str) -> Option<String> {
-    if text.contains("truehd") {
-        Some("truehd".to_string())
-    } else if text.contains("dts") || text.contains("dca") {
-        Some("dts".to_string())
-    } else if text.contains("eac3") || text.contains("ddp") {
-        Some("eac3".to_string())
-    } else if text.contains("ac3") {
-        Some("ac3".to_string())
-    } else if text.contains("aac") {
-        Some("aac".to_string())
-    } else {
-        None
+/// Parses hunch's "5.1" / "7.1" / "2.0" audio_channels token into a channel
+/// count (front + LFE/rear, e.g. "5.1" -> 6, "7.1" -> 8).
+fn parse_channel_count(s: &str) -> Option<i64> {
+    let (front, rear) = s.split_once('.')?;
+    Some(
+        front
+            .parse::<i64>()
+            .ok()?
+            + rear
+                .parse::<i64>()
+                .ok()?,
+    )
+}
+
+fn hunch_video_range_type(other: &[&str]) -> Option<api::VideoRangeType> {
+    other
+        .iter()
+        .find_map(|&o| match o {
+            "Dolby Vision" => Some(api::VideoRangeType::Dovi),
+            "HDR10+" => Some(api::VideoRangeType::Hdr10Plus),
+            "HDR10" => Some(api::VideoRangeType::Hdr10),
+            _ => None,
+        })
+}
+
+/// Coarse `VideoRange` companion for `VideoRangeType`, mirroring how the real
+/// ffprobe path (playback::probe) always derives both together. We only ever
+/// assert `Hdr` on positive filename evidence — absence of an HDR tag doesn't
+/// mean SDR, it just means hunch found nothing, so it stays `None` (unknown).
+fn video_range_from_type(t: Option<&api::VideoRangeType>) -> Option<api::VideoRange> {
+    match t? {
+        api::VideoRangeType::Sdr => Some(api::VideoRange::Sdr),
+        api::VideoRangeType::Other => Some(api::VideoRange::Other),
+        _ => Some(api::VideoRange::Hdr),
     }
 }
 
-fn infer_audio_channels(text: &str) -> Option<i64> {
-    if text.contains("7.1") {
-        Some(8)
-    } else if text.contains("5.1") {
-        Some(6)
-    } else if text.contains("2.0") || text.contains("stereo") {
-        Some(2)
-    } else {
-        None
-    }
-}
+pub(crate) fn guess_media_source_from_filename(filename: &str) -> FilenameProbeGuess {
+    let parsed = hunch::hunch(filename);
+    let mut media_streams = Vec::new();
 
-fn fallback_media_streams(source: &db::Media) -> Vec<api::MediaStream> {
-    // Only synthesize streams for remote source entries.
-    if source.kind != db::MediaKind::Stream {
-        return Vec::new();
-    }
+    let video_codec = parsed
+        .video_codec()
+        .and_then(map_hunch_video_codec);
+    let (width, height) = crate::db::min_screen_size(&parsed)
+        .and_then(screen_size_to_dimensions)
+        .map(|(w, h)| (Some(w), Some(h)))
+        .unwrap_or((None, None));
+    let video_range_type = hunch_video_range_type(&parsed.other());
+    let bit_depth = parsed
+        .color_depth()
+        .and_then(|s| {
+            s.trim_end_matches("-bit")
+                .parse::<i64>()
+                .ok()
+        });
 
-    if !source.is_remote_url() {
-        return Vec::new();
-    }
-
-    let text = source
-        .title
-        .to_ascii_lowercase();
-    let video_codec = infer_video_codec(&text);
-    let audio_codec = infer_audio_codec(&text);
-    let channels = infer_audio_channels(&text);
-
-    let video_title = video_codec
-        .as_ref()
-        .map(|c| format!("{} - Fallback", c.to_uppercase()))
-        .unwrap_or_else(|| "Video - Fallback".to_string());
-    let audio_title = match (&audio_codec, channels) {
-        (Some(c), Some(8)) => format!("{} - 7.1 - Fallback", c.to_uppercase()),
-        (Some(c), Some(6)) => format!("{} - 5.1 - Fallback", c.to_uppercase()),
-        (Some(c), Some(2)) => format!("{} - Stereo - Fallback", c.to_uppercase()),
-        (Some(c), _) => format!("{} - Fallback", c.to_uppercase()),
-        (None, Some(8)) => "Audio - 7.1 - Fallback".to_string(),
-        (None, Some(6)) => "Audio - 5.1 - Fallback".to_string(),
-        (None, Some(2)) => "Audio - Stereo - Fallback".to_string(),
-        (None, _) => "Audio - Fallback".to_string(),
-    };
-
-    vec![
-        api::MediaStream {
+    if video_codec.is_some()
+        || width.is_some()
+        || video_range_type.is_some()
+        || bit_depth.is_some()
+    {
+        let video_range = video_range_from_type(video_range_type.as_ref());
+        let display_title = display_title_video(&StreamMeta {
+            codec: video_codec.as_deref(),
+            width,
+            height,
+            video_range: video_range.as_ref(),
+            ..Default::default()
+        });
+        media_streams.push(api::MediaStream {
+            index: 0,
             type_: Some(api::MediaStreamType::Video),
             codec: video_codec,
-            is_default: Some(true),
-            display_title: Some(video_title),
+            width,
+            height,
+            video_range,
+            video_range_type,
+            bit_depth,
+            display_title,
+            // Never flag a filename guess as the container's default stream —
+            // resolve_default_streams() falls back to the first is_default
+            // stream, which would otherwise stamp DefaultAudioStreamIndex from
+            // pure guesswork.
+            is_default: Some(false),
             ..Default::default()
-        },
-        api::MediaStream {
+        });
+    }
+
+    let audio_codec = parsed
+        .audio_codec()
+        .and_then(map_hunch_audio_codec);
+    let channels = parsed
+        .audio_channels()
+        .and_then(parse_channel_count);
+    if audio_codec.is_some() || channels.is_some() {
+        let display_title = display_title_audio(&StreamMeta {
+            codec: audio_codec.as_deref(),
+            channels,
+            ..Default::default()
+        });
+        media_streams.push(api::MediaStream {
+            index: media_streams.len() as i64,
             type_: Some(api::MediaStreamType::Audio),
             codec: audio_codec,
             channels,
-            is_default: Some(true),
-            display_title: Some(audio_title),
+            display_title,
+            is_default: Some(false),
             ..Default::default()
-        },
-    ]
+        });
+    }
+
+    let container = parsed
+        .container()
+        .and_then(api::VideoContainer::parse_known)
+        .map(|c| c.canonical());
+
+    FilenameProbeGuess {
+        container,
+        media_streams,
+    }
+}
+
+/// Fills in item-details MediaSources whose `media_streams` came back empty
+/// (RemuxDB miss and never probed) with best-effort facts: codec/resolution/etc.
+/// guessed from the release filename, plus an overall bitrate derived from the
+/// addon-reported file size and the item's known runtime (bitrate = size*8 /
+/// duration — no filename parsing involved for that part). Persists the
+/// result into `db::Media.probe_data` tagged `ProbeOrigin::FilenameGuess` so
+/// later requests don't re-guess — but that tag is exactly what keeps this
+/// out of the playback/transcode path: `MediaSourceInfo::is_filename_guess()`
+/// is checked everywhere a real ffprobe/RemuxDB result would otherwise be
+/// trusted (see `probe_stream` in playback::probe), so a guess here can never
+/// block or stand in for a real probe.
+pub(crate) async fn apply_filename_probe_fallback(
+    base_item: &mut api::BaseItemDto,
+    sources: &[db::Media],
+    db: &sqlx::SqlitePool,
+) {
+    let Some(infos) = base_item
+        .media_sources
+        .as_mut()
+    else {
+        return;
+    };
+    for (info, source) in infos
+        .iter_mut()
+        .zip(sources.iter())
+    {
+        if !info
+            .media_streams
+            .is_empty()
+        {
+            continue;
+        }
+        let mut estimated = false;
+
+        if let Some(filename) = source
+            .stream_info
+            .as_ref()
+            .and_then(|si| {
+                si.filename
+                    .as_deref()
+            })
+        {
+            let guess = guess_media_source_from_filename(filename);
+            if !guess
+                .media_streams
+                .is_empty()
+            {
+                info.media_streams = guess.media_streams;
+                if info
+                    .container
+                    .is_none()
+                {
+                    info.container = guess.container;
+                }
+                estimated = true;
+            }
+        }
+
+        if info
+            .bitrate
+            .is_none()
+        {
+            let size = source
+                .stream_info
+                .as_ref()
+                .and_then(|si| si.size)
+                .or(info.size);
+            if let (Some(size), Some(ticks)) = (size, info.run_time_ticks) {
+                let secs = common::ticks_to_seconds(ticks);
+                if secs > 0.0 {
+                    info.size
+                        .get_or_insert(size);
+                    info.bitrate = Some(((size as f64 * 8.0) / secs).round() as i64);
+                    estimated = true;
+                }
+            }
+        }
+
+        if !estimated {
+            continue;
+        }
+        info.remux
+            .get_or_insert_with(Default::default)
+            .source = Some(api::ProbeOrigin::FilenameGuess);
+
+        let persisted = api::MediaSourceInfo {
+            media_streams: info
+                .media_streams
+                .clone(),
+            container: info
+                .container
+                .clone(),
+            bitrate: info.bitrate,
+            size: info.size,
+            run_time_ticks: info.run_time_ticks,
+            remux: Some(api::MediaSourceRemuxInfo {
+                source: Some(api::ProbeOrigin::FilenameGuess),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        if let Err(e) = db::Media::save_probe_data(db, &source.id, &persisted).await {
+            warn!(id = %source.id, error = %e, "failed to persist filename-guessed probe data");
+        }
+    }
 }
 
 impl From<db::Media> for api::MediaSourceInfo {
@@ -155,11 +322,25 @@ impl From<db::Media> for api::MediaSourceInfo {
                     .and_then(infer_container_from_url)
             });
 
+        // Carry the persisted probe-source tag forward — without this, a
+        // FilenameGuess (or Ffprobe/RemuxDb) tag stored on probe_data would
+        // silently vanish from the response every time this From impl
+        // rebuilds `remux`, making the estimate indistinguishable from real
+        // data to any client checking it.
+        let probe_source = source
+            .probe_data
+            .as_ref()
+            .and_then(|p| {
+                p.remux
+                    .as_ref()
+            })
+            .and_then(|r| r.source);
         let remux = Some(api::MediaSourceRemuxInfo {
             provider_info: source
                 .stream_info
                 .as_ref()
                 .and_then(|si| serde_json::to_value(si).ok()),
+            source: probe_source,
         });
 
         let path = Some({
@@ -622,6 +803,340 @@ fn srt_timestamp_to_ticks(ts: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guess_media_source_from_filename_parses_full_release_tags() {
+        let guess = guess_media_source_from_filename(
+            "Movie.2023.2160p.UHD.BluRay.x265.10bit.HDR10.DTS-HD.MA.7.1-GROUP.mkv",
+        );
+
+        assert_eq!(guess.container, Some(api::VideoContainer::Mkv));
+        assert_eq!(
+            guess
+                .media_streams
+                .len(),
+            2
+        );
+
+        let video = &guess.media_streams[0];
+        assert_eq!(video.type_, Some(api::MediaStreamType::Video));
+        assert_eq!(
+            video
+                .codec
+                .as_deref(),
+            Some("hevc")
+        );
+        assert_eq!(video.width, Some(3840));
+        assert_eq!(video.height, Some(2160));
+        assert_eq!(video.bit_depth, Some(10));
+        assert_eq!(video.video_range_type, Some(api::VideoRangeType::Hdr10));
+        assert_eq!(video.video_range, Some(api::VideoRange::Hdr));
+        assert_eq!(
+            video.is_default,
+            Some(false),
+            "a filename guess must never be flagged as the container default"
+        );
+        assert_eq!(
+            video
+                .display_title
+                .as_deref(),
+            Some("4K HEVC Hdr")
+        );
+
+        let audio = &guess.media_streams[1];
+        assert_eq!(audio.type_, Some(api::MediaStreamType::Audio));
+        assert_eq!(
+            audio
+                .codec
+                .as_deref(),
+            Some("dts")
+        );
+        assert_eq!(audio.channels, Some(8));
+        assert_eq!(
+            audio.is_default,
+            Some(false),
+            "a filename guess must never be flagged as the container default"
+        );
+        assert_eq!(
+            audio
+                .display_title
+                .as_deref(),
+            Some("DTS - 7.1")
+        );
+    }
+
+    #[test]
+    fn guessed_streams_never_produce_a_resolved_default_audio_index() {
+        // resolve_default_streams()'s last-resort fallback picks whichever
+        // stream is flagged is_default. Filename guesses must not win that
+        // fallback, or DefaultAudioStreamIndex gets stamped from guesswork.
+        let guess = guess_media_source_from_filename(
+            "Movie.2023.1080p.WEB-DL.x264.AAC.5.1-GROUP.mp4",
+        );
+        let mut info = api::MediaSourceInfo {
+            media_streams: guess.media_streams,
+            ..Default::default()
+        };
+        info.resolve_default_streams(
+            &remux_sdks::remux::UserConfiguration::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(info.default_audio_stream_index, None);
+    }
+
+    #[test]
+    fn guess_media_source_from_filename_no_technical_tags_yields_empty_streams() {
+        let guess = guess_media_source_from_filename("Some Movie (2023).mkv");
+
+        assert!(
+            guess
+                .media_streams
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn guess_media_source_from_filename_no_hdr_evidence_leaves_video_range_unknown() {
+        // Absence of an HDR tag doesn't mean SDR — it just means hunch found
+        // nothing, so video_range must stay None (unknown), not assert Sdr.
+        let guess = guess_media_source_from_filename(
+            "Movie.2023.1080p.WEB-DL.x264.AAC.5.1-GROUP.mp4",
+        );
+
+        let video = &guess.media_streams[0];
+        assert_eq!(video.video_range_type, None);
+        assert_eq!(video.video_range, None);
+    }
+
+    #[tokio::test]
+    async fn apply_filename_probe_fallback_fills_empty_source_from_filename() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let source = db::Media {
+            id: uuid::Uuid::new_v4(),
+            kind: db::MediaKind::Stream,
+            stream_info: Some(crate::stream::StreamInfo {
+                filename: Some(
+                    "Movie.2023.1080p.WEB-DL.x264.AAC.5.1-GROUP.mp4".to_string(),
+                ),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        db::Media::upsert(db, &[source.clone()])
+            .await
+            .unwrap();
+        let mut base_item = api::BaseItemDto {
+            media_sources: Some(vec![api::MediaSourceInfo::default()]),
+            ..Default::default()
+        };
+
+        apply_filename_probe_fallback(&mut base_item, &[source.clone()], db).await;
+
+        let info = &base_item
+            .media_sources
+            .unwrap()[0];
+        assert!(
+            !info
+                .media_streams
+                .is_empty()
+        );
+        assert_eq!(info.container, Some(api::VideoContainer::Mp4));
+        assert_eq!(
+            info.remux
+                .as_ref()
+                .and_then(|r| r.source),
+            Some(api::ProbeOrigin::FilenameGuess)
+        );
+
+        // The guess must have been persisted, tagged, so a later request
+        // doesn't re-guess and so playback-side gates can see it's not real.
+        let saved = db::Media::get_by_id(db, &source.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let saved_probe = saved
+            .probe_data
+            .expect("probe_data should be persisted");
+        assert!(
+            !saved_probe
+                .media_streams
+                .is_empty()
+        );
+        assert!(saved_probe.is_filename_guess());
+    }
+
+    #[tokio::test]
+    async fn apply_filename_probe_fallback_never_overrides_real_probe_data() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let source = db::Media {
+            id: uuid::Uuid::new_v4(),
+            kind: db::MediaKind::Stream,
+            stream_info: Some(crate::stream::StreamInfo {
+                filename: Some(
+                    "Movie.2023.1080p.WEB-DL.x264.AAC.5.1-GROUP.mp4".to_string(),
+                ),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let real_stream = api::MediaStream {
+            type_: Some(api::MediaStreamType::Video),
+            codec: Some("av1".to_string()),
+            ..Default::default()
+        };
+        let mut base_item = api::BaseItemDto {
+            media_sources: Some(vec![api::MediaSourceInfo {
+                media_streams: vec![real_stream.clone()],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        apply_filename_probe_fallback(&mut base_item, &[source], db).await;
+
+        let info = &base_item
+            .media_sources
+            .unwrap()[0];
+        assert_eq!(info.media_streams, vec![real_stream]);
+        assert_eq!(
+            info.remux
+                .as_ref()
+                .and_then(|r| r.source),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_filename_probe_fallback_skips_source_with_no_filename() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let source = db::Media {
+            id: uuid::Uuid::new_v4(),
+            stream_info: Some(crate::stream::StreamInfo::default()),
+            ..Default::default()
+        };
+        let mut base_item = api::BaseItemDto {
+            media_sources: Some(vec![api::MediaSourceInfo::default()]),
+            ..Default::default()
+        };
+
+        apply_filename_probe_fallback(&mut base_item, &[source], db).await;
+
+        let info = &base_item
+            .media_sources
+            .unwrap()[0];
+        assert!(
+            info.media_streams
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_filename_probe_fallback_derives_bitrate_from_size_and_runtime() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        // 900 MB over 1 hour -> 2 Mbps.
+        let source = db::Media {
+            id: uuid::Uuid::new_v4(),
+            kind: db::MediaKind::Stream,
+            stream_info: Some(crate::stream::StreamInfo {
+                size: Some(900_000_000),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        db::Media::upsert(db, &[source.clone()])
+            .await
+            .unwrap();
+        let mut base_item = api::BaseItemDto {
+            media_sources: Some(vec![api::MediaSourceInfo {
+                run_time_ticks: Some(3600 * 10_000_000),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        apply_filename_probe_fallback(&mut base_item, &[source.clone()], db).await;
+
+        let info = &base_item
+            .media_sources
+            .unwrap()[0];
+        assert_eq!(info.bitrate, Some(2_000_000));
+        assert_eq!(info.size, Some(900_000_000));
+        assert_eq!(
+            info.remux
+                .as_ref()
+                .and_then(|r| r.source),
+            Some(api::ProbeOrigin::FilenameGuess)
+        );
+
+        let saved = db::Media::get_by_id(db, &source.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            saved
+                .probe_data
+                .and_then(|p| p.bitrate),
+            Some(2_000_000)
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_filename_probe_fallback_never_overrides_real_bitrate() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let source = db::Media {
+            id: uuid::Uuid::new_v4(),
+            stream_info: Some(crate::stream::StreamInfo {
+                size: Some(900_000_000),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut base_item = api::BaseItemDto {
+            media_sources: Some(vec![api::MediaSourceInfo {
+                run_time_ticks: Some(3600 * 10_000_000),
+                bitrate: Some(8_000_000),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        apply_filename_probe_fallback(&mut base_item, &[source], db).await;
+
+        let info = &base_item
+            .media_sources
+            .unwrap()[0];
+        assert_eq!(info.bitrate, Some(8_000_000));
+    }
 
     #[test]
     fn srt_to_vtt_normalizes_hybrid_webvtt_timestamps() {
