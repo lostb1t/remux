@@ -219,9 +219,16 @@ impl Task for RefreshLibraryTask {
     }
 }
 
+/// Page size for `invalidate_collection_images`'s scan. Without an explicit
+/// `limit`, `get_by_filter` appends no LIMIT clause at all — every page (this
+/// one included) would return the entire collections table in one query.
+const INVALIDATE_PAGE_SIZE: u32 = 500;
+
 async fn invalidate_collection_images(ctx: &AppContext) {
     let filter = db::MediaFilter {
         kind: Some(vec![db::MediaKind::Collection]),
+        limit: Some(INVALIDATE_PAGE_SIZE),
+        total_count: true,
         ..Default::default()
     };
     let Ok(result) = db::Media::get_by_filter(&ctx.db, &filter).await else {
@@ -257,6 +264,7 @@ async fn invalidate_collection_images(ctx: &AppContext) {
         loop {
             let filter = db::MediaFilter {
                 kind: Some(vec![db::MediaKind::Collection]),
+                limit: Some(INVALIDATE_PAGE_SIZE),
                 offset: Some(offset),
                 ..Default::default()
             };

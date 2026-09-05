@@ -1042,7 +1042,8 @@ pub fn CollectionForm(
                                 {
                                     let bust = *image_bust.read();
                                     let src = if bust > 0 {
-                                        format!("{url}&_cb={bust}")
+                                        let sep = if url.contains('?') { '&' } else { '?' };
+                                        format!("{url}{sep}_cb={bust}")
                                     } else {
                                         url.clone()
                                     };
