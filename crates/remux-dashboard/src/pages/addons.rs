@@ -292,18 +292,20 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                     },
                                                     "Edit"
                                                 }
-                                                button {
-                                                    class: "btn btn-ghost",
-                                                    style: "height:28px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error)",
-                                                    draggable: "false",
-                                                    onpointerdown: move |e| e.stop_propagation(),
-                                                    onmousedown: move |e| e.stop_propagation(),
-                                                    onmouseup: move |e| e.stop_propagation(),
-                                                    onclick: move |e| {
-                                                        e.stop_propagation();
-                                                        id_to_delete.set(Some(id));
-                                                    },
-                                                    "Delete"
+                                                if !addon.system {
+                                                    button {
+                                                        class: "btn btn-ghost",
+                                                        style: "height:28px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error)",
+                                                        draggable: "false",
+                                                        onpointerdown: move |e| e.stop_propagation(),
+                                                        onmousedown: move |e| e.stop_propagation(),
+                                                        onmouseup: move |e| e.stop_propagation(),
+                                                        onclick: move |e| {
+                                                            e.stop_propagation();
+                                                            id_to_delete.set(Some(id));
+                                                        },
+                                                        "Delete"
+                                                    }
                                                 }
                                             }
                                         }
