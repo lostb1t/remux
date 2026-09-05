@@ -2030,12 +2030,22 @@ fn extend_from_tmdb_images(
         images
             .posters
             .iter()
+            .filter(|entry| {
+                entry
+                    .iso_639_1
+                    .is_some()
+            })
             .map(|entry| map_remote_image("Primary", entry)),
     );
     out.extend(
         images
             .logos
             .iter()
+            .filter(|entry| {
+                entry
+                    .iso_639_1
+                    .is_some()
+            })
             .map(|entry| map_remote_image("Logo", entry)),
     );
     out.extend(
@@ -2313,7 +2323,14 @@ mod tests {
                 image_entry("/neutral.jpg", None),
                 image_entry("/localized.jpg", Some("en")),
             ],
-            posters: vec![image_entry("/poster.jpg", Some("en"))],
+            posters: vec![
+                image_entry("/localized-poster.jpg", Some("en")),
+                image_entry("/neutral-poster.jpg", None),
+            ],
+            logos: vec![
+                image_entry("/localized-logo.svg", Some("en")),
+                image_entry("/neutral-logo.svg", None),
+            ],
             ..Default::default()
         };
         let mut remote_images = Vec::new();
@@ -2345,6 +2362,15 @@ mod tests {
                     .type_
                     .as_deref()
                     == Some("Primary"))
+        );
+        assert!(
+            remote_images
+                .iter()
+                .filter_map(|image| image
+                    .url
+                    .as_deref())
+                .all(|url| !url.contains("neutral-poster")
+                    && !url.contains("neutral-logo"))
         );
     }
 
