@@ -1480,6 +1480,8 @@ pub struct Media {
     pub collection_default_sort: Option<Vec<sdks::remux::ItemSortBy>>,
     #[sqlx(json(nullable))]
     pub collection_default_sort_order: Option<Vec<sdks::remux::SortOrder>>,
+    #[sqlx(json(nullable))]
+    pub collection_image_config: Option<sdks::remux::CollectionImageConfig>,
 
     // IPTV / Live TV
     pub live_start: Option<NaiveDateTime>,
@@ -2273,11 +2275,11 @@ impl Media {
             external_ids, external_ratings, created_at, updated_at, certification, certification_age, parent_idx,
             live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id,
             collection_smart_filter, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital,
-            collection_default_sort, collection_default_sort_order,
+            collection_default_sort, collection_default_sort_order, collection_image_config,
             original_language, is_locked, locked_fields, album_kind, end_date,
             user_id, public
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
@@ -2310,6 +2312,7 @@ impl Media {
             collection_latest_sort_digital = excluded.collection_latest_sort_digital,
             collection_default_sort = excluded.collection_default_sort,
             collection_default_sort_order = excluded.collection_default_sort_order,
+            collection_image_config = COALESCE(excluded.collection_image_config, media.collection_image_config),
             country = COALESCE(excluded.country, media.country),
             updated_at = excluded.updated_at,
             certification = excluded.certification,
@@ -2376,6 +2379,7 @@ impl Media {
         .bind(self.collection_latest_sort_digital)
         .bind(sqlx::types::Json(&self.collection_default_sort))
         .bind(sqlx::types::Json(&self.collection_default_sort_order))
+        .bind(sqlx::types::Json(&self.collection_image_config))
         .bind(&self.original_language)
         .bind(self.is_locked)
         .bind(sqlx::types::Json(&self.locked_fields))
@@ -2684,9 +2688,10 @@ impl Media {
                 custom_name = media.custom_name,
                 program_kind = excluded.program_kind,
                 original_language = COALESCE(excluded.original_language, media.original_language),
-                -- preserve user-set locks; never let a provider refresh overwrite them
+                -- preserve user-set locks and image config; never let a provider refresh overwrite them
                 is_locked = CASE WHEN media.id IS NOT NULL THEN media.is_locked ELSE excluded.is_locked END,
                 locked_fields = CASE WHEN media.id IS NOT NULL THEN media.locked_fields ELSE excluded.locked_fields END,
+                collection_image_config = COALESCE(media.collection_image_config, excluded.collection_image_config),
                 album_kind = COALESCE(excluded.album_kind, media.album_kind),
                 end_date = COALESCE(excluded.end_date, media.end_date)",
             );

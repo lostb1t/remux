@@ -1125,6 +1125,7 @@ pub struct PatchItemPayload {
     pub latest_sort_digital: Option<bool>,
     pub collection_default_sort: Option<Vec<ItemSortBy>>,
     pub collection_default_sort_order: Option<Vec<SortOrder>>,
+    pub image_config: Option<CollectionImageConfig>,
 }
 
 #[dto]
@@ -3523,6 +3524,123 @@ where
         .collect())
 }
 
+/// Overlay rendered on top of a collection's generated poster grid.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CollectionOverlay {
+    None,
+    Text {
+        /// Custom text; falls back to collection name when absent.
+        text: Option<String>,
+        /// Font size in pixels (default 80).
+        font_size: Option<u32>,
+        /// Typeface used by the overlay (defaults to Roboto).
+        font_family: Option<CollectionFontFamily>,
+        /// Weight used by the overlay (defaults to bold).
+        font_weight: Option<CollectionFontWeight>,
+    },
+    StreamingLogo {
+        provider_id: i64,
+        provider_name: Option<String>,
+        /// TMDB logo path, e.g. "/t2yyOv40HZeVlLjYsCsPHnWLk4W.jpg"
+        logo_path: Option<String>,
+    },
+}
+
+/// Typeface choices bundled for collection image text overlays.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum_macros::Display,
+    strum_macros::EnumString,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum CollectionFontFamily {
+    #[default]
+    #[serde(alias = "bold", alias = "regular")]
+    #[strum(serialize = "roboto", serialize = "bold", serialize = "regular")]
+    Roboto,
+    OpenSans,
+    Lato,
+    Montserrat,
+    Poppins,
+    Oswald,
+    Raleway,
+    Merriweather,
+    PlayfairDisplay,
+    BebasNeue,
+}
+
+/// Weight choices for collection image text overlays.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum_macros::Display,
+    strum_macros::EnumString,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum CollectionFontWeight {
+    Regular,
+    #[default]
+    Bold,
+}
+
+impl Default for CollectionOverlay {
+    fn default() -> Self {
+        CollectionOverlay::None
+    }
+}
+
+/// Poster layout for a collection's generated image.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum_macros::Display,
+    strum_macros::EnumString,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum CollectionPosterLayout {
+    /// Four-by-four poster grid, skewed as a single oversized background plane.
+    #[default]
+    #[serde(alias = "cascade", alias = "mosaic")]
+    #[strum(serialize = "grid", serialize = "cascade", serialize = "mosaic")]
+    Grid,
+    /// Clean horizontal shelf with minimal spacing.
+    Row,
+    /// Wide artistic scatter with bold angles.
+    Scatter,
+}
+
+/// Stored in `media.collection_image_config` (JSON).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct CollectionImageConfig {
+    #[serde(default)]
+    pub overlay: CollectionOverlay,
+    #[serde(default)]
+    pub layout: CollectionPosterLayout,
+}
+
 #[dto]
 pub struct RemuxInfo {
     pub collection_kind: Option<RemuxCollectionKind>,
@@ -3535,6 +3653,7 @@ pub struct RemuxInfo {
     pub latest_sort_digital: Option<bool>,
     pub collection_default_sort: Option<Vec<ItemSortBy>>,
     pub collection_default_sort_order: Option<Vec<SortOrder>>,
+    pub image_config: Option<CollectionImageConfig>,
 }
 
 #[dto]
@@ -6620,6 +6739,47 @@ pub struct RefreshItemQuery {
     pub recursive: bool,
     #[serde(default)]
     pub regenerate_trickplay: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Remux extension endpoints
+// ---------------------------------------------------------------------------
+
+/// `GET /remux/watch-providers`
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WatchProviderItem {
+    #[serde(rename = "provider_id", alias = "providerId")]
+    pub provider_id: i64,
+    #[serde(rename = "provider_name", alias = "providerName")]
+    pub provider_name: String,
+    #[serde(rename = "logo_path", alias = "logoPath")]
+    pub logo_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GetWatchProviders;
+
+impl Endpoint for GetWatchProviders {
+    type Output = Vec<WatchProviderItem>;
+    fn path(&self) -> String {
+        "/remux/watch-providers".into()
+    }
+}
+
+/// `POST /remux/collections/{id}/image/regenerate`
+#[derive(Debug, Clone)]
+pub struct RegenerateCollectionImage {
+    pub item_id: String,
+}
+
+impl Endpoint for RegenerateCollectionImage {
+    type Output = ();
+    fn path(&self) -> String {
+        format!("/remux/collections/{}/image/regenerate", self.item_id)
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
 }
 
 #[cfg(test)]

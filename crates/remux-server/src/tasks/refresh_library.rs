@@ -11,7 +11,7 @@ use super::{
         remove_stale_catalog_memberships,
     },
 };
-use crate::{AppContext, db};
+use crate::{AppContext, db, services::image::ImageService};
 use remux_sdks::stremio::ResourceType;
 
 pub struct RefreshLibraryTask;
@@ -223,6 +223,91 @@ impl Task for RefreshLibraryTask {
         }
         info!(elapsed = ?meta_start.elapsed(), processed, "metadata refresh pass complete");
 
+        // Bust the generated poster cache for all collections so the grid
+        // reflects any newly imported items on the next request.
+        invalidate_collection_images(&ctx).await;
+
         Ok(())
+    }
+}
+
+/// Page size for `invalidate_collection_images`'s scan. Without an explicit
+/// `limit`, `get_by_filter` appends no LIMIT clause at all — every page (this
+/// one included) would return the entire collections table in one query.
+const INVALIDATE_PAGE_SIZE: u32 = 500;
+
+async fn invalidate_collection_images(ctx: &AppContext) {
+    let filter = db::MediaFilter {
+        kind: Some(vec![db::MediaKind::Collection]),
+        limit: Some(INVALIDATE_PAGE_SIZE),
+        total_count: true,
+        ..Default::default()
+    };
+    let Ok(result) = db::Media::get_by_filter(&ctx.db, &filter).await else {
+        return;
+    };
+    for col in &result.records {
+        // Only invalidate generated images for collections that use the image
+        // configurator. Collections with no image_config may have a manually
+        // uploaded image that must not be deleted.
+        if col
+            .collection_image_config
+            .is_none()
+        {
+            continue;
+        }
+        let _ = ImageService::invalidate_collection_image(
+            &ctx.config
+                .data_dir,
+            col.id,
+            &ctx.db,
+        )
+        .await;
+    }
+    if result.total_count
+        > result
+            .records
+            .len()
+    {
+        // There are more collections; page through them.
+        let mut offset = result
+            .records
+            .len() as u32;
+        loop {
+            let filter = db::MediaFilter {
+                kind: Some(vec![db::MediaKind::Collection]),
+                limit: Some(INVALIDATE_PAGE_SIZE),
+                offset: Some(offset),
+                ..Default::default()
+            };
+            let Ok(page) = db::Media::get_by_filter(&ctx.db, &filter).await else {
+                break;
+            };
+            for col in &page.records {
+                if col
+                    .collection_image_config
+                    .is_none()
+                {
+                    continue;
+                }
+                let _ = ImageService::invalidate_collection_image(
+                    &ctx.config
+                        .data_dir,
+                    col.id,
+                    &ctx.db,
+                )
+                .await;
+            }
+            offset += page
+                .records
+                .len() as u32;
+            if page
+                .records
+                .is_empty()
+                || offset as usize >= result.total_count
+            {
+                break;
+            }
+        }
     }
 }

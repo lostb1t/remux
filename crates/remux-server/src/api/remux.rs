@@ -13,13 +13,17 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     AppState, OptionExt,
+    common::tmdb_client,
     db::{self, auth},
-    sdks,
+    sdks::{self, CachedEndpoint},
+    services::image::ImageService,
 };
 use axum_anyhow::ApiResult as Result;
 use uuid::Uuid;
 
 const CACHE_KEY_PREFIX: &str = "remux:cache:";
+const WATCH_PROVIDERS_CACHE_TTL: std::time::Duration =
+    std::time::Duration::from_secs(72 * 60 * 60);
 
 #[query]
 #[derive(Debug, Default)]
@@ -663,4 +667,91 @@ pub async fn remux_meta(
             Ok((StatusCode::NOT_FOUND, Json(serde_json::Value::Null)).into_response())
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Watch providers
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct WatchProviderDto {
+    pub provider_id: i64,
+    pub provider_name: String,
+    pub logo_path: Option<String>,
+}
+
+/// `GET /remux/watch-providers` — list all streaming providers available on TMDB.
+#[get("/remux/watch-providers")]
+pub async fn get_watch_providers(
+    State(state): State<AppState>,
+    _session: auth::AdminSession,
+) -> Result<Json<Vec<WatchProviderDto>>> {
+    let tmdb_base = state
+        .ctx
+        .config
+        .tmdb_base_url
+        .clone();
+    let client = tmdb_client(
+        &state
+            .ctx
+            .db,
+        &tmdb_base,
+    )
+    .await
+    .ok_or_else(|| anyhow::anyhow!("TMDB client is unavailable"))?;
+
+    let providers = client
+        .execute(
+            sdks::tmdb::AllMovieWatchProvidersEndpoint {
+                language: Some("en-US".to_string()),
+                watch_region: None,
+            }
+            .with_cache(WATCH_PROVIDERS_CACHE_TTL),
+        )
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!("failed to fetch TMDB watch providers: {error}")
+        })?
+        .results;
+
+    let mut dtos: Vec<WatchProviderDto> = providers
+        .into_iter()
+        .map(|p| WatchProviderDto {
+            provider_id: p.provider_id,
+            provider_name: p.provider_name,
+            logo_path: p.logo_path,
+        })
+        .collect();
+    dtos.sort_by(|a, b| {
+        a.provider_name
+            .cmp(&b.provider_name)
+    });
+    Ok(Json(dtos))
+}
+
+// ---------------------------------------------------------------------------
+// Collection image regeneration
+// ---------------------------------------------------------------------------
+
+/// `POST /remux/collections/{id}/image/regenerate` — delete the cached generated
+/// image for a collection so it is rebuilt on the next request.
+#[post("/remux/collections/{id}/image/regenerate")]
+pub async fn regenerate_collection_image(
+    State(state): State<AppState>,
+    _session: auth::AdminSession,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode> {
+    ImageService::invalidate_collection_image(
+        &state
+            .ctx
+            .config
+            .data_dir,
+        id,
+        &state
+            .ctx
+            .db,
+    )
+    .await
+    .map_err(anyhow::Error::from)?;
+    Ok(StatusCode::NO_CONTENT)
 }

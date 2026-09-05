@@ -3194,6 +3194,7 @@ struct PatchItemRequest {
     latest_sort_digital: Option<bool>,
     collection_default_sort: Option<Vec<api::ItemSortBy>>,
     collection_default_sort_order: Option<Vec<api::SortOrder>>,
+    image_config: Option<sdks::remux::CollectionImageConfig>,
 }
 
 #[patch("/items/{id}")]
@@ -3288,6 +3289,10 @@ pub async fn patch_item(
         qb.push(", collection_default_sort_order = ")
             .push_bind(sqlx::types::Json(v));
     }
+    if let Some(ref cfg) = payload.image_config {
+        qb.push(", collection_image_config = ")
+            .push_bind(sqlx::types::Json(cfg));
+    }
 
     qb.push(" WHERE id = ")
         .push_bind(id);
@@ -3298,6 +3303,24 @@ pub async fn patch_item(
                 .db,
         )
         .await?;
+
+    // Invalidate cached generated image when image config changes.
+    if payload
+        .image_config
+        .is_some()
+    {
+        let _ = ImageService::invalidate_collection_image(
+            &state
+                .ctx
+                .config
+                .data_dir,
+            id,
+            &state
+                .ctx
+                .db,
+        )
+        .await;
+    }
 
     if let Some(tags) = &payload.tags {
         set_tags(

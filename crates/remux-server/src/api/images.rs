@@ -103,12 +103,25 @@ async fn items_images_inner(
                     .to_string()
                     .parse()
                     .unwrap_or(ImageKind::Primary);
+                let is_collection = matches!(media.kind, db::MediaKind::Collection);
                 // If Thumb is requested but not stored, fall back to Primary.
+                // Collection artwork is generated and stored as Primary, but
+                // clients also request it as a wide Backdrop. Use the generated
+                // rendition when a collection has no dedicated backdrop.
                 let img_row = media
                     .images
                     .get(kind)
                     .or_else(|| {
                         if kind == ImageKind::Thumb {
+                            media
+                                .images
+                                .get(ImageKind::Primary)
+                        } else {
+                            None
+                        }
+                    })
+                    .or_else(|| {
+                        if kind == ImageKind::Backdrop && is_collection {
                             media
                                 .images
                                 .get(ImageKind::Primary)
@@ -140,11 +153,11 @@ async fn items_images_inner(
                     }
                 } else if matches!(
                     image_type,
-                    api::ImageType::Primary | api::ImageType::Thumb
-                ) && matches!(
-                    media.kind,
-                    db::MediaKind::Collection | db::MediaKind::Folder
-                ) {
+                    api::ImageType::Primary
+                        | api::ImageType::Thumb
+                        | api::ImageType::Backdrop
+                ) && is_collection
+                {
                     let b = ImageService::library_image(
                         &state
                             .ctx
@@ -339,13 +352,42 @@ async fn upload_item_image_inner(
     kind: ImageKind,
     image: api::image::JellyfinImage,
 ) -> Result<impl IntoResponse> {
+    let (is_collection_source, title) = {
+        let media = db::Media::get_by_id(
+            &state
+                .ctx
+                .db,
+            &id,
+        )
+        .await?
+        .context_not_found("item not found")?;
+        (
+            kind == ImageKind::Primary
+                && matches!(
+                    media.kind,
+                    db::MediaKind::Collection | db::MediaKind::Folder
+                )
+                && media
+                    .collection_image_config
+                    .is_some(),
+            media
+                .title
+                .clone(),
+        )
+    };
+    let storage_kind = if is_collection_source {
+        ImageKind::Backdrop
+    } else {
+        kind
+    };
+
     ImageService::save_image(
         &state
             .ctx
             .config
             .data_dir,
         id,
-        kind,
+        storage_kind,
         &image.bytes,
         &state
             .ctx
@@ -353,6 +395,37 @@ async fn upload_item_image_inner(
     )
     .await
     .context_internal("failed to save image")?;
+
+    if is_collection_source {
+        // Keep the uploaded file as the source image and regenerate Primary
+        // from it whenever the collection overlay changes.
+        ImageService::delete_image(
+            &state
+                .ctx
+                .config
+                .data_dir,
+            id,
+            ImageKind::Primary,
+            &state
+                .ctx
+                .db,
+        )
+        .await
+        .context_internal("failed to clear generated image")?;
+        ImageService::library_image(
+            &state
+                .ctx
+                .config
+                .data_dir,
+            id,
+            &title,
+            &state
+                .ctx
+                .db,
+        )
+        .await
+        .context_internal("failed to generate collection image")?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -383,6 +456,26 @@ async fn delete_item_image_inner(
     id: Uuid,
     kind: ImageKind,
 ) -> Result<impl IntoResponse> {
+    let has_collection_source = {
+        let media = db::Media::get_by_id(
+            &state
+                .ctx
+                .db,
+            &id,
+        )
+        .await?;
+        kind == ImageKind::Primary
+            && media
+                .as_ref()
+                .is_some_and(|item| {
+                    matches!(
+                        item.kind,
+                        db::MediaKind::Collection | db::MediaKind::Folder
+                    ) && item
+                        .collection_image_config
+                        .is_some()
+                })
+    };
     ImageService::delete_image(
         &state
             .ctx
@@ -396,6 +489,21 @@ async fn delete_item_image_inner(
     )
     .await
     .context_internal("failed to delete image")?;
+    if has_collection_source {
+        ImageService::delete_image(
+            &state
+                .ctx
+                .config
+                .data_dir,
+            id,
+            ImageKind::Backdrop,
+            &state
+                .ctx
+                .db,
+        )
+        .await
+        .context_internal("failed to delete custom collection source")?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -1,10 +1,11 @@
 use crate::{components::*, state::AppState};
 use dioxus::prelude::*;
 use remux_sdks::remux::{
-    BaseItemDto, CollectionFilter, CollectionType, CreateVirtualFolder,
+    BaseItemDto, CollectionFilter, CollectionImageConfig, CollectionOverlay,
+    CollectionPosterLayout, CollectionType, CreateVirtualFolder,
     CreateVirtualFolderPayload, DeleteVirtualFolder, FilterGroup, FilterMatchMode,
-    GetItems, GetItemsQuery, ItemSortBy, MediaType, PatchItem, PatchItemPayload,
-    SortOrder,
+    GetItems, GetItemsQuery, GetWatchProviders, ItemSortBy, MediaType, PatchItem,
+    PatchItemPayload, SortOrder, WatchProviderItem,
 };
 use std::collections::HashMap;
 
@@ -12,6 +13,98 @@ fn is_group_container(item: &BaseItemDto) -> bool {
     item.collection_type
         .as_ref()
         == Some(&CollectionType::Boxsets)
+}
+
+// Keep in sync with `provider_wordmark()` in
+// crates/remux-server/src/services/image.rs — this must accept exactly the
+// names that function can actually render a logo for, or the picker would
+// offer providers whose logo silently never appears.
+fn has_transparent_provider_wordmark(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase()
+            .as_str(),
+        "netflix"
+            | "amazon prime video"
+            | "prime video"
+            | "disney plus"
+            | "disney+"
+            | "max"
+            | "hbo max"
+            | "hulu"
+            | "paramount plus"
+            | "paramount+"
+            | "crunchyroll"
+            | "apple tv plus"
+            | "apple tv+"
+            | "apple tv"
+            | "viaplay"
+            | "skyshowtime"
+            | "peacock"
+            | "mubi"
+            | "pluto tv"
+            | "youtube"
+            | "youtube premium"
+            | "amc+"
+            | "amc plus"
+            | "adn"
+            | "animation digital network"
+            | "funimation now"
+            | "funimation"
+            | "illico+"
+            | "illico plus"
+            | "sky mais"
+            | "skymais"
+            | "c more"
+            | "cmore"
+            | "foxtel now"
+            | "jiohotstar"
+            | "wetv"
+            | "chorki"
+            | "tvp vod"
+            | "kwelitv"
+            | "vidio"
+            | "vivamax"
+            | "ruutu"
+            | "samsung tv plus"
+            | "craftsy"
+            | "mx player"
+            | "axn now"
+            | "axnnow"
+            | "claro video"
+            | "dimsum"
+            | "catchplay+"
+            | "catchplay"
+            | "fanatiz"
+            | "movistar plus+"
+            | "movistar+"
+            | "movistar plus"
+            | "discovery+"
+            | "discovery plus"
+            | "kocowa"
+            | "toku"
+            | "watcha"
+            | "wakanim"
+            | "dplay"
+            | "filmdoo"
+            | "globoplay"
+            | "mtv katsomo"
+            | "u-next"
+            | "unext"
+            | "rcti+"
+            | "rcti plus"
+            | "nfl+"
+            | "nfl plus"
+            | "nasa+"
+            | "nasa plus"
+            | "iwanttfc"
+            | "iwant"
+            | "kapamilya online live"
+            | "hayu"
+            | "watch it"
+            | "stan"
+            | "shudder"
+            | "roxi"
+    )
 }
 
 fn is_promoted(item: &BaseItemDto) -> bool {
@@ -431,6 +524,104 @@ pub fn CollectionForm(
             .map(|s| s.to_string())
             .unwrap_or_else(|| "Descending".to_string())
     });
+
+    // Image config state
+    let existing_image_config = existing
+        .as_ref()
+        .and_then(|f| {
+            f.remux
+                .as_ref()
+        })
+        .and_then(|r| {
+            r.image_config
+                .as_ref()
+        });
+    let existing_overlay = existing_image_config.map(|c| &c.overlay);
+    let existing_layout = existing_image_config
+        .map(|c| {
+            match c.layout {
+                CollectionPosterLayout::Grid => "grid",
+                CollectionPosterLayout::Row => "row",
+                CollectionPosterLayout::Scatter => "scatter",
+            }
+            .to_string()
+        })
+        .unwrap_or_else(|| "grid".to_string());
+    let mut poster_layout = use_signal(|| existing_layout);
+    let mut overlay_type = use_signal(|| match existing_overlay {
+        Some(CollectionOverlay::Text { .. }) => "text".to_string(),
+        Some(CollectionOverlay::StreamingLogo { .. }) => "logo".to_string(),
+        _ => "none".to_string(),
+    });
+    let mut overlay_text = use_signal(|| {
+        if let Some(CollectionOverlay::Text { text, .. }) = existing_overlay {
+            text.clone()
+                .unwrap_or_default()
+        } else {
+            String::new()
+        }
+    });
+    let mut overlay_font_size = use_signal(|| {
+        if let Some(CollectionOverlay::Text { font_size, .. }) = existing_overlay {
+            font_size
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "80".to_string())
+        } else {
+            "80".to_string()
+        }
+    });
+    let mut overlay_font_family = use_signal(|| {
+        if let Some(CollectionOverlay::Text { font_family, .. }) = existing_overlay {
+            font_family
+                .map(|family| family.to_string())
+                .unwrap_or_else(|| "roboto".to_string())
+        } else {
+            "roboto".to_string()
+        }
+    });
+    let mut overlay_font_weight = use_signal(|| {
+        if let Some(CollectionOverlay::Text { font_weight, .. }) = existing_overlay {
+            font_weight
+                .map(|weight| weight.to_string())
+                .unwrap_or_else(|| "bold".to_string())
+        } else {
+            "bold".to_string()
+        }
+    });
+    let mut logo_provider_id: Signal<Option<i64>> = use_signal(|| {
+        if let Some(CollectionOverlay::StreamingLogo { provider_id, .. }) =
+            existing_overlay
+        {
+            Some(*provider_id)
+        } else {
+            None
+        }
+    });
+    let mut logo_provider_name: Signal<Option<String>> = use_signal(|| {
+        if let Some(CollectionOverlay::StreamingLogo { provider_name, .. }) =
+            existing_overlay
+        {
+            provider_name.clone()
+        } else {
+            None
+        }
+    });
+    let mut logo_path: Signal<Option<String>> = use_signal(|| {
+        if let Some(CollectionOverlay::StreamingLogo { logo_path, .. }) =
+            existing_overlay
+        {
+            logo_path.clone()
+        } else {
+            None
+        }
+    });
+    let mut watch_providers: Signal<Vec<WatchProviderItem>> = use_signal(Vec::new);
+    let mut providers_loading = use_signal(|| false);
+    let mut providers_loaded = use_signal(|| false);
+    let mut providers_error: Signal<Option<String>> = use_signal(|| None);
+    let mut previewing = use_signal(|| false);
+    let mut image_bust: Signal<u32> = use_signal(|| 0);
+
     let mut saving = use_signal(|| false);
     let mut err = use_signal(|| Option::<String>::None);
 
@@ -456,11 +647,27 @@ pub fn CollectionForm(
         .clone();
     let current_image_url = existing_item_id
         .as_ref()
-        .zip(existing_image_tag.as_ref())
-        .map(|(id, tag)| format!("{server_base}/Items/{id}/Images/Primary?tag={tag}"));
+        .map(|id| {
+            existing_image_tag
+                .as_ref()
+                .map(|tag| format!("{server_base}/Items/{id}/Images/Primary?tag={tag}"))
+                .unwrap_or_else(|| format!("{server_base}/Items/{id}/Images/Primary"))
+        });
     let mut pending_image_bytes: Signal<Option<Vec<u8>>> = use_signal(|| None);
     let mut pending_image_preview: Signal<Option<String>> = use_signal(|| None);
     let mut has_image = use_signal(|| existing_image_tag.is_some());
+    let existing_custom_image_source = existing
+        .as_ref()
+        .and_then(|item| {
+            item.image_tags
+                .as_ref()
+        })
+        .and_then(|tags| {
+            tags.backdrop
+                .as_ref()
+        })
+        .is_some();
+    let mut has_custom_image_source = use_signal(|| existing_custom_image_source);
     let client_for_delete = app_state.clone();
     let app_state_delete = app_state.clone();
     let delete_name = existing
@@ -470,6 +677,38 @@ pub fn CollectionForm(
                 .clone()
         })
         .unwrap_or_default();
+
+    let app_state_providers = app_state.clone();
+    use_effect(move || {
+        if overlay_type
+            .read()
+            .as_str()
+            != "logo"
+            || !watch_providers
+                .read()
+                .is_empty()
+            || *providers_loaded.read()
+            || *providers_loading.read()
+        {
+            return;
+        }
+
+        providers_loading.set(true);
+        providers_error.set(None);
+        let client = app_state_providers.clone();
+        spawn(async move {
+            match client
+                .execute(GetWatchProviders)
+                .await
+            {
+                Ok(providers) => watch_providers.set(providers),
+                Err(error) => providers_error.set(Some(error.user_message())),
+            }
+            providers_loaded.set(true);
+            providers_loading.set(false);
+        });
+    });
+    let app_state_preview = app_state.clone();
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
@@ -531,6 +770,55 @@ pub fn CollectionForm(
                         .unwrap_or(SortOrder::Ascending)]
                 })
         };
+        // Build image config payload.
+        let ot = overlay_type
+            .peek()
+            .clone();
+        let image_config_payload = Some(CollectionImageConfig {
+            layout: poster_layout
+                .peek()
+                .parse::<CollectionPosterLayout>()
+                .unwrap_or_default(),
+            overlay: match ot.as_str() {
+                "text" => CollectionOverlay::Text {
+                    text: {
+                        let t = overlay_text
+                            .peek()
+                            .clone();
+                        if t.is_empty() {
+                            None
+                        } else {
+                            Some(t)
+                        }
+                    },
+                    font_size: overlay_font_size
+                        .peek()
+                        .parse::<u32>()
+                        .ok(),
+                    font_family: overlay_font_family
+                        .peek()
+                        .parse()
+                        .ok(),
+                    font_weight: overlay_font_weight
+                        .peek()
+                        .parse()
+                        .ok(),
+                },
+                "logo" => CollectionOverlay::StreamingLogo {
+                    provider_id: logo_provider_id
+                        .peek()
+                        .unwrap_or(0),
+                    provider_name: logo_provider_name
+                        .peek()
+                        .clone(),
+                    logo_path: logo_path
+                        .peek()
+                        .clone(),
+                },
+                _ => CollectionOverlay::None,
+            },
+        });
+
         saving.set(true);
         err.set(None);
         let pending_bytes = pending_image_bytes
@@ -562,6 +850,7 @@ pub fn CollectionForm(
                             }),
                             collection_default_sort: default_sort_payload,
                             collection_default_sort_order: default_sort_order_payload,
+                            image_config: image_config_payload,
                         },
                     })
                     .await;
@@ -622,6 +911,7 @@ pub fn CollectionForm(
                             }),
                             collection_default_sort: default_sort_payload,
                             collection_default_sort_order: default_sort_order_payload,
+                            image_config: image_config_payload,
                         },
                     })
                     .await;
@@ -649,6 +939,22 @@ pub fn CollectionForm(
             }
         });
     };
+
+    let pending_preview_label = {
+        let text = overlay_text.read();
+        if text.is_empty() {
+            title
+                .read()
+                .clone()
+        } else {
+            text.clone()
+        }
+    };
+    let pending_preview_font_size = overlay_font_size
+        .read()
+        .parse::<u32>()
+        .unwrap_or(80)
+        / 2;
 
     rsx! {
         p { class: "modal-title",
@@ -713,20 +1019,58 @@ pub fn CollectionForm(
                     div { style: "display:flex;flex-direction:column;gap:8px",
                         // Preview: local pick takes priority over server image
                         if let Some(preview) = pending_image_preview.read().as_ref() {
-                            img {
-                                src: "{preview}",
-                                style: "width:100%;max-height:180px;object-fit:cover;border-radius:6px;border:1px solid var(--border)",
+                            div { style: "position:relative",
+                                img {
+                                    src: "{preview}",
+                                    style: "width:100%;max-height:180px;object-fit:cover;border-radius:6px;border:1px solid var(--border)",
+                                }
+                                if *overlay_type.read() == "text" {
+                                    div {
+                                        style: "position:absolute;left:10.4%;right:10%;top:50%;transform:translateY(-50%);color:white;font-size:{pending_preview_font_size}px;font-weight:700;line-height:1.08;pointer-events:none;text-shadow:0 2px 12px rgba(0,0,0,.6);overflow-wrap:anywhere",
+                                        "{pending_preview_label}"
+                                    }
+                                }
+                                if *previewing.read() {
+                                    div {
+                                        style: "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.45);border-radius:6px",
+                                        span { class: "spinner" }
+                                    }
+                                }
                             }
                         } else if let Some(url) = &current_image_url {
                             if *has_image.read() {
-                                img {
-                                    src: "{url}",
-                                    style: "width:100%;max-height:180px;object-fit:cover;border-radius:6px;border:1px solid var(--border)",
-                                    onerror: move |_| has_image.set(false),
+                                {
+                                    let bust = *image_bust.read();
+                                    let src = if bust > 0 {
+                                        let sep = if url.contains('?') { '&' } else { '?' };
+                                        format!("{url}{sep}_cb={bust}")
+                                    } else {
+                                        url.clone()
+                                    };
+                                    let is_previewing = *previewing.read();
+                                    rsx! {
+                                        div { style: "position:relative",
+                                            img {
+                                                src: "{src}",
+                                                style: "width:100%;max-height:180px;object-fit:cover;border-radius:6px;border:1px solid var(--border);display:block",
+                                                onload: move |_| previewing.set(false),
+                                                onerror: move |_| {
+                                                    has_image.set(false);
+                                                    previewing.set(false);
+                                                },
+                                            }
+                                            if is_previewing {
+                                                div {
+                                                    style: "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.45);border-radius:6px",
+                                                    span { class: "spinner" }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
-                        div { style: "display:flex;gap:8px;align-items:center",
+                        div { style: "display:flex;flex-wrap:wrap;gap:8px;align-items:center",
                             label {
                                 class: "btn btn-ghost",
                                 style: "height:30px;font-size:.68rem;padding:0 10px;cursor:pointer",
@@ -749,6 +1093,7 @@ pub fn CollectionForm(
                                                     pending_image_preview.set(Some(data_url));
                                                     pending_image_bytes.set(Some(bytes));
                                                     has_image.set(true);
+                                                    has_custom_image_source.set(true);
                                                 }
                                             }
                                         });
@@ -760,7 +1105,7 @@ pub fn CollectionForm(
                                 button {
                                     r#type: "button",
                                     class: "btn btn-ghost",
-                                    style: "height:30px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error)",
+                                    style: "height:30px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error);background:rgba(239,68,68,.12)",
                                     onclick: {
                                         let item_id = existing_item_id.clone();
                                         let client = client_for_delete.clone();
@@ -777,15 +1122,237 @@ pub fn CollectionForm(
                                                 pending_image_bytes.set(None);
                                                 pending_image_preview.set(None);
                                                 has_image.set(false);
+                                                has_custom_image_source.set(false);
                                             });
                                         }
                                     },
-                                    "Remove image"
+                                    "Delete"
+                                }
+                            }
+                            if let Some(id) = existing_item_id.clone() {
+                                button {
+                                    r#type: "button",
+                                    class: "btn btn-ghost",
+                                    style: "height:30px;font-size:.68rem;padding:0 10px",
+                                    disabled: *previewing.read(),
+                                    onclick: {
+                                        let client = app_state_preview.clone();
+                                        move |_| {
+                                            let ot = overlay_type.peek().clone();
+                                            let smart_filter = if col_kind.peek().as_str() == "smart" {
+                                                Some(CollectionFilter {
+                                                    match_mode: sf_match.peek().clone(),
+                                                    groups: sf_groups.peek().clone(),
+                                                })
+                                            } else {
+                                                None
+                                            };
+                                            let cfg = CollectionImageConfig {
+                                                layout: poster_layout
+                                                    .peek()
+                                                    .parse::<CollectionPosterLayout>()
+                                                    .unwrap_or_default(),
+                                                overlay: match ot.as_str() {
+                                                    "text" => CollectionOverlay::Text {
+                                                        text: {
+                                                            let t = overlay_text.peek().clone();
+                                                            if t.is_empty() { None } else { Some(t) }
+                                                        },
+                                                        font_size: overlay_font_size.peek().parse::<u32>().ok(),
+                                                        font_family: overlay_font_family.peek().parse().ok(),
+                                                        font_weight: overlay_font_weight.peek().parse().ok(),
+                                                    },
+                                                    "logo" => CollectionOverlay::StreamingLogo {
+                                                        provider_id: logo_provider_id.peek().unwrap_or(0),
+                                                        provider_name: logo_provider_name.peek().clone(),
+                                                        logo_path: logo_path.peek().clone(),
+                                                    },
+                                                    _ => CollectionOverlay::None,
+                                                },
+                                            };
+                                            let pending_image = pending_image_bytes.peek().clone();
+                                            previewing.set(true);
+                                            let client = client.clone();
+                                            let id = id.clone();
+                                            spawn(async move {
+                                                match client
+                                                    .execute(PatchItem {
+                                                        item_id: id.clone(),
+                                                        payload: PatchItemPayload {
+                                                            smart_filter,
+                                                            image_config: Some(cfg),
+                                                            ..Default::default()
+                                                        },
+                                                    })
+                                                    .await
+                                                {
+                                                    Ok(_) => {
+                                                        if let Some(bytes) = pending_image {
+                                                            let content_type = crate::state::detect_image_content_type(&bytes);
+                                                            if let Err(e) = client
+                                                                .execute(remux_sdks::remux::UploadItemImage {
+                                                                    item_id: id,
+                                                                    image_type: "Primary".to_string(),
+                                                                    bytes,
+                                                                    content_type,
+                                                                })
+                                                                .await
+                                                            {
+                                                                err.set(Some(e.user_message()));
+                                                                previewing.set(false);
+                                                                return;
+                                                            }
+                                                            pending_image_bytes.set(None);
+                                                            pending_image_preview.set(None);
+                                                            has_image.set(true);
+                                                            has_custom_image_source.set(true);
+                                                        }
+                                                        let next = *image_bust.read() + 1;
+                                                        image_bust.set(next);
+                                                    }
+                                                    Err(e) => {
+                                                        err.set(Some(e.user_message()));
+                                                        previewing.set(false);
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    },
+                                    if *previewing.read() { "Updating…" } else { "Update preview" }
                                 }
                             }
                         }
                     }
                 }
+            }
+
+            // Image poster configurator (edit mode only)
+            if is_edit {
+                if !*has_custom_image_source.read() {
+                    div { class: "field",
+                        label { class: "field-label", "Poster Layout" }
+                        p { class: "field-hint", "Choose how the item posters are arranged in the generated image." }
+                        select {
+                            class: "select-input",
+                            value: "{poster_layout}",
+                            oninput: move |e| poster_layout.set(e.value()),
+                            option { value: "grid", selected: *poster_layout.read() == "grid", "Grid" }
+                            option { value: "row", selected: *poster_layout.read() == "row", "Row" }
+                            option { value: "scatter", selected: *poster_layout.read() == "scatter", "Scatter" }
+                        }
+                    }
+                }
+                div { class: "field",
+                    label { class: "field-label", "Poster Overlay" }
+                    p { class: "field-hint",
+                        "Generated poster uses item posters as a grid. Select an overlay to add on top."
+                    }
+                    select {
+                        class: "select-input",
+                        value: "{overlay_type}",
+                        onchange: move |e| {
+                            let v = e.value();
+                            overlay_type.set(v);
+                        },
+                        option { value: "none", selected: *overlay_type.read() == "none", "None" }
+                        option { value: "text", selected: *overlay_type.read() == "text", "Text" }
+                        option { value: "logo", selected: *overlay_type.read() == "logo", "Streaming Logo" }
+                    }
+
+                    if *overlay_type.read() == "text" {
+                        div { style: "display:flex;flex-direction:column;gap:8px;margin-top:8px",
+                            input {
+                                r#type: "text",
+                                class: "field-input",
+                                placeholder: "Custom text (leave blank to use collection name)",
+                                value: "{overlay_text}",
+                                oninput: move |e| overlay_text.set(e.value()),
+                            }
+                            div { style: "display:flex;flex-wrap:wrap;gap:8px",
+                                select {
+                                    class: "select-input",
+                                    style: "flex:1 1 160px",
+                                    value: "{overlay_font_family}",
+                                    onchange: move |e| overlay_font_family.set(e.value()),
+                                    option { value: "roboto",           selected: *overlay_font_family.read() == "roboto",           "Roboto" }
+                                    option { value: "open_sans",        selected: *overlay_font_family.read() == "open_sans",        "Open Sans" }
+                                    option { value: "lato",             selected: *overlay_font_family.read() == "lato",             "Lato" }
+                                    option { value: "montserrat",       selected: *overlay_font_family.read() == "montserrat",       "Montserrat" }
+                                    option { value: "poppins",          selected: *overlay_font_family.read() == "poppins",          "Poppins" }
+                                    option { value: "oswald",           selected: *overlay_font_family.read() == "oswald",           "Oswald" }
+                                    option { value: "raleway",          selected: *overlay_font_family.read() == "raleway",          "Raleway" }
+                                    option { value: "merriweather",     selected: *overlay_font_family.read() == "merriweather",     "Merriweather" }
+                                    option { value: "playfair_display", selected: *overlay_font_family.read() == "playfair_display", "Playfair Display" }
+                                    option { value: "bebas_neue",       selected: *overlay_font_family.read() == "bebas_neue",       "Bebas Neue" }
+                                }
+                                select {
+                                    class: "select-input",
+                                    style: "flex:1 1 96px",
+                                    value: "{overlay_font_weight}",
+                                    onchange: move |e| overlay_font_weight.set(e.value()),
+                                    option { value: "regular", selected: *overlay_font_weight.read() == "regular", "Regular" }
+                                    option { value: "bold", selected: *overlay_font_weight.read() == "bold", "Bold" }
+                                }
+                                input {
+                                    r#type: "range",
+                                    style: "flex:1 1 140px;min-width:0;accent-color:var(--accent)",
+                                    min: "32",
+                                    max: "160",
+                                    step: "2",
+                                    value: "{overlay_font_size}",
+                                    oninput: move |e| overlay_font_size.set(e.value()),
+                                }
+                                span { style: "flex:0 0 42px;text-align:right;font-variant-numeric:tabular-nums", "{overlay_font_size}px" }
+                            }
+                        }
+                    }
+
+                    if *overlay_type.read() == "logo" {
+                        div { style: "margin-top:8px",
+                            if *providers_loading.read() {
+                                span { class: "loading-text", "Loading providers…" }
+                            } else if let Some(error) = providers_error.read().as_ref() {
+                                p { class: "field-hint", style: "color:var(--error);margin:0", "Could not load providers: {error}" }
+                            } else if watch_providers.read().is_empty() {
+                                p { class: "field-hint", style: "margin:0", "No streaming providers were returned by TMDB." }
+                            } else {
+                                select {
+                                    class: "select-input",
+                                    value: logo_provider_id.read().as_ref().map(|id| id.to_string()).unwrap_or_default(),
+                                    onchange: move |e| {
+                                        let val = e.value();
+                                        if let Ok(pid) = val.parse::<i64>() {
+                                            logo_provider_id.set(Some(pid));
+                                            // Find logo_path and name from the list
+                                            let providers = watch_providers.read();
+                                            if let Some(p) = providers.iter().find(|p| p.provider_id == pid) {
+                                                logo_provider_name.set(Some(p.provider_name.clone()));
+                                                logo_path.set(p.logo_path.clone());
+                                            }
+                                        } else {
+                                            logo_provider_id.set(None);
+                                            logo_provider_name.set(None);
+                                            logo_path.set(None);
+                                        }
+                                    },
+                                    option { value: "", "— Select provider —" }
+                                    for p in watch_providers.read().iter().filter(|provider| has_transparent_provider_wordmark(&provider.provider_name)) {
+                                        option {
+                                            value: "{p.provider_id}",
+                                            selected: *logo_provider_id.read() == Some(p.provider_id),
+                                            "{p.provider_name}"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+            }
+
+            if is_edit {
+                div { style: "height:1px;background:var(--border);margin:2px 0" }
             }
 
             ToggleRow {

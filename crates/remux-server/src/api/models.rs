@@ -900,6 +900,9 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             collection_default_sort_order: media
                 .collection_default_sort_order
                 .clone(),
+            image_config: media
+                .collection_image_config
+                .clone(),
         }),
         enable_media_source_display: Some(true),
         date_created: Some(
