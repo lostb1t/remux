@@ -573,6 +573,10 @@ impl ImageService {
                     .collection_image_config
                     .clone()
             });
+        let layout = config
+            .as_ref()
+            .map(|c| c.layout)
+            .unwrap_or_default();
 
         // Resolve a custom background before looking up the poster grid. It is
         // the entire composition when present, so poster downloads would be
@@ -606,28 +610,24 @@ impl ImageService {
             }
         };
 
-        let poster_limit = config
-            .as_ref()
-            .map(|c| {
-                if c.layout == CollectionPosterLayout::Grid {
-                    GRID_SOURCE_POSTER_LIMIT as u32
-                } else {
-                    4u32
-                }
-            })
-            .unwrap_or(4);
-        let poster_urls = if custom_background.is_none() {
-            collect_poster_urls(
-                id,
-                &collection,
-                db,
-                poster_limit,
-                smart_filter_override,
-            )
-            .await
+        let poster_limit = if layout == CollectionPosterLayout::Grid {
+            GRID_SOURCE_POSTER_LIMIT as u32
         } else {
-            Vec::new()
+            4u32
         };
+        let poster_urls =
+            if custom_background.is_none() && layout != CollectionPosterLayout::None {
+                collect_poster_urls(
+                    id,
+                    &collection,
+                    db,
+                    poster_limit,
+                    smart_filter_override,
+                )
+                .await
+            } else {
+                Vec::new()
+            };
 
         if poster_urls.is_empty() && config.is_none() {
             // Fallback: single backdrop with label (original behaviour).
@@ -690,10 +690,6 @@ impl ImageService {
                     RgbaImage::from_pixel(OUT_W, OUT_H, Rgba([18, 18, 22, 255]))
                 });
 
-            let layout = config_owned
-                .as_ref()
-                .map(|c| c.layout)
-                .unwrap_or_default();
             let max_n = if layout == CollectionPosterLayout::Grid {
                 GRID_POSTER_LIMIT
             } else {
@@ -702,7 +698,8 @@ impl ImageService {
             let n = posters
                 .len()
                 .min(max_n);
-            if n > 0 && !has_custom_background {
+            if layout != CollectionPosterLayout::None && n > 0 && !has_custom_background
+            {
                 if layout == CollectionPosterLayout::Grid {
                     stamp_grid(&mut canvas, &posters[..n]);
                 } else {
@@ -724,7 +721,13 @@ impl ImageService {
                 .as_ref()
                 .map(|c| &c.overlay)
                 .unwrap_or(&CollectionOverlay::None);
-            apply_overlay_sync(&mut canvas, overlay, &name_owned, logo_image)?;
+            apply_overlay_sync(
+                &mut canvas,
+                overlay,
+                &name_owned,
+                logo_image,
+                layout == CollectionPosterLayout::None,
+            )?;
 
             encode_jpeg_rgba(canvas)
         })
@@ -970,8 +973,9 @@ async fn find_backdrop_url_from_collection(
 /// Poster positions (canvas center_x, center_y, clockwise angle°) for a given layout and n posters.
 fn layout_positions(layout: CollectionPosterLayout, n: usize) -> Vec<(i64, i64, f32)> {
     match layout {
-        // Grid is rendered as one transformed 4×4 plane by `stamp_grid`.
-        CollectionPosterLayout::Grid => Vec::new(),
+        // No posters are stamped for either layout — None skips them entirely,
+        // and Grid is rendered as one transformed 4×4 plane by `stamp_grid`.
+        CollectionPosterLayout::None | CollectionPosterLayout::Grid => Vec::new(),
         // Clean horizontal shelf, barely overlapping.
         CollectionPosterLayout::Row => match n {
             1 => vec![(720, 270, 0.0)],
@@ -1212,12 +1216,16 @@ fn rotate_and_stamp(
 }
 
 /// Sync overlay renderer — called from inside `spawn_blocking`.
-/// `logo_image` is the already-downloaded streaming logo (if any).
+/// `logo_image` is the already-downloaded streaming logo (if any). `centered`
+/// is set for [`CollectionPosterLayout::None`], where there is no poster grid
+/// reserving space on one side, so the overlay is centered on the full canvas
+/// instead of left-aligned in the text box next to it.
 fn apply_overlay_sync(
     canvas: &mut RgbaImage,
     overlay: &CollectionOverlay,
     fallback_name: &str,
     logo_image: Option<RgbaImage>,
+    centered: bool,
 ) -> anyhow::Result<()> {
     match overlay {
         CollectionOverlay::None => {}
@@ -1241,7 +1249,11 @@ fn apply_overlay_sync(
             };
             let _ = font.set_variation(b"wght", weight);
 
-            let max_w = TEXT_AREA_END as f32 - TEXT_LEFT_MARGIN as f32;
+            let max_w = if centered {
+                OUT_W as f32 * 0.85
+            } else {
+                TEXT_AREA_END as f32 - TEXT_LEFT_MARGIN as f32
+            };
             let scale = PxScale::from(size);
 
             let lines = wrap_words(&font, scale, label, max_w);
@@ -1258,10 +1270,16 @@ fn apply_overlay_sync(
                 .enumerate()
             {
                 let y = start_y + (i as f32 * step) as i32;
+                let x = if centered {
+                    ((OUT_W as f32 - measure_text_width(&font, scale, line)) / 2.0)
+                        as i32
+                } else {
+                    TEXT_LEFT_MARGIN
+                };
                 draw_text_mut(
                     canvas,
                     Rgba([255, 255, 255, 255]),
-                    TEXT_LEFT_MARGIN,
+                    x,
                     y,
                     scale,
                     &font,
@@ -1272,8 +1290,11 @@ fn apply_overlay_sync(
         CollectionOverlay::StreamingLogo { .. } => {
             if let Some(logo) = logo_image {
                 let max_logo_h = OUT_H / 3;
-                let max_logo_w =
-                    (TEXT_AREA_END - TEXT_LEFT_MARGIN as u32).min(OUT_W / 3);
+                let max_logo_w = if centered {
+                    (OUT_W as f32 * 0.7) as u32
+                } else {
+                    (TEXT_AREA_END - TEXT_LEFT_MARGIN as u32).min(OUT_W / 3)
+                };
                 let scale = (max_logo_h as f32 / logo.height() as f32)
                     .min(max_logo_w as f32 / logo.width() as f32);
                 let lw = (logo.width() as f32 * scale) as u32;
@@ -1284,7 +1305,11 @@ fn apply_overlay_sync(
                     lh,
                     image::imageops::FilterType::Lanczos3,
                 );
-                let lx = TEXT_LEFT_MARGIN as i64;
+                let lx = if centered {
+                    (OUT_W.saturating_sub(lw) / 2) as i64
+                } else {
+                    TEXT_LEFT_MARGIN as i64
+                };
                 let ly = (OUT_H.saturating_sub(lh) / 2) as i64;
                 image::imageops::overlay(canvas, &scaled, lx, ly);
             }
@@ -1628,6 +1653,7 @@ mod tests {
             },
             "Collection",
             None,
+            false,
         )
         .unwrap();
 

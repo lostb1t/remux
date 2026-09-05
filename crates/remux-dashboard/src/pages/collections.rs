@@ -540,6 +540,7 @@ pub fn CollectionForm(
     let existing_layout = existing_image_config
         .map(|c| {
             match c.layout {
+                CollectionPosterLayout::None => "none",
                 CollectionPosterLayout::Grid => "grid",
                 CollectionPosterLayout::Row => "row",
                 CollectionPosterLayout::Scatter => "scatter",
@@ -1218,12 +1219,13 @@ pub fn CollectionForm(
             if is_edit {
                 if !*has_custom_image_source.read() {
                     div { class: "field",
-                        label { class: "field-label", "Poster Layout" }
+                        label { class: "field-label", "Layout" }
                         p { class: "field-hint", "Choose how the item posters are arranged in the generated image." }
                         select {
                             class: "select-input",
                             value: "{poster_layout}",
                             oninput: move |e| poster_layout.set(e.value()),
+                            option { value: "none", selected: *poster_layout.read() == "none", "None" }
                             option { value: "grid", selected: *poster_layout.read() == "grid", "Grid" }
                             option { value: "row", selected: *poster_layout.read() == "row", "Row" }
                             option { value: "scatter", selected: *poster_layout.read() == "scatter", "Scatter" }
@@ -1231,9 +1233,9 @@ pub fn CollectionForm(
                     }
                 }
                 div { class: "field",
-                    label { class: "field-label", "Poster Overlay" }
+                    label { class: "field-label", "Overlay" }
                     p { class: "field-hint",
-                        "Generated poster uses item posters as a grid. Select an overlay to add on top."
+                        "Select an overlay to add on top of the generated image."
                     }
                     select {
                         class: "select-input",

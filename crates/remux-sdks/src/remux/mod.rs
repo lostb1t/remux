@@ -3605,7 +3605,7 @@ impl Default for CollectionOverlay {
     }
 }
 
-/// Poster layout for a collection's generated image.
+/// Layout for a collection's generated image.
 #[derive(
     Clone,
     Copy,
@@ -3621,6 +3621,8 @@ impl Default for CollectionOverlay {
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum CollectionPosterLayout {
+    /// No poster grid — the overlay is centered on a plain or custom background.
+    None,
     /// Four-by-four poster grid, skewed as a single oversized background plane.
     #[default]
     #[serde(alias = "cascade", alias = "mosaic")]
