@@ -802,6 +802,7 @@ pub trait MetaAddon: Send + Sync {
         &self,
         media: &db::Media,
         ctx: &AppContext,
+        image_type: Option<api::ImageType>,
     ) -> Result<Vec<crate::api::RemoteImageInfo>> {
         Ok(vec![])
     }
@@ -2572,6 +2573,7 @@ impl AddonService {
         &self,
         media: &db::Media,
         ctx: &AppContext,
+        image_type: Option<api::ImageType>,
     ) -> Result<Vec<crate::api::RemoteImageInfo>> {
         let addons = self
             .addons_for::<dyn MetaAddon>(media, &ctx.db, None)
@@ -2583,7 +2585,7 @@ impl AddonService {
                 .meta
                 .as_ref()
                 .unwrap()
-                .images_fetch(media, ctx)
+                .images_fetch(media, ctx, image_type.clone())
                 .await
             {
                 Ok(images) => out.extend(images),

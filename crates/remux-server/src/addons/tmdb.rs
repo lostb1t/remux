@@ -180,8 +180,9 @@ impl MetaAddon for TmdbAddon {
         &self,
         media: &db::Media,
         ctx: &AppContext,
+        image_type: Option<crate::api::ImageType>,
     ) -> Result<Vec<crate::api::RemoteImageInfo>> {
-        tmdb_remote_images(ctx, media).await
+        tmdb_remote_images(ctx, media, image_type).await
     }
 }
 
@@ -1991,8 +1992,10 @@ async fn search_tmdb_series(
 // Remote images
 // ---------------------------------------------------------------------------
 
-fn tmdb_image_languages_with_neutral(preferred_language: Option<&str>) -> String {
-    format!("{},null", preferred_language.unwrap_or("en"))
+fn tmdb_remote_image_languages(
+    image_type: Option<&api::ImageType>,
+) -> Option<&'static str> {
+    matches!(image_type, Some(api::ImageType::Backdrop)).then_some("null")
 }
 
 fn map_remote_image(
@@ -2014,15 +2017,17 @@ fn map_remote_image(
 fn extend_from_tmdb_images(
     out: &mut Vec<api::RemoteImageInfo>,
     images: &sdks::tmdb::Images,
+    language_neutral_backdrops: bool,
 ) {
     out.extend(
         images
             .backdrops
             .iter()
             .filter(|entry| {
-                entry
-                    .iso_639_1
-                    .is_none()
+                !language_neutral_backdrops
+                    || entry
+                        .iso_639_1
+                        .is_none()
             })
             .map(|entry| map_remote_image("Backdrop", entry)),
     );
@@ -2030,22 +2035,12 @@ fn extend_from_tmdb_images(
         images
             .posters
             .iter()
-            .filter(|entry| {
-                entry
-                    .iso_639_1
-                    .is_some()
-            })
             .map(|entry| map_remote_image("Primary", entry)),
     );
     out.extend(
         images
             .logos
             .iter()
-            .filter(|entry| {
-                entry
-                    .iso_639_1
-                    .is_some()
-            })
             .map(|entry| map_remote_image("Logo", entry)),
     );
     out.extend(
@@ -2053,9 +2048,10 @@ fn extend_from_tmdb_images(
             .stills
             .iter()
             .filter(|entry| {
-                entry
-                    .iso_639_1
-                    .is_none()
+                !language_neutral_backdrops
+                    || entry
+                        .iso_639_1
+                        .is_none()
             })
             .map(|entry| map_remote_image("Backdrop", entry)),
     );
@@ -2076,6 +2072,7 @@ fn extend_from_tmdb_images(
 async fn tmdb_remote_images(
     ctx: &AppContext,
     media: &db::Media,
+    image_type: Option<api::ImageType>,
 ) -> Result<Vec<api::RemoteImageInfo>> {
     let config = crate::db::Settings::get_config(&ctx.db).await?;
     let api_key = config.get_tmdb_key();
@@ -2087,6 +2084,8 @@ async fn tmdb_remote_images(
         &ctx.config
             .tmdb_base_url,
     )?;
+    let image_languages = tmdb_remote_image_languages(image_type.as_ref());
+    let language_neutral_backdrops = image_languages.is_some();
 
     let mut out = Vec::new();
 
@@ -2111,24 +2110,24 @@ async fn tmdb_remote_images(
                 None
             };
             if let Some(tmdb_id) = tmdb_id {
+                let mut endpoint = sdks::tmdb::MovieEndpoint::new(
+                    tmdb_id,
+                    config
+                        .preferred_metadata_language
+                        .clone(),
+                );
+                if let Some(languages) = image_languages {
+                    endpoint = endpoint.with_image_languages(languages);
+                }
                 let movie = client
-                    .execute(
-                        sdks::tmdb::MovieEndpoint::new(
-                            tmdb_id,
-                            config
-                                .preferred_metadata_language
-                                .clone(),
-                        )
-                        .with_image_languages(tmdb_image_languages_with_neutral(
-                            config
-                                .preferred_metadata_language
-                                .as_deref(),
-                        ))
-                        .with_cache(Duration::from_secs(360)),
-                    )
+                    .execute(endpoint.with_cache(Duration::from_secs(360)))
                     .await?;
                 if let Some(images) = &movie.images {
-                    extend_from_tmdb_images(&mut out, images);
+                    extend_from_tmdb_images(
+                        &mut out,
+                        images,
+                        language_neutral_backdrops,
+                    );
                 }
                 if out
                     .iter()
@@ -2198,24 +2197,24 @@ async fn tmdb_remote_images(
                 None
             };
             if let Some(tmdb_id) = tmdb_id {
+                let mut endpoint = sdks::tmdb::SeriesEndpoint::new(
+                    tmdb_id,
+                    config
+                        .preferred_metadata_language
+                        .clone(),
+                );
+                if let Some(languages) = image_languages {
+                    endpoint = endpoint.with_image_languages(languages);
+                }
                 let tv = client
-                    .execute(
-                        sdks::tmdb::SeriesEndpoint::new(
-                            tmdb_id,
-                            config
-                                .preferred_metadata_language
-                                .clone(),
-                        )
-                        .with_image_languages(tmdb_image_languages_with_neutral(
-                            config
-                                .preferred_metadata_language
-                                .as_deref(),
-                        ))
-                        .with_cache(Duration::from_secs(360)),
-                    )
+                    .execute(endpoint.with_cache(Duration::from_secs(360)))
                     .await?;
                 if let Some(images) = &tv.images {
-                    extend_from_tmdb_images(&mut out, images);
+                    extend_from_tmdb_images(
+                        &mut out,
+                        images,
+                        language_neutral_backdrops,
+                    );
                 }
             }
         }
@@ -2225,23 +2224,19 @@ async fn tmdb_remote_images(
             if let (Some(tmdb_id), Some(s_n), Some(e_n)) =
                 (series_tmdb_id, media.parent_idx, media.idx)
             {
+                let mut endpoint = sdks::tmdb::EpisodeEndpoint::new(
+                    tmdb_id,
+                    s_n,
+                    e_n,
+                    config
+                        .preferred_metadata_language
+                        .clone(),
+                );
+                if let Some(languages) = image_languages {
+                    endpoint = endpoint.with_image_languages(languages);
+                }
                 let ep = client
-                    .execute(
-                        sdks::tmdb::EpisodeEndpoint::new(
-                            tmdb_id,
-                            s_n,
-                            e_n,
-                            config
-                                .preferred_metadata_language
-                                .clone(),
-                        )
-                        .with_image_languages(tmdb_image_languages_with_neutral(
-                            config
-                                .preferred_metadata_language
-                                .as_deref(),
-                        ))
-                        .with_cache(Duration::from_secs(360)),
-                    )
+                    .execute(endpoint.with_cache(Duration::from_secs(360)))
                     .await?;
                 if let Some(images) = ep
                     .as_ref()
@@ -2250,7 +2245,11 @@ async fn tmdb_remote_images(
                             .as_ref()
                     })
                 {
-                    extend_from_tmdb_images(&mut out, images);
+                    extend_from_tmdb_images(
+                        &mut out,
+                        images,
+                        language_neutral_backdrops,
+                    );
                 }
                 if out
                     .iter()
@@ -2335,7 +2334,7 @@ mod tests {
         };
         let mut remote_images = Vec::new();
 
-        extend_from_tmdb_images(&mut remote_images, &images);
+        extend_from_tmdb_images(&mut remote_images, &images, true);
 
         let backdrop_urls = remote_images
             .iter()
@@ -2355,48 +2354,44 @@ mod tests {
             backdrop_urls,
             ["https://image.tmdb.org/t/p/original/neutral.jpg"]
         );
-        assert!(
-            remote_images
-                .iter()
-                .any(|image| image
+        let primary_count = remote_images
+            .iter()
+            .filter(|image| {
+                image
                     .type_
                     .as_deref()
-                    == Some("Primary"))
-        );
-        assert!(
-            remote_images
-                .iter()
-                .filter_map(|image| image
-                    .url
-                    .as_deref())
-                .all(|url| !url.contains("neutral-poster")
-                    && !url.contains("neutral-logo"))
-        );
+                    == Some("Primary")
+            })
+            .count();
+        assert_eq!(primary_count, 2);
     }
 
     #[test]
-    fn remote_image_queries_request_language_neutral_images() {
-        let image_languages = tmdb_image_languages_with_neutral(Some("nl-NL"));
-        let movie_query = sdks::tmdb::MovieEndpoint::new(1, Some("nl-NL".to_string()))
-            .with_image_languages(&image_languages)
-            .query();
-        let series_query =
-            sdks::tmdb::SeriesEndpoint::new(1, Some("nl-NL".to_string()))
-                .with_image_languages(&image_languages)
-                .query();
-        let episode_query =
-            sdks::tmdb::EpisodeEndpoint::new(1, 1, 1, Some("nl-NL".to_string()))
-                .with_image_languages(&image_languages)
-                .query();
+    fn remote_image_queries_only_request_neutral_images_for_backdrops() {
+        assert_eq!(
+            tmdb_remote_image_languages(Some(&api::ImageType::Backdrop)),
+            Some("null")
+        );
+        assert_eq!(
+            tmdb_remote_image_languages(Some(&api::ImageType::Primary)),
+            None
+        );
+        assert_eq!(tmdb_remote_image_languages(None), None);
 
-        for query in [movie_query, series_query, episode_query] {
-            assert!(
-                query.contains(&(
-                    "include_image_language".into(),
-                    "nl-NL%2Cnull".into()
-                ))
-            );
-        }
-        assert_eq!(tmdb_image_languages_with_neutral(None), "en,null");
+        let backdrop_query =
+            sdks::tmdb::MovieEndpoint::new(1, Some("nl-NL".to_string()))
+                .with_image_languages("null")
+                .query();
+        let primary_query =
+            sdks::tmdb::MovieEndpoint::new(1, Some("nl-NL".to_string())).query();
+
+        assert!(
+            backdrop_query.contains(&("include_image_language".into(), "null".into()))
+        );
+        assert!(
+            primary_query
+                .iter()
+                .all(|(key, _)| key != "include_image_language")
+        );
     }
 }

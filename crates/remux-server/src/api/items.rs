@@ -1389,6 +1389,13 @@ pub async fn items_remote_images(
     let provider = q
         .provider
         .as_deref();
+    let requested_image_type = q
+        .kind
+        .as_deref()
+        .and_then(|kind| {
+            kind.parse::<api::ImageType>()
+                .ok()
+        });
     let mut images = Vec::new();
     let mut queried_providers = Vec::new();
 
@@ -1397,7 +1404,7 @@ pub async fn items_remote_images(
         match state
             .ctx
             .addons
-            .fetch_images(&media, &state.ctx)
+            .fetch_images(&media, &state.ctx, requested_image_type)
             .await
         {
             Ok(v) => images.extend(v),

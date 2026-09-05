@@ -294,6 +294,7 @@ impl super::MetaAddon for BetterPostersAddon {
         &self,
         _media: &db::Media,
         _ctx: &AppContext,
+        _image_type: Option<crate::api::ImageType>,
     ) -> Result<Vec<crate::api::RemoteImageInfo>> {
         Ok(vec![])
     }
