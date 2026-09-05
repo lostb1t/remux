@@ -1991,6 +1991,10 @@ async fn search_tmdb_series(
 // Remote images
 // ---------------------------------------------------------------------------
 
+fn tmdb_image_languages_with_neutral(preferred_language: Option<&str>) -> String {
+    format!("{},null", preferred_language.unwrap_or("en"))
+}
+
 fn map_remote_image(
     type_label: &str,
     entry: &sdks::tmdb::ImageEntry,
@@ -2105,7 +2109,11 @@ async fn tmdb_remote_images(
                                 .preferred_metadata_language
                                 .clone(),
                         )
-                        .with_image_languages("null")
+                        .with_image_languages(tmdb_image_languages_with_neutral(
+                            config
+                                .preferred_metadata_language
+                                .as_deref(),
+                        ))
                         .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
@@ -2188,7 +2196,11 @@ async fn tmdb_remote_images(
                                 .preferred_metadata_language
                                 .clone(),
                         )
-                        .with_image_languages("null")
+                        .with_image_languages(tmdb_image_languages_with_neutral(
+                            config
+                                .preferred_metadata_language
+                                .as_deref(),
+                        ))
                         .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
@@ -2213,7 +2225,11 @@ async fn tmdb_remote_images(
                                 .preferred_metadata_language
                                 .clone(),
                         )
-                        .with_image_languages("null")
+                        .with_image_languages(tmdb_image_languages_with_neutral(
+                            config
+                                .preferred_metadata_language
+                                .as_deref(),
+                        ))
                         .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
@@ -2334,20 +2350,27 @@ mod tests {
 
     #[test]
     fn remote_image_queries_request_language_neutral_images() {
+        let image_languages = tmdb_image_languages_with_neutral(Some("nl-NL"));
         let movie_query = sdks::tmdb::MovieEndpoint::new(1, Some("nl-NL".to_string()))
-            .with_image_languages("null")
+            .with_image_languages(&image_languages)
             .query();
         let series_query =
             sdks::tmdb::SeriesEndpoint::new(1, Some("nl-NL".to_string()))
-                .with_image_languages("null")
+                .with_image_languages(&image_languages)
                 .query();
         let episode_query =
             sdks::tmdb::EpisodeEndpoint::new(1, 1, 1, Some("nl-NL".to_string()))
-                .with_image_languages("null")
+                .with_image_languages(&image_languages)
                 .query();
 
         for query in [movie_query, series_query, episode_query] {
-            assert!(query.contains(&("include_image_language".into(), "null".into())));
+            assert!(
+                query.contains(&(
+                    "include_image_language".into(),
+                    "nl-NL%2Cnull".into()
+                ))
+            );
         }
+        assert_eq!(tmdb_image_languages_with_neutral(None), "en,null");
     }
 }
