@@ -75,6 +75,7 @@ pub fn is_internal_host(host: &str) -> bool {
                 | "test"
                 | "invalid"
                 | "localdomain"
+                | "localhost"
         )
     )
 }
@@ -136,6 +137,7 @@ mod internal_host_tests {
         assert!(is_internal_host("myaddon.local"));
         assert!(is_internal_host("service.internal"));
         assert!(is_internal_host("box.lan"));
+        assert!(is_internal_host("service.localhost"));
     }
 
     #[test]

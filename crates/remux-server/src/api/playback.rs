@@ -887,13 +887,16 @@ async fn videos_stream_inner(
         if let (Some(addon_id), crate::stream::StreamDescriptor::Http { url, .. }) =
             (si.addon_id, &descriptor)
         {
+            // Fail closed: a URL we can't parse, or one with no host, is not
+            // confirmed reachable by the client either — treat it as internal
+            // rather than defaulting to allowing the redirect.
             let host_is_internal = url::Url::parse(url)
                 .ok()
                 .and_then(|u| {
                     u.host_str()
                         .map(crate::stream::is_internal_host)
                 })
-                .unwrap_or(false);
+                .unwrap_or(true);
             if !host_is_internal
                 && state
                     .ctx
