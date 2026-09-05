@@ -496,6 +496,13 @@ pub struct ServerConfiguration {
     #[default(0_i64)]
     pub digital_release_buffer_days: i64,
     pub tmdb_api_key: Option<String>,
+    /// Unset means no TVDB lookups. There is no bundled key to fall back on as
+    /// there is for TMDB: TheTVDB issues one per project, so an operator brings
+    /// their own or goes without.
+    pub tvdb_api_key: Option<String>,
+    /// Only a user-supported TVDB key needs one. Sent only when set, because
+    /// TVDB rejects a login that carries `pin` alongside a project key.
+    pub tvdb_pin: Option<String>,
     pub subtitle_languages: Option<Vec<String>>,
     #[default(Some(false))]
     pub enable_subtitles_detail: Option<bool>,

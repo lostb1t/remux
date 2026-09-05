@@ -436,18 +436,71 @@ impl MediaResolveService {
             return Ok(changed);
         }
 
-        let (Some(season), Some(number), Some(series_tmdb)) = (
-            episode.parent_idx,
-            episode.idx,
-            series
-                .external_ids
-                .tmdb,
-        ) else {
+        let (Some(season), Some(number)) = (episode.parent_idx, episode.idx) else {
             return Ok(changed);
         };
-        let Some(patch) =
-            Self::episode_external_ids(series_tmdb, season, number, &client).await?
-        else {
+
+        // TMDB first: one response carries both of the episode's ids when it
+        // has them, and the series' tmdb id was just resolved above.
+        let mut patch = match series
+            .external_ids
+            .tmdb
+        {
+            Some(series_tmdb) => {
+                Self::episode_external_ids(series_tmdb, season, number, &client).await?
+            }
+            None => None,
+        };
+
+        // TheTVDB carries episodes TMDB has no ids for, which is most of a
+        // long-running show. Asked whenever TMDB left the two ids that name an
+        // episode elsewhere unfilled, not merely when it answered nothing at
+        // all: TMDB routinely holds an episode record whose `external_ids` are
+        // empty, and that answer carries its own tmdb id, so treating it as a
+        // result would skip the source that has what is missing.
+        let episode_still_unnamed = patch
+            .as_ref()
+            .map_or(true, |p| {
+                p.tvdb
+                    .is_none()
+                    && p.imdb
+                        .is_none()
+            });
+        // TVDB cannot be asked about a series it has no id for, and TMDB's
+        // series record carries the mapping more often than the stored row
+        // does. Failing is only logged: the patch in hand must still be
+        // stored, and the episode's ids stay missing, so the next delivery
+        // asks again anyway.
+        if episode_still_unnamed
+            && series
+                .external_ids
+                .tvdb
+                .is_none()
+        {
+            match Self::fill_series_tvdb(series, ctx, &client).await {
+                Ok(filled) => changed = changed || filled,
+                Err(e) => debug!(
+                    series = %series.title,
+                    error = %e,
+                    "failed to backfill the series' tvdb id"
+                ),
+            }
+        }
+        if episode_still_unnamed
+            && let Some(tvdb) = Self::episode_tvdb_id(series, season, number, ctx).await
+        {
+            match patch.as_mut() {
+                Some(p) => p.tvdb = Some(tvdb),
+                None => {
+                    patch = Some(db::ExternalIds {
+                        tvdb: Some(tvdb),
+                        ..Default::default()
+                    })
+                }
+            }
+        }
+
+        let Some(patch) = patch else {
             return Ok(changed);
         };
 
@@ -467,6 +520,71 @@ impl MediaResolveService {
             changed = true;
         }
         Ok(changed)
+    }
+
+    /// The episode's own tvdb id from TheTVDB, for an episode TMDB does not
+    /// carry. Keyed on the series' tvdb id, which nearly every series has, and
+    /// season and episode number.
+    ///
+    /// `None` whenever no key is configured, which is the default: TheTVDB has
+    /// no bundled key to fall back on, so this is dark until an operator sets
+    /// one.
+    async fn episode_tvdb_id(
+        series: &db::Media,
+        season: i64,
+        number: i64,
+        ctx: &AppContext,
+    ) -> Option<i64> {
+        let Some(series_tvdb) = series
+            .external_ids
+            .tvdb
+        else {
+            tracing::debug!(series = %series.title, "no series tvdb id to ask about");
+            return None;
+        };
+        let Some(client) = crate::common::tvdb_client(ctx).await else {
+            tracing::debug!("no tvdb client: key unset or login failed");
+            return None;
+        };
+        match client
+            .execute(
+                sdks::tvdb::SeriesEpisodesEndpoint {
+                    series_id: series_tvdb,
+                    season_type: sdks::tvdb::SeasonType::Default,
+                    season: Some(season),
+                    episode_number: Some(number),
+                }
+                .with_cache(ID_CACHE_TTL)
+                .should_cache(|r: &sdks::tvdb::EpisodesResponse| {
+                    Some(
+                        if r.episode_id()
+                            .is_none()
+                        {
+                            ID_MISS_CACHE_TTL
+                        } else {
+                            ID_CACHE_TTL
+                        },
+                    )
+                }),
+            )
+            .await
+        {
+            Ok(res) => {
+                let id = res.episode_id();
+                tracing::debug!(
+                    series_tvdb,
+                    season,
+                    number,
+                    ?id,
+                    "tvdb episode lookup"
+                );
+                id
+            }
+            Err(e) => {
+                tracing::warn!(series_tvdb, season, number, error = %e, "tvdb lookup failed");
+                None
+            }
+        }
     }
 
     async fn fill_series_tmdb(
@@ -492,6 +610,66 @@ impl MediaResolveService {
             &series.id,
             &db::ExternalIds {
                 tmdb: Some(tmdb),
+                ..Default::default()
+            },
+        )
+        .await?
+        {
+            series.external_ids = stored;
+        }
+        Ok(true)
+    }
+
+    /// The series' tvdb id, from TMDB's record of the series. `Ok(false)` is
+    /// TMDB not carrying the mapping, which is cached like any id miss.
+    async fn fill_series_tvdb(
+        series: &mut db::Media,
+        ctx: &AppContext,
+        client: &RestClient<BearerAuth>,
+    ) -> anyhow::Result<bool> {
+        let Some(series_tmdb) = series
+            .external_ids
+            .tmdb
+        else {
+            return Ok(false);
+        };
+        let record = client
+            .execute(
+                sdks::tmdb::SeriesEndpoint {
+                    id: series_tmdb,
+                    language: None,
+                    append_to_response: vec!["external_ids".to_string()],
+                }
+                .with_cache(sdks::CacheOptions::new(ID_CACHE_TTL))
+                .should_cache(|s| {
+                    Some(
+                        match s
+                            .external_ids
+                            .as_ref()
+                            .and_then(|x| x.tvdb_id)
+                        {
+                            Some(_) => ID_CACHE_TTL,
+                            None => ID_MISS_CACHE_TTL,
+                        },
+                    )
+                }),
+            )
+            .await?;
+        let Some(tvdb) = record
+            .external_ids
+            .and_then(|x| x.tvdb_id)
+        else {
+            return Ok(false);
+        };
+
+        series
+            .external_ids
+            .tvdb = Some(tvdb);
+        if let Some(stored) = db::Media::widen_external_ids(
+            &ctx.db,
+            &series.id,
+            &db::ExternalIds {
+                tvdb: Some(tvdb),
                 ..Default::default()
             },
         )
@@ -1376,6 +1554,96 @@ mod tests {
             Some(7777)
         );
         assert_eq!(derived_id(&media), keyed_on);
+    }
+
+    #[tokio::test]
+    async fn a_series_missing_its_tvdb_id_gets_it_from_tmdb() {
+        let tmdb = httpmock::MockServer::start();
+        tmdb.mock(|when, then| {
+            when.path("/tv/1438")
+                .query_param("append_to_response", "external_ids");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "id": 1438,
+                    "name": "The Wire",
+                    "external_ids": { "tvdb_id": 79126 }
+                }));
+        });
+        let guard = ctx_with_tmdb(&tmdb).await;
+        let ctx = &guard.0;
+        let mut show = series(
+            ctx,
+            db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt0306414".to_string()).ok(),
+                tmdb: Some(1438),
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let client = MediaResolveService::tmdb(ctx)
+            .await
+            .unwrap();
+        assert!(
+            MediaResolveService::fill_series_tvdb(&mut show, ctx, &client)
+                .await
+                .unwrap()
+        );
+
+        assert_eq!(
+            show.external_ids
+                .tvdb,
+            Some(79126)
+        );
+        assert_eq!(
+            db::Media::get_by_id(&ctx.db, &show.id)
+                .await
+                .unwrap()
+                .expect("still there")
+                .external_ids
+                .tvdb,
+            Some(79126),
+            "the id must be stored, not merely held in memory"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_series_tmdb_has_no_tvdb_mapping_for_is_left_alone() {
+        let tmdb = httpmock::MockServer::start();
+        tmdb.mock(|when, then| {
+            when.path("/tv/1438");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "id": 1438,
+                    "name": "The Wire",
+                    "external_ids": { "tvdb_id": null }
+                }));
+        });
+        let guard = ctx_with_tmdb(&tmdb).await;
+        let ctx = &guard.0;
+        let mut show = series(
+            ctx,
+            db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt0306414".to_string()).ok(),
+                tmdb: Some(1438),
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let client = MediaResolveService::tmdb(ctx)
+            .await
+            .unwrap();
+        assert!(
+            !MediaResolveService::fill_series_tvdb(&mut show, ctx, &client)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            show.external_ids
+                .tvdb,
+            None
+        );
     }
 
     /// A server whose TMDB calls go to `mock`.
