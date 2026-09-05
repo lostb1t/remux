@@ -11,8 +11,8 @@ use crate::{
     db,
     db::ImageKind,
     sdks::remux::{
-        CollectionFontFamily, CollectionFontWeight, CollectionImageConfig,
-        CollectionOverlay, CollectionPosterLayout,
+        CollectionFilter, CollectionFontFamily, CollectionFontWeight,
+        CollectionImageConfig, CollectionOverlay, CollectionPosterLayout,
     },
 };
 
@@ -353,7 +353,7 @@ impl ImageService {
             }
         }
 
-        let bytes = Self::generate(id, name, db).await?;
+        let bytes = Self::generate(id, name, db, None, None, None).await?;
         let ct = detect_content_type(&bytes);
         let ext = ext_for_content_type(ct);
         let path = Self::image_path(data_dir, id, "primary", ext);
@@ -371,6 +371,24 @@ impl ImageService {
         .await?;
 
         Ok(bytes)
+    }
+
+    /// Render a collection image from draft, unsaved state — no disk write, no
+    /// DB write, no cache row. `config`/`smart_filter` override whatever is
+    /// currently stored on the collection, so the caller can preview an
+    /// in-progress edit before it's saved. Used by the dashboard's "Update
+    /// preview" action, which must never mutate the live collection.
+    pub async fn generate_preview(
+        id: Uuid,
+        name: &str,
+        db: &sqlx::SqlitePool,
+        config: &CollectionImageConfig,
+        smart_filter: Option<&CollectionFilter>,
+    ) -> anyhow::Result<(Vec<u8>, &'static str)> {
+        let bytes =
+            Self::generate(id, name, db, Some(config), smart_filter, None).await?;
+        let ct = detect_content_type(&bytes);
+        Ok((bytes, ct))
     }
 
     /// Save an uploaded image for `id`/`image_type`, write to disk, update DB.
@@ -531,42 +549,61 @@ impl ImageService {
         Self::delete_image(data_dir, id, ImageKind::Primary, db).await
     }
 
+    /// `config_override`/`smart_filter_override` take precedence over whatever
+    /// is stored on the collection row when present — the preview path
+    /// (`generate_preview`) supplies unsaved draft state this way, while the
+    /// persisting path (`library_image`) passes `None` for both and reads the
+    /// stored config as before. `background_override` similarly stands in for
+    /// a locally-picked-but-not-yet-uploaded custom background.
     async fn generate(
         id: Uuid,
         name: &str,
         db: &sqlx::SqlitePool,
+        config_override: Option<&CollectionImageConfig>,
+        smart_filter_override: Option<&CollectionFilter>,
+        background_override: Option<Vec<u8>>,
     ) -> anyhow::Result<Vec<u8>> {
         let collection = db::Media::get_by_id(db, &id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("collection {id} not found"))?;
-        let config = collection
-            .collection_image_config
-            .clone();
+        let config = config_override
+            .cloned()
+            .or_else(|| {
+                collection
+                    .collection_image_config
+                    .clone()
+            });
 
         // Resolve a custom background before looking up the poster grid. It is
         // the entire composition when present, so poster downloads would be
         // wasted work.
-        let custom_background_path = config
-            .as_ref()
-            .and_then(|_| {
-                collection
-                    .images
-                    .get(ImageKind::Backdrop)
-                    .map(|image| {
-                        image
-                            .path
-                            .clone()
-                    })
-            });
-        let custom_background = if let Some(path) = custom_background_path {
-            let result = if path.contains("://") {
-                Self::fetch_rgba(&path).await
-            } else {
-                Self::read_rgba(&path).await
-            };
-            result.ok()
+        let custom_background = if let Some(bytes) = background_override {
+            image::load_from_memory(&bytes)
+                .ok()
+                .map(|img| img.into_rgba8())
         } else {
-            None
+            let custom_background_path = config
+                .as_ref()
+                .and_then(|_| {
+                    collection
+                        .images
+                        .get(ImageKind::Backdrop)
+                        .map(|image| {
+                            image
+                                .path
+                                .clone()
+                        })
+                });
+            if let Some(path) = custom_background_path {
+                let result = if path.contains("://") {
+                    Self::fetch_rgba(&path).await
+                } else {
+                    Self::read_rgba(&path).await
+                };
+                result.ok()
+            } else {
+                None
+            }
         };
 
         let poster_limit = config
@@ -580,7 +617,14 @@ impl ImageService {
             })
             .unwrap_or(4);
         let poster_urls = if custom_background.is_none() {
-            collect_poster_urls(id, &collection, db, poster_limit).await
+            collect_poster_urls(
+                id,
+                &collection,
+                db,
+                poster_limit,
+                smart_filter_override,
+            )
+            .await
         } else {
             Vec::new()
         };
@@ -763,9 +807,37 @@ impl ImageService {
     }
 }
 
-fn collection_item_filter(collection: &db::Media) -> db::MediaFilter {
+/// Builds the query that finds a collection's own member items, for poster
+/// selection. Regression: this used to filter only by `collection_media_kind`
+/// with no membership scoping at all (no `parent_id`, no `filter_rules`), so
+/// the generated collage pulled arbitrary movies/shows matching that kind from
+/// the whole library rather than this collection's actual members. Mirrors the
+/// scoping `/items?parentId=` already uses (`api/items.rs`):
+/// - A "collection of collections" group container holds children via
+///   `parent_id`, regardless of its own `collection_kind` — same as
+///   `group_container_has_visible_content`'s walk above.
+/// - A Manual collection holds members via `media_relations`; `parent` (in
+///   addition to `parent_id`) is what makes `get_by_filter_inner` take that
+///   join path instead of a literal `parent_id` scan.
+/// - A Smart collection floats freely (no `parent_id`) and is scoped by
+///   `filter_rules` alone. `smart_filter_override` lets a caller preview an
+///   unsaved filter edit without it ever being persisted.
+fn collection_item_filter(
+    collection: &db::Media,
+    smart_filter_override: Option<&CollectionFilter>,
+) -> db::MediaFilter {
     match &collection.kind {
         db::MediaKind::Collection => {
+            if collection.collection_media_kind
+                == Some(db::CollectionMediaKind::Collection)
+            {
+                return db::MediaFilter {
+                    kind: Some(vec![db::MediaKind::Collection]),
+                    parent_id: Some(collection.id),
+                    limit: Some(8),
+                    ..Default::default()
+                };
+            }
             let kinds = match &collection.collection_media_kind {
                 Some(db::CollectionMediaKind::Movie) => vec![db::MediaKind::Movie],
                 Some(db::CollectionMediaKind::Series) => vec![db::MediaKind::Series],
@@ -775,18 +847,35 @@ fn collection_item_filter(collection: &db::Media) -> db::MediaFilter {
                 Some(db::CollectionMediaKind::Music) => {
                     vec![db::MediaKind::Album, db::MediaKind::Artist]
                 }
-                Some(db::CollectionMediaKind::Collection) => {
-                    vec![db::MediaKind::Collection]
-                }
                 Some(db::CollectionMediaKind::Playlist) => {
                     vec![db::MediaKind::Playlist]
                 }
+                Some(db::CollectionMediaKind::Collection) => {
+                    unreachable!("handled above")
+                }
                 None => vec![db::MediaKind::Movie, db::MediaKind::Series],
             };
-            db::MediaFilter {
-                kind: Some(kinds),
-                limit: Some(8),
-                ..Default::default()
+            if collection.collection_kind == Some(db::CollectionKind::Manual) {
+                db::MediaFilter {
+                    kind: Some(kinds),
+                    parent_id: Some(collection.id),
+                    parent: Some(collection.clone()),
+                    limit: Some(8),
+                    ..Default::default()
+                }
+            } else {
+                db::MediaFilter {
+                    kind: Some(kinds),
+                    filter_rules: smart_filter_override
+                        .cloned()
+                        .or_else(|| {
+                            collection
+                                .parse_smart_filter()
+                                .cloned()
+                        }),
+                    limit: Some(8),
+                    ..Default::default()
+                }
             }
         }
         _ => db::MediaFilter {
@@ -803,11 +892,12 @@ async fn collect_poster_urls(
     collection: &db::Media,
     db: &sqlx::SqlitePool,
     limit: u32,
+    smart_filter_override: Option<&CollectionFilter>,
 ) -> Vec<String> {
     // Inspect extra records so duplicate artwork does not consume a grid cell.
     let filter = db::MediaFilter {
         limit: Some(limit.saturating_mul(2)),
-        ..collection_item_filter(collection)
+        ..collection_item_filter(collection, smart_filter_override)
     };
     let Ok(result) = db::Media::get_by_filter(db, &filter).await else {
         return Vec::new();
@@ -844,7 +934,7 @@ async fn find_backdrop_url_from_collection(
 ) -> anyhow::Result<String> {
     let filter = db::MediaFilter {
         limit: Some(8),
-        ..collection_item_filter(collection)
+        ..collection_item_filter(collection, None)
     };
     let items = db::Media::get_by_filter(db, &filter)
         .await?

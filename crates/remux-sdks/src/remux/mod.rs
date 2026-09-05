@@ -5567,6 +5567,44 @@ impl Endpoint for UploadItemImage {
     }
 }
 
+/// Render a collection's generated image from draft, unsaved config/filter —
+/// nothing is persisted server-side. Used for the dashboard's live preview so
+/// it never has to PATCH the real collection just to see what a change would
+/// produce; only the real save action does that.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct PreviewCollectionImagePayload {
+    pub image_config: CollectionImageConfig,
+    pub smart_filter: Option<CollectionFilter>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreviewCollectionImage {
+    pub item_id: String,
+    pub payload: PreviewCollectionImagePayload,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollectionImagePreviewResponse {
+    pub content_type: String,
+    /// Base64-encoded image bytes — the shared HTTP client always reads
+    /// responses as JSON text, so raw binary can't go back as the body.
+    pub data: String,
+}
+
+impl Endpoint for PreviewCollectionImage {
+    type Output = CollectionImagePreviewResponse;
+    fn path(&self) -> String {
+        format!("/items/{}/imagepreview", self.item_id)
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
+    }
+}
+
 /// Delete an image for a library item (DELETE /Items/{id}/Images/{type}).
 #[derive(Debug, Clone)]
 pub struct DeleteItemImage {

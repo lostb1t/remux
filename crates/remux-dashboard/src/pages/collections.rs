@@ -620,7 +620,6 @@ pub fn CollectionForm(
     let mut providers_loaded = use_signal(|| false);
     let mut providers_error: Signal<Option<String>> = use_signal(|| None);
     let mut previewing = use_signal(|| false);
-    let mut image_bust: Signal<u32> = use_signal(|| 0);
 
     let mut saving = use_signal(|| false);
     let mut err = use_signal(|| Option::<String>::None);
@@ -1024,7 +1023,10 @@ pub fn CollectionForm(
                                     src: "{preview}",
                                     style: "width:100%;max-height:180px;object-fit:cover;border-radius:6px;border:1px solid var(--border)",
                                 }
-                                if *overlay_type.read() == "text" {
+                                // Only a locally-picked file needs this DOM approximation of
+                                // the text overlay — a server-generated preview (no pending
+                                // local file) already has it baked into the image pixels.
+                                if *overlay_type.read() == "text" && pending_image_bytes.read().is_some() {
                                     div {
                                         style: "position:absolute;left:10.4%;right:10%;top:50%;transform:translateY(-50%);color:white;font-size:{pending_preview_font_size}px;font-weight:700;line-height:1.08;pointer-events:none;text-shadow:0 2px 12px rgba(0,0,0,.6);overflow-wrap:anywhere",
                                         "{pending_preview_label}"
@@ -1040,18 +1042,11 @@ pub fn CollectionForm(
                         } else if let Some(url) = &current_image_url {
                             if *has_image.read() {
                                 {
-                                    let bust = *image_bust.read();
-                                    let src = if bust > 0 {
-                                        let sep = if url.contains('?') { '&' } else { '?' };
-                                        format!("{url}{sep}_cb={bust}")
-                                    } else {
-                                        url.clone()
-                                    };
                                     let is_previewing = *previewing.read();
                                     rsx! {
                                         div { style: "position:relative",
                                             img {
-                                                src: "{src}",
+                                                src: "{url}",
                                                 style: "width:100%;max-height:180px;object-fit:cover;border-radius:6px;border:1px solid var(--border);display:block",
                                                 onload: move |_| previewing.set(false),
                                                 onerror: move |_| {
@@ -1170,45 +1165,38 @@ pub fn CollectionForm(
                                                     _ => CollectionOverlay::None,
                                                 },
                                             };
-                                            let pending_image = pending_image_bytes.peek().clone();
+                                            // A locally-picked file already renders live from an
+                                            // in-browser data URL (see the file input's onchange
+                                            // below) with no server round-trip — nothing to do here.
+                                            // This button must never PATCH/upload anything; only the
+                                            // real Save action persists changes.
+                                            if pending_image_bytes
+                                                .peek()
+                                                .is_some()
+                                            {
+                                                return;
+                                            }
                                             previewing.set(true);
                                             let client = client.clone();
                                             let id = id.clone();
                                             spawn(async move {
                                                 match client
-                                                    .execute(PatchItem {
-                                                        item_id: id.clone(),
-                                                        payload: PatchItemPayload {
+                                                    .execute(remux_sdks::remux::PreviewCollectionImage {
+                                                        item_id: id,
+                                                        payload: remux_sdks::remux::PreviewCollectionImagePayload {
+                                                            image_config: cfg,
                                                             smart_filter,
-                                                            image_config: Some(cfg),
-                                                            ..Default::default()
                                                         },
                                                     })
                                                     .await
                                                 {
-                                                    Ok(_) => {
-                                                        if let Some(bytes) = pending_image {
-                                                            let content_type = crate::state::detect_image_content_type(&bytes);
-                                                            if let Err(e) = client
-                                                                .execute(remux_sdks::remux::UploadItemImage {
-                                                                    item_id: id,
-                                                                    image_type: "Primary".to_string(),
-                                                                    bytes,
-                                                                    content_type,
-                                                                })
-                                                                .await
-                                                            {
-                                                                err.set(Some(e.user_message()));
-                                                                previewing.set(false);
-                                                                return;
-                                                            }
-                                                            pending_image_bytes.set(None);
-                                                            pending_image_preview.set(None);
-                                                            has_image.set(true);
-                                                            has_custom_image_source.set(true);
-                                                        }
-                                                        let next = *image_bust.read() + 1;
-                                                        image_bust.set(next);
+                                                    Ok(resp) => {
+                                                        let data_url = format!(
+                                                            "data:{};base64,{}",
+                                                            resp.content_type, resp.data
+                                                        );
+                                                        pending_image_preview.set(Some(data_url));
+                                                        previewing.set(false);
                                                     }
                                                     Err(e) => {
                                                         err.set(Some(e.user_message()));

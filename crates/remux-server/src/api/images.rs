@@ -1,4 +1,5 @@
 use axum::{
+    Json,
     extract::{Path, State},
     http::{StatusCode, header},
     response::IntoResponse,
@@ -11,6 +12,7 @@ use uuid::Uuid;
 use crate::{
     AppState, OptionExt, ResultExt, api, db,
     db::{ImageKind, auth},
+    sdks,
     services::image::{ImageProcessOptions, ImageService},
 };
 use axum_anyhow::ApiResult as Result;
@@ -342,6 +344,52 @@ pub async fn items_images_indexed(
     Query(q): Query<api::ImageQuery>,
 ) -> Result<impl IntoResponse> {
     items_images_inner(state, id, image_type, q).await
+}
+
+/// Render a collection's generated image from draft, unsaved config — nothing
+/// is written to disk or the DB. Lets the dashboard's "Update preview" show
+/// what a config/filter change would produce without persisting it; only the
+/// real Save action (`PATCH /items/{id}`) commits anything.
+#[post("/items/{id}/imagepreview")]
+pub async fn preview_collection_image(
+    State(state): State<AppState>,
+    _session: auth::AdminSession,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<sdks::remux::PreviewCollectionImagePayload>,
+) -> Result<impl IntoResponse> {
+    let media = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &id,
+    )
+    .await?
+    .context_not_found("item not found")?;
+
+    let (bytes, content_type) = ImageService::generate_preview(
+        id,
+        &media.title,
+        &state
+            .ctx
+            .db,
+        &payload.image_config,
+        payload
+            .smart_filter
+            .as_ref(),
+    )
+    .await
+    .context_internal("failed to generate preview")?;
+
+    // The dashboard SDK client always reads responses as JSON text (see
+    // Client::execute_arc), so raw image bytes can't go back as the body —
+    // base64-envelope them instead. The dashboard turns this straight back
+    // into a `data:` URL, matching the format its local-file picker already
+    // produces client-side.
+    use base64::Engine;
+    Ok(axum::Json(api::CollectionImagePreviewResponse {
+        content_type: content_type.to_string(),
+        data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+    }))
 }
 
 // --- POST (upload) ---
