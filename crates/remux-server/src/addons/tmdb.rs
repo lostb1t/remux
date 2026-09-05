@@ -402,6 +402,7 @@ impl MetricsAddon for TmdbAddon {
                 .execute(sdks::tmdb::MovieEndpoint {
                     id: tmdb_id,
                     language: None,
+                    include_image_language: None,
                     append_to_response: vec![],
                 })
                 .await
@@ -412,6 +413,7 @@ impl MetricsAddon for TmdbAddon {
                 .execute(sdks::tmdb::SeriesEndpoint {
                     id: tmdb_id,
                     language: None,
+                    include_image_language: None,
                     append_to_response: vec![],
                 })
                 .await
@@ -1989,6 +1991,74 @@ async fn search_tmdb_series(
 // Remote images
 // ---------------------------------------------------------------------------
 
+fn map_remote_image(
+    type_label: &str,
+    entry: &sdks::tmdb::ImageEntry,
+) -> api::RemoteImageInfo {
+    let url = format!("https://image.tmdb.org/t/p/original{}", entry.file_path);
+    let thumb = format!("https://image.tmdb.org/t/p/w300{}", entry.file_path);
+    api::RemoteImageInfo {
+        provider_name: Some("TheMovieDb".to_string()),
+        url: Some(url),
+        thumbnail_url: Some(thumb),
+        type_: Some(type_label.to_string()),
+        width: entry.width,
+        height: entry.height,
+    }
+}
+
+fn extend_from_tmdb_images(
+    out: &mut Vec<api::RemoteImageInfo>,
+    images: &sdks::tmdb::Images,
+) {
+    out.extend(
+        images
+            .backdrops
+            .iter()
+            .filter(|entry| {
+                entry
+                    .iso_639_1
+                    .is_none()
+            })
+            .map(|entry| map_remote_image("Backdrop", entry)),
+    );
+    out.extend(
+        images
+            .posters
+            .iter()
+            .map(|entry| map_remote_image("Primary", entry)),
+    );
+    out.extend(
+        images
+            .logos
+            .iter()
+            .map(|entry| map_remote_image("Logo", entry)),
+    );
+    out.extend(
+        images
+            .stills
+            .iter()
+            .filter(|entry| {
+                entry
+                    .iso_639_1
+                    .is_none()
+            })
+            .map(|entry| map_remote_image("Backdrop", entry)),
+    );
+    out.extend(
+        images
+            .stills
+            .iter()
+            .map(|entry| map_remote_image("Screenshot", entry)),
+    );
+    out.extend(
+        images
+            .stills
+            .iter()
+            .map(|entry| map_remote_image("Thumb", entry)),
+    );
+}
+
 async fn tmdb_remote_images(
     ctx: &AppContext,
     media: &db::Media,
@@ -2003,64 +2073,6 @@ async fn tmdb_remote_images(
         &ctx.config
             .tmdb_base_url,
     )?;
-
-    fn map_image(
-        type_label: &str,
-        entry: &sdks::tmdb::ImageEntry,
-    ) -> api::RemoteImageInfo {
-        let url = format!("https://image.tmdb.org/t/p/original{}", entry.file_path);
-        let thumb = format!("https://image.tmdb.org/t/p/w300{}", entry.file_path);
-        api::RemoteImageInfo {
-            provider_name: Some("TheMovieDb".to_string()),
-            url: Some(url),
-            thumbnail_url: Some(thumb),
-            type_: Some(type_label.to_string()),
-            width: entry.width,
-            height: entry.height,
-        }
-    }
-
-    fn extend_from_images(
-        out: &mut Vec<api::RemoteImageInfo>,
-        images: &sdks::tmdb::Images,
-    ) {
-        out.extend(
-            images
-                .backdrops
-                .iter()
-                .map(|e| map_image("Backdrop", e)),
-        );
-        out.extend(
-            images
-                .posters
-                .iter()
-                .map(|e| map_image("Primary", e)),
-        );
-        out.extend(
-            images
-                .logos
-                .iter()
-                .map(|e| map_image("Logo", e)),
-        );
-        out.extend(
-            images
-                .stills
-                .iter()
-                .map(|e| map_image("Backdrop", e)),
-        );
-        out.extend(
-            images
-                .stills
-                .iter()
-                .map(|e| map_image("Screenshot", e)),
-        );
-        out.extend(
-            images
-                .stills
-                .iter()
-                .map(|e| map_image("Thumb", e)),
-        );
-    }
 
     let mut out = Vec::new();
 
@@ -2093,11 +2105,12 @@ async fn tmdb_remote_images(
                                 .preferred_metadata_language
                                 .clone(),
                         )
+                        .with_image_languages("null")
                         .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
                 if let Some(images) = &movie.images {
-                    extend_from_images(&mut out, images);
+                    extend_from_tmdb_images(&mut out, images);
                 }
                 if out
                     .iter()
@@ -2175,11 +2188,12 @@ async fn tmdb_remote_images(
                                 .preferred_metadata_language
                                 .clone(),
                         )
+                        .with_image_languages("null")
                         .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
                 if let Some(images) = &tv.images {
-                    extend_from_images(&mut out, images);
+                    extend_from_tmdb_images(&mut out, images);
                 }
             }
         }
@@ -2199,6 +2213,7 @@ async fn tmdb_remote_images(
                                 .preferred_metadata_language
                                 .clone(),
                         )
+                        .with_image_languages("null")
                         .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
@@ -2209,7 +2224,7 @@ async fn tmdb_remote_images(
                             .as_ref()
                     })
                 {
-                    extend_from_images(&mut out, images);
+                    extend_from_tmdb_images(&mut out, images);
                 }
                 if out
                     .iter()
@@ -2260,4 +2275,79 @@ async fn tmdb_remote_images(
     }
 
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use remux_sdks::Endpoint;
+
+    fn image_entry(path: &str, language: Option<&str>) -> sdks::tmdb::ImageEntry {
+        sdks::tmdb::ImageEntry {
+            file_path: path.to_string(),
+            iso_639_1: language.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn remote_backdrops_only_include_language_neutral_images() {
+        let images = sdks::tmdb::Images {
+            backdrops: vec![
+                image_entry("/neutral.jpg", None),
+                image_entry("/localized.jpg", Some("en")),
+            ],
+            posters: vec![image_entry("/poster.jpg", Some("en"))],
+            ..Default::default()
+        };
+        let mut remote_images = Vec::new();
+
+        extend_from_tmdb_images(&mut remote_images, &images);
+
+        let backdrop_urls = remote_images
+            .iter()
+            .filter(|image| {
+                image
+                    .type_
+                    .as_deref()
+                    == Some("Backdrop")
+            })
+            .filter_map(|image| {
+                image
+                    .url
+                    .as_deref()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            backdrop_urls,
+            ["https://image.tmdb.org/t/p/original/neutral.jpg"]
+        );
+        assert!(
+            remote_images
+                .iter()
+                .any(|image| image
+                    .type_
+                    .as_deref()
+                    == Some("Primary"))
+        );
+    }
+
+    #[test]
+    fn remote_image_queries_request_language_neutral_images() {
+        let movie_query = sdks::tmdb::MovieEndpoint::new(1, Some("nl-NL".to_string()))
+            .with_image_languages("null")
+            .query();
+        let series_query =
+            sdks::tmdb::SeriesEndpoint::new(1, Some("nl-NL".to_string()))
+                .with_image_languages("null")
+                .query();
+        let episode_query =
+            sdks::tmdb::EpisodeEndpoint::new(1, 1, 1, Some("nl-NL".to_string()))
+                .with_image_languages("null")
+                .query();
+
+        for query in [movie_query, series_query, episode_query] {
+            assert!(query.contains(&("include_image_language".into(), "null".into())));
+        }
+    }
 }
