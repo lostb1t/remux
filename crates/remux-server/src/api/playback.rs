@@ -1055,6 +1055,9 @@ async fn videos_stream_inner(
         encoding_preset: encoding_opts.encoding_preset,
         source_video_codec,
         source_audio_codec,
+        hevc_copy_tag: q
+            .video_codec_tag
+            .clone(),
         accelerator: hw_accel::from_encoding_opts(&encoding_opts),
         source_video_range_type,
         enable_tonemapping: encoding_opts

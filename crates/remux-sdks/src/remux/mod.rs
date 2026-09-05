@@ -1736,6 +1736,9 @@ pub struct VideoStreamQuery {
     pub device_id: Option<String>,
     pub audio_codec: Option<String>,
     pub video_codec: Option<String>,
+    /// Sample-entry fourcc for an HEVC stream copy (`hvc1`/`hev1`), resolved
+    /// from the client's DeviceProfile at PlaybackInfo time.
+    pub video_codec_tag: Option<String>,
     pub video_bit_rate: Option<i64>,
     pub audio_bit_rate: Option<i64>,
     pub audio_channels: Option<i64>,
@@ -4513,6 +4516,10 @@ pub struct HlsVideoQuery {
     #[serde(alias = "mediaSourceId")]
     pub media_source_id: Option<Uuid>,
     pub video_codec: Option<String>,
+    /// Sample-entry fourcc for an HEVC stream copy (`hvc1`/`hev1`), resolved
+    /// from the client's DeviceProfile at PlaybackInfo time and carried here
+    /// because the profile isn't available on this request.
+    pub video_codec_tag: Option<String>,
     pub audio_codec: Option<String>,
     pub segment_length: Option<i32>,
     pub start_time_ticks: Option<i64>,
