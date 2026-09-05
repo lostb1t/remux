@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788511265496,
+  "lastUpdate": 1788591969763,
   "repoUrl": "https://github.com/lostb1t/remux",
   "entries": {
     "Benchmark": [
@@ -1767,6 +1767,142 @@ window.BENCHMARK_DATA = {
             "name": "nextup_date_cutoff/30days",
             "value": 69080635,
             "range": "± 4996972",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "lostbit",
+            "username": "lostb1t",
+            "email": "coding-mosses0z@icloud.com"
+          },
+          "committer": {
+            "name": "lostbit",
+            "username": "lostb1t",
+            "email": "coding-mosses0z@icloud.com"
+          },
+          "id": "b473cc15279e615cfbcb3b3c2467d0f3480edfa4",
+          "message": "ci: fix invalid matrix context reference that broke PR Docker entirely\n\nPrevious commit (ff7479ba) gated build-server's macOS legs with a\njob-level `if: inputs.desktop || matrix.os_name == 'linux'` — job-level\nif can't reference the matrix context (only github/inputs/needs/vars\nare available there), so GitHub rejected the whole workflow file at\ndispatch time with zero jobs created.\n\nMoved the desktop/docker-only split into the matrix data itself via a\nsmall server-targets job that computes build-server's `include` list\nwith jq before the matrix fans out, so the macOS legs are excluded\noutright for docker-only builds instead of conditioned on per-leg.\nValidated both workflow files with actionlint this time.",
+          "timestamp": "2026-09-04T19:43:43Z",
+          "url": "https://github.com/lostb1t/remux/commit/b473cc15279e615cfbcb3b3c2467d0f3480edfa4"
+        },
+        "date": 1788591967919,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "items_latest/limit=20&recursive=false",
+            "value": 220230563,
+            "range": "± 13793523",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&recursive=false",
+            "value": 232242860,
+            "range": "± 14663877",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=500&recursive=false",
+            "value": 274948453,
+            "range": "± 13692184",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&include_item_types=Movie&recursive=false",
+            "value": 72590667,
+            "range": "± 6082233",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&include_item_types=Series&recursive=false",
+            "value": 103717873,
+            "range": "± 13473154",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=20&recursive=false",
+            "value": 141387666,
+            "range": "± 14886424",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&recursive=false",
+            "value": 132404889,
+            "range": "± 8889890",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=500&recursive=false",
+            "value": 158455448,
+            "range": "± 11044602",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&include_item_types=Movie&recursive=false",
+            "value": 127762473,
+            "range": "± 4352863",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&include_item_types=Series&recursive=false",
+            "value": 179543676,
+            "range": "± 8888884",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&filters=IsPlayed&recursive=false",
+            "value": 76655925,
+            "range": "± 5601445",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&sort_by=DateCreated&recursive=false",
+            "value": 232702598,
+            "range": "± 7625790",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=50&recursive=false",
+            "value": 233790214,
+            "range": "± 8554621",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=200&recursive=false",
+            "value": 218827611,
+            "range": "± 8098636",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=500&recursive=false",
+            "value": 224727118,
+            "range": "± 8509925",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/limit=500&enable_resumable=true&recursive=false",
+            "value": 223653551,
+            "range": "± 10678390",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/limit=500&enable_resumable=false&recursive=false",
+            "value": 226608577,
+            "range": "± 10092232",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/epoch",
+            "value": 220869649,
+            "range": "± 8700850",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/30days",
+            "value": 68677201,
+            "range": "± 5210839",
             "unit": "ns/iter"
           }
         ]
