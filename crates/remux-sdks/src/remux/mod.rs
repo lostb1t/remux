@@ -6686,8 +6686,11 @@ pub struct RefreshItemQuery {
 /// `GET /remux/watch-providers`
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WatchProviderItem {
+    #[serde(rename = "provider_id", alias = "providerId")]
     pub provider_id: i64,
+    #[serde(rename = "provider_name", alias = "providerName")]
     pub provider_name: String,
+    #[serde(rename = "logo_path", alias = "logoPath")]
     pub logo_path: Option<String>,
 }
 

@@ -26,9 +26,6 @@ const OVERLAY_ALPHA: f32 = 0x78 as f32 / 255.0;
 /// Maximum text width as a fraction of image width before scaling down.
 const MAX_TEXT_FRACTION: f32 = 0.90;
 
-/// TMDB image base URL for logo downloads.
-const TMDB_IMAGE_BASE: &str = "https://image.tmdb.org/t/p/w300";
-
 /// Standard poster dimensions (2:3 ratio) used in fan layout.
 const POSTER_W: u32 = 190;
 const POSTER_H: u32 = 285;
@@ -44,7 +41,7 @@ const GRID_POSTER_H: u32 = 241;
 const GRID_GUTTER: u32 = 10;
 
 /// Inset for text overlays, so copy does not sit flush with the image edge.
-const TEXT_LEFT_MARGIN: i32 = 100;
+const TEXT_LEFT_MARGIN: i32 = 115;
 
 /// Side of the square buffer used for rotation (must exceed sqrt(POSTER_W²+POSTER_H²) ≈ 342).
 const ROTATION_CANVAS: u32 = 380;
@@ -67,6 +64,127 @@ static FONT_MERRIWEATHER: &[u8] = include_bytes!("../../assets/fonts/Merriweathe
 static FONT_PLAYFAIR_DISPLAY: &[u8] =
     include_bytes!("../../assets/fonts/PlayfairDisplay.ttf");
 static FONT_BEBAS_NEUE: &[u8] = include_bytes!("../../assets/fonts/BebasNeue.ttf");
+static PROVIDER_LOGO_NETFLIX: &[u8] =
+    include_bytes!("../../assets/provider-logos/netflix.png");
+static PROVIDER_LOGO_PRIME_VIDEO: &[u8] =
+    include_bytes!("../../assets/provider-logos/prime-video.png");
+static PROVIDER_LOGO_DISNEY_PLUS: &[u8] =
+    include_bytes!("../../assets/provider-logos/disney-plus.png");
+static PROVIDER_LOGO_MAX: &[u8] = include_bytes!("../../assets/provider-logos/max.png");
+static PROVIDER_LOGO_HULU: &[u8] =
+    include_bytes!("../../assets/provider-logos/hulu.png");
+static PROVIDER_LOGO_PARAMOUNT_PLUS: &[u8] =
+    include_bytes!("../../assets/provider-logos/paramount-plus.png");
+static PROVIDER_LOGO_CRUNCHYROLL: &[u8] =
+    include_bytes!("../../assets/provider-logos/crunchyroll.png");
+static PROVIDER_LOGO_APPLE_TV: &[u8] =
+    include_bytes!("../../assets/provider-logos/apple-tv.png");
+static PROVIDER_LOGO_VIAPLAY: &[u8] =
+    include_bytes!("../../assets/provider-logos/viaplay.png");
+static PROVIDER_LOGO_SKYSHOWTIME: &[u8] =
+    include_bytes!("../../assets/provider-logos/skyshowtime.png");
+static PROVIDER_LOGO_PEACOCK: &[u8] =
+    include_bytes!("../../assets/provider-logos/peacock.png");
+static PROVIDER_LOGO_MUBI: &[u8] =
+    include_bytes!("../../assets/provider-logos/mubi.png");
+static PROVIDER_LOGO_PLUTO_TV: &[u8] =
+    include_bytes!("../../assets/provider-logos/pluto-tv.png");
+static PROVIDER_LOGO_YOUTUBE: &[u8] =
+    include_bytes!("../../assets/provider-logos/youtube.png");
+// Transparent wordmarks sourced from Wikimedia Commons (see
+// assets/provider-logos/commons/original/ for the full downloaded catalog
+// and its raw imageinfo). Only assets that are genuinely alpha-transparent —
+// verified by inspection, not just declared PNG — are curated here; TMDB's
+// own logo tiles are opaque and are never used as a fallback.
+static PROVIDER_LOGO_AMC_PLUS: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/amc-plus.png");
+static PROVIDER_LOGO_ADN: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/adn.png");
+static PROVIDER_LOGO_FUNIMATION_NOW: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/funimation-now.png");
+static PROVIDER_LOGO_ILLICO_PLUS: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/illico-plus.png");
+static PROVIDER_LOGO_SKY_MAIS: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/sky-mais.png");
+static PROVIDER_LOGO_C_MORE: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/c-more.png");
+static PROVIDER_LOGO_FOXTEL_NOW: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/foxtel-now.png");
+static PROVIDER_LOGO_JIOHOTSTAR: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/jiohotstar.png");
+static PROVIDER_LOGO_WETV: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/wetv.png");
+static PROVIDER_LOGO_CHORKI: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/chorki.png");
+static PROVIDER_LOGO_TVP_VOD: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/tvp-vod.png");
+static PROVIDER_LOGO_KWELITV: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/kwelitv.png");
+static PROVIDER_LOGO_VIDIO: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/vidio.png");
+static PROVIDER_LOGO_VIVAMAX: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/vivamax.png");
+static PROVIDER_LOGO_RUUTU: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/ruutu.png");
+static PROVIDER_LOGO_SAMSUNG_TV_PLUS: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/samsung-tv-plus.png");
+static PROVIDER_LOGO_CRAFTSY: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/craftsy.png");
+static PROVIDER_LOGO_MX_PLAYER: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/mx-player.png");
+static PROVIDER_LOGO_AXN_NOW: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/axn-now.png");
+static PROVIDER_LOGO_CLARO_VIDEO: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/claro-video.png");
+static PROVIDER_LOGO_DIMSUM: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/dimsum.png");
+static PROVIDER_LOGO_CATCHPLAY: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/catchplay.png");
+static PROVIDER_LOGO_FANATIZ: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/fanatiz.png");
+static PROVIDER_LOGO_MOVISTAR_PLUS: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/movistar-plus.png");
+static PROVIDER_LOGO_DISCOVERY_PLUS: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/discovery-plus.png");
+static PROVIDER_LOGO_KOCOWA: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/kocowa.png");
+static PROVIDER_LOGO_TOKU: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/toku.png");
+static PROVIDER_LOGO_WATCHA: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/watcha.png");
+static PROVIDER_LOGO_WAKANIM: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/wakanim.png");
+static PROVIDER_LOGO_DPLAY: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/dplay.png");
+static PROVIDER_LOGO_FILMDOO: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/filmdoo.png");
+static PROVIDER_LOGO_GLOBOPLAY: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/globoplay.png");
+static PROVIDER_LOGO_MTV_KATSOMO: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/mtv-katsomo.png");
+static PROVIDER_LOGO_U_NEXT: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/u-next.png");
+static PROVIDER_LOGO_RCTI_PLUS: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/rcti-plus.png");
+static PROVIDER_LOGO_NFL_PLUS: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/nfl-plus.png");
+static PROVIDER_LOGO_NASA_PLUS: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/nasa-plus.png");
+static PROVIDER_LOGO_IWANTTFC: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/iwanttfc.png");
+static PROVIDER_LOGO_KAPAMILYA_ONLINE_LIVE: &[u8] = include_bytes!(
+    "../../assets/provider-logos/commons/curated/kapamilya-online-live.png"
+);
+static PROVIDER_LOGO_HAYU: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/hayu.png");
+static PROVIDER_LOGO_WATCH_IT: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/watch-it.png");
+static PROVIDER_LOGO_STAN: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/stan.png");
+static PROVIDER_LOGO_SHUDDER: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/shudder.png");
+static PROVIDER_LOGO_ROXI: &[u8] =
+    include_bytes!("../../assets/provider-logos/commons/curated/roxi.png");
 
 #[allow(clippy::incompatible_msrv)]
 static HTTP_CLIENT: std::sync::LazyLock<reqwest::Client> =
@@ -498,27 +616,13 @@ impl ImageService {
         let posters =
             Self::load_poster_images(&poster_urls, poster_limit as usize).await;
 
-        // Pre-fetch streaming logo (async) so the blocking closure has it ready.
+        // Bundled provider wordmarks are transparent and avoid TMDB's opaque app tiles.
         let logo_image: Option<RgbaImage> = match config
             .as_ref()
             .map(|c| &c.overlay)
         {
-            Some(CollectionOverlay::StreamingLogo {
-                logo_path: Some(path),
-                ..
-            }) => {
-                let url = format!("{TMDB_IMAGE_BASE}{path}");
-                async {
-                    let bytes = HTTP_CLIENT
-                        .get(&url)
-                        .send()
-                        .await?
-                        .bytes()
-                        .await?;
-                    anyhow::Ok(image::load_from_memory(&bytes)?.into_rgba8())
-                }
-                .await
-                .ok()
+            Some(CollectionOverlay::StreamingLogo { provider_name, .. }) => {
+                provider_wordmark(provider_name.as_deref())
             }
             _ => None,
         };
@@ -1075,10 +1179,11 @@ fn apply_overlay_sync(
                 );
             }
         }
-        CollectionOverlay::StreamingLogo { provider_name, .. } => {
+        CollectionOverlay::StreamingLogo { .. } => {
             if let Some(logo) = logo_image {
                 let max_logo_h = OUT_H / 3;
-                let max_logo_w = OUT_W / 3;
+                let max_logo_w =
+                    (TEXT_AREA_END - TEXT_LEFT_MARGIN as u32).min(OUT_W / 3);
                 let scale = (max_logo_h as f32 / logo.height() as f32)
                     .min(max_logo_w as f32 / logo.width() as f32);
                 let lw = (logo.width() as f32 * scale) as u32;
@@ -1089,35 +1194,83 @@ fn apply_overlay_sync(
                     lh,
                     image::imageops::FilterType::Lanczos3,
                 );
-                let margin = 20i64;
-                let lx = OUT_W as i64 - lw as i64 - margin;
-                let ly = OUT_H as i64 - lh as i64 - margin;
+                let lx = TEXT_LEFT_MARGIN as i64;
+                let ly = (OUT_H.saturating_sub(lh) / 2) as i64;
                 image::imageops::overlay(canvas, &scaled, lx, ly);
-            } else {
-                let label = provider_name
-                    .as_deref()
-                    .unwrap_or("Streaming");
-                let font = FontRef::try_from_slice(FONT_BOLD)
-                    .map_err(|e| anyhow::anyhow!("font: {e:?}"))?;
-                let scale = PxScale::from(60.0);
-                let tw = measure_text_width(&font, scale, label);
-                let sf = font.as_scaled(scale);
-                let th = sf.ascent() - sf.descent();
-                let x = ((OUT_W as f32 - tw) / 2.0) as i32;
-                let y = ((OUT_H as f32 - th) / 2.0) as i32;
-                draw_text_mut(
-                    canvas,
-                    Rgba([255, 255, 255, 255]),
-                    x,
-                    y,
-                    scale,
-                    &font,
-                    label,
-                );
             }
         }
     }
     Ok(())
+}
+
+fn provider_wordmark(provider_name: Option<&str>) -> Option<RgbaImage> {
+    let bytes = match provider_name?
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "netflix" => PROVIDER_LOGO_NETFLIX,
+        "amazon prime video" | "prime video" => PROVIDER_LOGO_PRIME_VIDEO,
+        "disney plus" | "disney+" => PROVIDER_LOGO_DISNEY_PLUS,
+        "max" | "hbo max" => PROVIDER_LOGO_MAX,
+        "hulu" => PROVIDER_LOGO_HULU,
+        "paramount plus" | "paramount+" => PROVIDER_LOGO_PARAMOUNT_PLUS,
+        "crunchyroll" => PROVIDER_LOGO_CRUNCHYROLL,
+        "apple tv plus" | "apple tv+" | "apple tv" => PROVIDER_LOGO_APPLE_TV,
+        "viaplay" => PROVIDER_LOGO_VIAPLAY,
+        "skyshowtime" => PROVIDER_LOGO_SKYSHOWTIME,
+        "peacock" => PROVIDER_LOGO_PEACOCK,
+        "mubi" => PROVIDER_LOGO_MUBI,
+        "pluto tv" => PROVIDER_LOGO_PLUTO_TV,
+        "youtube" | "youtube premium" => PROVIDER_LOGO_YOUTUBE,
+        "amc+" | "amc plus" => PROVIDER_LOGO_AMC_PLUS,
+        "adn" | "animation digital network" => PROVIDER_LOGO_ADN,
+        "funimation now" | "funimation" => PROVIDER_LOGO_FUNIMATION_NOW,
+        "illico+" | "illico plus" => PROVIDER_LOGO_ILLICO_PLUS,
+        "sky mais" | "skymais" => PROVIDER_LOGO_SKY_MAIS,
+        "c more" | "cmore" => PROVIDER_LOGO_C_MORE,
+        "foxtel now" => PROVIDER_LOGO_FOXTEL_NOW,
+        "jiohotstar" => PROVIDER_LOGO_JIOHOTSTAR,
+        "wetv" => PROVIDER_LOGO_WETV,
+        "chorki" => PROVIDER_LOGO_CHORKI,
+        "tvp vod" => PROVIDER_LOGO_TVP_VOD,
+        "kwelitv" => PROVIDER_LOGO_KWELITV,
+        "vidio" => PROVIDER_LOGO_VIDIO,
+        "vivamax" => PROVIDER_LOGO_VIVAMAX,
+        "ruutu" => PROVIDER_LOGO_RUUTU,
+        "samsung tv plus" => PROVIDER_LOGO_SAMSUNG_TV_PLUS,
+        "craftsy" => PROVIDER_LOGO_CRAFTSY,
+        "mx player" => PROVIDER_LOGO_MX_PLAYER,
+        "axn now" | "axnnow" => PROVIDER_LOGO_AXN_NOW,
+        "claro video" => PROVIDER_LOGO_CLARO_VIDEO,
+        "dimsum" => PROVIDER_LOGO_DIMSUM,
+        "catchplay+" | "catchplay" => PROVIDER_LOGO_CATCHPLAY,
+        "fanatiz" => PROVIDER_LOGO_FANATIZ,
+        "movistar plus+" | "movistar+" | "movistar plus" => PROVIDER_LOGO_MOVISTAR_PLUS,
+        "discovery+" | "discovery plus" => PROVIDER_LOGO_DISCOVERY_PLUS,
+        "kocowa" => PROVIDER_LOGO_KOCOWA,
+        "toku" => PROVIDER_LOGO_TOKU,
+        "watcha" => PROVIDER_LOGO_WATCHA,
+        "wakanim" => PROVIDER_LOGO_WAKANIM,
+        "dplay" => PROVIDER_LOGO_DPLAY,
+        "filmdoo" => PROVIDER_LOGO_FILMDOO,
+        "globoplay" => PROVIDER_LOGO_GLOBOPLAY,
+        "mtv katsomo" => PROVIDER_LOGO_MTV_KATSOMO,
+        "u-next" | "unext" => PROVIDER_LOGO_U_NEXT,
+        "rcti+" | "rcti plus" => PROVIDER_LOGO_RCTI_PLUS,
+        "nfl+" | "nfl plus" => PROVIDER_LOGO_NFL_PLUS,
+        "nasa+" | "nasa plus" => PROVIDER_LOGO_NASA_PLUS,
+        "iwanttfc" | "iwant" => PROVIDER_LOGO_IWANTTFC,
+        "kapamilya online live" => PROVIDER_LOGO_KAPAMILYA_ONLINE_LIVE,
+        "hayu" => PROVIDER_LOGO_HAYU,
+        "watch it" => PROVIDER_LOGO_WATCH_IT,
+        "stan" => PROVIDER_LOGO_STAN,
+        "shudder" => PROVIDER_LOGO_SHUDDER,
+        "roxi" => PROVIDER_LOGO_ROXI,
+        _ => return None,
+    };
+    image::load_from_memory(bytes)
+        .ok()
+        .map(|image| image.into_rgba8())
 }
 
 /// Break `text` into lines where each line fits within `max_w` pixels at `scale`.
@@ -1369,5 +1522,25 @@ mod tests {
         let result = apply_sizing(source, &opts);
 
         assert_eq!((result.width(), result.height()), (1170, 657));
+    }
+
+    #[test]
+    fn missing_streaming_logo_does_not_render_placeholder_text() {
+        let mut canvas = RgbaImage::from_pixel(OUT_W, OUT_H, Rgba([18, 18, 22, 255]));
+        let expected = canvas.clone();
+
+        apply_overlay_sync(
+            &mut canvas,
+            &CollectionOverlay::StreamingLogo {
+                provider_id: 0,
+                provider_name: None,
+                logo_path: None,
+            },
+            "Collection",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(canvas, expected);
     }
 }

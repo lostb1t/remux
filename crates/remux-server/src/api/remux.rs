@@ -15,13 +15,15 @@ use crate::{
     AppState, OptionExt,
     common::tmdb_client,
     db::{self, auth},
-    sdks,
+    sdks::{self, CachedEndpoint},
     services::image::ImageService,
 };
 use axum_anyhow::ApiResult as Result;
 use uuid::Uuid;
 
 const CACHE_KEY_PREFIX: &str = "remux:cache:";
+const WATCH_PROVIDERS_CACHE_TTL: std::time::Duration =
+    std::time::Duration::from_secs(72 * 60 * 60);
 
 #[query]
 #[derive(Debug, Default)]
@@ -672,7 +674,6 @@ pub async fn remux_meta(
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct WatchProviderDto {
     pub provider_id: i64,
     pub provider_name: String,
@@ -696,20 +697,22 @@ pub async fn get_watch_providers(
             .db,
         &tmdb_base,
     )
-    .await;
+    .await
+    .ok_or_else(|| anyhow::anyhow!("TMDB client is unavailable"))?;
 
-    let providers = if let Some(client) = client {
-        client
-            .execute(sdks::tmdb::AllMovieWatchProvidersEndpoint {
+    let providers = client
+        .execute(
+            sdks::tmdb::AllMovieWatchProvidersEndpoint {
                 language: Some("en-US".to_string()),
                 watch_region: None,
-            })
-            .await
-            .map(|r| r.results)
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+            }
+            .with_cache(WATCH_PROVIDERS_CACHE_TTL),
+        )
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!("failed to fetch TMDB watch providers: {error}")
+        })?
+        .results;
 
     let mut dtos: Vec<WatchProviderDto> = providers
         .into_iter()

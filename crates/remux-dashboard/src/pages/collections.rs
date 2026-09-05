@@ -15,6 +15,98 @@ fn is_group_container(item: &BaseItemDto) -> bool {
         == Some(&CollectionType::Boxsets)
 }
 
+// Keep in sync with `provider_wordmark()` in
+// crates/remux-server/src/services/image.rs — this must accept exactly the
+// names that function can actually render a logo for, or the picker would
+// offer providers whose logo silently never appears.
+fn has_transparent_provider_wordmark(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase()
+            .as_str(),
+        "netflix"
+            | "amazon prime video"
+            | "prime video"
+            | "disney plus"
+            | "disney+"
+            | "max"
+            | "hbo max"
+            | "hulu"
+            | "paramount plus"
+            | "paramount+"
+            | "crunchyroll"
+            | "apple tv plus"
+            | "apple tv+"
+            | "apple tv"
+            | "viaplay"
+            | "skyshowtime"
+            | "peacock"
+            | "mubi"
+            | "pluto tv"
+            | "youtube"
+            | "youtube premium"
+            | "amc+"
+            | "amc plus"
+            | "adn"
+            | "animation digital network"
+            | "funimation now"
+            | "funimation"
+            | "illico+"
+            | "illico plus"
+            | "sky mais"
+            | "skymais"
+            | "c more"
+            | "cmore"
+            | "foxtel now"
+            | "jiohotstar"
+            | "wetv"
+            | "chorki"
+            | "tvp vod"
+            | "kwelitv"
+            | "vidio"
+            | "vivamax"
+            | "ruutu"
+            | "samsung tv plus"
+            | "craftsy"
+            | "mx player"
+            | "axn now"
+            | "axnnow"
+            | "claro video"
+            | "dimsum"
+            | "catchplay+"
+            | "catchplay"
+            | "fanatiz"
+            | "movistar plus+"
+            | "movistar+"
+            | "movistar plus"
+            | "discovery+"
+            | "discovery plus"
+            | "kocowa"
+            | "toku"
+            | "watcha"
+            | "wakanim"
+            | "dplay"
+            | "filmdoo"
+            | "globoplay"
+            | "mtv katsomo"
+            | "u-next"
+            | "unext"
+            | "rcti+"
+            | "rcti plus"
+            | "nfl+"
+            | "nfl plus"
+            | "nasa+"
+            | "nasa plus"
+            | "iwanttfc"
+            | "iwant"
+            | "kapamilya online live"
+            | "hayu"
+            | "watch it"
+            | "stan"
+            | "shudder"
+            | "roxi"
+    )
+}
+
 fn is_promoted(item: &BaseItemDto) -> bool {
     item.remux
         .as_ref()
@@ -525,6 +617,8 @@ pub fn CollectionForm(
     });
     let mut watch_providers: Signal<Vec<WatchProviderItem>> = use_signal(Vec::new);
     let mut providers_loading = use_signal(|| false);
+    let mut providers_loaded = use_signal(|| false);
+    let mut providers_error: Signal<Option<String>> = use_signal(|| None);
     let mut previewing = use_signal(|| false);
     let mut image_bust: Signal<u32> = use_signal(|| 0);
 
@@ -585,6 +679,35 @@ pub fn CollectionForm(
         .unwrap_or_default();
 
     let app_state_providers = app_state.clone();
+    use_effect(move || {
+        if overlay_type
+            .read()
+            .as_str()
+            != "logo"
+            || !watch_providers
+                .read()
+                .is_empty()
+            || *providers_loaded.read()
+            || *providers_loading.read()
+        {
+            return;
+        }
+
+        providers_loading.set(true);
+        providers_error.set(None);
+        let client = app_state_providers.clone();
+        spawn(async move {
+            match client
+                .execute(GetWatchProviders)
+                .await
+            {
+                Ok(providers) => watch_providers.set(providers),
+                Err(error) => providers_error.set(Some(error.user_message())),
+            }
+            providers_loaded.set(true);
+            providers_loading.set(false);
+        });
+    });
     let app_state_preview = app_state.clone();
 
     let on_submit = move |e: Event<FormData>| {
@@ -946,7 +1069,7 @@ pub fn CollectionForm(
                                 }
                             }
                         }
-                        div { style: "display:flex;gap:8px;align-items:center",
+                        div { style: "display:flex;flex-wrap:wrap;gap:8px;align-items:center",
                             label {
                                 class: "btn btn-ghost",
                                 style: "height:30px;font-size:.68rem;padding:0 10px;cursor:pointer",
@@ -981,7 +1104,7 @@ pub fn CollectionForm(
                                 button {
                                     r#type: "button",
                                     class: "btn btn-ghost",
-                                    style: "height:30px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error)",
+                                    style: "height:30px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error);background:rgba(239,68,68,.12)",
                                     onclick: {
                                         let item_id = existing_item_id.clone();
                                         let client = client_for_delete.clone();
@@ -1002,7 +1125,7 @@ pub fn CollectionForm(
                                             });
                                         }
                                     },
-                                    "Remove image"
+                                    "Delete"
                                 }
                             }
                             if let Some(id) = existing_item_id.clone() {
@@ -1015,6 +1138,14 @@ pub fn CollectionForm(
                                         let client = app_state_preview.clone();
                                         move |_| {
                                             let ot = overlay_type.peek().clone();
+                                            let smart_filter = if col_kind.peek().as_str() == "smart" {
+                                                Some(CollectionFilter {
+                                                    match_mode: sf_match.peek().clone(),
+                                                    groups: sf_groups.peek().clone(),
+                                                })
+                                            } else {
+                                                None
+                                            };
                                             let cfg = CollectionImageConfig {
                                                 layout: poster_layout
                                                     .peek()
@@ -1047,6 +1178,7 @@ pub fn CollectionForm(
                                                     .execute(PatchItem {
                                                         item_id: id.clone(),
                                                         payload: PatchItemPayload {
+                                                            smart_filter,
                                                             image_config: Some(cfg),
                                                             ..Default::default()
                                                         },
@@ -1119,20 +1251,6 @@ pub fn CollectionForm(
                         value: "{overlay_type}",
                         onchange: move |e| {
                             let v = e.value();
-                            // Load providers when switching to logo mode
-                            if v == "logo" && watch_providers.read().is_empty() && !*providers_loading.read() {
-                                providers_loading.set(true);
-                                let client = app_state_providers.clone();
-                                spawn(async move {
-                                    if let Ok(providers) = client
-                                        .execute(GetWatchProviders)
-                                        .await
-                                    {
-                                        watch_providers.set(providers);
-                                    }
-                                    providers_loading.set(false);
-                                });
-                            }
                             overlay_type.set(v);
                         },
                         option { value: "none", selected: *overlay_type.read() == "none", "None" }
@@ -1149,10 +1267,10 @@ pub fn CollectionForm(
                                 value: "{overlay_text}",
                                 oninput: move |e| overlay_text.set(e.value()),
                             }
-                            div { style: "display:flex;gap:8px",
+                            div { style: "display:flex;flex-wrap:wrap;gap:8px",
                                 select {
                                     class: "select-input",
-                                    style: "flex:1",
+                                    style: "flex:1 1 160px",
                                     value: "{overlay_font_family}",
                                     onchange: move |e| overlay_font_family.set(e.value()),
                                     option { value: "roboto",           selected: *overlay_font_family.read() == "roboto",           "Roboto" }
@@ -1168,7 +1286,7 @@ pub fn CollectionForm(
                                 }
                                 select {
                                     class: "select-input",
-                                    style: "flex:0 0 96px",
+                                    style: "flex:1 1 96px",
                                     value: "{overlay_font_weight}",
                                     onchange: move |e| overlay_font_weight.set(e.value()),
                                     option { value: "regular", selected: *overlay_font_weight.read() == "regular", "Regular" }
@@ -1176,7 +1294,7 @@ pub fn CollectionForm(
                                 }
                                 input {
                                     r#type: "range",
-                                    style: "flex:1;accent-color:var(--accent)",
+                                    style: "flex:1 1 140px;min-width:0;accent-color:var(--accent)",
                                     min: "32",
                                     max: "160",
                                     step: "2",
@@ -1192,6 +1310,10 @@ pub fn CollectionForm(
                         div { style: "margin-top:8px",
                             if *providers_loading.read() {
                                 span { class: "loading-text", "Loading providers…" }
+                            } else if let Some(error) = providers_error.read().as_ref() {
+                                p { class: "field-hint", style: "color:var(--error);margin:0", "Could not load providers: {error}" }
+                            } else if watch_providers.read().is_empty() {
+                                p { class: "field-hint", style: "margin:0", "No streaming providers were returned by TMDB." }
                             } else {
                                 select {
                                     class: "select-input",
@@ -1213,7 +1335,7 @@ pub fn CollectionForm(
                                         }
                                     },
                                     option { value: "", "— Select provider —" }
-                                    for p in watch_providers.read().iter() {
+                                    for p in watch_providers.read().iter().filter(|provider| has_transparent_provider_wordmark(&provider.provider_name)) {
                                         option {
                                             value: "{p.provider_id}",
                                             selected: *logo_provider_id.read() == Some(p.provider_id),
@@ -1226,6 +1348,10 @@ pub fn CollectionForm(
                     }
                 }
 
+            }
+
+            if is_edit {
+                div { style: "height:1px;background:var(--border);margin:2px 0" }
             }
 
             ToggleRow {
