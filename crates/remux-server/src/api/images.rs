@@ -400,7 +400,12 @@ async fn upload_item_image_inner(
     kind: ImageKind,
     image: api::image::JellyfinImage,
 ) -> Result<impl IntoResponse> {
-    let (is_collection_source, title) = {
+    // A GIF poster is always served as-is to preserve animation, so it can
+    // never be composite source material for the collection image
+    // configurator (which flattens everything to a static JPEG). Gate on the
+    // upload itself rather than a mode/setting so this can't be misconfigured.
+    let is_gif = crate::api::image::detect_content_type(&image.bytes) == "image/gif";
+    let (is_collection_kind, is_collection_source, title) = {
         let media = db::Media::get_by_id(
             &state
                 .ctx
@@ -409,12 +414,15 @@ async fn upload_item_image_inner(
         )
         .await?
         .context_not_found("item not found")?;
+        let is_collection_kind = kind == ImageKind::Primary
+            && matches!(
+                media.kind,
+                db::MediaKind::Collection | db::MediaKind::Folder
+            );
         (
-            kind == ImageKind::Primary
-                && matches!(
-                    media.kind,
-                    db::MediaKind::Collection | db::MediaKind::Folder
-                )
+            is_collection_kind,
+            is_collection_kind
+                && !is_gif
                 && media
                     .collection_image_config
                     .is_some(),
@@ -473,6 +481,19 @@ async fn upload_item_image_inner(
         )
         .await
         .context_internal("failed to generate collection image")?;
+    } else if is_collection_kind && is_gif {
+        // Drop any existing image config: it no longer applies once the
+        // collection has a raw GIF poster, and this also hides the
+        // layout/overlay configurator in the dashboard for it.
+        sqlx::query("UPDATE media SET collection_image_config = NULL WHERE id = ?")
+            .bind(id)
+            .execute(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await
+            .context_internal("failed to clear collection image config")?;
     }
     Ok(StatusCode::NO_CONTENT)
 }
