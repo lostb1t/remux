@@ -56,11 +56,32 @@ pub enum WebhookEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct HttpWebhookConfig {
+    pub url: String,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", content = "config", rename_all = "snake_case")]
+pub enum WebhookDestination {
+    Http(HttpWebhookConfig),
+}
+
+impl Default for WebhookDestination {
+    fn default() -> Self {
+        Self::Http(HttpWebhookConfig::default())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct WebhookConfig {
     pub id: Uuid,
     pub name: String,
     pub enabled: bool,
-    pub url: String,
+    #[serde(default)]
+    pub destination: WebhookDestination,
     #[serde(default)]
     pub events: Vec<WebhookEvent>,
     #[serde(default)]
@@ -69,8 +90,6 @@ pub struct WebhookConfig {
     pub media_types: Vec<String>,
     #[serde(default)]
     pub template: String,
-    #[serde(default)]
-    pub headers: HashMap<String, String>,
     #[serde(default)]
     pub fields: HashMap<String, String>,
     #[serde(default)]
@@ -83,19 +102,6 @@ pub struct WebhookConfig {
     pub created_at: String,
     #[serde(default)]
     pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct WebhookDelivery {
-    pub id: Uuid,
-    pub webhook_id: Uuid,
-    pub event: String,
-    pub attempt: i64,
-    pub success: bool,
-    pub status_code: Option<i64>,
-    pub error: Option<String>,
-    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -156,17 +162,6 @@ impl Endpoint for DeleteWebhook {
     }
     fn method(&self) -> Method {
         Method::DELETE
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct GetWebhookDeliveries {
-    pub id: Uuid,
-}
-impl Endpoint for GetWebhookDeliveries {
-    type Output = Vec<WebhookDelivery>;
-    fn path(&self) -> String {
-        format!("/remux/webhooks/{}/deliveries", self.id)
     }
 }
 
@@ -7015,6 +7010,25 @@ impl Endpoint for RegenerateCollectionImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn webhook_destination_round_trips_as_tagged_config() {
+        let destination = WebhookDestination::Http(HttpWebhookConfig {
+            url: "https://example.com/hook".to_string(),
+            headers: HashMap::from([(
+                "Authorization".to_string(),
+                "Bearer token".to_string(),
+            )]),
+        });
+        let json = serde_json::to_value(&destination).unwrap();
+        assert_eq!(json["kind"], "http");
+        assert_eq!(json["config"]["url"], "https://example.com/hook");
+        assert_eq!(json["config"]["headers"]["Authorization"], "Bearer token");
+        assert_eq!(
+            serde_json::from_value::<WebhookDestination>(json).unwrap(),
+            destination
+        );
+    }
 
     #[test]
     fn get_items_query_deserializes_any_provider_id_equals() {

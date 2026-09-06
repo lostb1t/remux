@@ -6,9 +6,10 @@ use crate::{
 };
 use dioxus::prelude::*;
 use remux_sdks::remux::{
-    CreateWebhook, DeleteWebhook, GetWebhooks, UpdateWebhook, WebhookConfig,
-    WebhookEvent,
+    CreateWebhook, DeleteWebhook, GetWebhooks, HttpWebhookConfig, UpdateWebhook,
+    WebhookConfig, WebhookDestination, WebhookEvent,
 };
+use std::collections::HashMap;
 use uuid::Uuid;
 
 const WEBHOOK_EVENTS: &[WebhookEvent] = &[
@@ -28,6 +29,7 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
     let mut name = use_signal(String::new);
     let mut url = use_signal(String::new);
     let mut template = use_signal(String::new);
+    let mut headers = use_signal(Vec::<(String, String)>::new);
     let mut enabled = use_signal(|| true);
     let mut selected_events = use_signal(|| {
         WEBHOOK_EVENTS
@@ -61,6 +63,7 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
         name.set(String::new());
         url.set(String::new());
         template.set(String::new());
+        headers.set(Vec::new());
         enabled.set(true);
         selected_events.set(
             WEBHOOK_EVENTS
@@ -75,8 +78,18 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
     let mut open_edit = move |hook: WebhookConfig| {
         editing_id.set(Some(hook.id));
         name.set(hook.name);
-        url.set(hook.url);
         template.set(hook.template);
+        let WebhookDestination::Http(http) = hook.destination;
+        url.set(http.url);
+        let mut header_rows: Vec<_> = http
+            .headers
+            .into_iter()
+            .collect();
+        header_rows.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+        });
+        headers.set(header_rows);
         enabled.set(hook.enabled);
         selected_events.set(hook.events);
         error.set(None);
@@ -97,10 +110,20 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
                 .trim()
                 .to_string(),
             enabled: *enabled.peek(),
-            url: url
-                .peek()
-                .trim()
-                .to_string(),
+            destination: WebhookDestination::Http(HttpWebhookConfig {
+                url: url
+                    .peek()
+                    .trim()
+                    .to_string(),
+                headers: headers
+                    .peek()
+                    .iter()
+                    .filter_map(|(key, value)| {
+                        let key = key.trim();
+                        (!key.is_empty()).then(|| (key.to_string(), value.clone()))
+                    })
+                    .collect::<HashMap<_, _>>(),
+            }),
             events: selected_events
                 .peek()
                 .clone(),
@@ -154,15 +177,19 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
                     div { class: "webhooks-table-wrap",
                         table { class: "webhooks-table",
                             thead { tr { th { "Name" } th { "URL" } th { "Events" } th { "Status" } th { "Actions" } } }
-                            tbody { for hook in hooks.read().iter() { tr {
-                                td { "{hook.name}" }
-                                td { class: "webhooks-url", title: "{hook.url}", "{hook.url}" }
-                                td { "{hook.events.len()} selected" }
-                                td { if hook.enabled { span { class: "webhooks-status webhooks-status-on", "Enabled" } } else { span { class: "webhooks-status", "Disabled" } } }
-                                td { class: "webhooks-actions",
-                                    button { class: "btn btn-ghost", onclick: { let hook = hook.clone(); move |_| open_edit(hook.clone()) }, "Edit" }
-                                    button { class: "btn btn-danger", onclick: { let id = hook.id; let client = action_client.clone(); move |_| { let client = client.clone(); spawn(async move { if let Err(e) = client.execute(DeleteWebhook { id }).await { error.set(Some(e.user_message())); } else { hooks.write().retain(|entry| entry.id != id); } }); } }, "Delete" }
-                                }
+                            tbody { for hook in hooks.read().iter() { {
+                                let WebhookDestination::Http(destination) = &hook.destination;
+                                let endpoint = destination.url.clone();
+                                rsx! { tr {
+                                    td { "{hook.name}" }
+                                    td { class: "webhooks-url", title: "{endpoint}", "{endpoint}" }
+                                    td { "{hook.events.len()} selected" }
+                                    td { if hook.enabled { span { class: "webhooks-status webhooks-status-on", "Enabled" } } else { span { class: "webhooks-status", "Disabled" } } }
+                                    td { class: "webhooks-actions",
+                                        button { class: "btn btn-ghost", onclick: { let hook = hook.clone(); move |_| open_edit(hook.clone()) }, "Edit" }
+                                        button { class: "btn btn-danger", onclick: { let id = hook.id; let client = action_client.clone(); move |_| { let client = client.clone(); spawn(async move { if let Err(e) = client.execute(DeleteWebhook { id }).await { error.set(Some(e.user_message())); } else { hooks.write().retain(|entry| entry.id != id); } }); } }, "Delete" }
+                                    }
+                                } }
                             } } }
                         }
                     }
@@ -181,6 +208,49 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
                         let checked = selected_events.read().contains(&event_name);
                         rsx! { div { class: "toggle-row webhook-event-switch", div { class: "toggle-row-text", span { class: "toggle-label", "{event_name}" } }, Switch { checked, on_change: move |value| { let mut events = selected_events.write(); if value { if !events.contains(&event_name) { events.push(event_name); } } else { events.retain(|selected| selected != &event_name); } } } } }
                     } } } }
+                    div { class: "form-group",
+                        label { class: "form-label", "HTTP headers" }
+                        div { class: "webhook-header-list",
+                            for (index, (header_name, header_value)) in headers.read().iter().cloned().enumerate() {
+                                div { class: "webhook-header-row",
+                                    input {
+                                        class: "form-input",
+                                        placeholder: "Header name",
+                                        value: "{header_name}",
+                                        oninput: move |event| {
+                                            if let Some(header) = headers.write().get_mut(index) {
+                                                header.0 = event.value();
+                                            }
+                                        }
+                                    }
+                                    input {
+                                        class: "form-input",
+                                        placeholder: "Value",
+                                        value: "{header_value}",
+                                        oninput: move |event| {
+                                            if let Some(header) = headers.write().get_mut(index) {
+                                                header.1 = event.value();
+                                            }
+                                        }
+                                    }
+                                    button {
+                                        class: "btn btn-danger webhook-header-delete",
+                                        r#type: "button",
+                                        onclick: move |_| {
+                                            headers.write().remove(index);
+                                        },
+                                        "Delete"
+                                    }
+                                }
+                            }
+                        }
+                        button {
+                            class: "btn btn-ghost webhook-add-header",
+                            r#type: "button",
+                            onclick: move |_| headers.write().push((String::new(), String::new())),
+                            "Add header"
+                        }
+                    }
                     FormGroup { label: "Handlebars template", textarea { class: "form-input", style: "min-height:180px;font-family:var(--font-mono);resize:vertical", value: "{template}", oninput: move |e| template.set(e.value()) } }
                 }
                 div { class: "modal-footer",

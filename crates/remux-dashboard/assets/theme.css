@@ -571,13 +571,18 @@ html, body {
 .webhooks-status-on { color: var(--primary); }
 .webhook-event-switches { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 16px; }
 .webhook-event-switch { border-bottom: 1px solid var(--border); }
-.webhook-preview { max-height: 180px; overflow: auto; white-space: pre-wrap; padding: 10px; background: var(--bg-elevated); border: 1px solid var(--border); font: .75rem var(--font-mono); }
+.webhook-header-list { display: flex; flex-direction: column; gap: 8px; }
+.webhook-header-row { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr) auto; gap: 8px; align-items: center; }
+.webhook-header-delete { white-space: nowrap; }
+.webhook-add-header { align-self: flex-start; margin-top: 8px; }
 
 @media (max-width: 640px) {
   .webhooks-table th:nth-child(2), .webhooks-table td:nth-child(2) { display: none; }
   .webhooks-table th, .webhooks-table td { padding: 9px 6px; }
   .webhooks-actions { flex-direction: column; align-items: stretch; }
   .webhook-event-switches { grid-template-columns: minmax(0, 1fr); }
+  .webhook-header-row { grid-template-columns: minmax(0, 1fr); }
+  .webhook-header-delete { justify-self: start; }
 }
 
 /* ── Alert ───────────────────────────────────────────────────────── */

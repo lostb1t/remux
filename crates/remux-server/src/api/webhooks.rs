@@ -20,19 +20,19 @@ use uuid::Uuid;
 
 use crate::{
     AppContext, AppState,
-    db::{self, WebhookConfig, WebhookDelivery, auth::AdminSession},
+    db::{self, WebhookConfig, auth::AdminSession},
     signals::{DeliveryMode, Event, EventType, PlaybackClientInfo, Subscriber},
 };
 use async_trait::async_trait;
 use axum_anyhow::ApiResult as Result;
-use remux_sdks::remux::WebhookEvent;
+use remux_sdks::remux::{HttpWebhookConfig, WebhookDestination, WebhookEvent};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveWebhook {
     pub name: String,
     pub enabled: Option<bool>,
-    pub url: String,
+    pub destination: WebhookDestination,
     #[serde(default)]
     pub events: Vec<WebhookEvent>,
     #[serde(default)]
@@ -41,8 +41,6 @@ pub struct SaveWebhook {
     pub media_types: Vec<String>,
     #[serde(default)]
     pub template: String,
-    #[serde(default)]
-    pub headers: HashMap<String, String>,
     #[serde(default)]
     pub fields: HashMap<String, String>,
     #[serde(default)]
@@ -65,12 +63,11 @@ fn config_from(
         enabled: p
             .enabled
             .unwrap_or(true),
-        url: p.url,
+        destination: p.destination,
         events: p.events,
         user_ids: p.user_ids,
         media_types: p.media_types,
         template: p.template,
-        headers: p.headers,
         fields: p.fields,
         send_all_properties: p.send_all_properties,
         trim_whitespace: p.trim_whitespace,
@@ -101,7 +98,7 @@ pub async fn create(
     _session: AdminSession,
     Json(p): Json<SaveWebhook>,
 ) -> Result<impl IntoResponse> {
-    validate_url(&p.url)?;
+    validate_destination(&p.destination)?;
     let now = Utc::now().to_rfc3339();
     let config = config_from(Uuid::new_v4(), p, now.clone(), now);
     config
@@ -121,7 +118,7 @@ pub async fn update(
     Path(id): Path<Uuid>,
     Json(p): Json<SaveWebhook>,
 ) -> Result<Json<WebhookConfig>> {
-    validate_url(&p.url)?;
+    validate_destination(&p.destination)?;
     let old = WebhookConfig::get(
         &state
             .ctx
@@ -155,24 +152,6 @@ pub async fn delete(
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-#[get("/remux/webhooks/{id}/deliveries")]
-pub async fn deliveries(
-    State(state): State<AppState>,
-    _session: AdminSession,
-    Path(id): Path<Uuid>,
-) -> Result<Json<Vec<WebhookDelivery>>> {
-    Ok(Json(
-        WebhookConfig::deliveries(
-            &state
-                .ctx
-                .db,
-            id,
-            100,
-        )
-        .await?,
-    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -225,16 +204,14 @@ pub async fn test(
         .first()
         .copied()
         .unwrap_or(WebhookEvent::PlaybackStart);
-    let body = send_webhook(
-        &state
-            .ctx
-            .db,
-        &config,
-        event,
-        sample_context(event),
-    )
-    .await?;
+    let body = send_webhook(&config, event, sample_context(event)).await?;
     Ok(Json(PreviewResponse { body }))
+}
+
+fn validate_destination(destination: &WebhookDestination) -> anyhow::Result<()> {
+    match destination {
+        WebhookDestination::Http(config) => validate_url(&config.url),
+    }
 }
 
 fn validate_url(raw: &str) -> anyhow::Result<()> {
@@ -679,7 +656,6 @@ impl HelperDef for JsonEncodeHelper {
 }
 
 async fn send_webhook(
-    db: &sqlx::SqlitePool,
     config: &WebhookConfig,
     event: WebhookEvent,
     mut context: Value,
@@ -716,13 +692,28 @@ async fn send_webhook(
     {
         return Ok(body);
     }
+
+    match &config.destination {
+        WebhookDestination::Http(destination) => {
+            deliver_http(destination, &body, config.id, event).await?
+        }
+    }
+    Ok(body)
+}
+
+async fn deliver_http(
+    destination: &HttpWebhookConfig,
+    body: &str,
+    webhook_id: Uuid,
+    event: WebhookEvent,
+) -> anyhow::Result<()> {
     let mut request = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()?
-        .post(&config.url)
-        .body(body.clone());
+        .post(&destination.url)
+        .body(body.to_owned());
     let mut content_type = "text/plain".to_string();
-    for (key, value) in &config.headers {
+    for (key, value) in &destination.headers {
         if key.eq_ignore_ascii_case("content-type") {
             content_type = value.clone();
             continue;
@@ -737,40 +728,16 @@ async fn send_webhook(
     match result {
         Ok(response) => {
             let status = response.status();
-            let success = status.is_success();
-            let error = (!success).then(|| format!("HTTP {}", status));
-            let event_name = event.to_string();
-            WebhookConfig::record_delivery(
-                db,
-                config.id,
-                &event_name,
-                1,
-                success,
-                Some(status.as_u16()),
-                error.as_deref(),
-            )
-            .await?;
-            if !success {
+            if !status.is_success() {
                 anyhow::bail!("webhook returned HTTP {status}");
             }
-            tracing::debug!(webhook_id = %config.id, event = %event, status = status.as_u16(), "webhook delivered");
+            tracing::debug!(webhook_id = %webhook_id, event = %event, status = status.as_u16(), "webhook delivered");
         }
         Err(error) => {
-            let event_name = event.to_string();
-            WebhookConfig::record_delivery(
-                db,
-                config.id,
-                &event_name,
-                1,
-                false,
-                None,
-                Some(&error.to_string()),
-            )
-            .await?;
             return Err(error.into());
         }
     }
-    Ok(body)
+    Ok(())
 }
 
 pub struct WebhookSubscriber {
@@ -780,6 +747,7 @@ pub struct WebhookSubscriber {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use httpmock::{Method::POST, MockServer};
 
     #[test]
     fn jellyfin_if_equals_helper_renders_block_branches() {
@@ -808,6 +776,40 @@ mod tests {
         assert_eq!(matching, "yes");
         assert_eq!(non_matching, "no");
         assert_eq!(bool_matching, "yes");
+    }
+
+    #[tokio::test]
+    async fn http_destination_sends_configured_headers() {
+        let server = MockServer::start_async().await;
+        let request = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/hook")
+                    .header("authorization", "Bearer secret")
+                    .header("content-type", "application/json");
+                then.status(204);
+            })
+            .await;
+        let destination = HttpWebhookConfig {
+            url: server.url("/hook"),
+            headers: HashMap::from([
+                ("Authorization".to_string(), "Bearer secret".to_string()),
+                ("Content-Type".to_string(), "application/json".to_string()),
+            ]),
+        };
+
+        deliver_http(
+            &destination,
+            r#"{"event":"Play"}"#,
+            Uuid::nil(),
+            WebhookEvent::PlaybackStart,
+        )
+        .await
+        .unwrap();
+
+        request
+            .assert_async()
+            .await;
     }
 }
 
@@ -964,16 +966,7 @@ impl Subscriber for WebhookSubscriber {
                 extra.clone(),
             )
             .await?;
-            if let Err(error) = send_webhook(
-                &self
-                    .ctx
-                    .db,
-                &config,
-                event_name,
-                context,
-            )
-            .await
-            {
+            if let Err(error) = send_webhook(&config, event_name, context).await {
                 tracing::warn!(webhook_id=%config.id, event=%event_name, %error, "webhook delivery failed");
                 first_error = first_error.or(Some(error));
             }
