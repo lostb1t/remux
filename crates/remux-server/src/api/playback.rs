@@ -1031,6 +1031,57 @@ async fn videos_stream_inner(
         .as_deref()
         == Some("Encode");
 
+    // Fast path: `build_progressive_args` already promotes any copy-codec
+    // request targeting mp4 to a matroska remux (to dodge bitstream-filter
+    // issues), so when the source is already Matroska this "transcode" is a
+    // byte-for-byte no-op — same codecs, same effective container. Skip
+    // ffmpeg and serve the source file directly instead: it's byte-identical
+    // to what ffmpeg would produce, and gets real HTTP Range/seek support for
+    // free through the same path Direct Play uses, where piping ffmpeg's
+    // stdout never could (#438). Bail on any request that needs ffmpeg to do
+    // real work — track selection, subtitle burn-in, or a non-zero start
+    // offset (which raw byte serving can't honor).
+    let source_is_mkv = matches!(
+        media
+            .probe_data
+            .as_ref()
+            .and_then(|p| p
+                .container
+                .as_ref()),
+        Some(VideoContainer::Mkv)
+    );
+    if is_copy_video
+        && audio_codec == "copy"
+        && source_is_mkv
+        && container.eq_ignore_ascii_case("mp4")
+        && !wants_stream_selection
+        && !burn_subtitle_prog
+        && q.start_time_ticks
+            .unwrap_or(0)
+            == 0
+    {
+        let resp = if let Some(addon_id) = descriptor.addon_id() {
+            let addon = state
+                .ctx
+                .addons
+                .get(addon_id)
+                .context_not_found("addon not found")?;
+            addon
+                .stream
+                .as_ref()
+                .context_not_found("addon does not support streams")?
+                .serve_stream(&descriptor, &headers)
+                .await?
+        } else {
+            descriptor
+                .clone()
+                .into_source()
+                .serve(&state, &headers)
+                .await?
+        };
+        return Ok(resp.into_response());
+    }
+
     let params = crate::playback::engine::ProgressiveTranscodeParams {
         input_url: url,
         container: container.clone(),
