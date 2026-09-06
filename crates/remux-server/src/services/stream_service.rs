@@ -196,7 +196,10 @@ impl StreamService {
         user_id: Option<Uuid>,
     ) -> anyhow::Result<db::Media> {
         let lookup_id = requested_id.unwrap_or(item_id);
-        let media = db::Media::get_by_id(&ctx.db, &lookup_id)
+        // Resolve the id the way PlaybackInfo does: `resolve_item` is
+        // `get_by_id` plus the synthetic-id path (search/catalog ids that have
+        // no row yet), so a client playing such an item reaches its streams.
+        let media = crate::services::MediaResolveService::resolve_item(lookup_id, ctx)
             .await?
             .ok_or_else(|| anyhow::anyhow!("stream not found: {}", lookup_id))?;
         Self::dispatch_lookup(ctx, item_id, requested_id, device_key, user_id, media)
@@ -231,6 +234,7 @@ impl StreamService {
             }
             db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track => {
                 let mut media = media;
+                let media_id = media.id;
                 let _ = ctx
                     .addons
                     .refresh_streams(&mut media, ctx, user_id)
@@ -239,7 +243,15 @@ impl StreamService {
                 let sources = media
                     .streams(&ctx.db)
                     .await?;
-                if let Some(sid) = requested_id.filter(|&sid| sid != item_id) {
+                // Here `requested_id` resolved to a Movie/Episode/Track, so it
+                // is an *item* id (auto-play, or the PlaybackInfo rewrite of
+                // source[0].Id — the sibling item's UUID when duplicate items
+                // share one IMDB id). An item's id is never one of its stream
+                // ids, so matching it against `sources` can only fail; treat it
+                // as auto-play and fall through to preference / first source.
+                let specific_stream =
+                    requested_id.filter(|&sid| sid != item_id && sid != media_id);
+                if let Some(sid) = specific_stream {
                     sources
                         .into_iter()
                         .find(|s| s.id == sid)
@@ -875,6 +887,77 @@ fn media_info_from_probe(
 mod tests {
     use super::*;
     use crate::stream::{StreamDescriptor, StreamInfo};
+
+    /// A `MediaSourceId` that is an item id (auto-play, or the PlaybackInfo
+    /// rewrite of `source[0].Id` — the sibling's UUID when duplicate items share
+    /// one IMDB id) must resolve to a stream. Before the fix the Movie arm looked
+    /// for the item's own id among its streams, failed with "stream not found",
+    /// and the stream endpoint served the no-streams placeholder (#212): source
+    /// #1 of every affected title played blank while the rest worked.
+    #[tokio::test]
+    async fn lookup_treats_item_id_as_auto_play_not_stream_id() {
+        use crate::integration_test::{
+            authenticated_server, insert_test_source, seed_movie,
+        };
+
+        let (_server, guard, _token) = authenticated_server().await;
+        let ctx = &guard.0;
+
+        // Movie A owns one stream. `Media::save` is an upsert that doesn't
+        // update `parent_id`, so attach the row directly. Stamp
+        // `streams_refreshed_at` 30s back: `refresh_streams` (no addons here)
+        // takes its TTL fast path, and `Media::streams()` keeps the row.
+        let owner = seed_movie(ctx).await;
+        let stream = insert_test_source(ctx).await;
+        sqlx::query("UPDATE media SET parent_id = ? WHERE id = ?")
+            .bind(owner.id)
+            .bind(stream.id)
+            .execute(&ctx.db)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE media SET streams_refreshed_at = ? WHERE id = ?")
+            .bind(chrono::Utc::now().naive_utc() - chrono::Duration::seconds(30))
+            .bind(owner.id)
+            .execute(&ctx.db)
+            .await
+            .unwrap();
+
+        // Movie B: duplicate item for the same film, no stream rows of its own.
+        let mut dup = db::Media {
+            id: Uuid::new_v4(),
+            title: owner
+                .title
+                .clone(),
+            kind: db::MediaKind::Movie,
+            external_ids: owner
+                .external_ids
+                .clone(),
+            ..Default::default()
+        };
+        dup.save(&ctx.db)
+            .await
+            .unwrap();
+
+        // B played with MediaSourceId = A.id (what the auto-play rewrite hands
+        // out). Before the fix: Err("stream not found: <A.id>").
+        let resolved = StreamService::lookup(ctx, dup.id, Some(owner.id), None, None)
+            .await
+            .expect("an item id used as MediaSourceId must resolve to a stream");
+        assert_eq!(resolved.id, stream.id);
+
+        // Plain auto-play (MediaSourceId == item being played) still works.
+        let resolved = StreamService::lookup(ctx, owner.id, Some(owner.id), None, None)
+            .await
+            .unwrap();
+        assert_eq!(resolved.id, stream.id);
+
+        // A real stream id is still honoured.
+        let resolved =
+            StreamService::lookup(ctx, owner.id, Some(stream.id), None, None)
+                .await
+                .unwrap();
+        assert_eq!(resolved.id, stream.id);
+    }
 
     const DEBRID_HASH: &str = "63259f55cd5c31826321286ae1fde40c931dee1d";
     const DESCRIPTOR_HASH: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
