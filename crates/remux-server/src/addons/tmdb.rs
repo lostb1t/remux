@@ -180,9 +180,9 @@ impl MetaAddon for TmdbAddon {
         &self,
         media: &db::Media,
         ctx: &AppContext,
-        image_type: Option<crate::api::ImageType>,
+        options: super::ImageFetchOptions,
     ) -> Result<Vec<crate::api::RemoteImageInfo>> {
-        tmdb_remote_images(ctx, media, image_type).await
+        tmdb_remote_images(ctx, media, options).await
     }
 }
 
@@ -1994,8 +1994,19 @@ async fn search_tmdb_series(
 
 fn tmdb_remote_image_languages(
     image_type: Option<&api::ImageType>,
+    include_all_languages: bool,
 ) -> Option<&'static str> {
-    matches!(image_type, Some(api::ImageType::Backdrop)).then_some("null")
+    (!include_all_languages && matches!(image_type, Some(api::ImageType::Backdrop)))
+        .then_some("null")
+}
+
+fn tmdb_remote_metadata_language(
+    preferred_language: Option<&str>,
+    include_all_languages: bool,
+) -> Option<String> {
+    (!include_all_languages)
+        .then(|| preferred_language.map(str::to_string))
+        .flatten()
 }
 
 fn map_remote_image(
@@ -2072,7 +2083,7 @@ fn extend_from_tmdb_images(
 async fn tmdb_remote_images(
     ctx: &AppContext,
     media: &db::Media,
-    image_type: Option<api::ImageType>,
+    options: super::ImageFetchOptions,
 ) -> Result<Vec<api::RemoteImageInfo>> {
     let config = crate::db::Settings::get_config(&ctx.db).await?;
     let api_key = config.get_tmdb_key();
@@ -2084,8 +2095,19 @@ async fn tmdb_remote_images(
         &ctx.config
             .tmdb_base_url,
     )?;
-    let image_languages = tmdb_remote_image_languages(image_type.as_ref());
+    let image_languages = tmdb_remote_image_languages(
+        options
+            .image_type
+            .as_ref(),
+        options.include_all_languages,
+    );
     let language_neutral_backdrops = image_languages.is_some();
+    let preferred_language = tmdb_remote_metadata_language(
+        config
+            .preferred_metadata_language
+            .as_deref(),
+        options.include_all_languages,
+    );
 
     let mut out = Vec::new();
 
@@ -2110,12 +2132,8 @@ async fn tmdb_remote_images(
                 None
             };
             if let Some(tmdb_id) = tmdb_id {
-                let mut endpoint = sdks::tmdb::MovieEndpoint::new(
-                    tmdb_id,
-                    config
-                        .preferred_metadata_language
-                        .clone(),
-                );
+                let mut endpoint =
+                    sdks::tmdb::MovieEndpoint::new(tmdb_id, preferred_language.clone());
                 if let Some(languages) = image_languages {
                     endpoint = endpoint.with_image_languages(languages);
                 }
@@ -2199,9 +2217,7 @@ async fn tmdb_remote_images(
             if let Some(tmdb_id) = tmdb_id {
                 let mut endpoint = sdks::tmdb::SeriesEndpoint::new(
                     tmdb_id,
-                    config
-                        .preferred_metadata_language
-                        .clone(),
+                    preferred_language.clone(),
                 );
                 if let Some(languages) = image_languages {
                     endpoint = endpoint.with_image_languages(languages);
@@ -2228,9 +2244,7 @@ async fn tmdb_remote_images(
                     tmdb_id,
                     s_n,
                     e_n,
-                    config
-                        .preferred_metadata_language
-                        .clone(),
+                    preferred_language,
                 );
                 if let Some(languages) = image_languages {
                     endpoint = endpoint.with_image_languages(languages);
@@ -2364,19 +2378,41 @@ mod tests {
             })
             .count();
         assert_eq!(primary_count, 2);
+
+        let mut all_languages = Vec::new();
+        extend_from_tmdb_images(&mut all_languages, &images, false);
+        assert_eq!(
+            all_languages
+                .iter()
+                .filter(|image| image
+                    .type_
+                    .as_deref()
+                    == Some("Backdrop"))
+                .count(),
+            2
+        );
     }
 
     #[test]
-    fn remote_image_queries_only_request_neutral_images_for_backdrops() {
+    fn remote_image_queries_respect_include_all_languages() {
         assert_eq!(
-            tmdb_remote_image_languages(Some(&api::ImageType::Backdrop)),
+            tmdb_remote_image_languages(Some(&api::ImageType::Backdrop), false),
             Some("null")
         );
         assert_eq!(
-            tmdb_remote_image_languages(Some(&api::ImageType::Primary)),
+            tmdb_remote_image_languages(Some(&api::ImageType::Primary), false),
             None
         );
-        assert_eq!(tmdb_remote_image_languages(None), None);
+        assert_eq!(
+            tmdb_remote_image_languages(Some(&api::ImageType::Backdrop), true),
+            None
+        );
+        assert_eq!(tmdb_remote_image_languages(None, false), None);
+        assert_eq!(
+            tmdb_remote_metadata_language(Some("nl-NL"), false),
+            Some("nl-NL".to_string())
+        );
+        assert_eq!(tmdb_remote_metadata_language(Some("nl-NL"), true), None);
 
         let backdrop_query =
             sdks::tmdb::MovieEndpoint::new(1, Some("nl-NL".to_string()))

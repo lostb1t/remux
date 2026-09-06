@@ -781,6 +781,12 @@ pub trait CatalogAddon: Send + Sync {
     ) -> Result<Option<Pin<Box<dyn Stream<Item = db::Media> + Send>>>>;
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ImageFetchOptions {
+    pub image_type: Option<api::ImageType>,
+    pub include_all_languages: bool,
+}
+
 #[async_trait]
 pub trait MetaAddon: Send + Sync {
     async fn supports(&self, media: &db::Media) -> bool;
@@ -802,7 +808,7 @@ pub trait MetaAddon: Send + Sync {
         &self,
         media: &db::Media,
         ctx: &AppContext,
-        image_type: Option<api::ImageType>,
+        options: ImageFetchOptions,
     ) -> Result<Vec<crate::api::RemoteImageInfo>> {
         Ok(vec![])
     }
@@ -2573,7 +2579,7 @@ impl AddonService {
         &self,
         media: &db::Media,
         ctx: &AppContext,
-        image_type: Option<api::ImageType>,
+        options: ImageFetchOptions,
     ) -> Result<Vec<crate::api::RemoteImageInfo>> {
         let addons = self
             .addons_for::<dyn MetaAddon>(media, &ctx.db, None)
@@ -2585,7 +2591,7 @@ impl AddonService {
                 .meta
                 .as_ref()
                 .unwrap()
-                .images_fetch(media, ctx, image_type.clone())
+                .images_fetch(media, ctx, options.clone())
                 .await
             {
                 Ok(images) => out.extend(images),
