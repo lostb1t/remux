@@ -37,6 +37,8 @@ pub enum Route {
     SettingsRemuxdbRoute,
     #[route("/settings/branding")]
     SettingsBrandingRoute,
+    #[route("/settings/webhooks")]
+    SettingsWebhooksRoute,
     #[route("/access/users")]
     AccessUsersRoute,
     #[route("/access/apikeys")]
@@ -134,6 +136,12 @@ pub(crate) fn SettingsRemuxdbRoute() -> Element {
 pub(crate) fn SettingsBrandingRoute() -> Element {
     let app_state = use_context::<AppState>();
     rsx! { BrandingPage { app_state } }
+}
+
+#[component]
+pub(crate) fn SettingsWebhooksRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { WebhooksPage { app_state } }
 }
 
 #[component]

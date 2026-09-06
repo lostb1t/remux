@@ -1,8 +1,22 @@
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
+use remux_sdks::remux::PlayMethod;
 use tracing::warn;
 use uuid::Uuid;
+
+#[derive(Debug, Clone, Default)]
+pub struct PlaybackClientInfo {
+    pub session_id: String,
+    pub device_id: String,
+    pub device_name: String,
+    pub client_name: String,
+    pub remote_endpoint: Option<String>,
+    pub media_source_id: Option<String>,
+    pub play_method: Option<PlayMethod>,
+    pub audio_stream_index: Option<i32>,
+    pub subtitle_stream_index: Option<i32>,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct PlaybackStartedInfo {
@@ -10,6 +24,7 @@ pub struct PlaybackStartedInfo {
     pub media_id: Uuid,
     pub session_id: String,
     pub position_ticks: i64,
+    pub client: PlaybackClientInfo,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -19,6 +34,7 @@ pub struct PlaybackProgressInfo {
     pub session_id: String,
     pub position_ticks: i64,
     pub is_paused: bool,
+    pub client: PlaybackClientInfo,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -28,6 +44,7 @@ pub struct PlaybackStoppedInfo {
     pub session_id: String,
     pub position_ticks: i64,
     pub played: bool,
+    pub client: PlaybackClientInfo,
 }
 
 #[derive(Debug, Clone, Default)]
