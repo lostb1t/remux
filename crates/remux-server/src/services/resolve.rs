@@ -61,6 +61,7 @@ fn series_ids_endpoint(tmdb_id: i64) -> sdks::tmdb::SeriesEndpoint {
     sdks::tmdb::SeriesEndpoint {
         id: tmdb_id,
         language: None,
+        include_image_language: None,
         append_to_response: vec!["external_ids".to_string()],
     }
 }
@@ -69,6 +70,7 @@ fn movie_ids_endpoint(tmdb_id: i64) -> sdks::tmdb::MovieEndpoint {
     sdks::tmdb::MovieEndpoint {
         id: tmdb_id,
         language: None,
+        include_image_language: None,
         append_to_response: vec!["external_ids".to_string()],
     }
 }
@@ -365,6 +367,7 @@ impl MediaResolveService {
                     season_number: season,
                     episode_number: episode,
                     language: None,
+                    include_image_language: None,
                     append_to_response: Some(vec!["external_ids".to_string()]),
                 }
                 .with_cache(

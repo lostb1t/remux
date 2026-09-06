@@ -1389,6 +1389,13 @@ pub async fn items_remote_images(
     let provider = q
         .provider
         .as_deref();
+    let requested_image_type = q
+        .kind
+        .as_deref()
+        .and_then(|kind| {
+            kind.parse::<api::ImageType>()
+                .ok()
+        });
     let mut images = Vec::new();
     let mut queried_providers = Vec::new();
 
@@ -1397,7 +1404,16 @@ pub async fn items_remote_images(
         match state
             .ctx
             .addons
-            .fetch_images(&media, &state.ctx)
+            .fetch_images(
+                &media,
+                &state.ctx,
+                crate::addons::ImageFetchOptions {
+                    image_type: requested_image_type,
+                    include_all_languages: q
+                        .include_all_languages
+                        .unwrap_or(false),
+                },
+            )
             .await
         {
             Ok(v) => images.extend(v),
@@ -3449,6 +3465,7 @@ pub async fn media_segments(
 
 #[cfg(test)]
 mod tests {
+    use super::RemoteImagesQuery;
     use chrono::Utc;
     use http::header::HeaderValue;
     use remux_sdks::remux::{
@@ -3465,6 +3482,22 @@ mod tests {
             insert_test_source_of_kind,
         },
     };
+
+    #[test]
+    fn remote_images_query_accepts_include_all_languages() {
+        let query: RemoteImagesQuery = serde_urlencoded::from_str(
+            "type=Primary&startIndex=0&limit=6&IncludeAllLanguages=true",
+        )
+        .unwrap();
+
+        assert_eq!(
+            query
+                .kind
+                .as_deref(),
+            Some("Primary")
+        );
+        assert_eq!(query.include_all_languages, Some(true));
+    }
 
     async fn get_user_id(server: &axum_test::TestServer, auth: &str) -> String {
         let resp: serde_json::Value = server

@@ -83,6 +83,7 @@ pub struct SeriesEndpoint {
     #[serde(skip)]
     pub id: i64,
     pub language: Option<String>,
+    pub include_image_language: Option<String>,
     #[serde(
         skip_serializing_if = "Vec::is_empty",
         serialize_with = "serialize_comma"
@@ -95,8 +96,14 @@ impl SeriesEndpoint {
         Self {
             id,
             language,
+            include_image_language: None,
             append_to_response: default_append_to_response(),
         }
+    }
+
+    pub fn with_image_languages(mut self, languages: impl Into<String>) -> Self {
+        self.include_image_language = Some(languages.into());
+        self
     }
 }
 
@@ -187,6 +194,8 @@ pub struct EpisodeEndpoint {
     // #[builder(default = "en")]
     pub language: Option<String>,
 
+    pub include_image_language: Option<String>,
+
     //#[builder(default = "Some(vec![\"images\".to_string(), \"external_ids\".to_string()])")]
     #[serde(serialize_with = "serialize_comma_opt")]
     pub append_to_response: Option<Vec<String>>,
@@ -204,8 +213,14 @@ impl EpisodeEndpoint {
             season_number,
             episode_number,
             language,
+            include_image_language: None,
             append_to_response: Some(super::default_append_to_response()),
         }
+    }
+
+    pub fn with_image_languages(mut self, languages: impl Into<String>) -> Self {
+        self.include_image_language = Some(languages.into());
+        self
     }
 }
 
