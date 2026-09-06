@@ -22,6 +22,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut catalog_max_items = use_signal(|| 100_i64);
     let mut meta_concurrency = use_signal(|| 12_i64);
     let mut delivery_concurrency = use_signal(|| 8_i64);
+    let mut stream_cache_ttl_seconds = use_signal(|| 60_i64);
     let mut filter_digital_release = use_signal(|| true);
     let mut digital_release_buffer = use_signal(|| 0_i64);
     let mut subtitle_languages = use_signal(String::new);
@@ -61,6 +62,10 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                     );
                     meta_concurrency.set(cfg.meta_concurrency);
                     delivery_concurrency.set(cfg.delivery_concurrency);
+                    stream_cache_ttl_seconds.set(
+                        cfg.stream_cache_ttl_seconds
+                            .unwrap_or(60),
+                    );
                     filter_digital_release.set(cfg.filter_by_digital_release_date);
                     digital_release_buffer.set(cfg.digital_release_buffer_days);
                     subtitle_languages.set(
@@ -108,6 +113,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
         let max = *catalog_max_items.peek();
         let concurrency = *meta_concurrency.peek();
         let delivery = *delivery_concurrency.peek();
+        let stream_cache_ttl = *stream_cache_ttl_seconds.peek();
         let filter_dr = *filter_digital_release.peek();
         let dr_buffer = *digital_release_buffer.peek();
         let sub_langs_str = subtitle_languages
@@ -126,6 +132,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
         cfg.catalog_max_items = Some(max);
         cfg.meta_concurrency = concurrency;
         cfg.delivery_concurrency = delivery;
+        cfg.stream_cache_ttl_seconds = Some(stream_cache_ttl.max(0));
         cfg.filter_by_digital_release_date = filter_dr;
         cfg.digital_release_buffer_days = dr_buffer;
         cfg.subtitle_languages = Some(
@@ -264,6 +271,25 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                             }
                             p { class: "field-hint",
                                 "Number of media trackers whose queued watch activity is sent concurrently. One tracker's events are always sent in order, one at a time, so this only controls how many trackers are worked on at once. Default: 8."
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", r#for: "s-stream-cache-ttl", "Stream Cache TTL (seconds)" }
+                            input {
+                                id: "s-stream-cache-ttl",
+                                r#type: "number",
+                                class: "field-input",
+                                min: "0",
+                                value: "{stream_cache_ttl_seconds}",
+                                oninput: move |e| {
+                                    if let Ok(n) = e.value().parse::<i64>() {
+                                        stream_cache_ttl_seconds.set(n);
+                                    }
+                                },
+                            }
+                            p { class: "field-hint",
+                                "How long a populated stream list is reused before fetching it again. Set to 0 to disable caching. Default: 60 seconds (1 minute)."
                             }
                         }
 

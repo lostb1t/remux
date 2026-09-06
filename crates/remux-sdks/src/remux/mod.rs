@@ -519,6 +519,9 @@ pub struct ServerConfiguration {
     /// Show streams that don't match any group individually (default true).
     #[default(Some(true))]
     pub stream_groups_show_ungrouped: Option<bool>,
+    /// How long a populated stream list remains fresh, in seconds (default: 60). Zero disables caching.
+    #[default(Some(60_i64))]
+    pub stream_cache_ttl_seconds: Option<i64>,
     /// Enable submitting probe data to remuxdb (default true).
     #[default(Some(true))]
     pub remuxdb_enabled: Option<bool>,
