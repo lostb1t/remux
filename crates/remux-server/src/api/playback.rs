@@ -862,14 +862,28 @@ async fn videos_stream_inner(
     )
     .await;
 
+    // Both fallthroughs serve the no-streams placeholder with HTTP 200 (the
+    // client plays a blank clip). Log why, or the failure is invisible.
     let media = match media {
         Ok(m) => m,
-        Err(_) => return Ok(no_streams_response().into_response()),
+        Err(e) => {
+            tracing::warn!(
+                item = %id,
+                media_source = ?q.media_source_id,
+                "stream lookup failed; serving no-streams placeholder: {e:#}"
+            );
+            return Ok(no_streams_response().into_response());
+        }
     };
     let Some(si) = media
         .stream_info
         .clone()
     else {
+        tracing::warn!(
+            item = %id,
+            media = %media.id,
+            "resolved media has no stream_info; serving no-streams placeholder"
+        );
         return Ok(no_streams_response().into_response());
     };
     let descriptor = si.descriptor;
