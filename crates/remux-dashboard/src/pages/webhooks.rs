@@ -26,6 +26,7 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
     let mut hooks = use_signal(Vec::<WebhookConfig>::new);
     let mut show_editor = use_signal(|| false);
     let mut editing_id = use_signal(|| Option::<Uuid>::None);
+    let mut editing_config = use_signal(|| Option::<WebhookConfig>::None);
     let mut name = use_signal(String::new);
     let mut url = use_signal(String::new);
     let mut template = use_signal(String::new);
@@ -60,6 +61,7 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
 
     let mut open_new = move || {
         editing_id.set(None);
+        editing_config.set(None);
         name.set(String::new());
         url.set(String::new());
         template.set(String::new());
@@ -77,6 +79,7 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
     };
     let mut open_edit = move |hook: WebhookConfig| {
         editing_id.set(Some(hook.id));
+        editing_config.set(Some(hook.clone()));
         name.set(hook.name);
         template.set(hook.template);
         let WebhookDestination::Http(http) = hook.destination;
@@ -103,35 +106,36 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
         error.set(None);
         saved.set(false);
         let existing = *editing_id.peek();
-        let config = WebhookConfig {
-            id: existing.unwrap_or_else(Uuid::new_v4),
-            name: name
+        let mut config = editing_config
+            .peek()
+            .clone()
+            .unwrap_or_default();
+        config.id = existing.unwrap_or_else(Uuid::new_v4);
+        config.name = name
+            .peek()
+            .trim()
+            .to_string();
+        config.enabled = *enabled.peek();
+        config.destination = WebhookDestination::Http(HttpWebhookConfig {
+            url: url
                 .peek()
                 .trim()
                 .to_string(),
-            enabled: *enabled.peek(),
-            destination: WebhookDestination::Http(HttpWebhookConfig {
-                url: url
-                    .peek()
-                    .trim()
-                    .to_string(),
-                headers: headers
-                    .peek()
-                    .iter()
-                    .filter_map(|(key, value)| {
-                        let key = key.trim();
-                        (!key.is_empty()).then(|| (key.to_string(), value.clone()))
-                    })
-                    .collect::<HashMap<_, _>>(),
-            }),
-            events: selected_events
+            headers: headers
                 .peek()
-                .clone(),
-            template: template
-                .peek()
-                .clone(),
-            ..Default::default()
-        };
+                .iter()
+                .filter_map(|(key, value)| {
+                    let key = key.trim();
+                    (!key.is_empty()).then(|| (key.to_string(), value.clone()))
+                })
+                .collect::<HashMap<_, _>>(),
+        });
+        config.events = selected_events
+            .peek()
+            .clone();
+        config.template = template
+            .peek()
+            .clone();
         let client = save_client.clone();
         spawn(async move {
             let result = if existing.is_some() {

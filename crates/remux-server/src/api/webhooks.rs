@@ -27,6 +27,14 @@ use async_trait::async_trait;
 use axum_anyhow::ApiResult as Result;
 use remux_sdks::remux::{HttpWebhookConfig, WebhookDestination, WebhookEvent};
 
+static WEBHOOK_CLIENT: std::sync::LazyLock<reqwest::Client> =
+    std::sync::LazyLock::new(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("failed to build webhook client")
+    });
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveWebhook {
@@ -579,22 +587,27 @@ impl HelperDef for LinkToHelper {
         &self,
         helper: &Helper<'rc>,
         _registry: &'reg Handlebars<'reg>,
-        context: &'rc Context,
+        _context: &'rc Context,
         _render_context: &mut RenderContext<'reg, 'rc>,
         output: &mut dyn Output,
     ) -> HelperResult {
         let url = helper
             .hash_get("url")
+            .or_else(|| helper.param(0))
             .map(|value| {
                 value
                     .value()
                     .render()
             })
             .unwrap_or_default();
-        let text = context
-            .data()
-            .get("text")
-            .map(|value| value.render())
+        let text = helper
+            .hash_get("text")
+            .or_else(|| helper.param(1))
+            .map(|value| {
+                value
+                    .value()
+                    .render()
+            })
             .unwrap_or_default();
         output.write(&format!("<a href='{url}'>{text}</a>"))?;
         Ok(())
@@ -707,9 +720,7 @@ async fn deliver_http(
     webhook_id: Uuid,
     event: WebhookEvent,
 ) -> anyhow::Result<()> {
-    let mut request = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()?
+    let mut request = WEBHOOK_CLIENT
         .post(&destination.url)
         .body(body.to_owned());
     let mut content_type = "text/plain".to_string();
@@ -776,6 +787,18 @@ mod tests {
         assert_eq!(matching, "yes");
         assert_eq!(non_matching, "no");
         assert_eq!(bool_matching, "yes");
+    }
+
+    #[test]
+    fn jellyfin_link_to_helper_reads_hash_arguments() {
+        let body = render_body(
+            r#"{{{link_to url="https://example.com/item" text="Open item"}}}"#,
+            false,
+            false,
+            &json!({}),
+        )
+        .unwrap();
+        assert_eq!(body, "<a href='https://example.com/item'>Open item</a>");
     }
 
     #[tokio::test]
@@ -929,20 +952,23 @@ impl Subscriber for WebhookSubscriber {
             } else {
                 None
             };
-            if let Some(media) = media.as_ref() {
+            if !config
+                .media_types
+                .is_empty()
+            {
+                let Some(media) = media.as_ref() else {
+                    continue;
+                };
                 if !config
                     .media_types
-                    .is_empty()
-                    && !config
-                        .media_types
-                        .iter()
-                        .any(|kind| {
-                            kind.eq_ignore_ascii_case(
-                                &media
-                                    .kind
-                                    .to_string(),
-                            )
-                        })
+                    .iter()
+                    .any(|kind| {
+                        kind.eq_ignore_ascii_case(
+                            &media
+                                .kind
+                                .to_string(),
+                        )
+                    })
                 {
                     continue;
                 }
