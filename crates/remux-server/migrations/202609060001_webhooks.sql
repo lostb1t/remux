@@ -10,7 +10,5 @@ CREATE TABLE IF NOT EXISTS webhooks (
     fields TEXT NOT NULL DEFAULT '{}',
     send_all_properties INTEGER NOT NULL DEFAULT 0,
     trim_whitespace INTEGER NOT NULL DEFAULT 0,
-    skip_empty_body INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    skip_empty_body INTEGER NOT NULL DEFAULT 0
 );

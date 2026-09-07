@@ -59,12 +59,7 @@ pub struct SaveWebhook {
     pub skip_empty_body: bool,
 }
 
-fn config_from(
-    id: Uuid,
-    p: SaveWebhook,
-    now: String,
-    created_at: String,
-) -> WebhookConfig {
+fn config_from(id: Uuid, p: SaveWebhook) -> WebhookConfig {
     WebhookConfig {
         id,
         name: p.name,
@@ -80,8 +75,6 @@ fn config_from(
         send_all_properties: p.send_all_properties,
         trim_whitespace: p.trim_whitespace,
         skip_empty_body: p.skip_empty_body,
-        created_at,
-        updated_at: now,
     }
 }
 
@@ -107,8 +100,7 @@ pub async fn create(
     Json(p): Json<SaveWebhook>,
 ) -> Result<impl IntoResponse> {
     validate_destination(&p.destination)?;
-    let now = Utc::now().to_rfc3339();
-    let config = config_from(Uuid::new_v4(), p, now.clone(), now);
+    let config = config_from(Uuid::new_v4(), p);
     config
         .save(
             &state
@@ -127,7 +119,7 @@ pub async fn update(
     Json(p): Json<SaveWebhook>,
 ) -> Result<Json<WebhookConfig>> {
     validate_destination(&p.destination)?;
-    let old = WebhookConfig::get(
+    WebhookConfig::get(
         &state
             .ctx
             .db,
@@ -135,7 +127,7 @@ pub async fn update(
     )
     .await?
     .ok_or_else(|| anyhow::anyhow!("webhook not found"))?;
-    let config = config_from(id, p, Utc::now().to_rfc3339(), old.created_at);
+    let config = config_from(id, p);
     config
         .save(
             &state
@@ -929,7 +921,6 @@ impl Subscriber for WebhookSubscriber {
             webhook_count = configs.len(),
             "processing webhook event"
         );
-        let mut first_error = None;
         for config in configs {
             if user_id.is_some_and(|id| {
                 !config
@@ -994,11 +985,7 @@ impl Subscriber for WebhookSubscriber {
             .await?;
             if let Err(error) = send_webhook(&config, event_name, context).await {
                 tracing::warn!(webhook_id=%config.id, event=%event_name, %error, "webhook delivery failed");
-                first_error = first_error.or(Some(error));
             }
-        }
-        if let Some(error) = first_error {
-            return Err(error);
         }
         Ok(())
     }

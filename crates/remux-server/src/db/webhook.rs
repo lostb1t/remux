@@ -30,10 +30,6 @@ pub struct WebhookConfig {
     pub trim_whitespace: bool,
     #[serde(default)]
     pub skip_empty_body: bool,
-    #[serde(default)]
-    pub created_at: String,
-    #[serde(default)]
-    pub updated_at: String,
 }
 
 fn default_true() -> bool {
@@ -69,8 +65,8 @@ impl WebhookConfig {
         let media = serde_json::to_string(&self.media_types)?;
         let destination = serde_json::to_string(&self.destination)?;
         let fields = serde_json::to_string(&self.fields)?;
-        sqlx::query("INSERT INTO webhooks (id,name,enabled,destination,events,user_ids,media_types,template,fields,send_all_properties,trim_whitespace,skip_empty_body,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,enabled=excluded.enabled,destination=excluded.destination,events=excluded.events,user_ids=excluded.user_ids,media_types=excluded.media_types,template=excluded.template,fields=excluded.fields,send_all_properties=excluded.send_all_properties,trim_whitespace=excluded.trim_whitespace,skip_empty_body=excluded.skip_empty_body,updated_at=excluded.updated_at")
-            .bind(self.id).bind(&self.name).bind(self.enabled).bind(destination).bind(events).bind(users).bind(media).bind(&self.template).bind(fields).bind(self.send_all_properties).bind(self.trim_whitespace).bind(self.skip_empty_body).bind(&self.created_at).bind(&self.updated_at).execute(db).await?;
+        sqlx::query("INSERT INTO webhooks (id,name,enabled,destination,events,user_ids,media_types,template,fields,send_all_properties,trim_whitespace,skip_empty_body) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,enabled=excluded.enabled,destination=excluded.destination,events=excluded.events,user_ids=excluded.user_ids,media_types=excluded.media_types,template=excluded.template,fields=excluded.fields,send_all_properties=excluded.send_all_properties,trim_whitespace=excluded.trim_whitespace,skip_empty_body=excluded.skip_empty_body")
+            .bind(self.id).bind(&self.name).bind(self.enabled).bind(destination).bind(events).bind(users).bind(media).bind(&self.template).bind(fields).bind(self.send_all_properties).bind(self.trim_whitespace).bind(self.skip_empty_body).execute(db).await?;
         Ok(())
     }
 
@@ -97,8 +93,6 @@ struct WebhookRow {
     send_all_properties: bool,
     trim_whitespace: bool,
     skip_empty_body: bool,
-    created_at: String,
-    updated_at: String,
 }
 impl WebhookRow {
     fn into_config(self) -> Result<WebhookConfig> {
@@ -115,8 +109,6 @@ impl WebhookRow {
             send_all_properties: self.send_all_properties,
             trim_whitespace: self.trim_whitespace,
             skip_empty_body: self.skip_empty_body,
-            created_at: self.created_at,
-            updated_at: self.updated_at,
         })
     }
 }
