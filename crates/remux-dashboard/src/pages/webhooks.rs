@@ -41,6 +41,9 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
     });
     let mut selected_user_ids = use_signal(Vec::<Uuid>::new);
     let mut users = use_signal(Vec::<UserDto>::new);
+    let mut send_all_properties = use_signal(|| false);
+    let mut trim_whitespace = use_signal(|| false);
+    let mut skip_empty_body = use_signal(|| false);
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(|| Option::<String>::None);
@@ -96,6 +99,9 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
                 .collect(),
         );
         selected_user_ids.set(Vec::new());
+        send_all_properties.set(false);
+        trim_whitespace.set(false);
+        skip_empty_body.set(false);
         error.set(None);
         show_editor.set(true);
     };
@@ -118,6 +124,9 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
         enabled.set(hook.enabled);
         selected_events.set(hook.events);
         selected_user_ids.set(hook.user_ids);
+        send_all_properties.set(hook.send_all_properties);
+        trim_whitespace.set(hook.trim_whitespace);
+        skip_empty_body.set(hook.skip_empty_body);
         error.set(None);
         show_editor.set(true);
     };
@@ -169,6 +178,9 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
         config.template = template
             .peek()
             .clone();
+        config.send_all_properties = *send_all_properties.peek();
+        config.trim_whitespace = *trim_whitespace.peek();
+        config.skip_empty_body = *skip_empty_body.peek();
         let client = save_client.clone();
         spawn(async move {
             let result = if existing.is_some() {
@@ -308,7 +320,10 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
                             "Add header"
                         }
                     }
-                    FormGroup { label: "Handlebars template", textarea { class: "form-input", style: "min-height:180px;font-family:var(--font-mono);resize:vertical", value: "{template}", oninput: move |e| template.set(e.value()) } }
+                    div { class: "form-group", div { class: "toggle-row", div { class: "toggle-row-text", span { class: "toggle-label", "Send all properties" }, span { class: "toggle-description", "Ignore the template below and send every available field as raw JSON" } }, Switch { checked: *send_all_properties.read(), on_change: move |value| send_all_properties.set(value) } } }
+                    div { class: "form-group", div { class: "toggle-row", div { class: "toggle-row-text", span { class: "toggle-label", "Trim whitespace" } }, Switch { checked: *trim_whitespace.read(), on_change: move |value| trim_whitespace.set(value) } } }
+                    div { class: "form-group", div { class: "toggle-row", div { class: "toggle-row-text", span { class: "toggle-label", "Skip empty message body" } }, Switch { checked: *skip_empty_body.read(), on_change: move |value| skip_empty_body.set(value) } } }
+                    FormGroup { label: "Handlebars template", textarea { class: "form-input", style: "min-height:180px;font-family:var(--font-mono);resize:vertical", disabled: *send_all_properties.read(), value: "{template}", oninput: move |e| template.set(e.value()) } }
                 }
                 div { class: "modal-footer",
                     button { class: "btn btn-ghost", r#type: "button", onclick: move |_| show_editor.set(false), "Cancel" }
