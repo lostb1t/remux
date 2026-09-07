@@ -313,6 +313,72 @@ pub fn tmdb_client_from_config(
         })
 }
 
+/// A TVDB bearer token, cached for rather less than the month TVDB grants it
+/// so a login failure surfaces on a scan rather than mid-delivery. Keyed on the
+/// api key so changing it in settings takes effect without a restart.
+///
+/// `None` when no key is configured, which is the normal state: TheTVDB issues
+/// a key per project and there is no bundled one to fall back on, unlike TMDB.
+pub async fn tvdb_token(ctx: &crate::AppContext) -> Option<String> {
+    let cfg = crate::db::Settings::get_config_or_default(&ctx.db).await;
+    let api_key = cfg
+        .tvdb_api_key
+        .as_deref()
+        .filter(|k| !k.is_empty())?
+        .to_string();
+    let pin = cfg
+        .tvdb_pin
+        .as_deref()
+        .filter(|p| !p.is_empty())
+        .map(str::to_string);
+
+    let cache_key = format!("tvdb-token:{api_key}");
+    if let Some(token) = ctx
+        .store
+        .get::<String>(&cache_key)
+    {
+        return Some((*token).clone());
+    }
+
+    let client = sdks::tvdb::client(sdks::tvdb::BASE_URL).ok()?;
+    let token = match client
+        .execute(sdks::tvdb::LoginEndpoint { api_key, pin })
+        .await
+    {
+        Ok(res) => {
+            res.data
+                .token
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "tvdb login failed");
+            return None;
+        }
+    };
+
+    ctx.store
+        .save(
+            cache_key,
+            token.clone(),
+            std::time::Duration::from_secs(60 * 60 * 24 * 25),
+        );
+    Some(token)
+}
+
+/// Authenticated for everything past `/login`.
+pub async fn tvdb_client(
+    ctx: &crate::AppContext,
+) -> Option<sdks::RestClient<sdks::BearerAuth>> {
+    let token = tvdb_token(ctx).await?;
+    sdks::RestClient::new(sdks::tvdb::BASE_URL)
+        .ok()
+        .map(|c| {
+            c.with_auth(sdks::BearerAuth { token })
+                .with_retry(
+                    sdks::ExponentialBackoff::builder().build_with_max_retries(3),
+                )
+        })
+}
+
 // --- Progress reporting ---
 
 use std::sync::atomic::{AtomicU64, Ordering};
