@@ -21,7 +21,7 @@ use uuid::Uuid;
 use crate::{
     AppContext, AppState, OptionExt,
     db::{self, Webhook, auth::AdminSession},
-    signals::{DeliveryMode, Event, EventType, PlaybackContext, Subscriber},
+    signals::{Event, EventType, PlaybackContext, Subscriber},
 };
 use async_trait::async_trait;
 use axum_anyhow::ApiResult as Result;
@@ -861,11 +861,6 @@ impl Subscriber for WebhookSubscriber {
             EventType::UserUpdated,
             EventType::UserDeleted,
         ]
-    }
-    fn delivery_mode(&self) -> DeliveryMode {
-        DeliveryMode::Persistent {
-            max_retries: Some(3),
-        }
     }
     async fn handle(&self, event: Event) -> anyhow::Result<()> {
         let (event_name, user_id, media_id, extra) = match event {
