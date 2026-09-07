@@ -23,79 +23,9 @@ use crate::{
     playback::session::TranscodeSession,
     services::{self, MediaResolveService},
     signals::{
-        Event, PlaybackClientInfo, PlaybackProgressInfo, PlaybackStartedInfo,
-        PlaybackStoppedInfo, RemoteCommandInfo, RemotePlayInfo, RemotePlaystateInfo,
+        Event, PlaybackContext, RemoteCommandInfo, RemotePlayInfo, RemotePlaystateInfo,
     },
 };
-
-fn playback_client_info(
-    session: &auth::AuthSession,
-    data: &api::PlaybackInfo,
-    playback: Option<&crate::playback_session::PlaybackSession>,
-    play_session_id: Option<&str>,
-) -> PlaybackClientInfo {
-    PlaybackClientInfo {
-        session_id: play_session_id
-            .map(str::to_owned)
-            .or_else(|| {
-                data.play_session_id
-                    .clone()
-            })
-            .or_else(|| {
-                playback.map(|p| {
-                    p.play_session_id
-                        .clone()
-                })
-            })
-            .unwrap_or_default(),
-        device_id: session
-            .device
-            .id
-            .clone(),
-        device_name: session
-            .device
-            .name
-            .clone(),
-        client_name: session
-            .device
-            .app_name
-            .clone(),
-        remote_endpoint: session
-            .device
-            .remote_ip
-            .clone(),
-        media_source_id: data
-            .media_source_id
-            .clone()
-            .or_else(|| {
-                playback.and_then(|p| {
-                    p.media_source_id
-                        .clone()
-                })
-            }),
-        play_method: data
-            .play_method
-            .clone()
-            .or_else(|| {
-                playback
-                    .and_then(|p| {
-                        p.play_method
-                            .as_deref()
-                    })
-                    .and_then(|method| {
-                        method
-                            .parse()
-                            .ok()
-                    })
-            }),
-        audio_stream_index: data
-            .audio_stream_index
-            .or_else(|| playback.and_then(|p| p.audio_stream_index)),
-        subtitle_stream_index: data
-            .subtitle_stream_index
-            .or_else(|| playback.and_then(|p| p.subtitle_stream_index)),
-    }
-}
 
 #[post("/sessions/logout")]
 pub async fn sessions_logout(
@@ -195,11 +125,10 @@ pub async fn report_playback_start(
                 .device
                 .id,
         );
-    let client = playback_client_info(&session, &data, playback.as_ref(), None);
     state
         .ctx
         .signals
-        .emit(Event::PlaybackStarted(PlaybackStartedInfo {
+        .emit(Event::PlaybackStarted(PlaybackContext {
             user_id: session
                 .user
                 .id,
@@ -207,10 +136,7 @@ pub async fn report_playback_start(
             position_ticks: data
                 .position_ticks
                 .unwrap_or(0),
-            session_id: client
-                .session_id
-                .clone(),
-            client,
+            ..PlaybackContext::from_parts(&session, &data, playback.as_ref(), None)
         }));
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -269,12 +195,10 @@ pub async fn report_playback_progress(
                 .ctx
                 .sessions
                 .get(psid);
-            let client =
-                playback_client_info(&session, &data, playback.as_ref(), Some(psid));
             state
                 .ctx
                 .signals
-                .emit(Event::PlaybackProgress(PlaybackProgressInfo {
+                .emit(Event::PlaybackProgress(PlaybackContext {
                     user_id: session
                         .user
                         .id,
@@ -283,10 +207,12 @@ pub async fn report_playback_progress(
                         .position_ticks
                         .unwrap_or(0),
                     is_paused: true,
-                    session_id: client
-                        .session_id
-                        .clone(),
-                    client,
+                    ..PlaybackContext::from_parts(
+                        &session,
+                        &data,
+                        playback.as_ref(),
+                        Some(psid),
+                    )
                 }));
         }
     }
@@ -328,8 +254,8 @@ pub async fn report_playback_stopped(
                     .map(|playback| playback.position_ticks)
             })
             .unwrap_or(0);
-        let client =
-            playback_client_info(&session, &data, playback.as_ref(), Some(psid));
+        let pctx =
+            PlaybackContext::from_parts(&session, &data, playback.as_ref(), Some(psid));
         let changed_item_id = (!data
             .item_id
             .is_nil())
@@ -364,17 +290,14 @@ pub async fn report_playback_stopped(
             state
                 .ctx
                 .signals
-                .emit(Event::PlaybackStopped(PlaybackStoppedInfo {
+                .emit(Event::PlaybackStopped(PlaybackContext {
                     user_id: session
                         .user
                         .id,
                     media_id: item_id,
                     position_ticks,
                     played,
-                    session_id: client
-                        .session_id
-                        .clone(),
-                    client,
+                    ..pctx
                 }));
         }
     }

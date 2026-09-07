@@ -21,7 +21,7 @@ use uuid::Uuid;
 use crate::{
     AppContext, AppState,
     db::{self, WebhookConfig, auth::AdminSession},
-    signals::{DeliveryMode, Event, EventType, PlaybackClientInfo, Subscriber},
+    signals::{DeliveryMode, Event, EventType, PlaybackContext, Subscriber},
 };
 use async_trait::async_trait;
 use axum_anyhow::ApiResult as Result;
@@ -254,7 +254,7 @@ fn format_ticks(ticks: i64) -> String {
 }
 
 fn playback_context(
-    client: &PlaybackClientInfo,
+    client: &PlaybackContext,
     position_ticks: i64,
     is_paused: bool,
     played_to_completion: Option<bool>,
@@ -858,19 +858,19 @@ impl Subscriber for WebhookSubscriber {
                 WebhookEvent::PlaybackStart,
                 Some(i.user_id),
                 Some(i.media_id),
-                playback_context(&i.client, i.position_ticks, false, None),
+                playback_context(&i, i.position_ticks, false, None),
             ),
             Event::PlaybackProgress(i) => (
                 WebhookEvent::PlaybackProgress,
                 Some(i.user_id),
                 Some(i.media_id),
-                playback_context(&i.client, i.position_ticks, i.is_paused, None),
+                playback_context(&i, i.position_ticks, i.is_paused, None),
             ),
             Event::PlaybackStopped(i) => (
                 WebhookEvent::PlaybackStop,
                 Some(i.user_id),
                 Some(i.media_id),
-                playback_context(&i.client, i.position_ticks, false, Some(i.played)),
+                playback_context(&i, i.position_ticks, false, Some(i.played)),
             ),
             Event::MarkPlayed(i) => (
                 WebhookEvent::UserDataSaved,
