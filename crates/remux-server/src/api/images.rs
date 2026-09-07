@@ -106,7 +106,9 @@ async fn items_images_inner(
                     .parse()
                     .unwrap_or(ImageKind::Primary);
                 let is_collection = matches!(media.kind, db::MediaKind::Collection);
-                // If Thumb is requested but not stored, fall back to Primary.
+                // Thumb falls back to a synthesized Backdrop+Logo composite
+                // (below) when a Backdrop exists; only falls back to Primary
+                // outright when there's no Backdrop to synthesize from either.
                 // Collection artwork is generated and stored as Primary, but
                 // clients also request it as a wide Backdrop. Use the generated
                 // rendition when a collection has no dedicated backdrop.
@@ -114,7 +116,13 @@ async fn items_images_inner(
                     .images
                     .get(kind)
                     .or_else(|| {
-                        if kind == ImageKind::Thumb {
+                        if kind == ImageKind::Thumb
+                            && !is_collection
+                            && media
+                                .images
+                                .get(ImageKind::Backdrop)
+                                .is_none()
+                        {
                             media
                                 .images
                                 .get(ImageKind::Primary)
@@ -153,6 +161,37 @@ async fn items_images_inner(
                             .context_not_found("image fetch failed")?;
                         (b, ct, source_key, true)
                     }
+                } else if kind == ImageKind::Thumb
+                    && !is_collection
+                    && let Some(backdrop) = media
+                        .images
+                        .get(ImageKind::Backdrop)
+                {
+                    let logo_path = media
+                        .images
+                        .get(ImageKind::Logo)
+                        .map(|l| {
+                            l.path
+                                .clone()
+                        });
+                    let bytes = ImageService::cached_synthetic_thumb(
+                        &state
+                            .ctx
+                            .config
+                            .data_dir,
+                        id,
+                        &backdrop.path,
+                        logo_path.as_deref(),
+                        &media.title,
+                    )
+                    .await
+                    .context_internal("thumb generation failed")?;
+                    (
+                        bytes,
+                        "image/jpeg".to_string(),
+                        format!("synthetic-thumb:{id}"),
+                        false,
+                    )
                 } else if matches!(
                     image_type,
                     api::ImageType::Primary

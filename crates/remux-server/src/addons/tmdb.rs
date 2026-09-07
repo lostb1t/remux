@@ -1259,6 +1259,25 @@ fn watch_provider_tags(
         .collect()
 }
 
+/// Image languages to request alongside the configured metadata language so
+/// `best_logo`/`best_thumb` (which look for English-tagged title-card art)
+/// can find a match even when the server's preferred language isn't English.
+/// Without `include_image_language`, TMDB restricts `images.backdrops`/
+/// `logos` to the request's `language` plus untagged entries, so an "en"
+/// entry never comes back unless the configured language already is "en".
+fn thumb_and_logo_languages(preferred_language: Option<&str>) -> String {
+    let mut langs = vec!["en", "null"];
+    if let Some(primary) = preferred_language.and_then(|l| {
+        l.split('-')
+            .next()
+    }) && !primary.is_empty()
+        && !langs.contains(&primary)
+    {
+        langs.insert(0, primary);
+    }
+    langs.join(",")
+}
+
 async fn fetch_tmdb_meta(
     media: &db::Media,
     ctx: &AppContext,
@@ -1309,6 +1328,11 @@ async fn fetch_tmdb_meta(
                                 .preferred_metadata_language
                                 .clone(),
                         )
+                        .with_image_languages(thumb_and_logo_languages(
+                            config
+                                .preferred_metadata_language
+                                .as_deref(),
+                        ))
                         .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
@@ -1507,6 +1531,11 @@ async fn fetch_tmdb_meta(
                                 .preferred_metadata_language
                                 .clone(),
                         )
+                        .with_image_languages(thumb_and_logo_languages(
+                            config
+                                .preferred_metadata_language
+                                .as_deref(),
+                        ))
                         .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
@@ -2429,5 +2458,17 @@ mod tests {
                 .iter()
                 .all(|(key, _)| key != "include_image_language")
         );
+    }
+
+    /// TMDB restricts `images.backdrops`/`logos` to the request's `language`
+    /// plus untagged entries, so an "en"-tagged title card never comes back
+    /// unless "en" is explicitly requested — regardless of the server's
+    /// configured metadata language.
+    #[test]
+    fn thumb_and_logo_languages_always_include_english_and_null() {
+        assert_eq!(thumb_and_logo_languages(None), "en,null");
+        assert_eq!(thumb_and_logo_languages(Some("en")), "en,null");
+        assert_eq!(thumb_and_logo_languages(Some("nl")), "nl,en,null");
+        assert_eq!(thumb_and_logo_languages(Some("nl-NL")), "nl,en,null");
     }
 }

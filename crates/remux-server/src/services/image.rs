@@ -391,6 +391,90 @@ impl ImageService {
         Ok((bytes, ct))
     }
 
+    /// Disk-cached wrapper around `synthetic_thumb`: serves the cached
+    /// composite for `id` from `cache_dir()` if one exists, otherwise
+    /// generates it and writes it there. Never registered in `media_images` —
+    /// purely a cache entry, wiped like any other by `ClearImageCacheTask`,
+    /// and regenerated from whatever Backdrop/Logo exist next time it's
+    /// missing (e.g. after a cache clear, or once a real Thumb replaces it).
+    pub async fn cached_synthetic_thumb(
+        data_dir: &std::path::Path,
+        id: Uuid,
+        backdrop_path: &str,
+        logo_path: Option<&str>,
+        title: &str,
+    ) -> anyhow::Result<Vec<u8>> {
+        let path = Self::cache_dir(data_dir).join(format!("synthetic-thumb-{id}.jpg"));
+        if path.exists() {
+            return Ok(tokio::fs::read(&path).await?);
+        }
+        let bytes = Self::synthetic_thumb(backdrop_path, logo_path, title).await?;
+        Self::write_image_to_disk(&path, &bytes).await?;
+        Ok(bytes)
+    }
+
+    /// Composite a landscape Thumb from a Backdrop and, if available, a Logo —
+    /// for items with no dedicated Thumb (TMDB has no matching English
+    /// title-card backdrop for them). Runs entirely in memory: no disk write,
+    /// no `media_images` row. A later refresh that adds a real Thumb, or a
+    /// better Backdrop/Logo, is picked up on the very next request with
+    /// nothing to invalidate.
+    pub async fn synthetic_thumb(
+        backdrop_path: &str,
+        logo_path: Option<&str>,
+        title: &str,
+    ) -> anyhow::Result<Vec<u8>> {
+        let backdrop = if backdrop_path.contains("://") {
+            Self::fetch_rgb(backdrop_path).await?
+        } else {
+            Self::read_rgb(backdrop_path).await?
+        };
+        let logo = match logo_path {
+            Some(path) if path.contains("://") => Self::fetch_rgba(path)
+                .await
+                .ok(),
+            Some(path) => Self::read_rgba(path)
+                .await
+                .ok(),
+            None => None,
+        };
+
+        let title = title.to_string();
+        tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
+            let resized = image::imageops::resize(
+                &backdrop,
+                OUT_W,
+                OUT_H,
+                image::imageops::FilterType::Lanczos3,
+            );
+            let dimmed = apply_dark_overlay(resized);
+
+            match logo {
+                Some(logo) => {
+                    let mut canvas = DynamicImage::ImageRgb8(dimmed).into_rgba8();
+                    let max_logo_h = OUT_H / 3;
+                    let max_logo_w = (OUT_W as f32 * 0.7) as u32;
+                    let scale = (max_logo_h as f32 / logo.height() as f32)
+                        .min(max_logo_w as f32 / logo.width() as f32);
+                    let lw = (logo.width() as f32 * scale) as u32;
+                    let lh = (logo.height() as f32 * scale) as u32;
+                    let scaled = image::imageops::resize(
+                        &logo,
+                        lw,
+                        lh,
+                        image::imageops::FilterType::Lanczos3,
+                    );
+                    let lx = (OUT_W.saturating_sub(lw) / 2) as i64;
+                    let ly = (OUT_H.saturating_sub(lh) / 2) as i64;
+                    image::imageops::overlay(&mut canvas, &scaled, lx, ly);
+                    encode_jpeg_rgba(canvas)
+                }
+                None => encode_jpeg(draw_label(dimmed, &title)?),
+            }
+        })
+        .await?
+    }
+
     /// Save an uploaded image for `id`/`image_type`, write to disk, update DB.
     pub async fn save_image(
         data_dir: &std::path::Path,
@@ -1658,5 +1742,110 @@ mod tests {
         .unwrap();
 
         assert_eq!(canvas, expected);
+    }
+
+    #[tokio::test]
+    async fn synthetic_thumb_composites_backdrop_and_logo_at_thumb_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let backdrop_path = dir
+            .path()
+            .join("backdrop.jpg");
+        RgbImage::from_pixel(1280, 720, Rgb([40, 60, 80]))
+            .save(&backdrop_path)
+            .unwrap();
+        let logo_path = dir
+            .path()
+            .join("logo.png");
+        RgbaImage::from_pixel(500, 200, Rgba([255, 255, 255, 255]))
+            .save(&logo_path)
+            .unwrap();
+
+        let bytes = ImageService::synthetic_thumb(
+            backdrop_path
+                .to_str()
+                .unwrap(),
+            Some(
+                logo_path
+                    .to_str()
+                    .unwrap(),
+            ),
+            "Some Title",
+        )
+        .await
+        .unwrap();
+
+        let decoded = image::load_from_memory(&bytes).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (OUT_W, OUT_H));
+        assert_eq!(detect_content_type(&bytes), "image/jpeg");
+    }
+
+    #[tokio::test]
+    async fn synthetic_thumb_falls_back_to_title_text_without_a_logo() {
+        let dir = tempfile::tempdir().unwrap();
+        let backdrop_path = dir
+            .path()
+            .join("backdrop.jpg");
+        RgbImage::from_pixel(1280, 720, Rgb([40, 60, 80]))
+            .save(&backdrop_path)
+            .unwrap();
+
+        let bytes = ImageService::synthetic_thumb(
+            backdrop_path
+                .to_str()
+                .unwrap(),
+            None,
+            "Some Title",
+        )
+        .await
+        .unwrap();
+
+        let decoded = image::load_from_memory(&bytes).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (OUT_W, OUT_H));
+    }
+
+    #[tokio::test]
+    async fn cached_synthetic_thumb_persists_under_the_image_cache_dir() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let backdrop_path = source_dir
+            .path()
+            .join("backdrop.jpg");
+        RgbImage::from_pixel(1280, 720, Rgb([40, 60, 80]))
+            .save(&backdrop_path)
+            .unwrap();
+
+        let data_dir = tempfile::tempdir().unwrap();
+        let id = Uuid::new_v4();
+        let cache_path = ImageService::cache_dir(data_dir.path())
+            .join(format!("synthetic-thumb-{id}.jpg"));
+        assert!(!cache_path.exists());
+
+        let first = ImageService::cached_synthetic_thumb(
+            data_dir.path(),
+            id,
+            backdrop_path
+                .to_str()
+                .unwrap(),
+            None,
+            "Some Title",
+        )
+        .await
+        .unwrap();
+        assert!(cache_path.exists(), "composite should be written to disk");
+
+        // Deleting the source backdrop proves a second call is served from
+        // the cache file rather than regenerated.
+        std::fs::remove_file(&backdrop_path).unwrap();
+        let second = ImageService::cached_synthetic_thumb(
+            data_dir.path(),
+            id,
+            backdrop_path
+                .to_str()
+                .unwrap(),
+            None,
+            "Some Title",
+        )
+        .await
+        .unwrap();
+        assert_eq!(first, second);
     }
 }
