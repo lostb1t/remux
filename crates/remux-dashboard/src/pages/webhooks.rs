@@ -102,6 +102,13 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
     let save_client = app_state.clone();
     let save = move |e: Event<FormData>| {
         e.prevent_default();
+        if selected_events
+            .peek()
+            .is_empty()
+        {
+            error.set(Some("Select at least one event".to_string()));
+            return;
+        }
         saving.set(true);
         error.set(None);
         saved.set(false);

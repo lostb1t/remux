@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::{
-    AppContext, AppState,
+    AppContext, AppState, OptionExt,
     db::{self, Webhook, auth::AdminSession},
     signals::{DeliveryMode, Event, EventType, PlaybackContext, Subscriber},
 };
@@ -126,7 +126,7 @@ pub async fn update(
         id,
     )
     .await?
-    .ok_or_else(|| anyhow::anyhow!("webhook not found"))?;
+    .context_not_found("Webhook not found")?;
     let config = config_from(id, p);
     config
         .save(
@@ -198,7 +198,7 @@ pub async fn test(
         id,
     )
     .await?
-    .ok_or_else(|| anyhow::anyhow!("webhook not found"))?;
+    .context_not_found("Webhook not found")?;
     let event = config
         .events
         .first()
@@ -210,7 +210,16 @@ pub async fn test(
 
 fn validate_destination(destination: &WebhookDestination) -> anyhow::Result<()> {
     match destination {
-        WebhookDestination::Http(config) => validate_url(&config.url),
+        WebhookDestination::Http(config) => {
+            validate_url(&config.url)?;
+            for (key, value) in &config.headers {
+                HeaderName::try_from(key)
+                    .map_err(|_| anyhow::anyhow!("invalid header name: {key}"))?;
+                HeaderValue::try_from(value)
+                    .map_err(|_| anyhow::anyhow!("invalid header value for {key}"))?;
+            }
+            Ok(())
+        }
     }
 }
 
