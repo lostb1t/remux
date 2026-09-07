@@ -1,33 +1,97 @@
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
+use remux_sdks::remux::PlayMethod;
 use tracing::warn;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Default)]
-pub struct PlaybackStartedInfo {
+pub struct PlaybackContext {
     pub user_id: Uuid,
     pub media_id: Uuid,
-    pub session_id: String,
-    pub position_ticks: i64,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct PlaybackProgressInfo {
-    pub user_id: Uuid,
-    pub media_id: Uuid,
-    pub session_id: String,
     pub position_ticks: i64,
     pub is_paused: bool,
+    pub played: bool,
+    pub session_id: String,
+    pub device_id: String,
+    pub device_name: String,
+    pub client_name: String,
+    pub remote_endpoint: Option<String>,
+    pub media_source_id: Option<String>,
+    pub play_method: Option<PlayMethod>,
+    pub audio_stream_index: Option<i32>,
+    pub subtitle_stream_index: Option<i32>,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct PlaybackStoppedInfo {
-    pub user_id: Uuid,
-    pub media_id: Uuid,
-    pub session_id: String,
-    pub position_ticks: i64,
-    pub played: bool,
+impl PlaybackContext {
+    pub fn from_parts(
+        session: &crate::db::auth::AuthSession,
+        data: &remux_sdks::remux::PlaybackInfo,
+        playback: Option<&crate::playback_session::PlaybackSession>,
+        play_session_id: Option<&str>,
+    ) -> Self {
+        Self {
+            session_id: play_session_id
+                .map(str::to_owned)
+                .or_else(|| {
+                    data.play_session_id
+                        .clone()
+                })
+                .or_else(|| {
+                    playback.map(|p| {
+                        p.play_session_id
+                            .clone()
+                    })
+                })
+                .unwrap_or_default(),
+            device_id: session
+                .device
+                .id
+                .clone(),
+            device_name: session
+                .device
+                .name
+                .clone(),
+            client_name: session
+                .device
+                .app_name
+                .clone(),
+            remote_endpoint: session
+                .device
+                .remote_ip
+                .clone(),
+            media_source_id: data
+                .media_source_id
+                .clone()
+                .or_else(|| {
+                    playback.and_then(|p| {
+                        p.media_source_id
+                            .clone()
+                    })
+                }),
+            play_method: data
+                .play_method
+                .clone()
+                .or_else(|| {
+                    playback
+                        .and_then(|p| {
+                            p.play_method
+                                .as_deref()
+                        })
+                        .and_then(|m| {
+                            m.parse()
+                                .ok()
+                        })
+                }),
+            audio_stream_index: data
+                .audio_stream_index
+                .or_else(|| playback.and_then(|p| p.audio_stream_index)),
+            subtitle_stream_index: data
+                .subtitle_stream_index
+                .or_else(|| playback.and_then(|p| p.subtitle_stream_index)),
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -91,9 +155,9 @@ pub struct RemoteCommandInfo {
 
 #[derive(Debug, Clone)]
 pub enum Event {
-    PlaybackStarted(PlaybackStartedInfo),
-    PlaybackProgress(PlaybackProgressInfo),
-    PlaybackStopped(PlaybackStoppedInfo),
+    PlaybackStarted(PlaybackContext),
+    PlaybackProgress(PlaybackContext),
+    PlaybackStopped(PlaybackContext),
     MarkPlayed(MarkPlayedInfo),
     MarkUnplayed(MarkUnplayedInfo),
     MarkFavorite(MarkFavoriteInfo),

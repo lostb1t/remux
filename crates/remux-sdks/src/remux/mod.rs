@@ -20,6 +20,191 @@ use uuid::Uuid;
 pub use crate::stremio::ResourceType;
 use crate::{Auth, Body, Endpoint, RestClient, stremio};
 
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum_macros::Display,
+    strum_macros::EnumString,
+)]
+#[serde(rename_all = "PascalCase")]
+#[strum(serialize_all = "PascalCase")]
+pub enum WebhookEvent {
+    #[serde(alias = "PlaybackStarted")]
+    #[strum(
+        to_string = "PlaybackStart",
+        serialize = "PlaybackStart",
+        serialize = "PlaybackStarted"
+    )]
+    PlaybackStart,
+    PlaybackProgress,
+    #[serde(alias = "PlaybackStopped")]
+    #[strum(
+        to_string = "PlaybackStop",
+        serialize = "PlaybackStop",
+        serialize = "PlaybackStopped"
+    )]
+    PlaybackStop,
+    UserDataSaved,
+    UserUpdated,
+    UserDeleted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpWebhookConfig {
+    pub url: String,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", content = "config", rename_all = "snake_case")]
+pub enum WebhookDestination {
+    Http(HttpWebhookConfig),
+}
+
+impl Default for WebhookDestination {
+    fn default() -> Self {
+        Self::Http(HttpWebhookConfig::default())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookConfig {
+    pub id: Uuid,
+    pub name: String,
+    pub enabled: bool,
+    #[serde(default)]
+    pub destination: WebhookDestination,
+    #[serde(default)]
+    pub events: Vec<WebhookEvent>,
+    #[serde(default)]
+    pub user_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub media_types: Vec<String>,
+    #[serde(default)]
+    pub template: String,
+    #[serde(default)]
+    pub fields: HashMap<String, String>,
+    #[serde(default)]
+    pub send_all_properties: bool,
+    #[serde(default)]
+    pub trim_whitespace: bool,
+    #[serde(default)]
+    pub skip_empty_body: bool,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GetWebhooks;
+impl Endpoint for GetWebhooks {
+    type Output = Vec<WebhookConfig>;
+    fn path(&self) -> String {
+        "/remux/webhooks".into()
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CreateWebhook {
+    pub config: WebhookConfig,
+}
+impl Endpoint for CreateWebhook {
+    type Output = WebhookConfig;
+    fn path(&self) -> String {
+        "/remux/webhooks".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.config).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateWebhook {
+    pub config: WebhookConfig,
+}
+impl Endpoint for UpdateWebhook {
+    type Output = WebhookConfig;
+    fn path(&self) -> String {
+        format!(
+            "/remux/webhooks/{}",
+            self.config
+                .id
+        )
+    }
+    fn method(&self) -> Method {
+        Method::PUT
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.config).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeleteWebhook {
+    pub id: Uuid,
+}
+impl Endpoint for DeleteWebhook {
+    type Output = serde_json::Value;
+    fn path(&self) -> String {
+        format!("/remux/webhooks/{}", self.id)
+    }
+    fn method(&self) -> Method {
+        Method::DELETE
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewWebhook {
+    pub template: String,
+    pub send_all_properties: bool,
+    pub trim_whitespace: bool,
+}
+impl Endpoint for PreviewWebhook {
+    type Output = WebhookTestResponse;
+    fn path(&self) -> String {
+        "/remux/webhooks/preview".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(self).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TestWebhook {
+    pub id: Uuid,
+}
+impl Endpoint for TestWebhook {
+    type Output = WebhookTestResponse;
+    fn path(&self) -> String {
+        format!("/remux/webhooks/{}/test", self.id)
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookTestResponse {
+    pub body: String,
+}
+
 fn serialize_comma<S>(v: &[String], s: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
@@ -6825,6 +7010,25 @@ impl Endpoint for RegenerateCollectionImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn webhook_destination_round_trips_as_tagged_config() {
+        let destination = WebhookDestination::Http(HttpWebhookConfig {
+            url: "https://example.com/hook".to_string(),
+            headers: HashMap::from([(
+                "Authorization".to_string(),
+                "Bearer token".to_string(),
+            )]),
+        });
+        let json = serde_json::to_value(&destination).unwrap();
+        assert_eq!(json["kind"], "http");
+        assert_eq!(json["config"]["url"], "https://example.com/hook");
+        assert_eq!(json["config"]["headers"]["Authorization"], "Bearer token");
+        assert_eq!(
+            serde_json::from_value::<WebhookDestination>(json).unwrap(),
+            destination
+        );
+    }
 
     #[test]
     fn get_items_query_deserializes_any_provider_id_equals() {

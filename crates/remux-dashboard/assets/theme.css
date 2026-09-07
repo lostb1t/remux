@@ -544,6 +544,47 @@ html, body {
   color: var(--text-dim);
 }
 
+/* Keep the webhook editor from widening on small screens. */
+.webhooks-layout {
+  display: grid;
+  grid-template-columns: minmax(0, .8fr) minmax(0, 1.4fr);
+  gap: 24px;
+  min-width: 0;
+}
+.webhooks-list, .webhooks-form { min-width: 0; }
+.webhooks-form { display: flex; flex-direction: column; gap: 14px; }
+.webhooks-form .field-input { min-width: 0; max-width: 100%; box-sizing: border-box; }
+
+@media (max-width: 640px) {
+  .webhooks-layout { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+}
+
+.webhooks-toolbar { display: flex; justify-content: flex-end; margin-bottom: 16px; }
+.webhooks-table-wrap { width: 100%; overflow-x: auto; }
+.webhooks-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.webhooks-table th, .webhooks-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; }
+.webhooks-table th { color: var(--text-secondary); font: 600 .68rem var(--font-mono); letter-spacing: .08em; text-transform: uppercase; }
+.webhooks-table td { font-size: .78rem; }
+.webhooks-url { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); color: var(--text-secondary); }
+.webhooks-actions { display: flex; gap: 6px; justify-content: flex-end; }
+.webhooks-status { color: var(--text-dim); font-family: var(--font-mono); font-size: .7rem; }
+.webhooks-status-on { color: var(--primary); }
+.webhook-event-switches { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 16px; }
+.webhook-event-switch { border-bottom: 1px solid var(--border); }
+.webhook-header-list { display: flex; flex-direction: column; gap: 8px; }
+.webhook-header-row { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr) auto; gap: 8px; align-items: center; }
+.webhook-header-delete { white-space: nowrap; }
+.webhook-add-header { align-self: flex-start; margin-top: 8px; }
+
+@media (max-width: 640px) {
+  .webhooks-table th:nth-child(2), .webhooks-table td:nth-child(2) { display: none; }
+  .webhooks-table th, .webhooks-table td { padding: 9px 6px; }
+  .webhooks-actions { flex-direction: column; align-items: stretch; }
+  .webhook-event-switches { grid-template-columns: minmax(0, 1fr); }
+  .webhook-header-row { grid-template-columns: minmax(0, 1fr); }
+  .webhook-header-delete { justify-self: start; }
+}
+
 /* ── Alert ───────────────────────────────────────────────────────── */
 .alert-error {
   padding: 10px 13px;

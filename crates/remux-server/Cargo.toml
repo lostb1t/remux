@@ -128,6 +128,7 @@ opendal = { version = "0.52", features = ["services-webdav", "services-fs"] }
 
 librqbit = { version = "8", default-features = false, features = ["rust-tls", "http-api", "tracing-subscriber-utils"] }
 regex = "1"
+handlebars = "6"
 hunch = "2"
 log = "0.4"
 env_logger = "0.11"
