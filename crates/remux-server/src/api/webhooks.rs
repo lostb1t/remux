@@ -66,12 +66,12 @@ fn config_from(id: Uuid, p: SaveWebhook) -> Webhook {
         enabled: p
             .enabled
             .unwrap_or(true),
-        destination: p.destination,
-        events: p.events,
-        user_ids: p.user_ids,
-        media_types: p.media_types,
+        destination: sqlx::types::Json(p.destination),
+        events: sqlx::types::Json(p.events),
+        user_ids: sqlx::types::Json(p.user_ids),
+        media_types: sqlx::types::Json(p.media_types),
         template: p.template,
-        fields: p.fields,
+        fields: sqlx::types::Json(p.fields),
         send_all_properties: p.send_all_properties,
         trim_whitespace: p.trim_whitespace,
         skip_empty_body: p.skip_empty_body,
@@ -680,7 +680,10 @@ async fn send_webhook(
         return Ok(String::new());
     }
     if let Some(obj) = context.as_object_mut() {
-        for (k, v) in &config.fields {
+        for (k, v) in &config
+            .fields
+            .0
+        {
             obj.insert(k.clone(), Value::String(v.clone()));
         }
     }
@@ -698,7 +701,10 @@ async fn send_webhook(
         return Ok(body);
     }
 
-    match &config.destination {
+    match &config
+        .destination
+        .0
+    {
         WebhookDestination::Http(destination) => {
             deliver_http(destination, &body, config.id, event).await?
         }
