@@ -571,6 +571,7 @@ html, body {
 .webhooks-status-on { color: var(--primary); }
 .webhook-event-switches { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 16px; }
 .webhook-event-switch { border-bottom: 1px solid var(--border); }
+.webhook-hint { color: var(--text-muted); font-size: .7rem; margin: -4px 0 6px; }
 .webhook-header-list { display: flex; flex-direction: column; gap: 8px; }
 .webhook-header-row { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr) auto; gap: 8px; align-items: center; }
 .webhook-header-delete { white-space: nowrap; }

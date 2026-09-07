@@ -6,8 +6,8 @@ use crate::{
 };
 use dioxus::prelude::*;
 use remux_sdks::remux::{
-    CreateWebhook, DeleteWebhook, GetWebhooks, HttpWebhookConfig, UpdateWebhook,
-    WebhookConfig, WebhookDestination, WebhookEvent,
+    CreateWebhook, DeleteWebhook, GetUsers, GetWebhooks, HttpWebhookConfig,
+    UpdateWebhook, UserDto, WebhookConfig, WebhookDestination, WebhookEvent,
 };
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -39,6 +39,8 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
             .copied()
             .collect::<Vec<_>>()
     });
+    let mut selected_user_ids = use_signal(Vec::<Uuid>::new);
+    let mut users = use_signal(Vec::<UserDto>::new);
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(|| Option::<String>::None);
@@ -59,6 +61,25 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
         });
     });
 
+    let users_client = app_state.clone();
+    use_effect(move || {
+        let client = users_client.clone();
+        spawn(async move {
+            match client
+                .execute(GetUsers)
+                .await
+            {
+                Ok(list) => users.set(list),
+                Err(e) => {
+                    error.set(Some(format!(
+                        "Failed to load users: {}",
+                        e.user_message()
+                    )));
+                }
+            }
+        });
+    });
+
     let mut open_new = move || {
         editing_id.set(None);
         editing_config.set(None);
@@ -74,6 +95,7 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
                 .copied()
                 .collect(),
         );
+        selected_user_ids.set(Vec::new());
         error.set(None);
         show_editor.set(true);
     };
@@ -95,6 +117,7 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
         headers.set(header_rows);
         enabled.set(hook.enabled);
         selected_events.set(hook.events);
+        selected_user_ids.set(hook.user_ids);
         error.set(None);
         show_editor.set(true);
     };
@@ -138,6 +161,9 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
                 .collect::<HashMap<_, _>>(),
         });
         config.events = selected_events
+            .peek()
+            .clone();
+        config.user_ids = selected_user_ids
             .peek()
             .clone();
         config.template = template
@@ -219,6 +245,26 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
                         let checked = selected_events.read().contains(&event_name);
                         rsx! { div { class: "toggle-row webhook-event-switch", div { class: "toggle-row-text", span { class: "toggle-label", "{event_name}" } }, Switch { checked, on_change: move |value| { let mut events = selected_events.write(); if value { if !events.contains(&event_name) { events.push(event_name); } } else { events.retain(|selected| selected != &event_name); } } } } }
                     } } } }
+                    div { class: "form-group",
+                        label { class: "form-label", "Users" }
+                        div { class: "webhook-hint", "Leave all off to notify for every user" }
+                        div { class: "webhook-event-switches", {
+                            let known = users.read();
+                            let selected = selected_user_ids.read();
+                            let mut entries: Vec<(Uuid, String, bool)> = known
+                                .iter()
+                                .map(|u| (u.id, u.name.clone(), selected.contains(&u.id)))
+                                .collect();
+                            for id in selected.iter() {
+                                if !known.iter().any(|u| u.id == *id) {
+                                    entries.push((*id, format!("Unknown user ({id})"), true));
+                                }
+                            }
+                            rsx! { for (user_id, user_name, checked) in entries {
+                                div { key: "{user_id}", class: "toggle-row webhook-event-switch", div { class: "toggle-row-text", span { class: "toggle-label", "{user_name}" } }, Switch { checked, on_change: move |value| { let mut ids = selected_user_ids.write(); if value { if !ids.contains(&user_id) { ids.push(user_id); } } else { ids.retain(|selected| selected != &user_id); } } } }
+                            } }
+                        } }
+                    }
                     div { class: "form-group",
                         label { class: "form-label", "HTTP headers" }
                         div { class: "webhook-header-list",
