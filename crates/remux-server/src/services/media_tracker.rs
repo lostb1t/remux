@@ -474,15 +474,13 @@ mod tests {
         // returns immediately without calling handle, but we can test that
         // handle on an unrelated event returns Ok.
         let result = sub
-            .handle(Event::PlaybackProgress(
-                crate::signals::PlaybackProgressInfo {
-                    user_id: uid,
-                    media_id: media.id,
-                    position_ticks: 1000,
-                    is_paused: false,
-                    ..Default::default()
-                },
-            ))
+            .handle(Event::PlaybackProgress(crate::signals::PlaybackContext {
+                user_id: uid,
+                media_id: media.id,
+                position_ticks: 1000,
+                is_paused: false,
+                ..Default::default()
+            }))
             .await;
 
         assert!(result.is_ok());
