@@ -65,11 +65,17 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
     use_effect(move || {
         let client = users_client.clone();
         spawn(async move {
-            if let Ok(list) = client
+            match client
                 .execute(GetUsers)
                 .await
             {
-                users.set(list);
+                Ok(list) => users.set(list),
+                Err(e) => {
+                    error.set(Some(format!(
+                        "Failed to load users: {}",
+                        e.user_message()
+                    )));
+                }
             }
         });
     });
@@ -242,12 +248,22 @@ pub fn WebhooksPage(app_state: AppState) -> Element {
                     div { class: "form-group",
                         label { class: "form-label", "Users" }
                         div { class: "webhook-hint", "Leave all off to notify for every user" }
-                        div { class: "webhook-event-switches", for user in users.read().iter() { {
-                            let user_id = user.id;
-                            let user_name = user.name.clone();
-                            let checked = selected_user_ids.read().contains(&user_id);
-                            rsx! { div { class: "toggle-row webhook-event-switch", div { class: "toggle-row-text", span { class: "toggle-label", "{user_name}" } }, Switch { checked, on_change: move |value| { let mut ids = selected_user_ids.write(); if value { if !ids.contains(&user_id) { ids.push(user_id); } } else { ids.retain(|selected| selected != &user_id); } } } } }
-                        } } }
+                        div { class: "webhook-event-switches", {
+                            let known = users.read();
+                            let selected = selected_user_ids.read();
+                            let mut entries: Vec<(Uuid, String, bool)> = known
+                                .iter()
+                                .map(|u| (u.id, u.name.clone(), selected.contains(&u.id)))
+                                .collect();
+                            for id in selected.iter() {
+                                if !known.iter().any(|u| u.id == *id) {
+                                    entries.push((*id, format!("Unknown user ({id})"), true));
+                                }
+                            }
+                            rsx! { for (user_id, user_name, checked) in entries {
+                                div { key: "{user_id}", class: "toggle-row webhook-event-switch", div { class: "toggle-row-text", span { class: "toggle-label", "{user_name}" } }, Switch { checked, on_change: move |value| { let mut ids = selected_user_ids.write(); if value { if !ids.contains(&user_id) { ids.push(user_id); } } else { ids.retain(|selected| selected != &user_id); } } } }
+                            } }
+                        } }
                     }
                     div { class: "form-group",
                         label { class: "form-label", "HTTP headers" }
