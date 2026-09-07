@@ -1,13 +1,13 @@
 use anyhow::Result;
 use remux_sdks::remux::{WebhookDestination, WebhookEvent};
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 use std::collections::HashMap;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct WebhookConfig {
+pub struct Webhook {
     pub id: Uuid,
     pub name: String,
     #[serde(default = "default_true")]
@@ -36,26 +36,50 @@ fn default_true() -> bool {
     true
 }
 
-impl WebhookConfig {
+impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for Webhook {
+    fn from_row(row: &'r sqlx::sqlite::SqliteRow) -> sqlx::Result<Self> {
+        let destination: String = row.try_get("destination")?;
+        let events: String = row.try_get("events")?;
+        let user_ids: String = row.try_get("user_ids")?;
+        let media_types: String = row.try_get("media_types")?;
+        let fields: String = row.try_get("fields")?;
+        Ok(Self {
+            id: row.try_get("id")?,
+            name: row.try_get("name")?,
+            enabled: row.try_get("enabled")?,
+            destination: serde_json::from_str(&destination)
+                .map_err(|e| sqlx::Error::Decode(e.into()))?,
+            events: serde_json::from_str(&events)
+                .map_err(|e| sqlx::Error::Decode(e.into()))?,
+            user_ids: serde_json::from_str(&user_ids)
+                .map_err(|e| sqlx::Error::Decode(e.into()))?,
+            media_types: serde_json::from_str(&media_types)
+                .map_err(|e| sqlx::Error::Decode(e.into()))?,
+            template: row.try_get("template")?,
+            fields: serde_json::from_str(&fields)
+                .map_err(|e| sqlx::Error::Decode(e.into()))?,
+            send_all_properties: row.try_get("send_all_properties")?,
+            trim_whitespace: row.try_get("trim_whitespace")?,
+            skip_empty_body: row.try_get("skip_empty_body")?,
+        })
+    }
+}
+
+impl Webhook {
     pub async fn list(db: &SqlitePool) -> Result<Vec<Self>> {
-        let rows = sqlx::query_as::<_, WebhookRow>(
+        Ok(sqlx::query_as::<_, Self>(
             "SELECT * FROM webhooks ORDER BY name COLLATE NOCASE",
         )
         .fetch_all(db)
-        .await?;
-        rows.into_iter()
-            .map(WebhookRow::into_config)
-            .collect()
+        .await?)
     }
 
     pub async fn get(db: &SqlitePool, id: Uuid) -> Result<Option<Self>> {
         Ok(
-            sqlx::query_as::<_, WebhookRow>("SELECT * FROM webhooks WHERE id = ?")
+            sqlx::query_as::<_, Self>("SELECT * FROM webhooks WHERE id = ?")
                 .bind(id)
                 .fetch_optional(db)
-                .await?
-                .map(WebhookRow::into_config)
-                .transpose()?,
+                .await?,
         )
     }
 
@@ -76,39 +100,5 @@ impl WebhookConfig {
             .execute(db)
             .await?;
         Ok(())
-    }
-}
-
-#[derive(sqlx::FromRow)]
-struct WebhookRow {
-    id: Uuid,
-    name: String,
-    enabled: bool,
-    destination: String,
-    events: String,
-    user_ids: String,
-    media_types: String,
-    template: String,
-    fields: String,
-    send_all_properties: bool,
-    trim_whitespace: bool,
-    skip_empty_body: bool,
-}
-impl WebhookRow {
-    fn into_config(self) -> Result<WebhookConfig> {
-        Ok(WebhookConfig {
-            id: self.id,
-            name: self.name,
-            enabled: self.enabled,
-            destination: serde_json::from_str(&self.destination)?,
-            events: serde_json::from_str(&self.events)?,
-            user_ids: serde_json::from_str(&self.user_ids)?,
-            media_types: serde_json::from_str(&self.media_types)?,
-            template: self.template,
-            fields: serde_json::from_str(&self.fields)?,
-            send_all_properties: self.send_all_properties,
-            trim_whitespace: self.trim_whitespace,
-            skip_empty_body: self.skip_empty_body,
-        })
     }
 }

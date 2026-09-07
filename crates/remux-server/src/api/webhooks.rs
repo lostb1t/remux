@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 use crate::{
     AppContext, AppState,
-    db::{self, WebhookConfig, auth::AdminSession},
+    db::{self, Webhook, auth::AdminSession},
     signals::{DeliveryMode, Event, EventType, PlaybackContext, Subscriber},
 };
 use async_trait::async_trait;
@@ -59,8 +59,8 @@ pub struct SaveWebhook {
     pub skip_empty_body: bool,
 }
 
-fn config_from(id: Uuid, p: SaveWebhook) -> WebhookConfig {
-    WebhookConfig {
+fn config_from(id: Uuid, p: SaveWebhook) -> Webhook {
+    Webhook {
         id,
         name: p.name,
         enabled: p
@@ -82,9 +82,9 @@ fn config_from(id: Uuid, p: SaveWebhook) -> WebhookConfig {
 pub async fn list(
     State(state): State<AppState>,
     _session: AdminSession,
-) -> Result<Json<Vec<WebhookConfig>>> {
+) -> Result<Json<Vec<Webhook>>> {
     Ok(Json(
-        WebhookConfig::list(
+        Webhook::list(
             &state
                 .ctx
                 .db,
@@ -117,9 +117,9 @@ pub async fn update(
     _session: AdminSession,
     Path(id): Path<Uuid>,
     Json(p): Json<SaveWebhook>,
-) -> Result<Json<WebhookConfig>> {
+) -> Result<Json<Webhook>> {
     validate_destination(&p.destination)?;
-    WebhookConfig::get(
+    Webhook::get(
         &state
             .ctx
             .db,
@@ -144,7 +144,7 @@ pub async fn delete(
     _session: AdminSession,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode> {
-    WebhookConfig::delete(
+    Webhook::delete(
         &state
             .ctx
             .db,
@@ -191,7 +191,7 @@ pub async fn test(
     _session: AdminSession,
     Path(id): Path<Uuid>,
 ) -> Result<Json<PreviewResponse>> {
-    let config = WebhookConfig::get(
+    let config = Webhook::get(
         &state
             .ctx
             .db,
@@ -661,7 +661,7 @@ impl HelperDef for JsonEncodeHelper {
 }
 
 async fn send_webhook(
-    config: &WebhookConfig,
+    config: &Webhook,
     event: WebhookEvent,
     mut context: Value,
 ) -> anyhow::Result<String> {
@@ -910,7 +910,7 @@ impl Subscriber for WebhookSubscriber {
             }
             _ => return Ok(()),
         };
-        let configs = WebhookConfig::list(
+        let configs = Webhook::list(
             &self
                 .ctx
                 .db,
