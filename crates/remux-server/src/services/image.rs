@@ -391,26 +391,35 @@ impl ImageService {
         Ok((bytes, ct))
     }
 
-    /// Disk-cached wrapper around `synthetic_thumb`: serves the cached
-    /// composite for `id` from `cache_dir()` if one exists, otherwise
-    /// generates it and writes it there. Never registered in `media_images` —
-    /// purely a cache entry, wiped like any other by `ClearImageCacheTask`,
-    /// and regenerated from whatever Backdrop/Logo exist next time it's
-    /// missing (e.g. after a cache clear, or once a real Thumb replaces it).
+    /// Disk-cached wrapper around `synthetic_thumb`, keyed on the *source*
+    /// Backdrop/Logo row ids rather than the media id: `sync_from_media`
+    /// regenerates an image's id whenever a refresh replaces it, so keying
+    /// on those ids means a stale composite is never served — a changed
+    /// Backdrop or Logo naturally misses the old cache file and regenerates.
+    /// Never registered in `media_images` — purely a cache entry, wiped like
+    /// any other by `ClearImageCacheTask`. Returns the derived cache key
+    /// alongside the bytes so the caller can reuse it as `process_image`'s
+    /// `source_key`, giving per-size variants the same change-detection.
     pub async fn cached_synthetic_thumb(
         data_dir: &std::path::Path,
-        id: Uuid,
+        backdrop_id: Uuid,
+        logo_id: Option<Uuid>,
         backdrop_path: &str,
         logo_path: Option<&str>,
         title: &str,
-    ) -> anyhow::Result<Vec<u8>> {
-        let path = Self::cache_dir(data_dir).join(format!("synthetic-thumb-{id}.jpg"));
+    ) -> anyhow::Result<(Vec<u8>, String)> {
+        let cache_key = Uuid::new_v5(
+            &Uuid::NAMESPACE_URL,
+            format!("synthetic-thumb|{backdrop_id}|{logo_id:?}").as_bytes(),
+        )
+        .to_string();
+        let path = Self::cache_dir(data_dir).join(format!("{cache_key}.jpg"));
         if path.exists() {
-            return Ok(tokio::fs::read(&path).await?);
+            return Ok((tokio::fs::read(&path).await?, cache_key));
         }
         let bytes = Self::synthetic_thumb(backdrop_path, logo_path, title).await?;
         Self::write_image_to_disk(&path, &bytes).await?;
-        Ok(bytes)
+        Ok((bytes, cache_key))
     }
 
     /// Composite a landscape Thumb from a Backdrop and, if available, a Logo —
@@ -1814,14 +1823,12 @@ mod tests {
             .unwrap();
 
         let data_dir = tempfile::tempdir().unwrap();
-        let id = Uuid::new_v4();
-        let cache_path = ImageService::cache_dir(data_dir.path())
-            .join(format!("synthetic-thumb-{id}.jpg"));
-        assert!(!cache_path.exists());
+        let backdrop_id = Uuid::new_v4();
 
-        let first = ImageService::cached_synthetic_thumb(
+        let (first, cache_key) = ImageService::cached_synthetic_thumb(
             data_dir.path(),
-            id,
+            backdrop_id,
+            None,
             backdrop_path
                 .to_str()
                 .unwrap(),
@@ -1830,14 +1837,17 @@ mod tests {
         )
         .await
         .unwrap();
+        let cache_path =
+            ImageService::cache_dir(data_dir.path()).join(format!("{cache_key}.jpg"));
         assert!(cache_path.exists(), "composite should be written to disk");
 
-        // Deleting the source backdrop proves a second call is served from
-        // the cache file rather than regenerated.
+        // Deleting the source backdrop proves a second call for the same
+        // backdrop/logo ids is served from the cache file, not regenerated.
         std::fs::remove_file(&backdrop_path).unwrap();
-        let second = ImageService::cached_synthetic_thumb(
+        let (second, _) = ImageService::cached_synthetic_thumb(
             data_dir.path(),
-            id,
+            backdrop_id,
+            None,
             backdrop_path
                 .to_str()
                 .unwrap(),
@@ -1847,5 +1857,49 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(first, second);
+    }
+
+    #[tokio::test]
+    async fn cached_synthetic_thumb_regenerates_when_the_backdrop_changes() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let backdrop_path = source_dir
+            .path()
+            .join("backdrop.jpg");
+        RgbImage::from_pixel(1280, 720, Rgb([40, 60, 80]))
+            .save(&backdrop_path)
+            .unwrap();
+
+        let data_dir = tempfile::tempdir().unwrap();
+
+        let (_, first_key) = ImageService::cached_synthetic_thumb(
+            data_dir.path(),
+            Uuid::new_v4(),
+            None,
+            backdrop_path
+                .to_str()
+                .unwrap(),
+            None,
+            "Some Title",
+        )
+        .await
+        .unwrap();
+
+        // A refresh that replaces the Backdrop gets a new `media_images` row
+        // id (see `sync_from_media`) — the cache key must follow it so the
+        // stale composite is never served for the new artwork.
+        let (_, second_key) = ImageService::cached_synthetic_thumb(
+            data_dir.path(),
+            Uuid::new_v4(),
+            None,
+            backdrop_path
+                .to_str()
+                .unwrap(),
+            None,
+            "Some Title",
+        )
+        .await
+        .unwrap();
+
+        assert_ne!(first_key, second_key);
     }
 }

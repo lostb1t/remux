@@ -167,31 +167,26 @@ async fn items_images_inner(
                         .images
                         .get(ImageKind::Backdrop)
                 {
-                    let logo_path = media
+                    let logo = media
                         .images
-                        .get(ImageKind::Logo)
-                        .map(|l| {
-                            l.path
-                                .clone()
-                        });
-                    let bytes = ImageService::cached_synthetic_thumb(
+                        .get(ImageKind::Logo);
+                    let (bytes, cache_key) = ImageService::cached_synthetic_thumb(
                         &state
                             .ctx
                             .config
                             .data_dir,
-                        id,
+                        backdrop.id,
+                        logo.map(|l| l.id),
                         &backdrop.path,
-                        logo_path.as_deref(),
+                        logo.map(|l| {
+                            l.path
+                                .as_str()
+                        }),
                         &media.title,
                     )
                     .await
                     .context_internal("thumb generation failed")?;
-                    (
-                        bytes,
-                        "image/jpeg".to_string(),
-                        format!("synthetic-thumb:{id}"),
-                        false,
-                    )
+                    (bytes, "image/jpeg".to_string(), cache_key, false)
                 } else if matches!(
                     image_type,
                     api::ImageType::Primary
