@@ -685,7 +685,10 @@ pub fn CollectionForm(
         .is_some();
     let mut has_custom_image_source = use_signal(|| existing_custom_image_source);
     let is_gif_poster = use_memo(move || {
-        if let Some(bytes) = pending_image_bytes
+        if !*has_image.read() {
+            // No image at all (e.g. just deleted) — nothing to gate on.
+            false
+        } else if let Some(bytes) = pending_image_bytes
             .read()
             .as_ref()
         {
