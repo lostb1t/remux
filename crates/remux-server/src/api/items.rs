@@ -2641,6 +2641,57 @@ pub async fn get_music_genre_by_name(
     Ok(Json(api::db_media_to_item(genre, false)))
 }
 
+// Tailored per item kind, mirroring how real Jellyfin's built-in providers
+// each declare a `Supports(item)`/`Type` — e.g. IMDb has no type
+// restriction, TmdbSeriesExternalId only supports Series, etc. `ProviderIds`
+// only ever carries `imdb`/`tmdb`/`tvdb` (see that struct in remux-sdks) —
+// there's no separate collection/slug variant to key a
+// `TmdbCollection`/`TvdbCollection`/`TvdbSlug` field off, so those are left
+// out entirely rather than rendering as fields that can never hold a value.
+// Collection is excluded entirely: `TmdbAddon::supports` (and every other
+// meta addon) never fetches for `MediaKind::Collection`, so an id typed into
+// that field here would never be acted on by anything.
+fn external_id_infos_for_kind(kind: db::MediaKind) -> Vec<api::ExternalIdInfo> {
+    let jellyfin_type = |t: &str| Some(t.to_string());
+    match kind {
+        db::MediaKind::Movie
+        | db::MediaKind::Series
+        | db::MediaKind::Season
+        | db::MediaKind::Episode
+        | db::MediaKind::Person => {
+            let type_name = match kind {
+                db::MediaKind::Movie => "Movie",
+                db::MediaKind::Series => "Series",
+                db::MediaKind::Season => "Season",
+                db::MediaKind::Episode => "Episode",
+                db::MediaKind::Person => "Person",
+                _ => unreachable!(),
+            };
+            vec![
+                api::ExternalIdInfo {
+                    name: "IMDb".to_string(),
+                    key: "Imdb".to_string(),
+                    type_: None,
+                    url_format_string: None,
+                },
+                api::ExternalIdInfo {
+                    name: "TheMovieDb".to_string(),
+                    key: "Tmdb".to_string(),
+                    type_: jellyfin_type(type_name),
+                    url_format_string: None,
+                },
+                api::ExternalIdInfo {
+                    name: "TheTVDB".to_string(),
+                    key: "Tvdb".to_string(),
+                    type_: jellyfin_type(type_name),
+                    url_format_string: None,
+                },
+            ]
+        }
+        _ => vec![],
+    }
+}
+
 #[get("/items/{id}/metadataeditor")]
 pub async fn items_metadata_editor(
     State(state): State<AppState>,
@@ -2713,47 +2764,24 @@ pub async fn items_metadata_editor(
             .cmp(&b.display_name)
     });
 
-    let external_id_infos: Vec<api::ExternalIdInfo> = vec![
-        ("IMDb", "Imdb", None),
-        ("TheMovieDb", "Tmdb", Some("Movie")),
-        ("TheMovieDb", "TmdbCollection", Some("BoxSet")),
-        ("TheTVDB", "TvdbCollection", Some("BoxSet")),
-        ("TheTVDB Numerical", "Tvdb", Some("Movie")),
-        ("TheTVDB Slug", "TvdbSlug", Some("Movie")),
-    ]
-    .into_iter()
-    .map(|(name, key, type_)| api::ExternalIdInfo {
-        name: name.to_string(),
-        key: key.to_string(),
-        type_: type_.map(str::to_string),
-        url_format_string: None,
-    })
-    .collect();
+    let external_id_infos = external_id_infos_for_kind(item.kind);
 
-    let content_type_options: Vec<String> = vec![
-        db::MediaKind::Movie,
-        db::MediaKind::Series,
-        db::MediaKind::Season,
-        db::MediaKind::Episode,
-        db::MediaKind::Artist,
-        db::MediaKind::Album,
-        db::MediaKind::Track,
-        db::MediaKind::Playlist,
-    ]
-    .into_iter()
-    .map(|k| k.to_string())
-    .collect();
-
+    // Jellyfin only surfaces this when an item's containing library has no
+    // configured content type at all (e.g. a "Mixed content" library) or the
+    // item already has an explicit per-item override — it exists to resolve
+    // an ambiguity Jellyfin's own file scanner can hit ("is this a movie or
+    // an episode?"). Every `Media` row here already carries a definitively
+    // resolved `kind` from the moment it's imported, regardless of which
+    // addon produced it or how mixed that addon's source is, so this never
+    // applies — stays empty like it does for the overwhelming majority of
+    // real Jellyfin items too.
     Ok(Json(api::MetadataEditorInfo {
         parental_rating_options,
         countries,
         cultures,
         external_id_infos,
-        content_type: Some(
-            item.kind
-                .to_string(),
-        ),
-        content_type_options,
+        content_type: None,
+        content_type_options: vec![],
     }))
 }
 
@@ -3465,7 +3493,7 @@ pub async fn media_segments(
 
 #[cfg(test)]
 mod tests {
-    use super::RemoteImagesQuery;
+    use super::{RemoteImagesQuery, external_id_infos_for_kind};
     use chrono::Utc;
     use http::header::HeaderValue;
     use remux_sdks::remux::{
@@ -3497,6 +3525,63 @@ mod tests {
             Some("Primary")
         );
         assert_eq!(query.include_all_languages, Some(true));
+    }
+
+    #[test]
+    fn external_id_infos_tailored_to_movie() {
+        let infos = external_id_infos_for_kind(db::MediaKind::Movie);
+        let keys: Vec<&str> = infos
+            .iter()
+            .map(|i| {
+                i.key
+                    .as_str()
+            })
+            .collect();
+        assert_eq!(keys, vec!["Imdb", "Tmdb", "Tvdb"]);
+        assert_eq!(
+            infos
+                .iter()
+                .find(|i| i.key == "Tmdb")
+                .unwrap()
+                .type_,
+            Some("Movie".to_string())
+        );
+        assert_eq!(
+            infos
+                .iter()
+                .find(|i| i.key == "Imdb")
+                .unwrap()
+                .type_,
+            None
+        );
+    }
+
+    #[test]
+    fn external_id_infos_tailored_to_person() {
+        let infos = external_id_infos_for_kind(db::MediaKind::Person);
+        assert_eq!(
+            infos
+                .iter()
+                .find(|i| i.key == "Tvdb")
+                .unwrap()
+                .type_,
+            Some("Person".to_string())
+        );
+    }
+
+    #[test]
+    fn external_id_infos_empty_for_collection() {
+        // TmdbAddon::supports (and every other meta addon) never fetches
+        // for MediaKind::Collection, so a BoxSet's tmdb/tvdb id would be a
+        // dead-end field with no downstream effect.
+        assert!(external_id_infos_for_kind(db::MediaKind::Collection).is_empty());
+    }
+
+    #[test]
+    fn external_id_infos_empty_for_unsupported_kinds() {
+        assert!(external_id_infos_for_kind(db::MediaKind::Track).is_empty());
+        assert!(external_id_infos_for_kind(db::MediaKind::Album).is_empty());
+        assert!(external_id_infos_for_kind(db::MediaKind::Artist).is_empty());
     }
 
     async fn get_user_id(server: &axum_test::TestServer, auth: &str) -> String {
