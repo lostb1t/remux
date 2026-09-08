@@ -131,6 +131,7 @@ pub struct Season {
     pub season_number: i64,
     pub vote_average: Option<f64>,
     pub episodes: Option<Vec<Episode>>,
+    pub external_ids: Option<super::ExternalIds>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,5 +269,88 @@ impl Endpoint for SearchTvEndpoint {
 
     fn query_params(&self) -> impl serde::Serialize + '_ {
         self
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SeasonExternalIdsEndpoint {
+    pub series_id: i64,
+    pub season_number: i64,
+}
+
+impl Endpoint for SeasonExternalIdsEndpoint {
+    type Output = super::ExternalIds;
+
+    fn path(&self) -> String {
+        format!(
+            "tv/{}/season/{}/external_ids",
+            self.series_id, self.season_number
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EpisodeExternalIdsEndpoint {
+    pub series_id: i64,
+    pub season_number: i64,
+    pub episode_number: i64,
+}
+
+impl Endpoint for EpisodeExternalIdsEndpoint {
+    type Output = super::ExternalIds;
+
+    fn path(&self) -> String {
+        format!(
+            "tv/{}/season/{}/episode/{}/external_ids",
+            self.series_id, self.season_number, self.episode_number
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn external_id_endpoints_address_the_child_not_the_series() {
+        assert_eq!(
+            SeasonExternalIdsEndpoint {
+                series_id: 10,
+                season_number: 2
+            }
+            .path(),
+            "tv/10/season/2/external_ids"
+        );
+        assert_eq!(
+            EpisodeExternalIdsEndpoint {
+                series_id: 10,
+                season_number: 2,
+                episode_number: 3
+            }
+            .path(),
+            "tv/10/season/2/episode/3/external_ids"
+        );
+    }
+
+    #[test]
+    fn season_external_ids_are_optional_and_deserialized() {
+        let mut value =
+            serde_json::json!({"id": 20, "name": "Season 2", "season_number": 2});
+        let season: Season = serde_json::from_value(value.clone()).unwrap();
+        assert!(
+            season
+                .external_ids
+                .is_none()
+        );
+        value["external_ids"] = serde_json::json!({"tvdb_id": 456});
+        let season: Season = serde_json::from_value(value).unwrap();
+        let ids = season
+            .external_ids
+            .unwrap();
+        assert_eq!(ids.tvdb_id, Some(456));
+        assert!(
+            ids.imdb_id
+                .is_none()
+        );
     }
 }

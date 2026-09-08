@@ -653,6 +653,23 @@ fn trending_tv_stream(
 // TMDB SDK type → db::Media conversions
 // ---------------------------------------------------------------------------
 
+fn tmdb_external_ids(
+    tmdb_id: i64,
+    external: Option<&sdks::tmdb::ExternalIds>,
+) -> db::ExternalIds {
+    db::ExternalIds {
+        tmdb: Some(tmdb_id),
+        imdb: external
+            .and_then(|ids| {
+                ids.imdb_id
+                    .as_ref()
+            })
+            .and_then(|id| db::NonEmptyString::try_new(id.clone()).ok()),
+        tvdb: external.and_then(|ids| ids.tvdb_id),
+        ..Default::default()
+    }
+}
+
 impl From<&sdks::tmdb::Season> for db::Media {
     fn from(s: &sdks::tmdb::Season) -> Self {
         let air_date = s
@@ -666,10 +683,11 @@ impl From<&sdks::tmdb::Season> for db::Media {
                 .clone()
                 .filter(|o| !o.is_empty()),
             idx: Some(s.season_number),
-            external_ids: db::ExternalIds {
-                tmdb: Some(s.id),
-                ..Default::default()
-            },
+            external_ids: tmdb_external_ids(
+                s.id,
+                s.external_ids
+                    .as_ref(),
+            ),
             released_at: air_date,
             digital_released_at: air_date,
             ..Default::default()
@@ -708,10 +726,11 @@ impl From<&sdks::tmdb::Episode> for db::Media {
                 .filter(|o| !o.is_empty()),
             idx: Some(ep.episode_number),
             parent_idx: Some(ep.season_number),
-            external_ids: db::ExternalIds {
-                tmdb: Some(ep.id),
-                ..Default::default()
-            },
+            external_ids: tmdb_external_ids(
+                ep.id,
+                ep.external_ids
+                    .as_ref(),
+            ),
             released_at: ep
                 .air_date
                 .and_then(|d| d.and_hms_opt(0, 0, 0)),
@@ -1782,7 +1801,26 @@ async fn fetch_tmdb_meta(
                 else {
                     return Ok(None);
                 };
-                return Ok(Some(db::Media::from(ep)));
+                let mut patch = db::Media::from(ep);
+                match client
+                    .execute(
+                        sdks::tmdb::EpisodeExternalIdsEndpoint {
+                            series_id: tmdb_id,
+                            season_number: s_n,
+                            episode_number: e_n,
+                        }
+                        .with_cache(Duration::from_secs(360)),
+                    )
+                    .await
+                {
+                    Ok(ids) => patch
+                        .external_ids
+                        .merge(&tmdb_external_ids(ep.id, Some(&ids)), true),
+                    Err(error) => {
+                        warn!(%error, series_id = tmdb_id, season = s_n, episode = e_n, "TMDB episode external IDs unavailable")
+                    }
+                }
+                return Ok(Some(patch));
             }
         }
         db::MediaKind::Season => {
@@ -1896,6 +1934,29 @@ async fn fetch_tmdb_season_meta(
         db::ImageKind::Primary,
     ) {
         patch.set_image(db::ImageKind::Primary, url);
+    }
+    patch.external_ids = tmdb_external_ids(
+        season.id,
+        season
+            .external_ids
+            .as_ref(),
+    );
+    match client
+        .execute(
+            sdks::tmdb::SeasonExternalIdsEndpoint {
+                series_id: tmdb_id,
+                season_number: season_idx,
+            }
+            .with_cache(Duration::from_secs(360)),
+        )
+        .await
+    {
+        Ok(ids) => patch
+            .external_ids
+            .merge(&tmdb_external_ids(season.id, Some(&ids)), true),
+        Err(error) => {
+            warn!(%error, series_id = tmdb_id, season = season_idx, "TMDB season external IDs unavailable")
+        }
     }
     Ok(Some(patch))
 }
@@ -2349,6 +2410,116 @@ async fn tmdb_remote_images(
 mod tests {
     use super::*;
     use remux_sdks::Endpoint;
+
+    #[test]
+    fn season_and_episode_external_ids_are_mapped() {
+        let ids = sdks::tmdb::ExternalIds {
+            imdb_id: Some("tt1234567".into()),
+            tvdb_id: Some(456),
+        };
+        let season = sdks::tmdb::Season {
+            id: 123,
+            external_ids: Some(ids.clone()),
+            ..Default::default()
+        };
+        let episode = sdks::tmdb::Episode {
+            id: 789,
+            external_ids: Some(ids),
+            ..Default::default()
+        };
+        for (patch, tmdb) in [
+            (db::Media::from(&season), 123),
+            (db::Media::from(&episode), 789),
+        ] {
+            assert_eq!(
+                patch
+                    .external_ids
+                    .tmdb,
+                Some(tmdb)
+            );
+            assert_eq!(
+                patch
+                    .external_ids
+                    .tvdb,
+                Some(456)
+            );
+            assert_eq!(
+                patch
+                    .external_ids
+                    .imdb
+                    .as_deref()
+                    .map(String::as_str),
+                Some("tt1234567")
+            );
+        }
+    }
+
+    #[test]
+    fn external_id_refresh_preserves_missing_values_and_respects_force() {
+        let existing = db::ExternalIds {
+            tmdb: Some(123),
+            tvdb: Some(456),
+            ..Default::default()
+        };
+        for force in [false, true] {
+            let mut media = db::Media {
+                external_ids: existing.clone(),
+                ..Default::default()
+            };
+            let empty = sdks::tmdb::ExternalIds {
+                imdb_id: Some(String::new()),
+                tvdb_id: None,
+            };
+            super::super::apply_meta(
+                &mut media,
+                db::Media {
+                    external_ids: tmdb_external_ids(123, Some(&empty)),
+                    ..Default::default()
+                },
+                force,
+            );
+            assert_eq!(
+                media
+                    .external_ids
+                    .tvdb,
+                Some(456)
+            );
+            assert!(
+                media
+                    .external_ids
+                    .imdb
+                    .is_none()
+            );
+            super::super::apply_meta(
+                &mut media,
+                db::Media {
+                    external_ids: tmdb_external_ids(
+                        123,
+                        Some(&sdks::tmdb::ExternalIds {
+                            imdb_id: Some("tt1234567".into()),
+                            tvdb_id: Some(999),
+                        }),
+                    ),
+                    ..Default::default()
+                },
+                force,
+            );
+            assert_eq!(
+                media
+                    .external_ids
+                    .tvdb,
+                Some(if force { 999 } else { 456 })
+            );
+            assert_eq!(
+                media
+                    .external_ids
+                    .imdb
+                    .as_deref()
+                    .map(String::as_str),
+                Some("tt1234567")
+            );
+        }
+    }
 
     fn image_entry(path: &str, language: Option<&str>) -> sdks::tmdb::ImageEntry {
         sdks::tmdb::ImageEntry {
