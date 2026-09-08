@@ -5,9 +5,14 @@
 -- neither has committed yet, and both insert — see the migration before
 -- this one, which cleans up existing duplicates so these can be created.
 --
--- Scoped by (kind, value): tmdb/tvdb ids are separate numbering spaces for
--- movies vs. tv, so the same numeric id legitimately appears once per kind.
--- This mirrors `find_by_external_ids`'s own `WHERE kind = ?` scoping exactly.
+-- Scoped to Movie/Series/TvProgram only, matching `find_by_external_ids`'s
+-- own match arm exactly (season/episode identity is positional — parent_id
+-- + idx — never external-id based, and Person/Artist/Album/Track use their
+-- own separate id schemes). Without this kind restriction, an Episode's own
+-- per-episode tmdb id gets swept into the same constraint — and duplicate
+-- episode trees (a known, separate consequence of two duplicate Series rows
+-- each having their own full season/episode tree before being merged) then
+-- violate it, blocking migration on any install that has that.
 
 DROP INDEX IF EXISTS idx_media_ext_imdb;
 DROP INDEX IF EXISTS idx_media_ext_tmdb;
@@ -17,20 +22,25 @@ DROP INDEX IF EXISTS idx_media_ext_stremio_id;
 
 CREATE UNIQUE INDEX idx_media_ext_imdb_unique
     ON media(kind, json_extract(external_ids, '$.imdb'))
-    WHERE json_extract(external_ids, '$.imdb') IS NOT NULL;
+    WHERE kind IN ('movie', 'series', 'tv_program')
+      AND json_extract(external_ids, '$.imdb') IS NOT NULL;
 
 CREATE UNIQUE INDEX idx_media_ext_tmdb_unique
     ON media(kind, json_extract(external_ids, '$.tmdb'))
-    WHERE json_extract(external_ids, '$.tmdb') IS NOT NULL;
+    WHERE kind IN ('movie', 'series', 'tv_program')
+      AND json_extract(external_ids, '$.tmdb') IS NOT NULL;
 
 CREATE UNIQUE INDEX idx_media_ext_tvdb_unique
     ON media(kind, json_extract(external_ids, '$.tvdb'))
-    WHERE json_extract(external_ids, '$.tvdb') IS NOT NULL;
+    WHERE kind IN ('movie', 'series', 'tv_program')
+      AND json_extract(external_ids, '$.tvdb') IS NOT NULL;
 
 CREATE UNIQUE INDEX idx_media_ext_kitsu_unique
     ON media(kind, json_extract(external_ids, '$.kitsu'))
-    WHERE json_extract(external_ids, '$.kitsu') IS NOT NULL;
+    WHERE kind IN ('movie', 'series', 'tv_program')
+      AND json_extract(external_ids, '$.kitsu') IS NOT NULL;
 
 CREATE UNIQUE INDEX idx_media_ext_stremio_id_unique
     ON media(kind, json_extract(external_ids, '$.custom_stremio_id'))
-    WHERE json_extract(external_ids, '$.custom_stremio_id') IS NOT NULL;
+    WHERE kind IN ('movie', 'series', 'tv_program')
+      AND json_extract(external_ids, '$.custom_stremio_id') IS NOT NULL;
