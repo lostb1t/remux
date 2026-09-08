@@ -8135,6 +8135,8 @@ pub(crate) fn build_genre_relations_from_names(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn movie_and_series_accept_known_external_ids() {
         for kind in [MediaKind::Movie, MediaKind::Series] {
