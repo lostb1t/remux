@@ -922,16 +922,23 @@ mod tests {
             .await
             .unwrap();
 
-        // Movie B: duplicate item for the same film, no stream rows of its own.
+        // Movie B: an unrelated item with no stream rows of its own. Sharing
+        // `owner`'s external ids used to be how this scenario arose (two
+        // rows for the same film) — that's now prevented at the DB level,
+        // but the code path under test only cares that B's id is a real,
+        // distinct Movie row mistakenly handed back as a MediaSourceId, not
+        // that it represents the same content as A, so it just needs its
+        // own (any) external id to satisfy validation.
         let mut dup = db::Media {
             id: Uuid::new_v4(),
             title: owner
                 .title
                 .clone(),
             kind: db::MediaKind::Movie,
-            external_ids: owner
-                .external_ids
-                .clone(),
+            external_ids: db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt9999998").ok(),
+                ..Default::default()
+            },
             ..Default::default()
         };
         dup.save(&ctx.db)
