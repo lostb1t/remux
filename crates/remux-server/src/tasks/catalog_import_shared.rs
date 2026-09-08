@@ -89,23 +89,33 @@ where
             }
         }
 
-        // Partition: only new items need meta-batch processing.
-        let existing_ids: HashSet<Uuid> = if items.is_empty() {
-            HashSet::new()
-        } else {
-            let mut qb = sqlx::QueryBuilder::new("SELECT id FROM media WHERE id IN (");
-            let mut sep = qb.separated(", ");
-            for m in &items {
-                sep.push_bind(m.id);
+        // Adopt stored identities before recording positions or partitioning.
+        // A provider's stub UUID can differ from a row discovered through another
+        // provider, even though their external IDs identify the same content.
+        let mut existing_ids = HashSet::new();
+        for item in &mut items {
+            let existing_id = match item.kind {
+                // Channels and playlists have provider-defined UUID identities;
+                // the external-ID resolver does not support these kinds.
+                db::MediaKind::TvChannel | db::MediaKind::Playlist => {
+                    sqlx::query_scalar::<_, Uuid>(
+                        "SELECT id FROM media WHERE id = ? AND kind = ?",
+                    )
+                    .bind(item.id)
+                    .bind(
+                        item.kind
+                            .to_string(),
+                    )
+                    .fetch_optional(&ctx.db)
+                    .await?
+                }
+                _ => db::Media::find_existing_id_by_ext(&ctx.db, item).await,
+            };
+            if let Some(existing_id) = existing_id {
+                item.id = existing_id;
+                existing_ids.insert(existing_id);
             }
-            qb.push(")");
-            qb.build_query_scalar()
-                .fetch_all(&ctx.db)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .collect()
-        };
+        }
         // Snapshot stream-order weights before partitioning — partition() does not
         // preserve the original order across the two vecs, so new items would
         // otherwise always get the lowest weights within a chunk regardless of where
@@ -523,4 +533,149 @@ pub async fn prune_stale_iptv_channels(db: &sqlx::SqlitePool, cutoff: NaiveDateT
 pub fn catalog_membership(media_id: &str) -> Option<(&str, &str)> {
     let rest = media_id.strip_prefix("addon:")?;
     rest.split_once(':')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn catalog_matches_external_ids_before_partitioning_and_membership() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let addon_id = Uuid::new_v4();
+        let collection_id = Uuid::new_v5(&addon_id, b"test");
+        let catalog = ResolvedCatalog {
+            provider_catalog_id: "test".into(),
+            catalog_id: format!("addon:{addon_id}:test"),
+            collection_id,
+            name: "Test".into(),
+            media_kind: Some(db::MediaKind::Series),
+            collection_media_kind: None,
+            enabled: true,
+            max_items: None,
+            tags: vec![],
+        };
+        let mut collection = db::Media {
+            id: collection_id,
+            kind: db::MediaKind::Collection,
+            title: "Test".into(),
+            ..Default::default()
+        };
+        collection
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        let imdb = db::NonEmptyString::try_new("tt446201".to_string()).unwrap();
+        let stored_id =
+            crate::common::stable_media_uuid(&db::MediaKind::Series, imdb.as_str());
+        let mut stored = db::Media {
+            id: stored_id,
+            kind: db::MediaKind::Series,
+            title: "Stored metadata".into(),
+            external_ids: db::ExternalIds {
+                imdb: Some(imdb.clone()),
+                tmdb: Some(446201),
+                tvdb: Some(446202),
+                kitsu: Some(446203),
+                custom_stremio_id: Some("custom:446201".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        stored
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        let progress = ProgressReporter::new(Default::default());
+        for external_ids in [
+            db::ExternalIds {
+                imdb: Some(imdb),
+                ..Default::default()
+            },
+            db::ExternalIds {
+                tmdb: Some(446201),
+                ..Default::default()
+            },
+            db::ExternalIds {
+                tvdb: Some(446202),
+                ..Default::default()
+            },
+            db::ExternalIds {
+                kitsu: Some(446203),
+                ..Default::default()
+            },
+            db::ExternalIds {
+                custom_stremio_id: Some("custom:446201".into()),
+                ..Default::default()
+            },
+        ] {
+            let stub_id = Uuid::new_v4();
+            let stub = db::Media {
+                id: stub_id,
+                kind: db::MediaKind::Series,
+                title: "Catalog stub".into(),
+                external_ids,
+                ..Default::default()
+            };
+            let (counts, new_counts) = import_catalog_items(
+                ctx,
+                &catalog,
+                &catalog.catalog_id,
+                10,
+                futures::stream::iter([stub]),
+                &progress,
+            )
+            .await
+            .unwrap();
+            assert_eq!(counts.get(&db::MediaKind::Series.to_string()), Some(&1));
+            assert!(
+                new_counts.is_empty(),
+                "existing content must skip metadata processing"
+            );
+            let members: Vec<(Uuid, i64)> = sqlx::query_as("SELECT right_media_id, weight FROM media_relations WHERE left_media_id = ? AND role = 'catalog'")
+                .bind(collection_id).fetch_all(&ctx.db).await.unwrap();
+            assert_eq!(members, vec![(stored_id, 0)]);
+            assert!(
+                db::Media::get_by_id(&ctx.db, &stub_id)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(
+                db::Media::get_by_id(&ctx.db, &stored_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .title,
+                "Stored metadata"
+            );
+        }
+        let fresh_id = Uuid::new_v4();
+        let fresh = db::Media {
+            id: fresh_id,
+            kind: db::MediaKind::Series,
+            title: "New series".into(),
+            external_ids: db::ExternalIds {
+                tmdb: Some(446204),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (_, new_counts) = import_catalog_items(
+            ctx,
+            &catalog,
+            &catalog.catalog_id,
+            10,
+            futures::stream::iter([fresh]),
+            &progress,
+        )
+        .await
+        .unwrap();
+        assert_eq!(new_counts.get(&db::MediaKind::Series.to_string()), Some(&1));
+        let members: Vec<Uuid> = sqlx::query_scalar("SELECT right_media_id FROM media_relations WHERE left_media_id = ? AND role = 'catalog'").bind(collection_id).fetch_all(&ctx.db).await.unwrap();
+        assert_eq!(members, vec![fresh_id]);
+    }
 }
