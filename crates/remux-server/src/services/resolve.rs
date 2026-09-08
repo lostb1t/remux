@@ -170,6 +170,61 @@ impl MediaResolveService {
 
         // FindById returns a partial object without external_ids; use the TMDB id
         // to fetch the full record which includes external_ids (via append_to_response).
+        Self::imdb_from_tmdb_id(tmdb_id, is_tv, client).await
+    }
+
+    /// Title+year search fallback, used only when nothing else identifies the
+    /// item at all — e.g. a filename with no embedded provider id, matched by
+    /// title against TMDB directly. Never a substitute for id-based
+    /// resolution; see [`Self::resolve_imdb_from_ids`] for that.
+    pub(crate) async fn resolve_imdb_from_search(
+        client: &RestClient<BearerAuth>,
+        title: &str,
+        year: Option<i64>,
+        is_tv: bool,
+    ) -> Option<db::NonEmptyString> {
+        if title.is_empty() {
+            return None;
+        }
+        let tmdb_id = if is_tv {
+            client
+                .execute(
+                    sdks::tmdb::SearchTvEndpoint {
+                        query: title.to_string(),
+                    }
+                    .with_cache(ID_CACHE_TTL),
+                )
+                .await
+                .ok()?
+                .results
+                .into_iter()
+                .next()?
+                .id
+        } else {
+            client
+                .execute(
+                    sdks::tmdb::SearchMovieEndpoint {
+                        query: title.to_string(),
+                        year,
+                    }
+                    .with_cache(ID_CACHE_TTL),
+                )
+                .await
+                .ok()?
+                .results
+                .into_iter()
+                .next()?
+                .id
+        };
+        Self::imdb_from_tmdb_id(tmdb_id, is_tv, client).await
+    }
+
+    /// The minimal external-ids-only fetch for a TMDB id already in hand.
+    async fn imdb_from_tmdb_id<A: sdks::Auth + Clone>(
+        tmdb_id: i64,
+        is_tv: bool,
+        client: &RestClient<A>,
+    ) -> Option<db::NonEmptyString> {
         if is_tv {
             let series = client
                 .execute(series_ids_endpoint(tmdb_id).with_cache(ID_CACHE_TTL))
