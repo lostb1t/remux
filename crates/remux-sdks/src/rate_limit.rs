@@ -1,11 +1,15 @@
 use http::{HeaderMap, header};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const DEFAULT_RETRY_AFTER: Duration = Duration::from_secs(60);
+pub(crate) const DEFAULT_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(48 * 60 * 60);
 
-pub(crate) fn retry_after(headers: &HeaderMap, now: SystemTime) -> Duration {
+pub(crate) fn retry_after(
+    headers: &HeaderMap,
+    now: SystemTime,
+    default: Duration,
+) -> Duration {
     headers
         .get(header::RETRY_AFTER)
         .and_then(|value| {
@@ -14,7 +18,7 @@ pub(crate) fn retry_after(headers: &HeaderMap, now: SystemTime) -> Duration {
                 .ok()
         })
         .and_then(|value| parse_retry_after(value, now))
-        .unwrap_or(DEFAULT_RETRY_AFTER)
+        .unwrap_or(default)
         .min(MAX_RETRY_AFTER)
 }
 
@@ -43,7 +47,9 @@ fn parse_retry_after(value: &str, now: SystemTime) -> Option<Duration> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct RetryAfterMiddleware;
+pub(crate) struct RetryAfterMiddleware {
+    pub(crate) default_retry_after: Duration,
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 #[async_trait::async_trait]
@@ -61,7 +67,11 @@ impl reqwest_middleware::Middleware for RetryAfterMiddleware {
             return Ok(response);
         }
 
-        let delay = retry_after(response.headers(), SystemTime::now());
+        let delay = retry_after(
+            response.headers(),
+            SystemTime::now(),
+            self.default_retry_after,
+        );
         if delay.is_zero() {
             return Ok(response);
         }
@@ -104,9 +114,9 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_sixty_seconds_when_absent_or_unparseable() {
+    fn defaults_to_the_configured_default_when_absent_or_unparseable() {
         assert_eq!(
-            retry_after(&HeaderMap::new(), UNIX_EPOCH),
+            retry_after(&HeaderMap::new(), UNIX_EPOCH, DEFAULT_RETRY_AFTER),
             DEFAULT_RETRY_AFTER
         );
 
@@ -117,7 +127,10 @@ mod tests {
                 .parse()
                 .unwrap(),
         );
-        assert_eq!(retry_after(&headers, UNIX_EPOCH), DEFAULT_RETRY_AFTER);
+        assert_eq!(
+            retry_after(&headers, UNIX_EPOCH, Duration::from_secs(2)),
+            Duration::from_secs(2)
+        );
     }
 
     #[test]
@@ -129,7 +142,10 @@ mod tests {
                 .parse()
                 .unwrap(),
         );
-        assert_eq!(retry_after(&headers, UNIX_EPOCH), MAX_RETRY_AFTER);
+        assert_eq!(
+            retry_after(&headers, UNIX_EPOCH, DEFAULT_RETRY_AFTER),
+            MAX_RETRY_AFTER
+        );
     }
 
     #[test]
@@ -141,7 +157,10 @@ mod tests {
                 .parse()
                 .unwrap(),
         );
-        assert_eq!(retry_after(&headers, UNIX_EPOCH), MAX_RETRY_AFTER);
+        assert_eq!(
+            retry_after(&headers, UNIX_EPOCH, DEFAULT_RETRY_AFTER),
+            MAX_RETRY_AFTER
+        );
     }
 
     #[test]
@@ -154,7 +173,7 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!(
-            retry_after(&headers, UNIX_EPOCH),
+            retry_after(&headers, UNIX_EPOCH, DEFAULT_RETRY_AFTER),
             Duration::from_secs(21600)
         );
     }
@@ -167,7 +186,10 @@ mod tests {
             "5".parse()
                 .unwrap(),
         );
-        assert_eq!(retry_after(&headers, UNIX_EPOCH), Duration::from_secs(5));
+        assert_eq!(
+            retry_after(&headers, UNIX_EPOCH, DEFAULT_RETRY_AFTER),
+            Duration::from_secs(5)
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]
