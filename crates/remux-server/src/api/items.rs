@@ -2713,47 +2713,71 @@ pub async fn items_metadata_editor(
             .cmp(&b.display_name)
     });
 
-    let external_id_infos: Vec<api::ExternalIdInfo> = vec![
-        ("IMDb", "Imdb", None),
-        ("TheMovieDb", "Tmdb", Some("Movie")),
-        ("TheMovieDb", "TmdbCollection", Some("BoxSet")),
-        ("TheTVDB", "TvdbCollection", Some("BoxSet")),
-        ("TheTVDB Numerical", "Tvdb", Some("Movie")),
-        ("TheTVDB Slug", "TvdbSlug", Some("Movie")),
-    ]
-    .into_iter()
-    .map(|(name, key, type_)| api::ExternalIdInfo {
-        name: name.to_string(),
-        key: key.to_string(),
-        type_: type_.map(str::to_string),
-        url_format_string: None,
-    })
-    .collect();
+    // Tailored per item kind, mirroring how real Jellyfin's built-in
+    // providers each declare a `Supports(item)`/`Type` — e.g. IMDb has no
+    // type restriction, TmdbSeriesExternalId only supports Series, etc.
+    // `ProviderIds` only ever carries `imdb`/`tmdb`/`tvdb` (see that struct
+    // in remux-sdks) — there's no separate collection/slug variant to key a
+    // `TmdbCollection`/`TvdbCollection`/`TvdbSlug` field off, so those are
+    // left out entirely rather than rendering as fields that can never hold
+    // a value.
+    let jellyfin_type = |t: &str| Some(t.to_string());
+    let external_id_infos: Vec<api::ExternalIdInfo> = match item.kind {
+        db::MediaKind::Movie
+        | db::MediaKind::Series
+        | db::MediaKind::Season
+        | db::MediaKind::Episode
+        | db::MediaKind::Person
+        | db::MediaKind::Collection => {
+            let type_name = match item.kind {
+                db::MediaKind::Movie => "Movie",
+                db::MediaKind::Series => "Series",
+                db::MediaKind::Season => "Season",
+                db::MediaKind::Episode => "Episode",
+                db::MediaKind::Person => "Person",
+                db::MediaKind::Collection => "BoxSet",
+                _ => unreachable!(),
+            };
+            vec![
+                api::ExternalIdInfo {
+                    name: "IMDb".to_string(),
+                    key: "Imdb".to_string(),
+                    type_: None,
+                    url_format_string: None,
+                },
+                api::ExternalIdInfo {
+                    name: "TheMovieDb".to_string(),
+                    key: "Tmdb".to_string(),
+                    type_: jellyfin_type(type_name),
+                    url_format_string: None,
+                },
+                api::ExternalIdInfo {
+                    name: "TheTVDB".to_string(),
+                    key: "Tvdb".to_string(),
+                    type_: jellyfin_type(type_name),
+                    url_format_string: None,
+                },
+            ]
+        }
+        _ => vec![],
+    };
 
-    let content_type_options: Vec<String> = vec![
-        db::MediaKind::Movie,
-        db::MediaKind::Series,
-        db::MediaKind::Season,
-        db::MediaKind::Episode,
-        db::MediaKind::Artist,
-        db::MediaKind::Album,
-        db::MediaKind::Track,
-        db::MediaKind::Playlist,
-    ]
-    .into_iter()
-    .map(|k| k.to_string())
-    .collect();
-
+    // Jellyfin only surfaces this when an item's containing library has no
+    // configured content type at all (e.g. a "Mixed content" library) or the
+    // item already has an explicit per-item override — it exists to resolve
+    // an ambiguity Jellyfin's own file scanner can hit ("is this a movie or
+    // an episode?"). Every `Media` row here already carries a definitively
+    // resolved `kind` from the moment it's imported, regardless of which
+    // addon produced it or how mixed that addon's source is, so this never
+    // applies — stays empty like it does for the overwhelming majority of
+    // real Jellyfin items too.
     Ok(Json(api::MetadataEditorInfo {
         parental_rating_options,
         countries,
         cultures,
         external_id_infos,
-        content_type: Some(
-            item.kind
-                .to_string(),
-        ),
-        content_type_options,
+        content_type: None,
+        content_type_options: vec![],
     }))
 }
 
