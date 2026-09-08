@@ -322,6 +322,123 @@ impl MediaResolveService {
         }
     }
 
+    /// Fills in whichever of tmdb/imdb/tvdb are missing on `media`, using
+    /// only the calls actually needed — an item with everything already
+    /// resolved makes no network calls at all. Movies only ever get
+    /// tmdb/imdb (TVDB doesn't track movies); tvdb is Series-only.
+    ///
+    /// Deliberately does not attempt to backfill a missing kitsu id: kitsu
+    /// only matters for anime, which we can't tell from ids alone at this
+    /// point (genre/original_language aren't known until an addon's own
+    /// `meta_fetch` runs, later in `refresh_meta`) — trying it unconditionally
+    /// for every Series added a mandatory third-party round trip that misses
+    /// for the vast majority of shows. Kitsu stays exactly what it was
+    /// before this method existed: a fallback *key source* in
+    /// `tmdb_search_key` (used only when neither imdb nor tvdb is known) and
+    /// the anime-tracker completion flow's own on-demand resolution — never
+    /// something resolved speculatively on every refresh.
+    ///
+    /// Called once at the top of `refresh_meta`, before any addon's own
+    /// `meta_fetch` runs, so every addon sees the fuller id set. This is
+    /// intentionally sequential, not parallelized: TMDB's series
+    /// `external_ids` sub-resource returns imdb *and* tvdb together in one
+    /// call — there's no pair
+    /// of independent lookups left to run concurrently once that's used.
+    pub async fn resolve_missing_external_ids(media: &mut db::Media, ctx: &AppContext) {
+        if !matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
+            return;
+        }
+        let is_tv = media.kind == db::MediaKind::Series;
+        let needs_tmdb = media
+            .external_ids
+            .tmdb
+            .is_none();
+        let needs_imdb = media
+            .external_ids
+            .imdb
+            .is_none();
+        let needs_tvdb = is_tv
+            && media
+                .external_ids
+                .tvdb
+                .is_none();
+        if !needs_tmdb && !needs_imdb && !needs_tvdb {
+            return;
+        }
+        let Some(client) = Self::tmdb(ctx).await else {
+            return;
+        };
+
+        let tmdb_id = if let Some(id) = media
+            .external_ids
+            .tmdb
+        {
+            Some(id)
+        } else {
+            match Self::tmdb_search_key(
+                &media.external_ids,
+                Some(&sdks::kitsu::client()),
+            )
+            .await
+            {
+                Some((external_id, external_source)) => {
+                    Self::find_tmdb_id_by(external_id, external_source, is_tv, &client)
+                        .await
+                        .ok()
+                        .flatten()
+                }
+                None => None,
+            }
+        };
+        let Some(tmdb_id) = tmdb_id else {
+            return;
+        };
+        media
+            .external_ids
+            .tmdb = Some(tmdb_id);
+
+        if needs_imdb || needs_tvdb {
+            if is_tv {
+                if let Ok(series) = client
+                    .execute(series_ids_endpoint(tmdb_id).with_cache(ID_CACHE_TTL))
+                    .await
+                    && let Some(e) = series.external_ids
+                {
+                    if media
+                        .external_ids
+                        .imdb
+                        .is_none()
+                    {
+                        media
+                            .external_ids
+                            .imdb = e
+                            .imdb_id
+                            .and_then(|s| db::NonEmptyString::try_new(s).ok());
+                    }
+                    if media
+                        .external_ids
+                        .tvdb
+                        .is_none()
+                    {
+                        media
+                            .external_ids
+                            .tvdb = e.tvdb_id;
+                    }
+                }
+            } else if needs_imdb
+                && let Ok(movie) = client
+                    .execute(movie_ids_endpoint(tmdb_id).with_cache(ID_CACHE_TTL))
+                    .await
+            {
+                media
+                    .external_ids
+                    .imdb = movie
+                    .imdb_id
+                    .and_then(|s| db::NonEmptyString::try_new(s).ok());
+            }
+        }
+    }
+
     /// The likeliest id to hit on `/find`: imdb, then tvdb, then tvdb via kitsu.
     /// Not tmdb, which a caller holding one would have skipped this for.
     pub(crate) async fn tmdb_search_key(
@@ -710,13 +827,18 @@ impl MediaResolveService {
         let config = std::sync::Arc::new(
             crate::db::Settings::get_config_or_default(&ctx.db).await,
         );
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(
+            (config
+                .meta_concurrency
+                .max(1)) as usize,
+        ));
         // process_meta_item now owns all upserts internally and returns the actual UUID
         // (which may differ from resolved_id if an existing DB row was adopted).
         // force_refresh=true: this is a brand-new item; the stub is a placeholder,
         // so meta addons should fully replace any pre-populated fields.
         let actual_id = ctx
             .addons
-            .process_meta_item(media, ctx.clone(), true, config)
+            .process_meta_item(media, ctx.clone(), true, config, semaphore)
             .await;
         Ok(db::Media::get_by_id(&ctx.db, &actual_id).await?)
     }
@@ -778,9 +900,21 @@ impl MediaResolveService {
                             crate::db::Settings::get_config_or_default(&bg_ctx.db)
                                 .await,
                         );
+                        let semaphore =
+                            std::sync::Arc::new(tokio::sync::Semaphore::new(
+                                (config
+                                    .meta_concurrency
+                                    .max(1)) as usize,
+                            ));
                         bg_ctx
                             .addons
-                            .process_meta_item(root, bg_ctx.clone(), false, config)
+                            .process_meta_item(
+                                root,
+                                bg_ctx.clone(),
+                                false,
+                                config,
+                                semaphore,
+                            )
                             .await;
                     });
                 }
@@ -823,8 +957,13 @@ impl MediaResolveService {
             let config = std::sync::Arc::new(
                 crate::db::Settings::get_config_or_default(&ctx.db).await,
             );
+            let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(
+                (config
+                    .meta_concurrency
+                    .max(1)) as usize,
+            ));
             ctx.addons
-                .process_meta_item(album_root, ctx.clone(), false, config)
+                .process_meta_item(album_root, ctx.clone(), false, config, semaphore)
                 .await;
         }
 
@@ -2345,5 +2484,88 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[tokio::test]
+    async fn resolve_missing_external_ids_fills_tmdb_and_tvdb_from_imdb_alone() {
+        let tmdb = httpmock::MockServer::start();
+        tmdb.mock(|when, then| {
+            when.path("/find/tt0306414")
+                .query_param("external_source", "imdb_id");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "tv_results": [{ "id": 1438, "name": "The Wire" }],
+                    "movie_results": []
+                }));
+        });
+        tmdb.mock(|when, then| {
+            when.path("/tv/1438");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "id": 1438,
+                    "name": "The Wire",
+                    "external_ids": { "imdb_id": "tt0306414", "tvdb_id": 79126 }
+                }));
+        });
+        let guard = ctx_with_tmdb(&tmdb).await;
+        let ctx = &guard.0;
+        let mut media = series(
+            ctx,
+            db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt0306414").ok(),
+                ..Default::default()
+            },
+        )
+        .await;
+
+        MediaResolveService::resolve_missing_external_ids(&mut media, ctx).await;
+
+        assert_eq!(
+            media
+                .external_ids
+                .tmdb,
+            Some(1438)
+        );
+        assert_eq!(
+            media
+                .external_ids
+                .tvdb,
+            Some(79126)
+        );
+        assert_eq!(
+            media
+                .external_ids
+                .imdb
+                .map(|s| s.to_string()),
+            Some("tt0306414".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_missing_external_ids_is_a_noop_when_nothing_is_missing() {
+        // No mocks registered at all — any request would fail the test by
+        // connection refused, proving no network call is made when every id
+        // this kind cares about is already present.
+        let tmdb = httpmock::MockServer::start();
+        let guard = ctx_with_tmdb(&tmdb).await;
+        let ctx = &guard.0;
+        let mut media = series(
+            ctx,
+            db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt0306414").ok(),
+                tmdb: Some(1438),
+                tvdb: Some(79126),
+                kitsu: Some(1),
+                ..Default::default()
+            },
+        )
+        .await;
+        let before = media
+            .external_ids
+            .clone();
+
+        MediaResolveService::resolve_missing_external_ids(&mut media, ctx).await;
+
+        assert_eq!(media.external_ids, before);
     }
 }

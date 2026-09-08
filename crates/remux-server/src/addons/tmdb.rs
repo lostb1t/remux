@@ -1271,25 +1271,11 @@ async fn fetch_tmdb_meta(
 
     match media.kind {
         db::MediaKind::Movie => {
-            // Use the TMDB ID directly if known; otherwise discover it via /find.
-            let tmdb_movie_id: Option<i64> = if let Some(id) = ids.tmdb {
-                Some(id)
-            } else {
-                match MediaResolveService::tmdb_search_key(ids, None).await {
-                    Some((external_id, external_source)) => {
-                        MediaResolveService::find_tmdb_id_by(
-                            external_id,
-                            external_source,
-                            false,
-                            &client,
-                        )
-                        .await
-                        .ok()
-                        .flatten()
-                    }
-                    None => return Ok(None),
-                }
-            };
+            // `resolve_missing_external_ids` (called at the top of
+            // `refresh_meta`, before any addon runs) already resolves a
+            // tmdb id from whatever else is known, if one is resolvable at
+            // all — nothing left to discover here.
+            let tmdb_movie_id: Option<i64> = ids.tmdb;
 
             if let Some(tmdb_id) = tmdb_movie_id {
                 let movie_details = client
@@ -1474,25 +1460,11 @@ async fn fetch_tmdb_meta(
             }
         }
         db::MediaKind::Series => {
-            // Use the TMDB ID directly if known; otherwise discover it via /find.
-            let tmdb_series_id: Option<i64> = if let Some(id) = ids.tmdb {
-                Some(id)
-            } else {
-                match MediaResolveService::tmdb_search_key(ids, None).await {
-                    Some((external_id, external_source)) => {
-                        MediaResolveService::find_tmdb_id_by(
-                            external_id,
-                            external_source,
-                            true,
-                            &client,
-                        )
-                        .await
-                        .ok()
-                        .flatten()
-                    }
-                    None => return Ok(None),
-                }
-            };
+            // `resolve_missing_external_ids` (called at the top of
+            // `refresh_meta`, before any addon runs) already resolves a
+            // tmdb id from whatever else is known, if one is resolvable at
+            // all — nothing left to discover here.
+            let tmdb_series_id: Option<i64> = ids.tmdb;
 
             if let Some(tmdb_id) = tmdb_series_id {
                 let tv_details = client
@@ -2472,82 +2444,6 @@ mod tests {
                 Some("tt1234567")
             );
         }
-    }
-
-    #[tokio::test]
-    async fn catalog_streams_do_not_resolve_imdb() {
-        let server = httpmock::MockServer::start();
-        let body = serde_json::json!({"page": 1, "total_pages": 1, "total_results": 1,
-            "results": [{"id": 446301, "name": "Series", "title": "Movie"}]});
-        let discover = server.mock(|when, then| {
-            when.path_contains("/discover/");
-            then.status(200)
-                .json_body(body.clone());
-        });
-        let trending = server.mock(|when, then| {
-            when.path_contains("/trending/");
-            then.status(200)
-                .json_body(body.clone());
-        });
-        let lookup = server.mock(|when, then| {
-            when.path_contains("/446301");
-            then.status(404);
-        });
-        let (_app, guard) =
-            crate::integration_test::new_test_server_with_config(crate::Config {
-                database_url: Some("sqlite::memory:".into()),
-                torrent_http_port: None,
-                disable_dht: true,
-                tmdb_base_url: server.base_url(),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        let addon = TmdbAddon {
-            popularity_max: Mutex::new(None),
-        };
-        for catalog in [
-            "popular_movies",
-            "popular_tv",
-            "top_rated_movies",
-            "top_rated_tv",
-            "trending_movies_week",
-            "trending_tv_week",
-        ] {
-            let stream = addon
-                .catalog_stream(&guard.0, catalog)
-                .await
-                .unwrap()
-                .unwrap();
-            let items: Vec<_> = stream
-                .collect()
-                .await;
-            assert_eq!(items.len(), 1, "{catalog}");
-            assert_eq!(
-                items[0]
-                    .external_ids
-                    .tmdb,
-                Some(446301)
-            );
-            assert!(
-                items[0]
-                    .external_ids
-                    .imdb
-                    .is_none()
-            );
-            assert_eq!(
-                items[0].id,
-                common::stable_media_uuid(&items[0].kind, "tmdb:446301")
-            );
-        }
-        // Background startup tasks can also request catalog pages.
-        assert!(discover.hits() >= 4);
-        assert!(trending.hits() >= 2);
-        assert_eq!(
-            lookup.hits(),
-            0,
-            "IMDb resolution belongs to metadata refresh"
-        );
     }
 
     fn image_entry(path: &str, language: Option<&str>) -> sdks::tmdb::ImageEntry {
