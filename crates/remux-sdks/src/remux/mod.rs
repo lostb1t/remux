@@ -716,6 +716,10 @@ pub struct ServerConfiguration {
     /// Items shorter than this are never shown in continue-watching. Default: 90.
     #[default(Some(90_i64))]
     pub min_resume_duration_seconds: Option<i64>,
+    /// Include the next released episode of started series in Continue Watching.
+    /// Disabled by default to retain Jellyfin's standard resume-only behaviour.
+    #[default(Some(false))]
+    pub enable_next_up_in_continue_watching: Option<bool>,
 }
 
 #[derive(

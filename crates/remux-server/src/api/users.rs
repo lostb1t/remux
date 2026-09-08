@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::HashSet;
 
 use anyhow::Context;
 use axum::{
@@ -1389,7 +1389,7 @@ pub async fn users_views(
     userviews(State(state), session, Query(q)).await
 }
 
-async fn resume_items(
+pub(crate) async fn resume_items(
     state: AppState,
     session: auth::AuthSession,
     mut q: api::GetItemsQuery,
@@ -1415,20 +1415,121 @@ async fn resume_items(
     {
         q.sort_order = Some(vec![api::SortOrder::Descending]);
     }
-    let items = get_items(state.clone(), session.clone(), q.clone(), true)
+    let unified_next_up = db::Settings::get_config_or_default(
+        &state
+            .ctx
+            .db,
+    )
+    .await
+    .enable_next_up_in_continue_watching
+    .unwrap_or(false);
+    // Merge and rank before paginating so an injected new release can displace
+    // an older resume item on the first page.
+    let mut items_query = q.clone();
+    if unified_next_up {
+        items_query.start_index = None;
+        // Injected Next Up entries only push resume items down, never pull a
+        // later resume item into this page. Keep the database fetch bounded.
+        items_query.limit = Some(
+            q.start_index
+                .unwrap_or(0)
+                .saturating_add(
+                    q.limit
+                        .unwrap_or(50),
+                ),
+        );
+    }
+    let items = get_items(state.clone(), session.clone(), items_query, true)
         .await?
         .with_permissions()
         .with_client_patches()
         .build();
 
+    let mut resume_items = items.items;
+    if unified_next_up {
+        let next_up = crate::api::shows::next_up_candidates(
+            &state,
+            session
+                .user
+                .id,
+            false,
+            "1970-01-01 00:00:00".to_string(),
+        )
+        .await?
+        .into_iter()
+        .map(|candidate| {
+            (
+                api::db_media_to_item(candidate.media, false),
+                candidate.effective_activity,
+            )
+        });
+        resume_items = merge_continue_watching(resume_items, next_up);
+    }
+
+    let total_record_count = if unified_next_up {
+        resume_items.len() as i64
+    } else {
+        items.total_count as i64
+    };
+    let start_index = q
+        .start_index
+        .unwrap_or(0) as usize;
+    let limit = q
+        .limit
+        .unwrap_or(50) as usize;
+    let response_items = if unified_next_up {
+        resume_items
+            .into_iter()
+            .skip(start_index)
+            .take(limit)
+            .collect()
+    } else {
+        resume_items
+    };
+
     Ok(Json(api::BaseItemDtoQueryResult {
-        items: items.items,
-        total_record_count: items.total_count as i64,
-        start_index: q
-            .start_index
-            .unwrap_or(0),
+        items: response_items,
+        total_record_count,
+        start_index: start_index as u32,
         ..Default::default()
     }))
+}
+
+fn merge_continue_watching(
+    resume_items: Vec<api::BaseItemDto>,
+    next_up: impl IntoIterator<Item = (api::BaseItemDto, chrono::DateTime<chrono::Utc>)>,
+) -> Vec<api::BaseItemDto> {
+    let mut represented_series: HashSet<Uuid> = resume_items
+        .iter()
+        .filter_map(|item| item.series_id)
+        .collect();
+    let epoch = chrono::DateTime::from_timestamp(0, 0)
+        .expect("Unix epoch is a valid timestamp");
+    let mut ranked: Vec<(api::BaseItemDto, chrono::DateTime<chrono::Utc>)> =
+        resume_items
+            .into_iter()
+            .map(|item| {
+                let activity = item
+                    .user_data
+                    .as_ref()
+                    .and_then(|data| data.last_played_date)
+                    .unwrap_or(epoch);
+                (item, activity)
+            })
+            .collect();
+    for (item, activity) in next_up {
+        if item
+            .series_id
+            .is_some_and(|series_id| represented_series.insert(series_id))
+        {
+            ranked.push((item, activity));
+        }
+    }
+    ranked.sort_by(|(_, a), (_, b)| b.cmp(a));
+    ranked
+        .into_iter()
+        .map(|(item, _)| item)
+        .collect()
 }
 
 #[get("/users/{user_id}/items/resume")]
@@ -1751,6 +1852,57 @@ mod e2e_tests {
     };
     use http::header::HeaderValue;
     use serde_json::json;
+
+    #[test]
+    fn merge_continue_watching_deduplicates_series_and_orders_by_activity() {
+        let existing_series = Uuid::new_v4();
+        let injected_series = Uuid::new_v4();
+        let resume_episode_id = Uuid::new_v4();
+        let movie_id = Uuid::new_v4();
+        let duplicate_next_up_id = Uuid::new_v4();
+        let injected_next_up_id = Uuid::new_v4();
+        let at = |seconds| chrono::DateTime::from_timestamp(seconds, 0).unwrap();
+        let resume_episode = api::BaseItemDto {
+            id: resume_episode_id,
+            series_id: Some(existing_series),
+            user_data: Some(api::UserItemDataDto {
+                last_played_date: Some(at(100)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let movie = api::BaseItemDto {
+            id: movie_id,
+            user_data: Some(api::UserItemDataDto {
+                last_played_date: Some(at(200)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let duplicate_next_up = api::BaseItemDto {
+            id: duplicate_next_up_id,
+            series_id: Some(existing_series),
+            ..Default::default()
+        };
+        let injected_next_up = api::BaseItemDto {
+            id: injected_next_up_id,
+            series_id: Some(injected_series),
+            ..Default::default()
+        };
+
+        let merged = merge_continue_watching(
+            vec![resume_episode, movie],
+            vec![(duplicate_next_up, at(300)), (injected_next_up, at(400))],
+        );
+
+        assert_eq!(
+            merged
+                .iter()
+                .map(|item| item.id)
+                .collect::<Vec<_>>(),
+            vec![injected_next_up_id, movie_id, resume_episode_id]
+        );
+    }
 
     #[tokio::test]
     async fn test_authenticate_valid_credentials() {

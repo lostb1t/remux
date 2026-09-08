@@ -131,6 +131,23 @@ pub async fn shows_nextup(
     session: auth::AuthSession,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
+    if db::Settings::get_config_or_default(
+        &state
+            .ctx
+            .db,
+    )
+    .await
+    .enable_next_up_in_continue_watching
+    .unwrap_or(false)
+    {
+        return Ok(Json(api::BaseItemDtoQueryResult {
+            start_index: q
+                .start_index
+                .unwrap_or(0),
+            ..Default::default()
+        })
+        .into_response());
+    }
     // Home-screen call: no seriesId — return one next-up episode per in-progress series
     if q.series_id
         .is_none()
@@ -284,24 +301,19 @@ pub async fn shows_nextup(
 
 /// Home-screen NextUp: one next-up episode per series that the user has started watching.
 /// Only returns series where at least one episode has been played or is in progress.
-async fn shows_nextup_all(
-    state: AppState,
-    session: auth::AuthSession,
-    q: api::GetItemsQuery,
-) -> Result<impl IntoResponse> {
-    let user_id = session
-        .user
-        .id;
-    let limit = q
-        .limit
-        .map(|l| l as usize);
-    let start_index = q
-        .start_index
-        .unwrap_or(0) as usize;
-    let enable_resumable = q
-        .enable_resumable
-        .unwrap_or(true);
+pub(crate) struct NextUpCandidate {
+    pub media: db::Media,
+    pub user_state: Option<db::UserMediaState>,
+    pub effective_activity: chrono::DateTime<chrono::Utc>,
+}
 
+/// Select and hydrate one eligible next-up episode per started series.
+pub(crate) async fn next_up_candidates(
+    state: &AppState,
+    user_id: Uuid,
+    enable_resumable: bool,
+    date_cutoff: String,
+) -> Result<Vec<NextUpCandidate>> {
     let server_config = db::Settings::get_config_or_default(
         &state
             .ctx
@@ -317,10 +329,6 @@ async fn shows_nextup_all(
     // media rows, avoiding a slow scan over the full episode index.
     // No series-count LIMIT here — we apply the page limit to the final episode list
     // (matching Jellyfin's approach: consider all active series, paginate results).
-    let date_cutoff = q
-        .next_up_date_cutoff
-        .clone()
-        .unwrap_or_else(|| "1970-01-01 00:00:00".to_string());
     let active_series: Vec<(Uuid, Option<chrono::NaiveDateTime>)> = sqlx::query_as(
         "SELECT m.grandparent_id, \
                 MAX(COALESCE(active.last_played_at, active.played_at, '1970-01-01 00:00:00')) AS last_activity \
@@ -345,7 +353,7 @@ async fn shows_nextup_all(
     .await?;
 
     if active_series.is_empty() {
-        return Ok(Json(api::BaseItemDtoQueryResult::default()).into_response());
+        return Ok(Vec::new());
     }
 
     let mut series_ids: Vec<Uuid> = Vec::with_capacity(active_series.len());
@@ -491,7 +499,7 @@ async fn shows_nextup_all(
     });
 
     if next_eps.is_empty() {
-        return Ok(Json(api::BaseItemDtoQueryResult::default()).into_response());
+        return Ok(Vec::new());
     }
 
     db::Media::preload_parents(
@@ -519,20 +527,73 @@ async fn shows_nextup_all(
             .unwrap_or_default();
     }
 
-    let total = next_eps.len() as i64;
-    let items: Vec<api::BaseItemDto> = next_eps
+    Ok(next_eps
+        .into_iter()
+        .map(|media| {
+            let release = media
+                .digital_released_at
+                .or(media.released_at)
+                .unwrap_or(epoch);
+            let activity = media
+                .grandparent_id
+                .and_then(|id| {
+                    series_last_activity
+                        .get(&id)
+                        .copied()
+                })
+                .unwrap_or(epoch);
+            NextUpCandidate {
+                user_state: states_map.remove(&media.id),
+                media,
+                effective_activity: release
+                    .max(activity)
+                    .and_utc(),
+            }
+        })
+        .collect())
+}
+
+async fn shows_nextup_all(
+    state: AppState,
+    session: auth::AuthSession,
+    q: api::GetItemsQuery,
+) -> Result<impl IntoResponse> {
+    let start_index = q
+        .start_index
+        .unwrap_or(0) as usize;
+    let limit = q
+        .limit
+        .map(|limit| limit as usize)
+        .unwrap_or(usize::MAX);
+    let candidates = next_up_candidates(
+        &state,
+        session
+            .user
+            .id,
+        q.enable_resumable
+            .unwrap_or(true),
+        q.next_up_date_cutoff
+            .unwrap_or_else(|| "1970-01-01 00:00:00".to_string()),
+    )
+    .await?;
+    let total = candidates.len() as i64;
+    let items = candidates
         .into_iter()
         .skip(start_index)
-        .take(limit.unwrap_or(usize::MAX))
-        .map(|ep| {
-            let mut item = api::db_media_to_item(ep.clone(), false);
-            if let Some(s) = states_map.get(&ep.id) {
-                item.user_data = Some(api::db_state_to_dto(s.clone(), &ep));
+        .take(limit)
+        .map(|candidate| {
+            let mut item = api::db_media_to_item(
+                candidate
+                    .media
+                    .clone(),
+                false,
+            );
+            if let Some(state) = candidate.user_state {
+                item.user_data = Some(api::db_state_to_dto(state, &candidate.media));
             }
             item
         })
         .collect();
-
     Ok(Json(api::BaseItemDtoQueryResult {
         items,
         total_record_count: total,

@@ -344,6 +344,7 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
     let mut min_resume_pct = use_signal(|| 5_i64);
     let mut max_resume_pct = use_signal(|| 90_i64);
     let mut min_resume_duration_seconds = use_signal(|| 90_i64);
+    let mut enable_next_up_in_continue_watching = use_signal(|| false);
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(|| Option::<String>::None);
@@ -368,6 +369,10 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                 min_resume_duration_seconds.set(
                     cfg.min_resume_duration_seconds
                         .unwrap_or(90),
+                );
+                enable_next_up_in_continue_watching.set(
+                    cfg.enable_next_up_in_continue_watching
+                        .unwrap_or(false),
                 );
                 base_cfg.set(Some(cfg));
             }
@@ -520,6 +525,8 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
         server_cfg.min_resume_pct = Some(min_pct);
         server_cfg.max_resume_pct = Some(max_pct);
         server_cfg.min_resume_duration_seconds = Some(min_dur);
+        server_cfg.enable_next_up_in_continue_watching =
+            Some(*enable_next_up_in_continue_watching.peek());
 
         saving.set(true);
         error.set(None);
@@ -830,6 +837,15 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                             }
                             p { class: "field-hint",
                                 "Items shorter than this (in seconds) are never shown in continue-watching. Default: 90."
+                            }
+                        }
+
+                        div { class: "field",
+                            ToggleRow {
+                                label: "Include Next Up in Continue Watching",
+                                description: "Add the next released episode of a started series when that series has no episode currently in progress. Disabled by default.",
+                                checked: *enable_next_up_in_continue_watching.read(),
+                                on_change: move |v| enable_next_up_in_continue_watching.set(v),
                             }
                         }
 
