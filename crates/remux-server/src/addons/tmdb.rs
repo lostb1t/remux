@@ -737,7 +737,12 @@ fn tmdb_client(
         .with_auth(sdks::BearerAuth {
             token: api_key.to_string(),
         })
-        .with_retry(sdks::ExponentialBackoff::builder().build_with_max_retries(3)))
+        .with_retry(sdks::ExponentialBackoff::builder().build_with_max_retries(3))
+        // TMDB never sends a `Retry-After` header on 429s (they dropped
+        // fixed rate limiting in 2019), so without this every 429 falls
+        // back to the SDK's generic 60s default, which is far longer than
+        // TMDB's actual throttle window.
+        .with_default_retry_after(std::time::Duration::from_secs(2)))
 }
 
 async fn tmdb_client_from_ctx(

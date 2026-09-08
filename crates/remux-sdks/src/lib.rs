@@ -392,7 +392,10 @@ impl RetryPolicy for DynRetryPolicy {
     }
 }
 
-fn build_mw(retry: Option<Arc<dyn RetryPolicy + Send + Sync>>) -> ClientWithMiddleware {
+fn build_mw(
+    retry: Option<Arc<dyn RetryPolicy + Send + Sync>>,
+    default_retry_after: Duration,
+) -> ClientWithMiddleware {
     #[cfg(not(target_arch = "wasm32"))]
     let builder =
         MwClientBuilder::new(SHARED_HTTP_CLIENT.clone()).with(InMemoryCacheMiddleware);
@@ -406,7 +409,9 @@ fn build_mw(retry: Option<Arc<dyn RetryPolicy + Send + Sync>>) -> ClientWithMidd
         None => builder,
     };
     #[cfg(not(target_arch = "wasm32"))]
-    let builder = builder.with(rate_limit::RetryAfterMiddleware);
+    let builder = builder.with(rate_limit::RetryAfterMiddleware {
+        default_retry_after,
+    });
     builder.build()
 }
 
@@ -416,15 +421,20 @@ pub struct RestClient<A: Auth = NoAuth> {
     base: url::Url,
     auth: Arc<A>,
     map_error: fn(u16, &str, &str) -> ClientError,
+    retry: Option<Arc<dyn RetryPolicy + Send + Sync>>,
+    default_retry_after: Duration,
 }
 
 impl RestClient<NoAuth> {
     pub fn new(base: &str) -> Result<Self, url::ParseError> {
+        let default_retry_after = rate_limit::DEFAULT_RETRY_AFTER;
         Ok(Self {
-            mw: build_mw(None),
+            mw: build_mw(None, default_retry_after),
             base: url::Url::parse(format!("{}/", base.trim_end_matches('/')).as_str())?,
             auth: Arc::new(NoAuth),
             map_error: default_error_mapper,
+            retry: None,
+            default_retry_after,
         })
     }
 }
@@ -436,6 +446,8 @@ impl<A: Auth + Clone> RestClient<A> {
             base: self.base,
             auth: Arc::new(auth),
             map_error: self.map_error,
+            retry: self.retry,
+            default_retry_after: self.default_retry_after,
         }
     }
 
@@ -448,7 +460,27 @@ impl<A: Auth + Clone> RestClient<A> {
         mut self,
         policy: P,
     ) -> Self {
-        self.mw = build_mw(Some(Arc::new(policy)));
+        self.retry = Some(Arc::new(policy));
+        self.mw = build_mw(
+            self.retry
+                .clone(),
+            self.default_retry_after,
+        );
+        self
+    }
+
+    /// Overrides how long to wait before retrying a 429 response that carries
+    /// no (or an unparseable) `Retry-After` header. Some upstreams — TMDB in
+    /// particular — never send that header at all, so without this every 429
+    /// falls back to the same conservative default meant for well-behaved
+    /// APIs that do send one.
+    pub fn with_default_retry_after(mut self, default: Duration) -> Self {
+        self.default_retry_after = default;
+        self.mw = build_mw(
+            self.retry
+                .clone(),
+            default,
+        );
         self
     }
 
@@ -539,9 +571,12 @@ impl<A: Auth + Clone> RestClient<A> {
             .status()
             .as_u16();
         if status == 429 {
-            let retry_after_secs =
-                rate_limit::retry_after(resp.headers(), std::time::SystemTime::now())
-                    .as_secs();
+            let retry_after_secs = rate_limit::retry_after(
+                resp.headers(),
+                std::time::SystemTime::now(),
+                self.default_retry_after,
+            )
+            .as_secs();
             return Err(ClientError::RateLimited { retry_after_secs });
         }
         let text = resp
