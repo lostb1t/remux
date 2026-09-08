@@ -536,6 +536,22 @@ pub fn CollectionForm(
             r.image_config
                 .as_ref()
         });
+    // A Primary image with no config attached means the server refused to
+    // treat it as configurator source material (currently: it's a GIF, kept
+    // as-is to preserve animation). Skip the configurator UI for it entirely
+    // rather than let a later Save silently attach a config that would flatten it.
+    let existing_untracked_gif = existing_image_config.is_none()
+        && existing
+            .as_ref()
+            .and_then(|f| {
+                f.image_tags
+                    .as_ref()
+            })
+            .and_then(|t| {
+                t.primary
+                    .as_ref()
+            })
+            .is_some();
     let existing_overlay = existing_image_config.map(|c| &c.overlay);
     let existing_layout = existing_image_config
         .map(|c| {
@@ -668,6 +684,16 @@ pub fn CollectionForm(
         })
         .is_some();
     let mut has_custom_image_source = use_signal(|| existing_custom_image_source);
+    let is_gif_poster = use_memo(move || {
+        if let Some(bytes) = pending_image_bytes
+            .read()
+            .as_ref()
+        {
+            crate::state::detect_image_content_type(bytes) == "image/gif"
+        } else {
+            existing_untracked_gif
+        }
+    });
     let client_for_delete = app_state.clone();
     let app_state_delete = app_state.clone();
     let delete_name = existing
@@ -770,54 +796,61 @@ pub fn CollectionForm(
                         .unwrap_or(SortOrder::Ascending)]
                 })
         };
-        // Build image config payload.
+        // Build image config payload. A GIF poster never gets one — sending
+        // `None` here leaves collection_image_config untouched (the backend
+        // clears it itself on GIF upload), so a plain "rename and save" can't
+        // resurrect a config for what the configurator UI isn't even showing.
         let ot = overlay_type
             .peek()
             .clone();
-        let image_config_payload = Some(CollectionImageConfig {
-            layout: poster_layout
-                .peek()
-                .parse::<CollectionPosterLayout>()
-                .unwrap_or_default(),
-            overlay: match ot.as_str() {
-                "text" => CollectionOverlay::Text {
-                    text: {
-                        let t = overlay_text
+        let image_config_payload = if *is_gif_poster.peek() {
+            None
+        } else {
+            Some(CollectionImageConfig {
+                layout: poster_layout
+                    .peek()
+                    .parse::<CollectionPosterLayout>()
+                    .unwrap_or_default(),
+                overlay: match ot.as_str() {
+                    "text" => CollectionOverlay::Text {
+                        text: {
+                            let t = overlay_text
+                                .peek()
+                                .clone();
+                            if t.is_empty() {
+                                None
+                            } else {
+                                Some(t)
+                            }
+                        },
+                        font_size: overlay_font_size
                             .peek()
-                            .clone();
-                        if t.is_empty() {
-                            None
-                        } else {
-                            Some(t)
-                        }
+                            .parse::<u32>()
+                            .ok(),
+                        font_family: overlay_font_family
+                            .peek()
+                            .parse()
+                            .ok(),
+                        font_weight: overlay_font_weight
+                            .peek()
+                            .parse()
+                            .ok(),
                     },
-                    font_size: overlay_font_size
-                        .peek()
-                        .parse::<u32>()
-                        .ok(),
-                    font_family: overlay_font_family
-                        .peek()
-                        .parse()
-                        .ok(),
-                    font_weight: overlay_font_weight
-                        .peek()
-                        .parse()
-                        .ok(),
+                    "logo" => CollectionOverlay::StreamingLogo {
+                        provider_id: logo_provider_id
+                            .peek()
+                            .unwrap_or(0),
+                        provider_name: logo_provider_name
+                            .peek()
+                            .clone(),
+                        logo_path: logo_path
+                            .peek()
+                            .clone(),
+                    },
+                    _ => CollectionOverlay::None,
                 },
-                "logo" => CollectionOverlay::StreamingLogo {
-                    provider_id: logo_provider_id
-                        .peek()
-                        .unwrap_or(0),
-                    provider_name: logo_provider_name
-                        .peek()
-                        .clone(),
-                    logo_path: logo_path
-                        .peek()
-                        .clone(),
-                },
-                _ => CollectionOverlay::None,
-            },
-        });
+            })
+        };
 
         saving.set(true);
         err.set(None);
@@ -1125,7 +1158,11 @@ pub fn CollectionForm(
                                     "Delete"
                                 }
                             }
-                            if let Some(id) = existing_item_id.clone() {
+                            if !*is_gif_poster.read() && existing_item_id.is_some() { {
+                                let id = existing_item_id
+                                    .clone()
+                                    .unwrap();
+                                rsx! {
                                 button {
                                     r#type: "button",
                                     class: "btn btn-ghost",
@@ -1209,14 +1246,16 @@ pub fn CollectionForm(
                                     },
                                     if *previewing.read() { "Updating…" } else { "Update preview" }
                                 }
-                            }
+                                }
+                            } }
                         }
                     }
                 }
             }
 
-            // Image poster configurator (edit mode only)
-            if is_edit {
+            // Image poster configurator (edit mode only). Hidden entirely for
+            // a GIF poster — it's served as-is, so there's no config to set.
+            if is_edit && !*is_gif_poster.read() {
                 if !*has_custom_image_source.read() {
                     div { class: "field",
                         label { class: "field-label", "Layout" }
