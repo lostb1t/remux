@@ -2893,6 +2893,17 @@ fn match_probe_version<'a>(
         })
 }
 
+fn streams_are_fresh(
+    refreshed_at: Option<chrono::NaiveDateTime>,
+    ttl_seconds: i64,
+    now: chrono::NaiveDateTime,
+) -> bool {
+    ttl_seconds > 0
+        && refreshed_at.is_some_and(|refreshed_at| {
+            (now - refreshed_at).num_seconds() < ttl_seconds
+        })
+}
+
 impl AddonService {
     #[tracing::instrument(skip_all, fields(title = %media.title, kind = %media.kind))]
     pub async fn refresh_streams(
@@ -2901,14 +2912,21 @@ impl AddonService {
         ctx: &AppContext,
         user_id: Option<Uuid>,
     ) -> Result<()> {
-        const STREAMS_TTL_SECS: i64 = 60;
         static STREAM_LOCKS: KeyedLock<Uuid> = KeyedLock::new();
+
+        let cfg = db::Settings::get_config_or_default(&ctx.db).await;
+        let stream_cache_ttl_seconds = cfg
+            .stream_cache_ttl_seconds
+            .unwrap_or(60)
+            .max(0);
 
         // Fast path: TTL not expired — skip the lock entirely.
         let is_fresh = |refreshed: Option<chrono::NaiveDateTime>| {
-            refreshed.is_some_and(|r| {
-                (chrono::Utc::now().naive_utc() - r).num_seconds() < STREAMS_TTL_SECS
-            })
+            streams_are_fresh(
+                refreshed,
+                stream_cache_ttl_seconds,
+                chrono::Utc::now().naive_utc(),
+            )
         };
         if is_fresh(media.streams_refreshed_at) {
             return Ok(());
@@ -2970,7 +2988,6 @@ impl AddonService {
             let Some(imdb_id) = imdb_id else {
                 return None;
             };
-            let cfg = db::Settings::get_config_or_default(&ctx.db).await;
             if !cfg
                 .remuxdb_enabled
                 .unwrap_or(true)
@@ -3314,6 +3331,31 @@ pub fn make_media_id(addon_id: Uuid, local_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stream_cache_ttl_defaults_to_one_minute() {
+        assert_eq!(
+            crate::api::ServerConfiguration::default().stream_cache_ttl_seconds,
+            Some(60)
+        );
+    }
+
+    #[test]
+    fn stream_cache_freshness_uses_configured_ttl() {
+        let now = chrono::Utc::now().naive_utc();
+
+        assert!(streams_are_fresh(
+            Some(now - chrono::Duration::seconds(59)),
+            60,
+            now
+        ));
+        assert!(!streams_are_fresh(
+            Some(now - chrono::Duration::seconds(60)),
+            60,
+            now
+        ));
+        assert!(!streams_are_fresh(Some(now), 0, now));
+    }
 
     fn torrent_stream(hash: &str, file_hint: &str, file_idx: usize) -> db::Media {
         db::Media {
