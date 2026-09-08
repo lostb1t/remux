@@ -301,7 +301,7 @@ impl CatalogAddon for TmdbAddon {
         )?;
 
         let stream: Pin<Box<dyn Stream<Item = db::Media> + Send>> = match local_id {
-            "popular_movies" => Box::pin(with_imdb_resolved(
+            "popular_movies" => Box::pin(with_optional_imdb(
                 discover_movie_stream(
                     client.clone(),
                     sdks::tmdb::DiscoverQuery {
@@ -312,7 +312,7 @@ impl CatalogAddon for TmdbAddon {
                 client,
                 false,
             )),
-            "popular_tv" => Box::pin(with_imdb_resolved(
+            "popular_tv" => Box::pin(with_optional_imdb(
                 discover_tv_stream(
                     client.clone(),
                     sdks::tmdb::DiscoverQuery {
@@ -323,7 +323,7 @@ impl CatalogAddon for TmdbAddon {
                 client,
                 true,
             )),
-            "top_rated_movies" => Box::pin(with_imdb_resolved(
+            "top_rated_movies" => Box::pin(with_optional_imdb(
                 discover_movie_stream(
                     client.clone(),
                     sdks::tmdb::DiscoverQuery {
@@ -335,7 +335,7 @@ impl CatalogAddon for TmdbAddon {
                 client,
                 false,
             )),
-            "top_rated_tv" => Box::pin(with_imdb_resolved(
+            "top_rated_tv" => Box::pin(with_optional_imdb(
                 discover_tv_stream(
                     client.clone(),
                     sdks::tmdb::DiscoverQuery {
@@ -347,12 +347,12 @@ impl CatalogAddon for TmdbAddon {
                 client,
                 true,
             )),
-            "trending_movies_week" => Box::pin(with_imdb_resolved(
+            "trending_movies_week" => Box::pin(with_optional_imdb(
                 trending_movie_stream(client.clone(), sdks::tmdb::TrendingWindow::Week),
                 client,
                 false,
             )),
-            "trending_tv_week" => Box::pin(with_imdb_resolved(
+            "trending_tv_week" => Box::pin(with_optional_imdb(
                 trending_tv_stream(client.clone(), sdks::tmdb::TrendingWindow::Week),
                 client,
                 true,
@@ -488,9 +488,9 @@ fn series_result_to_stub(s: sdks::tmdb::SeriesSearchResult) -> db::Media {
 }
 
 /// Wraps a catalog stub stream and resolves the IMDB ID for each item inline,
-/// recomputing the stable UUID from the IMDB ID. Items that cannot be resolved
-/// are dropped (no IMDB ID = no canonical identity).
-fn with_imdb_resolved(
+/// recomputing the stable UUID when an IMDb ID is found. Otherwise retain
+/// the stub's TMDB identity so missing mappings do not hide catalog items.
+fn with_optional_imdb(
     stream: impl Stream<Item = db::Media> + Send + 'static,
     client: sdks::RestClient<sdks::BearerAuth>,
     is_tv: bool,
@@ -499,20 +499,21 @@ fn with_imdb_resolved(
         .map(move |mut stub| {
             let c = client.clone();
             async move {
-                let imdb = MediaResolveService::resolve_imdb_from_ids(
+                if let Some(imdb) = MediaResolveService::resolve_imdb_from_ids(
                     &stub.external_ids,
                     is_tv,
                     &c,
                 )
-                .await?;
-                stub.id = common::stable_media_uuid(&stub.kind, imdb.as_str());
-                stub.external_ids
-                    .imdb = Some(imdb);
-                Some(stub)
+                .await
+                {
+                    stub.id = common::stable_media_uuid(&stub.kind, imdb.as_str());
+                    stub.external_ids
+                        .imdb = Some(imdb);
+                }
+                stub
             }
         })
         .buffer_unordered(10)
-        .filter_map(futures::future::ready)
 }
 
 fn discover_movie_stream(
@@ -2519,6 +2520,82 @@ mod tests {
                 Some("tt1234567")
             );
         }
+    }
+
+    #[tokio::test]
+    async fn catalog_keeps_tmdb_identity_without_imdb() {
+        let server = httpmock::MockServer::start();
+        let missing = server.mock(|when, then| {
+            when.path("/tv/446101");
+            then.status(200).json_body(serde_json::json!({"id": 446101, "external_ids": {"imdb_id": null}}));
+        });
+        let found = server.mock(|when, then| {
+            when.path("/tv/446102");
+            then.status(200).json_body(serde_json::json!({"id": 446102, "external_ids": {"imdb_id": "tt446102"}}));
+        });
+        let failed = server.mock(|when, then| {
+            when.path("/tv/446103");
+            then.status(404);
+        });
+        let stubs = [446101, 446102, 446103].map(|id| db::Media {
+            id: common::stable_media_uuid(
+                &db::MediaKind::Series,
+                &format!("tmdb:{id}"),
+            ),
+            kind: db::MediaKind::Series,
+            external_ids: db::ExternalIds {
+                tmdb: Some(id),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let client = sdks::RestClient::new(&server.base_url())
+            .unwrap()
+            .with_auth(sdks::BearerAuth {
+                token: String::new(),
+            });
+        let items: Vec<_> =
+            with_optional_imdb(futures::stream::iter(stubs.clone()), client, true)
+                .collect()
+                .await;
+        assert_eq!(items.len(), 3);
+        for stub in stubs {
+            let item = items
+                .iter()
+                .find(|item| {
+                    item.external_ids
+                        .tmdb
+                        == stub
+                            .external_ids
+                            .tmdb
+                })
+                .unwrap();
+            if stub
+                .external_ids
+                .tmdb
+                == Some(446102)
+            {
+                assert_eq!(
+                    item.id,
+                    common::stable_media_uuid(&db::MediaKind::Series, "tt446102")
+                );
+                assert!(
+                    item.external_ids
+                        .imdb
+                        .is_some()
+                );
+            } else {
+                assert_eq!(item.id, stub.id);
+                assert!(
+                    item.external_ids
+                        .imdb
+                        .is_none()
+                );
+            }
+        }
+        missing.assert();
+        found.assert();
+        failed.assert();
     }
 
     fn image_entry(path: &str, language: Option<&str>) -> sdks::tmdb::ImageEntry {

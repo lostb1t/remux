@@ -487,9 +487,9 @@ impl MediaResolveService {
         series
             .external_ids
             .tmdb = Some(tmdb);
-        // Cannot re-key the row out from under its own episodes: `candidate_ids`
-        // ranks imdb and the Stremio id above tmdb, and a series carrying
-        // neither is one `Media::save` refuses.
+        // Widen the stored IDs without changing the persisted UUID or child
+        // links, even when TMDB becomes the preferred canonical external ID.
+        // Later ingests find this row through its external IDs.
         if let Some(stored) = db::Media::widen_external_ids(
             &ctx.db,
             &series.id,
@@ -625,23 +625,8 @@ impl MediaResolveService {
 
         if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
             if !Self::resolve_media_imdb(&mut media, ctx).await {
-                // If the item arrived with a resolvable external ID (TMDB or TVDB), we
-                // expected to derive an IMDB ID from it. Bail early so the caller sees
-                // a clean failure instead of a silent crash.
-                if media
-                    .external_ids
-                    .tmdb
-                    .is_some()
-                    || media
-                        .external_ids
-                        .tvdb
-                        .is_some()
-                {
-                    warn!(%id, kind = ?media.kind, title = %media.title,
-                        "persist_from_store: IMDB resolution failed for TMDB/TVDB item, skipping");
-                    return Ok(None);
-                }
-                warn!(%id, kind = ?media.kind, "persist_from_store: IMDB resolution failed, saving without IMDB ID");
+                debug!(%id, kind = ?media.kind, title = %media.title,
+                    "persist_from_store: no IMDb ID resolved, retaining existing external IDs");
             }
             // External IDs resolved above may match a row already in the DB —
             // adopt its id rather than persisting a duplicate.
@@ -1397,46 +1382,117 @@ mod tests {
         .1
     }
 
-    /// A series tmdb could re-key is one `save` refuses outright, which is why
-    /// the completion path needs no re-key guard of its own.
     #[tokio::test]
-    async fn a_series_tmdb_could_re_key_cannot_be_stored_at_all() {
-        let (_s, guard) =
-            crate::integration_test::new_test_server_with_config(crate::Config {
-                database_url: Some("sqlite::memory:".into()),
-                torrent_http_port: None,
-                disable_dht: true,
+    async fn tvdb_series_keeps_stored_identity_when_tmdb_is_added() {
+        let tmdb = httpmock::MockServer::start();
+        tmdb.mock(|when, then| {
+            when.path("/find/7770002");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "tv_results": [{ "id": 7778, "name": "Show" }],
+                    "movie_results": []
+                }));
+        });
+        let guard = ctx_with_tmdb(&tmdb).await;
+        let ctx = &guard.0;
+        let mut media = series(
+            ctx,
+            db::ExternalIds {
+                tvdb: Some(7770002),
                 ..Default::default()
-            })
+            },
+        )
+        .await;
+        let original_id = media.id;
+        let client = MediaResolveService::tmdb(ctx)
             .await
             .unwrap();
-        let ids = db::ExternalIds {
-            tvdb: Some(7770002),
-            kitsu: Some(7770012),
-            ..Default::default()
-        };
-        let mut media = db::Media {
-            id: Uuid::from(&db::MediaIdRaw {
-                kind: db::MediaKind::Series,
-                external_ids: ids.clone(),
-                season: None,
-                episode: None,
-            }),
-            title: "Show".into(),
-            kind: db::MediaKind::Series,
-            external_ids: ids,
-            ..Default::default()
-        };
+        assert!(
+            MediaResolveService::fill_series_tmdb(&mut media, ctx, &client)
+                .await
+                .unwrap()
+        );
+        assert_eq!(media.id, original_id);
+        let stored = db::Media::get_by_id(&ctx.db, &original_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored
+                .external_ids
+                .tmdb,
+            Some(7778)
+        );
+        assert_eq!(
+            stored
+                .external_ids
+                .tvdb,
+            Some(7770002)
+        );
+        assert_eq!(
+            db::Media::find_existing_id_by_ext(&ctx.db, &media).await,
+            Some(original_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_tmdb_search_result_without_imdb_mapping() {
+        let tmdb = httpmock::MockServer::start();
+        let lookup = tmdb.mock(|when, then| {
+            when.path("/tv/446001");
+            then.status(200).json_body(serde_json::json!({
+                "id": 446001, "name": "No IMDb mapping", "external_ids": {"imdb_id": null}
+            }));
+        });
+        let guard = ctx_with_tmdb(&tmdb).await;
+        let ctx = &guard.0;
+        let id =
+            crate::common::stable_media_uuid(&db::MediaKind::Series, "tmdb:446001");
+        ctx.store
+            .save(
+                id.to_string(),
+                db::Media {
+                    id,
+                    title: "No IMDb mapping".into(),
+                    kind: db::MediaKind::Series,
+                    external_ids: db::ExternalIds {
+                        tmdb: Some(446001),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                std::time::Duration::from_secs(60),
+            );
+        let media = MediaResolveService::resolve_item(id, ctx)
+            .await
+            .unwrap()
+            .expect("TMDB-only series must persist");
+        assert_eq!(media.id, id);
+        assert_eq!(
+            media
+                .external_ids
+                .tmdb,
+            Some(446001)
+        );
         assert!(
             media
-                .save(
-                    &guard
-                        .0
-                        .db
-                )
-                .await
-                .is_err()
+                .external_ids
+                .imdb
+                .is_none()
         );
+        assert!(
+            db::Media::get_by_id(&ctx.db, &id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            MediaResolveService::resolve_item(id, ctx)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(lookup.hits() >= 1);
     }
 
     /// One provider needs only the episode's own ids, another the show's tmdb
