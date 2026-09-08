@@ -2300,7 +2300,58 @@ impl AddonService {
                 root_was_remapped = true;
             }
         }
+        // Upsert root. Images are held back and attached separately below:
+        // `Media::upsert` inserts `media_images` rows keyed on the item's own
+        // `id` in the *same* transaction as the root row's insert, but a
+        // per-kind external-id unique index violation (see the migration
+        // that added them) can redirect that root insert onto a different
+        // existing row via `ON CONFLICT DO UPDATE` — leaving an images
+        // insert keyed on an id that was never actually written, which
+        // fails the deferred `media_images.media_id` foreign key. Inserting
+        // images after the id below is confirmed avoids that entirely.
+        let pending_images = std::mem::take(&mut media.images);
+        if let Err(e) = db::Media::upsert(&ctx.db, &[media.clone()]).await {
+            error!(id = %media.id, error = %e, "failed to upsert root media");
+            return media.id;
+        }
+
+        // The upsert above may have silently landed on a different row than
+        // `media.id`: `Media::upsert`'s `ON CONFLICT DO UPDATE` has no
+        // conflict target, so SQLite fires it for ANY unique index
+        // violation, not just the primary key — including the per-kind
+        // external-id unique indexes. If another concurrent task committed
+        // a row under a different id with the same external id between our
+        // dedup check above and this upsert, our own insert gets silently
+        // redirected onto that row instead of failing or creating a
+        // duplicate. Re-check now (authoritative, since our own write just
+        // committed) and correct our bookkeeping before anything downstream
+        // (season/episode trees, catalog relations) keys off the wrong id.
+        if let Some(existing_id) =
+            db::Media::find_existing_id_by_ext(&ctx.db, &media).await
+        {
+            if existing_id != media.id {
+                if let Err(e) = db::Media::cascade_update_parent_refs(
+                    &ctx.db,
+                    media.id,
+                    existing_id,
+                )
+                .await
+                {
+                    warn!(old = %media.id, new = %existing_id, error = %e,
+                        "cascade_update_parent_refs failed after post-upsert id correction");
+                }
+                media.id = existing_id;
+                root_was_remapped = true;
+            }
+        }
         let actual_root_id = media.id;
+
+        if !pending_images.is_empty() {
+            media.images = pending_images;
+            if let Err(e) = db::Media::upsert(&ctx.db, &[media.clone()]).await {
+                warn!(id = %actual_root_id, error = %e, "failed to attach images to root media");
+            }
+        }
 
         // Build in-memory grandparent stub so children's refresh_meta calls can read
         // the series TMDB/IMDB ID and genres without hitting the DB.
@@ -2326,11 +2377,6 @@ impl AddonService {
             gp
         };
 
-        // Upsert root.
-        if let Err(e) = db::Media::upsert(&ctx.db, &[media.clone()]).await {
-            error!(id = %actual_root_id, error = %e, "failed to upsert root media");
-            return actual_root_id;
-        }
         db::UserMediaState::remap_orphaned_for(&ctx.db, &[media.clone()]).await;
         save_pending_relations(&ctx, &[media.clone()]).await;
         save_pending_tags(&ctx, &[media.clone()]).await;
@@ -3401,6 +3447,90 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    // Regression test for the duplicate-row race: two independent "new"
+    // stubs for the exact same content (same tmdb id, as if discovered via
+    // two different addon catalogs at once) must converge on a single row
+    // even when their `process_meta_item` calls genuinely race, because
+    // neither's pre-upsert dedup check can see the other's not-yet-committed
+    // insert. Correctness here depends on the per-kind external-id unique
+    // indexes (migrations/202609080002_media_external_id_unique_indexes.sql)
+    // plus the post-upsert id-correction check in `process_meta_item_inner`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_new_items_with_same_external_id_do_not_duplicate() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let ext = db::ExternalIds {
+            imdb: db::NonEmptyString::try_new("tt9999999").ok(),
+            tmdb: Some(999999),
+            ..Default::default()
+        };
+
+        let config = Arc::new(db::Settings::get_config_or_default(&ctx.db).await);
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(4));
+
+        let a = db::Media {
+            id: uuid::Uuid::new_v4(),
+            kind: db::MediaKind::Movie,
+            title: "Race Movie".into(),
+            external_ids: ext.clone(),
+            ..Default::default()
+        };
+        let b = db::Media {
+            id: uuid::Uuid::new_v4(),
+            kind: db::MediaKind::Movie,
+            title: "Race Movie".into(),
+            external_ids: ext,
+            ..Default::default()
+        };
+
+        let task_a = tokio::spawn({
+            let addons = ctx
+                .addons
+                .clone();
+            let ctx = ctx.clone();
+            let config = config.clone();
+            let semaphore = semaphore.clone();
+            async move {
+                addons
+                    .process_meta_item(a, ctx, false, config, semaphore)
+                    .await
+            }
+        });
+        let task_b = tokio::spawn({
+            let addons = ctx
+                .addons
+                .clone();
+            let ctx = ctx.clone();
+            let config = config.clone();
+            let semaphore = semaphore.clone();
+            async move {
+                addons
+                    .process_meta_item(b, ctx, false, config, semaphore)
+                    .await
+            }
+        });
+
+        let (id_a, id_b) = tokio::join!(task_a, task_b);
+        let id_a = id_a.unwrap();
+        let id_b = id_b.unwrap();
+
+        assert_eq!(
+            id_a, id_b,
+            "both concurrent imports of the same content must converge on one row"
+        );
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM media WHERE kind = 'movie' AND json_extract(external_ids, '$.tmdb') = 999999",
+        )
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap();
+        assert_eq!(count, 1, "exactly one row should survive the race");
     }
 
     #[test]
