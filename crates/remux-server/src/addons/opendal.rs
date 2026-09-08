@@ -1194,7 +1194,18 @@ async fn scan_addon(
                                         .map(Into::into)
                                 }
                             } else {
-                                resolve_imdb(tmdb, &clean_title, None, true).await
+                                if let Some(client) = tmdb {
+                                    MediaResolveService::resolve_imdb_from_search(
+                                        client,
+                                        &clean_title,
+                                        None,
+                                        true,
+                                    )
+                                    .await
+                                    .map(Into::into)
+                                } else {
+                                    None
+                                }
                             };
                             (imdb_id, season, episode, year, clean_title)
                         }
@@ -1226,7 +1237,18 @@ async fn scan_addon(
                                         .map(Into::into)
                                 }
                             } else {
-                                resolve_imdb(tmdb, &clean_title, year, false).await
+                                if let Some(client) = tmdb {
+                                    MediaResolveService::resolve_imdb_from_search(
+                                        client,
+                                        &clean_title,
+                                        year,
+                                        false,
+                                    )
+                                    .await
+                                    .map(Into::into)
+                                } else {
+                                    None
+                                }
                             };
                             (imdb_id, None, None, year, clean_title)
                         }
@@ -1478,7 +1500,18 @@ async fn scan_addon(
                                 .map(Into::into)
                         }
                     } else {
-                        resolve_imdb(tmdb, &clean_title, None, true).await
+                        if let Some(client) = tmdb {
+                            MediaResolveService::resolve_imdb_from_search(
+                                client,
+                                &clean_title,
+                                None,
+                                true,
+                            )
+                            .await
+                            .map(Into::into)
+                        } else {
+                            None
+                        }
                     };
 
                     if imdb_id.is_none() {
@@ -1519,7 +1552,18 @@ async fn scan_addon(
                                 .map(Into::into)
                         }
                     } else {
-                        resolve_imdb(tmdb, &clean_title, year, false).await
+                        if let Some(client) = tmdb {
+                            MediaResolveService::resolve_imdb_from_search(
+                                client,
+                                &clean_title,
+                                year,
+                                false,
+                            )
+                            .await
+                            .map(Into::into)
+                        } else {
+                            None
+                        }
                     };
 
                     if imdb_id.is_none() {
@@ -1619,77 +1663,6 @@ async fn fetch_existing_imdb(
     .fetch_optional(&ctx.db)
     .await?
     .flatten())
-}
-
-async fn resolve_imdb(
-    tmdb: &Option<sdks::RestClient<sdks::BearerAuth>>,
-    title: &str,
-    year: Option<i64>,
-    is_tv: bool,
-) -> Option<String> {
-    let client = tmdb.as_ref()?;
-    if title.is_empty() {
-        return None;
-    }
-
-    if is_tv {
-        let resp = client
-            .execute(
-                sdks::tmdb::SearchTvEndpoint {
-                    query: title.to_string(),
-                }
-                .with_cache(Duration::from_secs(86400)),
-            )
-            .await
-            .ok()?;
-        let tmdb_id = resp
-            .results
-            .into_iter()
-            .next()?
-            .id;
-
-        let series = client
-            .execute(
-                sdks::tmdb::SeriesEndpoint::new(tmdb_id, None)
-                    .with_cache(Duration::from_secs(86400)),
-            )
-            .await
-            .ok()?;
-
-        series
-            .external_ids
-            .as_ref()
-            .and_then(|e| {
-                e.imdb_id
-                    .clone()
-            })
-    } else {
-        let resp = client
-            .execute(
-                sdks::tmdb::SearchMovieEndpoint {
-                    query: title.to_string(),
-                    year,
-                }
-                .with_cache(Duration::from_secs(86400)),
-            )
-            .await
-            .ok()?;
-        let tmdb_id = resp
-            .results
-            .into_iter()
-            .next()?
-            .id;
-
-        let movie = client
-            .execute(
-                sdks::tmdb::MovieEndpoint::new(tmdb_id, None)
-                    .with_cache(Duration::from_secs(86400)),
-            )
-            .await
-            .ok()?;
-
-        movie.imdb_id
-    }
 }
 
 async fn prune_stale_paths(
@@ -3082,13 +3055,14 @@ mod tests {
         });
         mock_tv_series(&server, 157842, "tt21249100");
 
-        let result = resolve_imdb(
-            &tmdb_test_client(&server.base_url()),
+        let result: Option<String> = MediaResolveService::resolve_imdb_from_search(
+            &tmdb_test_client(&server.base_url()).unwrap(),
             "Black Summoner",
             Some(2022),
             true,
         )
-        .await;
+        .await
+        .map(Into::into);
         assert_eq!(
             result.as_deref(),
             Some("tt21249100"),
@@ -3109,13 +3083,14 @@ mod tests {
         });
         mock_tv_series(&server, 30984, "tt0434665");
 
-        let result = resolve_imdb(
-            &tmdb_test_client(&server.base_url()),
+        let result: Option<String> = MediaResolveService::resolve_imdb_from_search(
+            &tmdb_test_client(&server.base_url()).unwrap(),
             "Bleach",
             Some(2004),
             true,
         )
-        .await;
+        .await
+        .map(Into::into);
         assert_eq!(result.as_deref(), Some("tt0434665"), "Bleach title search");
     }
 
@@ -3132,13 +3107,14 @@ mod tests {
         });
         mock_tv_series(&server, 43270, "tt1890725");
 
-        let result = resolve_imdb(
-            &tmdb_test_client(&server.base_url()),
+        let result: Option<String> = MediaResolveService::resolve_imdb_from_search(
+            &tmdb_test_client(&server.base_url()).unwrap(),
             "Blood-C",
             Some(2011),
             true,
         )
-        .await;
+        .await
+        .map(Into::into);
         assert_eq!(result.as_deref(), Some("tt1890725"), "Blood-C title search");
     }
 

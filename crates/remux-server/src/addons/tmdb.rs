@@ -301,62 +301,43 @@ impl CatalogAddon for TmdbAddon {
         )?;
 
         let stream: Pin<Box<dyn Stream<Item = db::Media> + Send>> = match local_id {
-            "popular_movies" => Box::pin(with_imdb_resolved(
-                discover_movie_stream(
-                    client.clone(),
-                    sdks::tmdb::DiscoverQuery {
-                        sort_by: Some("popularity.desc".into()),
-                        ..Default::default()
-                    },
-                ),
+            "popular_movies" => Box::pin(discover_movie_stream(
                 client,
-                false,
+                sdks::tmdb::DiscoverQuery {
+                    sort_by: Some("popularity.desc".into()),
+                    ..Default::default()
+                },
             )),
-            "popular_tv" => Box::pin(with_imdb_resolved(
-                discover_tv_stream(
-                    client.clone(),
-                    sdks::tmdb::DiscoverQuery {
-                        sort_by: Some("popularity.desc".into()),
-                        ..Default::default()
-                    },
-                ),
+            "popular_tv" => Box::pin(discover_tv_stream(
                 client,
-                true,
+                sdks::tmdb::DiscoverQuery {
+                    sort_by: Some("popularity.desc".into()),
+                    ..Default::default()
+                },
             )),
-            "top_rated_movies" => Box::pin(with_imdb_resolved(
-                discover_movie_stream(
-                    client.clone(),
-                    sdks::tmdb::DiscoverQuery {
-                        sort_by: Some("vote_average.desc".into()),
-                        vote_count_gte: Some(300),
-                        ..Default::default()
-                    },
-                ),
+            "top_rated_movies" => Box::pin(discover_movie_stream(
                 client,
-                false,
+                sdks::tmdb::DiscoverQuery {
+                    sort_by: Some("vote_average.desc".into()),
+                    vote_count_gte: Some(300),
+                    ..Default::default()
+                },
             )),
-            "top_rated_tv" => Box::pin(with_imdb_resolved(
-                discover_tv_stream(
-                    client.clone(),
-                    sdks::tmdb::DiscoverQuery {
-                        sort_by: Some("vote_average.desc".into()),
-                        vote_count_gte: Some(300),
-                        ..Default::default()
-                    },
-                ),
+            "top_rated_tv" => Box::pin(discover_tv_stream(
                 client,
-                true,
+                sdks::tmdb::DiscoverQuery {
+                    sort_by: Some("vote_average.desc".into()),
+                    vote_count_gte: Some(300),
+                    ..Default::default()
+                },
             )),
-            "trending_movies_week" => Box::pin(with_imdb_resolved(
-                trending_movie_stream(client.clone(), sdks::tmdb::TrendingWindow::Week),
+            "trending_movies_week" => Box::pin(trending_movie_stream(
                 client,
-                false,
+                sdks::tmdb::TrendingWindow::Week,
             )),
-            "trending_tv_week" => Box::pin(with_imdb_resolved(
-                trending_tv_stream(client.clone(), sdks::tmdb::TrendingWindow::Week),
-                client,
-                true,
-            )),
+            "trending_tv_week" => {
+                Box::pin(trending_tv_stream(client, sdks::tmdb::TrendingWindow::Week))
+            }
             _ => return Ok(None),
         };
 
@@ -485,34 +466,6 @@ fn series_result_to_stub(s: sdks::tmdb::SeriesSearchResult) -> db::Media {
         media.set_image(db::ImageKind::Primary, url);
     }
     media
-}
-
-/// Wraps a catalog stub stream and resolves the IMDB ID for each item inline,
-/// recomputing the stable UUID from the IMDB ID. Items that cannot be resolved
-/// are dropped (no IMDB ID = no canonical identity).
-fn with_imdb_resolved(
-    stream: impl Stream<Item = db::Media> + Send + 'static,
-    client: sdks::RestClient<sdks::BearerAuth>,
-    is_tv: bool,
-) -> impl Stream<Item = db::Media> + Send {
-    stream
-        .map(move |mut stub| {
-            let c = client.clone();
-            async move {
-                let imdb = MediaResolveService::resolve_imdb_from_ids(
-                    &stub.external_ids,
-                    is_tv,
-                    &c,
-                )
-                .await?;
-                stub.id = common::stable_media_uuid(&stub.kind, imdb.as_str());
-                stub.external_ids
-                    .imdb = Some(imdb);
-                Some(stub)
-            }
-        })
-        .buffer_unordered(10)
-        .filter_map(futures::future::ready)
 }
 
 fn discover_movie_stream(
@@ -1318,25 +1271,11 @@ async fn fetch_tmdb_meta(
 
     match media.kind {
         db::MediaKind::Movie => {
-            // Use the TMDB ID directly if known; otherwise discover it via /find.
-            let tmdb_movie_id: Option<i64> = if let Some(id) = ids.tmdb {
-                Some(id)
-            } else {
-                match MediaResolveService::tmdb_search_key(ids, None).await {
-                    Some((external_id, external_source)) => {
-                        MediaResolveService::find_tmdb_id_by(
-                            external_id,
-                            external_source,
-                            false,
-                            &client,
-                        )
-                        .await
-                        .ok()
-                        .flatten()
-                    }
-                    None => return Ok(None),
-                }
-            };
+            // `resolve_missing_external_ids` (called at the top of
+            // `refresh_meta`, before any addon runs) already resolves a
+            // tmdb id from whatever else is known, if one is resolvable at
+            // all — nothing left to discover here.
+            let tmdb_movie_id: Option<i64> = ids.tmdb;
 
             if let Some(tmdb_id) = tmdb_movie_id {
                 let movie_details = client
@@ -1521,25 +1460,11 @@ async fn fetch_tmdb_meta(
             }
         }
         db::MediaKind::Series => {
-            // Use the TMDB ID directly if known; otherwise discover it via /find.
-            let tmdb_series_id: Option<i64> = if let Some(id) = ids.tmdb {
-                Some(id)
-            } else {
-                match MediaResolveService::tmdb_search_key(ids, None).await {
-                    Some((external_id, external_source)) => {
-                        MediaResolveService::find_tmdb_id_by(
-                            external_id,
-                            external_source,
-                            true,
-                            &client,
-                        )
-                        .await
-                        .ok()
-                        .flatten()
-                    }
-                    None => return Ok(None),
-                }
-            };
+            // `resolve_missing_external_ids` (called at the top of
+            // `refresh_meta`, before any addon runs) already resolves a
+            // tmdb id from whatever else is known, if one is resolvable at
+            // all — nothing left to discover here.
+            let tmdb_series_id: Option<i64> = ids.tmdb;
 
             if let Some(tmdb_id) = tmdb_series_id {
                 let tv_details = client

@@ -2185,15 +2185,6 @@ impl Media {
         }
 
         let missing = match self.kind {
-            MediaKind::Movie | MediaKind::Series => (self
-                .external_ids
-                .imdb
-                .is_none()
-                && self
-                    .external_ids
-                    .custom_stremio_id
-                    .is_none())
-            .then_some("imdb"),
             MediaKind::Season | MediaKind::Episode => self
                 .grandparent_id
                 .is_none()
@@ -8144,6 +8135,64 @@ pub(crate) fn build_genre_relations_from_names(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn movie_and_series_accept_known_external_ids() {
+        for kind in [MediaKind::Movie, MediaKind::Series] {
+            for external_ids in [
+                ExternalIds {
+                    imdb: NonEmptyString::try_new("tt446001".to_string()).ok(),
+                    ..Default::default()
+                },
+                ExternalIds {
+                    tmdb: Some(446001),
+                    ..Default::default()
+                },
+                ExternalIds {
+                    tvdb: Some(446001),
+                    ..Default::default()
+                },
+                ExternalIds {
+                    kitsu: Some(446001),
+                    ..Default::default()
+                },
+                ExternalIds {
+                    custom_stremio_id: Some("custom:446001".into()),
+                    ..Default::default()
+                },
+            ] {
+                let media = Media {
+                    kind: kind.clone(),
+                    external_ids,
+                    ..Default::default()
+                };
+                assert!(
+                    media
+                        .validate()
+                        .is_ok(),
+                    "{:?}",
+                    media.external_ids
+                );
+            }
+            for external_ids in [
+                ExternalIds::default(),
+                ExternalIds {
+                    youtube_id: Some("unrelated".into()),
+                    ..Default::default()
+                },
+            ] {
+                assert!(
+                    Media {
+                        kind: kind.clone(),
+                        external_ids,
+                        ..Default::default()
+                    }
+                    .validate()
+                    .is_err()
+                );
+            }
+        }
+    }
+
     use super::*;
     use crate::db::MediaIdRaw;
 
@@ -10391,8 +10440,7 @@ mod dedup_tests {
     /// Multi-match: incoming carries two ids that resolve to two different
     /// stored rows. The stronger id (imdb over custom_stremio_id) wins, per
     /// priority. Both stored rows carry an id from {imdb, custom_stremio_id}
-    /// so each independently satisfies `validate()`'s Movie rule (imdb OR
-    /// custom_stremio_id — tmdb/tvdb/kitsu alone do not).
+    /// so each independently satisfies the Movie external-ID requirement.
     #[tokio::test]
     async fn strongest_id_wins_on_ambiguous_match() {
         let (_s, guard) = new_test_server()
