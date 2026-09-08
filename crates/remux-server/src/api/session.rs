@@ -23,8 +23,7 @@ use crate::{
     playback::session::TranscodeSession,
     services::{self, MediaResolveService},
     signals::{
-        Event, PlaybackProgressInfo, PlaybackStartedInfo, PlaybackStoppedInfo,
-        RemoteCommandInfo, RemotePlayInfo, RemotePlaystateInfo,
+        Event, PlaybackContext, RemoteCommandInfo, RemotePlayInfo, RemotePlaystateInfo,
     },
 };
 
@@ -118,10 +117,18 @@ pub async fn report_playback_start(
         .ctx
         .signals
         .emit(Event::SessionsChanged);
+    let playback = state
+        .ctx
+        .sessions
+        .get_by_device(
+            &session
+                .device
+                .id,
+        );
     state
         .ctx
         .signals
-        .emit(Event::PlaybackStarted(PlaybackStartedInfo {
+        .emit(Event::PlaybackStarted(PlaybackContext {
             user_id: session
                 .user
                 .id,
@@ -129,7 +136,7 @@ pub async fn report_playback_start(
             position_ticks: data
                 .position_ticks
                 .unwrap_or(0),
-            ..Default::default()
+            ..PlaybackContext::from_parts(&session, &data, playback.as_ref(), None)
         }));
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -184,10 +191,14 @@ pub async fn report_playback_progress(
             .signals
             .emit(Event::SessionsChanged);
         if data.is_paused && !was_paused {
+            let playback = state
+                .ctx
+                .sessions
+                .get(psid);
             state
                 .ctx
                 .signals
-                .emit(Event::PlaybackProgress(PlaybackProgressInfo {
+                .emit(Event::PlaybackProgress(PlaybackContext {
                     user_id: session
                         .user
                         .id,
@@ -196,7 +207,12 @@ pub async fn report_playback_progress(
                         .position_ticks
                         .unwrap_or(0),
                     is_paused: true,
-                    ..Default::default()
+                    ..PlaybackContext::from_parts(
+                        &session,
+                        &data,
+                        playback.as_ref(),
+                        Some(psid),
+                    )
                 }));
         }
     }
@@ -226,15 +242,27 @@ pub async fn report_playback_stopped(
     if let Some(ref psid) = effective_psid {
         // Read before `stopped` clears the session, and the only id a client
         // is guaranteed to have given us: a stop report may carry none.
+        let playback = state
+            .ctx
+            .sessions
+            .get(psid);
+        let position_ticks = data
+            .position_ticks
+            .or_else(|| {
+                playback
+                    .as_ref()
+                    .map(|playback| playback.position_ticks)
+            })
+            .unwrap_or(0);
+        let pctx =
+            PlaybackContext::from_parts(&session, &data, playback.as_ref(), Some(psid));
         let changed_item_id = (!data
             .item_id
             .is_nil())
         .then_some(data.item_id)
         .or_else(|| {
-            state
-                .ctx
-                .sessions
-                .get(psid)
+            playback
+                .as_ref()
                 .map(|playback| playback.item_id)
                 .filter(|item_id| !item_id.is_nil())
         });
@@ -262,16 +290,14 @@ pub async fn report_playback_stopped(
             state
                 .ctx
                 .signals
-                .emit(Event::PlaybackStopped(PlaybackStoppedInfo {
+                .emit(Event::PlaybackStopped(PlaybackContext {
                     user_id: session
                         .user
                         .id,
                     media_id: item_id,
-                    position_ticks: data
-                        .position_ticks
-                        .unwrap_or(0),
+                    position_ticks,
                     played,
-                    ..Default::default()
+                    ..pctx
                 }));
         }
     }

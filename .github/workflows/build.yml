@@ -120,7 +120,7 @@ jobs:
           cargo set-version "${{ inputs.cargo_version }}"
 
       - name: Install dioxus-cli
-        run: cargo binstall dioxus-cli@0.7.3 --no-confirm --force
+        run: cargo binstall dioxus-cli@0.7.9 --no-confirm --force --locked
 
       - name: Build dashboard
         working-directory: crates/remux-dashboard

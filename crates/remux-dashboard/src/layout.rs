@@ -108,6 +108,7 @@ pub fn DashboardLayout() -> Element {
         Route::SettingsSearchRoute => "Search",
         Route::SettingsJellyfinSyncRoute => "Jellyfin Sync",
         Route::SettingsBrandingRoute => "Branding",
+        Route::SettingsWebhooksRoute => "Webhooks",
         Route::SettingsIntroRoute => "Intro",
         Route::SettingsRemuxdbRoute => "Remuxdb",
         Route::AccessUsersRoute => "Users",
@@ -196,6 +197,7 @@ pub fn DashboardLayout() -> Element {
                             | Route::SettingsSearchRoute
                             | Route::SettingsJellyfinSyncRoute
                             | Route::SettingsBrandingRoute
+                            | Route::SettingsWebhooksRoute
                             | Route::SettingsIntroRoute
                             | Route::SettingsRemuxdbRoute
                         ),
@@ -233,6 +235,11 @@ pub fn DashboardLayout() -> Element {
                             label: "Branding",
                             active: route == Route::SettingsBrandingRoute,
                             on_click: move |_| { navigator().push(Route::SettingsBrandingRoute); sidebar_open.set(false); },
+                        }
+                        NavSubItem {
+                            label: "Webhooks",
+                            active: route == Route::SettingsWebhooksRoute,
+                            on_click: move |_| { navigator().push(Route::SettingsWebhooksRoute); sidebar_open.set(false); },
                         }
                     }
 
