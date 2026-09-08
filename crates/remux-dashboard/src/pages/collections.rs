@@ -1158,7 +1158,11 @@ pub fn CollectionForm(
                                     "Delete"
                                 }
                             }
-                            if let Some(id) = existing_item_id.clone() {
+                            if !*is_gif_poster.read() && existing_item_id.is_some() { {
+                                let id = existing_item_id
+                                    .clone()
+                                    .unwrap();
+                                rsx! {
                                 button {
                                     r#type: "button",
                                     class: "btn btn-ghost",
@@ -1242,7 +1246,8 @@ pub fn CollectionForm(
                                     },
                                     if *previewing.read() { "Updating…" } else { "Update preview" }
                                 }
-                            }
+                                }
+                            } }
                         }
                     }
                 }
