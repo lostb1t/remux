@@ -2062,13 +2062,18 @@ impl AddonService {
         use futures::StreamExt;
 
         let config = db::Settings::get_config_or_default(&ctx.db).await;
-        let concurrency = config.meta_concurrency as usize;
+        // Clamp before casting: a persisted/API-set 0 or negative value would
+        // otherwise stall `buffer_unordered` (0) or wrap around to near
+        // `usize::MAX` (negative), not just fail to throttle.
+        let concurrency = config
+            .meta_concurrency
+            .max(1) as usize;
         let config = Arc::new(config);
         // Shared across this whole batch — top-level items, and every season/
         // episode any of them refreshes — so nested fan-out inside a single
         // item's own tree walk can't multiply past this budget. See
         // `process_meta_item_inner` for where seasons/episodes acquire from it.
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency.max(1)));
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
 
         let svc = self.clone();
         let ctx_owned = ctx.clone();
@@ -2242,7 +2247,8 @@ impl AddonService {
         let root_refresh_result = {
             let _permit = semaphore
                 .acquire()
-                .await;
+                .await
+                .expect("semaphore is never closed");
             self.refresh_meta(&mut media, &ctx, force_refresh, &config)
                 .await
         };
@@ -2441,7 +2447,8 @@ impl AddonService {
                     {
                         let _permit = semaphore
                             .acquire()
-                            .await;
+                            .await
+                            .expect("semaphore is never closed");
                         if let Err(e) = svc
                             .refresh_meta(&mut child, &ctx, effective_force, &config)
                             .await
@@ -2525,7 +2532,8 @@ impl AddonService {
                         {
                             let _permit = semaphore
                                 .acquire()
-                                .await;
+                                .await
+                                .expect("semaphore is never closed");
                             if let Err(e) = svc
                                 .refresh_meta(&mut gc, &ctx, effective_force, &config)
                                 .await

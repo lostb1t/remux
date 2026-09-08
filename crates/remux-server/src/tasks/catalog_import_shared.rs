@@ -92,23 +92,51 @@ where
         // Adopt stored identities before recording positions or partitioning.
         // A provider's stub UUID can differ from a row discovered through another
         // provider, even though their external IDs identify the same content.
+        //
+        // Fast path first: a single batched id lookup covers the common case
+        // (re-scanning the same addon's own catalog, where ids already match
+        // exactly) without a query per item. Only items whose own id isn't
+        // already a row fall through to the slower per-item external-ID
+        // match — that's the only path that can find a row saved under a
+        // different provider's id for the same content.
+        let candidate_ids: Vec<Uuid> = items
+            .iter()
+            .map(|i| i.id)
+            .collect();
+        let existing_by_id: HashMap<Uuid, String> = if candidate_ids.is_empty() {
+            HashMap::new()
+        } else {
+            let mut qb = sqlx::QueryBuilder::new(
+                "SELECT id, CAST(kind AS TEXT) FROM media WHERE id IN (",
+            );
+            let mut sep = qb.separated(", ");
+            for id in &candidate_ids {
+                sep.push_bind(id);
+            }
+            qb.push(")");
+            qb.build_query_as::<(Uuid, String)>()
+                .fetch_all(&ctx.db)
+                .await?
+                .into_iter()
+                .collect()
+        };
+
         let mut existing_ids = HashSet::new();
         for item in &mut items {
             let existing_id = match item.kind {
                 // Channels and playlists have provider-defined UUID identities;
-                // the external-ID resolver does not support these kinds.
-                db::MediaKind::TvChannel | db::MediaKind::Playlist => {
-                    sqlx::query_scalar::<_, Uuid>(
-                        "SELECT id FROM media WHERE id = ? AND kind = ?",
-                    )
-                    .bind(item.id)
-                    .bind(
-                        item.kind
-                            .to_string(),
-                    )
-                    .fetch_optional(&ctx.db)
-                    .await?
-                }
+                // the external-ID resolver does not support these kinds, so
+                // only an exact (id, kind) match — never an external-ID
+                // match — counts as "already exists" for them.
+                db::MediaKind::TvChannel | db::MediaKind::Playlist => existing_by_id
+                    .get(&item.id)
+                    .filter(|k| {
+                        **k == item
+                            .kind
+                            .to_string()
+                    })
+                    .map(|_| item.id),
+                _ if existing_by_id.contains_key(&item.id) => Some(item.id),
                 _ => db::Media::find_existing_id_by_ext(&ctx.db, item).await,
             };
             if let Some(existing_id) = existing_id {
