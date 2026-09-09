@@ -33,7 +33,10 @@ use remux_sdks::remux::Username;
 use super::{
     items::{ItemsQueryResultBuilder, get_items, item, items, items_flat},
     mock_items,
-    shows::livetv_view_item,
+    shows::{
+        NextUpCandidate, NextUpRequest, hydrate_next_up_candidates, livetv_view_item,
+        next_up_candidates,
+    },
 };
 
 #[post("/users/{user_id}/configuration")]
@@ -1422,7 +1425,12 @@ pub(crate) async fn resume_items(
     )
     .await
     .enable_next_up_in_continue_watching
-    .unwrap_or(false);
+    .unwrap_or(false)
+        // A request that doesn't even want Episodes (e.g. a movie-only or
+        // otherwise type-scoped Resume call) must never have one injected —
+        // matching the same request constraint the resume fetch itself honours.
+        && q.get_requested_item_types()
+            .contains(&api::MediaType::Episode);
     // Merge and rank before paginating so an injected new release can displace
     // an older resume item on the first page.
     let mut items_query = q.clone();
@@ -1445,59 +1453,137 @@ pub(crate) async fn resume_items(
         .with_client_patches()
         .build();
 
-    let fetched_resume_count = items
-        .items
-        .len();
-    let mut resume_items = items.items;
-    if unified_next_up {
-        let next_up = crate::api::shows::next_up_candidates(
-            &state,
-            session
-                .user
-                .id,
-            false,
-            "1970-01-01 00:00:00".to_string(),
-        )
-        .await?
-        .into_iter()
-        .map(|candidate| {
-            (
-                api::db_media_to_item(candidate.media, false),
-                candidate.effective_activity,
-            )
-        });
-        resume_items = merge_continue_watching(resume_items, next_up);
-    }
-
-    // `items.total_count` is the true, unbounded resume-item total (a
-    // separate COUNT(*) unaffected by the deliberately capped `items_query`
-    // limit above) — it must stay the base of the reported total, not be
-    // replaced by `resume_items.len()`, which only reflects the bounded
-    // fetch window and would make clients that paginate off
-    // TotalRecordCount stop after the first page. Add however many next-up
-    // entries got injected on top of what was actually fetched.
-    let injected_count = resume_items
-        .len()
-        .saturating_sub(fetched_resume_count) as i64;
-    let total_record_count = if unified_next_up {
-        items.total_count as i64 + injected_count
-    } else {
-        items.total_count as i64
-    };
+    let resume_items = items.items;
     let start_index = q
         .start_index
         .unwrap_or(0) as usize;
     let limit = q
         .limit
         .unwrap_or(50) as usize;
-    let response_items = if unified_next_up {
-        resume_items
+
+    let (response_items, total_record_count) = if unified_next_up {
+        // The authoritative, unbounded set of series with a resumable
+        // episode — not derived from `resume_items` above, which is only
+        // the fetch window. Using the window would make dedup (and thus
+        // which episode gets injected, and the reported total) depend on
+        // which page was requested.
+        let represented_series = db::Media::resumable_series_ids(
+            &state
+                .ctx
+                .db,
+            session
+                .user
+                .id,
+        )
+        .await?;
+
+        let policy = session
+            .user
+            .policy
+            .as_ref();
+        let next_up = next_up_candidates(
+            &state,
+            NextUpRequest {
+                user_id: session
+                    .user
+                    .id,
+                enable_resumable: false,
+                date_cutoff: "1970-01-01 00:00:00".to_string(),
+                max_parental_rating: policy.and_then(|p| p.max_parental_rating),
+                blocked_tags: policy
+                    .map(|p| {
+                        p.blocked_tags
+                            .clone()
+                    })
+                    .filter(|v| !v.is_empty()),
+                allowed_tags: policy
+                    .map(|p| {
+                        p.allowed_tags
+                            .clone()
+                    })
+                    .filter(|v| !v.is_empty()),
+                policy_filter: policy.and_then(|p| {
+                    p.filter_rules
+                        .clone()
+                }),
+                parent_id: q.parent_id,
+                // Injected into Continue Watching, not the standalone Next Up
+                // feed — must never show something that hasn't actually
+                // premiered, regardless of the server's release-date buffer.
+                require_actually_released: true,
+            },
+        )
+        .await?;
+
+        // `items.total_count` is the true, unbounded resume total (a
+        // separate COUNT(*) unaffected by the deliberately capped fetch
+        // above) — using `resume_items.len()` here would silently reproduce
+        // the exact undercount this was fixed to avoid.
+        let total_record_count = items.total_count as i64
+            + next_up_injected_count(&next_up, &represented_series);
+
+        let page = merge_continue_watching(resume_items, next_up, &represented_series);
+        let mut page: Vec<ContinueWatchingItem> = page
             .into_iter()
             .skip(start_index)
             .take(limit)
-            .collect()
+            .collect();
+
+        let mut next_up_in_page: Vec<&mut NextUpCandidate> = page
+            .iter_mut()
+            .filter_map(|item| match item {
+                ContinueWatchingItem::NextUp(c) => Some(c),
+                ContinueWatchingItem::Resume(_) => None,
+            })
+            .collect();
+        if !next_up_in_page.is_empty() {
+            let mut owned: Vec<NextUpCandidate> = next_up_in_page
+                .iter_mut()
+                .map(|c| NextUpCandidate {
+                    media: std::mem::take(&mut c.media),
+                    user_state: c
+                        .user_state
+                        .take(),
+                    effective_activity: c.effective_activity,
+                })
+                .collect();
+            hydrate_next_up_candidates(&state, &mut owned).await;
+            for (slot, hydrated) in next_up_in_page
+                .into_iter()
+                .zip(owned)
+            {
+                slot.media = hydrated.media;
+            }
+        }
+
+        let items: Vec<api::BaseItemDto> = page
+            .into_iter()
+            .map(|item| match item {
+                ContinueWatchingItem::Resume(dto) => dto,
+                ContinueWatchingItem::NextUp(candidate) => {
+                    let mut item = api::db_media_to_item(
+                        candidate
+                            .media
+                            .clone(),
+                        false,
+                    );
+                    if let Some(state) = candidate.user_state {
+                        item.user_data =
+                            Some(api::db_state_to_dto(state, &candidate.media));
+                    }
+                    item
+                }
+            })
+            .collect();
+        (items, total_record_count)
     } else {
-        resume_items
+        let total = items.total_count as i64;
+        let page = resume_items
+            .into_iter()
+            .skip(start_index)
+            .take(limit)
+            .collect();
+        (page, total)
     };
 
     Ok(Json(api::BaseItemDtoQueryResult {
@@ -1508,17 +1594,37 @@ pub(crate) async fn resume_items(
     }))
 }
 
+enum ContinueWatchingItem {
+    Resume(api::BaseItemDto),
+    NextUp(NextUpCandidate),
+}
+
+/// How many of `next_up` are not already represented among `represented_series`
+/// — i.e. how many would actually get injected by `merge_continue_watching`.
+/// Kept as its own pass (rather than reading it back off the merged result)
+/// so the total-count computation doesn't depend on hydration order.
+fn next_up_injected_count(
+    next_up: &[NextUpCandidate],
+    represented_series: &HashSet<Uuid>,
+) -> i64 {
+    next_up
+        .iter()
+        .filter(|c| {
+            c.media
+                .grandparent_id
+                .is_some_and(|series_id| !represented_series.contains(&series_id))
+        })
+        .count() as i64
+}
+
 fn merge_continue_watching(
     resume_items: Vec<api::BaseItemDto>,
-    next_up: impl IntoIterator<Item = (api::BaseItemDto, chrono::DateTime<chrono::Utc>)>,
-) -> Vec<api::BaseItemDto> {
-    let mut represented_series: HashSet<Uuid> = resume_items
-        .iter()
-        .filter_map(|item| item.series_id)
-        .collect();
+    next_up: Vec<NextUpCandidate>,
+    represented_series: &HashSet<Uuid>,
+) -> Vec<ContinueWatchingItem> {
     let epoch = chrono::DateTime::from_timestamp(0, 0)
         .expect("Unix epoch is a valid timestamp");
-    let mut ranked: Vec<(api::BaseItemDto, chrono::DateTime<chrono::Utc>)> =
+    let mut ranked: Vec<(ContinueWatchingItem, chrono::DateTime<chrono::Utc>)> =
         resume_items
             .into_iter()
             .map(|item| {
@@ -1527,15 +1633,17 @@ fn merge_continue_watching(
                     .as_ref()
                     .and_then(|data| data.last_played_date)
                     .unwrap_or(epoch);
-                (item, activity)
+                (ContinueWatchingItem::Resume(item), activity)
             })
             .collect();
-    for (item, activity) in next_up {
-        if item
-            .series_id
-            .is_some_and(|series_id| represented_series.insert(series_id))
-        {
-            ranked.push((item, activity));
+    for candidate in next_up {
+        let already_represented = candidate
+            .media
+            .grandparent_id
+            .is_none_or(|series_id| represented_series.contains(&series_id));
+        if !already_represented {
+            let activity = candidate.effective_activity;
+            ranked.push((ContinueWatchingItem::NextUp(candidate), activity));
         }
     }
     ranked.sort_by(|(_, a), (_, b)| b.cmp(a));
@@ -1866,6 +1974,36 @@ mod e2e_tests {
     use http::header::HeaderValue;
     use serde_json::json;
 
+    fn merged_item_id(item: &ContinueWatchingItem) -> Uuid {
+        match item {
+            ContinueWatchingItem::Resume(dto) => dto.id,
+            ContinueWatchingItem::NextUp(c) => {
+                c.media
+                    .id
+            }
+        }
+    }
+
+    fn next_up_candidate(
+        id: Uuid,
+        series_id: Uuid,
+        effective_activity_secs: i64,
+    ) -> NextUpCandidate {
+        NextUpCandidate {
+            media: db::Media {
+                id,
+                grandparent_id: Some(series_id),
+                ..Default::default()
+            },
+            user_state: None,
+            effective_activity: chrono::DateTime::from_timestamp(
+                effective_activity_secs,
+                0,
+            )
+            .unwrap(),
+        }
+    }
+
     #[test]
     fn merge_continue_watching_deduplicates_series_and_orders_by_activity() {
         let existing_series = Uuid::new_v4();
@@ -1892,28 +2030,394 @@ mod e2e_tests {
             }),
             ..Default::default()
         };
-        let duplicate_next_up = api::BaseItemDto {
-            id: duplicate_next_up_id,
-            series_id: Some(existing_series),
-            ..Default::default()
-        };
-        let injected_next_up = api::BaseItemDto {
-            id: injected_next_up_id,
-            series_id: Some(injected_series),
-            ..Default::default()
-        };
+        let duplicate_next_up =
+            next_up_candidate(duplicate_next_up_id, existing_series, 300);
+        let injected_next_up =
+            next_up_candidate(injected_next_up_id, injected_series, 400);
 
+        // `existing_series` is represented (it has a resume item) — the
+        // *authoritative* set passed in, not derived from `resume_items`.
+        let represented_series: HashSet<Uuid> = [existing_series]
+            .into_iter()
+            .collect();
         let merged = merge_continue_watching(
             vec![resume_episode, movie],
-            vec![(duplicate_next_up, at(300)), (injected_next_up, at(400))],
+            vec![duplicate_next_up, injected_next_up],
+            &represented_series,
         );
 
         assert_eq!(
             merged
                 .iter()
-                .map(|item| item.id)
+                .map(merged_item_id)
                 .collect::<Vec<_>>(),
             vec![injected_next_up_id, movie_id, resume_episode_id]
+        );
+    }
+
+    #[test]
+    fn merge_continue_watching_suppresses_next_up_for_a_series_resumable_outside_the_fetch_window()
+     {
+        // Regression test: dedup must use the full, unbounded resumable-series
+        // set, not just whatever resume items happened to be in the fetched
+        // page. Here the fetched `resume_items` window is empty (as if the
+        // series' own resumable item fell on a later page), but the
+        // authoritative `represented_series` set still knows about it.
+        let series_on_a_later_page = Uuid::new_v4();
+        let next_up = next_up_candidate(Uuid::new_v4(), series_on_a_later_page, 999);
+        let represented_series: HashSet<Uuid> = [series_on_a_later_page]
+            .into_iter()
+            .collect();
+
+        let merged =
+            merge_continue_watching(vec![], vec![next_up], &represented_series);
+
+        assert!(
+            merged.is_empty(),
+            "a series already known to have a resumable episode must never get a next-up injection, \
+             regardless of which page that episode happens to be on"
+        );
+    }
+
+    async fn insert_state(
+        db: &sqlx::SqlitePool,
+        user_id: Uuid,
+        media_id: Uuid,
+        play_count: i64,
+        playback_position: i64,
+        played_at: Option<chrono::NaiveDateTime>,
+        last_played_at: Option<chrono::NaiveDateTime>,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO user_media_state (
+                user_id,
+                media_id,
+                media_raw,
+                stream_id,
+                favorite,
+                play_count,
+                played_at,
+                playback_position,
+                last_played_at,
+                subtitle_idx,
+                audio_idx
+            )
+            VALUES (?1, ?2, NULL, NULL, 0, ?3, ?4, ?5, ?6, NULL, NULL)
+            ON CONFLICT(user_id, media_id)
+            DO UPDATE SET
+                play_count = excluded.play_count,
+                played_at = excluded.played_at,
+                playback_position = excluded.playback_position,
+                last_played_at = excluded.last_played_at
+            "#,
+        )
+        .bind(user_id)
+        .bind(media_id)
+        .bind(play_count)
+        .bind(played_at)
+        .bind(playback_position)
+        .bind(last_played_at)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    async fn seed_series_with_episode_count(
+        db: &sqlx::SqlitePool,
+        title: &str,
+        episode_count: i64,
+    ) -> (db::Media, Vec<db::Media>) {
+        let imdb = db::NonEmptyString::try_new(format!(
+            "tt{}",
+            Uuid::new_v4().as_u128() as u64
+        ))
+        .unwrap();
+        let mut series = db::Media {
+            id: Uuid::new_v4(),
+            title: title.to_string(),
+            kind: db::MediaKind::Series,
+            external_ids: db::ExternalIds {
+                imdb: Some(imdb),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        series
+            .save(db)
+            .await
+            .unwrap();
+
+        let mut episodes = Vec::new();
+        for idx in 1..=episode_count {
+            let mut ep = db::Media {
+                id: Uuid::new_v4(),
+                title: format!("{title} Ep {idx}"),
+                kind: db::MediaKind::Episode,
+                grandparent_id: Some(series.id),
+                idx: Some(idx),
+                ..Default::default()
+            };
+            ep.save(db)
+                .await
+                .unwrap();
+            episodes.push(ep);
+        }
+        (series, episodes)
+    }
+
+    async fn set_server_config(
+        db: &sqlx::SqlitePool,
+        f: impl FnOnce(&mut api::ServerConfiguration),
+    ) {
+        let mut cfg = db::Settings::get_config_or_default(db).await;
+        f(&mut cfg);
+        db::Settings::set_config(db, &cfg)
+            .await
+            .unwrap();
+    }
+
+    async fn set_max_parental_rating(db: &sqlx::SqlitePool, rating: i32) {
+        let mut user: db::User = sqlx::query_as("SELECT * FROM users LIMIT 1")
+            .fetch_one(db)
+            .await
+            .unwrap();
+        let mut policy = user
+            .policy
+            .as_ref()
+            .map(|p| {
+                p.0.clone()
+            })
+            .unwrap_or_default();
+        policy.max_parental_rating = Some(rating);
+        user.policy = Some(sqlx::types::Json(policy));
+        user.save(db)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn resume_unified_next_up_skips_series_already_resumable_on_another_page() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        set_server_config(db, |cfg| {
+            cfg.enable_next_up_in_continue_watching = Some(true);
+        })
+        .await;
+        let user: db::User = sqlx::query_as("SELECT * FROM users LIMIT 1")
+            .fetch_one(db)
+            .await
+            .unwrap();
+        let now = chrono::Utc::now().naive_utc();
+
+        // Series A: ep1+ep2 fully watched long ago, ep2 *also* currently
+        // resumable (a rewatch in progress) — so A has a resumable episode,
+        // but it's an old one. ep3 is untouched and would be a valid
+        // next-up candidate (released moments ago, so it would rank very
+        // high if wrongly injected).
+        let (_series_a, eps_a) =
+            seed_series_with_episode_count(db, "Series A", 3).await;
+        insert_state(
+            db,
+            user.id,
+            eps_a[0].id,
+            1,
+            0,
+            Some(now - chrono::Duration::days(200)),
+            Some(now - chrono::Duration::days(200)),
+        )
+        .await;
+        insert_state(
+            db,
+            user.id,
+            eps_a[1].id,
+            1,
+            500,
+            Some(now - chrono::Duration::days(200)),
+            Some(now - chrono::Duration::days(200)),
+        )
+        .await;
+        let mut ep_a3 = eps_a[2].clone();
+        ep_a3.digital_released_at = Some(now - chrono::Duration::minutes(1));
+        ep_a3
+            .save(db)
+            .await
+            .unwrap();
+
+        // Series B: a single resumable episode, more recent than A's, so it
+        // takes the one slot on a `limit=1` page ahead of A's.
+        let (_series_b, eps_b) =
+            seed_series_with_episode_count(db, "Series B", 1).await;
+        insert_state(
+            db,
+            user.id,
+            eps_b[0].id,
+            0,
+            100,
+            None,
+            Some(now - chrono::Duration::hours(2)),
+        )
+        .await;
+
+        let resp = server
+            .get("/users/me/items/resume?limit=1")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let items = body["Items"]
+            .as_array()
+            .unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0]["Id"],
+            eps_b[0]
+                .id
+                .simple()
+                .to_string(),
+            "series A already has a resumable episode (even though it's not on this page), \
+             so its next-up episode must not be injected ahead of series B's real resume item"
+        );
+        assert_eq!(
+            body["TotalRecordCount"], 2,
+            "total should count the two real resumable episodes, not an incorrectly-injected third"
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_unified_next_up_respects_parental_rating_policy() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        set_server_config(db, |cfg| {
+            cfg.enable_next_up_in_continue_watching = Some(true);
+        })
+        .await;
+        let user: db::User = sqlx::query_as("SELECT * FROM users LIMIT 1")
+            .fetch_one(db)
+            .await
+            .unwrap();
+        let now = chrono::Utc::now().naive_utc();
+
+        let (mut series, eps) =
+            seed_series_with_episode_count(db, "Mature Show", 2).await;
+        series.certification_age = Some(18);
+        series
+            .save(db)
+            .await
+            .unwrap();
+        insert_state(
+            db,
+            user.id,
+            eps[0].id,
+            1,
+            0,
+            Some(now - chrono::Duration::days(1)),
+            Some(now - chrono::Duration::days(1)),
+        )
+        .await;
+        let mut ep2 = eps[1].clone();
+        ep2.digital_released_at = Some(now - chrono::Duration::minutes(1));
+        ep2.save(db)
+            .await
+            .unwrap();
+
+        set_max_parental_rating(db, 13).await;
+
+        let resp = server
+            .get("/users/me/items/resume")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let items = body["Items"]
+            .as_array()
+            .unwrap();
+        assert!(
+            items
+                .iter()
+                .all(|item| item["Id"]
+                    != eps[1]
+                        .id
+                        .simple()
+                        .to_string()),
+            "an episode from a series that exceeds the user's max parental rating must never \
+             be injected into Continue Watching, {items:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_unified_next_up_excludes_unreleased_episodes_even_with_release_filter_disabled()
+     {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        set_server_config(db, |cfg| {
+            cfg.enable_next_up_in_continue_watching = Some(true);
+            // Disabled server-wide — the standalone Next Up feed would allow
+            // any future date through in this configuration.
+            cfg.filter_by_digital_release_date = false;
+        })
+        .await;
+        let user: db::User = sqlx::query_as("SELECT * FROM users LIMIT 1")
+            .fetch_one(db)
+            .await
+            .unwrap();
+        let now = chrono::Utc::now().naive_utc();
+
+        let (_series, eps) =
+            seed_series_with_episode_count(db, "Upcoming Show", 2).await;
+        insert_state(
+            db,
+            user.id,
+            eps[0].id,
+            1,
+            0,
+            Some(now - chrono::Duration::days(1)),
+            Some(now - chrono::Duration::days(1)),
+        )
+        .await;
+        let mut ep2 = eps[1].clone();
+        ep2.digital_released_at = Some(now + chrono::Duration::days(10));
+        ep2.save(db)
+            .await
+            .unwrap();
+
+        let resp = server
+            .get("/users/me/items/resume")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let items = body["Items"]
+            .as_array()
+            .unwrap();
+        assert!(
+            items
+                .iter()
+                .all(|item| item["Id"]
+                    != eps[1]
+                        .id
+                        .simple()
+                        .to_string()),
+            "Continue Watching must never show an episode that hasn't actually premiered, \
+             even when the server's release-date filter is disabled: {items:?}"
         );
     }
 

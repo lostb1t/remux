@@ -7,7 +7,10 @@ use uuid::Uuid;
 
 use crate::{
     AppState, OptionExt, api, db,
-    db::{auth, media::push_release_date_filter},
+    db::{
+        auth,
+        media::{push_policy_conditions, push_release_date_filter},
+    },
     services::resolve::ResolvedItem,
 };
 use axum_anyhow::ApiResult as Result;
@@ -311,13 +314,54 @@ pub(crate) struct NextUpCandidate {
     pub effective_activity: chrono::DateTime<chrono::Utc>,
 }
 
-/// Select and hydrate one eligible next-up episode per started series.
+/// Everything `next_up_candidates` needs beyond the user id — bundled (rather
+/// than ~10 positional args) since most callers build it straight from a
+/// session + query. All owned: no lifetime on the struct itself.
+pub(crate) struct NextUpRequest {
+    pub user_id: Uuid,
+    pub enable_resumable: bool,
+    pub date_cutoff: String,
+    /// Same content-visibility policy a normal browse/resume query enforces
+    /// (parental rating, blocked/allowed tags, collection filter rules) —
+    /// without this, an injected episode could show content the user's
+    /// policy excludes everywhere else.
+    pub max_parental_rating: Option<i32>,
+    pub blocked_tags: Option<Vec<String>>,
+    pub allowed_tags: Option<Vec<String>>,
+    pub policy_filter: Option<remux_sdks::remux::CollectionFilter>,
+    /// Restrict candidates to series that are direct children of this
+    /// library/parent (mirrors a request's own `ParentId` scoping). Only
+    /// handles direct children, not arbitrarily nested virtual folders.
+    pub parent_id: Option<Uuid>,
+    /// When true, ignore the server's configured release-date threshold
+    /// (which can be disabled, or padded with a positive buffer for the
+    /// standalone Next Up feed) and require the episode to have actually
+    /// premiered as of now. Continue Watching must never show something
+    /// that isn't out yet, even if Next Up's own buffer would allow it.
+    pub require_actually_released: bool,
+}
+
+/// Select one eligible next-up episode per started series. Callers that
+/// paginate (both current ones do) should slice the result down to what
+/// they'll actually render *before* calling `hydrate_next_up_candidates` —
+/// parent/image hydration is deliberately not done here so a request that
+/// only renders e.g. 12 cards doesn't pay for hydrating every active series.
 pub(crate) async fn next_up_candidates(
     state: &AppState,
-    user_id: Uuid,
-    enable_resumable: bool,
-    date_cutoff: String,
+    req: NextUpRequest,
 ) -> Result<Vec<NextUpCandidate>> {
+    let NextUpRequest {
+        user_id,
+        enable_resumable,
+        date_cutoff,
+        max_parental_rating,
+        blocked_tags,
+        allowed_tags,
+        policy_filter,
+        parent_id,
+        require_actually_released,
+    } = req;
+
     let server_config = db::Settings::get_config_or_default(
         &state
             .ctx
@@ -370,6 +414,37 @@ pub(crate) async fn next_up_candidates(
         }
     }
 
+    // Library/parent scoping (e.g. a Resume request scoped to one library):
+    // restrict to series that are direct children of `parent_id`.
+    if let Some(scope) = parent_id {
+        let mut scope_qb =
+            sqlx::QueryBuilder::new("SELECT id FROM media WHERE parent_id = ");
+        scope_qb.push_bind(scope);
+        scope_qb.push(" AND id IN (");
+        {
+            let mut sep = scope_qb.separated(", ");
+            for id in &series_ids {
+                sep.push_bind(id);
+            }
+        }
+        scope_qb.push(")");
+        let scoped_ids: std::collections::HashSet<Uuid> = scope_qb
+            .build_query_scalar()
+            .fetch_all(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await?
+            .into_iter()
+            .collect();
+        series_ids.retain(|id| scoped_ids.contains(id));
+        series_last_activity.retain(|id, _| scoped_ids.contains(id));
+        if series_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+    }
+
     let mut ep_qb =
         sqlx::QueryBuilder::new("SELECT * FROM media WHERE grandparent_id IN (");
     {
@@ -382,6 +457,26 @@ pub(crate) async fn next_up_candidates(
     if let Some(t) = release_threshold {
         push_release_date_filter(&mut ep_qb, "media", t, true);
     }
+    if require_actually_released {
+        // Independent of (and in addition to) the configurable threshold
+        // above: an episode injected into Continue Watching must have
+        // actually premiered, regardless of the server's release-filter
+        // buffer or whether that filter is disabled entirely.
+        push_release_date_filter(
+            &mut ep_qb,
+            "media",
+            chrono::Utc::now().naive_utc(),
+            true,
+        );
+    }
+    push_policy_conditions(
+        &mut ep_qb,
+        max_parental_rating,
+        blocked_tags.as_deref(),
+        allowed_tags.as_deref(),
+        policy_filter.as_ref(),
+        Some(&user_id),
+    );
     ep_qb.push(
         " ORDER BY grandparent_id, COALESCE(parent_idx, 9999) ASC, COALESCE(idx, 9999) ASC",
     );
@@ -476,15 +571,23 @@ pub(crate) async fn next_up_candidates(
         }
     }
 
-    // Re-sort: if next ep released more recently than the user's last watch,
-    // use the release date as the effective key so fresh episodes surface first.
+    if next_eps.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Compute the effective activity once per episode (if next ep released
+    // more recently than the user's last watch, the release date becomes the
+    // effective key so fresh episodes surface first), then sort and build
+    // candidates from that same precomputed value instead of recomputing it
+    // per comparison and again afterward.
     let epoch = chrono::NaiveDateTime::parse_from_str(
         "1970-01-01 00:00:00",
         "%Y-%m-%d %H:%M:%S",
     )
     .unwrap();
-    next_eps.sort_by(|a, b| {
-        let key = |ep: &db::Media| {
+    let mut next_eps: Vec<(db::Media, chrono::NaiveDateTime)> = next_eps
+        .into_iter()
+        .map(|ep| {
             let release = ep
                 .digital_released_at
                 .or(ep.released_at)
@@ -497,64 +600,66 @@ pub(crate) async fn next_up_candidates(
                         .copied()
                 })
                 .unwrap_or(epoch);
-            release.max(activity)
-        };
-        key(b).cmp(&key(a))
-    });
+            let effective = release.max(activity);
+            (ep, effective)
+        })
+        .collect();
+    next_eps.sort_by(|(_, a), (_, b)| b.cmp(a));
 
-    if next_eps.is_empty() {
-        return Ok(Vec::new());
-    }
+    Ok(next_eps
+        .into_iter()
+        .map(|(media, effective)| NextUpCandidate {
+            user_state: states_map.remove(&media.id),
+            media,
+            effective_activity: effective.and_utc(),
+        })
+        .collect())
+}
 
+/// Loads parent/image data for the given candidates in place. Deliberately
+/// separate from `next_up_candidates` so callers hydrate only the final,
+/// paginated slice they'll actually render — not every active series.
+pub(crate) async fn hydrate_next_up_candidates(
+    state: &AppState,
+    candidates: &mut [NextUpCandidate],
+) {
+    let mut media: Vec<db::Media> = candidates
+        .iter()
+        .map(|c| {
+            c.media
+                .clone()
+        })
+        .collect();
     db::Media::preload_parents(
         &state
             .ctx
             .db,
-        &mut next_eps,
+        &mut media,
     )
     .await;
-    let next_ep_ids: Vec<Uuid> = next_eps
+    let ids: Vec<Uuid> = media
         .iter()
-        .map(|e| e.id)
+        .map(|m| m.id)
         .collect();
     let mut images_map = db::MediaImage::get_for_media_ids(
         &state
             .ctx
             .db,
-        &next_ep_ids,
+        &ids,
     )
     .await
     .unwrap_or_default();
-    for ep in &mut next_eps {
-        ep.images = images_map
-            .remove(&ep.id)
+    for m in &mut media {
+        m.images = images_map
+            .remove(&m.id)
             .unwrap_or_default();
     }
-
-    Ok(next_eps
-        .into_iter()
-        .map(|media| {
-            let release = media
-                .digital_released_at
-                .or(media.released_at)
-                .unwrap_or(epoch);
-            let activity = media
-                .grandparent_id
-                .and_then(|id| {
-                    series_last_activity
-                        .get(&id)
-                        .copied()
-                })
-                .unwrap_or(epoch);
-            NextUpCandidate {
-                user_state: states_map.remove(&media.id),
-                media,
-                effective_activity: release
-                    .max(activity)
-                    .and_utc(),
-            }
-        })
-        .collect())
+    for (candidate, hydrated) in candidates
+        .iter_mut()
+        .zip(media)
+    {
+        candidate.media = hydrated;
+    }
 }
 
 async fn shows_nextup_all(
@@ -569,22 +674,60 @@ async fn shows_nextup_all(
         .limit
         .map(|limit| limit as usize)
         .unwrap_or(usize::MAX);
-    let candidates = next_up_candidates(
+    let policy = session
+        .user
+        .policy
+        .as_ref();
+    let mut candidates = next_up_candidates(
         &state,
-        session
-            .user
-            .id,
-        q.enable_resumable
-            .unwrap_or(true),
-        q.next_up_date_cutoff
-            .unwrap_or_else(|| "1970-01-01 00:00:00".to_string()),
+        NextUpRequest {
+            user_id: session
+                .user
+                .id,
+            enable_resumable: q
+                .enable_resumable
+                .unwrap_or(true),
+            date_cutoff: q
+                .next_up_date_cutoff
+                .clone()
+                .unwrap_or_else(|| "1970-01-01 00:00:00".to_string()),
+            max_parental_rating: policy.and_then(|p| p.max_parental_rating),
+            blocked_tags: policy
+                .map(|p| {
+                    p.blocked_tags
+                        .clone()
+                })
+                .filter(|v| !v.is_empty()),
+            allowed_tags: policy
+                .map(|p| {
+                    p.allowed_tags
+                        .clone()
+                })
+                .filter(|v| !v.is_empty()),
+            policy_filter: policy.and_then(|p| {
+                p.filter_rules
+                    .clone()
+            }),
+            parent_id: q.parent_id,
+            // This is the standalone Next Up feed itself, not an injection
+            // into Continue Watching — respect the server's configured
+            // release-date threshold (buffer/disable) as it always has.
+            require_actually_released: false,
+        },
     )
     .await?;
     let total = candidates.len() as i64;
-    let items = candidates
+    let mut page: Vec<NextUpCandidate> = candidates
+        .drain(
+            start_index.min(candidates.len())
+                ..(start_index
+                    .saturating_add(limit)
+                    .min(candidates.len())),
+        )
+        .collect();
+    hydrate_next_up_candidates(&state, &mut page).await;
+    let items = page
         .into_iter()
-        .skip(start_index)
-        .take(limit)
         .map(|candidate| {
             let mut item = api::db_media_to_item(
                 candidate
