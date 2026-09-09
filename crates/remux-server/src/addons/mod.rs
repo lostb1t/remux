@@ -1888,13 +1888,19 @@ impl AddonService {
         // every addon in this batch sees the fuller id set rather than each
         // doing its own partial, addon-specific resolution.
         let resolve_started = Instant::now();
-        // External IDs are identity data. Keep this as a backfill-only operation:
-        // a metadata force refresh must not fan out into an external-ID request for
-        // every already-identified child item.
-        MediaResolveService::resolve_external_ids(media, ctx, false).await;
+        // Seasons and episodes already carry the TMDB identity needed by their
+        // metadata providers. Do not turn a metadata tree refresh into a
+        // per-child external-ID enrichment job; that remains available to
+        // explicit callers of `resolve_external_ids` when it is actually needed.
+        let resolves_external_ids =
+            !matches!(media.kind, db::MediaKind::Season | db::MediaKind::Episode);
+        if resolves_external_ids {
+            MediaResolveService::resolve_external_ids(media, ctx, false).await;
+        }
         trace!(
             target: "remux_server::metadata_refresh",
             id = %media.id,
+            resolves_external_ids,
             elapsed = ?resolve_started.elapsed(),
             "refresh_meta: external ID resolution complete"
         );
