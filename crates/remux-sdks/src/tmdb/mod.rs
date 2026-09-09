@@ -51,8 +51,11 @@ pub enum ExternalIdType {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct FindByIdResponse {
+    #[serde(default)]
     pub movie_results: Vec<Movie>,
+    #[serde(default)]
     pub tv_results: Vec<Series>,
+    #[serde(default)]
     pub tv_episode_results: Vec<series::Episode>,
 }
 
