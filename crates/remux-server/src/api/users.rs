@@ -1445,6 +1445,9 @@ pub(crate) async fn resume_items(
         .with_client_patches()
         .build();
 
+    let fetched_resume_count = items
+        .items
+        .len();
     let mut resume_items = items.items;
     if unified_next_up {
         let next_up = crate::api::shows::next_up_candidates(
@@ -1466,8 +1469,18 @@ pub(crate) async fn resume_items(
         resume_items = merge_continue_watching(resume_items, next_up);
     }
 
+    // `items.total_count` is the true, unbounded resume-item total (a
+    // separate COUNT(*) unaffected by the deliberately capped `items_query`
+    // limit above) — it must stay the base of the reported total, not be
+    // replaced by `resume_items.len()`, which only reflects the bounded
+    // fetch window and would make clients that paginate off
+    // TotalRecordCount stop after the first page. Add however many next-up
+    // entries got injected on top of what was actually fetched.
+    let injected_count = resume_items
+        .len()
+        .saturating_sub(fetched_resume_count) as i64;
     let total_record_count = if unified_next_up {
-        resume_items.len() as i64
+        items.total_count as i64 + injected_count
     } else {
         items.total_count as i64
     };

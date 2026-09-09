@@ -131,27 +131,31 @@ pub async fn shows_nextup(
     session: auth::AuthSession,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    if db::Settings::get_config_or_default(
-        &state
-            .ctx
-            .db,
-    )
-    .await
-    .enable_next_up_in_continue_watching
-    .unwrap_or(false)
-    {
-        return Ok(Json(api::BaseItemDtoQueryResult {
-            start_index: q
-                .start_index
-                .unwrap_or(0),
-            ..Default::default()
-        })
-        .into_response());
-    }
-    // Home-screen call: no seriesId — return one next-up episode per in-progress series
+    // Home-screen call: no seriesId — return one next-up episode per in-progress series.
+    // When the unified setting is on, this feed is folded into Continue
+    // Watching instead — but only for this seriesId-less aggregate call; a
+    // per-series lookup (e.g. a client's "Next Episode" button) must still
+    // resolve normally regardless of the setting.
     if q.series_id
         .is_none()
     {
+        if db::Settings::get_config_or_default(
+            &state
+                .ctx
+                .db,
+        )
+        .await
+        .enable_next_up_in_continue_watching
+        .unwrap_or(false)
+        {
+            return Ok(Json(api::BaseItemDtoQueryResult {
+                start_index: q
+                    .start_index
+                    .unwrap_or(0),
+                ..Default::default()
+            })
+            .into_response());
+        }
         return shows_nextup_all(state, session, q)
             .await
             .map(IntoResponse::into_response);
