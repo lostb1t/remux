@@ -236,8 +236,8 @@ impl StreamGroup {
 
     /// Filter a list of media sources by the enabled stream groups.
     ///
-    /// Returns one representative source per matching group (the first
-    /// match by priority order), plus any unmatched sources when
+    /// Returns one representative source per matching group (the source with
+    /// the highest advertised seeder count), plus any unmatched sources when
     /// `show_ungrouped` is true.  When no groups are enabled the original
     /// list is returned unchanged.
     pub async fn filter_sources(
@@ -285,10 +285,13 @@ impl StreamGroup {
             }
 
             if !group.hidden {
-                // Only the first (highest-priority) match is shown.
+                // Only one match is shown. Prefer the healthiest advertised
+                // torrent, retaining source order as the tie-breaker.
                 // group_id marks it as a group representative; the real stream
                 // UUID stays in best.id so internal probe URLs stay correct.
-                let mut best = matching[0].clone();
+                let mut best = preferred_group_source(&matching)
+                    .expect("matching sources are non-empty")
+                    .clone();
                 best.title = group.display_name();
                 best.group_id = Some(group.id);
                 result.push(best);
@@ -305,6 +308,34 @@ impl StreamGroup {
 
         result
     }
+}
+
+fn preferred_group_source<'a>(matching: &'a [&Media]) -> Option<&'a Media> {
+    matching
+        .iter()
+        .copied()
+        .max_by(|left, right| {
+            advertised_seeders(left)
+                .cmp(&advertised_seeders(right))
+                .then_with(|| {
+                    right
+                        .idx
+                        .unwrap_or(i64::MAX)
+                        .cmp(
+                            &left
+                                .idx
+                                .unwrap_or(i64::MAX),
+                        )
+                })
+        })
+}
+
+fn advertised_seeders(media: &Media) -> i64 {
+    media
+        .stream_info
+        .as_ref()
+        .and_then(|stream| stream.seeders)
+        .unwrap_or(0)
 }
 
 /// Filter a list of source Media items using a `StreamFilter`.
@@ -734,6 +765,41 @@ mod tests {
             filename: Some(filename.to_string()),
             ..Default::default()
         }
+    }
+
+    fn source_with_seeders(seeders: Option<i64>, idx: i64) -> Media {
+        Media {
+            idx: Some(idx),
+            stream_info: Some(StreamInfo {
+                seeders,
+                ..info("movie.mkv")
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn group_representative_prefers_more_seeders() {
+        let first = source_with_seeders(Some(3), 0);
+        let second = source_with_seeders(Some(20), 1);
+        let matching = [&first, &second];
+
+        assert_eq!(
+            preferred_group_source(&matching).map(|source| source.id),
+            Some(second.id)
+        );
+    }
+
+    #[test]
+    fn group_representative_keeps_source_order_when_seeders_tie() {
+        let first = source_with_seeders(Some(20), 0);
+        let second = source_with_seeders(Some(20), 1);
+        let matching = [&second, &first];
+
+        assert_eq!(
+            preferred_group_source(&matching).map(|source| source.id),
+            Some(first.id)
+        );
     }
 
     // "UHD BluRay" credits the source disc; the explicit "1080p" token is the
