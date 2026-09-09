@@ -1481,7 +1481,7 @@ pub(crate) async fn resume_items(
             .user
             .policy
             .as_ref();
-        let next_up = next_up_candidates(
+        let mut next_up = next_up_candidates(
             &state,
             NextUpRequest {
                 user_id: session
@@ -1506,7 +1506,9 @@ pub(crate) async fn resume_items(
                     p.filter_rules
                         .clone()
                 }),
-                parent_id: q.parent_id,
+                // Apply scope through the normal item query below, which also
+                // understands recursive folders and collection membership.
+                parent_id: None,
                 // Injected into Continue Watching, not the standalone Next Up
                 // feed — must never show something that hasn't actually
                 // premiered, regardless of the server's release-date buffer.
@@ -1514,6 +1516,61 @@ pub(crate) async fn resume_items(
             },
         )
         .await?;
+
+        next_up.retain(|c| {
+            c.media
+                .grandparent_id
+                .is_some_and(|id| !represented_series.contains(&id))
+        });
+        if !next_up.is_empty() {
+            let mut eligible_query = q.clone();
+            eligible_query.filters = None;
+            eligible_query.start_index = None;
+            eligible_query.limit = None;
+            eligible_query.strict_item_filters = true;
+            eligible_query.include_item_types = Some(vec![api::MediaType::Episode]);
+            if let Some(term) = eligible_query
+                .search_term
+                .as_mut()
+            {
+                if !term.starts_with("local:") {
+                    *term = format!("local:{term}");
+                }
+            }
+            let ids: Vec<Uuid> = next_up
+                .iter()
+                .map(|c| {
+                    c.media
+                        .id
+                })
+                .filter(|id| {
+                    q.ids
+                        .as_ref()
+                        .is_none_or(|ids| ids.contains(id))
+                })
+                .collect();
+            if ids.is_empty() {
+                next_up.clear();
+            } else {
+                eligible_query.limit =
+                    Some(u32::try_from(ids.len()).unwrap_or(u32::MAX));
+                eligible_query.ids = Some(ids);
+                let eligible: HashSet<Uuid> =
+                    get_items(state.clone(), session.clone(), eligible_query, false)
+                        .await?
+                        .build()
+                        .items
+                        .into_iter()
+                        .map(|item| item.id)
+                        .collect();
+                next_up.retain(|c| {
+                    eligible.contains(
+                        &c.media
+                            .id,
+                    )
+                });
+            }
+        }
 
         // `items.total_count` is the true, unbounded resume total (a
         // separate COUNT(*) unaffected by the deliberately capped fetch
@@ -1552,7 +1609,7 @@ pub(crate) async fn resume_items(
                 .into_iter()
                 .zip(owned)
             {
-                slot.media = hydrated.media;
+                *slot = hydrated;
             }
         }
 
@@ -1578,12 +1635,7 @@ pub(crate) async fn resume_items(
         (items, total_record_count)
     } else {
         let total = items.total_count as i64;
-        let page = resume_items
-            .into_iter()
-            .skip(start_index)
-            .take(limit)
-            .collect();
-        (page, total)
+        (resume_items, total)
     };
 
     Ok(Json(api::BaseItemDtoQueryResult {
@@ -2154,6 +2206,10 @@ mod e2e_tests {
                 id: Uuid::new_v4(),
                 title: format!("{title} Ep {idx}"),
                 kind: db::MediaKind::Episode,
+                parent_id: Some(series.id),
+                released_at: Some(
+                    chrono::Utc::now().naive_utc() - chrono::Duration::days(30),
+                ),
                 grandparent_id: Some(series.id),
                 idx: Some(idx),
                 ..Default::default()
@@ -2291,6 +2347,116 @@ mod e2e_tests {
     }
 
     #[tokio::test]
+    async fn resume_disabled_paginates_only_once() {
+        let (server, guard, token) = authenticated_server().await;
+        let db = &guard
+            .0
+            .db;
+        let user: db::User = sqlx::query_as("SELECT * FROM users LIMIT 1")
+            .fetch_one(db)
+            .await
+            .unwrap();
+        let (_, episodes) = seed_series_with_episode_count(db, "Pagination", 3).await;
+        let now = chrono::Utc::now().naive_utc();
+        for (index, episode) in episodes
+            .iter()
+            .enumerate()
+        {
+            insert_state(
+                db,
+                user.id,
+                episode.id,
+                0,
+                100,
+                None,
+                Some(now - chrono::Duration::hours(index as i64)),
+            )
+            .await;
+        }
+        let response = server
+            .get("/users/me/items/resume?StartIndex=1&Limit=1")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+            .await;
+        response.assert_status_ok();
+        let body: serde_json::Value = response.json();
+        assert_eq!(
+            body["Items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            body["Items"][0]["Id"],
+            episodes[1]
+                .id
+                .simple()
+                .to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_injected_episode_preserves_favorite_and_request_scope() {
+        let (server, guard, token) = authenticated_server().await;
+        let db = &guard
+            .0
+            .db;
+        set_server_config(db, |cfg| {
+            cfg.enable_next_up_in_continue_watching = Some(true)
+        })
+        .await;
+        let user: db::User = sqlx::query_as("SELECT * FROM users LIMIT 1")
+            .fetch_one(db)
+            .await
+            .unwrap();
+        let (series, episodes) = seed_series_with_episode_count(db, "Scoped", 2).await;
+        let (other_series, _) = seed_series_with_episode_count(db, "Other", 1).await;
+        let now = chrono::Utc::now().naive_utc();
+        insert_state(db, user.id, episodes[0].id, 1, 0, Some(now), Some(now)).await;
+        insert_state(db, user.id, episodes[1].id, 0, 0, None, None).await;
+        sqlx::query("UPDATE user_media_state SET favorite = 1 WHERE user_id = ? AND media_id = ?")
+            .bind(user.id).bind(episodes[1].id).execute(db).await.unwrap();
+        for (query, expected_count) in [
+            (format!("SeriesId={}&IsFavorite=true", series.id), 1),
+            (format!("SeriesId={}", other_series.id), 0),
+            (format!("ParentId={}&Recursive=true", series.id), 1),
+            (format!("ParentId={}&Recursive=true", other_series.id), 0),
+            ("IsFavorite=false".to_string(), 0),
+        ] {
+            let response = server
+                .get(&format!("/users/me/items/resume?{query}"))
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+                )
+                .await;
+            response.assert_status_ok();
+            let body: serde_json::Value = response.json();
+            assert_eq!(
+                body["Items"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                expected_count,
+                "{query}: {body}"
+            );
+            if expected_count == 1 {
+                assert_eq!(
+                    body["Items"][0]["Id"],
+                    episodes[1]
+                        .id
+                        .simple()
+                        .to_string()
+                );
+                assert_eq!(body["Items"][0]["UserData"]["IsFavorite"], true);
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn resume_unified_next_up_respects_parental_rating_policy() {
         let (server, guard, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
@@ -2391,7 +2557,8 @@ mod e2e_tests {
         )
         .await;
         let mut ep2 = eps[1].clone();
-        ep2.digital_released_at = Some(now + chrono::Duration::days(10));
+        ep2.digital_released_at = Some(now - chrono::Duration::days(1));
+        ep2.released_at = Some(now + chrono::Duration::days(10));
         ep2.save(db)
             .await
             .unwrap();

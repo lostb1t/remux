@@ -1475,6 +1475,9 @@ pub struct GetItemsQuery {
     /// Internal server-side constraint. This is not a Jellyfin query parameter.
     #[serde(skip)]
     pub promoted: Option<bool>,
+    /// Internal list query: do not reinterpret a single ID as a details lookup.
+    #[serde(skip)]
+    pub strict_item_filters: bool,
     // #[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, ItemFields>>")]
     //#[serde_as(as = "Option<StringWithSeparator<CommaSeparator, ItemFields>>")]
     #[serde(

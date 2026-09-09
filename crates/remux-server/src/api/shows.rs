@@ -333,11 +333,8 @@ pub(crate) struct NextUpRequest {
     /// library/parent (mirrors a request's own `ParentId` scoping). Only
     /// handles direct children, not arbitrarily nested virtual folders.
     pub parent_id: Option<Uuid>,
-    /// When true, ignore the server's configured release-date threshold
-    /// (which can be disabled, or padded with a positive buffer for the
-    /// standalone Next Up feed) and require the episode to have actually
-    /// premiered as of now. Continue Watching must never show something
-    /// that isn't out yet, even if Next Up's own buffer would allow it.
+    /// Additionally require the episode's own PremiereDate to be known and
+    /// no later than now, regardless of the configured digital-release buffer.
     pub require_actually_released: bool,
 }
 
@@ -462,12 +459,9 @@ pub(crate) async fn next_up_candidates(
         // above: an episode injected into Continue Watching must have
         // actually premiered, regardless of the server's release-filter
         // buffer or whether that filter is disabled entirely.
-        push_release_date_filter(
-            &mut ep_qb,
-            "media",
-            chrono::Utc::now().naive_utc(),
-            true,
-        );
+        ep_qb
+            .push(" AND media.released_at IS NOT NULL AND media.released_at <= ")
+            .push_bind(chrono::Utc::now().naive_utc());
     }
     push_policy_conditions(
         &mut ep_qb,
