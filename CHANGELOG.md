@@ -1,3 +1,54 @@
+# [0.30.0](https://github.com/lostb1t/remux/compare/v0.29.0...v0.30.0) (2026-09-09)
+
+
+### Bug Fixes
+
+* allow media without IMDb mappings ([#453](https://github.com/lostb1t/remux/issues/453)) ([3d42431](https://github.com/lostb1t/remux/commit/3d424312c1efe8711cdf67886ee0a88bbcceba90))
+* **auth:** decode Authorization header bytes lossily instead of rejecting on non-ASCII (fixes [#397](https://github.com/lostb1t/remux/issues/397)) ([5fe4997](https://github.com/lostb1t/remux/commit/5fe49970b3e1d16f9646a37b98997cf308cdef21))
+* box search-result resolve chain to prevent stack overflow on playback ([7e2a9cb](https://github.com/lostb1t/remux/commit/7e2a9cb7bcdea26b6179a3f02e9c1692d8b45a80))
+* box search-result resolve chain to prevent stack overflow on playback ([96e3512](https://github.com/lostb1t/remux/commit/96e35121b0ff92cedeef500b36980c791b8ea425))
+* catalog membership dropped after id dedup, and empty promoted collection groups hidden ([5c2ea46](https://github.com/lostb1t/remux/commit/5c2ea4679c6f04aaf64de17ee54a608477d1004b)), closes [#426](https://github.com/lostb1t/remux/issues/426) [#414](https://github.com/lostb1t/remux/issues/414) [#425](https://github.com/lostb1t/remux/issues/425)
+* **ci:** bump dioxus-cli pin to match the dioxus library version (0.7.9) ([88dbacd](https://github.com/lostb1t/remux/commit/88dbacd736154d69dddc687e4a82f839533fb73d))
+* **ci:** pin dioxus-cli install to its own lockfile ([fbceb3d](https://github.com/lostb1t/remux/commit/fbceb3d9ab9cb3f40878b65e96d9df64e969e680))
+* **collections:** show poster configurator again after deleting a GIF ([#452](https://github.com/lostb1t/remux/issues/452)) ([7f6cefd](https://github.com/lostb1t/remux/commit/7f6cefdd693db68180ae68430444739fb84a6723))
+* **collections:** skip image configurator pipeline for GIF posters ([#437](https://github.com/lostb1t/remux/issues/437)) ([9f05c16](https://github.com/lostb1t/remux/commit/9f05c16299f195e4f59621de32026ed881a9261d))
+* **dashboard:** hide delete button for system addons ([558df98](https://github.com/lostb1t/remux/commit/558df986f07a51c46224cae65bf384b0b5d3ca4d))
+* **dashboard:** show all collections in the collection-id filter picker ([#423](https://github.com/lostb1t/remux/issues/423)) ([54025bc](https://github.com/lostb1t/remux/commit/54025bce972e33dd904994aeaee34d57c0d349ea))
+* **db:** match media identity on external ids instead of derived uuids ([#418](https://github.com/lostb1t/remux/issues/418)) ([cd28bc2](https://github.com/lostb1t/remux/commit/cd28bc2afa0c92eadec7657db6078fde4c78167f))
+* enrich season and episode external IDs from TMDB ([#451](https://github.com/lostb1t/remux/issues/451)) ([4e32a75](https://github.com/lostb1t/remux/commit/4e32a75dac146619f14cd318b76cc418866c4d42))
+* hide empty subcollection groups ([#420](https://github.com/lostb1t/remux/issues/420)) ([6cd80e7](https://github.com/lostb1t/remux/commit/6cd80e727fd6193fb7421f9e99dcc98402ab0619))
+* **images:** fix TMDB image-language filter and synthesize Thumb from Backdrop+Logo ([#444](https://github.com/lostb1t/remux/issues/444)) ([56733ec](https://github.com/lostb1t/remux/commit/56733ec2705632d67fa09c5db30bf0e7a3d97977))
+* **items:** tailor metadata editor content-type and external-id fields to item kind ([#454](https://github.com/lostb1t/remux/issues/454)) ([9876612](https://github.com/lostb1t/remux/commit/9876612c20f211bf5238e9c5671091c66d1bebdd))
+* **media:** prevent duplicate movie/series rows from concurrent metadata imports ([#457](https://github.com/lostb1t/remux/issues/457)) ([e7ea136](https://github.com/lostb1t/remux/commit/e7ea136acb1750d54396c3f973c5aea14168c82f))
+* **media:** scope external-id unique indexes to movie/series/tv_program ([64850e0](https://github.com/lostb1t/remux/commit/64850e0420c9b5fffc23110990affb5cd5a729b5))
+* **playback:** resolve item ids used as MediaSourceId instead of serving no-streams placeholder ([#432](https://github.com/lostb1t/remux/issues/432)) ([2b151b3](https://github.com/lostb1t/remux/commit/2b151b388420814a365ba46557506bae8bbf3ca2))
+* probe uncached P2P streams ([#422](https://github.com/lostb1t/remux/issues/422)) ([1e6a9ea](https://github.com/lostb1t/remux/commit/1e6a9ea2888289050eb3bcddf854b96527d0fab5))
+* **refresh:** adopt refreshed_at when re-matching existing episodes/seasons ([25e3785](https://github.com/lostb1t/remux/commit/25e3785c30bbe487a6e9556f3839e5a1790abb89))
+* **remuxdb:** submit HTTP debrid probes with preserved torrent identity ([#427](https://github.com/lostb1t/remux/issues/427)) ([e43e6e6](https://github.com/lostb1t/remux/commit/e43e6e68d32b03b731269bcce898740e126b8915))
+* return language-neutral TMDB backdrops ([#431](https://github.com/lostb1t/remux/issues/431)) ([5b59ccb](https://github.com/lostb1t/remux/commit/5b59ccb8585d3bb7238bf9bc8525508bcfa50adf))
+* stop collection image preview from persisting changes, scope poster selection to the collection ([80b3114](https://github.com/lostb1t/remux/commit/80b31144de62aeb582a76e45ffa65d1868fd3780))
+* **stream:** never redirect clients to internal-only stream hosts ([#429](https://github.com/lostb1t/remux/issues/429)) ([d3fb57b](https://github.com/lostb1t/remux/commit/d3fb57b03d041114d449c6091aeebeda8982bf27))
+* **subtitles:** add ffmpeg reconnect flags for remote subtitle extraction (fixes [#434](https://github.com/lostb1t/remux/issues/434)) ([3624c1e](https://github.com/lostb1t/remux/commit/3624c1eaea2f7d54998c533aabc32e83cc699560))
+* **test:** stop sharing external ids in the duplicate-item stream test ([2b9a424](https://github.com/lostb1t/remux/commit/2b9a424d8be1a63e8fe1de86dbbc0915505ce091))
+* **tmdb:** use a short default retry-after when TMDB omits the 429 header ([#456](https://github.com/lostb1t/remux/issues/456)) ([4a296aa](https://github.com/lostb1t/remux/commit/4a296aa995d3ee67ef4cf606f9af35c5dfd47538))
+* user policy collection filter (hide collections from browse views) ([#424](https://github.com/lostb1t/remux/issues/424)) ([fce6350](https://github.com/lostb1t/remux/commit/fce635020d234ce24057dfcc876277b9904a15b3))
+
+
+### Features
+
+* add configurable playback webhooks ([#433](https://github.com/lostb1t/remux/issues/433)) ([61b121f](https://github.com/lostb1t/remux/commit/61b121f3232a2d361c1b18877d2f67ad19166b33))
+* **collections:** add None image layout, rename Poster Layout/Overlay to Layout/Overlay ([f192afa](https://github.com/lostb1t/remux/commit/f192afa5756ae822c87598db356c800cf336cf47))
+* **collections:** image configurator ([#405](https://github.com/lostb1t/remux/issues/405)) ([6fcd41b](https://github.com/lostb1t/remux/commit/6fcd41b04990bcbb9f4c49e97b949ca8ed368fa0))
+* **dashboard:** expose per-user webhook targeting via multiselect ([#441](https://github.com/lostb1t/remux/issues/441)) ([d872f07](https://github.com/lostb1t/remux/commit/d872f0752a88c9017b68796b81fbd7df6efec1d9))
+* **dashboard:** expose send-all-properties, trim-whitespace, skip-empty-body toggles ([#443](https://github.com/lostb1t/remux/issues/443)) ([4955b92](https://github.com/lostb1t/remux/commit/4955b9244269df45e0841ab7e6a14a92a0f7f34e))
+* honor AnyProviderIdEquals for TMDB/IMDb/TVDB lookups ([#419](https://github.com/lostb1t/remux/issues/419)) ([673d9c2](https://github.com/lostb1t/remux/commit/673d9c2ae73d9094f3c371beabf0637fe3d65e6e))
+* **stremio:** keep the tvdb id an episode arrives with ([#442](https://github.com/lostb1t/remux/issues/442)) ([823e3f3](https://github.com/lostb1t/remux/commit/823e3f3283555eb08c7dfdeb7ffbc6271da4546f))
+
+
+### Performance Improvements
+
+* speed up metadata refresh ([#459](https://github.com/lostb1t/remux/issues/459)) ([75561a4](https://github.com/lostb1t/remux/commit/75561a497863fd7a317dd8fc51ed1536769b16ca))
+
 # [0.29.0](https://github.com/lostb1t/remux/compare/v0.28.1...v0.29.0) (2026-09-03)
 
 
