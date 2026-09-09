@@ -358,6 +358,10 @@ impl MediaResolveService {
             let needs_ids = force_refresh
                 || media
                     .external_ids
+                    .tmdb
+                    .is_none()
+                || media
+                    .external_ids
                     .imdb
                     .is_none()
                 || media

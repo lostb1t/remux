@@ -1909,21 +1909,12 @@ impl AddonService {
             .addons_for::<dyn MetaAddon>(media, &ctx.db, None)
             .await;
 
-        let addon_names = applicable
-            .iter()
-            .map(|r| {
-                r.row
-                    .name
-                    .as_str()
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
         trace!(
             target: "remux_server::metadata_refresh",
             id = %media.id,
             title = %media.title,
             kind = %media.kind,
-            addons = %addon_names,
+            addons = %applicable.iter().map(|r| r.row.name.as_str()).collect::<Vec<_>>().join(", "),
             "metadata refresh addons selected"
         );
 
