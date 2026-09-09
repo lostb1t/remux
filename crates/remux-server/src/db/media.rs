@@ -1984,13 +1984,7 @@ enum IdValue {
 }
 
 impl Media {
-    /// Every series that has at least one resumable (playback_position > 0)
-    /// episode for `user_id`, regardless of pagination — a cheap, unbounded
-    /// companion query to a windowed Resume-items fetch. Used to decide
-    /// whether a Next Up candidate's series is "already represented" without
-    /// that decision depending on how much of the Resume list was actually
-    /// fetched (see `find_by_external_ids` for the analogous "one query,
-    /// no per-item round trip" shape).
+    /// Series with in-progress episodes, including those outside the requested page.
     pub async fn resumable_series_ids(
         db: &SqlitePool,
         user_id: Uuid,
@@ -4375,22 +4369,44 @@ impl Media {
                     .is_some();
 
             if !container_only && has_policy {
-                push_policy_conditions(
-                    qb,
-                    filter.max_parental_rating,
-                    filter
-                        .blocked_tags
-                        .as_deref(),
-                    filter
-                        .allowed_tags
-                        .as_deref(),
-                    filter
-                        .policy_filter
-                        .as_ref(),
-                    filter
-                        .user_id
-                        .as_ref(),
-                );
+                if let Some(max_rating) = filter.max_parental_rating {
+                    qb.push(" AND COALESCE(certification_age, (SELECT p.certification_age FROM media p WHERE p.id = COALESCE(media.grandparent_id, media.parent_id))) <= ")
+                        .push_bind(max_rating)
+                        .push("");
+                }
+
+                if let Some(blocked) = &filter.blocked_tags {
+                    if !blocked.is_empty() {
+                        qb.push(" AND NOT EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND mt.tag IN (");
+                        let mut sep = qb.separated(", ");
+                        for t in blocked {
+                            sep.push_bind(t);
+                        }
+                        qb.push("))");
+                    }
+                }
+
+                if let Some(allowed) = &filter.allowed_tags {
+                    if !allowed.is_empty() {
+                        qb.push(" AND EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND mt.tag IN (");
+                        let mut sep = qb.separated(", ");
+                        for t in allowed {
+                            sep.push_bind(t);
+                        }
+                        qb.push("))");
+                    }
+                }
+
+                if let Some(ref f) = filter.policy_filter {
+                    apply_filter_rules(
+                        qb,
+                        f,
+                        filter
+                            .user_id
+                            .as_ref(),
+                        false,
+                    );
+                }
             }
 
             // Hide specific collections from browse views per the user's
@@ -7552,53 +7568,6 @@ fn collection_visibility_filters(
 /// - `tag` — `media.id IN (SELECT media_id FROM media_tags WHERE ...)`
 /// - `genre` / `studio` / `country` / `person` — `media.id IN (SELECT left_media_id FROM media_relations JOIN media WHERE ...)`
 /// - `catalog` / `collection_member` — `media.id IN (SELECT right_media_id FROM media_relations WHERE ...)`
-/// Appends parental-rating / blocked-tag / allowed-tag / policy-filter-rule
-/// conditions for the bare `media` table referenced in `qb`. Shared by
-/// `get_by_filter_inner` and any other raw query (e.g. `next_up_candidates`)
-/// that needs to enforce the same content-visibility policy a user's normal
-/// browsing already gets — assumes the query's base table is literally named
-/// `media` (not aliased), matching every current caller.
-pub fn push_policy_conditions<'a>(
-    qb: &mut sqlx::QueryBuilder<'a, sqlx::Sqlite>,
-    max_parental_rating: Option<i32>,
-    blocked_tags: Option<&'a [String]>,
-    allowed_tags: Option<&'a [String]>,
-    policy_filter: Option<&remux_sdks::remux::CollectionFilter>,
-    user_id: Option<&Uuid>,
-) {
-    if let Some(max_rating) = max_parental_rating {
-        qb.push(" AND COALESCE(certification_age, (SELECT p.certification_age FROM media p WHERE p.id = COALESCE(media.grandparent_id, media.parent_id))) <= ")
-            .push_bind(max_rating)
-            .push("");
-    }
-
-    if let Some(blocked) = blocked_tags {
-        if !blocked.is_empty() {
-            qb.push(" AND NOT EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND mt.tag IN (");
-            let mut sep = qb.separated(", ");
-            for t in blocked {
-                sep.push_bind(t);
-            }
-            qb.push("))");
-        }
-    }
-
-    if let Some(allowed) = allowed_tags {
-        if !allowed.is_empty() {
-            qb.push(" AND EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND mt.tag IN (");
-            let mut sep = qb.separated(", ");
-            for t in allowed {
-                sep.push_bind(t);
-            }
-            qb.push("))");
-        }
-    }
-
-    if let Some(f) = policy_filter {
-        apply_filter_rules(qb, f, user_id, false);
-    }
-}
-
 /// - `has_trailer` — json_array_length check
 pub fn apply_filter_rules(
     qb: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
