@@ -1122,11 +1122,21 @@ async fn scan_addon(
             .try_next()
             .await?
         {
-            if entry
+            // The lister classifies entries from a raw readdir() call, which does not
+            // follow symlinks and reports them as EntryMode::Unknown. Resolve those
+            // via stat() (which does follow symlinks) so symlinked media files staged
+            // by tools like Sonarr/Radarr + a debrid manager are indexed correctly.
+            let mode = entry
                 .metadata()
-                .mode()
-                != EntryMode::FILE
-            {
+                .mode();
+            let is_file = mode == EntryMode::FILE
+                || (mode == EntryMode::Unknown
+                    && operator
+                        .stat(entry.path())
+                        .await
+                        .map(|m| m.mode() == EntryMode::FILE)
+                        .unwrap_or(false));
+            if !is_file {
                 continue;
             }
 
