@@ -53,6 +53,7 @@ pub enum ExternalIdType {
 pub struct FindByIdResponse {
     pub movie_results: Vec<Movie>,
     pub tv_results: Vec<Series>,
+    pub tv_episode_results: Vec<series::Episode>,
 }
 
 // pub fn get_endpoint_for_media_type(t: media::MediaType) -> tmdb::MediaEndpoint {
