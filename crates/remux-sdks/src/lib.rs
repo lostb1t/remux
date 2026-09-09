@@ -11,7 +11,6 @@ pub mod trakt;
 
 mod rate_limit;
 
-use bytes::Bytes;
 use http::{Extensions, HeaderMap, HeaderValue, Method, header};
 use itertools::Itertools;
 use remux_utils::Secret;
@@ -21,12 +20,7 @@ use reqwest_retry::{RetryPolicy, RetryTransientMiddleware};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use std::{collections::HashMap, fmt, iter, ops, sync::Arc, time::Duration};
 #[cfg(not(target_arch = "wasm32"))]
-use {
-    async_trait::async_trait,
-    md5,
-    remux_utils::Store,
-    reqwest_middleware::{Middleware, Next},
-};
+use {md5, remux_utils::Store};
 
 #[cfg(not(target_arch = "wasm32"))]
 static HTTP_CACHE: std::sync::LazyLock<Store> =
@@ -40,16 +34,22 @@ pub fn clear_http_cache() {
     HTTP_CACHE.clear();
 }
 
-/// Returns `(entry_count, weighted_size)` for the HTTP response cache.
+/// Returns `(entry_count, weighted_size)` for the deserialized response cache.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn http_cache_stats() -> (u64, u64) {
     (HTTP_CACHE.entry_count(), HTTP_CACHE.weighted_size())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn hash_key(key: &str) -> String {
-    let result = md5::compute(key.as_bytes());
-    format!("{:x}", result)
+fn cache_key<T>(url: &str) -> String {
+    // A URL can legitimately be decoded into more than one output type (for
+    // example an endpoint wrapped in `Option<T>`). Keep those entries apart so
+    // `Store::get` is always a typed cache hit rather than a downcast miss.
+    format!(
+        "{}:{:x}",
+        std::any::type_name::<T>(),
+        md5::compute(url.as_bytes())
+    )
 }
 
 pub trait Auth: Send + Sync + Clone {
@@ -290,95 +290,6 @@ pub trait Endpoint {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Clone, Copy)]
-struct CacheTTL(Duration);
-
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Clone)]
-struct CachedResponse {
-    status: u16,
-    body: String,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-struct InMemoryCacheMiddleware;
-
-#[cfg(not(target_arch = "wasm32"))]
-#[async_trait]
-impl Middleware for InMemoryCacheMiddleware {
-    async fn handle(
-        &self,
-        req: reqwest::Request,
-        extensions: &mut Extensions,
-        next: Next<'_>,
-    ) -> reqwest_middleware::Result<reqwest::Response> {
-        let ttl = extensions
-            .get::<CacheTTL>()
-            .copied();
-        // Derive the cache key from the pre-redirect URL so hits are consistent
-        // regardless of whether the server redirects the request.
-        let key = ttl.map(|_| {
-            hash_key(
-                req.url()
-                    .as_str(),
-            )
-        });
-
-        if let Some(ref k) = key {
-            if let Some(cached) = HTTP_CACHE.get::<CachedResponse>(k) {
-                let resp = http::Response::builder()
-                    .status(cached.status)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Bytes::from(
-                        cached
-                            .body
-                            .clone(),
-                    ))
-                    .unwrap();
-                return Ok(reqwest::Response::from(resp));
-            }
-        }
-
-        let resp = next
-            .run(req, extensions)
-            .await?;
-
-        if let (Some(CacheTTL(ttl)), Some(k)) = (ttl, key) {
-            if resp
-                .status()
-                .is_success()
-            {
-                let status = resp.status();
-                let text = resp
-                    .text()
-                    .await
-                    .map_err(reqwest_middleware::Error::Reqwest)?;
-                let weight = text
-                    .len()
-                    .min(u32::MAX as usize) as u32;
-                HTTP_CACHE.save_arc_with_weight(
-                    k,
-                    Arc::new(CachedResponse {
-                        status: status.as_u16(),
-                        body: text.clone(),
-                    }),
-                    weight,
-                    ttl,
-                );
-                let rebuilt = http::Response::builder()
-                    .status(status)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Bytes::from(text))
-                    .unwrap();
-                return Ok(reqwest::Response::from(rebuilt));
-            }
-        }
-
-        Ok(resp)
-    }
-}
-
 struct DynRetryPolicy(Arc<dyn RetryPolicy + Send + Sync>);
 
 impl RetryPolicy for DynRetryPolicy {
@@ -396,10 +307,6 @@ fn build_mw(
     retry: Option<Arc<dyn RetryPolicy + Send + Sync>>,
     default_retry_after: Duration,
 ) -> ClientWithMiddleware {
-    #[cfg(not(target_arch = "wasm32"))]
-    let builder =
-        MwClientBuilder::new(SHARED_HTTP_CLIENT.clone()).with(InMemoryCacheMiddleware);
-    #[cfg(target_arch = "wasm32")]
     let builder = MwClientBuilder::new(SHARED_HTTP_CLIENT.clone());
     let builder = match retry {
         Some(policy) => builder.with(
@@ -516,6 +423,17 @@ impl<A: Auth + Clone> RestClient<A> {
             url.set_query(Some(&qs));
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
+        let cache_key = endpoint
+            .cache_options()
+            .map(|_| cache_key::<EP::Output>(url.as_str()));
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(ref key) = cache_key {
+            if let Some(cached) = HTTP_CACHE.get::<EP::Output>(key) {
+                return Ok(cached);
+            }
+        }
+
         let mut req = SHARED_HTTP_CLIENT
             .request(endpoint.method(), url.clone())
             .headers(endpoint.headers());
@@ -553,11 +471,6 @@ impl<A: Auth + Clone> RestClient<A> {
             .map_err(ClientError::Transport)?;
 
         let mut ext = Extensions::new();
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(opts) = endpoint.cache_options() {
-            ext.insert(CacheTTL(opts.ttl));
-        }
-
         let resp = self
             .mw
             .execute_with_extensions(request, &mut ext)
@@ -607,11 +520,8 @@ impl<A: Auth + Clone> RestClient<A> {
                         .len()
                         .min(u32::MAX as usize) as u32;
                     HTTP_CACHE.save_arc_with_weight(
-                        hash_key(url.as_str()),
-                        Arc::new(CachedResponse {
-                            status: s,
-                            body: text,
-                        }),
+                        cache_key.expect("cache key exists for a cacheable response"),
+                        Arc::clone(&arc),
                         weight,
                         ttl,
                     );
@@ -631,11 +541,8 @@ impl<A: Auth + Clone> RestClient<A> {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(ttl) = endpoint.should_cache(&arc) {
                     HTTP_CACHE.save_arc_with_weight(
-                        hash_key(url.as_str()),
-                        Arc::new(CachedResponse {
-                            status: s,
-                            body: "null".to_string(),
-                        }),
+                        cache_key.expect("cache key exists for a cacheable response"),
+                        Arc::clone(&arc),
                         4,
                         ttl,
                     );
@@ -1113,6 +1020,26 @@ mod cache_tests {
             .await
             .unwrap();
         assert_eq!(mock.hits(), 2, "asked again once the short TTL was up");
+    }
+
+    #[tokio::test]
+    async fn cached_execute_arc_reuses_the_deserialized_value() {
+        let server = httpmock::MockServer::start();
+        let (mock, client, probe) =
+            probe(&server, "typed-arc", serde_json::json!(["found"]));
+        let endpoint = probe.with_cache(NEVER);
+
+        let first = client
+            .execute_arc(endpoint.clone())
+            .await
+            .unwrap();
+        let second = client
+            .execute_arc(endpoint)
+            .await
+            .unwrap();
+
+        assert_eq!(mock.hits(), 1);
+        assert!(Arc::ptr_eq(&first, &second));
     }
 
     #[tokio::test]

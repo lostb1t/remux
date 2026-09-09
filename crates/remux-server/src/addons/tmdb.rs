@@ -1276,7 +1276,7 @@ async fn fetch_tmdb_meta(
 
     match media.kind {
         db::MediaKind::Movie => {
-            // `resolve_missing_external_ids` (called at the top of
+            // `resolve_external_ids` (called at the top of
             // `refresh_meta`, before any addon runs) already resolves a
             // tmdb id from whatever else is known, if one is resolvable at
             // all — nothing left to discover here.
@@ -1465,7 +1465,7 @@ async fn fetch_tmdb_meta(
             }
         }
         db::MediaKind::Series => {
-            // `resolve_missing_external_ids` (called at the top of
+            // `resolve_external_ids` (called at the top of
             // `refresh_meta`, before any addon runs) already resolves a
             // tmdb id from whatever else is known, if one is resolvable at
             // all — nothing left to discover here.
@@ -1731,26 +1731,7 @@ async fn fetch_tmdb_meta(
                 else {
                     return Ok(None);
                 };
-                let mut patch = db::Media::from(ep);
-                match client
-                    .execute(
-                        sdks::tmdb::EpisodeExternalIdsEndpoint {
-                            series_id: tmdb_id,
-                            season_number: s_n,
-                            episode_number: e_n,
-                        }
-                        .with_cache(Duration::from_secs(360)),
-                    )
-                    .await
-                {
-                    Ok(ids) => patch
-                        .external_ids
-                        .merge(&tmdb_external_ids(ep.id, Some(&ids)), true),
-                    Err(error) => {
-                        warn!(%error, series_id = tmdb_id, season = s_n, episode = e_n, "TMDB episode external IDs unavailable")
-                    }
-                }
-                return Ok(Some(patch));
+                return Ok(Some(db::Media::from(ep)));
             }
         }
         db::MediaKind::Season => {

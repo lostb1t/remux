@@ -4,6 +4,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+use tracing::trace;
 
 use super::{ProgressReporter, Task, TaskCategory, TaskService};
 use crate::{AppContext, db};
@@ -36,6 +37,8 @@ impl Task for RefreshAllMetaTask {
     ) -> Result<()> {
         const CHUNK_SIZE: u32 = 100;
 
+        let task_started = std::time::Instant::now();
+        let count_started = std::time::Instant::now();
         let total: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM media WHERE kind IN (?, ?, ?, ?)")
                 .bind(db::MediaKind::Movie)
@@ -45,6 +48,13 @@ impl Task for RefreshAllMetaTask {
                 .fetch_one(&ctx.db)
                 .await?;
         let total = total as usize;
+        trace!(
+            target: "remux_server::metadata_refresh",
+            total,
+            elapsed = ?count_started.elapsed(),
+            chunk_size = CHUNK_SIZE,
+            "starting full metadata refresh"
+        );
 
         // Shared counter incremented per item inside process_meta_batch so progress
         // updates as each concurrent item finishes, not once per full 100-item batch.
@@ -62,7 +72,9 @@ impl Task for RefreshAllMetaTask {
         // Cursor-based pagination: WHERE id > last_id guarantees forward progress even
         // when refresh fails and refreshed_at is not updated for an item.
         let mut last_id: Option<uuid::Uuid> = None;
+        let mut batches = 0usize;
         loop {
+            let fetch_started = std::time::Instant::now();
             let batch = if let Some(cursor) = last_id {
                 sqlx::query_as::<_, db::Media>(
                     "SELECT * FROM media WHERE kind IN (?, ?, ?, ?) AND id > ? ORDER BY id LIMIT ?",
@@ -91,13 +103,42 @@ impl Task for RefreshAllMetaTask {
             if batch.is_empty() {
                 break;
             }
+            batches += 1;
+            let batch_len = batch.len();
+            let fetch_elapsed = fetch_started.elapsed();
+            trace!(
+                target: "remux_server::metadata_refresh",
+                batch = batches,
+                items = batch_len,
+                processed = processed.load(Ordering::Relaxed),
+                fetch_elapsed = ?fetch_elapsed,
+                "full metadata refresh batch starting"
+            );
             last_id = batch
                 .last()
                 .map(|m| m.id);
+            let process_started = std::time::Instant::now();
             ctx.addons
                 .process_meta_batch(batch, &ctx, true, Some(Arc::clone(&on_item_done)))
                 .await?;
+            trace!(
+                target: "remux_server::metadata_refresh",
+                batch = batches,
+                items = batch_len,
+                processed = processed.load(Ordering::Relaxed),
+                fetch_elapsed = ?fetch_elapsed,
+                process_elapsed = ?process_started.elapsed(),
+                "full metadata refresh batch complete"
+            );
         }
+        trace!(
+            target: "remux_server::metadata_refresh",
+            total,
+            processed = processed.load(Ordering::Relaxed),
+            batches,
+            elapsed = ?task_started.elapsed(),
+            "full metadata refresh complete"
+        );
         Ok(())
     }
 }

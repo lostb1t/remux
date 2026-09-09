@@ -32,7 +32,7 @@ use std::{
 
 use crate::keyed_lock::KeyedLock;
 use libc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
 use crate::{
@@ -1864,37 +1864,115 @@ impl AddonService {
         force_refresh: bool,
         config: &api::ServerConfiguration,
     ) -> Result<()> {
+        trace!(
+            target: "remux_server::metadata_refresh",
+            id = %media.id,
+            title = %media.title,
+            kind = %media.kind,
+            force_refresh,
+            "metadata refresh starting"
+        );
+        let grandparent_started = Instant::now();
         media
             .grandparent(&ctx.db)
             .await
             .ok();
+        trace!(
+            target: "remux_server::metadata_refresh",
+            id = %media.id,
+            elapsed = ?grandparent_started.elapsed(),
+            "refresh_meta: grandparent lookup complete"
+        );
 
         // Fill in whatever external ids we can before any addon runs, so
         // every addon in this batch sees the fuller id set rather than each
         // doing its own partial, addon-specific resolution.
-        MediaResolveService::resolve_missing_external_ids(media, ctx).await;
+        let resolve_started = Instant::now();
+        // Seasons and episodes already carry the TMDB identity needed by their
+        // metadata providers. Do not turn a metadata tree refresh into a
+        // per-child external-ID enrichment job; that remains available to
+        // explicit callers of `resolve_external_ids` when it is actually needed.
+        let resolves_external_ids =
+            !matches!(media.kind, db::MediaKind::Season | db::MediaKind::Episode);
+        if resolves_external_ids {
+            MediaResolveService::resolve_external_ids(media, ctx, false).await;
+        }
+        trace!(
+            target: "remux_server::metadata_refresh",
+            id = %media.id,
+            resolves_external_ids,
+            elapsed = ?resolve_started.elapsed(),
+            "refresh_meta: external ID resolution complete"
+        );
 
         let applicable = self
             .addons_for::<dyn MetaAddon>(media, &ctx.db, None)
             .await;
+
+        trace!(
+            target: "remux_server::metadata_refresh",
+            id = %media.id,
+            title = %media.title,
+            kind = %media.kind,
+            addons = %applicable.iter().map(|r| r.row.name.as_str()).collect::<Vec<_>>().join(", "),
+            "metadata refresh addons selected"
+        );
 
         if applicable.is_empty() {
             return Ok(());
         }
 
         let fetch_started = std::time::Instant::now();
+        let media_ref: &db::Media = media;
         let results = futures::future::join_all(
             applicable
                 .iter()
                 .map(|r| {
-                    r.meta
-                        .as_ref()
-                        .unwrap()
-                        .meta_fetch(media, ctx, config)
+                    let addon = r
+                        .row
+                        .name
+                        .clone();
+                    async move {
+                        let addon_started = Instant::now();
+                        trace!(
+                            target: "remux_server::metadata_refresh",
+                            id = %media_ref.id,
+                            title = %media_ref.title,
+                            kind = %media_ref.kind,
+                            addon = %addon,
+                            "metadata addon request starting"
+                        );
+                        let result = r
+                            .meta
+                            .as_ref()
+                            .unwrap()
+                            .meta_fetch(media_ref, ctx, config)
+                            .await;
+                        trace!(
+                            target: "remux_server::metadata_refresh",
+                            id = %media_ref.id,
+                            addon = %addon,
+                            elapsed = ?addon_started.elapsed(),
+                            success = result.is_ok(),
+                            "refresh_meta: addon meta_fetch complete"
+                        );
+                        trace!(
+                            target: "remux_server::metadata_refresh",
+                            id = %media_ref.id,
+                            title = %media_ref.title,
+                            kind = %media_ref.kind,
+                            addon = %addon,
+                            elapsed = ?addon_started.elapsed(),
+                            success = result.is_ok(),
+                            "metadata addon request complete"
+                        );
+                        result
+                    }
                 }),
         )
         .await;
-        debug!(
+        trace!(
+            target: "remux_server::metadata_refresh",
             id = %media.id,
             title = %media.title,
             kind = %media.kind,
@@ -2068,6 +2146,13 @@ impl AddonService {
         let concurrency = config
             .meta_concurrency
             .max(1) as usize;
+        trace!(
+            target: "remux_server::metadata_refresh",
+            items = media.len(),
+            force_refresh,
+            concurrency,
+            "processing metadata batch"
+        );
         let config = Arc::new(config);
         // Shared across this whole batch — top-level items, and every season/
         // episode any of them refreshes — so nested fan-out inside a single
@@ -2216,10 +2301,25 @@ impl AddonService {
             .kind
             .clone();
         let started = std::time::Instant::now();
+        trace!(
+            target: "remux_server::metadata_refresh",
+            id = %media.id,
+            title = %title,
+            kind = %kind,
+            force_refresh,
+            "top-level metadata item starting"
+        );
         let id = self
             .process_meta_item_inner(media, ctx, force_refresh, config, semaphore)
             .await;
-        debug!(%id, %title, %kind, elapsed = ?started.elapsed(), "process_meta_item done");
+        trace!(
+            target: "remux_server::metadata_refresh",
+            %id,
+            %title,
+            %kind,
+            elapsed = ?started.elapsed(),
+            "process_meta_item done"
+        );
         id
     }
 
@@ -2245,12 +2345,33 @@ impl AddonService {
         let original_id = media.id;
 
         let root_refresh_result = {
+            let permit_wait_started = Instant::now();
             let _permit = semaphore
                 .acquire()
                 .await
                 .expect("semaphore is never closed");
-            self.refresh_meta(&mut media, &ctx, force_refresh, &config)
-                .await
+            trace!(
+                target: "remux_server::metadata_refresh",
+                id = %media.id,
+                title = %media.title,
+                kind = %media.kind,
+                wait_elapsed = ?permit_wait_started.elapsed(),
+                "top-level metadata item acquired refresh slot"
+            );
+            let refresh_started = Instant::now();
+            let result = self
+                .refresh_meta(&mut media, &ctx, force_refresh, &config)
+                .await;
+            trace!(
+                target: "remux_server::metadata_refresh",
+                id = %media.id,
+                title = %media.title,
+                kind = %media.kind,
+                elapsed = ?refresh_started.elapsed(),
+                success = result.is_ok(),
+                "top-level metadata item root refresh complete"
+            );
+            result
         };
         if let Err(e) = root_refresh_result {
             warn!(id = %media.id, error = %e, "failed to refresh metadata, keeping as-is");

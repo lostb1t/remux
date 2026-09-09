@@ -29,6 +29,9 @@ fn find_matched_nothing(found: &sdks::tmdb::FindByIdResponse) -> bool {
         && found
             .tv_results
             .is_empty()
+        && found
+            .tv_episode_results
+            .is_empty()
 }
 
 /// The ids the call was for are not there: no such episode, or one TMDB knows
@@ -322,10 +325,12 @@ impl MediaResolveService {
         }
     }
 
-    /// Fills in whichever of tmdb/imdb/tvdb are missing on `media`, using
-    /// only the calls actually needed — an item with everything already
-    /// resolved makes no network calls at all. Movies only ever get
-    /// tmdb/imdb (TVDB doesn't track movies); tvdb is Series-only.
+    /// Resolves external IDs on `media`.
+    ///
+    /// With `force_refresh` disabled, makes only the calls needed to fill a
+    /// missing ID. With it enabled, re-fetches IDs that TMDB can authoritatively
+    /// provide. Movies only ever get tmdb/imdb (TVDB doesn't track movies);
+    /// TVDB is Series- and Episode-only.
     ///
     /// Deliberately does not attempt to backfill a missing kitsu id: kitsu
     /// only matters for anime, which we can't tell from ids alone at this
@@ -344,7 +349,63 @@ impl MediaResolveService {
     /// `external_ids` sub-resource returns imdb *and* tvdb together in one
     /// call — there's no pair
     /// of independent lookups left to run concurrently once that's used.
-    pub async fn resolve_missing_external_ids(media: &mut db::Media, ctx: &AppContext) {
+    pub async fn resolve_external_ids(
+        media: &mut db::Media,
+        ctx: &AppContext,
+        force_refresh: bool,
+    ) {
+        if media.kind == db::MediaKind::Episode {
+            let needs_ids = force_refresh
+                || media
+                    .external_ids
+                    .tmdb
+                    .is_none()
+                || media
+                    .external_ids
+                    .imdb
+                    .is_none()
+                || media
+                    .external_ids
+                    .tvdb
+                    .is_none();
+            if !needs_ids {
+                return;
+            }
+            let Some(client) = Self::tmdb(ctx).await else {
+                return;
+            };
+            let series_tmdb = if let Some(series_tmdb) =
+                Self::stored_series_tmdb_id(media, ctx)
+                    .await
+                    .ok()
+                    .flatten()
+            {
+                series_tmdb
+            } else {
+                let Some((episode_tmdb, series_tmdb)) =
+                    Self::find_episode_tmdb_ids(&media.external_ids, &client).await
+                else {
+                    return;
+                };
+                media
+                    .external_ids
+                    .tmdb = Some(episode_tmdb);
+                series_tmdb
+            };
+            let (Some(season), Some(episode)) = (media.parent_idx, media.idx) else {
+                return;
+            };
+            let Ok(Some(ids)) =
+                Self::episode_external_ids(series_tmdb, season, episode, &client).await
+            else {
+                return;
+            };
+            media
+                .external_ids
+                .merge(&ids, force_refresh);
+            return;
+        }
+
         if !matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
             return;
         }
@@ -362,7 +423,7 @@ impl MediaResolveService {
                 .external_ids
                 .tvdb
                 .is_none();
-        if !needs_tmdb && !needs_imdb && !needs_tvdb {
+        if !force_refresh && !needs_tmdb && !needs_imdb && !needs_tvdb {
             return;
         }
         let Some(client) = Self::tmdb(ctx).await else {
@@ -397,17 +458,18 @@ impl MediaResolveService {
             .external_ids
             .tmdb = Some(tmdb_id);
 
-        if needs_imdb || needs_tvdb {
+        if force_refresh || needs_imdb || needs_tvdb {
             if is_tv {
                 if let Ok(series) = client
                     .execute(series_ids_endpoint(tmdb_id).with_cache(ID_CACHE_TTL))
                     .await
                     && let Some(e) = series.external_ids
                 {
-                    if media
-                        .external_ids
-                        .imdb
-                        .is_none()
+                    if force_refresh
+                        || media
+                            .external_ids
+                            .imdb
+                            .is_none()
                     {
                         media
                             .external_ids
@@ -415,17 +477,18 @@ impl MediaResolveService {
                             .imdb_id
                             .and_then(|s| db::NonEmptyString::try_new(s).ok());
                     }
-                    if media
-                        .external_ids
-                        .tvdb
-                        .is_none()
+                    if force_refresh
+                        || media
+                            .external_ids
+                            .tvdb
+                            .is_none()
                     {
                         media
                             .external_ids
                             .tvdb = e.tvdb_id;
                     }
                 }
-            } else if needs_imdb
+            } else if (force_refresh || needs_imdb)
                 && let Ok(movie) = client
                     .execute(movie_ids_endpoint(tmdb_id).with_cache(ID_CACHE_TTL))
                     .await
@@ -499,6 +562,42 @@ impl MediaResolveService {
                 .next()
                 .map(|m| m.id)
         })
+    }
+
+    /// Finds an episode's TMDB id and its parent series id from the episode's
+    /// own IMDb or TVDB id. `/find` accepts either ID without requiring a
+    /// resolved parent series first.
+    async fn find_episode_tmdb_ids<A: sdks::Auth + Clone>(
+        ids: &db::ExternalIds,
+        client: &RestClient<A>,
+    ) -> Option<(i64, i64)> {
+        let (external_id, external_source) =
+            Self::tmdb_search_key(ids, Some(&sdks::kitsu::client())).await?;
+        let found = client
+            .execute(
+                sdks::tmdb::FindByIdEndpoint {
+                    external_id,
+                    external_source: external_source.to_string(),
+                }
+                .with_cache(ID_CACHE_TTL)
+                .should_cache(|r| {
+                    Some(if find_matched_nothing(r) {
+                        ID_MISS_CACHE_TTL
+                    } else {
+                        ID_CACHE_TTL
+                    })
+                }),
+            )
+            .await
+            .ok()?;
+        found
+            .tv_episode_results
+            .into_iter()
+            .find_map(|episode| {
+                episode
+                    .show_id
+                    .map(|series_id| (episode.id, series_id))
+            })
     }
 
     /// The series' TMDB id, from whatever else it carries. Kitsu comes last:
@@ -1901,6 +2000,7 @@ mod tests {
         assert!(!find_matched_nothing(&sdks::tmdb::FindByIdResponse {
             movie_results: vec![sdks::tmdb::Movie::default()],
             tv_results: vec![],
+            ..Default::default()
         }));
     }
 
@@ -2487,7 +2587,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_missing_external_ids_fills_tmdb_and_tvdb_from_imdb_alone() {
+    async fn resolve_external_ids_fills_tmdb_and_tvdb_from_imdb_alone() {
         let tmdb = httpmock::MockServer::start();
         tmdb.mock(|when, then| {
             when.path("/find/tt0306414")
@@ -2518,7 +2618,7 @@ mod tests {
         )
         .await;
 
-        MediaResolveService::resolve_missing_external_ids(&mut media, ctx).await;
+        MediaResolveService::resolve_external_ids(&mut media, ctx, false).await;
 
         assert_eq!(
             media
@@ -2542,7 +2642,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_missing_external_ids_is_a_noop_when_nothing_is_missing() {
+    async fn resolve_external_ids_is_a_noop_when_nothing_is_missing() {
         // No mocks registered at all — any request would fail the test by
         // connection refused, proving no network call is made when every id
         // this kind cares about is already present.
@@ -2564,8 +2664,69 @@ mod tests {
             .external_ids
             .clone();
 
-        MediaResolveService::resolve_missing_external_ids(&mut media, ctx).await;
+        MediaResolveService::resolve_external_ids(&mut media, ctx, false).await;
 
         assert_eq!(media.external_ids, before);
+    }
+
+    #[tokio::test]
+    async fn resolve_external_ids_fills_missing_episode_ids() {
+        let tmdb = httpmock::MockServer::start();
+        let request = tmdb.mock(|when, then| {
+            when.path("/tv/1438/season/1/episode/1");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "id": 972467,
+                    "name": "The Target",
+                    "episode_number": 1,
+                    "season_number": 1,
+                    "external_ids": {
+                        "imdb_id": "tt0749419",
+                        "tvdb_id": 303821,
+                    },
+                }));
+        });
+        let guard = ctx_with_tmdb(&tmdb).await;
+        let ctx = &guard.0;
+        let mut episode = db::Media {
+            title: "The Target".into(),
+            kind: db::MediaKind::Episode,
+            parent_idx: Some(1),
+            idx: Some(1),
+            grandparent: Some(Box::new(db::Media {
+                title: "The Wire".into(),
+                kind: db::MediaKind::Series,
+                external_ids: db::ExternalIds {
+                    tmdb: Some(1438),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+
+        MediaResolveService::resolve_external_ids(&mut episode, ctx, false).await;
+
+        assert_eq!(request.hits(), 1);
+        assert_eq!(
+            episode
+                .external_ids
+                .tmdb,
+            Some(972467)
+        );
+        assert_eq!(
+            episode
+                .external_ids
+                .imdb
+                .as_deref()
+                .map(String::as_str),
+            Some("tt0749419")
+        );
+        assert_eq!(
+            episode
+                .external_ids
+                .tvdb,
+            Some(303821)
+        );
     }
 }
