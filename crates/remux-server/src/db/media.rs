@@ -1984,6 +1984,25 @@ enum IdValue {
 }
 
 impl Media {
+    /// Series with in-progress episodes, including those outside the requested page.
+    pub async fn resumable_series_ids(
+        db: &SqlitePool,
+        user_id: Uuid,
+    ) -> Result<std::collections::HashSet<Uuid>> {
+        let ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT DISTINCT m.grandparent_id FROM user_media_state ums \
+             JOIN media m ON m.id = ums.media_id \
+             WHERE ums.user_id = ? AND ums.playback_position > 0 \
+             AND m.grandparent_id IS NOT NULL",
+        )
+        .bind(user_id)
+        .fetch_all(db)
+        .await?;
+        Ok(ids
+            .into_iter()
+            .collect())
+    }
+
     pub fn is_live(&self) -> bool {
         self.kind == MediaKind::TvChannel
     }

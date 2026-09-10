@@ -131,10 +131,31 @@ pub async fn shows_nextup(
     session: auth::AuthSession,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    // Home-screen call: no seriesId — return one next-up episode per in-progress series
+    // Home-screen call: no seriesId — return one next-up episode per in-progress series.
+    // When the unified setting is on, this feed is folded into Continue
+    // Watching instead — but only for this seriesId-less aggregate call; a
+    // per-series lookup (e.g. a client's "Next Episode" button) must still
+    // resolve normally regardless of the setting.
     if q.series_id
         .is_none()
     {
+        if db::Settings::get_config_or_default(
+            &state
+                .ctx
+                .db,
+        )
+        .await
+        .enable_next_up_in_continue_watching
+        .unwrap_or(false)
+        {
+            return Ok(Json(api::BaseItemDtoQueryResult {
+                start_index: q
+                    .start_index
+                    .unwrap_or(0),
+                ..Default::default()
+            })
+            .into_response());
+        }
         return shows_nextup_all(state, session, q)
             .await
             .map(IntoResponse::into_response);
@@ -282,26 +303,22 @@ pub async fn shows_nextup(
     .into_response())
 }
 
-/// Home-screen NextUp: one next-up episode per series that the user has started watching.
-/// Only returns series where at least one episode has been played or is in progress.
-async fn shows_nextup_all(
-    state: AppState,
-    session: auth::AuthSession,
-    q: api::GetItemsQuery,
-) -> Result<impl IntoResponse> {
+/// Select the next episode per started series, with its release-aware sort key.
+pub(crate) async fn next_up_candidates(
+    state: &AppState,
+    session: &auth::AuthSession,
+    q: &api::GetItemsQuery,
+) -> Result<Vec<(db::Media, chrono::DateTime<chrono::Utc>)>> {
     let user_id = session
         .user
         .id;
-    let limit = q
-        .limit
-        .map(|l| l as usize);
-    let start_index = q
-        .start_index
-        .unwrap_or(0) as usize;
     let enable_resumable = q
         .enable_resumable
         .unwrap_or(true);
-
+    let date_cutoff = q
+        .next_up_date_cutoff
+        .as_deref()
+        .unwrap_or("1970-01-01 00:00:00");
     let server_config = db::Settings::get_config_or_default(
         &state
             .ctx
@@ -317,10 +334,6 @@ async fn shows_nextup_all(
     // media rows, avoiding a slow scan over the full episode index.
     // No series-count LIMIT here — we apply the page limit to the final episode list
     // (matching Jellyfin's approach: consider all active series, paginate results).
-    let date_cutoff = q
-        .next_up_date_cutoff
-        .clone()
-        .unwrap_or_else(|| "1970-01-01 00:00:00".to_string());
     let active_series: Vec<(Uuid, Option<chrono::NaiveDateTime>)> = sqlx::query_as(
         "SELECT m.grandparent_id, \
                 MAX(COALESCE(active.last_played_at, active.played_at, '1970-01-01 00:00:00')) AS last_activity \
@@ -345,7 +358,7 @@ async fn shows_nextup_all(
     .await?;
 
     if active_series.is_empty() {
-        return Ok(Json(api::BaseItemDtoQueryResult::default()).into_response());
+        return Ok(Vec::new());
     }
 
     let mut series_ids: Vec<Uuid> = Vec::with_capacity(active_series.len());
@@ -464,15 +477,23 @@ async fn shows_nextup_all(
         }
     }
 
-    // Re-sort: if next ep released more recently than the user's last watch,
-    // use the release date as the effective key so fresh episodes surface first.
+    if next_eps.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Compute the effective activity once per episode (if next ep released
+    // more recently than the user's last watch, the release date becomes the
+    // effective key so fresh episodes surface first), then sort and build
+    // candidates from that same precomputed value instead of recomputing it
+    // per comparison and again afterward.
     let epoch = chrono::NaiveDateTime::parse_from_str(
         "1970-01-01 00:00:00",
         "%Y-%m-%d %H:%M:%S",
     )
     .unwrap();
-    next_eps.sort_by(|a, b| {
-        let key = |ep: &db::Media| {
+    let mut next_eps: Vec<(db::Media, chrono::NaiveDateTime)> = next_eps
+        .into_iter()
+        .map(|ep| {
             let release = ep
                 .digital_released_at
                 .or(ep.released_at)
@@ -485,61 +506,69 @@ async fn shows_nextup_all(
                         .copied()
                 })
                 .unwrap_or(epoch);
-            release.max(activity)
-        };
-        key(b).cmp(&key(a))
-    });
-
-    if next_eps.is_empty() {
-        return Ok(Json(api::BaseItemDtoQueryResult::default()).into_response());
-    }
-
-    db::Media::preload_parents(
-        &state
-            .ctx
-            .db,
-        &mut next_eps,
-    )
-    .await;
-    let next_ep_ids: Vec<Uuid> = next_eps
-        .iter()
-        .map(|e| e.id)
-        .collect();
-    let mut images_map = db::MediaImage::get_for_media_ids(
-        &state
-            .ctx
-            .db,
-        &next_ep_ids,
-    )
-    .await
-    .unwrap_or_default();
-    for ep in &mut next_eps {
-        ep.images = images_map
-            .remove(&ep.id)
-            .unwrap_or_default();
-    }
-
-    let total = next_eps.len() as i64;
-    let items: Vec<api::BaseItemDto> = next_eps
-        .into_iter()
-        .skip(start_index)
-        .take(limit.unwrap_or(usize::MAX))
-        .map(|ep| {
-            let mut item = api::db_media_to_item(ep.clone(), false);
-            if let Some(s) = states_map.get(&ep.id) {
-                item.user_data = Some(api::db_state_to_dto(s.clone(), &ep));
-            }
-            item
+            let effective = release.max(activity);
+            (ep, effective)
         })
         .collect();
+    next_eps.sort_by(|(_, a), (_, b)| b.cmp(a));
 
+    Ok(next_eps
+        .into_iter()
+        .map(|(media, activity)| (media, activity.and_utc()))
+        .collect())
+}
+
+async fn shows_nextup_all(
+    state: AppState,
+    session: auth::AuthSession,
+    q: api::GetItemsQuery,
+) -> Result<impl IntoResponse> {
+    let candidates = next_up_candidates(&state, &session, &q).await?;
+    if candidates.is_empty() {
+        return Ok(Json(api::BaseItemDtoQueryResult::default()));
+    }
+    let order: HashMap<Uuid, usize> = candidates
+        .iter()
+        .enumerate()
+        .map(|(index, (media, _))| (media.id, index))
+        .collect();
+    let mut query = q.clone();
+    query.ids = Some(
+        candidates
+            .into_iter()
+            .map(|(media, _)| media.id)
+            .collect(),
+    );
+    query.include_item_types = Some(vec![api::MediaType::Episode]);
+    query.strict_item_filters = true;
+    query.start_index = None;
+    query.limit = Some(order.len() as u32);
+    let mut items = get_items(state, session, query, false)
+        .await?
+        .with_permissions()
+        .with_client_patches()
+        .build()
+        .items;
+    items.sort_by_key(|item| order[&item.id]);
+    let total = items.len() as i64;
     Ok(Json(api::BaseItemDtoQueryResult {
-        items,
+        items: items
+            .into_iter()
+            .skip(
+                q.start_index
+                    .unwrap_or(0) as usize,
+            )
+            .take(
+                q.limit
+                    .unwrap_or(u32::MAX) as usize,
+            )
+            .collect(),
         total_record_count: total,
-        start_index: start_index as u32,
+        start_index: q
+            .start_index
+            .unwrap_or(0),
         ..Default::default()
-    })
-    .into_response())
+    }))
 }
 
 /// Upcoming episodes sorted by premiere date, soonest first.
@@ -709,7 +738,7 @@ pub async fn shows_recommendations(
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use super::*;
     use chrono::{NaiveDate, NaiveDateTime};
     use sqlx::SqlitePool;
@@ -724,7 +753,7 @@ mod test {
         db
     }
 
-    async fn insert_series_with_episodes(
+    pub(crate) async fn insert_series_with_episodes(
         db: &SqlitePool,
         series_title: &str,
         episode_titles: &[&str],
@@ -828,7 +857,7 @@ mod test {
         user
     }
 
-    async fn insert_state(
+    pub(crate) async fn insert_state(
         db: &SqlitePool,
         user_id: Uuid,
         media_id: Uuid,

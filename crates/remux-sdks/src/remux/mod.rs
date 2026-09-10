@@ -716,6 +716,10 @@ pub struct ServerConfiguration {
     /// Items shorter than this are never shown in continue-watching. Default: 90.
     #[default(Some(90_i64))]
     pub min_resume_duration_seconds: Option<i64>,
+    /// Include the next released episode of started series in Continue Watching.
+    /// Disabled by default to retain Jellyfin's standard resume-only behaviour.
+    #[default(Some(false))]
+    pub enable_next_up_in_continue_watching: Option<bool>,
 }
 
 #[derive(
@@ -1471,6 +1475,9 @@ pub struct GetItemsQuery {
     /// Internal server-side constraint. This is not a Jellyfin query parameter.
     #[serde(skip)]
     pub promoted: Option<bool>,
+    /// Internal list query: do not reinterpret a single ID as a details lookup.
+    #[serde(skip)]
+    pub strict_item_filters: bool,
     // #[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, ItemFields>>")]
     //#[serde_as(as = "Option<StringWithSeparator<CommaSeparator, ItemFields>>")]
     #[serde(

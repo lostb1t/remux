@@ -25,6 +25,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut digital_release_buffer = use_signal(|| 0_i64);
     let mut subtitle_languages = use_signal(String::new);
     let mut quick_connect_enabled = use_signal(|| true);
+    let mut enable_next_up_in_continue_watching = use_signal(|| false);
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(|| Option::<String>::None);
@@ -71,6 +72,10 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                         cfg.quick_connect_available
                             .unwrap_or(true),
                     );
+                    enable_next_up_in_continue_watching.set(
+                        cfg.enable_next_up_in_continue_watching
+                            .unwrap_or(false),
+                    );
                     base_cfg.set(Some(cfg));
                 }
                 Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
@@ -111,6 +116,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
             .peek()
             .clone();
         let qc_enabled = *quick_connect_enabled.peek();
+        let next_up_unified = *enable_next_up_in_continue_watching.peek();
 
         let mut cfg = base_cfg
             .peek()
@@ -120,6 +126,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
         cfg.metadata_country_code = Some(country);
         cfg.preferred_metadata_language = Some(language);
         cfg.quick_connect_available = Some(qc_enabled);
+        cfg.enable_next_up_in_continue_watching = Some(next_up_unified);
         cfg.catalog_max_items = Some(max);
         cfg.meta_concurrency = concurrency;
         cfg.filter_by_digital_release_date = filter_dr;
@@ -297,6 +304,15 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                                 description: "Allow clients to log in by entering a code shown on the login screen.",
                                 checked: *quick_connect_enabled.read(),
                                 on_change: move |v| quick_connect_enabled.set(v),
+                            }
+                        }
+
+                        div { class: "field",
+                            ToggleRow {
+                                label: "Include Next Up in Continue Watching",
+                                description: "Add the next released episode of a started series when that series has no episode currently in progress. Disabled by default.",
+                                checked: *enable_next_up_in_continue_watching.read(),
+                                on_change: move |v| enable_next_up_in_continue_watching.set(v),
                             }
                         }
 

@@ -795,7 +795,7 @@ pub async fn get_items(
 
     // handle details request
     if let Some(ids) = &q.ids {
-        if ids.len() == 1 {
+        if ids.len() == 1 && !q.strict_item_filters {
             let media = item(
                 state,
                 session.clone(),
