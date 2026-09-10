@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use anyhow::Context;
 use axum::{
@@ -1496,7 +1496,11 @@ async fn resume_items(
                 .with_client_patches()
                 .build()
                 .items;
-            total += next_up.len() as i64;
+            if q.enable_total_record_count
+                .unwrap_or(true)
+            {
+                total += next_up.len() as i64;
+            }
             items.extend(next_up);
         }
         items.sort_by_key(|item| {
@@ -1951,6 +1955,7 @@ mod e2e_tests {
                 .simple()
                 .to_string()
         );
+        assert_eq!(body["TotalRecordCount"], 0);
 
         insert_state(db, user.id, next[1].id, 0, 0, None, None).await;
         sqlx::query("UPDATE user_media_state SET favorite = 1 WHERE user_id = ? AND media_id = ?")
