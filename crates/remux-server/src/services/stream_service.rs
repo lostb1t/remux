@@ -650,6 +650,61 @@ impl StreamService {
         })
     }
 
+    /// Remember that the probe fell over from the client-facing first source
+    /// to `effective_stream` for this play session.
+    ///
+    /// PlaybackInfo stamps `MediaSources[0].Id` with the item id, so a client
+    /// that auto-plays comes back to `/videos/{id}/stream` naming the item,
+    /// not a stream. `dispatch_lookup` treats that as "first source" — the
+    /// very stream that just failed to probe — and the fallback PlaybackInfo
+    /// chose is lost: the stream request hangs on the dead source until the
+    /// upstream timeout and fails, while the second source, picked by hand,
+    /// plays at once. Keying on the play session id (minted by PlaybackInfo
+    /// and echoed by every Jellyfin client on the stream URL) ties the two
+    /// requests together without needing a device id, which not every client
+    /// sends on stream URLs. No-op when nothing fell over or the client named
+    /// a specific stream.
+    pub fn save_probe_fallback(&self, play_session_id: &str, probed: &ProbedStreams) {
+        if probed.specific_requested {
+            return;
+        }
+        let Some(first) = probed
+            .results
+            .first()
+        else {
+            return;
+        };
+        if first
+            .effective_stream
+            .id
+            == first
+                .stream
+                .id
+        {
+            return;
+        }
+        self.ctx
+            .store
+            .save(
+                Self::probe_fallback_key(play_session_id),
+                first
+                    .effective_stream
+                    .id,
+                std::time::Duration::from_secs(24 * 3600),
+            );
+    }
+
+    /// The stream PlaybackInfo's probe fell over to for `play_session_id`, if any.
+    pub fn probe_fallback_for(ctx: &AppContext, play_session_id: &str) -> Option<Uuid> {
+        ctx.store
+            .get::<Uuid>(Self::probe_fallback_key(play_session_id))
+            .map(|id| *id)
+    }
+
+    fn probe_fallback_key(play_session_id: &str) -> String {
+        format!("pstream:psid:{play_session_id}")
+    }
+
     /// Persist the resolved stream UUID in the device-preference store (24 h TTL).
     /// Also records the group→item association so /Items/{group_uuid} can redirect
     /// to the correct content item without a DB scan.
@@ -1097,5 +1152,56 @@ mod tests {
             ..Default::default()
         });
         assert!(media_info_from_probe(&probe_with_size(1), &stream, None).is_none());
+    }
+
+    /// A probe fallback must reach the stream request that follows PlaybackInfo.
+    /// That request names the item, not a stream, so without this the resolver
+    /// serves the first source — the one that just failed — and playback hangs
+    /// until the upstream timeout while the second source, picked by hand, plays.
+    #[tokio::test]
+    async fn probe_fallback_is_remembered_per_play_session() {
+        use crate::integration_test::{
+            authenticated_server, insert_test_source, seed_movie,
+        };
+        let (_server, guard, _token) = authenticated_server().await;
+        let ctx = &guard.0;
+        let owner = seed_movie(ctx).await;
+        let dead = insert_test_source(ctx).await;
+        let alive = insert_test_source(ctx).await;
+        assert_ne!(dead.id, alive.id);
+        let service = StreamService::new(StreamServiceConfig {
+            ctx: ctx.clone(),
+            item_id: owner.id,
+            requested_id: None,
+            show_ungrouped: true,
+            stream_filter: None,
+            user_id: None,
+        });
+        let probed = |effective: &db::Media, specific_requested: bool| ProbedStreams {
+            results: vec![ProbeResult {
+                source: api::MediaSourceInfo::from(dead.clone()),
+                stream: dead.clone(),
+                effective_stream: effective.clone(),
+            }],
+            specific_requested,
+        };
+
+        // Fell over to `alive`: remembered under the play session.
+        service.save_probe_fallback("psid-fallback", &probed(&alive, false));
+        assert_eq!(
+            StreamService::probe_fallback_for(ctx, "psid-fallback"),
+            Some(alive.id)
+        );
+        // First source probed fine: nothing to remember.
+        service.save_probe_fallback("psid-clean", &probed(&dead, false));
+        assert_eq!(StreamService::probe_fallback_for(ctx, "psid-clean"), None);
+        // Client named a specific stream: its choice stands, nothing remembered.
+        service.save_probe_fallback("psid-specific", &probed(&alive, true));
+        assert_eq!(
+            StreamService::probe_fallback_for(ctx, "psid-specific"),
+            None
+        );
+        // Unknown session: nothing.
+        assert_eq!(StreamService::probe_fallback_for(ctx, "psid-unknown"), None);
     }
 }
