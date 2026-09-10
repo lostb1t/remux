@@ -2773,6 +2773,30 @@ impl Media {
     /// imdb ▸ custom_stremio_id ▸ tmdb ▸ tvdb ▸ kitsu, or deezer ▸ youtube_id
     /// for music) and the conflict is logged — this is intentionally not
     /// resolved by merging the rows.
+    /// Point remote results (search, catalog) that already exist locally at
+    /// their stored row: same kind, matching external id.
+    ///
+    /// Remote results are minted with a fresh id per request and live in the
+    /// in-memory store for an hour. A client that keeps such an id, for
+    /// next-episode autoplay or a continue-watching entry, is left with a
+    /// dead one after that, or after a restart, and gets 404 on
+    /// `/shows/{id}/seasons` while the stored series is fine. Only results
+    /// with a matching row are rewritten; unknown items keep their id.
+    pub async fn adopt_existing_ids(db: &SqlitePool, items: &mut [Media]) {
+        for m in items.iter_mut() {
+            if m.external_ids
+                .is_empty()
+            {
+                continue;
+            }
+            if let Some(id) =
+                Self::find_by_external_ids(db, &m.kind, &m.external_ids).await
+            {
+                m.id = id;
+            }
+        }
+    }
+
     pub async fn find_by_external_ids(
         db: &SqlitePool,
         kind: &MediaKind,
