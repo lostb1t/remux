@@ -1474,6 +1474,10 @@ async fn resume_items(
                     .collect(),
             );
             query.filters = None;
+            // DatePlayed queries start from playback history and omit untouched
+            // episodes. Ordering is applied after the merge, not during lookup.
+            query.sort_by = Some(vec![api::ItemSortBy::IndexNumber]);
+            query.sort_order = Some(vec![api::SortOrder::Ascending]);
             query.include_item_types = Some(vec![api::MediaType::Episode]);
             query.start_index = None;
             query.limit = Some(activity.len() as u32);
@@ -1905,9 +1909,6 @@ mod e2e_tests {
             insert_state(db, user.id, id, count, position, Some(date), Some(date))
                 .await;
         }
-        insert_state(db, user.id, next[1].id, 0, 0, None, None).await;
-        sqlx::query("UPDATE user_media_state SET favorite = 1 WHERE user_id = ? AND media_id = ?")
-            .bind(user.id).bind(next[1].id).execute(db).await.unwrap();
 
         // Default-off path already paginates in the database.
         let response = server
@@ -1937,6 +1938,23 @@ mod e2e_tests {
         db::Settings::set_config(db, &config)
             .await
             .unwrap();
+
+        // A genuinely untouched episode has no user_media_state row at all.
+        let response = server.get("/users/me/items/resume?Limit=12&Recursive=true&Fields=PrimaryImageAspectRatio&ImageTypeLimit=1&EnableImageTypes=Primary%2CBackdrop%2CThumb&EnableTotalRecordCount=false&MediaTypes=Video")
+            .add_header(http::header::AUTHORIZATION, auth.clone()).await;
+        response.assert_status_ok();
+        let body: serde_json::Value = response.json();
+        assert_eq!(
+            body["Items"][0]["Id"],
+            next[1]
+                .id
+                .simple()
+                .to_string()
+        );
+
+        insert_state(db, user.id, next[1].id, 0, 0, None, None).await;
+        sqlx::query("UPDATE user_media_state SET favorite = 1 WHERE user_id = ? AND media_id = ?")
+            .bind(user.id).bind(next[1].id).execute(db).await.unwrap();
 
         // Sorting, bounded-page dedup, scope, user data and actual premiere gating.
         for (query, expected) in [
