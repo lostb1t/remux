@@ -1,3 +1,16 @@
+# [0.31.0](https://github.com/lostb1t/remux/compare/v0.30.0...v0.31.0) (2026-09-11)
+
+
+### Bug Fixes
+
+* index symlinked files in opendal-local scan (fixes [#460](https://github.com/lostb1t/remux/issues/460)) ([#461](https://github.com/lostb1t/remux/issues/461)) ([34530c4](https://github.com/lostb1t/remux/commit/34530c4c7224827f58d2035cab0f5d59a965e6f3))
+* **media:** dedupe sibling media_relations before remapping to avoid uniq_media_relation conflicts ([1fdd4f0](https://github.com/lostb1t/remux/commit/1fdd4f09bd4cae18b5bd7fa735c6bedc12e6cc92))
+
+
+### Features
+
+* unify next up with continue watching ([#458](https://github.com/lostb1t/remux/issues/458)) ([1ec8c0e](https://github.com/lostb1t/remux/commit/1ec8c0efb0f117e04f4b496e6799fba18ed79a21))
+
 # [0.30.0](https://github.com/lostb1t/remux/compare/v0.29.0...v0.30.0) (2026-09-09)
 
 
