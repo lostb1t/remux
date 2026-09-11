@@ -108,8 +108,50 @@ async fn prepare_squash(pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
+/// Fixed a bug in this migration's own SQL after it had already shipped (a
+/// 3+-way duplicate cluster sharing one relation target violated
+/// `uniq_media_relation` — see the file's current comments for the actual
+/// fix). Installs where it already ran successfully before the fix must not
+/// be told "previously applied but has been modified" on upgrade: patch the
+/// stored checksum to match the corrected file, exactly like `prepare_squash`
+/// does for the squash migration, so they're treated as already-satisfied
+/// rather than re-run or rejected. Installs where it never succeeded (the
+/// bug in question, or brand new) are unaffected — they just run the fixed
+/// version fresh.
+const DEDUPE_EXTERNAL_IDS_VERSION: i64 = 202609080001;
+
+async fn patch_migration_checksum(pool: &SqlitePool, version: i64) -> Result<()> {
+    let already_succeeded: Option<i64> = sqlx::query_scalar(
+        "SELECT version FROM _sqlx_migrations WHERE version = ? AND success = TRUE",
+    )
+    .bind(version)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    let Some(_) = already_succeeded else {
+        return Ok(());
+    };
+    if let Some(m) = sqlx::migrate!("./migrations")
+        .migrations
+        .iter()
+        .find(|m| m.version == version)
+    {
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?")
+            .bind(
+                m.checksum
+                    .as_ref(),
+            )
+            .bind(version)
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
+}
+
 pub async fn migrate(pool: &SqlitePool) -> Result<()> {
     prepare_squash(pool).await?;
+    patch_migration_checksum(pool, DEDUPE_EXTERNAL_IDS_VERSION).await?;
     sqlx::migrate!("./migrations")
         .set_ignore_missing(true)
         .run(pool)
