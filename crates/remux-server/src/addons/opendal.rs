@@ -3742,7 +3742,11 @@ mod tests {
         // Simulate VOD2MLIB regenerating the `.strm` under a new filename
         // that still resolves to the same proxy URL — a different fs path
         // (and therefore a different derived id) colliding on `path`.
-        std::fs::remove_file(dir.path().join(old_name)).unwrap();
+        std::fs::remove_file(
+            dir.path()
+                .join(old_name),
+        )
+        .unwrap();
         let new_name = "[imdbid-tt0133093] The Matrix (1999) [2160p].strm";
         write_files(dir.path(), &[(new_name, url.as_bytes())]);
 
