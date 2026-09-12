@@ -7165,6 +7165,18 @@ impl TryFrom<sdks::stremio::Meta> for Media {
         };
 
         let mut media = media;
+        // A remote result carries the same identity as the row it becomes, so
+        // give it that row's id up front: the first search for a title and
+        // every one after it agree, before anything is stored, and a client
+        // that keeps the id keeps a valid one. Random only when nothing
+        // identifies the item.
+        let raw = media.media_id_raw();
+        if raw
+            .canonical()
+            .is_some()
+        {
+            media.id = Uuid::from(&raw);
+        }
         if let Some(url) = meta
             .poster
             .or(meta.thumbnail)

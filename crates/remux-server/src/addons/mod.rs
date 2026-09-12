@@ -4195,6 +4195,29 @@ mod tests {
     /// exists locally must carry the stored row's id, or a client that keeps
     /// the id (next episode, continue watching) gets 404 on it once the
     /// store entry is gone. Unknown items keep their own id.
+    /// A remote result gets the id its stored row would have, so the first
+    /// search for a title and every search after it agree before anything
+    /// is stored.
+    #[test]
+    fn remote_results_get_the_stable_id() {
+        let meta = |id: &str| {
+            serde_json::from_value::<remux_sdks::stremio::Meta>(serde_json::json!({
+                "id": id, "type": "movie", "name": "Heat"
+            }))
+            .unwrap()
+        };
+        let a = db::Media::try_from(meta("tt0113277")).unwrap();
+        let b = db::Media::try_from(meta("tt0113277")).unwrap();
+        assert_eq!(a.id, b.id, "same identity, same id");
+        assert_eq!(
+            a.id,
+            Uuid::from(&a.media_id_raw()),
+            "the id a stored row gets"
+        );
+        let other = db::Media::try_from(meta("tt0000001")).unwrap();
+        assert_ne!(a.id, other.id);
+    }
+
     #[tokio::test]
     async fn search_results_adopt_existing_row_ids() {
         use crate::integration_test::{authenticated_server, seed_movie};
