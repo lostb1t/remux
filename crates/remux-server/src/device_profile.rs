@@ -12,7 +12,13 @@ pub trait DeviceProfileExt {
     fn subtitle_delivery_method(&self, codec: &str) -> Option<SubtitleDeliveryMethod>;
     fn supports_direct_play(&self, media_source: &MediaSourceInfo) -> bool;
     fn check_direct_play(&self, media_source: &MediaSourceInfo) -> TranscodeReasons;
+    fn hevc_copy_tag(&self, media_source: &MediaSourceInfo) -> &'static str;
 }
+
+/// Sample-entry fourcc for HEVC in an MP4-family container. `hvc1` asserts the
+/// `hvcC` carries VPS/SPS/PPS out-of-band; `hev1` also permits them in-band.
+pub const HEVC_TAG_HVC1: &str = "hvc1";
+pub const HEVC_TAG_HEV1: &str = "hev1";
 
 pub(crate) fn subtitle_codec_matches_profile(
     codec: &str,
@@ -134,6 +140,70 @@ impl DeviceProfileExt for DeviceProfile {
             check_codec_profiles(self, media_source, &mut r);
             r
         })
+    }
+
+    /// Which HEVC sample-entry tag to write when we stream-copy HEVC into fMP4.
+    ///
+    /// Two independent questions decide this, and `hvc1` — today's behaviour,
+    /// and what Apple's HLS authoring spec mandates — wins unless both come
+    /// back clean:
+    ///
+    /// 1. *What will the client accept?* Apple clients advertise a
+    ///    `VideoCodecTag` condition on their hevc codec profile (Safari sends
+    ///    `EqualsAny hvc1|dvh1`); most clients omit it entirely. Asked through
+    ///    the client's own conditions, so `Equals`/`NotEquals`/`EqualsAny` are
+    ///    all honoured without re-implementing them here.
+    /// 2. *Is `hvc1` true for this file?* `hvc1` promises the `hvcC` carries
+    ///    VPS/SPS/PPS out-of-band, which is a lie for sources that keep
+    ///    parameter sets in-band (some WEB-DL repackages). ffmpeg copies the
+    ///    header-only record through verbatim and the resulting empty `hvcC`
+    ///    leaves ExoPlayer unable to initialise a decoder. A muxer that put the
+    ///    parameter sets in-band said so in its own sample entry, so the
+    ///    source's fourcc is the signal.
+    ///
+    /// A silent client on an ordinary `hvc1` source therefore stays on `hvc1`;
+    /// only a source that is itself `hev1` moves, and only when the client
+    /// hasn't ruled `hev1` out.
+    fn hevc_copy_tag(&self, media_source: &MediaSourceInfo) -> &'static str {
+        let client_rejects = |tag: &str| {
+            self.codec_profiles
+                .iter()
+                .filter(|cp| matches!(cp.type_, Some(DlnaProfileType::Video)))
+                .filter(|cp| cp.applies_to_codec("hevc"))
+                .flat_map(|cp| &cp.conditions)
+                .filter(|cond| {
+                    cond.property
+                        .as_deref()
+                        == Some("VideoCodecTag")
+                })
+                .any(|cond| !cond.is_satisfied_opt(Some(tag)))
+        };
+
+        // A declared constraint is the client telling us outright. Checked
+        // hvc1-first so a contradictory profile that rejects both still lands
+        // on today's behaviour.
+        if client_rejects(HEVC_TAG_HEV1) {
+            return HEVC_TAG_HVC1;
+        }
+        if client_rejects(HEVC_TAG_HVC1) {
+            return HEVC_TAG_HEV1;
+        }
+
+        // The client takes either, so keep hvc1 unless the source itself says
+        // its parameter sets are in-band.
+        let source_is_hev1 = media_source
+            .video_stream()
+            .and_then(|s| {
+                s.codec_tag
+                    .as_deref()
+            })
+            .is_some_and(|tag| tag.eq_ignore_ascii_case(HEVC_TAG_HEV1));
+
+        if source_is_hev1 {
+            HEVC_TAG_HEV1
+        } else {
+            HEVC_TAG_HVC1
+        }
     }
 }
 
@@ -758,5 +828,124 @@ mod tests {
             !reasons.contains(&TranscodeReason::VideoCodecNotSupported(String::new())),
             "an audio-only constraint must not produce VideoCodecNotSupported: {reasons:?}"
         );
+    }
+
+    fn hevc_tag_condition(condition: &str, value: &str) -> DeviceProfile {
+        DeviceProfile {
+            codec_profiles: vec![CodecProfile {
+                type_: Some(DlnaProfileType::Video),
+                codec: Some(vec!["hevc".to_string()]),
+                conditions: vec![ProfileCondition {
+                    condition: Some(condition.to_string()),
+                    property: Some("VideoCodecTag".to_string()),
+                    value: Some(value.to_string()),
+                    is_required: Some(true),
+                }],
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// An HEVC source whose sample entry is `tag` (`None` = the container
+    /// reports no fourcc, as MKV does).
+    fn hevc_source(tag: Option<&str>) -> MediaSourceInfo {
+        MediaSourceInfo {
+            container: Some(VideoContainer::Mp4),
+            media_streams: vec![MediaStream {
+                codec: Some("hevc".to_string()),
+                codec_tag: tag.map(str::to_string),
+                type_: Some(MediaStreamType::Video),
+                index: 0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn hevc_copy_tag_is_hvc1_for_safaris_declared_condition() {
+        // Verbatim from Jellyfin's own Safari test profile
+        // (tests/Jellyfin.Model.Tests/Test Data/DeviceProfile-SafariNext.json).
+        // Declared constraints outrank the source: even an hev1 source has to
+        // be retagged for a client that only accepts hvc1.
+        let profile = hevc_tag_condition("EqualsAny", "hvc1|dvh1");
+        assert_eq!(profile.hevc_copy_tag(&hevc_source(Some("hev1"))), "hvc1");
+    }
+
+    #[test]
+    fn hevc_copy_tag_honours_not_equals_conditions() {
+        // NotEquals hev1 means the client refuses hev1 -> must send hvc1.
+        let profile = hevc_tag_condition("NotEquals", "hev1");
+        assert_eq!(profile.hevc_copy_tag(&hevc_source(Some("hev1"))), "hvc1");
+    }
+
+    #[test]
+    fn hevc_copy_tag_is_hev1_when_the_client_rules_hvc1_out() {
+        let profile = hevc_tag_condition("Equals", "hev1");
+        assert_eq!(profile.hevc_copy_tag(&hevc_source(Some("hvc1"))), "hev1");
+    }
+
+    #[test]
+    fn hevc_copy_tag_follows_the_source_when_the_client_is_silent() {
+        // No VideoCodecTag condition anywhere: an hev1 source keeps hev1,
+        // because its parameter sets are in-band and hvc1 would be a lie.
+        let silent = DeviceProfile {
+            codec_profiles: vec![CodecProfile {
+                type_: Some(DlnaProfileType::Video),
+                codec: Some(vec!["hevc".to_string()]),
+                conditions: vec![ProfileCondition {
+                    condition: Some("EqualsAny".to_string()),
+                    property: Some("VideoProfile".to_string()),
+                    value: Some("main|main 10".to_string()),
+                    is_required: Some(false),
+                }],
+            }],
+            ..Default::default()
+        };
+        assert_eq!(silent.hevc_copy_tag(&hevc_source(Some("hev1"))), "hev1");
+    }
+
+    #[test]
+    fn hevc_copy_tag_stays_hvc1_for_ordinary_sources() {
+        // The regression guard: a silent client on anything that isn't
+        // positively hev1 keeps today's behaviour. An absent fourcc is not
+        // evidence — MKV reports none yet keeps parameter sets out-of-band in
+        // CodecPrivate.
+        for tag in [None, Some("hvc1")] {
+            assert_eq!(
+                DeviceProfile::default().hevc_copy_tag(&hevc_source(tag)),
+                "hvc1",
+                "tag={tag:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn hevc_copy_tag_ignores_tag_conditions_scoped_to_other_codecs() {
+        let profile = DeviceProfile {
+            codec_profiles: vec![CodecProfile {
+                type_: Some(DlnaProfileType::Video),
+                codec: Some(vec!["h264".to_string()]),
+                conditions: vec![ProfileCondition {
+                    condition: Some("EqualsAny".to_string()),
+                    property: Some("VideoCodecTag".to_string()),
+                    value: Some("avc1".to_string()),
+                    is_required: Some(true),
+                }],
+            }],
+            ..Default::default()
+        };
+        // The h264 constraint must not decide anything, leaving the source to.
+        assert_eq!(profile.hevc_copy_tag(&hevc_source(Some("hev1"))), "hev1");
+        assert_eq!(profile.hevc_copy_tag(&hevc_source(Some("hvc1"))), "hvc1");
+    }
+
+    #[test]
+    fn hevc_copy_tag_is_hvc1_when_the_source_has_no_video_stream() {
+        let empty = MediaSourceInfo {
+            container: Some(VideoContainer::Mp4),
+            ..Default::default()
+        };
+        assert_eq!(DeviceProfile::default().hevc_copy_tag(&empty), "hvc1");
     }
 }
