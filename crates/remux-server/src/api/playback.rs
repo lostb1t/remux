@@ -1082,6 +1082,7 @@ async fn videos_stream_inner(
     );
     if is_copy_video
         && source_is_mkv
+        && !matches!(&descriptor, crate::stream::StreamDescriptor::Rtsp { .. })
         && can_serve_mkv_source_directly(
             &container,
             requested_audio_codec.as_deref(),
@@ -1341,6 +1342,78 @@ mod tests {
             false
         ));
         assert!(!super::can_serve_mkv_source_directly("mp4", None, false));
+    }
+
+    #[tokio::test]
+    async fn bare_mkv_stream_preserves_range_requests() {
+        use crate::{
+            api::{MediaSourceInfo, MediaStream, MediaStreamType},
+            db, stream,
+        };
+
+        let (server, guard, token) = authenticated_server().await;
+        let fixture = std::env::temp_dir()
+            .join(format!("remux-range-{}.mkv", uuid::Uuid::new_v4()));
+        tokio::fs::write(&fixture, b"0123456789abcdef")
+            .await
+            .unwrap();
+
+        let now = chrono::Utc::now().naive_utc();
+        let mut media = db::Media {
+            title: "MKV range fixture".to_string(),
+            kind: db::MediaKind::Stream,
+            stream_info: Some(stream::StreamInfo {
+                descriptor: stream::StreamDescriptor::Local(fixture.clone()),
+                ..Default::default()
+            }),
+            probe_data: Some(MediaSourceInfo {
+                container: Some(VideoContainer::Mkv),
+                media_streams: vec![
+                    MediaStream {
+                        codec: Some("h264".to_string()),
+                        type_: Some(MediaStreamType::Video),
+                        index: 0,
+                        ..Default::default()
+                    },
+                    MediaStream {
+                        codec: Some("aac".to_string()),
+                        type_: Some(MediaStreamType::Audio),
+                        index: 1,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        media
+            .save(
+                &guard
+                    .0
+                    .db,
+            )
+            .await
+            .unwrap();
+
+        let auth = auth_header_with_token(&token);
+        let response = server
+            .get(&format!("/videos/{}/stream.mkv", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_header(http::header::RANGE, HeaderValue::from_static("bytes=4-7"))
+            .await;
+
+        response.assert_status(StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.header("content-range"), "bytes 4-7/16");
+        assert_eq!(response.header("accept-ranges"), "bytes");
+
+        tokio::fs::remove_file(fixture)
+            .await
+            .unwrap();
     }
 
     #[test]
