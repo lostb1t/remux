@@ -1491,7 +1491,7 @@ async fn scan_addon(
                     };
 
                     let existing_imdb =
-                        fetch_existing_imdb(ctx, addon.id, &path).await?;
+                        fetch_existing_imdb(ctx, addon.id, &stored_path).await?;
                     let imdb_id = if let Some(id) = existing_imdb {
                         Some(id)
                     } else if !jellyfin_ids.is_empty() {
@@ -1543,7 +1543,7 @@ async fn scan_addon(
                         .to_string();
 
                     let existing_imdb =
-                        fetch_existing_imdb(ctx, addon.id, &path).await?;
+                        fetch_existing_imdb(ctx, addon.id, &stored_path).await?;
                     let imdb_id = if let Some(id) = existing_imdb {
                         Some(id)
                     } else if !jellyfin_ids.is_empty() {
@@ -1594,7 +1594,7 @@ async fn scan_addon(
                 .naive_utc()
                 .to_string();
 
-            sqlx::query(
+            let insert_result = sqlx::query(
                 "INSERT INTO opendal_files \
                  (id, addon_id, media_kind, path, name, title, imdb_id, season, episode, track_number, year, size, scanned_at) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
@@ -1621,9 +1621,30 @@ async fn scan_addon(
             .bind(size)
             .bind(&now)
             .execute(&ctx.db)
-            .await?;
+            .await;
 
-            upserted += 1;
+            // A UNIQUE(addon_id, path) clash here means some other row (a different
+            // id) already holds this path — typically a stale entry from a file that
+            // has since been renamed/regenerated (e.g. a `.strm` whose URL rotated).
+            // `id` and `path` come from different sources for `.strm` entries (fs path
+            // vs. the URL read from the file), so `ON CONFLICT(id)` can't reconcile it.
+            // Skip only that specific violation instead of aborting the whole scan via
+            // `?` — bailing out here would also skip `prune_stale_paths` below, so the
+            // stale row would never get cleaned up and every future scan would hit the
+            // same clash again. Any other error (connection loss, disk I/O, etc.) is
+            // still propagated — swallowing those could make the scan report success
+            // while `prune_stale_paths` deletes rows based on an incomplete `seen_ids`.
+            match insert_result {
+                Ok(_) => upserted += 1,
+                Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+                    warn!(
+                        path = %stored_path,
+                        error = %e,
+                        "opendal: skipping file due to UNIQUE(addon_id, path) collision"
+                    );
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
     }
 
@@ -3615,6 +3636,160 @@ mod tests {
             other => panic!("expected Local descriptor, got {other:?}"),
         };
         assert_eq!(path, url, "stream path must be the URL from the .strm file");
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression: two `.strm` files that resolve to the same URL must not
+    // abort the whole scan with a UNIQUE(addon_id, path) error.
+    //
+    // `id` is derived from the .strm file's own filesystem path, while the
+    // stored `path` is the URL read from inside the file — two different
+    // files can therefore produce different ids but an identical path. That
+    // used to hit a plain INSERT (ON CONFLICT(id) doesn't fire, since the
+    // ids differ) which violated the UNIQUE(addon_id, path) index and
+    // propagated an error out of the whole scan via `?`, which in turn meant
+    // `prune_stale_paths` never ran — a single collision permanently wedged
+    // every future scan of the addon on the same row.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn opendal_strm_url_collision_does_not_abort_scan() {
+        let url = "https://example.com/videos/shared.mkv";
+        let dir = tempfile::tempdir().unwrap();
+        write_files(
+            dir.path(),
+            &[
+                ("[imdbid-tt0133093] The Matrix (1999).strm", url.as_bytes()),
+                ("[imdbid-tt0106977] Heat (1995).strm", url.as_bytes()),
+            ],
+        );
+
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let (addon, db_addon) = make_local_addon(ctx, dir.path(), "movie").await;
+
+        // Must complete without error even though the two files collide on path.
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+
+        // The UNIQUE(addon_id, path) index means only one of the two rows can
+        // hold that path — the other is skipped, not silently duplicated.
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM opendal_files WHERE addon_id = ?")
+                .bind(db_addon.id)
+                .fetch_one(&ctx.db)
+                .await
+                .unwrap();
+        assert_eq!(
+            count, 1,
+            "exactly one of the two colliding .strm files should be indexed"
+        );
+
+        // Running it again must still succeed (no permanent deadlock).
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression: a stale row from a file that has since been renamed (e.g.
+    // VOD2MLIB regenerating a `.strm` under a new filename for the same
+    // proxy URL) must eventually be cleared and the current file indexed —
+    // not just "scan doesn't crash", but genuine recovery.
+    //
+    // A single rescan right after the rename still collides (the stale row
+    // hasn't been pruned yet), so the new file's insert is skipped that
+    // pass; the collision-skip fix lets the scan reach `prune_stale_paths`
+    // regardless, which removes the stale row since its id is no longer
+    // seen. The following rescan then has a clear path and indexes the
+    // current file, preserving its IMDb id throughout.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn opendal_strm_rename_recovers_from_stale_row_collision() {
+        let url = "https://example.com/videos/shared.mkv";
+        let dir = tempfile::tempdir().unwrap();
+        let old_name = "[imdbid-tt0133093] The Matrix (1999).strm";
+        write_files(dir.path(), &[(old_name, url.as_bytes())]);
+
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let (addon, db_addon) = make_local_addon(ctx, dir.path(), "movie").await;
+
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+
+        let stale_id: Uuid = sqlx::query_scalar(
+            "SELECT id FROM opendal_files WHERE addon_id = ? AND path = ?",
+        )
+        .bind(db_addon.id)
+        .bind(url)
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap();
+
+        // Simulate VOD2MLIB regenerating the `.strm` under a new filename
+        // that still resolves to the same proxy URL — a different fs path
+        // (and therefore a different derived id) colliding on `path`.
+        std::fs::remove_file(
+            dir.path()
+                .join(old_name),
+        )
+        .unwrap();
+        let new_name = "[imdbid-tt0133093] The Matrix (1999) [2160p].strm";
+        write_files(dir.path(), &[(new_name, url.as_bytes())]);
+
+        // First rescan: the stale row still occupies `path`, so the new
+        // file's insert collides and is skipped — but must not abort, and
+        // must still reach prune_stale_paths to clear the stale row out.
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+
+        let after_first_rescan: Vec<Uuid> =
+            sqlx::query_scalar("SELECT id FROM opendal_files WHERE addon_id = ?")
+                .bind(db_addon.id)
+                .fetch_all(&ctx.db)
+                .await
+                .unwrap();
+        assert!(
+            !after_first_rescan.contains(&stale_id),
+            "stale row must be pruned even though this pass's insert collided"
+        );
+
+        // Second rescan: no more collision, the current file is indexed.
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+
+        let (current_id, imdb_id, name): (Uuid, Option<String>, String) = sqlx::query_as(
+            "SELECT id, imdb_id, name FROM opendal_files WHERE addon_id = ? AND path = ?",
+        )
+        .bind(db_addon.id)
+        .bind(url)
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap();
+
+        assert_ne!(
+            current_id, stale_id,
+            "surviving row must be the current file, not the stale one"
+        );
+        assert_eq!(name, new_name);
+        assert_eq!(imdb_id.as_deref(), Some("tt0133093"));
     }
 
     // -----------------------------------------------------------------------
