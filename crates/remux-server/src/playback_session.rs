@@ -446,24 +446,45 @@ impl PlaybackSessionManager {
                     .map(|s| s.position_ticks)
             });
 
-        let mut played = false;
-        if let Some(item_id) = item_id {
-            if let Ok(Some(media)) = db::Media::get_by_id(db, &item_id).await {
-                played = db::UserMediaState::update_playback(
-                    db,
-                    user,
-                    &media,
-                    final_ticks.unwrap_or(0),
-                    None, // don't overwrite stream selections on stop
-                    None,
-                    media.runtime, // Some(runtime) triggers watched-threshold check
-                )
-                .await?;
-            }
-        }
+        let played = Self::persist_stop(db, user, item_id, final_ticks).await?;
 
         debug!(play_session_id = psid, "Playback stopped");
         Ok(played)
+    }
+
+    /// Persist the final position of a stop report (with the 90 % watched-mark
+    /// check) for `item_id`, if it names a known media row.
+    ///
+    /// Shared by session-backed stops and stop reports that arrive without any
+    /// play session: some clients never call
+    /// `/sessions/playing` or `/sessions/playing/progress` and their only
+    /// report is the stop, carrying the item id and position but no
+    /// `PlaySessionId`. Jellyfin persists that report regardless of session
+    /// state, so dropping it would lose Continue Watching for those clients.
+    ///
+    /// Returns whether this stop crossed the watched threshold.
+    pub async fn persist_stop(
+        db: &sqlx::SqlitePool,
+        user: &db::User,
+        item_id: Option<uuid::Uuid>,
+        final_ticks: Option<i64>,
+    ) -> anyhow::Result<bool> {
+        let Some(item_id) = item_id else {
+            return Ok(false);
+        };
+        let Ok(Some(media)) = db::Media::get_by_id(db, &item_id).await else {
+            return Ok(false);
+        };
+        db::UserMediaState::update_playback(
+            db,
+            user,
+            &media,
+            final_ticks.unwrap_or(0),
+            None, // don't overwrite stream selections on stop
+            None,
+            media.runtime, // Some(runtime) triggers watched-threshold check
+        )
+        .await
     }
 
     /// Insert (or replace) a playback session, preserving any transcode that was
