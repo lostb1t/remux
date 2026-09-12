@@ -1978,6 +1978,7 @@ pub enum MediaError {
 // doesn't coerce across storage classes in a bare `=`), so integer-valued
 // fields must bind as an integer, not a stringified one. Used by
 // `Media::find_by_external_ids` and `Media::resolve_ambiguous_external_id`.
+#[derive(Clone, PartialEq)]
 enum IdValue {
     Text(String),
     Int(i64),
@@ -2773,11 +2774,113 @@ impl Media {
     /// imdb ▸ custom_stremio_id ▸ tmdb ▸ tvdb ▸ kitsu, or deezer ▸ youtube_id
     /// for music) and the conflict is logged — this is intentionally not
     /// resolved by merging the rows.
-    pub async fn find_by_external_ids(
+    /// Point remote results (search, catalog) that already exist locally at
+    /// their stored row: same kind, matching external id.
+    ///
+    /// Remote results are minted with a fresh id per request and live in the
+    /// in-memory store for an hour. A client that keeps such an id, for
+    /// next-episode autoplay or a continue-watching entry, is left with a
+    /// dead one after that, or after a restart, and gets 404 on
+    /// `/shows/{id}/seasons` while the stored series is fine. Only results
+    /// with a matching row are rewritten; unknown items keep their id.
+    pub async fn adopt_existing_ids(db: &SqlitePool, items: &mut [Media]) {
+        let mut kinds: Vec<MediaKind> = Vec::new();
+        for m in items.iter() {
+            if !m
+                .external_ids
+                .is_empty()
+                && !kinds.contains(&m.kind)
+            {
+                kinds.push(
+                    m.kind
+                        .clone(),
+                );
+            }
+        }
+        for kind in kinds {
+            let mut wanted: Vec<(&'static str, IdValue)> = Vec::new();
+            for m in items
+                .iter()
+                .filter(|m| m.kind == kind)
+            {
+                for field in Self::external_id_fields(&kind, &m.external_ids) {
+                    if !wanted.contains(&field) {
+                        wanted.push(field);
+                    }
+                }
+            }
+            let rows = Self::rows_with_external_ids(db, &kind, &wanted).await;
+            if rows.is_empty() {
+                continue;
+            }
+            for m in items
+                .iter_mut()
+                .filter(|m| m.kind == kind)
+            {
+                let fields = Self::external_id_fields(&kind, &m.external_ids);
+                let hit = fields
+                    .iter()
+                    .find_map(|field| {
+                        rows.iter()
+                            .find(|(_, row_fields)| row_fields.contains(field))
+                            .map(|(id, _)| *id)
+                    });
+                if let Some(id) = hit {
+                    m.id = id;
+                }
+            }
+        }
+    }
+
+    /// Rows of `kind` carrying any of `wanted`, each with its own id fields so
+    /// callers can apply the priority order in memory. One query per chunk.
+    async fn rows_with_external_ids(
         db: &SqlitePool,
         kind: &MediaKind,
+        wanted: &[(&'static str, IdValue)],
+    ) -> Vec<(Uuid, Vec<(&'static str, IdValue)>)> {
+        let mut out = Vec::new();
+        for chunk in wanted.chunks(SQLITE_VAR_LIMIT - 1) {
+            let mut qb = sqlx::QueryBuilder::new(
+                "SELECT id, external_ids FROM media WHERE kind = ",
+            );
+            qb.push_bind(kind.to_string());
+            qb.push(" AND (");
+            for (i, (path, value)) in chunk
+                .iter()
+                .enumerate()
+            {
+                if i > 0 {
+                    qb.push(" OR ");
+                }
+                qb.push("json_extract(external_ids, '")
+                    .push(path)
+                    .push("') = ");
+                match value {
+                    IdValue::Text(s) => qb.push_bind(s.clone()),
+                    IdValue::Int(n) => qb.push_bind(*n),
+                };
+            }
+            qb.push(")");
+            let rows: Vec<(Uuid, sqlx::types::Json<ExternalIds>)> = qb
+                .build_query_as()
+                .fetch_all(db)
+                .await
+                .unwrap_or_default();
+            out.extend(
+                rows.into_iter()
+                    .map(|(id, ext)| (id, Self::external_id_fields(kind, &ext.0))),
+            );
+        }
+        out
+    }
+
+    /// `(json path, bound value)` pairs identifying `ext` for `kind`, in
+    /// priority order.
+    fn external_id_fields(
+        kind: &MediaKind,
         ext: &ExternalIds,
-    ) -> Option<Uuid> {
+    ) -> Vec<(&'static str, IdValue)> {
         // (json path, bound value) in priority order — mirrors stable_media_uuid
         // for Movie/Series/TvProgram; Artist/Album/Track have no priority
         // conflict since each carries at most one provider's id in practice.
@@ -2824,8 +2927,17 @@ impl Media {
             // Season/Episode identity is positional (parent series + index),
             // not a single external id — never deduped this way, their ids
             // are minted deterministically via `season_id`/`episode_id`.
-            _ => return None,
+            _ => {}
         }
+        id_fields
+    }
+
+    pub async fn find_by_external_ids(
+        db: &SqlitePool,
+        kind: &MediaKind,
+        ext: &ExternalIds,
+    ) -> Option<Uuid> {
+        let id_fields = Self::external_id_fields(kind, ext);
         if id_fields.is_empty() {
             return None;
         }
@@ -7053,6 +7165,18 @@ impl TryFrom<sdks::stremio::Meta> for Media {
         };
 
         let mut media = media;
+        // A remote result carries the same identity as the row it becomes, so
+        // give it that row's id up front: the first search for a title and
+        // every one after it agree, before anything is stored, and a client
+        // that keeps the id keeps a valid one. Random only when nothing
+        // identifies the item.
+        let raw = media.media_id_raw();
+        if raw
+            .canonical()
+            .is_some()
+        {
+            media.id = Uuid::from(&raw);
+        }
         if let Some(url) = meta
             .poster
             .or(meta.thumbnail)

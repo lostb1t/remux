@@ -2793,7 +2793,8 @@ impl AddonService {
                 .search(kind, query, limit, ctx)
                 .await
             {
-                Ok(Some(results)) => {
+                Ok(Some(mut results)) => {
+                    db::Media::adopt_existing_ids(&ctx.db, &mut results).await;
                     for m in &results {
                         ctx.store
                             .save(
@@ -4187,6 +4188,93 @@ mod tests {
         assert!(
             !called.load(std::sync::atomic::Ordering::SeqCst),
             "stream-only addon's get_children should never be called"
+        );
+    }
+
+    /// Remote search mints a fresh id per request. A result that already
+    /// exists locally must carry the stored row's id, or a client that keeps
+    /// the id (next episode, continue watching) gets 404 on it once the
+    /// store entry is gone. Unknown items keep their own id.
+    /// A remote result gets the id its stored row would have, so the first
+    /// search for a title and every search after it agree before anything
+    /// is stored.
+    #[test]
+    fn remote_results_get_the_stable_id() {
+        let meta = |id: &str| {
+            serde_json::from_value::<remux_sdks::stremio::Meta>(serde_json::json!({
+                "id": id, "type": "movie", "name": "Heat"
+            }))
+            .unwrap()
+        };
+        let a = db::Media::try_from(meta("tt0113277")).unwrap();
+        let b = db::Media::try_from(meta("tt0113277")).unwrap();
+        assert_eq!(a.id, b.id, "same identity, same id");
+        assert_eq!(
+            a.id,
+            Uuid::from(&a.media_id_raw()),
+            "the id a stored row gets"
+        );
+        let other = db::Media::try_from(meta("tt0000001")).unwrap();
+        assert_ne!(a.id, other.id);
+    }
+
+    #[tokio::test]
+    async fn search_results_adopt_existing_row_ids() {
+        use crate::integration_test::{authenticated_server, seed_movie};
+        let (_server, guard, _token) = authenticated_server().await;
+        let ctx = &guard.0;
+        let stored = seed_movie(ctx).await;
+        let mut results = vec![
+            db::Media {
+                id: Uuid::new_v4(),
+                title: stored
+                    .title
+                    .clone(),
+                kind: db::MediaKind::Movie,
+                external_ids: db::ExternalIds {
+                    imdb: stored
+                        .external_ids
+                        .imdb
+                        .clone(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            db::Media {
+                id: Uuid::new_v4(),
+                title: "Unknown".into(),
+                kind: db::MediaKind::Movie,
+                external_ids: db::ExternalIds {
+                    imdb: db::NonEmptyString::try_new("tt0000001".to_string()).ok(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        ];
+        let unknown_id = results[1].id;
+        results.push(db::Media {
+            id: Uuid::new_v4(),
+            title: stored
+                .title
+                .clone(),
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                tmdb: stored
+                    .external_ids
+                    .tmdb,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        db::Media::adopt_existing_ids(&ctx.db, &mut results).await;
+        assert_eq!(
+            results[0].id, stored.id,
+            "known item takes the stored row's id"
+        );
+        assert_eq!(results[1].id, unknown_id, "unknown item keeps its own id");
+        assert_eq!(
+            results[2].id, stored.id,
+            "a match on a lower-priority id adopts the stored row's id too"
         );
     }
 }
