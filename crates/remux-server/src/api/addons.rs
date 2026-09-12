@@ -383,6 +383,15 @@ pub async fn update_addon(
     Path(id): Path<Uuid>,
     Json(payload): Json<UpdateAddonRequest>,
 ) -> Result<Json<AddonDto>> {
+    let explicit_resources = payload
+        .resources
+        .is_some();
+    let explicit_types = payload
+        .types
+        .is_some();
+    let config_changed = payload
+        .config
+        .is_some();
     let mut addon = Addon::get(
         &state
             .ctx
@@ -470,7 +479,7 @@ pub async fn update_addon(
             .context_bad_request("Invalid addon configuration")?
             .into();
     }
-    preset
+    let caps = preset
         .from_cfg(
             addon.id,
             addon
@@ -482,6 +491,58 @@ pub async fn update_addon(
                 .config,
         )
         .context_bad_request("Invalid addon configuration")?;
+
+    // A config change can alter what an addon serves (e.g. an opendal addon
+    // switching `media_kind`): the stored `types`/`resources` snapshot must
+    // follow, or `supports_type()` intersects the stale snapshot with the
+    // live capabilities down to nothing and the addon silently drops out of
+    // catalog import. Refresh the snapshot from the new capabilities unless
+    // this request set those fields explicitly. System addons keep theirs.
+    if config_changed && !addon.system {
+        let metadata = preset.metadata();
+        let avail_info = if let Some(k) = caps
+            .kind
+            .as_deref()
+        {
+            k.available_info()
+                .await
+                .context_not_reachable()?
+        } else {
+            None
+        };
+        if !explicit_resources {
+            addon.resources = match &avail_info {
+                Some((refs, _)) => refs
+                    .iter()
+                    .map(|r| {
+                        r.name
+                            .clone()
+                    })
+                    .collect(),
+                None => metadata
+                    .supported_resources
+                    .iter()
+                    .map(|r| {
+                        r.name
+                            .clone()
+                    })
+                    .collect(),
+            };
+        }
+        if !explicit_types {
+            addon.types = match avail_info {
+                Some((_, t)) => t
+                    .into_iter()
+                    .filter_map(|t| DbMediaKind::try_from(t).ok())
+                    .collect(),
+                None => metadata
+                    .supported_types
+                    .into_iter()
+                    .map(DbMediaKind::from)
+                    .collect(),
+            };
+        }
+    }
 
     addon
         .update(
@@ -898,5 +959,63 @@ mod test {
             }))
             .await;
         resp.assert_status(http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn update_addon_config_refreshes_capability_snapshot() {
+        let (server, _ctx, token) = authenticated_server().await;
+        let (h, v) = auth(&token);
+
+        let dir = std::env::temp_dir()
+            .to_string_lossy()
+            .to_string();
+
+        let created: serde_json::Value = server
+            .post("/addons")
+            .add_header(h.clone(), v.clone())
+            .json(&json!({
+                "preset": {
+                    "kind": "opendal-local",
+                    "config": { "paths": [dir.clone()], "media_kind": "movie" }
+                },
+                "name": "Local files",
+            }))
+            .await
+            .json();
+        assert!(
+            created["types"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t == "movie"),
+            "fresh movie addon should snapshot movie types, got {}",
+            created["types"]
+        );
+
+        // Changing only the config must refresh the derived snapshot: a
+        // stale `types` list makes supports_type() intersect to nothing
+        // and the addon silently drops out of catalog import.
+        let updated: serde_json::Value = server
+            .post(&format!(
+                "/addons/{}",
+                created["id"]
+                    .as_str()
+                    .unwrap()
+            ))
+            .add_header(h, v)
+            .json(&json!({
+                "config": { "paths": [dir], "media_kind": "episode" }
+            }))
+            .await
+            .json();
+        assert!(
+            updated["types"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t == "series"),
+            "episode-kind addon should snapshot series types, got {}",
+            updated["types"]
+        );
     }
 }
