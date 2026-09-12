@@ -1204,4 +1204,79 @@ mod tests {
         // Unknown session: nothing.
         assert_eq!(StreamService::probe_fallback_for(ctx, "psid-unknown"), None);
     }
+
+    /// With stream groups on, the initial PlaybackInfo lists one representative
+    /// stream per group and is not a specific request, so a fallback is
+    /// remembered exactly as without groups. A request for a group by its UUID
+    /// is specific: nothing is remembered and the stream request keeps
+    /// resolving the group itself.
+    #[tokio::test]
+    async fn probe_fallback_with_stream_groups() {
+        use crate::integration_test::{
+            authenticated_server, insert_test_source, seed_movie,
+        };
+        let (_server, guard, _token) = authenticated_server().await;
+        let ctx = &guard.0;
+        let owner = seed_movie(ctx).await;
+        let group_a = uuid::Uuid::new_v4();
+        let group_b = uuid::Uuid::new_v4();
+        let mut dead = insert_test_source(ctx).await;
+        let mut alive = insert_test_source(ctx).await;
+        dead.group_id = Some(group_a);
+        alive.group_id = Some(group_b);
+        let probed = |specific_requested: bool| ProbedStreams {
+            results: vec![ProbeResult {
+                source: api::MediaSourceInfo::from(dead.clone()),
+                stream: dead.clone(),
+                effective_stream: alive.clone(),
+            }],
+            specific_requested,
+        };
+
+        // Initial load: group representatives, no group context.
+        let mut service = StreamService::new(StreamServiceConfig {
+            ctx: ctx.clone(),
+            item_id: owner.id,
+            requested_id: None,
+            show_ungrouped: false,
+            stream_filter: None,
+            user_id: None,
+        });
+        service.streams = vec![dead.clone(), alive.clone()];
+        let selection = service.select_streams();
+        assert!(!selection.specific_requested);
+        service
+            .save_probe_fallback("psid-grouped", &probed(selection.specific_requested));
+        assert_eq!(
+            StreamService::probe_fallback_for(ctx, "psid-grouped"),
+            Some(alive.id)
+        );
+
+        // Group A requested by its UUID.
+        let mut service = StreamService::new(StreamServiceConfig {
+            ctx: ctx.clone(),
+            item_id: owner.id,
+            requested_id: Some(group_a),
+            show_ungrouped: false,
+            stream_filter: None,
+            user_id: None,
+        });
+        service.group = Some((
+            group_a,
+            "Group A".to_string(),
+            vec![dead.clone(), alive.clone()],
+        ));
+        service.stream = Some(dead.clone());
+        service.streams = vec![dead.clone(), alive.clone()];
+        let selection = service.select_streams();
+        assert!(selection.specific_requested);
+        service.save_probe_fallback(
+            "psid-group-request",
+            &probed(selection.specific_requested),
+        );
+        assert_eq!(
+            StreamService::probe_fallback_for(ctx, "psid-group-request"),
+            None
+        );
+    }
 }
