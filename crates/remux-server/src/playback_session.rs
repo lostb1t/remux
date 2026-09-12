@@ -59,12 +59,17 @@ impl PlaybackSessionManager {
     /// source, builds and inserts the `PlaybackSession`, and emits the playback-
     /// start log line (skipped for transcode — the HLS handler logs that after
     /// it has codec/bitrate/reason details).
+    /// Returns any sessions this start silently evicted (a stale session for
+    /// the same device) — their transcodes are already killed by the time
+    /// this returns, but the caller still needs them to release whatever
+    /// depended on that transcode's input (e.g. an owned torrent), which
+    /// this method has no visibility into.
     pub async fn start(
         &self,
         db: &sqlx::SqlitePool,
         auth_session: &auth::AuthSession,
         data: &PlaybackInfo,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Vec<PlaybackSession>> {
         let play_session_id = data
             .play_session_id
             .clone()
@@ -106,7 +111,7 @@ impl PlaybackSessionManager {
                 client = %auth_session.device.app_name,
                 "PlaybackStart missing item_id, skipping session creation"
             );
-            return Ok(());
+            return Ok(Vec::new());
         }
 
         // If the client selected a StreamGroup source, record its group UUID.
@@ -179,7 +184,9 @@ impl PlaybackSessionManager {
             item_kind,
         };
 
-        self.insert(ps);
+        let evicted = self
+            .insert(ps)
+            .await;
 
         // For transcode sessions, master_hls_video fires the info log once it
         // has full codec/bitrate/reasons info. For direct play/stream, log here.
@@ -241,7 +248,7 @@ impl PlaybackSessionManager {
             );
         }
 
-        Ok(())
+        Ok(evicted)
     }
 
     /// Handle a `POST /sessions/playing/progress` report.
@@ -490,8 +497,11 @@ impl PlaybackSessionManager {
     /// Insert (or replace) a playback session, preserving any transcode that was
     /// pre-attached before `report_playback_start` fired.
     /// Removes stale sessions for the same device so `get_sessions` always
-    /// finds the most recent playback.
-    pub fn insert(&self, mut session: PlaybackSession) {
+    /// finds the most recent playback — killing their transcode (if any) and
+    /// returning them so the caller can release whatever the transcode's
+    /// input source was holding onto (e.g. a torrent), which this method has
+    /// no way to know about itself.
+    pub async fn insert(&self, mut session: PlaybackSession) -> Vec<PlaybackSession> {
         if session
             .transcode
             .is_none()
@@ -507,6 +517,7 @@ impl PlaybackSessionManager {
             }
         }
         // Remove any previous session for this device (different play_session_id).
+        let mut evicted = Vec::new();
         if !session
             .device_id
             .is_empty()
@@ -526,8 +537,12 @@ impl PlaybackSessionManager {
                 })
                 .collect();
             for id in stale {
-                self.sessions
-                    .remove(&id);
+                if let Some((_, stale_session)) = self
+                    .sessions
+                    .remove(&id)
+                {
+                    evicted.push(stale_session);
+                }
             }
         }
         self.sessions
@@ -537,6 +552,15 @@ impl PlaybackSessionManager {
                     .clone(),
                 session,
             );
+        for stale_session in &evicted {
+            if let Some(ts) = stale_session
+                .transcode
+                .clone()
+            {
+                kill_transcode(ts).await;
+            }
+        }
+        evicted
     }
 
     /// Return a clone of the session, if it exists.
@@ -835,4 +859,133 @@ async fn kill_transcode(ts: Arc<tokio::sync::RwLock<TranscodeSession>>) {
         notification.await;
     }
     let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::playback::session::TranscodeState;
+
+    fn minimal_transcode_session(input_url: &str) -> TranscodeSession {
+        let (state_tx, _) = tokio::sync::watch::channel(TranscodeState::Running);
+        TranscodeSession {
+            id: "ts".into(),
+            item_id: Uuid::nil(),
+            media_source_id: Uuid::nil(),
+            output_dir: std::env::temp_dir().join("remux-test-nonexistent"),
+            input_url: input_url.to_string(),
+            state: TranscodeState::Running,
+            state_tx: Arc::new(state_tx),
+            created_at: std::time::Instant::now(),
+            video_codec: String::new(),
+            audio_codec: String::new(),
+            audio_stream_index: None,
+            subtitle_stream_index: None,
+            burn_subtitle: false,
+            segment_length: 6,
+            transcode_reasons: Default::default(),
+            kill_tx: None,
+            wait_done: Arc::new(tokio::sync::Notify::new()),
+            last_segment_index: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            start_time_secs: 0,
+            playback_offset_secs: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            runtime_ticks: 0,
+            is_live: false,
+            source_video_codec: None,
+            source_audio_codec: None,
+            source_video_profile: None,
+            source_video_level: None,
+            source_video_range_type: None,
+            source_video_width: None,
+            source_video_height: None,
+            source_frame_rate: None,
+            video_bitrate: None,
+            hardware_acceleration_type: None,
+        }
+    }
+
+    fn minimal_session(
+        play_session_id: &str,
+        device_id: &str,
+        input_url: Option<&str>,
+    ) -> PlaybackSession {
+        PlaybackSession {
+            play_session_id: play_session_id.to_string(),
+            user_id: Uuid::nil(),
+            item_id: Uuid::nil(),
+            media_source_id: None,
+            device_id: device_id.to_string(),
+            client_name: String::new(),
+            position_ticks: 0,
+            can_seek: false,
+            is_paused: false,
+            last_paused_at: None,
+            is_muted: false,
+            volume_level: None,
+            audio_stream_index: None,
+            subtitle_stream_index: None,
+            play_method: None,
+            now_playing_queue: None,
+            playlist_item_id: None,
+            started_at: Utc::now(),
+            last_activity: Utc::now(),
+            transcode: input_url.map(|url| {
+                Arc::new(tokio::sync::RwLock::new(minimal_transcode_session(url)))
+            }),
+            group_id: None,
+            item_kind: None,
+        }
+    }
+
+    // Regression test: a new session on the same device used to silently
+    // drop the previous one via a raw DashMap remove, never killing its
+    // transcode or telling anyone what it was streaming from — the torrent
+    // (if any) backing it just kept running until the next daily sweep.
+    #[tokio::test]
+    async fn insert_returns_and_kills_evicted_same_device_session() {
+        let dir = std::env::temp_dir().join(format!("remux-test-{}", Uuid::new_v4()));
+        let mgr = PlaybackSessionManager::new(&dir);
+
+        let first = minimal_session(
+            "psid-1",
+            "device-1",
+            Some("http://127.0.0.1:3000/torrents/7/stream/0"),
+        );
+        let evicted = mgr
+            .insert(first)
+            .await;
+        assert!(
+            evicted.is_empty(),
+            "first insert for a device should never evict anything"
+        );
+
+        let second = minimal_session("psid-2", "device-1", None);
+        let evicted = mgr
+            .insert(second)
+            .await;
+
+        assert_eq!(evicted.len(), 1);
+        assert_eq!(evicted[0].play_session_id, "psid-1");
+        let ts = evicted[0]
+            .transcode
+            .as_ref()
+            .expect("evicted session should still carry its transcode");
+        assert_eq!(
+            ts.read()
+                .await
+                .input_url,
+            "http://127.0.0.1:3000/torrents/7/stream/0"
+        );
+        // The evicted session's slot is gone; only the new one remains.
+        assert!(
+            mgr.get("psid-1")
+                .is_none()
+        );
+        assert!(
+            mgr.get("psid-2")
+                .is_some()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

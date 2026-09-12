@@ -359,6 +359,8 @@ pub async fn init_app(
         .register(services::media_tracker::MediaTrackerSubscriber { ctx: ctx.clone() });
     ctx.signals
         .register(api::webhooks::WebhookSubscriber { ctx: ctx.clone() });
+    ctx.signals
+        .register(torrent::TorrentCleanupSubscriber { ctx: ctx.clone() });
 
     // Sync intro items at startup (best-effort; errors are logged not fatal).
     if let Err(e) = intro::sync_intros(&ctx).await {
