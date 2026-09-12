@@ -4229,11 +4229,29 @@ mod tests {
             },
         ];
         let unknown_id = results[1].id;
+        results.push(db::Media {
+            id: Uuid::new_v4(),
+            title: stored
+                .title
+                .clone(),
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                tmdb: stored
+                    .external_ids
+                    .tmdb,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
         db::Media::adopt_existing_ids(&ctx.db, &mut results).await;
         assert_eq!(
             results[0].id, stored.id,
             "known item takes the stored row's id"
         );
         assert_eq!(results[1].id, unknown_id, "unknown item keeps its own id");
+        assert_eq!(
+            results[2].id, stored.id,
+            "a match on a lower-priority id adopts the stored row's id too"
+        );
     }
 }
