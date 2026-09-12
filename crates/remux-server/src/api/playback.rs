@@ -845,6 +845,37 @@ fn ext_from_descriptor(descriptor: &crate::stream::StreamDescriptor) -> String {
     }
 }
 
+/// A Matroska source can be served unchanged when the requested output is
+/// Matroska. `stream.mkv` callers commonly omit `AudioCodec`; unlike the
+/// progressive endpoint's FFmpeg default, that does not itself request an
+/// audio conversion.
+fn can_serve_mkv_source_directly(
+    container: &str,
+    audio_codec: Option<&str>,
+    has_audio_options: bool,
+) -> bool {
+    if has_audio_options {
+        return false;
+    }
+
+    let audio_is_copy_or_unspecified = audio_codec
+        .map(|codec| codec.eq_ignore_ascii_case("copy"))
+        .unwrap_or(true);
+
+    match container
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        // `build_progressive_args` promotes copy/copy MP4 output to Matroska,
+        // so this is also an unchanged source response.
+        "mp4" => audio_codec
+            .map(|codec| codec.eq_ignore_ascii_case("copy"))
+            .unwrap_or(false),
+        "mkv" | "matroska" => audio_is_copy_or_unspecified,
+        _ => false,
+    }
+}
+
 async fn videos_stream_inner(
     headers: headers::HeaderMap,
     state: AppState,
@@ -987,6 +1018,9 @@ async fn videos_stream_inner(
         "h264"
     }
     .to_string();
+    let requested_audio_codec = q
+        .audio_codec
+        .clone();
     let audio_codec = q
         .audio_codec
         .unwrap_or_else(|| "aac".to_string());
@@ -1031,16 +1065,12 @@ async fn videos_stream_inner(
         .as_deref()
         == Some("Encode");
 
-    // Fast path: `build_progressive_args` already promotes any copy-codec
-    // request targeting mp4 to a matroska remux (to dodge bitstream-filter
-    // issues), so when the source is already Matroska this "transcode" is a
-    // byte-for-byte no-op — same codecs, same effective container. Skip
-    // ffmpeg and serve the source file directly instead: it's byte-identical
-    // to what ffmpeg would produce, and gets real HTTP Range/seek support for
-    // free through the same path Direct Play uses, where piping ffmpeg's
-    // stdout never could (#438). Bail on any request that needs ffmpeg to do
-    // real work — track selection, subtitle burn-in, or a non-zero start
-    // offset (which raw byte serving can't honor).
+    // Fast path: a Matroska source requested as Matroska is already the exact
+    // output the client wants. Copy/copy MP4 requests are also promoted to
+    // Matroska by `build_progressive_args`. Serve the source directly so its
+    // Range support is preserved; piping FFmpeg's stdout cannot seek (#438).
+    // Requests that select streams, burn subtitles, or seek by timestamp
+    // still need FFmpeg.
     let source_is_mkv = matches!(
         media
             .probe_data
@@ -1051,9 +1081,15 @@ async fn videos_stream_inner(
         Some(VideoContainer::Mkv)
     );
     if is_copy_video
-        && audio_codec == "copy"
         && source_is_mkv
-        && container.eq_ignore_ascii_case("mp4")
+        && can_serve_mkv_source_directly(
+            &container,
+            requested_audio_codec.as_deref(),
+            q.audio_bit_rate
+                .is_some()
+                || q.audio_channels
+                    .is_some(),
+        )
         && !wants_stream_selection
         && !burn_subtitle_prog
         && q.start_time_ticks
@@ -1276,6 +1312,36 @@ mod tests {
         authenticated_server, insert_test_source, insert_test_source_of_kind,
         insert_test_source_with_external_subtitle, new_test_server,
     };
+
+    #[test]
+    fn mkv_source_direct_path_accepts_bare_and_copy_mkv_requests() {
+        assert!(super::can_serve_mkv_source_directly("mkv", None, false));
+        assert!(super::can_serve_mkv_source_directly(
+            "mkv",
+            Some("copy"),
+            false
+        ));
+        assert!(super::can_serve_mkv_source_directly(
+            "matroska",
+            Some("COPY"),
+            false
+        ));
+        assert!(!super::can_serve_mkv_source_directly(
+            "mkv",
+            Some("aac"),
+            false
+        ));
+        assert!(!super::can_serve_mkv_source_directly("mkv", None, true));
+
+        // A copy/copy MP4 request is remuxed as Matroska by FFmpeg, whereas
+        // omitting AudioCodec retains its progressive AAC default.
+        assert!(super::can_serve_mkv_source_directly(
+            "mp4",
+            Some("copy"),
+            false
+        ));
+        assert!(!super::can_serve_mkv_source_directly("mp4", None, false));
+    }
 
     #[test]
     fn item_runtime_fills_missing_source_duration() {
