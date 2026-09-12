@@ -846,20 +846,6 @@ fn ext_from_descriptor(descriptor: &crate::stream::StreamDescriptor) -> String {
     }
 }
 
-/// Which id the stream request resolves: a specific stream when the client
-/// named one, otherwise the probe fallback remembered for the play session
-/// (if any), otherwise whatever the client sent (item id or nothing).
-fn stream_lookup_id(
-    item_id: Uuid,
-    media_source_id: Option<Uuid>,
-    probe_fallback: Option<Uuid>,
-) -> Option<Uuid> {
-    match media_source_id {
-        Some(sid) if sid != item_id => Some(sid),
-        auto_play => probe_fallback.or(auto_play),
-    }
-}
-
 async fn videos_stream_inner(
     headers: headers::HeaderMap,
     state: AppState,
@@ -867,15 +853,24 @@ async fn videos_stream_inner(
     id: Uuid,
     q: api::VideoStreamQuery,
 ) -> Result<impl IntoResponse> {
-    // Auto-play names the item, not a stream (MediaSourceId absent or == id).
-    // If PlaybackInfo's probe fell over to another stream for this play
-    // session, follow it; the lookup below would otherwise land on the first
-    // source — the one that just failed to probe.
+    // Auto-play and stream-group requests name an id the client echoes back
+    // (the item id, or the group id), not a stream. If PlaybackInfo's probe
+    // fell over to another stream for that id in this play session, follow
+    // it; the lookup below would otherwise land on the first candidate — the
+    // one that just failed to probe. A specific stream named by the client
+    // has no such record and stands.
     let probe_fallback = q
         .play_session_id
         .as_deref()
-        .and_then(|psid| StreamService::probe_fallback_for(&state.ctx, psid));
-    let requested_id = stream_lookup_id(id, q.media_source_id, probe_fallback);
+        .and_then(|psid| {
+            StreamService::probe_fallback_for(
+                &state.ctx,
+                psid,
+                q.media_source_id
+                    .unwrap_or(id),
+            )
+        });
+    let requested_id = probe_fallback.or(q.media_source_id);
     let media = StreamService::lookup(
         &state.ctx,
         id,
@@ -1257,30 +1252,6 @@ mod tests {
         super::apply_item_runtime_fallback(&mut source, Some(142));
 
         assert_eq!(source.run_time_ticks, Some(1_420_000_000));
-    }
-
-    #[test]
-    fn stream_request_follows_probe_fallback_only_for_auto_play() {
-        let item = uuid::Uuid::new_v4();
-        let stream = uuid::Uuid::new_v4();
-        let fallback = uuid::Uuid::new_v4();
-        // Client named a stream: its choice stands.
-        assert_eq!(
-            super::stream_lookup_id(item, Some(stream), Some(fallback)),
-            Some(stream)
-        );
-        // Auto-play (MediaSourceId == item id, or absent) follows the fallback.
-        assert_eq!(
-            super::stream_lookup_id(item, Some(item), Some(fallback)),
-            Some(fallback)
-        );
-        assert_eq!(
-            super::stream_lookup_id(item, None, Some(fallback)),
-            Some(fallback)
-        );
-        // No fallback recorded: unchanged.
-        assert_eq!(super::stream_lookup_id(item, Some(item), None), Some(item));
-        assert_eq!(super::stream_lookup_id(item, None, None), None);
     }
 
     #[test]

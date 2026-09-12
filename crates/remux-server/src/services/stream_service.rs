@@ -662,12 +662,16 @@ impl StreamService {
     /// plays at once. Keying on the play session id (minted by PlaybackInfo
     /// and echoed by every Jellyfin client on the stream URL) ties the two
     /// requests together without needing a device id, which not every client
-    /// sends on stream URLs. No-op when nothing fell over or the client named
-    /// a specific stream.
+    /// sends on stream URLs. A stream-group request answers with the group id
+    /// the same way, so the record is keyed by the id the client echoes back:
+    /// the item id, or the group id. No-op when nothing fell over or the
+    /// client named a specific stream.
     pub fn save_probe_fallback(&self, play_session_id: &str, probed: &ProbedStreams) {
-        if probed.specific_requested {
-            return;
-        }
+        let source_id = match &self.group {
+            Some((gid, _, _)) => *gid,
+            None if probed.specific_requested => return,
+            None => self.item_id,
+        };
         let Some(first) = probed
             .results
             .first()
@@ -686,7 +690,7 @@ impl StreamService {
         self.ctx
             .store
             .save(
-                Self::probe_fallback_key(play_session_id),
+                Self::probe_fallback_key(play_session_id, source_id),
                 first
                     .effective_stream
                     .id,
@@ -694,15 +698,20 @@ impl StreamService {
             );
     }
 
-    /// The stream PlaybackInfo's probe fell over to for `play_session_id`, if any.
-    pub fn probe_fallback_for(ctx: &AppContext, play_session_id: &str) -> Option<Uuid> {
+    /// The stream PlaybackInfo's probe fell over to when it answered
+    /// `play_session_id` with `source_id` (the item id or a group id), if any.
+    pub fn probe_fallback_for(
+        ctx: &AppContext,
+        play_session_id: &str,
+        source_id: Uuid,
+    ) -> Option<Uuid> {
         ctx.store
-            .get::<Uuid>(Self::probe_fallback_key(play_session_id))
+            .get::<Uuid>(Self::probe_fallback_key(play_session_id, source_id))
             .map(|id| *id)
     }
 
-    fn probe_fallback_key(play_session_id: &str) -> String {
-        format!("pstream:psid:{play_session_id}")
+    fn probe_fallback_key(play_session_id: &str, source_id: Uuid) -> String {
+        format!("pstream:psid:{play_session_id}:{source_id}")
     }
 
     /// Persist the resolved stream UUID in the device-preference store (24 h TTL).
@@ -1189,27 +1198,33 @@ mod tests {
         // Fell over to `alive`: remembered under the play session.
         service.save_probe_fallback("psid-fallback", &probed(&alive, false));
         assert_eq!(
-            StreamService::probe_fallback_for(ctx, "psid-fallback"),
+            StreamService::probe_fallback_for(ctx, "psid-fallback", owner.id),
             Some(alive.id)
         );
         // First source probed fine: nothing to remember.
         service.save_probe_fallback("psid-clean", &probed(&dead, false));
-        assert_eq!(StreamService::probe_fallback_for(ctx, "psid-clean"), None);
+        assert_eq!(
+            StreamService::probe_fallback_for(ctx, "psid-clean", owner.id),
+            None
+        );
         // Client named a specific stream: its choice stands, nothing remembered.
         service.save_probe_fallback("psid-specific", &probed(&alive, true));
         assert_eq!(
-            StreamService::probe_fallback_for(ctx, "psid-specific"),
+            StreamService::probe_fallback_for(ctx, "psid-specific", owner.id),
             None
         );
         // Unknown session: nothing.
-        assert_eq!(StreamService::probe_fallback_for(ctx, "psid-unknown"), None);
+        assert_eq!(
+            StreamService::probe_fallback_for(ctx, "psid-unknown", owner.id),
+            None
+        );
     }
 
     /// With stream groups on, the initial PlaybackInfo lists one representative
     /// stream per group and is not a specific request, so a fallback is
-    /// remembered exactly as without groups. A request for a group by its UUID
-    /// is specific: nothing is remembered and the stream request keeps
-    /// resolving the group itself.
+    /// remembered under the item id exactly as without groups. A request for a
+    /// group by its UUID answers with the group id, so its fallback is
+    /// remembered under the group id.
     #[tokio::test]
     async fn probe_fallback_with_stream_groups() {
         use crate::integration_test::{
@@ -1248,7 +1263,7 @@ mod tests {
         service
             .save_probe_fallback("psid-grouped", &probed(selection.specific_requested));
         assert_eq!(
-            StreamService::probe_fallback_for(ctx, "psid-grouped"),
+            StreamService::probe_fallback_for(ctx, "psid-grouped", owner.id),
             Some(alive.id)
         );
 
@@ -1275,8 +1290,8 @@ mod tests {
             &probed(selection.specific_requested),
         );
         assert_eq!(
-            StreamService::probe_fallback_for(ctx, "psid-group-request"),
-            None
+            StreamService::probe_fallback_for(ctx, "psid-group-request", group_a),
+            Some(alive.id)
         );
     }
 }
