@@ -84,21 +84,43 @@ ON CONFLICT(user_id, media_id) DO UPDATE SET
     rating = COALESCE(user_media_state.rating, excluded.rating);
 DELETE FROM user_media_state WHERE media_id IN (SELECT loser_id FROM _dedupe_map);
 
--- Repoint relations, dropping any that would collide with an equivalent
--- relation the winner already has.
-DELETE FROM media_relations WHERE left_media_id IN (SELECT loser_id FROM _dedupe_map)
-  AND EXISTS (SELECT 1 FROM media_relations mr2
-    WHERE mr2.left_media_id = (SELECT winner_id FROM _dedupe_map WHERE loser_id = media_relations.left_media_id)
-      AND mr2.right_media_id = media_relations.right_media_id
-      AND COALESCE(mr2.role, '') = COALESCE(media_relations.role, ''));
+-- Repoint relations. Dropping only rows that collide with an existing
+-- winner-owned relation isn't enough: two *sibling* losers merging into the
+-- same winner can each hold an identical (right_media_id, role) relation,
+-- which would only collide with each other once both are remapped in the
+-- same UPDATE below — a pre-remap EXISTS check against the current table
+-- can't see that. Instead, group every relation that will end up owned by a
+-- given winner (its own pre-existing ones plus every loser's) by
+-- (target left id, right_media_id, role) and keep exactly one per group —
+-- preferring a row the winner already owns, else the lowest relation_id —
+-- before remapping survivors.
+DELETE FROM media_relations WHERE relation_id IN (
+    SELECT relation_id FROM (
+        SELECT mr.relation_id,
+            ROW_NUMBER() OVER (
+                PARTITION BY COALESCE(dm.winner_id, mr.left_media_id), mr.right_media_id, COALESCE(mr.role, '')
+                ORDER BY (dm.winner_id IS NULL) DESC, mr.relation_id ASC
+            ) AS rn
+        FROM media_relations mr
+        LEFT JOIN _dedupe_map dm ON dm.loser_id = mr.left_media_id
+        WHERE dm.winner_id IS NOT NULL OR mr.left_media_id IN (SELECT winner_id FROM _dedupe_map)
+    ) WHERE rn > 1
+);
 UPDATE media_relations SET left_media_id = (SELECT winner_id FROM _dedupe_map WHERE loser_id = left_media_id)
 WHERE left_media_id IN (SELECT loser_id FROM _dedupe_map);
 
-DELETE FROM media_relations WHERE right_media_id IN (SELECT loser_id FROM _dedupe_map)
-  AND EXISTS (SELECT 1 FROM media_relations mr2
-    WHERE mr2.right_media_id = (SELECT winner_id FROM _dedupe_map WHERE loser_id = media_relations.right_media_id)
-      AND mr2.left_media_id = media_relations.left_media_id
-      AND COALESCE(mr2.role, '') = COALESCE(media_relations.role, ''));
+DELETE FROM media_relations WHERE relation_id IN (
+    SELECT relation_id FROM (
+        SELECT mr.relation_id,
+            ROW_NUMBER() OVER (
+                PARTITION BY mr.left_media_id, COALESCE(dm.winner_id, mr.right_media_id), COALESCE(mr.role, '')
+                ORDER BY (dm.winner_id IS NULL) DESC, mr.relation_id ASC
+            ) AS rn
+        FROM media_relations mr
+        LEFT JOIN _dedupe_map dm ON dm.loser_id = mr.right_media_id
+        WHERE dm.winner_id IS NOT NULL OR mr.right_media_id IN (SELECT winner_id FROM _dedupe_map)
+    ) WHERE rn > 1
+);
 UPDATE media_relations SET right_media_id = (SELECT winner_id FROM _dedupe_map WHERE loser_id = right_media_id)
 WHERE right_media_id IN (SELECT loser_id FROM _dedupe_map);
 
