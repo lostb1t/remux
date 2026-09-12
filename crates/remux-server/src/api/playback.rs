@@ -846,6 +846,37 @@ fn ext_from_descriptor(descriptor: &crate::stream::StreamDescriptor) -> String {
     }
 }
 
+/// A Matroska source can be served unchanged when the requested output is
+/// Matroska. `stream.mkv` callers commonly omit `AudioCodec`; unlike the
+/// progressive endpoint's FFmpeg default, that does not itself request an
+/// audio conversion.
+fn can_serve_mkv_source_directly(
+    container: &str,
+    audio_codec: Option<&str>,
+    has_audio_options: bool,
+) -> bool {
+    if has_audio_options {
+        return false;
+    }
+
+    let audio_is_copy_or_unspecified = audio_codec
+        .map(|codec| codec.eq_ignore_ascii_case("copy"))
+        .unwrap_or(true);
+
+    match container
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        // `build_progressive_args` promotes copy/copy MP4 output to Matroska,
+        // so this is also an unchanged source response.
+        "mp4" => audio_codec
+            .map(|codec| codec.eq_ignore_ascii_case("copy"))
+            .unwrap_or(false),
+        "mkv" | "matroska" => audio_is_copy_or_unspecified,
+        _ => false,
+    }
+}
+
 async fn videos_stream_inner(
     headers: headers::HeaderMap,
     state: AppState,
@@ -1006,6 +1037,9 @@ async fn videos_stream_inner(
         "h264"
     }
     .to_string();
+    let requested_audio_codec = q
+        .audio_codec
+        .clone();
     let audio_codec = q
         .audio_codec
         .unwrap_or_else(|| "aac".to_string());
@@ -1049,6 +1083,60 @@ async fn videos_stream_inner(
         .subtitle_method
         .as_deref()
         == Some("Encode");
+
+    // Fast path: a Matroska source requested as Matroska is already the exact
+    // output the client wants. Copy/copy MP4 requests are also promoted to
+    // Matroska by `build_progressive_args`. Serve the source directly so its
+    // Range support is preserved; piping FFmpeg's stdout cannot seek (#438).
+    // Requests that select streams, burn subtitles, or seek by timestamp
+    // still need FFmpeg.
+    let source_is_mkv = matches!(
+        media
+            .probe_data
+            .as_ref()
+            .and_then(|p| p
+                .container
+                .as_ref()),
+        Some(VideoContainer::Mkv)
+    );
+    if is_copy_video
+        && source_is_mkv
+        && !matches!(&descriptor, crate::stream::StreamDescriptor::Rtsp { .. })
+        && can_serve_mkv_source_directly(
+            &container,
+            requested_audio_codec.as_deref(),
+            q.audio_bit_rate
+                .is_some()
+                || q.audio_channels
+                    .is_some(),
+        )
+        && !wants_stream_selection
+        && !burn_subtitle_prog
+        && q.start_time_ticks
+            .unwrap_or(0)
+            == 0
+    {
+        let resp = if let Some(addon_id) = descriptor.addon_id() {
+            let addon = state
+                .ctx
+                .addons
+                .get(addon_id)
+                .context_not_found("addon not found")?;
+            addon
+                .stream
+                .as_ref()
+                .context_not_found("addon does not support streams")?
+                .serve_stream(&descriptor, &headers)
+                .await?
+        } else {
+            descriptor
+                .clone()
+                .into_source()
+                .serve(&state, &headers)
+                .await?
+        };
+        return Ok(resp.into_response());
+    }
 
     let params = crate::playback::engine::ProgressiveTranscodeParams {
         input_url: url,
@@ -1244,6 +1332,108 @@ mod tests {
         authenticated_server, insert_test_source, insert_test_source_of_kind,
         insert_test_source_with_external_subtitle, new_test_server,
     };
+
+    #[test]
+    fn mkv_source_direct_path_accepts_bare_and_copy_mkv_requests() {
+        assert!(super::can_serve_mkv_source_directly("mkv", None, false));
+        assert!(super::can_serve_mkv_source_directly(
+            "mkv",
+            Some("copy"),
+            false
+        ));
+        assert!(super::can_serve_mkv_source_directly(
+            "matroska",
+            Some("COPY"),
+            false
+        ));
+        assert!(!super::can_serve_mkv_source_directly(
+            "mkv",
+            Some("aac"),
+            false
+        ));
+        assert!(!super::can_serve_mkv_source_directly("mkv", None, true));
+
+        // A copy/copy MP4 request is remuxed as Matroska by FFmpeg, whereas
+        // omitting AudioCodec retains its progressive AAC default.
+        assert!(super::can_serve_mkv_source_directly(
+            "mp4",
+            Some("copy"),
+            false
+        ));
+        assert!(!super::can_serve_mkv_source_directly("mp4", None, false));
+    }
+
+    #[tokio::test]
+    async fn bare_mkv_stream_preserves_range_requests() {
+        use crate::{
+            api::{MediaSourceInfo, MediaStream, MediaStreamType},
+            db, stream,
+        };
+
+        let (server, guard, token) = authenticated_server().await;
+        let fixture = std::env::temp_dir()
+            .join(format!("remux-range-{}.mkv", uuid::Uuid::new_v4()));
+        tokio::fs::write(&fixture, b"0123456789abcdef")
+            .await
+            .unwrap();
+
+        let now = chrono::Utc::now().naive_utc();
+        let mut media = db::Media {
+            title: "MKV range fixture".to_string(),
+            kind: db::MediaKind::Stream,
+            stream_info: Some(stream::StreamInfo {
+                descriptor: stream::StreamDescriptor::Local(fixture.clone()),
+                ..Default::default()
+            }),
+            probe_data: Some(MediaSourceInfo {
+                container: Some(VideoContainer::Mkv),
+                media_streams: vec![
+                    MediaStream {
+                        codec: Some("h264".to_string()),
+                        type_: Some(MediaStreamType::Video),
+                        index: 0,
+                        ..Default::default()
+                    },
+                    MediaStream {
+                        codec: Some("aac".to_string()),
+                        type_: Some(MediaStreamType::Audio),
+                        index: 1,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        media
+            .save(
+                &guard
+                    .0
+                    .db,
+            )
+            .await
+            .unwrap();
+
+        let auth = auth_header_with_token(&token);
+        let response = server
+            .get(&format!("/videos/{}/stream.mkv", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_header(http::header::RANGE, HeaderValue::from_static("bytes=4-7"))
+            .await;
+
+        response.assert_status(StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.header("content-range"), "bytes 4-7/16");
+        assert_eq!(response.header("accept-ranges"), "bytes");
+
+        tokio::fs::remove_file(fixture)
+            .await
+            .unwrap();
+    }
 
     #[test]
     fn item_runtime_fills_missing_source_duration() {
