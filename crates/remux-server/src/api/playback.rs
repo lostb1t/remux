@@ -272,6 +272,7 @@ async fn items_playbackinfo_inner(
     let probed = service
         .probe_candidates()
         .await?;
+    service.save_probe_fallback(&play_session_id, &probed);
     let specific_stream_requested = probed.specific_requested;
     let mut media_sources = Vec::with_capacity(
         probed
@@ -883,10 +884,28 @@ async fn videos_stream_inner(
     id: Uuid,
     q: api::VideoStreamQuery,
 ) -> Result<impl IntoResponse> {
+    // Auto-play and stream-group requests name an id the client echoes back
+    // (the item id, or the group id), not a stream. If PlaybackInfo's probe
+    // fell over to another stream for that id in this play session, follow
+    // it; the lookup below would otherwise land on the first candidate — the
+    // one that just failed to probe. A specific stream named by the client
+    // has no such record and stands.
+    let probe_fallback = q
+        .play_session_id
+        .as_deref()
+        .and_then(|psid| {
+            StreamService::probe_fallback_for(
+                &state.ctx,
+                psid,
+                q.media_source_id
+                    .unwrap_or(id),
+            )
+        });
+    let requested_id = probe_fallback.or(q.media_source_id);
     let media = StreamService::lookup(
         &state.ctx,
         id,
-        q.media_source_id,
+        requested_id,
         q.device_id
             .as_deref(),
         user_id,
