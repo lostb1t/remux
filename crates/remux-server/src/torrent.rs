@@ -1,6 +1,7 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, Session, SessionOptions,
     SessionPersistenceConfig, TorrentStatsState,
@@ -9,6 +10,8 @@ use librqbit::{
     http_api::HttpApi,
 };
 use tracing::{debug, warn};
+
+use crate::signals::{Event, EventType, Subscriber};
 
 #[derive(Clone, Debug)]
 struct TorrentFile {
@@ -232,6 +235,54 @@ impl TorrentManager {
             "http://127.0.0.1:{}/torrents/{}/stream/{}",
             self.http_port, torrent_id, file_idx
         ))
+    }
+
+    /// Delete a single managed torrent (and its downloaded data) by id. A
+    /// no-op if the torrent is already gone. Intended to be called as soon
+    /// as a playback session that was using it ends, rather than waiting
+    /// for the periodic sweep in `delete_unused_with_files` — a torrent left
+    /// running keeps announcing to DHT/trackers and holding peer
+    /// connections for content nobody is watching anymore.
+    pub async fn stop_torrent(&self, id: usize) -> Result<()> {
+        let api = Api::new(
+            self.session
+                .clone(),
+            None,
+            None,
+        );
+        api.api_torrent_action_delete(TorrentIdOrHash::Id(id))
+            .await
+            .context("failed to delete torrent")?;
+        Ok(())
+    }
+
+    /// Stop a managed torrent by info hash, if one is currently active for
+    /// it — a no-op both when it's already gone and when nothing ever
+    /// resolved it in the first place (e.g. a session that stopped before
+    /// its first byte request). Deliberately does not go through
+    /// `resolve_url`: that would *add* the torrent (starting a download)
+    /// just to immediately delete it.
+    pub async fn stop_torrent_by_hash(&self, info_hash: &str) -> Result<()> {
+        let api = Api::new(
+            self.session
+                .clone(),
+            None,
+            None,
+        );
+        let Some(id) = api
+            .api_torrent_list()
+            .torrents
+            .into_iter()
+            .find(|t| {
+                t.info_hash
+                    .eq_ignore_ascii_case(info_hash)
+            })
+            .and_then(|t| t.id)
+        else {
+            return Ok(());
+        };
+        self.stop_torrent(id)
+            .await
     }
 
     /// Delete managed torrents and their files, skipping any whose ID is in `active`.
@@ -631,9 +682,104 @@ fn parse_file_idx_param(magnet: &str) -> Option<usize> {
         })
 }
 
+/// Stops the torrent backing a playback session as soon as that session
+/// ends, instead of leaving it running until the next daily
+/// `CleanTranscodeFolderTask` sweep. A torrent nobody is watching anymore
+/// still announces to DHT/trackers and holds peer connections, which is pure
+/// overhead at best — and on Windows, `librqbit`'s DHT socket has been
+/// observed to die from a spurious WSAECONNRESET after enough of that
+/// background traffic accumulates, taking down every subsequent stream
+/// until the whole process restarts. Cutting torrents loose immediately
+/// doesn't fix that underlying socket issue, but it substantially reduces
+/// how much unnecessary DHT/peer traffic piles up between plays.
+///
+/// This fires on `PlaybackSessionEnded` — emitted regardless of play method
+/// — rather than anything transcode-specific: direct play resolves torrents
+/// through the exact same `TorrentManager` (see `TorrentSource::serve` in
+/// `stream.rs`) without ever going through a `TranscodeSession`, so a
+/// transcode-only trigger would miss it entirely. Re-derives the stream the
+/// session was actually using via the same lookup the original stream
+/// request used, rather than relying on it having been captured up front.
+pub struct TorrentCleanupSubscriber {
+    pub ctx: crate::AppContext,
+}
+
+#[async_trait]
+impl Subscriber for TorrentCleanupSubscriber {
+    fn key(&self) -> &'static str {
+        "torrent_cleanup"
+    }
+    fn events(&self) -> &[EventType] {
+        &[EventType::PlaybackSessionEnded]
+    }
+    async fn handle(&self, event: Event) -> anyhow::Result<()> {
+        let Event::PlaybackSessionEnded {
+            item_id,
+            media_source_id,
+            device_id,
+            user_id,
+        } = event
+        else {
+            return Ok(());
+        };
+        let Some(mgr) = self
+            .ctx
+            .torrent
+            .read()
+            .await
+            .clone()
+        else {
+            return Ok(());
+        };
+        let requested_id = media_source_id
+            .as_deref()
+            .and_then(|s| {
+                s.parse()
+                    .ok()
+            });
+        let media = crate::services::stream_service::StreamService::lookup(
+            &self.ctx,
+            item_id,
+            requested_id,
+            Some(&device_id),
+            Some(user_id),
+        )
+        .await?;
+        let Some(si) = media.stream_info else {
+            return Ok(());
+        };
+        let crate::stream::StreamDescriptor::Torrent { info_hash, .. } = si.descriptor
+        else {
+            return Ok(());
+        };
+        mgr.stop_torrent_by_hash(&info_hash)
+            .await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Regression guard for the `PlaybackSessionEnded` redesign: a session
+    // that stops before anything ever resolved a torrent for it (or one
+    // playing a non-torrent source) must not error or attempt to add one —
+    // `stop_torrent_by_hash` only ever looks at what's already managed.
+    #[tokio::test]
+    async fn stop_torrent_by_hash_is_a_noop_when_nothing_is_managed() {
+        let dir = std::env::temp_dir()
+            .join(format!("remux-torrent-test-{}", uuid::Uuid::new_v4()));
+        let mgr =
+            TorrentManager::new(dir.join("data"), dir.join("cache"), None, true, None)
+                .await
+                .expect("torrent manager should start with DHT disabled");
+
+        mgr.stop_torrent_by_hash("0000000000000000000000000000000000000000")
+            .await
+            .expect("stopping an unmanaged hash should be a no-op, not an error");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn file(name: &str, length: u64) -> TorrentFile {
         TorrentFile {

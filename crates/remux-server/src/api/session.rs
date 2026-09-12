@@ -92,7 +92,7 @@ pub async fn report_playback_start(
     session: auth::AuthSession,
     Json(data): Json<api::PlaybackInfo>,
 ) -> Result<impl IntoResponse> {
-    state
+    let evicted = state
         .ctx
         .sessions
         .start(
@@ -113,6 +113,24 @@ pub async fn report_playback_start(
                 e.context_internal("failed to start session")
             }
         })?;
+    // A stale session for this device just got silently replaced — its
+    // transcode is already dead, but whatever it was streaming from (e.g. a
+    // torrent) still needs releasing.
+    for stale in &evicted {
+        state
+            .ctx
+            .signals
+            .emit(Event::PlaybackSessionEnded {
+                item_id: stale.item_id,
+                media_source_id: stale
+                    .media_source_id
+                    .clone(),
+                device_id: stale
+                    .device_id
+                    .clone(),
+                user_id: stale.user_id,
+            });
+    }
     state
         .ctx
         .signals
@@ -286,6 +304,26 @@ pub async fn report_playback_stopped(
             .ctx
             .signals
             .emit(Event::SessionsChanged);
+        // `playback` was captured before `stopped` removed the session, so
+        // it still has the item/source info needed to release whatever this
+        // session was streaming from — fired for direct play too, not just
+        // transcode: neither has anything to do with the id used above,
+        // which a stop report may omit entirely.
+        if let Some(playback) = playback.as_ref() {
+            state
+                .ctx
+                .signals
+                .emit(Event::PlaybackSessionEnded {
+                    item_id: playback.item_id,
+                    media_source_id: playback
+                        .media_source_id
+                        .clone(),
+                    device_id: playback
+                        .device_id
+                        .clone(),
+                    user_id: playback.user_id,
+                });
+        }
         if let Some(item_id) = changed_item_id {
             state
                 .ctx
