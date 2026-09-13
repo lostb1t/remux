@@ -889,6 +889,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                 .parse_smart_filter()
                 .cloned(),
             promoted: Some(media.promoted),
+            show_in_my_media: Some(media.collection_show_in_my_media),
             digital_release_date: media
                 .digital_released_at
                 .map(|d| d.and_utc()),
@@ -1142,6 +1143,18 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             .collection_media_kind
             .clone()
             .and_then(db_media_kind_to_collection_type);
+        // A group hidden from "My Media" must still reach the home screen, and
+        // the row has to come from the server so every client gets it — a
+        // web-only DOM patch would leave Infuse, Streamyfin et al. with nothing.
+        //
+        // Jellyfin clients skip `boxsets` views when building "Recently Added"
+        // rows, so a group container advertising that type gets no row at all.
+        // Reporting it as `mixed` is what earns one: `/items/latest` already
+        // returns the group's child collections either way (verified against
+        // both types), so only the client's row-eligibility check changes.
+        if !media.collection_show_in_my_media && media.is_group_container() {
+            item.collection_type = Some(CollectionType::Mixed);
+        }
         if media.promoted || media.is_group_container() {
             item.type_ = MediaType::CollectionFolder;
             item.display_preferences_id = Some(
@@ -1213,4 +1226,57 @@ pub struct RemoteSubtitleInfo {
     pub is_hash_match: Option<bool>,
     pub ai_translated: Option<bool>,
     pub machine_translated: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn group_container(show_in_my_media: bool) -> db::Media {
+        db::Media {
+            kind: db::MediaKind::Collection,
+            collection_media_kind: Some(db::CollectionMediaKind::Collection),
+            collection_kind: Some(db::CollectionKind::Manual),
+            promoted: true,
+            collection_show_in_my_media: show_in_my_media,
+            ..Default::default()
+        }
+    }
+
+    /// Hiding a group from "My Media" has to leave it somewhere on the home
+    /// screen, and the row must come from the server so non-web clients
+    /// (Infuse, Streamyfin, Swiftfin) get it too. Clients skip `boxsets` views
+    /// when building "Recently Added" rows, so the hidden group is advertised
+    /// as `mixed` to become row-eligible.
+    #[test]
+    fn hidden_group_container_is_advertised_as_mixed_to_earn_a_home_row() {
+        let item = db_media_to_item(group_container(false), false);
+        assert_eq!(item.collection_type, Some(CollectionType::Mixed));
+        // Still a library view, not a boxset item.
+        assert_eq!(item.type_, MediaType::CollectionFolder);
+    }
+
+    /// The visible case must keep reporting `boxsets`: it already owns a My
+    /// Media tile, and reporting `mixed` there would add a duplicate row.
+    #[test]
+    fn visible_group_container_keeps_its_boxsets_type() {
+        let item = db_media_to_item(group_container(true), false);
+        assert_eq!(item.collection_type, Some(CollectionType::Boxsets));
+    }
+
+    /// The override is scoped to group containers. A hidden ordinary library
+    /// must keep its real content type, or clients would mis-route its items.
+    #[test]
+    fn hidden_ordinary_collection_keeps_its_content_type() {
+        let media = db::Media {
+            kind: db::MediaKind::Collection,
+            collection_media_kind: Some(db::CollectionMediaKind::Series),
+            collection_kind: Some(db::CollectionKind::Smart),
+            promoted: true,
+            collection_show_in_my_media: false,
+            ..Default::default()
+        };
+        let item = db_media_to_item(media, false);
+        assert_eq!(item.collection_type, Some(CollectionType::Tvshows));
+    }
 }
