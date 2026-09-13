@@ -1,7 +1,6 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
-use async_trait::async_trait;
 use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, Session, SessionOptions,
     SessionPersistenceConfig, TorrentStatsState,
@@ -10,8 +9,6 @@ use librqbit::{
     http_api::HttpApi,
 };
 use tracing::{debug, warn};
-
-use crate::signals::{Event, EventType, Subscriber};
 
 #[derive(Clone, Debug)]
 struct TorrentFile {
@@ -31,6 +28,39 @@ struct SidecarSubtitleFile {
 pub struct TorrentManager {
     session: Arc<Session>,
     http_port: u16,
+    users: tokio::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Weak<TorrentLease>>,
+    >,
+}
+
+/// Shared by playback sessions and response bodies using this exact torrent.
+pub struct TorrentLease {
+    manager: Arc<TorrentManager>,
+    hash: String,
+}
+
+impl Drop for TorrentLease {
+    fn drop(&mut self) {
+        let manager = self
+            .manager
+            .clone();
+        let hash = self
+            .hash
+            .clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                // Allow a seek/reconnect or the next episode to acquire the
+                // same torrent before releasing its peers and downloaded data.
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                if let Err(error) = manager
+                    .delete_if_unused(&hash)
+                    .await
+                {
+                    warn!(%hash, "failed to release torrent: {error:#}");
+                }
+            });
+        }
+    }
 }
 
 impl TorrentManager {
@@ -76,7 +106,70 @@ impl TorrentManager {
         Ok(Self {
             session,
             http_port: bound_port,
+            users: Default::default(),
         })
+    }
+
+    pub async fn acquire(self: &Arc<Self>, hash: &str) -> Arc<TorrentLease> {
+        // Magnet hashes may be hex or base32; librqbit lists them as hex.
+        let hash = librqbit::Magnet::parse(&format!("magnet:?xt=urn:btih:{hash}"))
+            .ok()
+            .and_then(|magnet| magnet.as_id20())
+            .map(|id| id.as_string())
+            .unwrap_or_else(|| hash.to_ascii_lowercase());
+        let mut users = self
+            .users
+            .lock()
+            .await;
+        if let Some(lease) = users
+            .get(&hash)
+            .and_then(std::sync::Weak::upgrade)
+        {
+            return lease;
+        }
+        let lease = Arc::new(TorrentLease {
+            manager: self.clone(),
+            hash: hash.clone(),
+        });
+        users.insert(hash, Arc::downgrade(&lease));
+        lease
+    }
+
+    async fn delete_if_unused(&self, hash: &str) -> Result<()> {
+        // Acquisition and deletion share the lock, so a new reader cannot
+        // acquire a torrent between the last-user check and deletion.
+        let mut users = self
+            .users
+            .lock()
+            .await;
+        if users
+            .get(hash)
+            .is_none_or(|lease| lease.strong_count() != 0)
+        {
+            return Ok(());
+        }
+        let api = Api::new(
+            self.session
+                .clone(),
+            None,
+            None,
+        );
+        if let Some(id) = api
+            .api_torrent_list()
+            .torrents
+            .into_iter()
+            .find(|torrent| {
+                torrent
+                    .info_hash
+                    .eq_ignore_ascii_case(hash)
+            })
+            .and_then(|torrent| torrent.id)
+        {
+            api.api_torrent_action_delete(TorrentIdOrHash::Id(id))
+                .await?;
+        }
+        users.remove(hash);
+        Ok(())
     }
 
     pub async fn from_config(config: &crate::Config) -> Result<Self> {
@@ -237,59 +330,15 @@ impl TorrentManager {
         ))
     }
 
-    /// Delete a single managed torrent (and its downloaded data) by id. A
-    /// no-op if the torrent is already gone. Intended to be called as soon
-    /// as a playback session that was using it ends, rather than waiting
-    /// for the periodic sweep in `delete_unused_with_files` — a torrent left
-    /// running keeps announcing to DHT/trackers and holding peer
-    /// connections for content nobody is watching anymore.
-    pub async fn stop_torrent(&self, id: usize) -> Result<()> {
-        let api = Api::new(
-            self.session
-                .clone(),
-            None,
-            None,
-        );
-        api.api_torrent_action_delete(TorrentIdOrHash::Id(id))
-            .await
-            .context("failed to delete torrent")?;
-        Ok(())
-    }
-
-    /// Stop a managed torrent by info hash, if one is currently active for
-    /// it — a no-op both when it's already gone and when nothing ever
-    /// resolved it in the first place (e.g. a session that stopped before
-    /// its first byte request). Deliberately does not go through
-    /// `resolve_url`: that would *add* the torrent (starting a download)
-    /// just to immediately delete it.
-    pub async fn stop_torrent_by_hash(&self, info_hash: &str) -> Result<()> {
-        let api = Api::new(
-            self.session
-                .clone(),
-            None,
-            None,
-        );
-        let Some(id) = api
-            .api_torrent_list()
-            .torrents
-            .into_iter()
-            .find(|t| {
-                t.info_hash
-                    .eq_ignore_ascii_case(info_hash)
-            })
-            .and_then(|t| t.id)
-        else {
-            return Ok(());
-        };
-        self.stop_torrent(id)
-            .await
-    }
-
     /// Delete managed torrents and their files, skipping any whose ID is in `active`.
     pub async fn delete_unused_with_files(
         &self,
         active: &std::collections::HashSet<usize>,
     ) -> Result<usize> {
+        let users = self
+            .users
+            .lock()
+            .await;
         let api = Api::new(
             self.session
                 .clone(),
@@ -300,6 +349,15 @@ impl TorrentManager {
             .api_torrent_list()
             .torrents
             .into_iter()
+            .filter(|torrent| {
+                !users
+                    .get(
+                        &torrent
+                            .info_hash
+                            .to_ascii_lowercase(),
+                    )
+                    .is_some_and(|lease| lease.strong_count() != 0)
+            })
             .filter_map(|t| t.id)
             .filter(|id| !active.contains(id))
             .collect();
@@ -682,103 +740,211 @@ fn parse_file_idx_param(magnet: &str) -> Option<usize> {
         })
 }
 
-/// Stops the torrent backing a playback session as soon as that session
-/// ends, instead of leaving it running until the next daily
-/// `CleanTranscodeFolderTask` sweep. A torrent nobody is watching anymore
-/// still announces to DHT/trackers and holds peer connections, which is pure
-/// overhead at best — and on Windows, `librqbit`'s DHT socket has been
-/// observed to die from a spurious WSAECONNRESET after enough of that
-/// background traffic accumulates, taking down every subsequent stream
-/// until the whole process restarts. Cutting torrents loose immediately
-/// doesn't fix that underlying socket issue, but it substantially reduces
-/// how much unnecessary DHT/peer traffic piles up between plays.
-///
-/// This fires on `PlaybackSessionEnded` — emitted regardless of play method
-/// — rather than anything transcode-specific: direct play resolves torrents
-/// through the exact same `TorrentManager` (see `TorrentSource::serve` in
-/// `stream.rs`) without ever going through a `TranscodeSession`, so a
-/// transcode-only trigger would miss it entirely. Re-derives the stream the
-/// session was actually using via the same lookup the original stream
-/// request used, rather than relying on it having been captured up front.
-pub struct TorrentCleanupSubscriber {
-    pub ctx: crate::AppContext,
-}
-
-#[async_trait]
-impl Subscriber for TorrentCleanupSubscriber {
-    fn key(&self) -> &'static str {
-        "torrent_cleanup"
-    }
-    fn events(&self) -> &[EventType] {
-        &[EventType::PlaybackSessionEnded]
-    }
-    async fn handle(&self, event: Event) -> anyhow::Result<()> {
-        let Event::PlaybackSessionEnded {
-            item_id,
-            media_source_id,
-            device_id,
-            user_id,
-        } = event
-        else {
-            return Ok(());
-        };
-        let Some(mgr) = self
-            .ctx
-            .torrent
-            .read()
-            .await
-            .clone()
-        else {
-            return Ok(());
-        };
-        let requested_id = media_source_id
-            .as_deref()
-            .and_then(|s| {
-                s.parse()
-                    .ok()
-            });
-        let media = crate::services::stream_service::StreamService::lookup(
-            &self.ctx,
-            item_id,
-            requested_id,
-            Some(&device_id),
-            Some(user_id),
-        )
-        .await?;
-        let Some(si) = media.stream_info else {
-            return Ok(());
-        };
-        let crate::stream::StreamDescriptor::Torrent { info_hash, .. } = si.descriptor
-        else {
-            return Ok(());
-        };
-        mgr.stop_torrent_by_hash(&info_hash)
-            .await
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // Regression guard for the `PlaybackSessionEnded` redesign: a session
-    // that stops before anything ever resolved a torrent for it (or one
-    // playing a non-torrent source) must not error or attempt to add one —
-    // `stop_torrent_by_hash` only ever looks at what's already managed.
     #[tokio::test]
-    async fn stop_torrent_by_hash_is_a_noop_when_nothing_is_managed() {
-        let dir = std::env::temp_dir()
-            .join(format!("remux-torrent-test-{}", uuid::Uuid::new_v4()));
-        let mgr =
-            TorrentManager::new(dir.join("data"), dir.join("cache"), None, true, None)
-                .await
-                .expect("torrent manager should start with DHT disabled");
-
-        mgr.stop_torrent_by_hash("0000000000000000000000000000000000000000")
+    async fn cleanup_waits_for_sessions_and_readers_and_respects_reacquisition() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(
+            TorrentManager::new(
+                dir.path()
+                    .join("data"),
+                dir.path()
+                    .join("cache"),
+                None,
+                true,
+                None,
+            )
             .await
-            .expect("stopping an unmanaged hash should be a no-op, not an error");
+            .unwrap(),
+        );
+        let (server, guard, token) =
+            crate::integration_test::authenticated_server().await;
+        let sessions = &guard
+            .0
+            .sessions;
+        // A tiny paused torrent exercises real librqbit deletion without
+        // requiring DHT, trackers, peers, or a downloaded media fixture.
+        manager.session.add_torrent(
+            AddTorrent::from_bytes(&b"d4:infod6:lengthi1e4:name1:x12:piece lengthi16384e6:pieces20:....................ee"[..]),
+            Some(AddTorrentOptions { paused: true, disable_trackers: true, ..Default::default() }),
+        ).await.unwrap();
+        let api = Api::new(
+            manager
+                .session
+                .clone(),
+            None,
+            None,
+        );
+        let hash = api
+            .api_torrent_list()
+            .torrents[0]
+            .info_hash
+            .clone();
+        let hash = hash.as_str();
+        let other = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
 
-        let _ = std::fs::remove_dir_all(&dir);
+        // Requests may precede playback reports; these references must still
+        // be released by stop. Two viewers share the very same torrent.
+        sessions
+            .retain_torrent("viewer-a", &manager, hash)
+            .await;
+        sessions
+            .retain_torrent("viewer-b", &manager, hash)
+            .await;
+        let reader = manager
+            .acquire(hash)
+            .await;
+        let weak = Arc::downgrade(&reader);
+        sessions
+            .stop("viewer-a")
+            .await;
+        manager
+            .delete_if_unused(hash)
+            .await
+            .unwrap();
+        assert!(
+            weak.upgrade()
+                .is_some()
+        );
+        assert_eq!(
+            api.api_torrent_list()
+                .torrents
+                .len(),
+            1
+        );
+        assert_eq!(
+            manager
+                .delete_unused_with_files(&Default::default())
+                .await
+                .unwrap(),
+            0
+        );
+        drop(reader);
+        assert!(
+            weak.upgrade()
+                .is_some(),
+            "viewer-b still owns the torrent"
+        );
+
+        // Changing a selected source doesn't change the recorded reference
+        // for an existing session; both actual sources are retained.
+        sessions
+            .retain_torrent("viewer-b", &manager, other)
+            .await;
+        sessions
+            .stop("viewer-b")
+            .await;
+        assert!(
+            weak.upgrade()
+                .is_none()
+        );
+        let next_episode = manager
+            .acquire(hash)
+            .await;
+        manager
+            .delete_if_unused(hash)
+            .await
+            .unwrap();
+        assert!(
+            manager
+                .users
+                .lock()
+                .await
+                .contains_key(hash)
+        );
+        assert_eq!(
+            api.api_torrent_list()
+                .torrents
+                .len(),
+            1
+        );
+        drop(next_episode);
+        manager
+            .delete_if_unused(hash)
+            .await
+            .unwrap();
+        manager
+            .delete_if_unused(other)
+            .await
+            .unwrap();
+        assert!(
+            manager
+                .users
+                .lock()
+                .await
+                .is_empty()
+        );
+        assert!(
+            api.api_torrent_list()
+                .torrents
+                .is_empty()
+        );
+
+        // Exercise real playback reports too: a start replaces the previous
+        // session on this device, and a stop releases the replacement.
+        let media = crate::integration_test::insert_test_source(&guard.0).await;
+        let auth = crate::integration_test::auth_header_with_token(&token);
+        for id in ["old-session", "new-session"] {
+            sessions
+                .retain_torrent(id, &manager, hash)
+                .await;
+            server
+                .post("/sessions/playing")
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    http::HeaderValue::from_str(&auth).unwrap(),
+                )
+                .json(&serde_json::json!({ "ItemId": media.id, "PlaySessionId": id }))
+                .await
+                .assert_status(http::StatusCode::NO_CONTENT);
+        }
+        assert!(
+            sessions
+                .get("old-session")
+                .is_none()
+        );
+        let lease = manager
+            .acquire(hash)
+            .await;
+        let weak = Arc::downgrade(&lease);
+        drop(lease);
+        server.post("/sessions/playing/stopped")
+            .add_header(http::header::AUTHORIZATION, http::HeaderValue::from_str(&auth).unwrap())
+            .json(&serde_json::json!({ "ItemId": media.id, "PlaySessionId": "new-session" }))
+            .await.assert_status(http::StatusCode::NO_CONTENT);
+        assert!(
+            weak.upgrade()
+                .is_none(),
+            "both removed sessions must release their references"
+        );
+        sessions
+            .retain_torrent("orphan-request", &manager, hash)
+            .await;
+        let lease = manager
+            .acquire(hash)
+            .await;
+        let weak = Arc::downgrade(&lease);
+        drop(lease);
+        let cleanup = sessions
+            .clone()
+            .spawn_cleanup_task(Duration::from_millis(1), Duration::ZERO);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while weak
+                .upgrade()
+                .is_some()
+            {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("unclaimed requests must expire");
+        cleanup.abort();
+        manager
+            .shutdown()
+            .await;
     }
 
     fn file(name: &str, length: u64) -> TorrentFile {

@@ -170,19 +170,6 @@ pub enum Event {
     RemotePlay(RemotePlayInfo),
     RemotePlaystate(RemotePlaystateInfo),
     RemoteCommand(RemoteCommandInfo),
-    /// A playback session ended — explicit stop, or silently evicted by a
-    /// new session on the same device — and whatever source it was using is
-    /// no longer needed. Fired for both transcode and direct-play sessions
-    /// alike (there's no `TranscodeSession` at all for direct play), so
-    /// subscribers re-derive the actual stream source the same way the
-    /// original request did rather than relying on it being captured
-    /// up front. Carries enough of the session to redo that lookup.
-    PlaybackSessionEnded {
-        item_id: Uuid,
-        media_source_id: Option<String>,
-        device_id: String,
-        user_id: Uuid,
-    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,7 +189,6 @@ pub enum EventType {
     RemotePlay,
     RemotePlaystate,
     RemoteCommand,
-    PlaybackSessionEnded,
 }
 
 impl Event {
@@ -223,7 +209,6 @@ impl Event {
             Event::RemotePlay(_) => EventType::RemotePlay,
             Event::RemotePlaystate(_) => EventType::RemotePlaystate,
             Event::RemoteCommand(_) => EventType::RemoteCommand,
-            Event::PlaybackSessionEnded { .. } => EventType::PlaybackSessionEnded,
         }
     }
 }

@@ -198,6 +198,28 @@ async fn create_hls_session(
                 .context_not_found("no stream found for track")?;
         }
 
+        if let Some(crate::stream::StreamInfo {
+            descriptor: crate::stream::StreamDescriptor::Torrent { info_hash, .. },
+            ..
+        }) = resolved_media
+            .stream_info
+            .as_ref()
+        {
+            if let Some(torrent) = state
+                .ctx
+                .torrent
+                .read()
+                .await
+                .clone()
+            {
+                state
+                    .ctx
+                    .sessions
+                    .retain_torrent(&play_session_id, &torrent, info_hash)
+                    .await;
+            }
+        }
+
         let input_url = resolved_media
             .stream_info
             .as_ref()
