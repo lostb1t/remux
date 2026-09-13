@@ -28,7 +28,7 @@ struct SidecarSubtitleFile {
 pub struct TorrentManager {
     session: Arc<Session>,
     http_port: u16,
-    users: tokio::sync::Mutex<
+    leases: tokio::sync::Mutex<
         std::collections::HashMap<String, std::sync::Weak<TorrentLease>>,
     >,
 }
@@ -106,7 +106,7 @@ impl TorrentManager {
         Ok(Self {
             session,
             http_port: bound_port,
-            users: Default::default(),
+            leases: Default::default(),
         })
     }
 
@@ -117,11 +117,11 @@ impl TorrentManager {
             .and_then(|magnet| magnet.as_id20())
             .map(|id| id.as_string())
             .unwrap_or_else(|| hash.to_ascii_lowercase());
-        let mut users = self
-            .users
+        let mut leases = self
+            .leases
             .lock()
             .await;
-        if let Some(lease) = users
+        if let Some(lease) = leases
             .get(&hash)
             .and_then(std::sync::Weak::upgrade)
         {
@@ -131,18 +131,18 @@ impl TorrentManager {
             manager: self.clone(),
             hash: hash.clone(),
         });
-        users.insert(hash, Arc::downgrade(&lease));
+        leases.insert(hash, Arc::downgrade(&lease));
         lease
     }
 
     async fn delete_if_unused(&self, hash: &str) -> Result<()> {
         // Acquisition and deletion share the lock, so a new reader cannot
         // acquire a torrent between the last-user check and deletion.
-        let mut users = self
-            .users
+        let mut leases = self
+            .leases
             .lock()
             .await;
-        if users
+        if leases
             .get(hash)
             .is_none_or(|lease| lease.strong_count() != 0)
         {
@@ -168,7 +168,7 @@ impl TorrentManager {
             api.api_torrent_action_delete(TorrentIdOrHash::Id(id))
                 .await?;
         }
-        users.remove(hash);
+        leases.remove(hash);
         Ok(())
     }
 
@@ -335,8 +335,8 @@ impl TorrentManager {
         &self,
         active: &std::collections::HashSet<usize>,
     ) -> Result<usize> {
-        let users = self
-            .users
+        let leases = self
+            .leases
             .lock()
             .await;
         let api = Api::new(
@@ -350,7 +350,7 @@ impl TorrentManager {
             .torrents
             .into_iter()
             .filter(|torrent| {
-                !users
+                !leases
                     .get(
                         &torrent
                             .info_hash
@@ -850,7 +850,7 @@ mod tests {
             .unwrap();
         assert!(
             manager
-                .users
+                .leases
                 .lock()
                 .await
                 .contains_key(hash)
@@ -872,7 +872,7 @@ mod tests {
             .unwrap();
         assert!(
             manager
-                .users
+                .leases
                 .lock()
                 .await
                 .is_empty()

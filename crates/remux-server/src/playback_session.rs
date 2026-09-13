@@ -35,15 +35,21 @@ pub struct PlaybackSession {
     pub group_id: Option<Uuid>,
     /// Kind of the item being played, used to populate NowPlayingItem in session broadcasts.
     pub item_kind: Option<db::MediaKind>,
+    /// Torrent sources selected for this playback. Their leases are released
+    /// with the session, after any active HTTP response has finished reading.
+    torrents: Vec<Arc<crate::torrent::TorrentLease>>,
 }
 
 #[derive(Clone)]
 pub struct PlaybackSessionManager {
     sessions: Arc<DashMap<String, PlaybackSession>>,
-    // Requests can arrive before the client's playback-start report. Keep
-    // their actual torrent references independently of the session metadata.
-    torrents:
+    // Requests can arrive before the client's playback-start report. Hold
+    // their leases briefly, then move them into the PlaybackSession on start.
+    pending_torrents:
         Arc<DashMap<String, (DateTime<Utc>, Vec<Arc<crate::torrent::TorrentLease>>)>>,
+    // Makes that handoff atomic: a request cannot be stranded in pending
+    // while playback-start inserts its session.
+    torrent_handoff: Arc<std::sync::Mutex<()>>,
     base_dir: PathBuf,
 }
 
@@ -53,7 +59,8 @@ impl PlaybackSessionManager {
         let _ = std::fs::create_dir_all(&base_dir);
         Self {
             sessions: Arc::new(DashMap::new()),
-            torrents: Arc::new(DashMap::new()),
+            pending_torrents: Arc::new(DashMap::new()),
+            torrent_handoff: Arc::new(std::sync::Mutex::new(())),
             base_dir,
         }
     }
@@ -182,6 +189,7 @@ impl PlaybackSessionManager {
             transcode: None,
             group_id,
             item_kind,
+            torrents: Vec::new(),
         };
 
         self.insert(ps)
@@ -515,6 +523,27 @@ impl PlaybackSessionManager {
                     .await;
             }
         }
+        let _handoff = self
+            .torrent_handoff
+            .lock()
+            .expect("torrent handoff lock is not poisoned");
+        if let Some((_, (_, pending))) = self
+            .pending_torrents
+            .remove(&session.play_session_id)
+        {
+            retain_leases(&mut session.torrents, pending);
+        }
+        if let Some(existing) = self
+            .sessions
+            .get(&session.play_session_id)
+        {
+            retain_leases(
+                &mut session.torrents,
+                existing
+                    .torrents
+                    .clone(),
+            );
+        }
         self.sessions
             .insert(
                 session
@@ -681,6 +710,7 @@ impl PlaybackSessionManager {
                         last_activity: Utc::now(),
                         group_id: None,
                         item_kind: None,
+                        torrents: Vec::new(),
                     },
                 );
         }
@@ -706,11 +736,16 @@ impl PlaybackSessionManager {
     /// Returns the removed session so callers can read final position/item data.
     pub async fn stop(&self, id: &str) -> Option<PlaybackSession> {
         // Also release references captured before a playback-start report.
-        self.torrents
+        let _handoff = self
+            .torrent_handoff
+            .lock()
+            .expect("torrent handoff lock is not poisoned");
+        self.pending_torrents
             .remove(id);
         let (_, session) = self
             .sessions
             .remove(id)?;
+        drop(_handoff);
         if let Some(ts) = session
             .transcode
             .clone()
@@ -722,6 +757,9 @@ impl PlaybackSessionManager {
 
     /// Capture the source selected by the stream handler, never resolve it
     /// again at stop time (a group's candidates may have changed by then).
+    ///
+    /// Once playback has started, the lease belongs directly to its session.
+    /// Before that report arrives, it is held briefly and handed off by insert.
     pub async fn retain_torrent(
         &self,
         id: &str,
@@ -731,19 +769,22 @@ impl PlaybackSessionManager {
         let lease = torrent
             .acquire(hash)
             .await;
-        let mut entry = self
-            .torrents
-            .entry(id.to_string())
-            .or_insert_with(|| (Utc::now(), Vec::new()));
-        entry.0 = Utc::now();
-        if !entry
-            .1
-            .iter()
-            .any(|existing| Arc::ptr_eq(existing, &lease))
+        let _handoff = self
+            .torrent_handoff
+            .lock()
+            .expect("torrent handoff lock is not poisoned");
+        if let Some(mut session) = self
+            .sessions
+            .get_mut(id)
         {
-            entry
-                .1
-                .push(lease);
+            retain_lease(&mut session.torrents, lease);
+        } else {
+            let mut entry = self
+                .pending_torrents
+                .entry(id.to_string())
+                .or_insert_with(|| (Utc::now(), Vec::new()));
+            entry.0 = Utc::now();
+            retain_lease(&mut entry.1, lease);
         }
     }
 
@@ -827,14 +868,35 @@ impl PlaybackSessionManager {
                 // Requests that never received a playback-start report must
                 // not retain a torrent forever. Active responses still own
                 // their own reference when this pending entry expires.
-                self.torrents
-                    .retain(|id, (seen, _)| {
-                        self.sessions
-                            .contains_key(id)
-                            || *seen >= cutoff
-                    });
+                let _handoff = self
+                    .torrent_handoff
+                    .lock()
+                    .expect("torrent handoff lock is not poisoned");
+                self.pending_torrents
+                    .retain(|_, (seen, _)| *seen >= cutoff);
             }
         })
+    }
+}
+
+fn retain_leases(
+    target: &mut Vec<Arc<crate::torrent::TorrentLease>>,
+    leases: Vec<Arc<crate::torrent::TorrentLease>>,
+) {
+    for lease in leases {
+        retain_lease(target, lease);
+    }
+}
+
+fn retain_lease(
+    target: &mut Vec<Arc<crate::torrent::TorrentLease>>,
+    lease: Arc<crate::torrent::TorrentLease>,
+) {
+    if !target
+        .iter()
+        .any(|existing| Arc::ptr_eq(existing, &lease))
+    {
+        target.push(lease);
     }
 }
 
