@@ -1,9 +1,9 @@
 pub(crate) use remux_sdks::remux::{AudioCodec, SubtitleCodec, VideoCodec};
 use remux_sdks::remux::{
     CodecProfile, DeviceProfile, DirectPlayProfile, DlnaProfileType, MediaSourceInfo,
-    MediaStream, MediaStreamType, ProfileCondition, SubtitleDeliveryMethod,
-    TranscodeReason, TranscodeReasons, TranscodingProfile, TranscodingProtocol,
-    VideoContainer,
+    MediaStream, MediaStreamType, ProfileCondition, ProfileProperty,
+    SubtitleDeliveryMethod, TranscodeReason, TranscodeReasons, TranscodingProfile,
+    TranscodingProtocol, VideoContainer,
 };
 
 pub trait DeviceProfileExt {
@@ -329,7 +329,7 @@ impl CodecProfileExt for CodecProfile {
         for cond in &self.conditions {
             let property = match cond
                 .property
-                .as_deref()
+                .as_ref()
             {
                 Some(p) => p,
                 None => continue,
@@ -337,7 +337,7 @@ impl CodecProfileExt for CodecProfile {
             let actual = stream_property_value(stream, property);
 
             // HDR10Plus also satisfies HDR10 conditions.
-            if property == "VideoRangeType" {
+            if matches!(property, ProfileProperty::VideoRangeType) {
                 if let Some(ref v) = actual {
                     if v.eq_ignore_ascii_case("HDR10Plus")
                         && cond.is_satisfied_opt(Some("HDR10"))
@@ -361,21 +361,29 @@ impl CodecProfileExt for CodecProfile {
                         .unwrap_or("(unknown)"),
                 );
                 let reason = match property {
-                    "VideoRangeType" => {
+                    ProfileProperty::VideoRangeType => {
                         TranscodeReason::VideoRangeTypeNotSupported(detail)
                     }
-                    "VideoCodecTag" => {
+                    ProfileProperty::VideoCodecTag => {
                         TranscodeReason::VideoCodecTagNotSupported(detail)
                     }
-                    "VideoProfile" => TranscodeReason::VideoProfileNotSupported(detail),
-                    "AudioProfile" => TranscodeReason::AudioCodecNotSupported(detail),
-                    "Profile"
+                    ProfileProperty::VideoProfile => {
+                        TranscodeReason::VideoProfileNotSupported(detail)
+                    }
+                    ProfileProperty::AudioProfile => {
+                        TranscodeReason::AudioCodecNotSupported(detail)
+                    }
+                    ProfileProperty::Profile
                         if matches!(stream.type_, Some(MediaStreamType::Audio)) =>
                     {
                         TranscodeReason::AudioCodecNotSupported(detail)
                     }
-                    "Profile" => TranscodeReason::VideoProfileNotSupported(detail),
-                    "BitDepth" => TranscodeReason::VideoBitDepthNotSupported(detail),
+                    ProfileProperty::Profile => {
+                        TranscodeReason::VideoProfileNotSupported(detail)
+                    }
+                    ProfileProperty::BitDepth => {
+                        TranscodeReason::VideoBitDepthNotSupported(detail)
+                    }
                     _ => {
                         if matches!(stream.type_, Some(MediaStreamType::Audio)) {
                             TranscodeReason::AudioCodecNotSupported(detail)
@@ -419,64 +427,71 @@ fn any_codec_matches(entry: &str, source: &str) -> bool {
     }
 }
 
-fn stream_property_value(stream: &MediaStream, property: &str) -> Option<String> {
+fn stream_property_value(
+    stream: &MediaStream,
+    property: &ProfileProperty,
+) -> Option<String> {
     match property {
-        "VideoRangeType" => stream
+        ProfileProperty::VideoRangeType => stream
             .video_range_type
             .as_ref()
             .map(|v| {
                 v.as_str()
                     .to_string()
             }),
-        "VideoCodecTag" => stream
+        ProfileProperty::VideoCodecTag => stream
             .codec_tag
             .clone(),
-        "IsAnamorphic" => Some(
+        ProfileProperty::IsAnamorphic => Some(
             stream
                 .is_anamorphic
                 .unwrap_or(false)
                 .to_string(),
         ),
-        "IsInterlaced" => Some(
+        ProfileProperty::IsInterlaced => Some(
             stream
                 .is_interlaced
                 .to_string(),
         ),
-        "IsAVC" | "IsAvc" => Some(
+        ProfileProperty::IsAvc => Some(
             stream
                 .is_avc
                 .unwrap_or(false)
                 .to_string(),
         ),
-        "BitDepth" => stream
+        ProfileProperty::BitDepth => stream
             .bit_depth
             .map(|v| v.to_string()),
-        "RefFrames" => stream
+        ProfileProperty::RefFrames => stream
             .ref_frames
             .map(|v| v.to_string()),
-        "NumAudioStreams" | "NumVideoStreams" => None,
-        "VideoLevel" | "Level" => stream
+        ProfileProperty::NumAudioStreams | ProfileProperty::NumVideoStreams => None,
+        ProfileProperty::VideoLevel | ProfileProperty::Level => stream
             .level
             .map(|v| v.to_string()),
-        "VideoProfile" | "AudioProfile" | "Profile" => stream
+        ProfileProperty::VideoProfile
+        | ProfileProperty::AudioProfile
+        | ProfileProperty::Profile => stream
             .profile
             .clone(),
-        "Height" => stream
+        ProfileProperty::Height => stream
             .height
             .map(|v| v.to_string()),
-        "Width" => stream
+        ProfileProperty::Width => stream
             .width
             .map(|v| v.to_string()),
-        "VideoFramerate" | "Framerate" => stream
+        ProfileProperty::VideoFramerate | ProfileProperty::Framerate => stream
             .real_frame_rate
             .map(|v| v.to_string()),
-        "VideoBitrate" | "Bitrate" | "AudioBitrate" => stream
+        ProfileProperty::VideoBitrate
+        | ProfileProperty::Bitrate
+        | ProfileProperty::AudioBitrate => stream
             .bit_rate
             .map(|v| v.to_string()),
-        "AudioChannels" => stream
+        ProfileProperty::AudioChannels => stream
             .channels
             .map(|v| v.to_string()),
-        "AudioSampleRate" => stream
+        ProfileProperty::AudioSampleRate => stream
             .sample_rate
             .map(|v| v.to_string()),
         _ => None,
@@ -542,8 +557,8 @@ mod tests {
     use remux_sdks::remux::{
         AudioCodec, CodecProfile, DeviceProfile, DirectPlayProfile, DlnaProfileType,
         MediaSourceInfo, MediaStream, MediaStreamType, ProfileCondition,
-        SubtitleDeliveryMethod, SubtitleProfile, TranscodeReason, VideoCodec,
-        VideoContainer,
+        ProfileProperty, SubtitleDeliveryMethod, SubtitleProfile, TranscodeReason,
+        VideoCodec, VideoContainer,
     };
 
     #[test]
@@ -678,7 +693,7 @@ mod tests {
                 codec: Some(vec!["h264".to_string()]),
                 conditions: vec![ProfileCondition {
                     condition: Some("EqualsAny".to_string()),
-                    property: Some("VideoProfile".to_string()),
+                    property: Some(ProfileProperty::VideoProfile),
                     value: Some("high|main|baseline|constrained baseline".to_string()),
                     is_required: Some(false),
                 }],
@@ -749,7 +764,7 @@ mod tests {
                 codec: Some(vec!["aac".to_string()]),
                 conditions: vec![ProfileCondition {
                     condition: Some("LessThanEqual".to_string()),
-                    property: Some("AudioChannels".to_string()),
+                    property: Some(ProfileProperty::AudioChannels),
                     value: Some("2".to_string()),
                     is_required: Some(false),
                 }],
@@ -804,7 +819,7 @@ mod tests {
                 codec: Some(vec!["aac".to_string()]),
                 conditions: vec![ProfileCondition {
                     condition: Some("NotEquals".to_string()),
-                    property: Some("AudioProfile".to_string()),
+                    property: Some(ProfileProperty::AudioProfile),
                     value: Some("HE-AAC".to_string()),
                     is_required: Some(false),
                 }],
