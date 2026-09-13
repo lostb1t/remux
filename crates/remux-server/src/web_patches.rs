@@ -47,7 +47,7 @@ pub static CSS: &str = r##"
 /// JS injected before `</body>` of every HTML response.
 /// Intercepts React Router (History API) navigation to /wizard and /dashboard
 /// and redirects to our admin UI at /admin.
-pub static JS: &str = r#"
+pub static JS: &str = r##"
 
 (function () {
   var ADMIN = ['/wizard', '/dashboard'];
@@ -673,7 +673,120 @@ pub static JS: &str = r#"
   processRoot(document.body);
 }());
 
-"#;
+// Hide individual libraries from the homescreen "My Media" tiles while leaving
+// them everywhere else (sidebar, "Latest in ..." shelves, browse, search).
+//
+// This cannot be done server-side: the home tiles, the sidebar and the Latest
+// shelf selection all consume one shared `GET /Users/{id}/Views` response
+// (react-query key ["User",id,"Views"]), so dropping a view from that payload
+// removes it from all three at once. `MyMediaExcludes` is exactly that blunt
+// exclusion. Filtering the rendered tiles is the only place the three surfaces
+// are distinguishable, hence this DOM patch.
+//
+// Server truth is `Remux.ShowInMyMedia === false` on the view item.
+(function () {
+  var hidden = null;      // { id: true } for views to skip; null until loaded
+  var pending = null;     // In-flight fetch, so concurrent callers share it
+
+  // `/userviews` already applies this user's policy and MyMediaExcludes, so a
+  // view missing here is hidden for other reasons and needs no tile handling.
+  function loadHidden() {
+    if (hidden) return Promise.resolve(hidden);
+    if (pending) return pending;
+    var client = window.ApiClient;
+    if (!client || !client.getUrl || !client.getJSON) return Promise.resolve(null);
+    pending = client
+      .getJSON(client.getUrl('UserViews', { userId: client.getCurrentUserId() }))
+      .then(function (result) {
+        var ids = Object.create(null);
+        var items = (result && result.Items) || [];
+        for (var i = 0; i < items.length; i++) {
+          var item = items[i];
+          var remux = item && (item.Remux || item.remux);
+          if (remux && remux.ShowInMyMedia === false) ids[String(item.Id)] = true;
+        }
+        hidden = ids;
+        pending = null;
+        return hidden;
+      })
+      .catch(function () {
+        pending = null;
+        return null;
+      });
+    return pending;
+  }
+
+  // Both My Media flavours are identified by what the renderer emits, verified
+  // against the live DOM:
+  //   librarybuttons     -> <a class="raised homeLibraryButton emby-button"
+  //                            href="#/list?parentId=<id>&serverId=...">
+  //   smalllibrarytiles  -> <div class="card ..." data-id="<id>"
+  //                            data-context absent>
+  function libraryIdFor(el) {
+    if (el.classList.contains('homeLibraryButton')) {
+      var href = el.getAttribute('href') || '';
+      var qmark = href.indexOf('?');
+      if (qmark < 0) return null;
+      var params = new URLSearchParams(href.slice(qmark + 1));
+      return params.get('parentId') || params.get('topParentId') || params.get('id');
+    }
+    // Content cards carry data-context ("home"); library tiles never do. This
+    // is what keeps a Latest row — same .card/.itemsContainer shape — intact.
+    if (el.hasAttribute('data-context')) return null;
+    return el.getAttribute('data-id');
+  }
+
+  // A My Media section owns its heading directly (`> h2.sectionTitle`), whereas
+  // a Latest row wraps the heading in a `.sectionTitleContainer` link. That
+  // structural difference is the reliable discriminator between the two, and it
+  // also keeps the sidebar (outside .homeSectionsContainer) untouched.
+  function myMediaTiles(root) {
+    if (!root.querySelectorAll) return [];
+    var out = [];
+    var sections = document.querySelectorAll('.homeSectionsContainer .verticalSection');
+    for (var i = 0; i < sections.length; i++) {
+      var section = sections[i];
+      if (section.classList.contains('remux-hidden-view-shelf')) continue;
+      if (!section.querySelector(':scope > h2.sectionTitle')) continue;
+      var tiles = section.querySelectorAll('.card[data-id], a.homeLibraryButton');
+      for (var j = 0; j < tiles.length; j++) out.push(tiles[j]);
+    }
+    return out;
+  }
+
+  function apply(root) {
+    var tiles = myMediaTiles(root || document.body);
+    if (!tiles.length) return;
+    loadHidden().then(function (ids) {
+      if (!ids) return;
+      for (var i = 0; i < tiles.length; i++) {
+        var tile = tiles[i];
+        if (!tile.isConnected) continue;
+        var id = libraryIdFor(tile);
+        if (id && ids[id]) tile.style.display = 'none';
+      }
+    });
+  }
+
+  // Home sections are rebuilt on settings change and on re-entering the tab,
+  // so a one-shot pass would be undone. Re-run whenever nodes are added.
+  // Coalesce with setTimeout rather than requestAnimationFrame: rAF is
+  // throttled to never firing on background/hidden pages and in some embedded
+  // webviews, which would leave the tiles unfiltered.
+  var queued = false;
+  new MutationObserver(function () {
+    if (queued) return;
+    queued = true;
+    setTimeout(function () {
+      queued = false;
+      apply(document.body);
+    }, 0);
+  }).observe(document.body, { childList: true, subtree: true });
+
+  apply(document.body);
+}());
+
+"##;
 
 #[cfg(test)]
 mod tests {
@@ -699,5 +812,55 @@ mod tests {
         );
         assert!(JS.contains("control.click();"));
         assert!(JS.contains("routeHeaderClick"));
+    }
+
+    /// A malformed `JS` static is a silent failure: the browser aborts the
+    /// whole inline script, so every patch in it stops working with no server
+    /// error and no visible cause.
+    ///
+    /// The failure mode this guards is a stray or missing closer left behind by
+    /// an edit, which shifts a later block out of its IIFE. Every top-level
+    /// unit here is written as `(function () { ... }());`, always at column 0,
+    /// so the invariant is checkable without lexing JS: outside of those
+    /// blocks, the only content may be comments and blank lines. A leftover
+    /// `}` or an unclosed function body surfaces as stray top-level code.
+    #[test]
+    fn injected_js_toplevel_blocks_are_well_formed() {
+        let mut depth = 0usize;
+        let mut blocks = 0usize;
+
+        for (n, line) in JS
+            .lines()
+            .enumerate()
+        {
+            let lineno = n + 1;
+            if depth == 0 {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with("//") {
+                    continue;
+                }
+                assert_eq!(
+                    line, "(function () {",
+                    "line {lineno}: expected a top-level IIFE opener or comment, got {line:?}"
+                );
+                depth = 1;
+                blocks += 1;
+            } else if line == "}());" {
+                depth = 0;
+            } else {
+                // Inside a block every line must be indented; a column-0 line
+                // means the previous block was closed early or never opened.
+                assert!(
+                    line.trim()
+                        .is_empty()
+                        || line.starts_with(' '),
+                    "line {lineno}: unindented line inside an IIFE, \
+                     indicating a mismatched brace: {line:?}"
+                );
+            }
+        }
+
+        assert_eq!(depth, 0, "unterminated top-level IIFE in injected JS");
+        assert!(blocks > 0, "no top-level IIFE found in injected JS");
     }
 }
