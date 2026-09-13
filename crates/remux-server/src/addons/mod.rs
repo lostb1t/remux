@@ -1124,7 +1124,7 @@ fn user_scoped(runtime: &AddonRuntime, override_ids: Option<&[Uuid]>) -> bool {
 /// `supports_type` believe an anime/series-only addon serves only movies,
 /// excluding it from `addons_for::<dyn StreamAddon>` for every
 /// Series/Season/Episode lookup.
-fn recognized_manifest_media_kind(
+pub(crate) fn recognized_manifest_media_kind(
     t: sdks::stremio::MediaType,
 ) -> Option<sdks::remux::MediaKind> {
     use sdks::{remux::MediaKind as MK, stremio::MediaType as MT};

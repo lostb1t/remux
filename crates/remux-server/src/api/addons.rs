@@ -13,14 +13,65 @@ use uuid::Uuid;
 use crate::{
     AppState, IntoApiError, OptionExt, ResultExt,
     addons::{
-        Addon, AddonCatalogDto, AddonDto, AddonMetadata, CreateAddonRequest,
-        UpdateAddonCatalogRequest, UpdateAddonRequest, registered_presets,
-        set_user_addon_override, user_addon_override,
+        Addon, AddonCapabilities, AddonCatalogDto, AddonDto, AddonMetadata,
+        AddonPreset, CreateAddonRequest, UpdateAddonCatalogRequest, UpdateAddonRequest,
+        registered_presets, set_user_addon_override, user_addon_override,
     },
     db::{MediaKind as DbMediaKind, auth},
 };
 use axum_anyhow::ApiResult as Result;
 use remux_sdks::remux::MediaKind;
+
+type CapabilitySnapshot = (Vec<remux_sdks::stremio::ResourceType>, Vec<DbMediaKind>);
+
+fn preset_capability_snapshot(preset: &dyn AddonPreset) -> CapabilitySnapshot {
+    let metadata = preset.metadata();
+    (
+        metadata
+            .supported_resources
+            .into_iter()
+            .map(|resource| resource.name)
+            .collect(),
+        metadata
+            .supported_types
+            .into_iter()
+            .map(DbMediaKind::from)
+            .collect(),
+    )
+}
+
+async fn capability_snapshot(
+    preset: &dyn AddonPreset,
+    caps: &AddonCapabilities,
+) -> anyhow::Result<CapabilitySnapshot> {
+    let Some(kind) = caps
+        .kind
+        .as_deref()
+    else {
+        return Ok(preset_capability_snapshot(preset));
+    };
+    let Some((resources, types)) = kind
+        .available_info()
+        .await?
+    else {
+        return Ok(preset_capability_snapshot(preset));
+    };
+    let resources = resources
+        .into_iter()
+        .map(|resource| resource.name)
+        .collect();
+    let types: Vec<_> = types
+        .into_iter()
+        .filter_map(crate::addons::recognized_manifest_media_kind)
+        .map(DbMediaKind::from)
+        .collect();
+    let types = if types.is_empty() {
+        preset_capability_snapshot(preset).1
+    } else {
+        types
+    };
+    Ok((resources, types))
+}
 
 async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
     let preset = registered_presets()
@@ -265,40 +316,16 @@ pub async fn create_addon(
                 .config,
         )
         .context_bad_request("Invalid addon configuration")?;
-    let kind_ref = caps
-        .kind
-        .as_deref();
-
-    let metadata = preset.metadata();
-    let avail_info = if let Some(k) = kind_ref {
-        k.available_info()
+    let (derived_resources, derived_types) =
+        capability_snapshot(preset.as_ref(), &caps)
             .await
-            .context_not_reachable()?
-    } else {
-        None
-    };
+            .context_not_reachable()?;
 
     let resources: Vec<remux_sdks::stremio::ResourceType> = if payload
         .resources
         .is_empty()
     {
-        match &avail_info {
-            Some((refs, _)) => refs
-                .iter()
-                .map(|r| {
-                    r.name
-                        .clone()
-                })
-                .collect(),
-            None => metadata
-                .supported_resources
-                .iter()
-                .map(|r| {
-                    r.name
-                        .clone()
-                })
-                .collect(),
-        }
+        derived_resources
     } else {
         payload.resources
     };
@@ -306,17 +333,7 @@ pub async fn create_addon(
         .types
         .is_empty()
     {
-        match avail_info {
-            Some((_, t)) => t
-                .into_iter()
-                .filter_map(|t| DbMediaKind::try_from(t).ok())
-                .collect(),
-            None => metadata
-                .supported_types
-                .into_iter()
-                .map(DbMediaKind::from)
-                .collect(),
-        }
+        derived_types
     } else {
         payload
             .types
@@ -383,6 +400,17 @@ pub async fn update_addon(
     Path(id): Path<Uuid>,
     Json(payload): Json<UpdateAddonRequest>,
 ) -> Result<Json<AddonDto>> {
+    let UpdateAddonRequest {
+        name,
+        config,
+        resources,
+        types,
+        enabled,
+        priority,
+        is_default,
+        http_redirect_stream,
+        service_filter,
+    } = payload;
     let mut addon = Addon::get(
         &state
             .ctx
@@ -392,49 +420,47 @@ pub async fn update_addon(
     .await?
     .context_not_found("Addon not found")?;
 
-    // System addons cannot have their resources or content types modified.
-    // Silently skip these fields so the rest of the update still saves.
-    if let Some(resources) = payload.resources {
+    // Keep these Options available below: explicit fields take precedence over
+    // capability values derived when the config changes.
+    if let Some(resources) = &resources {
         if addon.system {
-            if resources != addon.resources {
+            if resources != &addon.resources {
                 warn!("ignoring resources change on system addon {}", addon.id);
             }
         } else {
-            addon.resources = resources;
+            addon.resources = resources.clone();
         }
     }
-    if let Some(types) = payload.types {
+    if let Some(types) = &types {
+        let types: Vec<_> = types
+            .iter()
+            .cloned()
+            .map(DbMediaKind::from)
+            .collect();
         if addon.system {
-            let new_types: Vec<_> = types
-                .into_iter()
-                .map(DbMediaKind::from)
-                .collect();
-            if new_types != addon.types {
+            if types != addon.types {
                 warn!("ignoring types change on system addon {}", addon.id);
             }
         } else {
-            addon.types = types
-                .into_iter()
-                .map(DbMediaKind::from)
-                .collect();
+            addon.types = types;
         }
     }
-    if let Some(name) = payload.name {
+    if let Some(name) = name {
         addon.name = name;
     }
-    if let Some(enabled) = payload.enabled {
+    if let Some(enabled) = enabled {
         addon.enabled = enabled;
     }
-    if let Some(priority) = payload.priority {
+    if let Some(priority) = priority {
         addon.priority = priority;
     }
-    if let Some(is_default) = payload.is_default {
+    if let Some(is_default) = is_default {
         addon.is_default = is_default;
     }
-    if let Some(http_redirect_stream) = payload.http_redirect_stream {
+    if let Some(http_redirect_stream) = http_redirect_stream {
         addon.http_redirect_stream = http_redirect_stream;
     }
-    if let Some(service_filter) = payload.service_filter {
+    if let Some(service_filter) = service_filter {
         addon.service_filter = service_filter;
     }
     addon.updated_at = Utc::now().naive_utc();
@@ -457,7 +483,8 @@ pub async fn update_addon(
             )
         })
         .context_bad_request("Unknown addon kind")?;
-    if let Some(config) = payload.config {
+    let config_changed = config.is_some();
+    if let Some(config) = config {
         addon
             .preset
             .config = preset
@@ -470,7 +497,7 @@ pub async fn update_addon(
             .context_bad_request("Invalid addon configuration")?
             .into();
     }
-    preset
+    let caps = preset
         .from_cfg(
             addon.id,
             addon
@@ -482,6 +509,27 @@ pub async fn update_addon(
                 .config,
         )
         .context_bad_request("Invalid addon configuration")?;
+
+    if config_changed && !addon.system {
+        let (derived_resources, derived_types) =
+            match capability_snapshot(preset.as_ref(), &caps).await {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    warn!(
+                        addon_id = %addon.id,
+                        %error,
+                        "failed to refresh addon capabilities; using preset metadata"
+                    );
+                    preset_capability_snapshot(preset.as_ref())
+                }
+            };
+        if resources.is_none() {
+            addon.resources = derived_resources;
+        }
+        if types.is_none() {
+            addon.types = derived_types;
+        }
+    }
 
     addon
         .update(
@@ -744,14 +792,79 @@ pub async fn set_user_addons(
 mod test {
     use super::*;
     use crate::integration_test::{auth_header_with_token, authenticated_server};
+    use async_trait::async_trait;
     use http::header::HeaderValue;
     use serde_json::json;
+    use std::sync::Arc;
+
+    struct ManifestKind(Vec<remux_sdks::stremio::MediaType>);
+
+    #[async_trait]
+    impl crate::addons::AddonKind for ManifestKind {
+        fn id(&self) -> &'static str {
+            "test"
+        }
+
+        async fn available_info(
+            &self,
+        ) -> anyhow::Result<
+            Option<(
+                Vec<remux_sdks::stremio::ResourceRef>,
+                Vec<remux_sdks::stremio::MediaType>,
+            )>,
+        > {
+            Ok(Some((
+                vec![],
+                self.0
+                    .clone(),
+            )))
+        }
+    }
 
     fn auth(token: &str) -> (http::header::HeaderName, HeaderValue) {
         (
             http::header::AUTHORIZATION,
             HeaderValue::from_str(&auth_header_with_token(token)).unwrap(),
         )
+    }
+
+    #[tokio::test]
+    async fn capability_snapshot_uses_shared_mapping_and_falls_back_for_unknown_types()
+    {
+        let preset = registered_presets()
+            .into_iter()
+            .find(|preset| preset.id() == "stremio")
+            .unwrap();
+
+        let genre = capability_snapshot(
+            preset.as_ref(),
+            &AddonCapabilities {
+                kind: Some(Arc::new(ManifestKind(vec![
+                    remux_sdks::stremio::MediaType::Other("genre".to_string()),
+                ]))),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(genre.1, vec![DbMediaKind::Genre]);
+
+        let unknown = capability_snapshot(
+            preset.as_ref(),
+            &AddonCapabilities {
+                kind: Some(Arc::new(ManifestKind(vec![
+                    remux_sdks::stremio::MediaType::Other("anime".to_string()),
+                ]))),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            !unknown
+                .1
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -898,5 +1011,154 @@ mod test {
             }))
             .await;
         resp.assert_status(http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn update_config_refreshes_derived_capabilities() {
+        let (server, _ctx, token) = authenticated_server().await;
+        let (h, v) = auth(&token);
+        let dir = std::env::temp_dir()
+            .to_string_lossy()
+            .to_string();
+
+        let created: AddonDto = server
+            .post("/addons")
+            .add_header(h.clone(), v.clone())
+            .json(&json!({
+                "preset": {
+                    "kind": "opendal-local",
+                    "config": { "paths": [dir.clone()], "media_kind": "movie" }
+                },
+                "name": "Local files"
+            }))
+            .await
+            .json();
+        assert!(
+            created
+                .types
+                .contains(&MediaKind::Movie)
+        );
+
+        let updated: AddonDto = server
+            .post(&format!("/addons/{}", created.id))
+            .add_header(h, v)
+            .json(&json!({
+                "config": { "paths": [dir], "media_kind": "episode" }
+            }))
+            .await
+            .json();
+
+        assert!(
+            updated
+                .types
+                .contains(&MediaKind::Series)
+        );
+        assert!(
+            !updated
+                .types
+                .contains(&MediaKind::Movie)
+        );
+
+        let (h, v) = auth(&token);
+        let explicit: AddonDto = server
+            .post(&format!("/addons/{}", created.id))
+            .add_header(h, v)
+            .json(&json!({
+                "config": { "paths": [std::env::temp_dir()], "media_kind": "movie" },
+                "resources": ["stream"],
+                "types": ["series"]
+            }))
+            .await
+            .json();
+        assert_eq!(
+            explicit.resources,
+            vec![remux_sdks::stremio::ResourceType::Stream]
+        );
+        assert_eq!(explicit.types, vec![MediaKind::Series]);
+
+        let (h, v) = auth(&token);
+        let explicit_empty: AddonDto = server
+            .post(&format!("/addons/{}", created.id))
+            .add_header(h, v)
+            .json(&json!({
+                "config": { "paths": [std::env::temp_dir()], "media_kind": "episode" },
+                "resources": [],
+                "types": []
+            }))
+            .await
+            .json();
+        assert!(
+            explicit_empty
+                .resources
+                .is_empty()
+        );
+        assert!(
+            explicit_empty
+                .types
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn update_config_survives_unreachable_capability_manifest() {
+        let (server, ctx, token) = authenticated_server().await;
+        let (h, v) = auth(&token);
+        let now = Utc::now().naive_utc();
+        let mut addon = Addon {
+            id: Uuid::new_v4(),
+            name: "Unavailable manifest".to_string(),
+            preset: crate::addons::AddonPresetRef {
+                kind: "stremio".to_string(),
+                config: json!({ "manifest_url": "http://127.0.0.1:1/manifest.json" })
+                    .into(),
+            },
+            resources: vec![],
+            types: vec![],
+            enabled: false,
+            priority: 0,
+            created_at: now,
+            updated_at: now,
+            system: false,
+            is_default: false,
+            http_redirect_stream: false,
+            service_filter: vec![],
+        };
+        addon
+            .insert(
+                &ctx.0
+                    .db,
+            )
+            .await
+            .unwrap();
+
+        let response = server
+            .post(&format!("/addons/{}", addon.id))
+            .add_header(h, v)
+            .json(&json!({
+                "name": "Updated while unavailable",
+                "config": { "manifest_url": "http://127.0.0.1:1/manifest.json" }
+            }))
+            .await;
+        response.assert_status_ok();
+
+        addon = Addon::get(
+            &ctx.0
+                .db,
+            addon.id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(addon.name, "Updated while unavailable");
+        assert!(
+            !addon
+                .resources
+                .is_empty()
+        );
+        assert!(
+            !addon
+                .types
+                .is_empty()
+        );
     }
 }
