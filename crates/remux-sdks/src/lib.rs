@@ -7,7 +7,6 @@ pub mod remux;
 pub mod remuxdb;
 pub mod stremio;
 pub mod tmdb;
-pub mod trakt;
 
 mod rate_limit;
 
