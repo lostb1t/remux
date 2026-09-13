@@ -258,6 +258,8 @@ pub struct MediaInfo {
 /// Values are already normalized to RemuxDB's 0–100 scale.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MetricPeriods {
+    #[serde(rename = "alltime")]
+    pub all_time: Option<f64>,
     pub daily: Option<f64>,
     pub weekly: Option<f64>,
     pub monthly: Option<f64>,
@@ -273,8 +275,8 @@ pub struct RatingSource {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaRatings {
-    pub score: f64,
-    pub score_average: f64,
+    pub score: Option<f64>,
+    pub score_average: Option<f64>,
     /// Rotten Tomatoes critics score, on its native 0–100 percentage scale.
     pub tomatoes: Option<f64>,
     #[serde(default)]

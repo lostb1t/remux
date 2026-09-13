@@ -29,7 +29,7 @@ run_task = { name = ["dev-server", "dev-build-dash"], fork = true, parallel = tr
 [tasks.dev-server]
 command = "cargo"
 args = ["run" , "-p", "remux-server"]
-watch = true
+watch = { watch = ["${PWD}/crates"] }
 #cwd = "crates/server"
 
 [tasks.dev-serve-dash]
