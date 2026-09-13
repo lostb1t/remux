@@ -1304,6 +1304,7 @@ pub struct PatchItemPayload {
     pub collection_kind: Option<String>,
     pub smart_filter: Option<CollectionFilter>,
     pub promoted: Option<bool>,
+    pub show_in_my_media: Option<bool>,
     pub tags: Option<Vec<String>>,
     pub sort_order: Option<i64>,
     pub latest_auto_unplayed: Option<bool>,
@@ -3838,6 +3839,9 @@ pub struct RemuxInfo {
     pub collection_max_items: Option<i64>,
     pub smart_filter: Option<CollectionFilter>,
     pub promoted: Option<bool>,
+    /// `false` hides a promoted collection from the jellyfin-web home
+    /// "My Media" tiles only; sidebar, "Latest" shelf and browse stay intact.
+    pub show_in_my_media: Option<bool>,
     pub digital_release_date: Option<DateTime<Utc>>,
     pub latest_auto_unplayed: Option<bool>,
     pub latest_sort_digital: Option<bool>,
@@ -7007,6 +7011,54 @@ impl Endpoint for RegenerateCollectionImage {
     }
     fn method(&self) -> Method {
         Method::POST
+    }
+}
+
+/// `POST /collections/{id}/items?ids=...`
+///
+/// For a group container (`CollectionMediaKind::Collection`) the server
+/// reparents the given collections; for an ordinary manual collection it adds
+/// content items as members. Smart collections reject this.
+#[derive(Debug, Clone)]
+pub struct AddCollectionItems {
+    pub collection_id: String,
+    pub item_ids: Vec<String>,
+}
+
+impl Endpoint for AddCollectionItems {
+    type Output = ();
+    fn path(&self) -> String {
+        format!(
+            "/collections/{}/items?ids={}",
+            self.collection_id,
+            self.item_ids
+                .join(",")
+        )
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+}
+
+/// `DELETE /collections/{id}/items?ids=...`
+#[derive(Debug, Clone)]
+pub struct RemoveCollectionItems {
+    pub collection_id: String,
+    pub item_ids: Vec<String>,
+}
+
+impl Endpoint for RemoveCollectionItems {
+    type Output = ();
+    fn path(&self) -> String {
+        format!(
+            "/collections/{}/items?ids={}",
+            self.collection_id,
+            self.item_ids
+                .join(",")
+        )
+    }
+    fn method(&self) -> Method {
+        Method::DELETE
     }
 }
 
