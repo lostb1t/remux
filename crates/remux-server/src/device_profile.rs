@@ -161,7 +161,7 @@ fn check_codec_profiles(
                 }
             }
             Some(DlnaProfileType::Audio) => {
-                if let Some(stream) = media_source.audio_stream() {
+                if let Some(stream) = media_source.selected_audio_stream() {
                     let codec = stream
                         .codec
                         .as_deref()
@@ -183,7 +183,7 @@ fn check_codec_profiles(
                     .video_stream()
                     .is_some() =>
             {
-                if let Some(stream) = media_source.audio_stream() {
+                if let Some(stream) = media_source.selected_audio_stream() {
                     let codec = stream
                         .codec
                         .as_deref()
@@ -251,7 +251,7 @@ impl DirectPlayProfileExt for DirectPlayProfile {
             }
         }
 
-        if let Some(audio_stream) = media_source.audio_stream() {
+        if let Some(audio_stream) = media_source.selected_audio_stream() {
             if let Some(audio_codec) = &audio_stream.codec {
                 if !self.supports_audio_codec(audio_codec) {
                     reasons.insert(TranscodeReason::AudioCodecNotSupported(format!(
@@ -826,8 +826,9 @@ mod tests {
             }],
             ..Default::default()
         };
-        let source = |audio_profile: &str| MediaSourceInfo {
+        let source = |selected_audio_stream_index| MediaSourceInfo {
             container: Some(VideoContainer::Ts),
+            default_audio_stream_index: Some(selected_audio_stream_index),
             media_streams: vec![
                 MediaStream {
                     codec: Some("h264".to_string()),
@@ -837,16 +838,23 @@ mod tests {
                 },
                 MediaStream {
                     codec: Some("aac".to_string()),
-                    profile: Some(audio_profile.to_string()),
+                    profile: Some("LC".to_string()),
                     type_: Some(MediaStreamType::Audio),
                     index: 1,
+                    ..Default::default()
+                },
+                MediaStream {
+                    codec: Some("aac".to_string()),
+                    profile: Some("HE-AAC".to_string()),
+                    type_: Some(MediaStreamType::Audio),
+                    index: 2,
                     ..Default::default()
                 },
             ],
             ..Default::default()
         };
 
-        let he_aac_reasons = profile.check_direct_play(&source("HE-AAC"));
+        let he_aac_reasons = profile.check_direct_play(&source(2));
         assert!(
             he_aac_reasons
                 .contains(&TranscodeReason::AudioCodecNotSupported(String::new())),
@@ -854,7 +862,7 @@ mod tests {
         );
         assert!(
             profile
-                .check_direct_play(&source("LC"))
+                .check_direct_play(&source(1))
                 .is_empty()
         );
     }

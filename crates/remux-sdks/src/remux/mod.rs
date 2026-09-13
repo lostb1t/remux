@@ -2878,6 +2878,21 @@ impl MediaSourceInfo {
             .find(|s| matches!(s.type_, Some(MediaStreamType::Audio)))
     }
 
+    /// The audio stream selected for this playback request, falling back to
+    /// the first audio stream when no per-request selection has been made.
+    pub fn selected_audio_stream(&self) -> Option<&MediaStream> {
+        self.default_audio_stream_index
+            .and_then(|index| {
+                self.media_streams
+                    .iter()
+                    .find(|stream| {
+                        stream.index == index
+                            && matches!(stream.type_, Some(MediaStreamType::Audio))
+                    })
+            })
+            .or_else(|| self.audio_stream())
+    }
+
     pub fn subtitle_stream(&self) -> Option<&MediaStream> {
         self.media_streams
             .iter()
