@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use super::{
     AddonCapabilities, AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration,
-    CatalogAddon, CatalogInfo, MediaKind, MetaAddon, MetricSnapshot, MetricValue,
-    MetricsAddon, MetricsCtx, ResourceType, SearchAddon, TreeAddon,
+    CatalogAddon, CatalogInfo, MediaKind, MetaAddon, ResourceType, SearchAddon,
+    TreeAddon,
 };
 use crate::{
     AppContext, api, common, db, sdks,
@@ -37,7 +37,6 @@ impl AddonPreset for TmdbPreset {
                 AddonMetadata::simple_resource(ResourceType::Meta),
                 AddonMetadata::simple_resource(ResourceType::Search),
                 AddonMetadata::simple_resource(ResourceType::Catalog),
-                AddonMetadata::simple_resource(ResourceType::Metrics),
             ],
             supported_types: vec![
                 MediaKind::Movie,
@@ -45,7 +44,7 @@ impl AddonPreset for TmdbPreset {
                 MediaKind::Episode,
                 MediaKind::Person,
             ],
-            supported_resources_user: vec![ResourceType::Search, ResourceType::Metrics],
+            supported_resources_user: vec![ResourceType::Search],
             supported_types_user: vec![
                 MediaKind::Movie,
                 MediaKind::Series,
@@ -62,16 +61,13 @@ impl AddonPreset for TmdbPreset {
         _cfg: &serde_json::Value,
         _config: &crate::Config,
     ) -> Result<AddonCapabilities> {
-        let addon = Arc::new(TmdbAddon {
-            popularity_max: Mutex::new(None),
-        });
+        let addon = Arc::new(TmdbAddon);
         Ok(AddonCapabilities {
             kind: Some(addon.clone()),
             meta: Some(addon.clone()),
             search: Some(addon.clone()),
             tree: Some(addon.clone()),
             catalog: Some(addon.clone()),
-            metrics: Some(addon),
             ..Default::default()
         })
     }
@@ -81,58 +77,7 @@ inventory::submit! {
     AddonPresetRegistration(|| Box::new(TmdbPreset))
 }
 
-pub struct TmdbAddon {
-    // (fetched_at, movie_max, tv_max) — refreshed every hour from discover page 1
-    popularity_max: Mutex<Option<(chrono::DateTime<chrono::Utc>, f64, f64)>>,
-}
-
-impl TmdbAddon {
-    async fn popularity_max(&self, api_key: &str, base_url: &str) -> (f64, f64) {
-        let now = chrono::Utc::now();
-        let mut cache = self
-            .popularity_max
-            .lock()
-            .await;
-        if cache
-            .as_ref()
-            .map_or(true, |(t, _, _)| (now - *t).num_minutes() >= 60)
-        {
-            let Ok(client) = tmdb_client(api_key, base_url) else {
-                return (1_000.0, 1_000.0);
-            };
-            let q = sdks::tmdb::DiscoverQuery {
-                sort_by: Some("popularity.desc".into()),
-                page: Some(1),
-                ..Default::default()
-            };
-            let movie_max = client
-                .execute(sdks::tmdb::DiscoverMovieEndpoint { query: q.clone() })
-                .await
-                .ok()
-                .and_then(|r| {
-                    r.results
-                        .into_iter()
-                        .next()
-                })
-                .and_then(|m| m.popularity)
-                .unwrap_or(1_000.0);
-            let tv_max = client
-                .execute(sdks::tmdb::DiscoverTvEndpoint { query: q })
-                .await
-                .ok()
-                .and_then(|r| {
-                    r.results
-                        .into_iter()
-                        .next()
-                })
-                .and_then(|s| s.popularity)
-                .unwrap_or(1_000.0);
-            *cache = Some((now, movie_max, tv_max));
-        }
-        let (_, movie_max, tv_max) = cache.unwrap();
-        (movie_max, tv_max)
-    }
-}
+pub struct TmdbAddon;
 
 fn tmdb_image(path: Option<&str>, kind: db::ImageKind) -> Option<String> {
     let size = match kind {
@@ -342,77 +287,6 @@ impl CatalogAddon for TmdbAddon {
         };
 
         Ok(Some(stream))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// MetricsAddon
-// ---------------------------------------------------------------------------
-
-#[async_trait]
-impl MetricsAddon for TmdbAddon {
-    async fn metric(
-        &self,
-        media: &db::Media,
-        ctx: &MetricsCtx,
-    ) -> Result<Option<MetricSnapshot>> {
-        let Some(tmdb_id) = media
-            .external_ids
-            .tmdb
-        else {
-            return Ok(None);
-        };
-        let api_key = ctx
-            .settings
-            .get_tmdb_key();
-        let (movie_max, tv_max) = self
-            .popularity_max(
-                api_key,
-                &ctx.config
-                    .tmdb_base_url,
-            )
-            .await;
-        let client = tmdb_client(
-            api_key,
-            &ctx.config
-                .tmdb_base_url,
-        )?;
-        let today = chrono::Utc::now().date_naive();
-
-        let popularity: Option<(f64, f64)> = match media.kind {
-            db::MediaKind::Movie => client
-                .execute(sdks::tmdb::MovieEndpoint {
-                    id: tmdb_id,
-                    language: None,
-                    include_image_language: None,
-                    append_to_response: vec![],
-                })
-                .await
-                .ok()
-                .and_then(|m| m.popularity)
-                .map(|p| (p, movie_max)),
-            db::MediaKind::Series => client
-                .execute(sdks::tmdb::SeriesEndpoint {
-                    id: tmdb_id,
-                    language: None,
-                    include_image_language: None,
-                    append_to_response: vec![],
-                })
-                .await
-                .ok()
-                .map(|s| (s.popularity, tv_max)),
-            _ => return Ok(None),
-        };
-
-        let external_id = format!("tmdb:{}", tmdb_id);
-        Ok(popularity.map(|(p, max)| MetricSnapshot {
-            source: "tmdb".to_string(),
-            media_id: Some(media.id),
-            media_raw: Some(external_id.clone()),
-            external_id,
-            value: MetricValue::from_raw(p, max),
-            date: today,
-        }))
     }
 }
 
@@ -667,6 +541,7 @@ impl From<&sdks::tmdb::Episode> for db::Media {
                         .vote_count
                         .map(|v| v as u32),
                 }),
+            ..Default::default()
         };
         let mut media = db::Media {
             kind: db::MediaKind::Episode,
@@ -1384,6 +1259,7 @@ async fn fetch_tmdb_meta(
                                 .vote_count
                                 .map(|v| v as u32),
                         }),
+                    ..Default::default()
                 };
                 let mut patch = db::Media {
                     title: movie_details.title,
@@ -1453,14 +1329,6 @@ async fn fetch_tmdb_meta(
                     .await
                     .ok();
                 patch.tags = watch_provider_tags(providers.as_ref(), &metadata_country);
-                patch.pending_popularity = movie_details
-                    .popularity
-                    .map(|p| {
-                        (
-                            format!("tmdb:{}", tmdb_id),
-                            MetricValue::from_raw(p, 1_000.0),
-                        )
-                    });
                 return Ok(Some(patch));
             }
         }
@@ -1549,6 +1417,7 @@ async fn fetch_tmdb_meta(
                             score,
                             vote_count: Some(tv_details.vote_count as u32),
                         }),
+                    ..Default::default()
                 };
                 let tmdb_status = tv_details
                     .status
@@ -1689,10 +1558,6 @@ async fn fetch_tmdb_meta(
                     .await
                     .ok();
                 patch.tags = watch_provider_tags(providers.as_ref(), &metadata_country);
-                patch.pending_popularity = Some((
-                    format!("tmdb:{}", tmdb_id),
-                    MetricValue::from_raw(tv_details.popularity, 1_000.0),
-                ));
                 return Ok(Some(patch));
             }
         }

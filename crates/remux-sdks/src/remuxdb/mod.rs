@@ -254,6 +254,95 @@ pub struct MediaInfo {
     pub tracks: Vec<TrackDetail>,
 }
 
+/// Popularity or trending scores returned by `GET /api/media/{imdb_id}`.
+/// Values are already normalized to RemuxDB's 0–100 scale.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MetricPeriods {
+    pub daily: Option<f64>,
+    pub weekly: Option<f64>,
+    pub monthly: Option<f64>,
+    pub yearly: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RatingSource {
+    pub source: String,
+    pub value: f64,
+    pub votes: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaRatings {
+    pub score: f64,
+    pub score_average: f64,
+    /// Rotten Tomatoes critics score, on its native 0–100 percentage scale.
+    pub tomatoes: Option<f64>,
+    #[serde(default)]
+    pub sources: Vec<RatingSource>,
+    pub updated_at: Option<String>,
+}
+
+/// Metadata and metrics returned by `GET /api/media/{imdb_id}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaMetrics {
+    pub popularity: MetricPeriods,
+    pub trending: MetricPeriods,
+    pub ratings: Option<MediaRatings>,
+}
+
+#[derive(Clone)]
+struct MediaMetricsEndpoint {
+    imdb_id: String,
+    client_id: String,
+}
+
+impl Endpoint for MediaMetricsEndpoint {
+    type Output = MediaMetrics;
+
+    fn path(&self) -> String {
+        format!("/api/media/{}", self.imdb_id)
+    }
+
+    fn headers(&self) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        if let Ok(value) = HeaderValue::from_str(&self.client_id) {
+            map.insert("x-client-id", value);
+        }
+        map
+    }
+}
+
+/// Fetch RemuxDB's canonical popularity, trending, and rating data for an IMDb title.
+/// Returns `None` for a missing title or an unavailable service.
+pub async fn fetch_media_metrics(
+    base_url: &str,
+    client_id: &str,
+    imdb_id: &str,
+) -> Option<MediaMetrics> {
+    let client = match RestClient::new(base_url.trim_end_matches('/')) {
+        Ok(client) => client
+            .with_retry(crate::ExponentialBackoff::builder().build_with_max_retries(3)),
+        Err(error) => {
+            warn!(%error, "remuxdb: invalid base url");
+            return None;
+        }
+    };
+    match client
+        .execute(MediaMetricsEndpoint {
+            imdb_id: imdb_id.to_string(),
+            client_id: client_id.to_string(),
+        })
+        .await
+    {
+        Ok(metrics) => Some(metrics),
+        Err(ClientError::Http { status: 404, .. }) => None,
+        Err(error) => {
+            warn!(%imdb_id, %error, "remuxdb: metrics fetch failed");
+            None
+        }
+    }
+}
+
 #[derive(Clone)]
 struct MediaInfoEndpoint {
     imdb_id: String,

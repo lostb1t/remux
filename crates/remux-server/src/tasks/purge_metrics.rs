@@ -39,11 +39,6 @@ impl Task for PurgeMetricsTask {
         _tasks: Arc<TaskService>,
         progress: ProgressReporter,
     ) -> Result<()> {
-        sqlx::query("DELETE FROM popularity_raw")
-            .execute(&ctx.db)
-            .await?;
-        progress.set(50.0);
-
         sqlx::query("DELETE FROM popularity_agg")
             .execute(&ctx.db)
             .await?;

@@ -852,13 +852,58 @@ pub struct Rating {
     pub vote_count: Option<u32>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RemuxDbRatingSource {
+    pub source: String,
+    pub value: f64,
+    pub votes: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RemuxDbRatings {
+    pub score: f64,
+    pub score_average: f64,
+    pub tomatoes: Option<f64>,
+    #[serde(default)]
+    pub sources: Vec<RemuxDbRatingSource>,
+    pub updated_at: Option<String>,
+}
+
 #[skip_serializing_none]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExternalRatings {
     pub tmdb: Option<Rating>,
+    pub remuxdb: Option<RemuxDbRatings>,
 }
 
 impl ExternalRatings {
+    pub fn merge(&mut self, source: &Self, replace: bool) {
+        if replace
+            || self
+                .tmdb
+                .is_none()
+        {
+            self.tmdb = source
+                .tmdb
+                .clone()
+                .or(self
+                    .tmdb
+                    .clone());
+        }
+        if replace
+            || self
+                .remuxdb
+                .is_none()
+        {
+            self.remuxdb = source
+                .remuxdb
+                .clone()
+                .or(self
+                    .remuxdb
+                    .clone());
+        }
+    }
+
     pub fn audience_rating(&self) -> Option<f64> {
         const PRIOR: f64 = 6.5;
         const M: f64 = 500.0;
@@ -1416,10 +1461,6 @@ pub struct Media {
     //pub description: Option<String>,
     #[sqlx(skip)]
     pub tags: Vec<String>,
-    /// Set by TMDB meta fetch; written to `popularity_raw` by `save_pending_popularity`.
-    #[sqlx(skip)]
-    #[serde(skip)]
-    pub pending_popularity: Option<(String, crate::addons::MetricValue)>,
     #[sqlx(skip)]
     pub child_count: Option<i64>,
     #[sqlx(skip)]
