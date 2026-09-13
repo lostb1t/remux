@@ -489,6 +489,32 @@ fn is_hls_input_url(input_url: &str) -> bool {
                 .any(|(name, _)| name.eq_ignore_ascii_case("url")))
 }
 
+/// FFmpeg's `-reconnect*` flags are options of its `http`/`https` protocol
+/// handler — passing them on a local file path or another protocol (rtsp,
+/// etc.) makes ffmpeg fail outright ("Option reconnect not found"). Checked
+/// against the *resolved* input string (what ffmpeg actually opens), not
+/// the originating `StreamDescriptor`: Torrent/Opendal sources resolve to
+/// remux's own `http://127.0.0.1:{port}/...` proxy (see
+/// `StreamDescriptor::server_input`), which is a real HTTP input ffmpeg
+/// benefits from reconnecting on (a stalled torrent read looks just like a
+/// dropped connection) even though `StreamDescriptor::as_http_url` reports
+/// `None` for it.
+pub(crate) fn ffmpeg_reconnect_args(input_url: &str) -> &'static [&'static str] {
+    match url::Url::parse(input_url) {
+        Ok(url) if matches!(url.scheme(), "http" | "https") => &[
+            "-reconnect",
+            "1",
+            "-reconnect_at_eof",
+            "1",
+            "-reconnect_streamed",
+            "1",
+            "-reconnect_delay_max",
+            "5",
+        ],
+        _ => &[],
+    }
+}
+
 fn add_hls_extension_compat_args(args: &mut Vec<String>, input_url: &str) {
     if is_hls_input_url(input_url) {
         args.extend([
@@ -651,6 +677,12 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     }
 
     add_hls_extension_compat_args(&mut args, &params.input_url);
+
+    args.extend(
+        ffmpeg_reconnect_args(&params.input_url)
+            .iter()
+            .map(|s| (*s).into()),
+    );
 
     args.extend([
         "-copyts".into(),
@@ -1406,15 +1438,12 @@ pub(crate) fn build_progressive_args(
         "5000000".into(),
         "-probesize".into(),
         "5000000".into(),
-        "-reconnect".into(),
-        "1".into(),
-        "-reconnect_at_eof".into(),
-        "1".into(),
-        "-reconnect_streamed".into(),
-        "1".into(),
-        "-reconnect_delay_max".into(),
-        "5".into(),
     ];
+    args.extend(
+        ffmpeg_reconnect_args(&params.input_url)
+            .iter()
+            .map(|s| (*s).into()),
+    );
 
     args.extend(
         accel.decode_input_args(
@@ -3016,6 +3045,63 @@ mod tests {
         assert!(args_contains(&args, "-reconnect"));
         assert!(args_contains(&args, "-reconnect_at_eof"));
         assert!(args_contains(&args, "-reconnect_streamed"));
+    }
+
+    #[test]
+    fn ffmpeg_reconnect_args_only_for_http() {
+        for url in [
+            "http://127.0.0.1:8080/torrents/1/stream/0",
+            "https://cdn.example.com/video.mkv",
+        ] {
+            assert!(
+                !ffmpeg_reconnect_args(url).is_empty(),
+                "expected reconnect args for {url}"
+            );
+        }
+        for url in [
+            "/media/tv/show/episode.mkv",
+            r"C:\media\tv\show\episode.mkv",
+            r"\\server\media\show\episode.mkv",
+            "file:///media/tv/show/episode.mkv",
+            "rtsp://camera.example.com/live",
+        ] {
+            assert!(
+                ffmpeg_reconnect_args(url).is_empty(),
+                "expected no reconnect args for {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn progressive_local_input_omits_reconnect_flags() {
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
+            input_url: "/media/tv/show/episode.mkv".into(),
+            ..default_progressive()
+        });
+        assert!(!args_contains(&args, "-reconnect"));
+        assert!(!args_contains(&args, "-reconnect_at_eof"));
+        assert!(!args_contains(&args, "-reconnect_streamed"));
+        assert!(!args_contains(&args, "-reconnect_delay_max"));
+    }
+
+    #[test]
+    fn hls_http_input_gets_reconnect_flags() {
+        let args = build_hls_args(&default_hls(PathBuf::from("/tmp/test_session")));
+        assert!(args_contains(&args, "-reconnect"));
+        assert!(args_contains(&args, "-reconnect_at_eof"));
+        assert!(args_contains(&args, "-reconnect_streamed"));
+    }
+
+    #[test]
+    fn hls_local_input_omits_reconnect_flags() {
+        let args = build_hls_args(&TranscodeParams {
+            input_url: "/media/tv/show/episode.mkv".into(),
+            ..default_hls(PathBuf::from("/tmp/test_session"))
+        });
+        assert!(!args_contains(&args, "-reconnect"));
+        assert!(!args_contains(&args, "-reconnect_at_eof"));
+        assert!(!args_contains(&args, "-reconnect_streamed"));
+        assert!(!args_contains(&args, "-reconnect_delay_max"));
     }
 
     #[test]
