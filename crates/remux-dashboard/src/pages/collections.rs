@@ -1,11 +1,11 @@
 use crate::{components::*, state::AppState};
 use dioxus::prelude::*;
 use remux_sdks::remux::{
-    BaseItemDto, CollectionFilter, CollectionImageConfig, CollectionOverlay,
-    CollectionPosterLayout, CollectionType, CreateVirtualFolder,
+    AddCollectionItems, BaseItemDto, CollectionFilter, CollectionImageConfig,
+    CollectionOverlay, CollectionPosterLayout, CollectionType, CreateVirtualFolder,
     CreateVirtualFolderPayload, DeleteVirtualFolder, FilterGroup, FilterMatchMode,
     GetItems, GetItemsQuery, GetWatchProviders, ItemSortBy, MediaType, PatchItem,
-    PatchItemPayload, SortOrder, WatchProviderItem,
+    PatchItemPayload, RemoveCollectionItems, SortOrder, WatchProviderItem,
 };
 use std::collections::HashMap;
 
@@ -356,6 +356,21 @@ pub fn CollectionForm(
         FormMode::Create => None,
     };
 
+    // Manual group containers ("collection of collections") hold their children
+    // structurally, so membership is edited here rather than through a filter.
+    let existing_id: Option<String> = existing
+        .as_ref()
+        .map(|f| {
+            f.id.to_string()
+        });
+    // Every selectable collection paired with whether it is currently a child.
+    // One list keeps the checkbox order stable as boxes are toggled.
+    let mut group_choices: Signal<Vec<(BaseItemDto, bool)>> = use_signal(Vec::new);
+    let mut member_search = use_signal(String::new);
+    let mut members_loading = use_signal(|| false);
+    let mut members_error: Signal<Option<String>> = use_signal(|| None);
+    let mut members_refresh = use_signal(|| 0_u32);
+
     let mut title = use_signal(|| {
         existing
             .as_ref()
@@ -374,6 +389,16 @@ pub fn CollectionForm(
             })
             .and_then(|r| r.promoted)
             .unwrap_or(false)
+    });
+    let mut show_in_my_media = use_signal(|| {
+        existing
+            .as_ref()
+            .and_then(|f| {
+                f.remux
+                    .as_ref()
+            })
+            .and_then(|r| r.show_in_my_media)
+            .unwrap_or(true)
     });
     let mut col_type = use_signal(|| {
         // Prefer the Remux namespace's CollectionMediaKind — it's the canonical source
@@ -737,6 +762,87 @@ pub fn CollectionForm(
             providers_loading.set(false);
         });
     });
+
+    // Build the checkbox list: every eligible collection, flagged with whether
+    // it is already a child. Runs only for a saved manual group — creation has
+    // no id to reparent onto, and a smart group derives children from a filter.
+    let app_state_members = app_state.clone();
+    let members_group_id = existing_id.clone();
+    use_effect(move || {
+        let _r = *members_refresh.read();
+        let is_manual_group =
+            *col_type.read() == "collections" && *col_kind.read() == "manual";
+        let Some(group_id) = members_group_id
+            .clone()
+            .filter(|_| is_manual_group)
+        else {
+            group_choices.set(Vec::new());
+            return;
+        };
+        members_loading.set(true);
+        let client = app_state_members.clone();
+        spawn(async move {
+            let children = client
+                .execute(GetItems(GetItemsQuery {
+                    parent_id: group_id
+                        .parse()
+                        .ok(),
+                    include_childless: Some(true),
+                    ..Default::default()
+                }))
+                .await;
+            let all = client
+                .execute(GetItems(GetItemsQuery {
+                    include_item_types: Some(vec![MediaType::BoxSet]),
+                    include_childless: Some(true),
+                    sort_by: Some(vec![ItemSortBy::SortName]),
+                    sort_order: Some(vec![SortOrder::Ascending]),
+                    ..Default::default()
+                }))
+                .await;
+            match (children, all) {
+                (Ok(children), Ok(all)) => {
+                    let member_ids: Vec<String> = children
+                        .items
+                        .iter()
+                        .map(|i| {
+                            i.id.to_string()
+                        })
+                        .collect();
+                    group_choices.set(
+                        all.items
+                            .into_iter()
+                            .filter_map(|item| {
+                                let id = item
+                                    .id
+                                    .to_string();
+                                // A group cannot contain itself.
+                                if id == group_id {
+                                    return None;
+                                }
+                                let is_member = member_ids.contains(&id);
+                                // Hide collections held by a *different* group:
+                                // checking one would silently steal it from that
+                                // group, since a child has a single parent.
+                                let claimed_elsewhere = !is_member
+                                    && item
+                                        .parent_id
+                                        .is_some();
+                                (!claimed_elsewhere).then_some((item, is_member))
+                            })
+                            .collect(),
+                    );
+                    members_error.set(None);
+                }
+                (Err(e), _) | (_, Err(e)) => members_error.set(Some(e.user_message())),
+            }
+            members_loading.set(false);
+        });
+    });
+    let app_state_members_ui = app_state.clone();
+    let members_ui_group_id = existing_id
+        .clone()
+        .unwrap_or_default();
     let app_state_preview = app_state.clone();
 
     let on_submit = move |e: Event<FormData>| {
@@ -758,6 +864,7 @@ pub fn CollectionForm(
             .peek()
             .clone();
         let prm = *promoted.peek();
+        let show_my_media = *show_in_my_media.peek();
         let auto_unplayed = *latest_auto_unplayed.peek();
         let sort_digital = *latest_sort_digital.peek();
         let current_tags = tags
@@ -872,6 +979,7 @@ pub fn CollectionForm(
                             collection_kind: Some(ck),
                             smart_filter: smart_filter_payload,
                             promoted: Some(prm),
+                            show_in_my_media: Some(show_my_media),
                             tags: Some(current_tags),
                             sort_order: None,
                             latest_auto_unplayed: Some(if is_group {
@@ -933,6 +1041,7 @@ pub fn CollectionForm(
                             collection_kind: None,
                             smart_filter: smart_filter_payload,
                             promoted: None,
+                            show_in_my_media: Some(show_my_media),
                             tags: Some(current_tags),
                             sort_order: None,
                             latest_auto_unplayed: Some(if is_group {
@@ -1041,6 +1150,137 @@ pub fn CollectionForm(
                     onchange: move |e| col_kind.set(e.value()),
                     option { value: "smart",  "Smart"  }
                     option { value: "manual", "Manual" }
+                }
+            }
+
+            // Manual group container: pick which collections it contains.
+            // Requires a saved id — membership is a reparent on the child row,
+            // so it cannot be staged before the group exists.
+            if col_type.read().as_str() == "collections"
+                && col_kind.read().as_str() == "manual"
+                && existing_id.is_some()
+            {
+                div { class: "field",
+                    label { class: "field-label", "Child collections" }
+                    p { class: "field-hint",
+                        "A collection can belong to one group at a time, so collections already held by another group are not listed. Switching one off returns it to the top level; its items are never touched."
+                    }
+
+                    if let Some(error) = members_error.read().as_ref() {
+                        p { class: "field-hint", style: "color:var(--error);margin:0", "{error}" }
+                    }
+
+                    input {
+                        r#type: "text",
+                        class: "field-input",
+                        placeholder: "Search collections",
+                        value: "{member_search}",
+                        oninput: move |e| member_search.set(e.value()),
+                    }
+
+                    {
+                        let needle = member_search
+                            .read()
+                            .trim()
+                            .to_lowercase();
+                        let visible: Vec<(BaseItemDto, bool)> = group_choices
+                            .read()
+                            .iter()
+                            .filter(|(choice, _)| {
+                                needle.is_empty()
+                                    || choice
+                                        .name
+                                        .as_deref()
+                                        .unwrap_or_default()
+                                        .to_lowercase()
+                                        .contains(&needle)
+                            })
+                            .cloned()
+                            .collect();
+
+                        if *members_loading.read() && group_choices.read().is_empty() {
+                            rsx! {
+                                p { class: "field-hint", style: "margin:0", "Loading…" }
+                            }
+                        } else if group_choices.read().is_empty() {
+                            rsx! {
+                                p { class: "field-hint", style: "margin:0",
+                                    "No other collections are available to put in this group."
+                                }
+                            }
+                        } else if visible.is_empty() {
+                            rsx! {
+                                p { class: "field-hint", style: "margin:0",
+                                    "No collection matches this search."
+                                }
+                            }
+                        } else {
+                            rsx! {
+                                // `.toggle-row` carries no padding of its own —
+                                // the form's own spacing comes from a flex `gap`
+                                // on its parent, so this container has to supply
+                                // one too or the rows sit flush against each
+                                // other.
+                                //
+                                // Height caps the list at ten rows (20px each
+                                // plus the 14px gaps between them) and scrolls
+                                // past that, so a large library cannot stretch
+                                // the form off-screen.
+                                div {
+                                    style: "display:flex;flex-direction:column;gap:14px;max-height:326px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;margin-top:8px;padding:10px 12px",
+                                    for (choice, is_member) in visible {
+                                        ToggleRow {
+                                            key: "{choice.id}",
+                                            label: choice.name.clone().unwrap_or_default(),
+                                            checked: is_member,
+                                            // Serialize writes: each toggle reparents a
+                                            // row then reloads, so overlapping clicks
+                                            // would race.
+                                            disabled: *members_loading.read(),
+                                            on_change: {
+                                                let client = app_state_members_ui.clone();
+                                                let group_id = members_ui_group_id.clone();
+                                                let child_id = choice.id.to_string();
+                                                move |wanted: bool| {
+                                                    let client = client.clone();
+                                                    let group_id = group_id.clone();
+                                                    let child_id = child_id.clone();
+                                                    members_loading.set(true);
+                                                    spawn(async move {
+                                                        let result = if wanted {
+                                                            client
+                                                                .execute(AddCollectionItems {
+                                                                    collection_id: group_id,
+                                                                    item_ids: vec![child_id],
+                                                                })
+                                                                .await
+                                                        } else {
+                                                            client
+                                                                .execute(RemoveCollectionItems {
+                                                                    collection_id: group_id,
+                                                                    item_ids: vec![child_id],
+                                                                })
+                                                                .await
+                                                        };
+                                                        match result {
+                                                            Ok(()) => members_error.set(None),
+                                                            Err(e) => members_error
+                                                                .set(Some(e.user_message())),
+                                                        }
+                                                        // Reload rather than patching local
+                                                        // state: the server owns membership,
+                                                        // and a failed write must not leave
+                                                        // a switch on.
+                                                        members_refresh.with_mut(|r| *r += 1);
+                                                    });
+                                                }
+                                            },
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -1392,6 +1632,17 @@ pub fn CollectionForm(
                 checked: *promoted.read(),
                 on_change: move |v| promoted.set(v),
             }
+
+            // Only meaningful for a library tile: an unpromoted collection has
+            // no My Media entry to hide in the first place.
+            if *promoted.read() {
+                ToggleRow {
+                    label: "Show in My Media",
+                    checked: *show_in_my_media.read(),
+                    on_change: move |v| show_in_my_media.set(v),
+                }
+            }
+
 
             if col_type.read().as_str() != "collections" {
                 ToggleRow {
