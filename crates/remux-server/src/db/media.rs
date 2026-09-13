@@ -893,6 +893,14 @@ pub struct ExternalIds {
     pub deezer_track: Option<i64>,
     pub deezer_playlist: Option<i64>,
     pub youtube_id: Option<String>,
+    /// Addon-scoped Eclipse item id, already namespaced by the caller as
+    /// `"{addon_uuid}:{raw_id}"` so two Eclipse addon instances that both
+    /// mint e.g. `"track_123"` cannot collide.
+    pub eclipse_id: Option<String>,
+    /// ISRC recording code, normalized uppercase without dashes (12 chars).
+    /// Identifies a *recording* across providers, so it is the strongest
+    /// track identity available.
+    pub isrc: Option<String>,
     pub iptv_source_id: Option<String>,
     pub iptv_group: Option<String>,
     /// Raw addon-specific ID for content that has no IMDB/TMDB/TVDB equivalent.
@@ -1017,6 +1025,12 @@ impl ExternalIds {
                 .is_none()
             && self
                 .custom_stremio_id
+                .is_none()
+            && self
+                .eclipse_id
+                .is_none()
+            && self
+                .isrc
                 .is_none()
     }
 
@@ -2209,11 +2223,15 @@ impl Media {
                 .grandparent_id
                 .is_none()
                 .then_some("grandparent_id"),
-            MediaKind::Artist => self
+            MediaKind::Artist => (self
                 .external_ids
                 .deezer_artist
                 .is_none()
-                .then_some("deezer_artist"),
+                && self
+                    .external_ids
+                    .eclipse_id
+                    .is_none())
+            .then_some("deezer_artist or eclipse_id"),
             MediaKind::Album => (self
                 .external_ids
                 .deezer_album
@@ -2221,8 +2239,12 @@ impl Media {
                 && self
                     .external_ids
                     .youtube_id
+                    .is_none()
+                && self
+                    .external_ids
+                    .eclipse_id
                     .is_none())
-            .then_some("deezer_album or youtube_id"),
+            .then_some("deezer_album, youtube_id or eclipse_id"),
             MediaKind::Track => (self
                 .external_ids
                 .deezer_track
@@ -2230,8 +2252,16 @@ impl Media {
                 && self
                     .external_ids
                     .youtube_id
+                    .is_none()
+                && self
+                    .external_ids
+                    .eclipse_id
+                    .is_none()
+                && self
+                    .external_ids
+                    .isrc
                     .is_none())
-            .then_some("deezer_track or youtube_id"),
+            .then_some("deezer_track, youtube_id, eclipse_id or isrc"),
             _ => None,
         };
 
@@ -2959,11 +2989,17 @@ impl Media {
                 }
             }
             MediaKind::Artist => {
+                if let Some(eid) = &ext.eclipse_id {
+                    id_fields.push(("$.eclipse_id", IdValue::Text(eid.clone())));
+                }
                 if let Some(id) = ext.deezer_artist {
                     id_fields.push(("$.deezer_artist", IdValue::Int(id)));
                 }
             }
             MediaKind::Album => {
+                if let Some(eid) = &ext.eclipse_id {
+                    id_fields.push(("$.eclipse_id", IdValue::Text(eid.clone())));
+                }
                 if let Some(id) = ext.deezer_album {
                     id_fields.push(("$.deezer_album", IdValue::Int(id)));
                 }
@@ -2972,11 +3008,25 @@ impl Media {
                 }
             }
             MediaKind::Track => {
+                // An ISRC identifies the *recording* itself, so it matches
+                // across providers — strongest track identity there is.
+                if let Some(isrc) = &ext.isrc {
+                    id_fields.push(("$.isrc", IdValue::Text(isrc.clone())));
+                }
+                if let Some(eid) = &ext.eclipse_id {
+                    id_fields.push(("$.eclipse_id", IdValue::Text(eid.clone())));
+                }
                 if let Some(id) = ext.deezer_track {
                     id_fields.push(("$.deezer_track", IdValue::Int(id)));
                 }
                 if let Some(ref yid) = ext.youtube_id {
                     id_fields.push(("$.youtube_id", IdValue::Text(yid.clone())));
+                }
+            }
+            // An ISRC is a recording code and never identifies a playlist.
+            MediaKind::Playlist => {
+                if let Some(eid) = &ext.eclipse_id {
+                    id_fields.push(("$.eclipse_id", IdValue::Text(eid.clone())));
                 }
             }
             // Season/Episode identity is positional (parent series + index),
@@ -8347,6 +8397,76 @@ mod tests {
         }
     }
 
+    /// Eclipse addon items carry neither a Deezer nor a YouTube id — only an
+    /// addon-scoped `eclipse_id` and (for tracks) possibly an ISRC. Each of
+    /// those alone must be enough identity to persist.
+    #[test]
+    fn music_kinds_accept_an_eclipse_id_or_isrc_alone() {
+        for (kind, external_ids) in [
+            (
+                MediaKind::Track,
+                ExternalIds {
+                    eclipse_id: Some("abc:track_123".into()),
+                    ..Default::default()
+                },
+            ),
+            (
+                MediaKind::Track,
+                ExternalIds {
+                    isrc: Some("USUM71703861".into()),
+                    ..Default::default()
+                },
+            ),
+            (
+                MediaKind::Artist,
+                ExternalIds {
+                    eclipse_id: Some("abc:artist_9".into()),
+                    ..Default::default()
+                },
+            ),
+            (
+                MediaKind::Album,
+                ExternalIds {
+                    eclipse_id: Some("abc:album_4".into()),
+                    ..Default::default()
+                },
+            ),
+        ] {
+            let media = Media {
+                kind: kind.clone(),
+                external_ids,
+                ..Default::default()
+            };
+            assert!(
+                media
+                    .validate()
+                    .is_ok(),
+                "{kind:?} {:?}",
+                media.external_ids
+            );
+        }
+    }
+
+    #[test]
+    fn track_without_any_known_music_id_is_still_rejected() {
+        let err = Media {
+            kind: MediaKind::Track,
+            external_ids: ExternalIds {
+                // An unrelated video-side id is not a music identity.
+                tmdb: Some(603),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .validate()
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("deezer_track, youtube_id, eclipse_id or isrc"),
+            "{err}"
+        );
+    }
+
     use super::*;
     use crate::db::MediaIdRaw;
 
@@ -10754,5 +10874,69 @@ mod dedup_tests {
 
         let found = Media::find_by_external_ids(&ctx.db, &MediaKind::Album, &ext).await;
         assert_eq!(found, Some(album.id));
+    }
+
+    /// Eclipse tracks are deduped on `eclipse_id` or `isrc` alone — no Deezer
+    /// or YouTube id is ever present on them.
+    #[tokio::test]
+    async fn finds_a_stored_track_by_eclipse_id_alone() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let ext = ExternalIds {
+            eclipse_id: Some("11111111-1111-1111-1111-111111111111:track_123".into()),
+            ..Default::default()
+        };
+        let mut track = Media {
+            id: Uuid::new_v4(),
+            title: "Eclipse Track".into(),
+            kind: MediaKind::Track,
+            external_ids: ext.clone(),
+            ..Default::default()
+        };
+        track
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let found = Media::find_by_external_ids(&ctx.db, &MediaKind::Track, &ext).await;
+        assert_eq!(found, Some(track.id));
+    }
+
+    #[tokio::test]
+    async fn finds_a_stored_track_by_isrc_alone() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let mut track = Media {
+            id: Uuid::new_v4(),
+            title: "ISRC Track".into(),
+            kind: MediaKind::Track,
+            external_ids: ExternalIds {
+                eclipse_id: Some("2222:track_9".into()),
+                isrc: Some("USUM71703861".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        track
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        // A second Eclipse addon reports the same recording under its own
+        // opaque id; only the shared ISRC can match them.
+        let incoming = ExternalIds {
+            eclipse_id: Some("3333:song_42".into()),
+            isrc: Some("USUM71703861".into()),
+            ..Default::default()
+        };
+        let found =
+            Media::find_by_external_ids(&ctx.db, &MediaKind::Track, &incoming).await;
+        assert_eq!(found, Some(track.id));
     }
 }
