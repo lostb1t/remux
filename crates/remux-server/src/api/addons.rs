@@ -56,16 +56,21 @@ async fn capability_snapshot(
     else {
         return Ok(preset_capability_snapshot(preset));
     };
-    Ok((
-        resources
-            .into_iter()
-            .map(|resource| resource.name)
-            .collect(),
+    let resources = resources
+        .into_iter()
+        .map(|resource| resource.name)
+        .collect();
+    let types: Vec<_> = types
+        .into_iter()
+        .filter_map(crate::addons::recognized_manifest_media_kind)
+        .map(DbMediaKind::from)
+        .collect();
+    let types = if types.is_empty() {
+        preset_capability_snapshot(preset).1
+    } else {
         types
-            .into_iter()
-            .filter_map(|kind| DbMediaKind::try_from(kind).ok())
-            .collect(),
-    ))
+    };
+    Ok((resources, types))
 }
 
 async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
@@ -787,14 +792,79 @@ pub async fn set_user_addons(
 mod test {
     use super::*;
     use crate::integration_test::{auth_header_with_token, authenticated_server};
+    use async_trait::async_trait;
     use http::header::HeaderValue;
     use serde_json::json;
+    use std::sync::Arc;
+
+    struct ManifestKind(Vec<remux_sdks::stremio::MediaType>);
+
+    #[async_trait]
+    impl crate::addons::AddonKind for ManifestKind {
+        fn id(&self) -> &'static str {
+            "test"
+        }
+
+        async fn available_info(
+            &self,
+        ) -> anyhow::Result<
+            Option<(
+                Vec<remux_sdks::stremio::ResourceRef>,
+                Vec<remux_sdks::stremio::MediaType>,
+            )>,
+        > {
+            Ok(Some((
+                vec![],
+                self.0
+                    .clone(),
+            )))
+        }
+    }
 
     fn auth(token: &str) -> (http::header::HeaderName, HeaderValue) {
         (
             http::header::AUTHORIZATION,
             HeaderValue::from_str(&auth_header_with_token(token)).unwrap(),
         )
+    }
+
+    #[tokio::test]
+    async fn capability_snapshot_uses_shared_mapping_and_falls_back_for_unknown_types()
+    {
+        let preset = registered_presets()
+            .into_iter()
+            .find(|preset| preset.id() == "stremio")
+            .unwrap();
+
+        let genre = capability_snapshot(
+            preset.as_ref(),
+            &AddonCapabilities {
+                kind: Some(Arc::new(ManifestKind(vec![
+                    remux_sdks::stremio::MediaType::Other("genre".to_string()),
+                ]))),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(genre.1, vec![DbMediaKind::Genre]);
+
+        let unknown = capability_snapshot(
+            preset.as_ref(),
+            &AddonCapabilities {
+                kind: Some(Arc::new(ManifestKind(vec![
+                    remux_sdks::stremio::MediaType::Other("anime".to_string()),
+                ]))),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            !unknown
+                .1
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -987,6 +1057,45 @@ mod test {
             !updated
                 .types
                 .contains(&MediaKind::Movie)
+        );
+
+        let (h, v) = auth(&token);
+        let explicit: AddonDto = server
+            .post(&format!("/addons/{}", created.id))
+            .add_header(h, v)
+            .json(&json!({
+                "config": { "paths": [std::env::temp_dir()], "media_kind": "movie" },
+                "resources": ["stream"],
+                "types": ["series"]
+            }))
+            .await
+            .json();
+        assert_eq!(
+            explicit.resources,
+            vec![remux_sdks::stremio::ResourceType::Stream]
+        );
+        assert_eq!(explicit.types, vec![MediaKind::Series]);
+
+        let (h, v) = auth(&token);
+        let explicit_empty: AddonDto = server
+            .post(&format!("/addons/{}", created.id))
+            .add_header(h, v)
+            .json(&json!({
+                "config": { "paths": [std::env::temp_dir()], "media_kind": "episode" },
+                "resources": [],
+                "types": []
+            }))
+            .await
+            .json();
+        assert!(
+            explicit_empty
+                .resources
+                .is_empty()
+        );
+        assert!(
+            explicit_empty
+                .types
+                .is_empty()
         );
     }
 
