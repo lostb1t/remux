@@ -1508,6 +1508,12 @@ pub struct Media {
 
     // collection
     pub promoted: bool,
+    /// Whether this promoted collection appears in the jellyfin-web home
+    /// "My Media" section. Independent of `promoted`: when false the view is
+    /// still returned by `/userviews`, so its sidebar entry, "Latest" shelf and
+    /// browse pages are unaffected — only the home tiles skip it.
+    #[default(true)]
+    pub collection_show_in_my_media: bool,
     // CollectionKind
     pub collection_kind: Option<CollectionKind>,
     pub collection_latest_auto_unplayed: Option<bool>,
@@ -2329,9 +2335,9 @@ impl Media {
             collection_smart_filter, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital,
             collection_default_sort, collection_default_sort_order, collection_image_config,
             original_language, is_locked, locked_fields, album_kind, end_date,
-            user_id, public
+            user_id, public, collection_show_in_my_media
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
@@ -2386,7 +2392,8 @@ impl Media {
             album_kind = COALESCE(excluded.album_kind, media.album_kind),
             end_date = COALESCE(excluded.end_date, media.end_date),
             user_id = COALESCE(excluded.user_id, media.user_id),
-            public = excluded.public
+            public = excluded.public,
+            collection_show_in_my_media = excluded.collection_show_in_my_media
         "#,
         )
         .bind(self.id)
@@ -2439,6 +2446,7 @@ impl Media {
         .bind(self.end_date)
         .bind(self.user_id)
         .bind(self.public)
+        .bind(self.collection_show_in_my_media)
         .execute(db)
         .await?;
 

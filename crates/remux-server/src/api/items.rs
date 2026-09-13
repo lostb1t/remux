@@ -2263,6 +2263,7 @@ struct VirtualFolderRequest {
     collection_type: Option<String>,
     collection_kind: Option<String>,
     promoted: Option<bool>,
+    show_in_my_media: Option<bool>,
     sort_order: Option<i64>,
 }
 
@@ -2295,6 +2296,9 @@ pub async fn create_virtual_folder(
         collection_kind: Some(collection_kind.clone()),
         collection_media_kind,
         promoted,
+        collection_show_in_my_media: payload
+            .show_in_my_media
+            .unwrap_or(true),
         sort_order: payload.sort_order,
         ..Default::default()
     };
@@ -2318,6 +2322,7 @@ struct UpdateVirtualFolderRequest {
     collection_type: Option<String>,
     collection_kind: Option<String>,
     promoted: Option<bool>,
+    show_in_my_media: Option<bool>,
     collection_max_items: Option<i64>,
     sort_order: Option<i64>,
 }
@@ -2357,10 +2362,14 @@ pub async fn update_virtual_folder(
     let promoted = payload
         .promoted
         .unwrap_or(false);
+    // Omitted by older clients: keep whatever the collection already had.
+    let show_in_my_media = payload
+        .show_in_my_media
+        .unwrap_or(media.collection_show_in_my_media);
     let updated_at = Utc::now().naive_utc();
 
     sqlx::query(
-        "UPDATE media SET title = $1, promoted = $2, collection_media_kind = $3, collection_kind = $4, collection_max_items = $5, updated_at = $6, sort_order = $8 WHERE id = $7",
+        "UPDATE media SET title = $1, promoted = $2, collection_media_kind = $3, collection_kind = $4, collection_max_items = $5, updated_at = $6, sort_order = $8, collection_show_in_my_media = $9 WHERE id = $7",
     )
     .bind(&payload.name)
     .bind(promoted)
@@ -2370,6 +2379,7 @@ pub async fn update_virtual_folder(
     .bind(updated_at)
     .bind(payload.id)
     .bind(payload.sort_order)
+    .bind(show_in_my_media)
     .execute(&state.ctx.db)
     .await?;
 
@@ -3231,6 +3241,7 @@ struct PatchItemRequest {
     collection_kind: Option<String>,
     smart_filter: Option<api::CollectionFilter>,
     promoted: Option<bool>,
+    show_in_my_media: Option<bool>,
     tags: Option<Vec<String>>,
     digital_released_at: Option<chrono::DateTime<chrono::Utc>>,
     sort_order: Option<i64>,
@@ -3308,6 +3319,10 @@ pub async fn patch_item(
     if let Some(prm) = payload.promoted {
         qb.push(", promoted = ")
             .push_bind(if prm { 1i64 } else { 0i64 });
+    }
+    if let Some(show) = payload.show_in_my_media {
+        qb.push(", collection_show_in_my_media = ")
+            .push_bind(show);
     }
     if let Some(dra) = payload.digital_released_at {
         qb.push(", digital_released_at = ")
