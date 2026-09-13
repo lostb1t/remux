@@ -844,6 +844,9 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     type_: Some(api::MediaStreamType::Audio),
                     index: s.index,
                     codec: Some(codec.clone()),
+                    profile: s
+                        .profile
+                        .clone(),
                     channels,
                     channel_layout: channel_layout.map(str::to_string),
                     sample_rate,

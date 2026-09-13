@@ -11,6 +11,7 @@ bin/
 jellyfin-openapi-stable.json
 db.sqlite
 db.sqlite*
+prod-db.sqlite*
 db.backup*
 backup.sqlite
 *.big

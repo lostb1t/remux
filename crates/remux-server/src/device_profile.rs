@@ -176,6 +176,28 @@ fn check_codec_profiles(
                     }
                 }
             }
+            // Jellyfin Web uses VideoAudio for audio constraints on video
+            // playback, including its HE-AAC MSE compatibility condition.
+            Some(DlnaProfileType::VideoAudio)
+                if media_source
+                    .video_stream()
+                    .is_some() =>
+            {
+                if let Some(stream) = media_source.audio_stream() {
+                    let codec = stream
+                        .codec
+                        .as_deref()
+                        .unwrap_or("");
+                    if cp.applies_to_codec(codec) {
+                        for r in cp
+                            .check_reasons(stream)
+                            .0
+                        {
+                            reasons.insert(r);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -345,9 +367,14 @@ impl CodecProfileExt for CodecProfile {
                     "VideoCodecTag" => {
                         TranscodeReason::VideoCodecTagNotSupported(detail)
                     }
-                    "VideoProfile" | "Profile" => {
-                        TranscodeReason::VideoProfileNotSupported(detail)
+                    "VideoProfile" => TranscodeReason::VideoProfileNotSupported(detail),
+                    "AudioProfile" => TranscodeReason::AudioCodecNotSupported(detail),
+                    "Profile"
+                        if matches!(stream.type_, Some(MediaStreamType::Audio)) =>
+                    {
+                        TranscodeReason::AudioCodecNotSupported(detail)
                     }
+                    "Profile" => TranscodeReason::VideoProfileNotSupported(detail),
                     "BitDepth" => TranscodeReason::VideoBitDepthNotSupported(detail),
                     _ => {
                         if matches!(stream.type_, Some(MediaStreamType::Audio)) {
@@ -431,7 +458,7 @@ fn stream_property_value(stream: &MediaStream, property: &str) -> Option<String>
         "VideoLevel" | "Level" => stream
             .level
             .map(|v| v.to_string()),
-        "VideoProfile" | "Profile" => stream
+        "VideoProfile" | "AudioProfile" | "Profile" => stream
             .profile
             .clone(),
         "Height" => stream
@@ -757,6 +784,63 @@ mod tests {
         assert!(
             !reasons.contains(&TranscodeReason::VideoCodecNotSupported(String::new())),
             "an audio-only constraint must not produce VideoCodecNotSupported: {reasons:?}"
+        );
+    }
+
+    #[test]
+    fn jellyfin_web_rejects_he_aac_in_video_sources() {
+        // This is the CodecProfile Jellyfin Web sends when MSE rejects
+        // `mp4a.40.5`. AAC-LC remains direct-playable; only HE-AAC needs an
+        // audio transcode.
+        let profile = DeviceProfile {
+            direct_play_profiles: vec![DirectPlayProfile {
+                container: Some(vec![VideoContainer::Ts]),
+                video_codec: Some(vec![VideoCodec::H264]),
+                audio_codec: Some(vec![AudioCodec::Aac]),
+                type_: Some(DlnaProfileType::Video),
+            }],
+            codec_profiles: vec![CodecProfile {
+                type_: Some(DlnaProfileType::VideoAudio),
+                codec: Some(vec!["aac".to_string()]),
+                conditions: vec![ProfileCondition {
+                    condition: Some("NotEquals".to_string()),
+                    property: Some("AudioProfile".to_string()),
+                    value: Some("HE-AAC".to_string()),
+                    is_required: Some(false),
+                }],
+            }],
+            ..Default::default()
+        };
+        let source = |audio_profile: &str| MediaSourceInfo {
+            container: Some(VideoContainer::Ts),
+            media_streams: vec![
+                MediaStream {
+                    codec: Some("h264".to_string()),
+                    type_: Some(MediaStreamType::Video),
+                    index: 0,
+                    ..Default::default()
+                },
+                MediaStream {
+                    codec: Some("aac".to_string()),
+                    profile: Some(audio_profile.to_string()),
+                    type_: Some(MediaStreamType::Audio),
+                    index: 1,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let he_aac_reasons = profile.check_direct_play(&source("HE-AAC"));
+        assert!(
+            he_aac_reasons
+                .contains(&TranscodeReason::AudioCodecNotSupported(String::new())),
+            "HE-AAC must require audio transcoding: {he_aac_reasons:?}"
+        );
+        assert!(
+            profile
+                .check_direct_play(&source("LC"))
+                .is_empty()
         );
     }
 }
