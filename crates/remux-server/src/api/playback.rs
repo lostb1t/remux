@@ -937,6 +937,37 @@ async fn videos_stream_inner(
         return Ok(no_streams_response().into_response());
     };
     let descriptor = si.descriptor;
+    let playback_id = q
+        .play_session_id
+        .clone()
+        .or_else(|| {
+            state
+                .ctx
+                .sessions
+                .get_by_device(
+                    q.device_id
+                        .as_deref()?,
+                )
+                .filter(|session| session.item_id == id)
+                .map(|session| session.play_session_id)
+        });
+    if let (Some(psid), crate::stream::StreamDescriptor::Torrent { info_hash, .. }) =
+        (playback_id.as_deref(), &descriptor)
+    {
+        if let Some(torrent) = state
+            .ctx
+            .torrent
+            .read()
+            .await
+            .clone()
+        {
+            state
+                .ctx
+                .sessions
+                .retain_torrent(psid, &torrent, info_hash)
+                .await;
+        }
+    }
 
     // Direct play: serve bytes directly through the StreamSource trait.
     // This handles HTTP, local files, torrents, and opendal without going through
