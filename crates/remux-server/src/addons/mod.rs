@@ -2794,7 +2794,7 @@ impl AddonService {
                 .await
             {
                 Ok(Some(mut results)) => {
-                    db::Media::adopt_existing_ids(&ctx.db, &mut results).await;
+                    db::Media::adopt_existing_rows(&ctx.db, &mut results).await;
                     for m in &results {
                         ctx.store
                             .save(
@@ -4191,12 +4191,14 @@ mod tests {
         );
     }
 
-    /// Remote search mints a fresh id per request. A result that already
-    /// exists locally must carry the stored row's id, or a client that keeps
+    /// Remote search mints a fresh id (and fresh, possibly-drifted data) per
+    /// request. A result that already exists locally must be replaced with
+    /// the stored row wholesale — not just its id — or a client that keeps
     /// the id (next episode, continue watching) gets 404 on it once the
-    /// store entry is gone. Unknown items keep their own id.
+    /// store entry is gone, and in the meantime sees data that can differ
+    /// from what it actually has. Unknown items keep their own id and data.
     #[tokio::test]
-    async fn search_results_adopt_existing_row_ids() {
+    async fn search_results_adopt_existing_rows() {
         use crate::integration_test::{authenticated_server, seed_movie};
         let (_server, guard, _token) = authenticated_server().await;
         let ctx = &guard.0;
@@ -4204,9 +4206,9 @@ mod tests {
         let mut results = vec![
             db::Media {
                 id: Uuid::new_v4(),
-                title: stored
-                    .title
-                    .clone(),
+                // Deliberately different from the stored row's title, to
+                // prove the whole item is replaced, not just its id.
+                title: "Heat (remote addon's stale title)".into(),
                 kind: db::MediaKind::Movie,
                 external_ids: db::ExternalIds {
                     imdb: stored
@@ -4215,6 +4217,9 @@ mod tests {
                         .clone(),
                     ..Default::default()
                 },
+                // Transient, caller-attached bookkeeping unrelated to which
+                // row is correct — must survive the swap.
+                relations: Some(vec![]),
                 ..Default::default()
             },
             db::Media {
@@ -4243,15 +4248,80 @@ mod tests {
             },
             ..Default::default()
         });
-        db::Media::adopt_existing_ids(&ctx.db, &mut results).await;
+        db::Media::adopt_existing_rows(&ctx.db, &mut results).await;
         assert_eq!(
             results[0].id, stored.id,
             "known item takes the stored row's id"
         );
+        assert_eq!(
+            results[0].title, stored.title,
+            "known item is replaced wholesale with the stored row, not just its id"
+        );
+        assert!(
+            results[0]
+                .relations
+                .is_some(),
+            "caller-attached relations survive the swap"
+        );
         assert_eq!(results[1].id, unknown_id, "unknown item keeps its own id");
+        assert_eq!(
+            results[1].title, "Unknown",
+            "unknown item keeps its own data"
+        );
         assert_eq!(
             results[2].id, stored.id,
             "a match on a lower-priority id adopts the stored row's id too"
+        );
+        assert_eq!(
+            results[2].title, stored.title,
+            "a match on a lower-priority id is also replaced wholesale"
+        );
+    }
+
+    // Regression test: `ExternalIds::is_empty()` only looks at
+    // imdb/tmdb/tvdb/custom_stremio_id, so gating kind-detection on it (as
+    // opposed to the kind-aware `external_id_fields`) silently skipped
+    // Artist/Album/Track adoption entirely — their only identity is
+    // deezer_*/youtube_id.
+    #[tokio::test]
+    async fn search_results_adopt_existing_rows_for_music_kinds() {
+        use crate::integration_test::authenticated_server;
+        let (_server, guard, _token) = authenticated_server().await;
+        let ctx = &guard.0;
+
+        let mut stored = db::Media {
+            id: Uuid::new_v4(),
+            title: "Actual Album".into(),
+            kind: db::MediaKind::Album,
+            external_ids: db::ExternalIds {
+                deezer_album: Some(42),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        stored
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let mut results = vec![db::Media {
+            id: Uuid::new_v4(),
+            title: "Remote Album (stale)".into(),
+            kind: db::MediaKind::Album,
+            external_ids: db::ExternalIds {
+                deezer_album: Some(42),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        db::Media::adopt_existing_rows(&ctx.db, &mut results).await;
+        assert_eq!(
+            results[0].id, stored.id,
+            "a deezer-only match still adopts the stored row"
+        );
+        assert_eq!(
+            results[0].title, stored.title,
+            "a deezer-only match is replaced wholesale too"
         );
     }
 }

@@ -1245,7 +1245,7 @@ async fn stremio_search(
         .await
         .unwrap_or_default();
 
-    let mut media = results
+    let mut media: Vec<db::Media> = results
         .into_iter()
         .unique_by(|m| {
             m.imdb_id
