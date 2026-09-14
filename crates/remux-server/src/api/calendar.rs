@@ -787,4 +787,75 @@ mod tests {
             "favoriting a series must surface its upcoming episodes: {body}"
         );
     }
+
+    /// The window is one continuous interval, so a followed series contributes
+    /// its aired, same-day and upcoming episodes alike. Today is the boundary
+    /// most likely to be lost to an off-by-one, and unlike /shows/upcoming the
+    /// calendar must not restrict itself to the future.
+    #[tokio::test]
+    async fn feed_includes_past_present_and_future_episodes_of_a_followed_series() {
+        use crate::api::shows::test::insert_series_with_episodes;
+
+        let (server, guard, token) = authenticated_server().await;
+        let db_pool = &guard
+            .0
+            .db;
+
+        let (series, episodes) = insert_series_with_episodes(
+            db_pool,
+            "Airing Show",
+            &["Aired Last Week", "Airs Today", "Airs Next Week"],
+        )
+        .await;
+
+        let today = Utc::now().date_naive();
+        let midnight = today
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        // Today's episode is stored mid-afternoon: a window ending at 00:00:00
+        // rather than end-of-day would silently drop it.
+        let air_dates = [
+            midnight - Duration::days(7),
+            today
+                .and_hms_opt(14, 30, 0)
+                .unwrap(),
+            midnight + Duration::days(7),
+        ];
+        for (episode, air_date) in episodes
+            .iter()
+            .zip(air_dates)
+        {
+            sqlx::query(
+                "UPDATE media SET released_at = ?1, digital_released_at = NULL WHERE id = ?2",
+            )
+            .bind(air_date)
+            .bind(episode.id)
+            .execute(db_pool)
+            .await
+            .unwrap();
+        }
+
+        favorite(db_pool, admin_id(db_pool).await, series.id).await;
+
+        let url = create_link(&server, &token).await;
+        let body = server
+            .get(&url)
+            .await
+            .text();
+        for expected in [
+            "SUMMARY:Airing Show - S01E01 - Aired Last Week\r\n",
+            "SUMMARY:Airing Show - S01E02 - Airs Today\r\n",
+            "SUMMARY:Airing Show - S01E03 - Airs Next Week\r\n",
+        ] {
+            assert!(
+                body.contains(expected),
+                "missing {expected:?} — the window must cover past, present and future: {body}"
+            );
+        }
+        // Today's episode must land on today's date, not shift a day.
+        assert!(
+            body.contains(&format!("DTSTART;VALUE=DATE:{}", today.format("%Y%m%d"))),
+            "today's episode did not render on today's date: {body}"
+        );
+    }
 }
