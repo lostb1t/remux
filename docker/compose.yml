@@ -16,12 +16,20 @@ services:
 
   aiostreams:
     image: ghcr.io/viren070/aiostreams:latest
+    env_file:
+      - ../.env
+    volumes:
+      - ../data/aiostreams:/app/data
     networks:
       - remux-internal
       - aio-egress
 
   aiometadata:
     image: ghcr.io/jigsawfr/aiometadata:latest
+    env_file:
+      - ../.env
+    volumes:
+      - ../data/aiometadata:/app/data
     networks:
       - remux-internal
       - aio-egress

@@ -74,6 +74,58 @@ services:
       - /remux/data:/data
 ```
 
+### Docker Compose with AIOStreams and AIOMetadata
+
+The repository's `docker/compose.yml` starts Remux together with AIOStreams and AIOMetadata. Remux reaches both addons over the private `remux-internal` network, while only the Remux HTTP port is published on the host. The AIO containers also use a separate non-published egress network because they must contact their upstream metadata, catalog, debrid, and provider services.
+
+Before starting the stack, create a local environment file and never commit it:
+
+```sh
+cp .env.example .env
+```
+
+At minimum, AIOStreams requires a persistent `SECRET_KEY`. Add a securely generated value to `.env`, together with any provider credentials required by the AIOStreams configuration you use. For example:
+
+```dotenv
+# Generate a strong value; do not use this example literally.
+SECRET_KEY=replace-with-a-64-character-hex-secret
+
+# Add the provider variables required by your AIOStreams release/configuration.
+# Keep Debrid tokens and API keys in .env or in the AIOStreams web configurator,
+# never in docker/compose.yml or in Git.
+# REAL_DEBRID_API_KEY=...
+# TORBOX_API_KEY=...
+```
+
+The Compose file passes `.env` to both AIO containers and persists their `/app/data` directories, so configured provider credentials and addon state survive container recreation:
+
+```yaml
+services:
+  aiostreams:
+    env_file: .env
+    volumes:
+      - ./data/aiostreams:/app/data
+  aiometadata:
+    env_file: .env
+    volumes:
+      - ./data/aiometadata:/app/data
+```
+
+The checked-in Compose file already defines the two internal manifest URLs used by Remux:
+
+```dotenv
+AIO_STREAMS_MANIFEST_URL=http://aiostreams:3000/manifest.json
+AIO_METADATA_MANIFEST_URL=http://aiometadata:3000/manifest.json
+```
+
+If a provider requires additional environment variables, add them to the local `.env` according to the [AIOStreams configuration reference](https://docs.aiostreams.viren070.me/) and the corresponding AIOMetadata release documentation. Then start the stack with:
+
+```sh
+docker compose -f docker/compose.yml up -d
+```
+
+For production, pin image versions instead of `latest`, restrict `.env` permissions (`chmod 600 .env`), and use a secret manager where available. Do not publish the AIO service ports directly; Remux should access them by the internal container names `aiostreams` and `aiometadata`.
+
 ### Development
 
 Install cargo make
