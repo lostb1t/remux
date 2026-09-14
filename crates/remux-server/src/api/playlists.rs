@@ -417,6 +417,9 @@ pub async fn add_playlist_items(
 
     let resolved =
         crate::services::MediaResolveService::resolve_ids(&q.ids, &state.ctx).await;
+    let requested = !q
+        .ids
+        .is_empty();
     let resolved = retain_playlist_items(
         &state
             .ctx
@@ -424,6 +427,16 @@ pub async fn add_playlist_items(
         resolved,
     )
     .await?;
+    // Every requested id was dropped — a container (series, album, ...) or an
+    // unresolvable id. Returning 204 here would be indistinguishable from a
+    // successful add, so the client would show the item as added while nothing
+    // was stored.
+    if requested && resolved.is_empty() {
+        return Err(anyhow::anyhow!(
+            "no playable items in request: playlists hold movies, episodes, tracks and channels, not containers"
+        ))
+        .context_bad_request("No playable items to add");
+    }
     db::MediaRelation::add_playlist_items(
         &state
             .ctx
@@ -759,6 +772,76 @@ mod tests {
             visible_playlist_ids(&db, other.id)
                 .await
                 .contains(&pl.id)
+        );
+    }
+
+    /// Adding only containers stores nothing, so the request must not report
+    /// success — a 204 here is indistinguishable from a real add and leaves the
+    /// client showing an item the playlist does not hold.
+    #[tokio::test]
+    async fn adding_only_a_series_is_rejected_instead_of_silently_succeeding() {
+        use crate::{
+            api::shows::test::insert_series_with_episodes,
+            integration_test::{auth_header_with_token, authenticated_server},
+        };
+        use http::header::HeaderValue;
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db_pool = &guard
+            .0
+            .db;
+        let (series, episodes) =
+            insert_series_with_episodes(db_pool, "Playlist Show", &["E1"]).await;
+
+        let created: serde_json::Value = server
+            .post("/playlists?name=Calendar")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let playlist_id = created["Id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        server
+            .post(&format!("/playlists/{playlist_id}/items?ids={}", series.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .expect_failure()
+            .await
+            .assert_status_bad_request();
+
+        // An episode is a playable leaf and must still be accepted.
+        server
+            .post(&format!(
+                "/playlists/{playlist_id}/items?ids={}",
+                episodes[0].id
+            ))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        let items: serde_json::Value = server
+            .get(&format!("/playlists/{playlist_id}/items"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        assert_eq!(
+            items["TotalRecordCount"],
+            serde_json::json!(1),
+            "only the episode should have been stored: {items}"
         );
     }
 }
