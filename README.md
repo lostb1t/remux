@@ -16,6 +16,16 @@ Remux is a Jellyfin-compatible media server that brings Stremio add-ons, local f
 
 ---
 
+## Credits & Attribution
+
+This repository is a **custom fork of [Remux](https://github.com/remux-org/remux)**, the original open-source Jellyfin-compatible media server project. The upstream project remains the primary source for the Remux server architecture, Jellyfin API compatibility, and the original project history.
+
+This fork focuses on an integrated AIO deployment profile with automatic, pre-configured support for [AIOStreams](https://github.com/Viren070/AIOStreams) and [AIOMetadata](https://github.com/cedya77/aiometadata). Its goal is to provide a ready-to-run bridge between the AIO ecosystem and official Jellyfin-compatible clients such as Infuse and VidHub, while preserving the upstream Remux behavior and compatibility wherever possible.
+
+All upstream copyright notices, attribution requirements, and license terms remain applicable. This project **retains the original Remux license**; see the [`LICENSE`](LICENSE) file for the complete terms. Changes and additions specific to this fork are documented in the repository history.
+
+---
+
 ## Features
 
 - **Works with your Jellyfin clients**  
