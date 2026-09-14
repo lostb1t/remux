@@ -7194,6 +7194,14 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                 if let Some(ref imdb) = meta.imdb_id {
                     ids.imdb = NonEmptyString::try_new(imdb.clone()).ok();
                 }
+                if ids
+                    .tmdb
+                    .is_none()
+                {
+                    ids.tmdb = meta
+                        .moviedb_id
+                        .and_then(|id| i64::try_from(id).ok());
+                }
                 ids.custom_stremio_type = custom_stremio_type(&meta.media_type);
                 ids
             },
@@ -7240,13 +7248,16 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
         .try_into()?;
 
     if imdb_id.is_none() {
-        // Custom-ID path: no IMDB, derive UUIDs from the addon-specific id.
-        let custom_id = ExternalIds::from_stremio_id(&meta.id)
-            .custom_stremio_id
-            .context("imdb_id is missing and meta.id is empty")?;
-        media
-            .external_ids
-            .custom_stremio_id = Some(custom_id.clone());
+        // Catalog entries often arrive with a TMDB/TVDB or addon-specific ID
+        // but no IMDB ID. That identity is enough to import and deduplicate
+        // them; enriching genuinely new rows happens later in metadata refresh.
+        if media
+            .media_id_raw()
+            .canonical()
+            .is_none()
+        {
+            anyhow::bail!("meta is missing a usable external ID");
+        }
         let series_key = media.series_canonical_key();
         let mut media_instances = vec![media.clone()];
         if let MediaKind::Series = media.kind {
@@ -8375,6 +8386,25 @@ mod tests {
 
     use super::*;
     use crate::db::MediaIdRaw;
+
+    #[test]
+    fn stremio_meta_without_imdb_uses_its_tmdb_identity() {
+        let meta: sdks::stremio::Meta = serde_json::from_value(serde_json::json!({
+            "id": "tmdb:42",
+            "type": "movie",
+            "name": "The Answer",
+        }))
+        .expect("fixture meta deserializes");
+
+        let medias = stremio_meta_to_medias(meta).expect("TMDB-only meta converts");
+        assert_eq!(medias.len(), 1);
+        assert_eq!(
+            medias[0]
+                .external_ids
+                .tmdb,
+            Some(42)
+        );
+    }
 
     /// `stremio_meta_episode` is the per-episode fast path used by meta refresh;
     /// it must produce exactly what the whole-season builder produces for the

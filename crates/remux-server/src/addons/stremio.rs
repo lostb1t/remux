@@ -23,7 +23,7 @@ use super::{
 use crate::{
     AppContext, common, db, sdks,
     sdks::{CachedEndpoint, ClientError},
-    services::{MediaResolveService, stremio as stremio_service},
+    services::stremio as stremio_service,
 };
 
 pub struct StremioPreset;
@@ -327,24 +327,11 @@ impl CatalogAddon for StremioAddon {
         let stream = svc
             .get_catalog_stream(kind.to_string(), id.to_string(), supports_skip)
             .await?;
-        let tmdb_client = crate::common::tmdb_client(
-            &ctx.db,
-            &ctx.config
-                .tmdb_base_url,
-        )
-        .await;
-
         let stream = stream
-            .map(move |mut meta| {
-                let svc = svc.clone();
-                let tmdb = tmdb_client.clone();
+            .map(move |meta| {
                 async move {
                     if meta.is_error() {
                         debug!(id = %meta.id, "catalog item is an error stub, skipping");
-                        return vec![];
-                    }
-                    if !resolve_imdb_id(&mut meta, Some(&svc), tmdb.as_ref()).await {
-                        debug!(id = %meta.id, "could not resolve imdb_id, skipping");
                         return vec![];
                     }
                     match db::stremio_meta_to_medias(meta) {
@@ -561,96 +548,6 @@ fn stremio_type_for_kind(kind: &db::MediaKind) -> Option<&'static str> {
         db::MediaKind::Artist => Some("artist"),
         _ => None,
     }
-}
-
-// ---------------------------------------------------------------------------
-// Catalog helpers
-// ---------------------------------------------------------------------------
-
-pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
-    meta: &mut sdks::stremio::Meta,
-    svc: Option<&stremio_service::StremioService>,
-    tmdb_client: Option<&sdks::RestClient<A>>,
-) -> bool {
-    let t = Instant::now();
-
-    // Phase 1: build the richest possible ExternalIds before any TMDB calls.
-    let mut ids = db::ExternalIds::from_stremio_id(&meta.id);
-    if ids
-        .imdb
-        .is_none()
-    {
-        ids.imdb = meta
-            .imdb_id
-            .as_deref()
-            .and_then(|s| db::NonEmptyString::try_new(s.to_string()).ok());
-    }
-    if ids
-        .tmdb
-        .is_none()
-    {
-        ids.tmdb = meta
-            .moviedb_id
-            .map(|n| n as i64);
-    }
-
-    // AIO resolve: the addon may map its own ID to an IMDB ID.
-    if ids
-        .imdb
-        .is_none()
-    {
-        if let Some(svc) = svc {
-            match meta
-                .resolve(&svc.client)
-                .await
-            {
-                Ok(()) => {}
-                Err(e) => warn!(id = %meta.id, error = %e, "AIO resolve failed"),
-            }
-            debug!(id = %meta.id, elapsed = ?t.elapsed(), resolved = meta.imdb_id.is_some(), "after AIO resolve");
-            ids.imdb = meta
-                .imdb_id
-                .as_deref()
-                .and_then(|s| db::NonEmptyString::try_new(s.to_string()).ok());
-        }
-    }
-
-    // Phase 2: single TMDB resolution pass (TMDB/TVDB/Kitsu chains handled inside).
-    if ids
-        .imdb
-        .is_none()
-    {
-        if let Some(client) = tmdb_client {
-            if !ids.is_empty() {
-                let is_tv = meta.media_type == sdks::stremio::MediaType::Series;
-                ids.imdb =
-                    MediaResolveService::resolve_imdb_from_ids(&ids, is_tv, client)
-                        .await;
-                debug!(id = %meta.id, elapsed = ?t.elapsed(), resolved = ids.imdb.is_some(), "after TMDB resolve");
-            }
-        }
-    }
-
-    meta.imdb_id = ids
-        .imdb
-        .clone()
-        .map(Into::into);
-
-    if meta
-        .imdb_id
-        .is_none()
-    {
-        // Allow items that have a recognised non-IMDB identity (custom addon prefix or
-        // kitsu ID that couldn't be resolved to IMDB — anime often isn't on IMDB).
-        return ids
-            .custom_stremio_id
-            .is_some()
-            || ids
-                .kitsu
-                .is_some();
-    }
-
-    true
 }
 
 fn is_404(e: &anyhow::Error) -> bool {

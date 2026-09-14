@@ -121,29 +121,29 @@ where
                 .collect()
         };
 
-        let mut existing_ids = HashSet::new();
-        for item in &mut items {
-            let existing_id = match item.kind {
-                // Channels and playlists have provider-defined UUID identities;
-                // the external-ID resolver does not support these kinds, so
-                // only an exact (id, kind) match — never an external-ID
-                // match — counts as "already exists" for them.
-                db::MediaKind::TvChannel | db::MediaKind::Playlist => existing_by_id
-                    .get(&item.id)
-                    .filter(|k| {
-                        **k == item
-                            .kind
-                            .to_string()
-                    })
-                    .map(|_| item.id),
-                _ if existing_by_id.contains_key(&item.id) => Some(item.id),
-                _ => db::Media::find_existing_id_by_ext(&ctx.db, item).await,
-            };
-            if let Some(existing_id) = existing_id {
-                item.id = existing_id;
-                existing_ids.insert(existing_id);
-            }
-        }
+        // Replace remote stubs with their stored rows in a handful of batched
+        // external-ID queries. Aside from avoiding one SQLite query per item,
+        // this is what lets Stremio catalog import identify existing entries
+        // before their expensive metadata/IMDB enrichment runs.
+        db::Media::adopt_existing_rows(&ctx.db, &mut items).await;
+        let existing_ids: HashSet<Uuid> = items
+            .iter()
+            .zip(&candidate_ids)
+            .filter_map(|(item, original_id)| {
+                let direct_match = existing_by_id
+                    .get(original_id)
+                    .is_some_and(|kind| {
+                        !matches!(
+                            item.kind,
+                            db::MediaKind::TvChannel | db::MediaKind::Playlist
+                        ) || *kind
+                            == item
+                                .kind
+                                .to_string()
+                    });
+                (direct_match || item.id != *original_id).then_some(item.id)
+            })
+            .collect();
         // Snapshot stream-order weights before partitioning — partition() does not
         // preserve the original order across the two vecs, so new items would
         // otherwise always get the lowest weights within a chunk regardless of where
