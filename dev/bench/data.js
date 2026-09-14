@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789288824418,
+  "lastUpdate": 1789375303092,
   "repoUrl": "https://github.com/lostb1t/remux",
   "entries": {
     "Benchmark": [
@@ -4079,6 +4079,142 @@ window.BENCHMARK_DATA = {
             "name": "nextup_date_cutoff/30days",
             "value": 275521788,
             "range": "± 70653025",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "lostbit",
+            "username": "lostb1t",
+            "email": "coding-mosses0z@icloud.com"
+          },
+          "committer": {
+            "name": "lostbit",
+            "username": "lostb1t",
+            "email": "coding-mosses0z@icloud.com"
+          },
+          "id": "325e7e39cfdb097e08381e2051df2baa269f6439",
+          "message": "refactor(remuxdb): use the /api/media/{external_id}/versions probe route\n\nRemuxDB replaced GET /api/media/info?imdb_id={} with GET\n/api/media/{external_id}/versions. external_id is an imdb id or, absent\nthat, a tmdb:{id}-prefixed id, matching ExternalIds::stremio_lookup_id's\nexisting priority (imdb > custom_stremio_id > tmdb) — the caller now\nbuilds it with that instead of extracting imdb only.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01XLFFGASL5q4kVHpTYnr81e",
+          "timestamp": "2026-09-14T03:33:41Z",
+          "url": "https://github.com/lostb1t/remux/commit/325e7e39cfdb097e08381e2051df2baa269f6439"
+        },
+        "date": 1789375301272,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "items_latest/limit=20&recursive=false",
+            "value": 1002715173,
+            "range": "± 171955660",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&recursive=false",
+            "value": 1070297728,
+            "range": "± 150453589",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=500&recursive=false",
+            "value": 1289304391,
+            "range": "± 144411253",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&include_item_types=Movie&recursive=false",
+            "value": 259268432,
+            "range": "± 59075499",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&include_item_types=Series&recursive=false",
+            "value": 325829889,
+            "range": "± 78886955",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=20&recursive=false",
+            "value": 550061576,
+            "range": "± 133826798",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&recursive=false",
+            "value": 600581117,
+            "range": "± 104585590",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=500&recursive=false",
+            "value": 714856980,
+            "range": "± 109849697",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&include_item_types=Movie&recursive=false",
+            "value": 588544193,
+            "range": "± 50942120",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&include_item_types=Series&recursive=false",
+            "value": 898342689,
+            "range": "± 130861135",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&filters=IsPlayed&recursive=false",
+            "value": 307029474,
+            "range": "± 149480101",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&sort_by=DateCreated&recursive=false",
+            "value": 1181933082,
+            "range": "± 141779783",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=50&recursive=false",
+            "value": 1104538747,
+            "range": "± 60029521",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=200&recursive=false",
+            "value": 1111758270,
+            "range": "± 103631621",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=500&recursive=false",
+            "value": 1104898503,
+            "range": "± 52413401",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/limit=500&enable_resumable=true&recursive=false",
+            "value": 1105341470,
+            "range": "± 44735795",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/limit=500&enable_resumable=false&recursive=false",
+            "value": 1115470115,
+            "range": "± 66648647",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/epoch",
+            "value": 1118239514,
+            "range": "± 88796140",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/30days",
+            "value": 298846967,
+            "range": "± 57193484",
             "unit": "ns/iter"
           }
         ]
