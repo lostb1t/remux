@@ -70,20 +70,12 @@ pub fn CalendarPage(app_state: AppState) -> Element {
         });
     });
 
-    // Users without a link yet — the only sensible choices when generating.
-    let linkable: Vec<UserDto> = {
-        let existing: Vec<Uuid> = links
-            .read()
-            .iter()
-            .map(|l| l.user_id)
-            .collect();
-        users
-            .read()
-            .iter()
-            .filter(|u| !existing.contains(&u.id))
-            .cloned()
-            .collect()
-    };
+    // Every user is selectable. Issuing is idempotent, so picking someone who
+    // already has a link shows theirs instead of replacing it — which is how an
+    // admin re-reads a URL to send it on.
+    let all_users: Vec<UserDto> = users
+        .read()
+        .clone();
 
     let app_state_generate = app_state.clone();
     let app_state_rotate = app_state.clone();
@@ -96,19 +88,7 @@ pub fn CalendarPage(app_state: AppState) -> Element {
             action: rsx! {
                 button {
                     class: "btn btn-primary",
-                    // A green button that does nothing reads as enabled, so dim it
-                    // when every user already has a link.
-                    style: if linkable.is_empty() {
-                        "height:32px;font-size:.68rem;opacity:.45;cursor:not-allowed"
-                    } else {
-                        "height:32px;font-size:.68rem"
-                    },
-                    disabled: linkable.is_empty(),
-                    title: if linkable.is_empty() {
-                        "Every user already has a link"
-                    } else {
-                        "Generate a calendar link for a user"
-                    },
+                    style: "height:32px;font-size:.68rem",
                     onclick: move |_| {
                         selected_user.set(None);
                         show_generate.set(true);
@@ -199,7 +179,7 @@ pub fn CalendarPage(app_state: AppState) -> Element {
                     }
                     div { class: "modal-body",
                         p { style: "color:var(--text-muted);font-size:.75rem;margin-bottom:10px",
-                            "Pick the user this calendar belongs to. The feed shows only what they follow, filtered by their own library permissions."
+                            "Pick the user this calendar belongs to. The feed shows only what they follow, filtered by their own library permissions. Users who already have a link are marked — selecting one shows their existing URL rather than replacing it."
                         }
                         select {
                             class: "form-input",
@@ -207,8 +187,19 @@ pub fn CalendarPage(app_state: AppState) -> Element {
                                 selected_user.set(e.value().parse().ok());
                             },
                             option { value: "", "Select a user…" }
-                            for user in linkable.clone() {
-                                option { value: "{user.id}", "{user.name}" }
+                            for user in all_users.clone() {
+                                {
+                                    let has_link = links
+                                        .read()
+                                        .iter()
+                                        .any(|l| l.user_id == user.id);
+                                    let label = if has_link {
+                                        format!("{} — has a link", user.name)
+                                    } else {
+                                        user.name.clone()
+                                    };
+                                    rsx! { option { value: "{user.id}", "{label}" } }
+                                }
                             }
                         }
                     }
