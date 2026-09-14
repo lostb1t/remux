@@ -6,10 +6,11 @@
 
 pub mod ics;
 
+use crate::{AppContext, api, db};
 use anyhow::Result;
 use chrono::{Duration, NaiveDate, NaiveDateTime, Utc};
-
-use crate::{AppContext, api, db};
+use std::collections::HashMap;
+use uuid::Uuid;
 
 pub use ics::{CalendarEvent, serialize_ics};
 
@@ -20,7 +21,6 @@ const MAX_RANGE_DAYS: i64 = 93;
 /// Hard cap on events in one response. A feed past this size is not usable in a
 /// calendar client, and serializing it wastes the request.
 const MAX_EVENTS: u32 = 5_000;
-
 /// Days of history the subscribable feed includes. Recent releases stay visible
 /// when a client refreshes after a gap.
 const FEED_PAST_DAYS: i64 = 31;
@@ -77,9 +77,9 @@ impl DateRange {
 
 /// Loads a user's release events in `range`, honouring their library policy.
 ///
-/// Movies and episodes are queried separately: an episode needs its series title
-/// resolved for the summary, and the two kinds are ordered independently before
-/// being merged into one date-sorted list.
+/// Movies and episodes share the same premiere-date expression, so they are
+/// fetched in one query. Besides avoiding duplicate work, this makes
+/// `MAX_EVENTS` a real cap on the complete response rather than a per-kind cap.
 pub async fn events_for_user(
     ctx: &AppContext,
     user: &db::User,
@@ -89,31 +89,59 @@ pub async fn events_for_user(
         .from
         .and_hms_opt(0, 0, 0)
         .expect("midnight is a valid time");
-    // `released_at` is stored as a timestamp, so include the whole end day.
+    // Include every representable timestamp on the end date, not only the
+    // second exactly at 23:59:59.
     let to = range
         .to
-        .and_hms_opt(23, 59, 59)
+        .and_hms_nano_opt(23, 59, 59, 999_999_999)
         .expect("end of day is a valid time");
 
-    let mut events = Vec::new();
-    for kind in [db::MediaKind::Movie, db::MediaKind::Episode] {
-        let items = query_kind(ctx, user, kind, from, to).await?;
-        for item in items {
-            if let Some(event) = to_event(ctx, item).await? {
-                events.push(event);
-            }
-        }
-    }
+    let items = query_kind(
+        ctx,
+        user,
+        &[db::MediaKind::Movie, db::MediaKind::Episode],
+        from,
+        to,
+    )
+    .await?;
+    let series_titles = series_titles(ctx, &items).await?;
+    let mut events: Vec<CalendarEvent> = items
+        .into_iter()
+        .filter_map(|item| to_event(item, &series_titles))
+        .collect();
 
     sort_events(&mut events);
     Ok(events)
 }
 
-/// Fetches release-dated items of one kind within the window.
+/// Titles of the series owning `items`, keyed by series id. Empty for non-episodes.
+async fn series_titles(
+    ctx: &AppContext,
+    items: &[db::Media],
+) -> Result<HashMap<Uuid, String>> {
+    let mut ids: Vec<Uuid> = items
+        .iter()
+        .filter(|i| i.kind == db::MediaKind::Episode)
+        .filter_map(|i| i.grandparent_id)
+        .collect();
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    // A followed series contributes many episodes; dedupe before querying.
+    ids.sort_unstable();
+    ids.dedup();
+    Ok(db::Media::get_by_ids(&ctx.db, &ids)
+        .await?
+        .into_iter()
+        .map(|series| (series.id, series.title))
+        .collect())
+}
+
+/// Fetches release-dated movies and episodes within the window.
 async fn query_kind(
     ctx: &AppContext,
     user: &db::User,
-    kind: db::MediaKind,
+    kinds: &[db::MediaKind],
     from: NaiveDateTime,
     to: NaiveDateTime,
 ) -> Result<Vec<db::Media>> {
@@ -123,7 +151,7 @@ async fn query_kind(
     let result = db::Media::get_by_filter(
         &ctx.db,
         &db::MediaFilter {
-            kind: Some(vec![kind]),
+            kind: Some(kinds.to_vec()),
             // Bound the window on the premiere date itself. Deliberately not
             // `digital_released_before`: that gate hides recent theatrical-only
             // movies, which are exactly what an upcoming-release calendar shows.
@@ -165,23 +193,24 @@ async fn query_kind(
 }
 
 /// Converts a media row into an event, or `None` when it has no usable date.
-async fn to_event(ctx: &AppContext, item: db::Media) -> Result<Option<CalendarEvent>> {
-    let Some(date) = premiere_date(&item) else {
-        return Ok(None);
-    };
+fn to_event(
+    item: db::Media,
+    series_titles: &HashMap<Uuid, String>,
+) -> Option<CalendarEvent> {
+    let date = premiere_date(&item)?;
 
     let (series_title, season_number, episode_number) =
         if item.kind == db::MediaKind::Episode {
-            let series = match item.grandparent_id {
-                Some(id) => db::Media::get_by_id(&ctx.db, &id).await?,
-                None => None,
-            };
-            (series.map(|s| s.title), item.parent_idx, item.idx)
+            let title = item
+                .grandparent_id
+                .and_then(|id| series_titles.get(&id))
+                .cloned();
+            (title, item.parent_idx, item.idx)
         } else {
             (None, None, None)
         };
 
-    Ok(Some(CalendarEvent {
+    Some(CalendarEvent {
         id: item
             .id
             .to_string(),
@@ -191,7 +220,7 @@ async fn to_event(ctx: &AppContext, item: db::Media) -> Result<Option<CalendarEv
         season_number,
         episode_number,
         updated_at: item.updated_at,
-    }))
+    })
 }
 
 /// The date the item premieres: its theatrical or air date, else its digital
