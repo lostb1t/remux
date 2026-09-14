@@ -1,5 +1,7 @@
 use crate::{
-    components::{EmptyState, FormGroup, LoadingText, Switch, ToggleRow},
+    components::{
+        DragAndDropList, EmptyState, FormGroup, LoadingText, Switch, ToggleRow,
+    },
     state::AppState,
 };
 use dioxus::prelude::*;
@@ -11,6 +13,7 @@ use remux_sdks::remux::{
     StreamGroupPreviewDto, StreamQuality, StreamResolution, StreamRule,
     UpdateStreamGroup, UpdateStreamGroupRequest, UpdateSystemConfiguration,
 };
+use std::collections::HashMap;
 use uuid::Uuid;
 
 #[component]
@@ -299,14 +302,13 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
     let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
     let mut loading = use_signal(|| true);
     let mut error: Signal<Option<String>> = use_signal(|| None);
-    let mut refresh = use_signal(|| 0_u32);
+    let mut page_refresh = use_signal(|| 0_u32);
 
     // Create modal state
     let mut show_create = use_signal(|| false);
     let mut create_name = use_signal(String::new);
     let mut create_match: Signal<FilterMatchMode> = use_signal(|| FilterMatchMode::All);
     let mut create_rules: Signal<Vec<StreamRule>> = use_signal(Vec::new);
-    let mut create_priority = use_signal(|| 0_i64);
     let mut creating = use_signal(|| false);
 
     // Edit modal state
@@ -330,13 +332,16 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
     let mut preview_data: Signal<Option<StreamGroupPreviewDto>> = use_signal(|| None);
     let mut preview_loading = use_signal(|| false);
     let mut preview_error: Signal<Option<String>> = use_signal(|| None);
+    let mut preview_refresh = use_signal(|| 0_u32);
 
     let app_state_preview = app_state.clone();
     use_effect(move || {
         let imdb = preview_imdb
             .read()
             .clone();
-        let _r = *refresh.read();
+        // depend on the following two signals; will re-trigger effect
+        let _page_refresh = *page_refresh.read();
+        let _preview_refresh = *preview_refresh.read();
         if imdb.is_empty() {
             return;
         }
@@ -362,7 +367,7 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
 
     let app_state_effect = app_state.clone();
     use_effect(move || {
-        let _r = *refresh.read();
+        let _r = *page_refresh.read();
         loading.set(true);
         let client = app_state_effect.clone();
         spawn(async move {
@@ -434,7 +439,6 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                         create_name.set(String::new());
                         create_match.set(FilterMatchMode::All);
                         create_rules.set(vec![]);
-                        create_priority.set(0);
                         show_create.set(true);
                     },
                     "+ New Group"
@@ -449,16 +453,28 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                 } else if groups.read().is_empty() {
                     EmptyState { message: "No stream groups — create one to consolidate similar streams." }
                 } else {
-                    div { class: "row-list",
-                        for group in groups.read().clone() {
-                            {
+                    {
+                        let group_items = groups.read().clone();
+                        let groups_by_id: HashMap<Uuid, StreamGroupDto> = group_items
+                            .iter()
+                            .cloned()
+                            .map(|group| (group.id, group))
+                            .collect();
+                        let list_key = group_items
+                            .iter()
+                            .map(|group| group.id.to_string())
+                            .collect::<Vec<_>>()
+                            .join(":");
+                        let items: Vec<Element> = group_items
+                            .into_iter()
+                            .map(|group| {
                                 let gid = group.id;
                                 let gid_del = group.id;
                                 rsx! {
                                     div {
-                                        class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)]",
+                                        class: "flex min-h-20 hover:bg-[rgba(0,0,0,0.03)]",
                                         key: "{group.id}",
-                                        div { class: "flex-1 min-w-0 px-3 py-[10px]",
+                                        div { class: "h-full flex-1 min-w-0 px-3 py-[10px]",
                                             div { style: "font-weight:500;font-size:.85rem", "{group.name}" }
                                             div { style: "font-size:.72rem;color:var(--text-muted);margin-top:3px;display:flex;flex-wrap:wrap;gap:4px",
                                                 for rule in group.filter.rules.iter() {
@@ -493,7 +509,6 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                                                         {if group.filter.match_mode == FilterMatchMode::All { "AND" } else { "OR" }}
                                                     }
                                                 }
-                                                span { style: "color:var(--text-muted)", "priority {group.priority}" }
                                                 if !group.enabled {
                                                     span { style: "color:var(--error)", "disabled" }
                                                 }
@@ -501,9 +516,19 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                                         }
                                         div { class: "shrink-0 px-3 py-[10px] flex items-center gap-2",
                                             button {
+                                                r#type: "button",
+                                                draggable: "false",
                                                 class: "btn btn-ghost",
                                                 style: "height:30px;font-size:.68rem;padding:0 10px",
-                                                onclick: move |_| {
+                                                onpointerdown: move |e| e.stop_propagation(),
+                                                onmousedown: move |e| e.stop_propagation(),
+                                                onmouseup: move |e| e.stop_propagation(),
+                                                ondragstart: move |e| {
+                                                    e.prevent_default();
+                                                    e.stop_propagation();
+                                                },
+                                                onclick: move |e| {
+                                                    e.stop_propagation();
                                                     edit_name.set(group.name.clone());
                                                     edit_match.set(group.filter.match_mode.clone());
                                                     edit_rules.set(group.filter.rules.clone());
@@ -515,14 +540,83 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                                                 "Edit"
                                             }
                                             button {
+                                                r#type: "button",
+                                                draggable: "false",
                                                 class: "btn btn-ghost",
                                                 style: "height:30px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error)",
-                                                onclick: move |_| id_to_delete.set(Some(gid_del)),
+                                                onpointerdown: move |e| e.stop_propagation(),
+                                                onmousedown: move |e| e.stop_propagation(),
+                                                onmouseup: move |e| e.stop_propagation(),
+                                                ondragstart: move |e| {
+                                                    e.prevent_default();
+                                                    e.stop_propagation();
+                                                },
+                                                onclick: move |e| {
+                                                    e.stop_propagation();
+                                                    id_to_delete.set(Some(gid_del));
+                                                },
                                                 "Delete"
                                             }
                                         }
                                     }
                                 }
+                            })
+                            .collect();
+                        let client = app_state.clone();
+
+                        rsx! {
+                            DragAndDropList {
+                                key: "{list_key}",
+                                items,
+                                aria_label: "Stream groups",
+                                on_reorder: move |new_order: Vec<String>| {
+                                    let reordered_groups: Vec<StreamGroupDto> = new_order
+                                        .iter()
+                                        .enumerate()
+                                        .filter_map(|(index, id)| {
+                                            let id = id.parse::<Uuid>().ok()?;
+                                            let mut group = groups_by_id.get(&id)?.clone();
+                                            group.priority = index as i64 * 10;
+                                            Some(group)
+                                        })
+                                        .collect();
+                                    let updates: Vec<(Uuid, UpdateStreamGroupRequest)> =
+                                        reordered_groups
+                                            .iter()
+                                            .map(|group| {
+                                                (
+                                                    group.id,
+                                                    UpdateStreamGroupRequest {
+                                                        name: group.name.clone(),
+                                                        filter: group.filter.clone(),
+                                                        priority: group.priority,
+                                                        enabled: group.enabled,
+                                                        hidden: group.hidden,
+                                                    },
+                                                )
+                                            })
+                                            .collect();
+
+                                    groups.set(reordered_groups);
+                                    let client = client.clone();
+                                    spawn(async move {
+                                        for (id, payload) in updates {
+                                            if let Err(e) = client
+                                                .execute(UpdateStreamGroup { id, payload })
+                                                .await
+                                            {
+                                                error.set(Some(format!(
+                                                    "Failed to update stream group order: {e}"
+                                                )));
+                                                let value = *page_refresh.peek() + 1;
+                                                page_refresh.set(value);
+                                                return;
+                                            }
+                                        }
+                                        let value = *preview_refresh.peek() + 1;
+                                        preview_refresh.set(value);
+                                    });
+                                },
                             }
                         }
                     }
@@ -612,18 +706,6 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                         FormGroup { label: "Filter rules",
                             StreamFilterEditor { match_mode: create_match, rules: create_rules }
                         }
-                        FormGroup { label: "Priority (lower = shown first)",
-                            input {
-                                class: "form-input",
-                                r#type: "number",
-                                value: "{create_priority}",
-                                oninput: move |e| {
-                                    if let Ok(n) = e.value().parse::<i64>() {
-                                        create_priority.set(n);
-                                    }
-                                },
-                            }
-                        }
                     }
                     div { class: "modal-footer",
                         button {
@@ -644,19 +726,24 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                                         match_mode: create_match.peek().clone(),
                                         rules: create_rules.peek().clone(),
                                     };
-                                    let prio = *create_priority.peek();
+                                    let priority = groups
+                                        .peek()
+                                        .iter()
+                                        .map(|group| group.priority)
+                                        .max()
+                                        .map_or(0, |priority| priority.saturating_add(10));
                                     spawn(async move {
                                         match c.execute(CreateStreamGroup {
                                             payload: CreateStreamGroupRequest {
                                                 name,
                                                 filter,
-                                                priority: prio,
+                                                priority,
                                             },
                                         }).await {
                                             Ok(_) => {
                                                 show_create.set(false);
-                                                let v = *refresh.peek() + 1;
-                                                refresh.set(v);
+                                                let v = *page_refresh.peek() + 1;
+                                                page_refresh.set(v);
                                             }
                                             Err(e) => {
                                                 error.set(Some(format!("Failed to create: {e}")));
@@ -692,18 +779,6 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                         }
                         FormGroup { label: "Filter rules",
                             StreamFilterEditor { match_mode: edit_match, rules: edit_rules }
-                        }
-                        FormGroup { label: "Priority (lower = shown first)",
-                            input {
-                                class: "form-input",
-                                r#type: "number",
-                                value: "{edit_priority}",
-                                oninput: move |e| {
-                                    if let Ok(n) = e.value().parse::<i64>() {
-                                        edit_priority.set(n);
-                                    }
-                                },
-                            }
                         }
                         div { class: "form-group",
                             ToggleRow {
@@ -756,8 +831,8 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                                         }).await {
                                             Ok(_) => {
                                                 id_to_edit.set(None);
-                                                let v = *refresh.peek() + 1;
-                                                refresh.set(v);
+                                                let v = *page_refresh.peek() + 1;
+                                                page_refresh.set(v);
                                             }
                                             Err(e) => {
                                                 error.set(Some(format!("Failed to update: {e}")));
@@ -808,8 +883,8 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                                         match c.execute(DeleteStreamGroup { id }).await {
                                             Ok(_) => {
                                                 id_to_delete.set(None);
-                                                let v = *refresh.peek() + 1;
-                                                refresh.set(v);
+                                                let v = *page_refresh.peek() + 1;
+                                                page_refresh.set(v);
                                             }
                                             Err(e) => {
                                                 error.set(Some(format!("Failed to delete: {e}")));
