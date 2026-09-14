@@ -208,7 +208,11 @@ impl MediaKind {
     pub fn is_playable_leaf(&self) -> bool {
         matches!(
             self,
-            Self::Movie | Self::Episode | Self::Track | Self::TvChannel
+            Self::Movie
+                | Self::Episode
+                | Self::Track
+                | Self::TvChannel
+                | Self::TvProgram
         )
     }
 }
@@ -1097,7 +1101,10 @@ impl ExternalIds {
         grandparent_ext: Option<&ExternalIds>,
     ) -> Vec<String> {
         match kind {
-            MediaKind::Movie | MediaKind::Series | MediaKind::TvProgram => {
+            MediaKind::Movie
+            | MediaKind::Series
+            | MediaKind::TvChannel
+            | MediaKind::TvProgram => {
                 let mut ids = Vec::new();
                 if let Some(ref imdb) = self.imdb {
                     ids.push(imdb.to_string());
@@ -4386,22 +4393,23 @@ impl Media {
             }
 
             if let Some(parent_enabled) = &filter.parent_enabled {
-                qb.push(" AND parent_id IN (SELECT id FROM media WHERE kind = 'tv_channel' AND enabled = ")
+                qb.push(" AND (parent_id IS NULL OR parent_id IN (SELECT id FROM media WHERE kind = 'tv_channel' AND enabled = ")
                     .push_bind(*parent_enabled)
-                    .push(")");
+                    .push("))");
             }
 
             if let Some(has_aired) = filter.has_aired {
                 if has_aired {
                     qb.push(" AND live_end < datetime('now')");
                 } else {
-                    qb.push(" AND live_end >= datetime('now')");
+                    qb.push(" AND (live_end IS NULL OR live_end >= datetime('now'))");
                 }
             }
 
             if let Some(min_end) = &filter.min_end_date {
-                qb.push(" AND live_end >= ")
-                    .push_bind(min_end);
+                qb.push(" AND (live_end IS NULL OR live_end >= ")
+                    .push_bind(min_end)
+                    .push(")");
             }
 
             if let Some(max_start) = &filter.max_start_date {
@@ -7011,6 +7019,17 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                 .clone(),
         )
         .unwrap_or(MediaKind::Movie);
+        // Sports addons commonly expose both permanent channels and scheduled
+        // fixtures as Stremio `tv`. A concrete start time makes this a guide
+        // program; its end remains unknown because the source does not provide
+        // one.
+        if media_kind == MediaKind::TvChannel
+            && meta
+                .released
+                .is_some()
+        {
+            media_kind = MediaKind::TvProgram;
+        }
         if media_kind == MediaKind::Movie
             && meta
                 .videos
@@ -7160,6 +7179,14 @@ impl TryFrom<sdks::stremio::Meta> for Media {
             released_at: meta
                 .released
                 .map(|x| x.naive_utc()),
+            live_start: (media_kind == MediaKind::TvProgram)
+                .then(|| {
+                    meta.released
+                        .map(|x| x.naive_utc())
+                })
+                .flatten(),
+            program_kind: (media_kind == MediaKind::TvProgram)
+                .then_some(ProgramKind::Sports),
             digital_released_at,
             runtime: meta
                 .runtime

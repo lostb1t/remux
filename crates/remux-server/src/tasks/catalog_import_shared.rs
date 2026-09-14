@@ -68,6 +68,7 @@ where
                     | db::MediaKind::Series
                     | db::MediaKind::Artist
                     | db::MediaKind::TvChannel
+                    | db::MediaKind::TvProgram
                     | db::MediaKind::Album
                     | db::MediaKind::Track
                     | db::MediaKind::Playlist
@@ -553,6 +554,16 @@ pub async fn prune_stale_iptv_channels(db: &sqlx::SqlitePool, cutoff: NaiveDateT
         }
         Ok(_) => {}
         Err(e) => warn!(error = %e, "failed to prune stale IPTV channels"),
+    }
+
+    if let Err(e) = sqlx::query(
+        "DELETE FROM media WHERE kind = 'tv_program' AND parent_id IS NULL AND updated_at < ?",
+    )
+    .bind(cutoff)
+    .execute(db)
+    .await
+    {
+        warn!(error = %e, "failed to prune stale Stremio guide programs");
     }
 }
 
