@@ -1318,6 +1318,29 @@ pub struct MediaFilter {
     /// If set, only return items whose `released_at` is on or after this date.
     /// Used by /shows/upcoming to surface future-airing episodes.
     pub released_after: Option<NaiveDateTime>,
+    /// If set, bounds results to items whose premiere date is within
+    /// `[premiere_after, premiere_before]` (inclusive). The premiere date is
+    /// `COALESCE(released_at, digital_released_at)` — the same expression
+    /// `ItemSortBy::PremiereDate` orders by — so an item is bounded by the very
+    /// date a caller displays it on.
+    ///
+    /// Deliberately distinct from `digital_released_before`, which is the
+    /// availability gate and additionally hides recent theatrical-only movies.
+    /// A release calendar must show those, so it bounds its window with this.
+    pub premiere_after: Option<NaiveDateTime>,
+    pub premiere_before: Option<NaiveDateTime>,
+    /// If set, restrict results to items this user follows.
+    ///
+    /// Deliberately asymmetric by kind: any episode of a series the user has
+    /// played counts (watching one episode implies interest in the next), while a
+    /// movie needs an explicit favorite or like — watching a movie is terminal
+    /// and says nothing about any future release date.
+    ///
+    /// Distinct from `user_state`, which matches state on the row itself. An
+    /// unaired episode has no state of its own, so interest is inherited from
+    /// sibling episodes; a row-only match would exclude exactly the upcoming
+    /// items a calendar exists to show.
+    pub tracked_by_user: Option<Uuid>,
     /// Sort order for results. Mapped from Jellyfin's ItemSortBy.
     pub sort_by: Vec<api::ItemSortBy>,
     pub sort_order: Vec<api::SortOrder>,
@@ -4446,6 +4469,57 @@ impl Media {
             if let Some(after) = filter.released_after {
                 qb.push(" AND released_at >= ")
                     .push_bind(after);
+            }
+
+            // Bound the premiere date, matching ItemSortBy::PremiereDate. Items
+            // with neither date resolve to NULL and are excluded by both
+            // comparisons, which is correct: they have no date to place.
+            if let Some(after) = filter.premiere_after {
+                qb.push(" AND COALESCE(released_at, digital_released_at) >= ")
+                    .push_bind(after);
+            }
+
+            if let Some(before) = filter.premiere_before {
+                qb.push(" AND COALESCE(released_at, digital_released_at) <= ")
+                    .push_bind(before);
+            }
+
+            // Restrict to what the user follows. The rule is deliberately
+            // asymmetric because the two kinds relate to the future differently:
+            //
+            // - Episodes: watching one episode implies interest in the next, so
+            //   playback anywhere in the series counts. State rows live on
+            //   episodes, never on the series row, so this must reach sibling
+            //   episodes via the shared grandparent — the same traversal
+            //   `next_up_candidates` performs. Interest survives finishing a
+            //   season, which is exactly when a future season matters most.
+            // - Movies: watching a movie is terminal and implies nothing about
+            //   any future date, so only an explicit intent (favorite or like)
+            //   qualifies.
+            //
+            // A like is `rating >= UserRating::LIKE_THRESHOLD`; a dislike is a
+            // stored rating below it and must NOT pull the item in.
+            if let Some(uid) = &filter.tracked_by_user {
+                qb.push(" AND (EXISTS (SELECT 1 FROM user_media_state ums \
+                          WHERE ums.user_id = ")
+                    .push_bind(uid)
+                    .push(
+                        " AND ums.media_id IN (media.id, media.parent_id, media.grandparent_id) \
+                           AND (ums.favorite = 1 OR ums.rating >= ",
+                    )
+                    .push_bind(super::UserRating::LIKE_THRESHOLD)
+                    .push(
+                        ")) \
+                         OR (media.kind = 'episode' AND media.grandparent_id IS NOT NULL \
+                             AND EXISTS (SELECT 1 FROM user_media_state ums \
+                               JOIN media sib ON sib.id = ums.media_id \
+                               WHERE ums.user_id = ",
+                    )
+                    .push_bind(uid)
+                    .push(
+                        " AND sib.grandparent_id = media.grandparent_id \
+                           AND (ums.play_count > 0 OR ums.playback_position > 0))))",
+                    );
             }
 
             if !is_genre_scope_query {

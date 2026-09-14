@@ -6900,6 +6900,7 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "serde_with",
+ "sha2",
  "sqlx",
  "strum",
  "strum_macros",
