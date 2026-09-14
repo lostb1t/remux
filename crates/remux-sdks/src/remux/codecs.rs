@@ -392,6 +392,8 @@ impl<'de> serde::Deserialize<'de> for TranscodingProtocol {
 pub enum DlnaProfileType {
     Video,
     Audio,
+    /// Audio streams in a video source (Jellyfin's `VideoAudio`).
+    VideoAudio,
     Photo,
     #[strum(default, to_string = "{0}")]
     Other(String),

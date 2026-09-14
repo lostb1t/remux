@@ -334,29 +334,6 @@ async fn items_playbackinfo_inner(
                 .map_or(false, |b| b > max)
         });
 
-        let mut transcode_reasons: api::TranscodeReasons = {
-            let mut reasons = device_profile
-                .as_ref()
-                .map(|profile| profile.check_direct_play(&source))
-                .unwrap_or_default();
-            if bitrate_exceeded {
-                reasons.insert(api::TranscodeReason::ContainerBitrateExceedsLimit);
-            }
-            // RTSP streams can only be served via ffmpeg — never direct-playable.
-            if matches!(
-                stream
-                    .stream_info
-                    .as_ref()
-                    .map(|si| &si.descriptor),
-                Some(crate::stream::StreamDescriptor::Rtsp { .. })
-            ) {
-                reasons.insert(api::TranscodeReason::ContainerNotSupported(
-                    "rtsp".to_string(),
-                ));
-            }
-            reasons
-        };
-
         // Strip mode: remove embedded subtitle streams not supported by the client so
         // they don't trigger a transcode. External/addon subs are never touched.
         if subtitle_mode == remux_sdks::remux::EmbeddedSubtitleHandling::Strip {
@@ -412,6 +389,32 @@ async fn items_playbackinfo_inner(
             saved_audio,
             saved_subtitle,
         );
+
+        // Evaluate direct-play compatibility after resolving the requested/default
+        // audio stream. Device profiles constrain the stream that will actually
+        // be played, not necessarily the first audio track in the container.
+        let mut transcode_reasons: api::TranscodeReasons = {
+            let mut reasons = device_profile
+                .as_ref()
+                .map(|profile| profile.check_direct_play(&source))
+                .unwrap_or_default();
+            if bitrate_exceeded {
+                reasons.insert(api::TranscodeReason::ContainerBitrateExceedsLimit);
+            }
+            // RTSP streams can only be served via ffmpeg — never direct-playable.
+            if matches!(
+                stream
+                    .stream_info
+                    .as_ref()
+                    .map(|si| &si.descriptor),
+                Some(crate::stream::StreamDescriptor::Rtsp { .. })
+            ) {
+                reasons.insert(api::TranscodeReason::ContainerNotSupported(
+                    "rtsp".to_string(),
+                ));
+            }
+            reasons
+        };
 
         // Detect embedded subtitle codecs unsupported by the client device profile.
         // In Burn mode this triggers transcoding so the subtitle can be burned in.

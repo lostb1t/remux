@@ -2030,11 +2030,66 @@ pub struct SubtitleProfile {
     pub method: Option<SubtitleDeliveryMethod>,
 }
 
+/// A Jellyfin device-profile property.
+///
+/// The public API may add properties over time, so unknown values remain
+/// lossless rather than making a client profile impossible to parse.
+#[derive(
+    Debug, Clone, PartialEq, Eq, strum_macros::EnumString, strum_macros::Display,
+)]
+#[strum(ascii_case_insensitive)]
+pub enum ProfileProperty {
+    AudioBitrate,
+    AudioChannels,
+    AudioProfile,
+    AudioSampleRate,
+    BitDepth,
+    Bitrate,
+    Framerate,
+    Height,
+    #[strum(to_string = "IsAVC", serialize = "IsAVC", serialize = "IsAvc")]
+    IsAvc,
+    IsAnamorphic,
+    IsInterlaced,
+    Level,
+    NumAudioStreams,
+    NumVideoStreams,
+    Profile,
+    RefFrames,
+    VideoBitrate,
+    VideoCodecTag,
+    VideoFramerate,
+    VideoLevel,
+    VideoProfile,
+    VideoRangeType,
+    Width,
+    #[strum(default, to_string = "{0}")]
+    Other(String),
+}
+
+impl Serialize for ProfileProperty {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for ProfileProperty {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Ok(value
+            .parse()
+            .unwrap_or_else(|_| Self::Other(value)))
+    }
+}
+
 #[derive(Default, Debug, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct ProfileCondition {
     pub condition: Option<String>,
-    pub property: Option<String>,
+    pub property: Option<ProfileProperty>,
     #[serde(
         default,
         deserialize_with = "crate::deserialize_option_string_from_any"
@@ -2821,6 +2876,21 @@ impl MediaSourceInfo {
         self.media_streams
             .iter()
             .find(|s| matches!(s.type_, Some(MediaStreamType::Audio)))
+    }
+
+    /// The audio stream selected for this playback request, falling back to
+    /// the first audio stream when no per-request selection has been made.
+    pub fn selected_audio_stream(&self) -> Option<&MediaStream> {
+        self.default_audio_stream_index
+            .and_then(|index| {
+                self.media_streams
+                    .iter()
+                    .find(|stream| {
+                        stream.index == index
+                            && matches!(stream.type_, Some(MediaStreamType::Audio))
+                    })
+            })
+            .or_else(|| self.audio_stream())
     }
 
     pub fn subtitle_stream(&self) -> Option<&MediaStream> {
@@ -7545,6 +7615,7 @@ mod tests {
                 .as_deref(),
             Some("6")
         );
+        assert_eq!(cond.property, Some(ProfileProperty::AudioChannels));
 
         let json_str =
             r#"{"Condition": "Equals", "Property": "AudioChannels", "Value": "6"}"#;
@@ -7573,6 +7644,14 @@ mod tests {
             r#"{"Condition": "Equals", "Property": "Height", "Value": "   "}"#;
         let cond: ProfileCondition = serde_json::from_str(json_empty).unwrap();
         assert_eq!(cond.value, None);
+
+        let unknown =
+            r#"{"Condition": "Equals", "Property": "FutureProperty", "Value": "x"}"#;
+        let cond: ProfileCondition = serde_json::from_str(unknown).unwrap();
+        assert_eq!(
+            cond.property,
+            Some(ProfileProperty::Other("FutureProperty".to_string()))
+        );
     }
 
     #[test]
