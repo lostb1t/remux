@@ -96,8 +96,19 @@ pub fn CalendarPage(app_state: AppState) -> Element {
             action: rsx! {
                 button {
                     class: "btn btn-primary",
-                    style: "height:32px;font-size:.68rem",
+                    // A green button that does nothing reads as enabled, so dim it
+                    // when every user already has a link.
+                    style: if linkable.is_empty() {
+                        "height:32px;font-size:.68rem;opacity:.45;cursor:not-allowed"
+                    } else {
+                        "height:32px;font-size:.68rem"
+                    },
                     disabled: linkable.is_empty(),
+                    title: if linkable.is_empty() {
+                        "Every user already has a link"
+                    } else {
+                        "Generate a calendar link for a user"
+                    },
                     onclick: move |_| {
                         selected_user.set(None);
                         show_generate.set(true);
