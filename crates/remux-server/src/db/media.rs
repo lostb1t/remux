@@ -7019,17 +7019,6 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                 .clone(),
         )
         .unwrap_or(MediaKind::Movie);
-        // Sports addons commonly expose both permanent channels and scheduled
-        // fixtures as Stremio `tv`. A concrete start time makes this a guide
-        // program; its end remains unknown because the source does not provide
-        // one.
-        if media_kind == MediaKind::TvChannel
-            && meta
-                .released
-                .is_some()
-        {
-            media_kind = MediaKind::TvProgram;
-        }
         if media_kind == MediaKind::Movie
             && meta
                 .videos
@@ -7234,7 +7223,15 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                         .filter_map(|t| t.source)
                         .collect::<Vec<String>>()
                 }),
-            id: Uuid::new_v4(),
+            // Live channels have no external-ID deduplication path during catalog
+            // import, so their primary key must be derived from the provider's
+            // stable Stremio ID. Other media kinds are reconciled by their
+            // external IDs after import.
+            id: if media_kind == MediaKind::TvChannel {
+                crate::common::stable_media_uuid(&media_kind, &meta.id)
+            } else {
+                Uuid::new_v4()
+            },
             ..Default::default()
         };
 
@@ -7265,6 +7262,33 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
     let mut media: Media = meta
         .clone()
         .try_into()?;
+
+    // A dated `tv` listing is a scheduled, single-program virtual channel.
+    // Keep the channel playable in its catalog and add a guide program below
+    // it. Prefer the runtime when the addon supplies one; otherwise use a
+    // conservative 24-hour placeholder. Items absent from the next refresh
+    // are pruned.
+    if media.kind == MediaKind::TvChannel {
+        if let Some(start) = meta
+            .released
+            .map(|released| released.naive_utc())
+        {
+            let mut program = media.clone();
+            program.id =
+                crate::common::stable_media_uuid(&MediaKind::TvProgram, &meta.id);
+            program.kind = MediaKind::TvProgram;
+            program.parent_id = Some(media.id);
+            program.live_start = Some(start);
+            let duration = media
+                .runtime
+                .filter(|seconds| *seconds > 0)
+                .map(chrono::Duration::seconds)
+                .unwrap_or_else(|| chrono::Duration::hours(24));
+            program.live_end = Some(start + duration);
+            program.program_kind = Some(ProgramKind::Sports);
+            return Ok(vec![media, program]);
+        }
+    }
 
     if imdb_id.is_none() {
         // Custom-ID path: no IMDB, derive UUIDs from the addon-specific id.
@@ -8841,6 +8865,69 @@ mod tests {
                 .external_ids
                 .custom_stremio_type,
             Some("anime".to_string())
+        );
+    }
+
+    #[test]
+    fn stremio_tv_channel_id_is_stable_across_catalog_refreshes() {
+        let json = r#"{
+            "id": "nuvio_sport_spk_admin-rally-tv",
+            "type": "tv",
+            "name": "Rally TV"
+        }"#;
+        let first: Media = serde_json::from_str::<sdks::stremio::Meta>(json)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let second: Media = serde_json::from_str::<sdks::stremio::Meta>(json)
+            .unwrap()
+            .try_into()
+            .unwrap();
+
+        assert_eq!(first.kind, MediaKind::TvChannel);
+        assert_eq!(first.id, second.id);
+        assert_eq!(
+            first.id,
+            crate::common::stable_media_uuid(
+                &MediaKind::TvChannel,
+                "nuvio_sport_spk_admin-rally-tv"
+            )
+        );
+    }
+
+    #[test]
+    fn dated_stremio_tv_listing_creates_a_channel_and_program() {
+        let meta: sdks::stremio::Meta = serde_json::from_str(
+            r#"{
+                "id": "nuvio_sport_spk_arsenal-vs-chelsea",
+                "type": "tv",
+                "name": "Arsenal vs Chelsea",
+                "released": "2026-09-14T16:00:00.000Z",
+                "runtime": "90 min"
+            }"#,
+        )
+        .unwrap();
+
+        let items = stremio_meta_to_medias(meta).unwrap();
+        assert_eq!(items.len(), 2);
+        let channel = items
+            .iter()
+            .find(|item| item.kind == MediaKind::TvChannel)
+            .unwrap();
+        let program = items
+            .iter()
+            .find(|item| item.kind == MediaKind::TvProgram)
+            .unwrap();
+
+        assert_eq!(program.parent_id, Some(channel.id));
+        assert_eq!(
+            program.live_end,
+            Some(
+                program
+                    .live_start
+                    .unwrap()
+                    + chrono::Duration::minutes(90)
+            )
         );
     }
 

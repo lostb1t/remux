@@ -358,11 +358,13 @@ impl CatalogAddon for StremioAddon {
                     }
                     match db::stremio_meta_to_medias(meta) {
                         Ok(mut items) => {
-                            // Only emit the top-level item (series/movie).
-                            // Seasons and episodes are populated by sync_tree
-                            // during RefreshLibrary, avoiding FK constraint
-                            // failures when chunks are split across parents.
-                            items.retain(|x| x.parent_id.is_none());
+                            // Only emit top-level content. Seasons and episodes
+                            // are populated by sync_tree during RefreshLibrary,
+                            // but a scheduled virtual channel's program must be
+                            // imported alongside its channel for the live guide.
+                            items.retain(|x| {
+                                x.parent_id.is_none() || x.kind == db::MediaKind::TvProgram
+                            });
                             if let Some(top) = items.first_mut() {
                                 top.parent_id = None;
                             }
