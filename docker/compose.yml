@@ -3,9 +3,31 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-
     ports:
       - "3001:3000"
-    #command: ["bash", "-c", "tail -f /dev/null"]
-    #command: ["bash", "-lc", "ls -la ."]
-    #command: ["/app/remux-server"]
+    environment:
+      AIO_STREAMS_MANIFEST_URL: http://aiostreams:3000/manifest.json
+      AIO_METADATA_MANIFEST_URL: http://aiometadata:3000/manifest.json
+    depends_on:
+      - aiostreams
+      - aiometadata
+    networks:
+      - remux-internal
+
+  aiostreams:
+    image: ghcr.io/viren070/aiostreams:latest
+    networks:
+      - remux-internal
+      - aio-egress
+
+  aiometadata:
+    image: ghcr.io/jigsawfr/aiometadata:latest
+    networks:
+      - remux-internal
+      - aio-egress
+
+networks:
+  remux-internal:
+    internal: true
+  aio-egress:
+    driver: bridge

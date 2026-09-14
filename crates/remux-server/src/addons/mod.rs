@@ -1157,6 +1157,59 @@ fn kind_in_type_list(kind: &db::MediaKind, list: &[db::MediaKind]) -> bool {
             && list.contains(&db::MediaKind::Series))
 }
 
+/// Seed the built-in AIO Stremio addons without overwriting operator changes.
+///
+/// The fixed UUIDs make this operation idempotent across restarts. The manifest
+/// URLs come from Config so deployments can replace the Docker-internal defaults
+/// with hosted or reverse-proxied endpoints.
+pub async fn seed_aio_addons(
+    db: &SqlitePool,
+    config: &crate::Config,
+) -> Result<()> {
+    const AIO_METADATA_ID: &str = "6f9f8d79-7f2f-4e7e-9e38-2f6a2b6e5c01";
+    const AIO_STREAMS_ID: &str = "8b2f1a64-1fcb-4fcb-9f4d-5c2f6e7a8b02";
+
+    let seeds = [
+        (
+            AIO_METADATA_ID,
+            "AIOMetadata",
+            config.aio_metadata_manifest_url.as_deref(),
+            r#"["catalog","meta","search"]"#,
+            10_i64,
+        ),
+        (
+            AIO_STREAMS_ID,
+            "AIOStreams",
+            config.aio_streams_manifest_url.as_deref(),
+            r#"["stream"]"#,
+            20_i64,
+        ),
+    ];
+
+    for (id, name, manifest_url, resources, priority) in seeds {
+        let Some(manifest_url) = manifest_url else {
+            continue;
+        };
+        let preset = serde_json::json!({
+            "kind": "stremio",
+            "config": { "manifest_url": manifest_url },
+        });
+        sqlx::query(
+            "INSERT OR IGNORE INTO addons \
+             (id, name, preset, resources, types, enabled, priority, created_at, updated_at, system, is_default, http_redirect_stream, service_filter) \
+             VALUES (unhex(replace(?1, '-', '')), ?2, ?3, ?4, '[]', 1, ?5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0, 1, 0, '[]')",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(sqlx::types::Json(preset))
+        .bind(resources)
+        .bind(priority)
+        .execute(db)
+        .await?;
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // AddonService
 // ---------------------------------------------------------------------------

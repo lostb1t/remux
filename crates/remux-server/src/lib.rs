@@ -274,6 +274,7 @@ pub async fn init_app(
     info!("Running database migrations. Do not interrupt!");
     db::migrate(&conn).await?;
     info!("migrations complete");
+    addons::seed_aio_addons(&conn, &config).await?;
 
     // Checkpoint the WAL before accepting any requests. At this point no
     // other readers exist, so TRUNCATE is guaranteed to succeed and the WAL
@@ -589,6 +590,12 @@ pub struct Config {
     /// Base URL for remuxdb. When set, probe results are submitted after each live probe.
     #[serde(default = "default_remuxdb_url")]
     pub remuxdb_url: Option<String>,
+    /// Default Stremio manifest URL for the AIOStreams stream provider.
+    #[serde(default = "default_aio_streams_manifest_url")]
+    pub aio_streams_manifest_url: Option<String>,
+    /// Default Stremio manifest URL for the AIOMetadata catalog/meta provider.
+    #[serde(default = "default_aio_metadata_manifest_url")]
+    pub aio_metadata_manifest_url: Option<String>,
     #[serde(default = "default_activity_log_retention_days")]
     pub activity_log_retention_days: u32,
     #[serde(default = "default_jellyfin_version")]
@@ -601,6 +608,14 @@ fn default_jellyfin_version() -> String {
 
 fn default_remuxdb_url() -> Option<String> {
     Some("https://remuxdb.1632022.xyz".to_string())
+}
+
+fn default_aio_streams_manifest_url() -> Option<String> {
+    Some("http://aiostreams:3000/manifest.json".to_string())
+}
+
+fn default_aio_metadata_manifest_url() -> Option<String> {
+    Some("http://aiometadata:3000/manifest.json".to_string())
 }
 
 fn default_activity_log_retention_days() -> u32 {
@@ -720,6 +735,8 @@ impl Default for Config {
             tmdb_base_url: default_tmdb_base_url(),
             trakt_base_url: default_trakt_base_url(),
             remuxdb_url: Some("https://remuxdb.1632022.xyz".to_string()),
+            aio_streams_manifest_url: default_aio_streams_manifest_url(),
+            aio_metadata_manifest_url: default_aio_metadata_manifest_url(),
             activity_log_retention_days: default_activity_log_retention_days(),
             jellyfin_version: default_jellyfin_version(),
         }
