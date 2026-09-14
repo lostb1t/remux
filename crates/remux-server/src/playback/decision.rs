@@ -277,7 +277,12 @@ fn build_video_transcode(
                                 .is_some_and(|container| {
                                     container
                                         .to_string()
-                                        .eq_ignore_ascii_case("ts")
+                                        .split(',')
+                                        .any(|value| {
+                                            value
+                                                .trim()
+                                                .eq_ignore_ascii_case("ts")
+                                        })
                                 })
                     })
                     .or_else(|| profile.video_transcoding_profile())

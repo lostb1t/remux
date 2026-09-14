@@ -501,10 +501,6 @@ fn is_hls_input_url(input_url: &str) -> bool {
         .path()
         .to_ascii_lowercase();
     path.ends_with(".m3u8")
-        || (path.ends_with("/hls")
-            && url
-                .query_pairs()
-                .any(|(name, _)| name.eq_ignore_ascii_case("url")))
         // Some stream relays expose their HLS manifest through a generic
         // endpoint such as `/api/manifest?url=https://origin/live.m3u8`.
         || url.query_pairs().any(|(name, value)| {
@@ -3265,6 +3261,13 @@ mod tests {
             "https://relay.example/api/manifest?url=https%3A%2F%2Forigin.example%2Flive.m3u8",
         );
         assert_eq!(hls, ["-http_persistent", "0"]);
+
+        // A generic relay endpoint is not necessarily HLS. DASH inputs still
+        // need the normal reconnect options.
+        let dash = ffmpeg_http_input_args(
+            "https://relay.example/hls?url=https%3A%2F%2Forigin.example%2Flive.mpd",
+        );
+        assert!(dash.contains(&"-reconnect"));
     }
 
     #[test]

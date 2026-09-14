@@ -4393,7 +4393,9 @@ impl Media {
             }
 
             if let Some(parent_enabled) = &filter.parent_enabled {
-                qb.push(" AND (parent_id IS NULL OR parent_id IN (SELECT id FROM media WHERE kind = 'tv_channel' AND enabled = ")
+                // A channel has no parent; only guide programs need their
+                // parent channel's enabled state checked.
+                qb.push(" AND (kind != 'tv_program' OR parent_id IN (SELECT id FROM media WHERE kind = 'tv_channel' AND enabled = ")
                     .push_bind(*parent_enabled)
                     .push("))");
             }

@@ -163,6 +163,13 @@ where
         let (new_items, existing_items): (Vec<db::Media>, Vec<db::Media>) = items
             .into_iter()
             .partition(|m| !existing_ids.contains(&m.id));
+        let new_item_kinds: Vec<db::MediaKind> = new_items
+            .iter()
+            .map(|item| {
+                item.kind
+                    .clone()
+            })
+            .collect();
 
         debug!(
             catalog = media_id,
@@ -188,8 +195,7 @@ where
         // Persist channels first so the program's parent foreign key is valid;
         // `process_meta_batch` otherwise runs items concurrently.
         let (new_programs, new_roots): (Vec<db::Media>, Vec<db::Media>) = new_items
-            .iter()
-            .cloned()
+            .into_iter()
             .partition(|item| {
                 item.kind == db::MediaKind::TvProgram
                     && item
@@ -354,13 +360,19 @@ where
             }
 
             if !catalog_tags.is_empty() {
-                let tag_rows: Vec<(Uuid, &String)> = new_items
+                let tag_rows: Vec<(Uuid, &String)> = item_weights
                     .iter()
-                    .chain(existing_items.iter())
-                    .flat_map(|item| {
+                    .map(|(item_id, _)| item_id)
+                    .chain(
+                        existing_items
+                            .iter()
+                            .filter(|item| item.kind != db::MediaKind::TvProgram)
+                            .map(|item| &item.id),
+                    )
+                    .flat_map(|item_id| {
                         catalog_tags
                             .iter()
-                            .map(move |tag| (item.id, tag))
+                            .map(move |tag| (*item_id, tag))
                     })
                     .collect();
 
@@ -385,23 +397,21 @@ where
             }
         }
 
-        for item in new_items.iter() {
+        for kind in &new_item_kinds {
             *new_counts
-                .entry(
-                    item.kind
-                        .to_string(),
-                )
+                .entry(kind.to_string())
                 .or_insert(0) += 1;
         }
-        for item in new_items
+        for kind in new_item_kinds
             .iter()
-            .chain(existing_items.iter())
+            .chain(
+                existing_items
+                    .iter()
+                    .map(|item| &item.kind),
+            )
         {
             *counts
-                .entry(
-                    item.kind
-                        .to_string(),
-                )
+                .entry(kind.to_string())
                 .or_insert(0) += 1;
         }
         total = counts
