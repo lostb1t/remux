@@ -17,6 +17,8 @@ pub enum Route {
     LibraryRoute,
     #[route("/content/iptv")]
     IptvRoute,
+    #[route("/content/calendar")]
+    CalendarRoute,
     #[route("/streaming/groups")]
     StreamingGroupsRoute,
     #[route("/streaming/probing")]
@@ -76,6 +78,12 @@ pub(crate) fn LibraryRoute() -> Element {
 pub(crate) fn IptvRoute() -> Element {
     let app_state = use_context::<AppState>();
     rsx! { IptvPage { app_state } }
+}
+
+#[component]
+pub(crate) fn CalendarRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { CalendarPage { app_state } }
 }
 
 #[component]

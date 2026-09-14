@@ -1,7 +1,6 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rand::RngCore;
-use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
@@ -14,51 +13,64 @@ const TOKEN_ENTROPY_BYTES: usize = 32;
 /// is rejected before it reaches the database.
 const TOKEN_PREFIX: &str = "remux_cal_";
 
-/// A user's ICS feed link. The token itself is never stored — only its digest.
+/// A user's ICS feed link.
+///
+/// The token is stored in plaintext: only an administrator creates and
+/// distributes these links, so the admin UI must be able to show an existing
+/// token rather than rotate it to learn its value. `api_keys` stores its
+/// `access_token` the same way. The token is wrapped in [`remux_utils::Secret`]
+/// so it is not serialised or logged by accident.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct CalendarLink {
-    pub token_hash: Vec<u8>,
+    pub token: remux_utils::Secret<String>,
     pub user_id: Uuid,
     pub created_at: DateTime<Utc>,
     pub rotated_at: Option<DateTime<Utc>>,
 }
 
-/// A freshly minted link plus its plaintext token. The token is returned exactly
-/// once, at creation or rotation; afterwards only the digest exists.
-#[derive(Debug, Clone)]
-pub struct CalendarCredential {
-    pub link: CalendarLink,
-    pub token: remux_utils::Secret<String>,
-}
-
 impl CalendarLink {
-    /// Creates the user's link, or rotates it if one already exists.
+    /// Returns the user's existing link, creating one only if absent.
     ///
-    /// Rotation reuses this single upsert so a user can never end up with two
-    /// live feed URLs: replacing the row revokes the previous token.
-    pub async fn upsert(db: &SqlitePool, user_id: &Uuid) -> Result<CalendarCredential> {
-        let (token, token_hash) = generate_token();
-        let now = Utc::now();
-        // token_hash is the primary key, so a rotation inserts a new key for an
-        // existing user_id; the conflict target is therefore user_id.
+    /// Deliberately non-destructive: an admin asking for someone's link must not
+    /// invalidate the URL that person already subscribed with. Use
+    /// [`Self::rotate`] to replace a token on purpose.
+    pub async fn get_or_create(db: &SqlitePool, user_id: &Uuid) -> Result<Self> {
+        if let Some(existing) = Self::get_by_user(db, user_id).await? {
+            return Ok(existing);
+        }
+        // Racing callers: one INSERT wins, the loser reads the winner's row.
+        let token = generate_token();
         sqlx::query(
-            "INSERT INTO user_calendar_links (token_hash, user_id, created_at) \
-             VALUES (?1, ?2, ?3) \
-             ON CONFLICT(user_id) DO UPDATE SET token_hash = ?1, rotated_at = ?3",
+            "INSERT INTO user_calendar_links (token, user_id, created_at) \
+             VALUES (?1, ?2, ?3) ON CONFLICT(user_id) DO NOTHING",
         )
-        .bind(&token_hash)
+        .bind(&token)
+        .bind(user_id)
+        .bind(Utc::now())
+        .execute(db)
+        .await?;
+        Self::get_by_user(db, user_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("calendar link not found after insert"))
+    }
+
+    /// Replaces the user's token, killing the previous URL immediately.
+    pub async fn rotate(db: &SqlitePool, user_id: &Uuid) -> Result<Self> {
+        let token = generate_token();
+        let now = Utc::now();
+        sqlx::query(
+            "INSERT INTO user_calendar_links (token, user_id, created_at) \
+             VALUES (?1, ?2, ?3) \
+             ON CONFLICT(user_id) DO UPDATE SET token = ?1, rotated_at = ?3",
+        )
+        .bind(&token)
         .bind(user_id)
         .bind(now)
         .execute(db)
         .await?;
-
-        let link = Self::get_by_user(db, user_id)
+        Self::get_by_user(db, user_id)
             .await?
-            .ok_or_else(|| anyhow::anyhow!("calendar link not found after upsert"))?;
-        Ok(CalendarCredential {
-            link,
-            token: remux_utils::Secret::new(token),
-        })
+            .ok_or_else(|| anyhow::anyhow!("calendar link not found after rotate"))
     }
 
     pub async fn get_by_user(db: &SqlitePool, user_id: &Uuid) -> Result<Option<Self>> {
@@ -72,17 +84,26 @@ impl CalendarLink {
 
     /// Resolves the token a feed request presented to its owning link.
     ///
-    /// Malformed tokens are rejected without a query. Lookup is by digest, so a
-    /// stolen database yields no usable feed URLs.
+    /// Malformed tokens are rejected before any query: the encoding is fixed, so
+    /// a mismatch cannot be a token we issued.
     pub async fn get_by_token(db: &SqlitePool, token: &str) -> Result<Option<Self>> {
-        let Some(token_hash) = token_digest(token) else {
+        if !is_well_formed(token) {
             return Ok(None);
-        };
+        }
         Ok(sqlx::query_as::<_, Self>(
-            "SELECT * FROM user_calendar_links WHERE token_hash = ?1",
+            "SELECT * FROM user_calendar_links WHERE token = ?1",
         )
-        .bind(token_hash)
+        .bind(token)
         .fetch_optional(db)
+        .await?)
+    }
+
+    /// Every link, newest first. Admin-only listing.
+    pub async fn get_all(db: &SqlitePool) -> Result<Vec<Self>> {
+        Ok(sqlx::query_as::<_, Self>(
+            "SELECT * FROM user_calendar_links ORDER BY created_at DESC",
+        )
+        .fetch_all(db)
         .await?)
     }
 
@@ -95,28 +116,23 @@ impl CalendarLink {
     }
 }
 
-/// Mints a token and its digest.
-fn generate_token() -> (String, Vec<u8>) {
+/// Mints a token.
+fn generate_token() -> String {
     let mut entropy = [0u8; TOKEN_ENTROPY_BYTES];
     rand::thread_rng().fill_bytes(&mut entropy);
-    let token = format!("{TOKEN_PREFIX}{}", base64_url_nopad(&entropy));
-    let digest = Sha256::digest(token.as_bytes()).to_vec();
-    (token, digest)
+    format!("{TOKEN_PREFIX}{}", base64_url_nopad(&entropy))
 }
 
-/// Digest of a well-formed token, or `None` if the token cannot be one we issued.
-fn token_digest(token: &str) -> Option<Vec<u8>> {
-    let encoded = token.strip_prefix(TOKEN_PREFIX)?;
-    // Reject anything that is not exactly our own encoding: length and alphabet
-    // are fixed, so a mismatch cannot be a token we minted.
-    if encoded.len() != base64_url_nopad_len(TOKEN_ENTROPY_BYTES)
-        || !encoded
+/// Whether `token` matches the shape we issue: correct prefix, exact encoded
+/// length, base64url alphabet only.
+fn is_well_formed(token: &str) -> bool {
+    let Some(encoded) = token.strip_prefix(TOKEN_PREFIX) else {
+        return false;
+    };
+    encoded.len() == base64_url_nopad_len(TOKEN_ENTROPY_BYTES)
+        && encoded
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    {
-        return None;
-    }
-    Some(Sha256::digest(token.as_bytes()).to_vec())
 }
 
 fn base64_url_nopad(bytes: &[u8]) -> String {
@@ -135,39 +151,24 @@ mod tests {
 
     #[test]
     fn generated_tokens_are_prefixed_and_full_entropy() {
-        let (token, digest) = generate_token();
+        let token = generate_token();
         assert!(token.starts_with(TOKEN_PREFIX), "{token}");
-        assert_eq!(digest.len(), 32, "digest must be a full SHA-256");
-        // The plaintext token must not be recoverable from what we store.
-        assert!(
-            !digest
-                .windows(TOKEN_PREFIX.len())
-                .any(|w| w == TOKEN_PREFIX.as_bytes()),
-            "digest leaks token material"
+        assert!(is_well_formed(&token), "own token rejected: {token}");
+        assert_eq!(
+            token.len(),
+            TOKEN_PREFIX.len() + base64_url_nopad_len(TOKEN_ENTROPY_BYTES),
+            "token must carry the full 256 bits: {token}"
         );
     }
 
     #[test]
     fn generated_tokens_are_unique() {
-        let (first, first_digest) = generate_token();
-        let (second, second_digest) = generate_token();
-        assert_ne!(first, second);
-        assert_ne!(first_digest, second_digest);
+        assert_ne!(generate_token(), generate_token());
     }
 
     #[test]
-    fn token_digest_accepts_own_tokens_and_is_stable() {
-        let (token, digest) = generate_token();
-        assert_eq!(
-            token_digest(&token),
-            Some(digest),
-            "digest must match the one stored at creation"
-        );
-    }
-
-    #[test]
-    fn token_digest_rejects_malformed_tokens() {
-        let (valid, _) = generate_token();
+    fn rejects_malformed_tokens() {
+        let valid = generate_token();
         let body = valid
             .strip_prefix(TOKEN_PREFIX)
             .unwrap();
@@ -186,7 +187,7 @@ mod tests {
             TOKEN_PREFIX.to_string(),
             String::new(),
         ] {
-            assert_eq!(token_digest(&bad), None, "accepted malformed token {bad:?}");
+            assert!(!is_well_formed(&bad), "accepted malformed token {bad:?}");
         }
     }
 

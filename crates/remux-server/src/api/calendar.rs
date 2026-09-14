@@ -17,7 +17,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::{
-    AppState, ResultExt,
+    AppState, OptionExt, ResultExt,
     db::{self, auth},
     services::calendar::{self, DateRange},
 };
@@ -52,24 +52,15 @@ pub struct CalendarResponse {
     pub events: Vec<CalendarEventDto>,
 }
 
-/// Status of a user's feed link. The token is absent: it is returned only by
-/// create and rotate, so a compromised session cannot read back an existing
-/// feed URL.
+/// A user's feed link, including its token.
+///
+/// Only an administrator can reach the endpoints that return this: the admin
+/// creates the link and passes the URL to the person it belongs to.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct CalendarLinkDto {
-    pub active: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<DateTime<Utc>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rotated_at: Option<DateTime<Utc>>,
-}
-
-/// A newly created or rotated link, including its one-time token and feed path.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "PascalCase")]
-pub struct CalendarCredentialDto {
-    pub active: bool,
+    pub user_id: Uuid,
+    pub user_name: String,
     pub created_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rotated_at: Option<DateTime<Utc>>,
@@ -78,12 +69,18 @@ pub struct CalendarCredentialDto {
     pub url: String,
 }
 
-impl From<db::CalendarLink> for CalendarLinkDto {
-    fn from(link: db::CalendarLink) -> Self {
+impl CalendarLinkDto {
+    fn new(link: db::CalendarLink, user_name: String) -> Self {
+        let token = link
+            .token
+            .into_inner();
         Self {
-            active: true,
-            created_at: Some(link.created_at),
+            user_id: link.user_id,
+            user_name,
+            created_at: link.created_at,
             rotated_at: link.rotated_at,
+            url: feed_url(&token),
+            token,
         }
     }
 }
@@ -130,78 +127,109 @@ pub async fn get_calendar(
     }))
 }
 
-/// `GET /remux/calendar/link` — whether the user has a feed link.
-#[get("/remux/calendar/link")]
-pub async fn get_calendar_link(
+/// `GET /remux/calendar/links` — every issued link, with its token.
+///
+/// Admin-only: the response is credential material for other users.
+#[get("/remux/calendar/links")]
+pub async fn list_calendar_links(
     State(state): State<AppState>,
-    session: auth::AuthSession,
-) -> Result<Json<CalendarLinkDto>> {
-    let link = db::CalendarLink::get_by_user(
+    _session: auth::AdminSession,
+) -> Result<Json<Vec<CalendarLinkDto>>> {
+    let links = db::CalendarLink::get_all(
         &state
             .ctx
             .db,
-        &session
-            .user
-            .id,
     )
     .await?;
-    Ok(Json(match link {
-        Some(link) => link.into(),
-        None => CalendarLinkDto {
-            active: false,
-            created_at: None,
-            rotated_at: None,
-        },
-    }))
+    let names = user_names(
+        &state
+            .ctx
+            .db,
+        &links,
+    )
+    .await?;
+    Ok(Json(
+        links
+            .into_iter()
+            .map(|link| {
+                let name = names
+                    .get(&link.user_id)
+                    .cloned()
+                    .unwrap_or_default();
+                CalendarLinkDto::new(link, name)
+            })
+            .collect(),
+    ))
 }
 
-/// `POST /remux/calendar/link` — create the user's feed link, or rotate it.
+/// `POST /remux/calendar/links/{user_id}` — the user's link, creating one only
+/// if they have none.
 ///
-/// Rotation is the same operation as creation: it replaces the stored token, so
-/// the previous URL stops working immediately.
-#[post("/remux/calendar/link")]
+/// Deliberately idempotent: an admin fetching someone's URL to send it must not
+/// invalidate the URL that person already subscribed with. Use the rotate
+/// endpoint to replace a token on purpose.
+#[post("/remux/calendar/links/{user_id}")]
 pub async fn create_calendar_link(
     State(state): State<AppState>,
-    session: auth::AuthSession,
-) -> Result<Json<CalendarCredentialDto>> {
-    let credential = db::CalendarLink::upsert(
+    _session: auth::AdminSession,
+    Path(user_id): Path<Uuid>,
+) -> Result<Json<CalendarLinkDto>> {
+    let user = db::User::get_by_id(
         &state
             .ctx
             .db,
-        &session
-            .user
-            .id,
+        &user_id,
+    )
+    .await?
+    .context_not_found("User not found")?;
+    let link = db::CalendarLink::get_or_create(
+        &state
+            .ctx
+            .db,
+        &user_id,
     )
     .await?;
-    let token = credential
-        .token
-        .into_inner();
-    Ok(Json(CalendarCredentialDto {
-        active: true,
-        created_at: credential
-            .link
-            .created_at,
-        rotated_at: credential
-            .link
-            .rotated_at,
-        url: feed_url(&token),
-        token,
-    }))
+    Ok(Json(CalendarLinkDto::new(link, user.username)))
 }
 
-/// `DELETE /remux/calendar/link` — revoke the user's feed link.
-#[delete("/remux/calendar/link")]
+/// `POST /remux/calendar/links/{user_id}/rotate` — issue a new token, killing
+/// the previous URL immediately.
+#[post("/remux/calendar/links/{user_id}/rotate")]
+pub async fn rotate_calendar_link(
+    State(state): State<AppState>,
+    _session: auth::AdminSession,
+    Path(user_id): Path<Uuid>,
+) -> Result<Json<CalendarLinkDto>> {
+    let user = db::User::get_by_id(
+        &state
+            .ctx
+            .db,
+        &user_id,
+    )
+    .await?
+    .context_not_found("User not found")?;
+    let link = db::CalendarLink::rotate(
+        &state
+            .ctx
+            .db,
+        &user_id,
+    )
+    .await?;
+    Ok(Json(CalendarLinkDto::new(link, user.username)))
+}
+
+/// `DELETE /remux/calendar/links/{user_id}` — revoke the user's link.
+#[delete("/remux/calendar/links/{user_id}")]
 pub async fn delete_calendar_link(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AdminSession,
+    Path(user_id): Path<Uuid>,
 ) -> Result<StatusCode> {
     let deleted = db::CalendarLink::delete_by_user(
         &state
             .ctx
             .db,
-        &session
-            .user
-            .id,
+        &user_id,
     )
     .await?;
     Ok(if deleted {
@@ -209,6 +237,22 @@ pub async fn delete_calendar_link(
     } else {
         StatusCode::NOT_FOUND
     })
+}
+
+/// Usernames for the owners of `links`, for display alongside each token.
+async fn user_names(
+    db_pool: &sqlx::SqlitePool,
+    links: &[db::CalendarLink],
+) -> anyhow::Result<std::collections::HashMap<Uuid, String>> {
+    let ids: Vec<Uuid> = links
+        .iter()
+        .map(|l| l.user_id)
+        .collect();
+    Ok(db::User::get_by_ids(db_pool, &ids)
+        .await?
+        .into_iter()
+        .map(|u| (u.id, u.username))
+        .collect())
 }
 
 /// `GET /remux/calendar/feed/{token}.ics` — the subscribable feed.
@@ -364,10 +408,14 @@ mod tests {
             .id
     }
 
-    /// Creates the caller's feed link and returns its URL.
-    async fn create_link(server: &axum_test::TestServer, token: &str) -> String {
+    /// Issues (or fetches) `user_id`'s link as an admin and returns its feed URL.
+    async fn create_link(
+        server: &axum_test::TestServer,
+        token: &str,
+        user_id: Uuid,
+    ) -> String {
         let created: serde_json::Value = server
-            .post("/remux/calendar/link")
+            .post(&format!("/remux/calendar/links/{user_id}"))
             .add_header(
                 http::header::AUTHORIZATION,
                 HeaderValue::from_str(&auth_header_with_token(token)).unwrap(),
@@ -376,7 +424,7 @@ mod tests {
             .json();
         created["Url"]
             .as_str()
-            .unwrap()
+            .unwrap_or_else(|| panic!("no Url in response: {created}"))
             .to_string()
     }
 
@@ -391,7 +439,7 @@ mod tests {
         let movie = insert_movie(db_pool, "Feed Movie", 7).await;
         favorite(db_pool, admin_id(db_pool).await, movie.id).await;
 
-        let url = create_link(&server, &token).await;
+        let url = create_link(&server, &token, admin_id(db_pool).await).await;
         let resp = server
             .get(&url)
             .await;
@@ -405,8 +453,12 @@ mod tests {
     /// An unknown or revoked token must 404 rather than serve anyone's calendar.
     #[tokio::test]
     async fn feed_rejects_unknown_and_revoked_tokens() {
-        let (server, _guard, token) = authenticated_server().await;
+        let (server, guard, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
+        let db_pool = &guard
+            .0
+            .db;
+        let uid = admin_id(db_pool).await;
 
         server
             .get("/remux/calendar/feed/remux_cal_notarealtoken.ics")
@@ -414,10 +466,10 @@ mod tests {
             .await
             .assert_status_not_found();
 
-        let url = create_link(&server, &token).await;
+        let url = create_link(&server, &token, uid).await;
 
         server
-            .delete("/remux/calendar/link")
+            .delete(&format!("/remux/calendar/links/{uid}"))
             .add_header(
                 http::header::AUTHORIZATION,
                 HeaderValue::from_str(&auth).unwrap(),
@@ -433,21 +485,40 @@ mod tests {
             .assert_status_not_found();
     }
 
-    /// Rotating replaces the token: the previous URL must die so a shared link
-    /// can actually be taken back.
+    /// Issuing is idempotent so an admin can re-read a URL to pass it on without
+    /// breaking the subscription already using it; rotating is the explicit
+    /// operation that replaces the token.
     #[tokio::test]
-    async fn rotating_a_link_invalidates_the_previous_url() {
-        let (server, _guard, token) = authenticated_server().await;
+    async fn issuing_is_idempotent_and_rotating_replaces_the_url() {
+        let (server, guard, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
+        let db_pool = &guard
+            .0
+            .db;
+        let uid = admin_id(db_pool).await;
 
-        let first = create_link(&server, &token).await;
-        let second = create_link(&server, &token).await;
-        let old = first.as_str();
-        let new = second.as_str();
-        assert_ne!(old, new, "rotation must mint a new token");
+        let first = create_link(&server, &token, uid).await;
+        let again = create_link(&server, &token, uid).await;
+        assert_eq!(
+            first, again,
+            "re-issuing must return the existing URL, not invalidate it"
+        );
+
+        let rotated: serde_json::Value = server
+            .post(&format!("/remux/calendar/links/{uid}/rotate"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let new = rotated["Url"]
+            .as_str()
+            .unwrap();
+        assert_ne!(first.as_str(), new, "rotation must mint a new token");
 
         server
-            .get(old)
+            .get(&first)
             .expect_failure()
             .await
             .assert_status_not_found();
@@ -468,7 +539,7 @@ mod tests {
         let movie = insert_movie(db_pool, "Theatrical Only", -3).await;
         favorite(db_pool, admin_id(db_pool).await, movie.id).await;
 
-        let url = create_link(&server, &token).await;
+        let url = create_link(&server, &token, admin_id(db_pool).await).await;
         let body = server
             .get(&url)
             .await
@@ -494,7 +565,7 @@ mod tests {
             favorite(db_pool, uid, movie.id).await;
         }
 
-        let url = create_link(&server, &token).await;
+        let url = create_link(&server, &token, admin_id(db_pool).await).await;
         let body = server
             .get(&url)
             .await
@@ -504,45 +575,69 @@ mod tests {
         assert!(!body.contains("Too Far Behind"), "{body}");
     }
 
-    /// The link endpoint must never hand back an existing token, only its status.
+    /// Link endpoints return other users' credentials, so a non-admin session
+    /// must not reach them — not even for its own link.
     #[tokio::test]
-    async fn link_status_does_not_expose_the_token() {
-        let (server, _guard, token) = authenticated_server().await;
-        let auth = auth_header_with_token(&token);
+    async fn link_endpoints_are_admin_only() {
+        let (server, guard, _admin_token) = authenticated_server().await;
+        let db_pool = &guard
+            .0
+            .db;
 
-        let before: serde_json::Value = server
-            .get("/remux/calendar/link")
+        let mut viewer = db::User {
+            id: Uuid::new_v4(),
+            username: "plain".to_string(),
+            is_admin: false,
+            ..Default::default()
+        };
+        viewer
+            .set_password("plain")
+            .unwrap();
+        viewer
+            .save(db_pool)
+            .await
+            .unwrap();
+
+        let auth: serde_json::Value = server
+            .post("/users/authenticatebyname")
             .add_header(
                 http::header::AUTHORIZATION,
-                HeaderValue::from_str(&auth).unwrap(),
+                HeaderValue::from_static(crate::integration_test::AUTH_HEADER),
             )
+            .json(&serde_json::json!({ "Username": "plain", "Pw": "plain" }))
             .await
             .json();
-        assert_eq!(before["Active"], serde_json::json!(false));
-
-        server
-            .post("/remux/calendar/link")
-            .add_header(
-                http::header::AUTHORIZATION,
-                HeaderValue::from_str(&auth).unwrap(),
-            )
-            .await;
-
-        let after: serde_json::Value = server
-            .get("/remux/calendar/link")
-            .add_header(
-                http::header::AUTHORIZATION,
-                HeaderValue::from_str(&auth).unwrap(),
-            )
-            .await
-            .json();
-        assert_eq!(after["Active"], serde_json::json!(true));
-        assert!(
-            after
-                .get("Token")
-                .is_none(),
-            "link status must not expose the token: {after}"
+        let viewer_auth = auth_header_with_token(
+            auth["AccessToken"]
+                .as_str()
+                .unwrap(),
         );
+
+        let own = viewer.id;
+        for (method, path) in [
+            ("GET", "/remux/calendar/links".to_string()),
+            ("POST", format!("/remux/calendar/links/{own}")),
+            ("POST", format!("/remux/calendar/links/{own}/rotate")),
+            ("DELETE", format!("/remux/calendar/links/{own}")),
+        ] {
+            let request = match method {
+                "GET" => server.get(&path),
+                "POST" => server.post(&path),
+                _ => server.delete(&path),
+            };
+            let status = request
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&viewer_auth).unwrap(),
+                )
+                .expect_failure()
+                .await
+                .status_code();
+            assert!(
+                status == StatusCode::FORBIDDEN || status == StatusCode::UNAUTHORIZED,
+                "{method} {path} must not be reachable by a non-admin, got {status}"
+            );
+        }
     }
 
     /// Each user's feed is their own: a second user's link must not expose the
@@ -608,9 +703,10 @@ mod tests {
             favorite(db_pool, user_id, open.id).await;
         }
 
+        // The admin issues both links; each must still resolve to its own owner.
         let urls = [
-            create_link(&server, &admin_token).await,
-            create_link(&server, &viewer_token).await,
+            create_link(&server, &admin_token, admin_id(db_pool).await).await,
+            create_link(&server, &admin_token, viewer.id).await,
         ];
         assert_ne!(urls[0], urls[1], "each user must get a distinct feed URL");
 
@@ -651,7 +747,7 @@ mod tests {
         insert_movie(db_pool, "Library Noise", 6).await;
         favorite(db_pool, admin_id(db_pool).await, wanted.id).await;
 
-        let url = create_link(&server, &token).await;
+        let url = create_link(&server, &token, admin_id(db_pool).await).await;
         let body = server
             .get(&url)
             .await
@@ -674,7 +770,7 @@ mod tests {
         let watched = insert_movie(db_pool, "Already Seen", 4).await;
         mark_in_progress(db_pool, admin_id(db_pool).await, watched.id).await;
 
-        let url = create_link(&server, &token).await;
+        let url = create_link(&server, &token, admin_id(db_pool).await).await;
         let body = server
             .get(&url)
             .await
@@ -731,7 +827,7 @@ mod tests {
         // Watch only the first episode of the first series.
         mark_in_progress(db_pool, admin_id(db_pool).await, watched_eps[0].id).await;
 
-        let url = create_link(&server, &token).await;
+        let url = create_link(&server, &token, admin_id(db_pool).await).await;
         let body = server
             .get(&url)
             .await
@@ -777,7 +873,7 @@ mod tests {
         // Favorite the series, never the episode.
         favorite(db_pool, admin_id(db_pool).await, series.id).await;
 
-        let url = create_link(&server, &token).await;
+        let url = create_link(&server, &token, admin_id(db_pool).await).await;
         let body = server
             .get(&url)
             .await
@@ -837,7 +933,7 @@ mod tests {
 
         favorite(db_pool, admin_id(db_pool).await, series.id).await;
 
-        let url = create_link(&server, &token).await;
+        let url = create_link(&server, &token, admin_id(db_pool).await).await;
         let body = server
             .get(&url)
             .await

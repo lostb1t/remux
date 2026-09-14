@@ -100,6 +100,7 @@ pub fn DashboardLayout() -> Element {
         Route::AddonsRoute => "Addons",
         Route::LibraryRoute => "Library",
         Route::IptvRoute => "IPTV",
+        Route::CalendarRoute => "Calendar",
         Route::StreamingGroupsRoute => "Stream Groups",
         Route::StreamingProbingRoute => "Probing",
         Route::StreamingP2pRoute => "P2P",
@@ -156,7 +157,7 @@ pub fn DashboardLayout() -> Element {
 
                     SidebarGroup {
                         label: "Content",
-                        active: matches!(route, Route::LibraryRoute | Route::IptvRoute),
+                        active: matches!(route, Route::LibraryRoute | Route::IptvRoute | Route::CalendarRoute),
                         NavSubItem {
                             label: "Library",
                             active: route == Route::LibraryRoute,
@@ -166,6 +167,11 @@ pub fn DashboardLayout() -> Element {
                             label: "IPTV",
                             active: route == Route::IptvRoute,
                             on_click: move |_| { navigator().push(Route::IptvRoute); sidebar_open.set(false); },
+                        }
+                        NavSubItem {
+                            label: "Calendar",
+                            active: route == Route::CalendarRoute,
+                            on_click: move |_| { navigator().push(Route::CalendarRoute); sidebar_open.set(false); },
                         }
                     }
 

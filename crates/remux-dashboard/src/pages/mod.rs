@@ -1,6 +1,7 @@
 pub mod addons;
 pub mod api_keys;
 pub mod branding;
+pub mod calendar;
 pub mod collections;
 pub mod dashboard;
 pub mod devices;
@@ -13,6 +14,7 @@ pub mod webhooks;
 pub use addons::AddonsPage;
 pub use api_keys::ApiKeysPage;
 pub use branding::BrandingPage;
+pub use calendar::CalendarPage;
 pub use collections::CollectionsPage;
 pub use dashboard::DashboardPage;
 pub use devices::DevicesPage;

@@ -6417,6 +6417,80 @@ impl Endpoint for DeleteApiKey {
     }
 }
 
+// --- Calendar links ---
+
+/// A user's ICS feed link. Carries the token, so admin-only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct CalendarLinkInfo {
+    pub user_id: uuid::Uuid,
+    pub user_name: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default)]
+    pub rotated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub token: String,
+    /// Server-relative feed path; prefix with the server's base URL.
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GetCalendarLinks;
+
+impl Endpoint for GetCalendarLinks {
+    type Output = Vec<CalendarLinkInfo>;
+    fn path(&self) -> String {
+        "/remux/calendar/links".into()
+    }
+}
+
+/// Returns the user's link, creating one only if absent — never invalidates an
+/// existing subscription.
+#[derive(Debug, Clone)]
+pub struct CreateCalendarLink {
+    pub user_id: uuid::Uuid,
+}
+
+impl Endpoint for CreateCalendarLink {
+    type Output = CalendarLinkInfo;
+    fn path(&self) -> String {
+        format!("/remux/calendar/links/{}", self.user_id)
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+}
+
+/// Issues a new token, killing the previous URL.
+#[derive(Debug, Clone)]
+pub struct RotateCalendarLink {
+    pub user_id: uuid::Uuid,
+}
+
+impl Endpoint for RotateCalendarLink {
+    type Output = CalendarLinkInfo;
+    fn path(&self) -> String {
+        format!("/remux/calendar/links/{}/rotate", self.user_id)
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeleteCalendarLink {
+    pub user_id: uuid::Uuid,
+}
+
+impl Endpoint for DeleteCalendarLink {
+    type Output = ();
+    fn path(&self) -> String {
+        format!("/remux/calendar/links/{}", self.user_id)
+    }
+    fn method(&self) -> Method {
+        Method::DELETE
+    }
+}
+
 // --- Addons ---
 
 #[derive(Debug, Clone, Default)]
