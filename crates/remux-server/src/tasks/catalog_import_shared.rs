@@ -90,58 +90,19 @@ where
         }
 
         // Adopt stored identities before recording positions or partitioning.
-        // A provider's stub UUID can differ from a row discovered through another
-        // provider, even though their external IDs identify the same content.
-        //
-        // Fast path first: a single batched id lookup covers the common case
-        // (re-scanning the same addon's own catalog, where ids already match
-        // exactly) without a query per item. Only items whose own id isn't
-        // already a row fall through to the slower per-item external-ID
-        // match — that's the only path that can find a row saved under a
-        // different provider's id for the same content.
-        let candidate_ids: Vec<Uuid> = items
+        // Remote metadata UUIDs are transient. External IDs are the sole
+        // identity source, including when multiple addons describe the same
+        // item.
+        let original_ids: Vec<Uuid> = items
             .iter()
-            .map(|i| i.id)
+            .map(|item| item.id)
             .collect();
-        let existing_by_id: HashMap<Uuid, String> = if candidate_ids.is_empty() {
-            HashMap::new()
-        } else {
-            let mut qb = sqlx::QueryBuilder::new(
-                "SELECT id, CAST(kind AS TEXT) FROM media WHERE id IN (",
-            );
-            let mut sep = qb.separated(", ");
-            for id in &candidate_ids {
-                sep.push_bind(id);
-            }
-            qb.push(")");
-            qb.build_query_as::<(Uuid, String)>()
-                .fetch_all(&ctx.db)
-                .await?
-                .into_iter()
-                .collect()
-        };
-
-        // Replace remote stubs with their stored rows in a handful of batched
-        // external-ID queries. Aside from avoiding one SQLite query per item,
-        // this is what lets Stremio catalog import identify existing entries
-        // before their expensive metadata/IMDB enrichment runs.
-        db::Media::adopt_existing_rows(&ctx.db, &mut items).await;
+        db::Media::adopt_existing_ids(&ctx.db, &mut items).await;
         let existing_ids: HashSet<Uuid> = items
             .iter()
-            .zip(&candidate_ids)
+            .zip(&original_ids)
             .filter_map(|(item, original_id)| {
-                let direct_match = existing_by_id
-                    .get(original_id)
-                    .is_some_and(|kind| {
-                        !matches!(
-                            item.kind,
-                            db::MediaKind::TvChannel | db::MediaKind::Playlist
-                        ) || *kind
-                            == item
-                                .kind
-                                .to_string()
-                    });
-                (direct_match || item.id != *original_id).then_some(item.id)
+                (item.id != *original_id).then_some(item.id)
             })
             .collect();
         // Snapshot stream-order weights before partitioning — partition() does not

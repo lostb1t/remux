@@ -310,6 +310,10 @@ pub fn tmdb_client_from_config(
                 .with_retry(
                     sdks::ExponentialBackoff::builder().build_with_max_retries(3),
                 )
+                // TMDB does not send Retry-After on 429, so use its short
+                // throttle window instead of the SDK's generic 60-second
+                // fallback.
+                .with_default_retry_after(std::time::Duration::from_secs(2))
         })
 }
 

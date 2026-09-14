@@ -953,6 +953,16 @@ pub struct ExternalIds {
     pub artist_name: Option<String>,
 }
 
+/// The only stored fields catalog import needs when it recognizes a remote
+/// item. Keeping this separate from `Media` avoids loading every image and
+/// parent row merely to reuse the database UUID.
+#[derive(sqlx::FromRow)]
+struct ExternalIdMatch {
+    id: Uuid,
+    #[sqlx(json)]
+    external_ids: ExternalIds,
+}
+
 impl ExternalIds {
     /// Parse an AIO `meta.id` string into external provider IDs using the
     /// standard Stremio/Jellyfin prefix conventions.
@@ -2893,6 +2903,57 @@ impl Media {
         Self::preload_parents(db, items).await;
     }
 
+    /// Point catalog-import items at matching stored UUIDs without replacing
+    /// their remote metadata. Import only needs identity before deciding which
+    /// entries require enrichment; unlike search results it never exposes the
+    /// transient remote row to a client. Selecting just IDs and external IDs
+    /// here avoids the image and parent preloads required by
+    /// `adopt_existing_rows`.
+    pub async fn adopt_existing_ids(db: &SqlitePool, items: &mut [Media]) {
+        let mut kinds: Vec<MediaKind> = Vec::new();
+        for item in items.iter() {
+            if !Self::external_id_fields(&item.kind, &item.external_ids).is_empty()
+                && !kinds.contains(&item.kind)
+            {
+                kinds.push(
+                    item.kind
+                        .clone(),
+                );
+            }
+        }
+
+        for kind in kinds {
+            let exts: Vec<ExternalIds> = items
+                .iter()
+                .filter(|item| item.kind == kind)
+                .map(|item| {
+                    item.external_ids
+                        .clone()
+                })
+                .collect();
+            let rows = Self::get_existing_ids_by_external_ids(db, &kind, &exts).await;
+
+            for item in items
+                .iter_mut()
+                .filter(|item| item.kind == kind)
+            {
+                let fields = Self::external_id_fields(&kind, &item.external_ids);
+                if let Some(stored) = fields
+                    .iter()
+                    .find_map(|field| {
+                        rows.iter()
+                            .find(|row| {
+                                Self::external_id_fields(&kind, &row.external_ids)
+                                    .contains(field)
+                            })
+                    })
+                {
+                    item.id = stored.id;
+                }
+            }
+        }
+    }
+
     /// Appends `kind = ? AND (json_extract(external_ids, '$.a') = ? OR
     /// json_extract(external_ids, '$.b') = ? OR ...)` for `fields` (which
     /// must be non-empty) to `qb`. Shared by every external-id lookup below
@@ -2967,6 +3028,67 @@ impl Media {
                     .unwrap_or_default();
             }
             out.extend(rows);
+        }
+        out
+    }
+
+    /// The lightweight counterpart to `get_many_by_external_ids` for catalog
+    /// import. It deliberately does not hydrate full media records, images, or
+    /// parent relationships.
+    async fn get_existing_ids_by_external_ids(
+        db: &SqlitePool,
+        kind: &MediaKind,
+        exts: &[ExternalIds],
+    ) -> Vec<ExternalIdMatch> {
+        let mut wanted: HashMap<&'static str, Vec<IdValue>> = HashMap::new();
+        for ext in exts {
+            for (path, value) in Self::external_id_fields(kind, ext) {
+                let values = wanted
+                    .entry(path)
+                    .or_default();
+                if !values.contains(&value) {
+                    values.push(value);
+                }
+            }
+        }
+        if wanted.is_empty() {
+            return Vec::new();
+        }
+
+        let mut out = Vec::new();
+        for (path, values) in wanted {
+            for chunk in values.chunks(SQLITE_VAR_LIMIT - 1) {
+                let mut qb = sqlx::QueryBuilder::new(
+                    "SELECT id, external_ids FROM media WHERE kind = ",
+                );
+                qb.push_bind(kind.to_string());
+                // These redundant predicates let SQLite prove that the
+                // partial external-ID indexes apply. Without them it chose a
+                // broad kind index and scanned every movie/series row.
+                if matches!(
+                    kind,
+                    MediaKind::Movie | MediaKind::Series | MediaKind::TvProgram
+                ) {
+                    qb.push(" AND kind IN ('movie', 'series', 'tv_program')");
+                }
+                qb.push(" AND json_extract(external_ids, '")
+                    .push(path)
+                    .push("') IN (");
+                let mut sep = qb.separated(", ");
+                for value in chunk {
+                    match value {
+                        IdValue::Text(s) => sep.push_bind(s.clone()),
+                        IdValue::Int(n) => sep.push_bind(*n),
+                    };
+                }
+                qb.push(")");
+                out.extend(
+                    qb.build_query_as()
+                        .fetch_all(db)
+                        .await
+                        .unwrap_or_default(),
+                );
+            }
         }
         out
     }
