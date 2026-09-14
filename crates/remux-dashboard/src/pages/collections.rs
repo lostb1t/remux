@@ -1638,6 +1638,11 @@ pub fn CollectionForm(
             if *promoted.read() {
                 ToggleRow {
                     label: "Show in My Media",
+                    // Turning this off needs the branding script: the server
+                    // cannot drop a single tile from My Media on its own, since
+                    // the home tiles, the sidebar and the Latest shelf selection
+                    // all read the same /UserViews response.
+                    description: "When off, the collection still gets its own home row and stays in the sidebar. Hiding the tile itself requires the \"Honor Show in My Media\" script under Branding → Built-in scripts.",
                     checked: *show_in_my_media.read(),
                     on_change: move |v| show_in_my_media.set(v),
                 }
