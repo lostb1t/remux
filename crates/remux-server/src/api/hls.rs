@@ -447,6 +447,8 @@ async fn create_hls_session(
             is_live,
             source_video_codec,
             source_audio_codec,
+            q.video_codec_tag
+                .clone(),
             source_video_profile,
             source_video_level,
             source_video_range_type,
@@ -521,6 +523,11 @@ async fn create_hls_session(
                 .read()
                 .await
                 .source_audio_codec
+                .clone(),
+            hevc_copy_tag: session
+                .read()
+                .await
+                .hevc_copy_tag
                 .clone(),
             accelerator: hw_accel::from_encoding_opts(&encoding_opts),
             source_video_range_type,
@@ -1201,6 +1208,11 @@ async fn hls_segment_inner(
                             .read()
                             .await
                             .source_audio_codec
+                            .clone(),
+                        hevc_copy_tag: session
+                            .read()
+                            .await
+                            .hevc_copy_tag
                             .clone(),
                         accelerator: hw_accel::from_encoding_opts(&encoding_opts),
                         source_video_range_type: session
