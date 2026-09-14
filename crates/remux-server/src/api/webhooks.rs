@@ -395,6 +395,21 @@ async fn event_context(
                                 .to_rfc3339())
                     ),
                 );
+
+                let mut series_provider_ids = serde_json::Map::new();
+                if let Some(imdb) = series.external_ids.imdb.as_ref() {
+                    series_provider_ids.insert("Imdb".into(), json!(imdb.to_string()));
+                }
+                if let Some(tmdb) = series.external_ids.tmdb {
+                    series_provider_ids.insert("Tmdb".into(), json!(tmdb.to_string()));
+                }
+                if let Some(tvdb) = series.external_ids.tvdb {
+                    series_provider_ids.insert("Tvdb".into(), json!(tvdb.to_string()));
+                }
+                obj.insert(
+                    "SeriesProviderIds".into(),
+                    Value::Object(series_provider_ids),
+                );
             }
         }
         if matches!(media.kind, db::MediaKind::Episode | db::MediaKind::Season) {
