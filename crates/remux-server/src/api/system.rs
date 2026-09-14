@@ -617,6 +617,15 @@ pub async fn get_branding_configuration(
     Ok(Json(config))
 }
 
+/// Lists the scripts bundled with this build, so the dashboard can offer them
+/// without hardcoding a list that drifts from the server.
+#[get("/remux/branding/scripts")]
+pub async fn get_branding_scripts(
+    _session: auth::AdminSession,
+) -> Result<impl IntoResponse> {
+    Ok(Json(crate::branding_scripts::catalog()))
+}
+
 #[post("/branding/configuration")]
 pub async fn update_branding_configuration_legacy(
     State(state): State<AppState>,

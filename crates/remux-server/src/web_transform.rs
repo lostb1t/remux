@@ -147,16 +147,20 @@ where
                 html = html.replace("</head>", &tag);
             }
 
-            let user_js = match pool.as_ref() {
-                Some(p) => custom_js_from_db(p).await,
-                None => None,
+            let (scripts_js, user_js) = match pool.as_ref() {
+                Some(p) => branding_js_from_db(p).await,
+                None => (String::new(), None),
             };
 
-            if !JS.is_empty() || user_js.is_some() {
+            if !JS.is_empty() || !scripts_js.is_empty() || user_js.is_some() {
+                // Built-in scripts first, so hand-written `custom_js` can still
+                // override anything they set up.
                 let extra = user_js
                     .as_deref()
                     .unwrap_or("");
-                let tag = format!("<script data-remux>{JS}{extra}</script></body>");
+                let tag = format!(
+                    "<script data-remux>{JS}{scripts_js}{extra}</script></body>"
+                );
                 html = html.replace("</body>", &tag);
             }
 
@@ -173,12 +177,26 @@ where
     }
 }
 
-async fn custom_js_from_db(pool: &sqlx::SqlitePool) -> Option<String> {
-    let json = crate::db::Settings::get(pool, BRANDING_CONFIG_KEY)
+/// Returns the concatenated sources of the operator's enabled built-in scripts
+/// and their hand-written `custom_js`, in that order.
+async fn branding_js_from_db(pool: &sqlx::SqlitePool) -> (String, Option<String>) {
+    let Some(Some(json)) = crate::db::Settings::get(pool, BRANDING_CONFIG_KEY)
         .await
-        .ok()??;
-    let opts: remux_sdks::remux::BrandingOptions = serde_json::from_str(&json).ok()?;
-    opts.remux?
-        .custom_js
-        .filter(|s| !s.is_empty())
+        .ok()
+    else {
+        return (String::new(), None);
+    };
+    let Ok(opts) = serde_json::from_str::<remux_sdks::remux::BrandingOptions>(&json)
+    else {
+        return (String::new(), None);
+    };
+    let Some(remux) = opts.remux else {
+        return (String::new(), None);
+    };
+    (
+        crate::branding_scripts::sources_for(&remux.enabled_scripts),
+        remux
+            .custom_js
+            .filter(|s| !s.is_empty()),
+    )
 }

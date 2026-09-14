@@ -51,6 +51,7 @@ pub mod sdks {
 }
 mod addons;
 pub mod api;
+pub mod branding_scripts;
 mod common;
 pub mod jellyfin_client;
 pub use common::stable_media_uuid;

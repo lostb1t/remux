@@ -554,6 +554,20 @@ pub struct QueryResult<T> {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
 pub struct RemuxBrandingExtensions {
     pub custom_js: Option<String>,
+    /// Ids of built-in scripts the operator has switched on, injected ahead of
+    /// `custom_js`. Kept as a separate list so shipping a new script never has
+    /// to touch — or clobber — whatever the operator wrote by hand.
+    #[serde(default)]
+    pub enabled_scripts: Vec<String>,
+}
+
+/// A script bundled with the server that an operator can switch on from the
+/// branding page, rather than pasting the source in by hand.
+#[dto]
+pub struct BrandingScriptInfo {
+    pub id: String,
+    pub name: String,
+    pub description: String,
 }
 
 #[dto]
@@ -7016,6 +7030,17 @@ impl Endpoint for RegenerateCollectionImage {
     }
     fn method(&self) -> Method {
         Method::POST
+    }
+}
+
+/// `GET /remux/branding/scripts`
+#[derive(Debug, Clone)]
+pub struct GetBrandingScripts;
+
+impl Endpoint for GetBrandingScripts {
+    type Output = Vec<BrandingScriptInfo>;
+    fn path(&self) -> String {
+        "/remux/branding/scripts".into()
     }
 }
 
