@@ -2895,26 +2895,25 @@ impl AddonService {
             else {
                 return None;
             };
-            let imdb_id = if media.kind == db::MediaKind::Episode {
+            let external_id = if media.kind == db::MediaKind::Episode {
                 media
                     .grandparent
                     .as_deref()
                     .and_then(|gp| {
                         gp.external_ids
-                            .imdb
-                            .as_deref()
+                            .stremio_lookup_id()
                     })
-                    .or(media
-                        .external_ids
-                        .imdb
-                        .as_deref())
+                    .or_else(|| {
+                        media
+                            .external_ids
+                            .stremio_lookup_id()
+                    })
             } else {
                 media
                     .external_ids
-                    .imdb
-                    .as_deref()
+                    .stremio_lookup_id()
             };
-            let Some(imdb_id) = imdb_id else {
+            let Some(external_id) = external_id else {
                 return None;
             };
             let cfg = db::Settings::get_config_or_default(&ctx.db).await;
@@ -2941,7 +2940,7 @@ impl AddonService {
                 cfg.remuxdb_token
                     .as_deref(),
                 Some(crate::common::server_id().as_str()),
-                imdb_id,
+                &external_id,
                 season,
                 episode,
             )

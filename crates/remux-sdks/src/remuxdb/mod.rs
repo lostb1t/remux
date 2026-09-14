@@ -174,7 +174,7 @@ impl MediaInfoPayload {
     }
 }
 
-/// Flat track returned by `GET /api/media/info`.
+/// Flat track returned by `GET /api/media/{external_id}/versions`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TrackDetail {
     pub kind: String,
@@ -236,7 +236,7 @@ pub struct ChapterDetail {
     pub end_time: Option<f64>,
 }
 
-/// One probe result returned by `GET /api/media/info`.
+/// One probe result returned by `GET /api/media/{external_id}/versions`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaInfo {
     pub content_hash: Option<String>,
@@ -347,7 +347,7 @@ pub async fn fetch_media_metrics(
 
 #[derive(Clone)]
 struct MediaInfoEndpoint {
-    imdb_id: String,
+    external_id: String,
     season: Option<i32>,
     episode: Option<i32>,
     token: Option<String>,
@@ -358,12 +358,14 @@ impl Endpoint for MediaInfoEndpoint {
     type Output = Vec<MediaInfo>;
 
     fn path(&self) -> String {
-        let mut path = format!("/api/media/info?imdb_id={}", self.imdb_id);
+        let mut path = format!("/api/media/{}/versions", self.external_id);
+        let mut sep = '?';
         if let Some(s) = self.season {
-            path.push_str(&format!("&season={s}"));
+            path.push_str(&format!("{sep}season={s}"));
+            sep = '&';
         }
         if let Some(e) = self.episode {
-            path.push_str(&format!("&episode={e}"));
+            path.push_str(&format!("{sep}episode={e}"));
         }
         path
     }
@@ -385,12 +387,15 @@ impl Endpoint for MediaInfoEndpoint {
 }
 
 /// Fetch probe versions for a media title from RemuxDB.
+/// `external_id` is the item's imdb id (e.g. `tt0113277`) or, absent that, a
+/// `tmdb:{id}`-prefixed id — imdb takes priority when both are known, per
+/// `db::ExternalIds::stremio_lookup_id`, which callers should use to build it.
 /// Returns `None` on 404 or any error (failures are logged at debug level).
 pub async fn fetch_probe(
     base_url: &str,
     token: Option<&str>,
     client_id: Option<&str>,
-    imdb_id: &str,
+    external_id: &str,
     season: Option<i32>,
     episode: Option<i32>,
 ) -> Option<Vec<MediaInfo>> {
@@ -404,7 +409,7 @@ pub async fn fetch_probe(
         }
     };
     let ep = MediaInfoEndpoint {
-        imdb_id: imdb_id.to_string(),
+        external_id: external_id.to_string(),
         season,
         episode,
         token: token.map(|s| s.to_string()),
@@ -817,6 +822,30 @@ mod tests {
         let info = media_info_with_container("mkv");
         let source = MediaSourceInfo::from(&info);
         assert_eq!(source.container, Some(crate::remux::VideoContainer::Mkv));
+    }
+
+    #[test]
+    fn media_info_endpoint_path_uses_versions_route() {
+        let ep = MediaInfoEndpoint {
+            external_id: "tt0113277".into(),
+            season: None,
+            episode: None,
+            token: None,
+            client_id: None,
+        };
+        assert_eq!(ep.path(), "/api/media/tt0113277/versions");
+    }
+
+    #[test]
+    fn media_info_endpoint_path_carries_tmdb_prefixed_ids_and_season_episode() {
+        let ep = MediaInfoEndpoint {
+            external_id: "tmdb:603".into(),
+            season: Some(1),
+            episode: Some(2),
+            token: None,
+            client_id: None,
+        };
+        assert_eq!(ep.path(), "/api/media/tmdb:603/versions?season=1&episode=2");
     }
 
     #[test]
