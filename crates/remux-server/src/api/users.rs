@@ -1302,9 +1302,17 @@ async fn default_userviews(
 /// verbatim. Otherwise a save that merely restates today's default (e.g. a
 /// client re-posting its full config unprompted) would freeze that user
 /// out of any order the admin sets later, since a non-empty `OrderedViews`
-/// always wins over the live default in `userviews`. A malformed list
-/// (any entry that fails to parse as a UUID) is never treated as a
-/// restatement — it's left as the user's real, if broken, customization.
+/// always wins over the live default in `userviews`.
+///
+/// `OrderedViews` is a *priority* list, not a required full permutation —
+/// `userviews` puts listed ids first (in listed order) and leaves every
+/// other row in its existing default relative order via a stable sort. So
+/// a partial list, one with unparseable/unknown entries, or one that omits
+/// the synthetic Live TV id can still produce an *effective* order
+/// identical to the default even though it isn't the same list — this
+/// compares effective order (by literally applying the same stable sort
+/// `userviews` uses), not the raw posted list, so all of those still
+/// collapse to "no override" too.
 async fn normalize_ordered_views(
     db: &sqlx::SqlitePool,
     target_id: Uuid,
@@ -1321,13 +1329,6 @@ async fn normalize_ordered_views(
         .iter()
         .filter_map(|s| Uuid::parse_str(s).ok())
         .collect();
-    if posted.len()
-        != payload
-            .ordered_views
-            .len()
-    {
-        return Ok(());
-    }
 
     let target_policy = db::User::get_by_id(db, &target_id)
         .await?
@@ -1341,17 +1342,26 @@ async fn normalize_ordered_views(
     let excluded =
         (!excluded_view_ids.is_empty()).then_some(excluded_view_ids.as_slice());
 
-    let (libraries, has_channels) =
+    // The synthetic Live TV view is appended after userviews' sort step
+    // regardless of where (or whether) it appears in `posted`, so it never
+    // affects whether an override actually changes anything — left out of
+    // this comparison entirely rather than tacked onto both sides.
+    let (libraries, _has_channels) =
         default_userviews(db, target_id, target_policy.as_ref(), excluded).await?;
-    let mut default_ids: Vec<Uuid> = libraries
+    let default_ids: Vec<Uuid> = libraries
         .into_iter()
         .map(|m| m.id)
         .collect();
-    if has_channels {
-        default_ids.push(livetv_view_id());
-    }
 
-    if posted == default_ids {
+    let mut effective = default_ids.clone();
+    effective.sort_by_key(|id| {
+        posted
+            .iter()
+            .position(|p| p == id)
+            .unwrap_or(usize::MAX)
+    });
+
+    if effective == default_ids {
         payload.ordered_views = Vec::new();
     }
     Ok(())
@@ -4465,6 +4475,77 @@ mod e2e_tests {
             user["Configuration"]["OrderedViews"],
             serde_json::json!([]),
             "restating the default order verbatim must be stored as no override"
+        );
+    }
+
+    /// `OrderedViews` is a priority list, not a required full permutation:
+    /// `userviews` puts listed ids first and leaves everything else in its
+    /// default relative order. A partial list naming only the item that's
+    /// already first in the default order has no actual effect, and must
+    /// collapse to "no override" exactly like restating the full list would.
+    #[tokio::test]
+    async fn saving_a_no_op_partial_order_is_stored_as_no_override() {
+        let (server, ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        insert_promoted_collection(&ctx.0, "First").await;
+        insert_promoted_collection(&ctx.0, "Second").await;
+        let user_id = get_user_id(&server, &auth).await;
+
+        let resp = server
+            .get("/userviews")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        let default_ids: Vec<String> = resp.json::<serde_json::Value>()["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| {
+                v["Id"]
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .collect();
+        assert!(
+            default_ids.len() >= 2,
+            "need at least two default views for a partial list to be meaningful"
+        );
+
+        // Naming only the item already in first place changes nothing.
+        server
+            .post(&format!("/users/{}/configuration", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "PlayDefaultAudioTrack": true,
+                "SubtitleMode": "Default",
+                "HidePlayedInLatest": true,
+                "RememberAudioSelections": true,
+                "RememberSubtitleSelections": true,
+                "EnableNextEpisodeAutoPlay": true,
+                "OrderedViews": [default_ids[0].clone()]
+            }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+
+        let resp = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let user: serde_json::Value = resp.json();
+        assert_eq!(
+            user["Configuration"]["OrderedViews"],
+            serde_json::json!([]),
+            "a partial list with no effect on the actual order must be stored as no override"
         );
     }
 
