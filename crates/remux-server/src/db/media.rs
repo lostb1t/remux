@@ -4701,6 +4701,9 @@ impl Media {
                         api::ItemSortBy::DigitalReleaseDate => {
                             format!("COALESCE(digital_released_at, released_at) {}", dir)
                         }
+                        api::ItemSortBy::StartDate => {
+                            format!("live_start {}", dir)
+                        }
                         api::ItemSortBy::CommunityRating => {
                             format!("COALESCE(rating_audience, rating_critic) {}", dir)
                         }
