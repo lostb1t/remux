@@ -912,6 +912,18 @@ impl MediaResolveService {
             return Self::persist_music(media, id, ctx).await;
         }
 
+        // An addon-scoped artist or playlist has no metadata provider to sync
+        // against — the addon that minted its id is the only source. Persist it
+        // as itself; its children arrive later via the tree path.
+        if matches!(media.kind, db::MediaKind::Artist | db::MediaKind::Playlist)
+            && media
+                .external_ids
+                .eclipse_id
+                .is_some()
+        {
+            return Self::persist_addon_music(media, id, ctx).await;
+        }
+
         let resolved_id = media.id;
 
         // If the caller's fake UUID differs from the resolved real UUID, keep an alias so
@@ -950,6 +962,16 @@ impl MediaResolveService {
         id: Uuid,
         ctx: &AppContext,
     ) -> anyhow::Result<Option<db::Media>> {
+        // An Eclipse item is identified by the addon's own id, not by a Deezer
+        // one, and its containers are only reachable through that addon — the
+        // Deezer-keyed discography sync below has nothing to work with.
+        if media
+            .external_ids
+            .eclipse_id
+            .is_some()
+        {
+            return Self::persist_addon_music(media, id, ctx).await;
+        }
         if !Self::resolve_music_deezer(&mut media).await {
             warn!(%id, kind = ?media.kind, title = %media.title,
                 "persist_music: Deezer ID resolution failed");
@@ -1110,6 +1132,58 @@ impl MediaResolveService {
             return Ok(None);
         }
         Ok(db::Media::get_by_id(&ctx.db, &clicked_id).await?)
+    }
+
+    /// Persists a clicked search result whose identity belongs to an addon
+    /// rather than to a public catalog (currently Eclipse).
+    ///
+    /// Such an item carries no provider id to key containers by: its album and
+    /// artist arrive as *names* only, because the addon's search response has no
+    /// ids for them. So there is no discography to sync — the item is persisted
+    /// as itself, with its names preserved in `external_ids` so it still renders
+    /// with an artist and album, and so a later stream lookup can re-find it by
+    /// searching the addon.
+    async fn persist_addon_music(
+        media: db::Media,
+        id: Uuid,
+        ctx: &AppContext,
+    ) -> anyhow::Result<Option<db::Media>> {
+        // An addon-scoped id may name a recording this server already has under
+        // a different provider (matched by ISRC) — adopt that row instead of
+        // creating a second one for the same song.
+        let mut media = media;
+        if let Some(existing_id) =
+            db::Media::find_existing_id_by_ext(&ctx.db, &media).await
+        {
+            media.id = existing_id;
+        }
+        Self::save_alias(ctx, id, media.id).await;
+
+        if let Some(item) = db::Media::get_by_id(&ctx.db, &media.id).await? {
+            return Ok(Some(item));
+        }
+
+        // Playlists carry their members as pending relations; the tracks have to
+        // exist as rows before the relations can reference them.
+        let mut rows = vec![media.clone()];
+        if let Some(relations) = media
+            .relations
+            .as_ref()
+        {
+            rows.extend(
+                relations
+                    .iter()
+                    .map(|(_, track)| track.clone()),
+            );
+        }
+
+        let media_id = media.id;
+        if let Err(e) = db::Media::upsert(&ctx.db, &rows).await {
+            warn!(%id, error = %e, "persist_addon_music: failed to upsert clicked item");
+            return Ok(None);
+        }
+        crate::addons::save_pending_relations(ctx, &rows).await;
+        Ok(db::Media::get_by_id(&ctx.db, &media_id).await?)
     }
 
     /// Album root stable-keyed by the Deezer album ID, for tracks whose
