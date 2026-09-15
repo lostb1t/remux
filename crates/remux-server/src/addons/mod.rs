@@ -1866,10 +1866,6 @@ impl AddonService {
 
         let config = db::Settings::get_config_or_default(&ctx.db).await;
         let concurrency = crate::common::META_CONCURRENCY;
-        info!(
-            items = media.len(),
-            force_refresh, concurrency, "metadata batch starting"
-        );
         trace!(
             target: "remux_server::metadata_refresh",
             items = media.len(),
