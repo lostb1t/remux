@@ -47,7 +47,7 @@ static TMDB_RATE_LIMIT: OnceLock<sdks::SharedRateLimit> = OnceLock::new();
 /// override from before per-provider rate limiting was shared (see
 /// `tmdb_rate_limit`) would otherwise keep depressing throughput below what
 /// the current code can safely sustain.
-pub(crate) const META_CONCURRENCY: usize = 50;
+pub(crate) const META_CONCURRENCY: usize = 40;
 
 /// TMDB clients are built in a few independent paths. They must still share
 /// one cooldown, otherwise concurrent metadata refreshes each evade a 429 by
