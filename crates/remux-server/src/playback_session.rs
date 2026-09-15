@@ -35,11 +35,21 @@ pub struct PlaybackSession {
     pub group_id: Option<Uuid>,
     /// Kind of the item being played, used to populate NowPlayingItem in session broadcasts.
     pub item_kind: Option<db::MediaKind>,
+    /// Torrent sources selected for this playback. Their leases are released
+    /// with the session, after any active HTTP response has finished reading.
+    torrents: Vec<Arc<crate::torrent::TorrentLease>>,
 }
 
 #[derive(Clone)]
 pub struct PlaybackSessionManager {
     sessions: Arc<DashMap<String, PlaybackSession>>,
+    // Requests can arrive before the client's playback-start report. Hold
+    // their leases briefly, then move them into the PlaybackSession on start.
+    pending_torrents:
+        Arc<DashMap<String, (DateTime<Utc>, Vec<Arc<crate::torrent::TorrentLease>>)>>,
+    // Makes that handoff atomic: a request cannot be stranded in pending
+    // while playback-start inserts its session.
+    torrent_handoff: Arc<std::sync::Mutex<()>>,
     base_dir: PathBuf,
 }
 
@@ -49,6 +59,8 @@ impl PlaybackSessionManager {
         let _ = std::fs::create_dir_all(&base_dir);
         Self {
             sessions: Arc::new(DashMap::new()),
+            pending_torrents: Arc::new(DashMap::new()),
+            torrent_handoff: Arc::new(std::sync::Mutex::new(())),
             base_dir,
         }
     }
@@ -177,9 +189,11 @@ impl PlaybackSessionManager {
             transcode: None,
             group_id,
             item_kind,
+            torrents: Vec::new(),
         };
 
-        self.insert(ps);
+        self.insert(ps)
+            .await;
 
         // For transcode sessions, master_hls_video fires the info log once it
         // has full codec/bitrate/reasons info. For direct play/stream, log here.
@@ -272,8 +286,8 @@ impl PlaybackSessionManager {
                 .item_id
                 .is_nil()
         {
-            self.sessions
-                .remove(psid);
+            self.stop(psid)
+                .await;
             return Ok(());
         }
 
@@ -446,31 +460,52 @@ impl PlaybackSessionManager {
                     .map(|s| s.position_ticks)
             });
 
-        let mut played = false;
-        if let Some(item_id) = item_id {
-            if let Ok(Some(media)) = db::Media::get_by_id(db, &item_id).await {
-                played = db::UserMediaState::update_playback(
-                    db,
-                    user,
-                    &media,
-                    final_ticks.unwrap_or(0),
-                    None, // don't overwrite stream selections on stop
-                    None,
-                    media.runtime, // Some(runtime) triggers watched-threshold check
-                )
-                .await?;
-            }
-        }
+        let played = Self::persist_stop(db, user, item_id, final_ticks).await?;
 
         debug!(play_session_id = psid, "Playback stopped");
         Ok(played)
+    }
+
+    /// Persist the final position of a stop report (with the 90 % watched-mark
+    /// check) for `item_id`, if it names a known media row.
+    ///
+    /// Shared by session-backed stops and stop reports that arrive without any
+    /// play session: some clients never call
+    /// `/sessions/playing` or `/sessions/playing/progress` and their only
+    /// report is the stop, carrying the item id and position but no
+    /// `PlaySessionId`. Jellyfin persists that report regardless of session
+    /// state, so dropping it would lose Continue Watching for those clients.
+    ///
+    /// Returns whether this stop crossed the watched threshold.
+    pub async fn persist_stop(
+        db: &sqlx::SqlitePool,
+        user: &db::User,
+        item_id: Option<uuid::Uuid>,
+        final_ticks: Option<i64>,
+    ) -> anyhow::Result<bool> {
+        let Some(item_id) = item_id else {
+            return Ok(false);
+        };
+        let Ok(Some(media)) = db::Media::get_by_id(db, &item_id).await else {
+            return Ok(false);
+        };
+        db::UserMediaState::update_playback(
+            db,
+            user,
+            &media,
+            final_ticks.unwrap_or(0),
+            None, // don't overwrite stream selections on stop
+            None,
+            media.runtime, // Some(runtime) triggers watched-threshold check
+        )
+        .await
     }
 
     /// Insert (or replace) a playback session, preserving any transcode that was
     /// pre-attached before `report_playback_start` fired.
     /// Removes stale sessions for the same device so `get_sessions` always
     /// finds the most recent playback.
-    pub fn insert(&self, mut session: PlaybackSession) {
+    pub async fn insert(&self, mut session: PlaybackSession) {
         if session
             .transcode
             .is_none()
@@ -505,9 +540,30 @@ impl PlaybackSessionManager {
                 })
                 .collect();
             for id in stale {
-                self.sessions
-                    .remove(&id);
+                self.stop(&id)
+                    .await;
             }
+        }
+        let _handoff = self
+            .torrent_handoff
+            .lock()
+            .expect("torrent handoff lock is not poisoned");
+        if let Some((_, (_, pending))) = self
+            .pending_torrents
+            .remove(&session.play_session_id)
+        {
+            retain_leases(&mut session.torrents, pending);
+        }
+        if let Some(existing) = self
+            .sessions
+            .get(&session.play_session_id)
+        {
+            retain_leases(
+                &mut session.torrents,
+                existing
+                    .torrents
+                    .clone(),
+            );
         }
         self.sessions
             .insert(
@@ -675,6 +731,7 @@ impl PlaybackSessionManager {
                         last_activity: Utc::now(),
                         group_id: None,
                         item_kind: None,
+                        torrents: Vec::new(),
                     },
                 );
         }
@@ -699,9 +756,17 @@ impl PlaybackSessionManager {
     /// Stop the transcode (if any) and remove the playback session entirely.
     /// Returns the removed session so callers can read final position/item data.
     pub async fn stop(&self, id: &str) -> Option<PlaybackSession> {
+        // Also release references captured before a playback-start report.
+        let _handoff = self
+            .torrent_handoff
+            .lock()
+            .expect("torrent handoff lock is not poisoned");
+        self.pending_torrents
+            .remove(id);
         let (_, session) = self
             .sessions
             .remove(id)?;
+        drop(_handoff);
         if let Some(ts) = session
             .transcode
             .clone()
@@ -709,6 +774,39 @@ impl PlaybackSessionManager {
             kill_transcode(ts).await;
         }
         Some(session)
+    }
+
+    /// Capture the source selected by the stream handler, never resolve it
+    /// again at stop time (a group's candidates may have changed by then).
+    ///
+    /// Once playback has started, the lease belongs directly to its session.
+    /// Before that report arrives, it is held briefly and handed off by insert.
+    pub async fn retain_torrent(
+        &self,
+        id: &str,
+        torrent: &Arc<crate::torrent::TorrentManager>,
+        hash: &str,
+    ) {
+        let lease = torrent
+            .acquire(hash)
+            .await;
+        let _handoff = self
+            .torrent_handoff
+            .lock()
+            .expect("torrent handoff lock is not poisoned");
+        if let Some(mut session) = self
+            .sessions
+            .get_mut(id)
+        {
+            retain_lease(&mut session.torrents, lease);
+        } else {
+            let mut entry = self
+                .pending_torrents
+                .entry(id.to_string())
+                .or_insert_with(|| (Utc::now(), Vec::new()));
+            entry.0 = Utc::now();
+            retain_lease(&mut entry.1, lease);
+        }
     }
 
     /// Path where a given HLS segment lives on disk (used for disk-based recovery).
@@ -788,8 +886,38 @@ impl PlaybackSessionManager {
                     self.stop(&id)
                         .await;
                 }
+                // Requests that never received a playback-start report must
+                // not retain a torrent forever. Active responses still own
+                // their own reference when this pending entry expires.
+                let _handoff = self
+                    .torrent_handoff
+                    .lock()
+                    .expect("torrent handoff lock is not poisoned");
+                self.pending_torrents
+                    .retain(|_, (seen, _)| *seen >= cutoff);
             }
         })
+    }
+}
+
+fn retain_leases(
+    target: &mut Vec<Arc<crate::torrent::TorrentLease>>,
+    leases: Vec<Arc<crate::torrent::TorrentLease>>,
+) {
+    for lease in leases {
+        retain_lease(target, lease);
+    }
+}
+
+fn retain_lease(
+    target: &mut Vec<Arc<crate::torrent::TorrentLease>>,
+    lease: Arc<crate::torrent::TorrentLease>,
+) {
+    if !target
+        .iter()
+        .any(|existing| Arc::ptr_eq(existing, &lease))
+    {
+        target.push(lease);
     }
 }
 

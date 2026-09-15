@@ -935,6 +935,33 @@ impl UserMediaState {
         Ok(ms)
     }
 
+    /// True when this state records nothing a client could act on: never
+    /// played, no resume point, no favourite, no rating, no remembered
+    /// stream/track selection. Such a row is not worth creating.
+    pub fn is_blank(&self) -> bool {
+        self.play_count == 0
+            && self
+                .played_at
+                .is_none()
+            && self.playback_position == 0
+            && !self.favorite
+            && self
+                .rating
+                .is_none()
+            && self
+                .stream_id
+                .is_none()
+            && self
+                .audio_idx
+                .is_none()
+            && self
+                .subtitle_idx
+                .is_none()
+            && self
+                .last_played_at
+                .is_none()
+    }
+
     /// Jellyfin does not persist `Likes`; it derives it from the rating.
     pub fn likes(&self) -> Option<bool> {
         self.rating
@@ -1009,6 +1036,14 @@ impl UserMediaState {
                 .await?;
             } else if no_resume {
                 ms.playback_position = 0;
+                // Nothing kept and nothing known before: don't create a row.
+                // A row would only carry a fresh `last_played_at`, which
+                // Jellyfin never writes on a stop (that comes from playback
+                // start), and some clients read "last played, position
+                // 0, not played" as a fully watched episode.
+                if ms.is_blank() {
+                    return Ok(false);
+                }
                 ms.save(db)
                     .await?;
             } else {

@@ -15,7 +15,6 @@ pub mod squid;
 pub mod stremio;
 pub mod tmdb;
 pub mod torznab;
-pub mod trakt;
 pub mod ytdlp;
 
 use anyhow::{Result, anyhow};
@@ -32,10 +31,12 @@ use std::{
 
 use crate::keyed_lock::KeyedLock;
 use libc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
-use crate::{AppContext, api, common::ProgressReporter, db, sdks};
+use crate::{
+    AppContext, api, common::ProgressReporter, db, sdks, services::MediaResolveService,
+};
 pub use addon::{Addon, CatalogState, set_user_addon_override, user_addon_override};
 use remux_sdks::remuxdb;
 
@@ -355,80 +356,6 @@ pub(crate) async fn save_pending_tags(ctx: &AppContext, items: &[db::Media]) {
     }
 }
 
-pub(crate) async fn save_pending_popularity(ctx: &AppContext, items: &[db::Media]) {
-    let today = chrono::Utc::now().date_naive();
-    let rows: Vec<_> = items
-        .iter()
-        .filter_map(|item| {
-            item.pending_popularity
-                .as_ref()
-                .map(|(ext_id, value)| (item.id, ext_id.clone(), value.get()))
-        })
-        .collect();
-
-    if rows.is_empty() {
-        return;
-    }
-
-    let mut qb = sqlx::QueryBuilder::new(
-        "INSERT INTO popularity_raw (source, external_id, media_id, media_raw, value, date) ",
-    );
-    qb.push_values(&rows, |mut b, (media_id, ext_id, value)| {
-        b.push_bind("tmdb")
-            .push_bind(ext_id)
-            .push_bind(media_id)
-            .push_bind(ext_id)
-            .push_bind(value)
-            .push_bind(&today);
-    });
-    qb.push(
-        " ON CONFLICT DO UPDATE SET value = excluded.value, \
-         media_id = COALESCE(excluded.media_id, popularity_raw.media_id), \
-         media_raw = COALESCE(excluded.media_raw, popularity_raw.media_raw)",
-    );
-    if let Err(e) = qb
-        .build()
-        .execute(&ctx.db)
-        .await
-    {
-        warn!(error = %e, "failed to write popularity_raw batch");
-    }
-}
-
-pub(crate) async fn bulk_insert_snapshots(
-    ctx: &AppContext,
-    snapshots: &[MetricSnapshot],
-) -> Result<()> {
-    if snapshots.is_empty() {
-        return Ok(());
-    }
-    for chunk in snapshots.chunks(400) {
-        let mut qb = sqlx::QueryBuilder::new(
-            "INSERT INTO popularity_raw (source, external_id, media_id, media_raw, value, date) ",
-        );
-        qb.push_values(chunk, |mut b, s| {
-            b.push_bind(&s.source)
-                .push_bind(&s.external_id)
-                .push_bind(s.media_id)
-                .push_bind(&s.media_raw)
-                .push_bind(
-                    s.value
-                        .get(),
-                )
-                .push_bind(&s.date);
-        });
-        qb.push(
-            " ON CONFLICT DO UPDATE SET value = excluded.value, \
-             media_id = COALESCE(excluded.media_id, popularity_raw.media_id), \
-             media_raw = COALESCE(excluded.media_raw, popularity_raw.media_raw)",
-        );
-        qb.build()
-            .execute(&ctx.db)
-            .await?;
-    }
-    Ok(())
-}
-
 pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: bool) {
     use remux_utils::merge_option;
 
@@ -488,15 +415,11 @@ pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: b
     target
         .external_ids
         .merge(&source.external_ids, replace);
-    merge_option(
-        &mut target.external_ratings,
-        &source.external_ratings,
-        replace,
-    );
-    if source
-        .external_ratings
-        .is_some()
-    {
+    if let Some(source_ratings) = &source.external_ratings {
+        target
+            .external_ratings
+            .get_or_insert_default()
+            .merge(source_ratings, replace);
         merge_option(&mut target.rating_audience, &source.rating_audience, true);
     }
 }
@@ -900,62 +823,6 @@ pub trait LyricAddon: Send + Sync {
     async fn lyric_get_by_id(&self, id: &str) -> Result<Option<LyricDto>>;
 }
 
-/// A single popularity snapshot emitted by a `MetricsAddon`.
-/// Popularity score normalized to \[0.0, 100.0\].
-///
-/// All `MetricsAddon` implementations must emit values in this range.
-/// Use `MetricValue::from_raw(raw, source_max)` to normalize a raw source value.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-pub struct MetricValue(f64);
-
-impl MetricValue {
-    /// Normalize a raw source value: `(raw / source_max) * 100`, clamped to \[0, 100\].
-    pub fn from_raw(raw: f64, source_max: f64) -> Self {
-        Self(((raw / source_max) * 100.0).clamp(0.0, 100.0))
-    }
-
-    /// Construct from an already-normalized value, clamping to \[0, 100\].
-    pub fn from_normalized(v: f64) -> Self {
-        Self(v.clamp(0.0, 100.0))
-    }
-
-    pub fn get(self) -> f64 {
-        self.0
-    }
-}
-
-/// Each addon computes the `value` internally from its own source data.
-/// Values must be in \[0.0, 100.0\]; use `MetricValue::from_raw` to normalize.
-#[derive(Debug, Clone)]
-pub struct MetricSnapshot {
-    pub source: String,
-    pub external_id: String,
-    pub value: MetricValue,
-    pub date: chrono::NaiveDate,
-    pub media_id: Option<uuid::Uuid>,
-    pub media_raw: Option<String>,
-}
-
-/// Per-run context passed to `MetricsAddon::metric`. Carries only what addons
-/// need (static config + pre-fetched settings) — addons must not touch the DB.
-#[derive(Clone)]
-pub struct MetricsCtx {
-    pub config: Arc<crate::Config>,
-    pub settings: api::ServerConfiguration,
-}
-
-#[async_trait]
-pub trait MetricsAddon: AddonKind + Send + Sync {
-    /// Fetch a popularity metric for a single media item.
-    /// Returns `None` if this addon has no data for the item.
-    /// Values in `MetricSnapshot.value` must be in \[0.0, 100.0\].
-    async fn metric(
-        &self,
-        media: &db::Media,
-        ctx: &MetricsCtx,
-    ) -> Result<Option<MetricSnapshot>>;
-}
-
 // ---------------------------------------------------------------------------
 // AddonCapabilities — produced by AddonPreset::from_cfg
 // ---------------------------------------------------------------------------
@@ -973,7 +840,6 @@ pub struct AddonCapabilities {
     pub segment: Option<Arc<dyn SegmentAddon>>,
     pub lyric: Option<Arc<dyn LyricAddon>>,
     pub index: Option<Arc<dyn IndexAddon>>,
-    pub metrics: Option<Arc<dyn MetricsAddon>>,
     pub media_tracker: Option<Arc<dyn media_tracker::MediaTrackerAddon>>,
 }
 
@@ -1122,7 +988,7 @@ fn user_scoped(runtime: &AddonRuntime, override_ids: Option<&[Uuid]>) -> bool {
 /// `supports_type` believe an anime/series-only addon serves only movies,
 /// excluding it from `addons_for::<dyn StreamAddon>` for every
 /// Series/Season/Episode lookup.
-fn recognized_manifest_media_kind(
+pub(crate) fn recognized_manifest_media_kind(
     t: sdks::stremio::MediaType,
 ) -> Option<sdks::remux::MediaKind> {
     use sdks::{remux::MediaKind as MK, stremio::MediaType as MT};
@@ -1539,159 +1405,6 @@ impl AddonService {
             .collect()
     }
 
-    pub fn metrics_addons(&self) -> Vec<AddonRuntime> {
-        self.inner
-            .load()
-            .iter()
-            .filter(|r| {
-                r.metrics
-                    .is_some()
-                    && r.row
-                        .resources
-                        .contains(&ResourceType::Metrics)
-            })
-            .cloned()
-            .collect()
-    }
-
-    pub async fn snapshot_all_metrics(
-        &self,
-        ctx: &AppContext,
-        progress: ProgressReporter,
-    ) -> Result<()> {
-        use futures::stream::{self, StreamExt as _};
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        let addons = self.metrics_addons();
-        if addons.is_empty() {
-            progress.set(100.0);
-            return Ok(());
-        }
-
-        let settings = db::Settings::get_config_or_default(&ctx.db).await;
-        let metrics_ctx = MetricsCtx {
-            config: Arc::new(
-                ctx.config
-                    .clone(),
-            ),
-            settings,
-        };
-
-        let total: u64 = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM media WHERE kind IN ('movie', 'series')",
-        )
-        .fetch_one(&ctx.db)
-        .await
-        .unwrap_or(0) as u64;
-
-        let num_addons = addons.len() as u64;
-        let grand_total = total * num_addons;
-        // Shared counter: done items + newly fetched items across all addon loops.
-        let processed = Arc::new(AtomicU64::new(0));
-
-        const PAGE: u32 = 250;
-        const CONCURRENCY: usize = 25;
-
-        // Each addon runs its own independent paging loop concurrently.
-        // This way a rate-limited addon (e.g. Trakt sleeping 5 min) doesn't
-        // stall the others.
-        futures::future::join_all(
-            addons
-                .iter()
-                .map(|runtime| {
-                    let addon = runtime.metrics.as_ref().unwrap().clone();
-                    let metrics_ctx = metrics_ctx.clone();
-                    let progress = progress.clone();
-                    let processed = Arc::clone(&processed);
-                    async move {
-                        let done: std::collections::HashSet<uuid::Uuid> =
-                            sqlx::query_scalar::<_, Option<uuid::Uuid>>(
-                                "SELECT media_id FROM popularity_raw \
-                                 WHERE source = ? AND date = date('now') AND media_id IS NOT NULL",
-                            )
-                            .bind(addon.id())
-                            .fetch_all(&ctx.db)
-                            .await
-                            .unwrap_or_default()
-                            .into_iter()
-                            .flatten()
-                            .collect();
-
-                        tracing::info!(
-                            source = addon.id(),
-                            already_fetched = done.len(),
-                            remaining = (total as usize).saturating_sub(done.len()),
-                            "starting metrics fetch"
-                        );
-
-                        // Credit already-fetched items immediately so progress
-                        // reflects a resumed or partial run from the start.
-                        if grand_total > 0 && !done.is_empty() {
-                            let n = processed.fetch_add(done.len() as u64, Ordering::Relaxed)
-                                + done.len() as u64;
-                            progress.set((n as f64 / grand_total as f64 * 100.0).min(99.0));
-                        }
-
-                        let mut offset = 0u32;
-                        loop {
-                            let page = db::Media::get_by_filter(
-                                &ctx.db,
-                                &db::MediaFilter {
-                                    kind: Some(vec![db::MediaKind::Movie, db::MediaKind::Series]),
-                                    limit: Some(PAGE),
-                                    offset: Some(offset),
-                                    total_count: false,
-                                    ..Default::default()
-                                },
-                            )
-                            .await?
-                            .records;
-
-                            if page.is_empty() {
-                                break;
-                            }
-
-                            let batch: Vec<_> =
-                                page.into_iter().filter(|m| !done.contains(&m.id)).collect();
-                            offset += PAGE;
-                            if batch.is_empty() {
-                                continue;
-                            }
-
-                            let batch_len = batch.len() as u64;
-                            let snapshots: Vec<MetricSnapshot> = stream::iter(batch)
-                                .map(|item| {
-                                    let addon = addon.clone();
-                                    let ctx = metrics_ctx.clone();
-                                    async move { addon.metric(&item, &ctx).await.ok().flatten() }
-                                })
-                                .buffer_unordered(CONCURRENCY)
-                                .filter_map(|s| async move { s })
-                                .collect()
-                                .await;
-
-                            if !snapshots.is_empty() {
-                                bulk_insert_snapshots(ctx, &snapshots).await?;
-                            }
-
-                            if grand_total > 0 {
-                                let n = processed.fetch_add(batch_len, Ordering::Relaxed)
-                                    + batch_len;
-                                progress.set((n as f64 / grand_total as f64 * 100.0).min(99.0));
-                            }
-                        }
-                        Ok::<(), anyhow::Error>(())
-                    }
-                }),
-        )
-        .await
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()?;
-
-        progress.set(100.0);
-        Ok(())
-    }
-
     /// Returns `(addon, catalogs)` pairs for every catalog-capable addon that could
     /// produce any of `kinds`, with each addon's catalog list already filtered down to
     /// catalogs whose own `media_kind` is one of `kinds`. Addons are pre-filtered via
@@ -1862,32 +1575,115 @@ impl AddonService {
         force_refresh: bool,
         config: &api::ServerConfiguration,
     ) -> Result<()> {
+        trace!(
+            target: "remux_server::metadata_refresh",
+            id = %media.id,
+            title = %media.title,
+            kind = %media.kind,
+            force_refresh,
+            "metadata refresh starting"
+        );
+        let grandparent_started = Instant::now();
         media
             .grandparent(&ctx.db)
             .await
             .ok();
+        trace!(
+            target: "remux_server::metadata_refresh",
+            id = %media.id,
+            elapsed = ?grandparent_started.elapsed(),
+            "refresh_meta: grandparent lookup complete"
+        );
+
+        // Fill in whatever external ids we can before any addon runs, so
+        // every addon in this batch sees the fuller id set rather than each
+        // doing its own partial, addon-specific resolution.
+        let resolve_started = Instant::now();
+        // Seasons and episodes already carry the TMDB identity needed by their
+        // metadata providers. Do not turn a metadata tree refresh into a
+        // per-child external-ID enrichment job; that remains available to
+        // explicit callers of `resolve_external_ids` when it is actually needed.
+        let resolves_external_ids =
+            !matches!(media.kind, db::MediaKind::Season | db::MediaKind::Episode);
+        if resolves_external_ids {
+            MediaResolveService::resolve_external_ids(media, ctx, false).await;
+        }
+        trace!(
+            target: "remux_server::metadata_refresh",
+            id = %media.id,
+            resolves_external_ids,
+            elapsed = ?resolve_started.elapsed(),
+            "refresh_meta: external ID resolution complete"
+        );
 
         let applicable = self
             .addons_for::<dyn MetaAddon>(media, &ctx.db, None)
             .await;
+
+        trace!(
+            target: "remux_server::metadata_refresh",
+            id = %media.id,
+            title = %media.title,
+            kind = %media.kind,
+            addons = %applicable.iter().map(|r| r.row.name.as_str()).collect::<Vec<_>>().join(", "),
+            "metadata refresh addons selected"
+        );
 
         if applicable.is_empty() {
             return Ok(());
         }
 
         let fetch_started = std::time::Instant::now();
+        let media_ref: &db::Media = media;
         let results = futures::future::join_all(
             applicable
                 .iter()
                 .map(|r| {
-                    r.meta
-                        .as_ref()
-                        .unwrap()
-                        .meta_fetch(media, ctx, config)
+                    let addon = r
+                        .row
+                        .name
+                        .clone();
+                    async move {
+                        let addon_started = Instant::now();
+                        trace!(
+                            target: "remux_server::metadata_refresh",
+                            id = %media_ref.id,
+                            title = %media_ref.title,
+                            kind = %media_ref.kind,
+                            addon = %addon,
+                            "metadata addon request starting"
+                        );
+                        let result = r
+                            .meta
+                            .as_ref()
+                            .unwrap()
+                            .meta_fetch(media_ref, ctx, config)
+                            .await;
+                        trace!(
+                            target: "remux_server::metadata_refresh",
+                            id = %media_ref.id,
+                            addon = %addon,
+                            elapsed = ?addon_started.elapsed(),
+                            success = result.is_ok(),
+                            "refresh_meta: addon meta_fetch complete"
+                        );
+                        trace!(
+                            target: "remux_server::metadata_refresh",
+                            id = %media_ref.id,
+                            title = %media_ref.title,
+                            kind = %media_ref.kind,
+                            addon = %addon,
+                            elapsed = ?addon_started.elapsed(),
+                            success = result.is_ok(),
+                            "metadata addon request complete"
+                        );
+                        result
+                    }
                 }),
         )
         .await;
-        debug!(
+        trace!(
+            target: "remux_server::metadata_refresh",
             id = %media.id,
             title = %media.title,
             kind = %media.kind,
@@ -2055,8 +1851,25 @@ impl AddonService {
         use futures::StreamExt;
 
         let config = db::Settings::get_config_or_default(&ctx.db).await;
-        let concurrency = config.meta_concurrency as usize;
+        // Clamp before casting: a persisted/API-set 0 or negative value would
+        // otherwise stall `buffer_unordered` (0) or wrap around to near
+        // `usize::MAX` (negative), not just fail to throttle.
+        let concurrency = config
+            .meta_concurrency
+            .max(1) as usize;
+        trace!(
+            target: "remux_server::metadata_refresh",
+            items = media.len(),
+            force_refresh,
+            concurrency,
+            "processing metadata batch"
+        );
         let config = Arc::new(config);
+        // Shared across this whole batch — top-level items, and every season/
+        // episode any of them refreshes — so nested fan-out inside a single
+        // item's own tree walk can't multiply past this budget. See
+        // `process_meta_item_inner` for where seasons/episodes acquire from it.
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
 
         let svc = self.clone();
         let ctx_owned = ctx.clone();
@@ -2067,10 +1880,11 @@ impl AddonService {
                     let svc = svc.clone();
                     let ctx = ctx_owned.clone();
                     let cfg = Arc::clone(&config);
+                    let sem = Arc::clone(&semaphore);
                     let original_id = m.id;
                     async move {
                         let final_id = svc
-                            .process_meta_item(m, ctx, force_refresh, cfg)
+                            .process_meta_item(m, ctx, force_refresh, cfg, sem)
                             .await;
                         (original_id, final_id)
                     }
@@ -2189,6 +2003,7 @@ impl AddonService {
         ctx: AppContext,
         force_refresh: bool,
         config: Arc<api::ServerConfiguration>,
+        semaphore: Arc<tokio::sync::Semaphore>,
     ) -> Uuid {
         let title = media
             .title
@@ -2197,10 +2012,25 @@ impl AddonService {
             .kind
             .clone();
         let started = std::time::Instant::now();
+        trace!(
+            target: "remux_server::metadata_refresh",
+            id = %media.id,
+            title = %title,
+            kind = %kind,
+            force_refresh,
+            "top-level metadata item starting"
+        );
         let id = self
-            .process_meta_item_inner(media, ctx, force_refresh, config)
+            .process_meta_item_inner(media, ctx, force_refresh, config, semaphore)
             .await;
-        debug!(%id, %title, %kind, elapsed = ?started.elapsed(), "process_meta_item done");
+        trace!(
+            target: "remux_server::metadata_refresh",
+            %id,
+            %title,
+            %kind,
+            elapsed = ?started.elapsed(),
+            "process_meta_item done"
+        );
         id
     }
 
@@ -2210,20 +2040,57 @@ impl AddonService {
         ctx: AppContext,
         force_refresh: bool,
         config: Arc<api::ServerConfiguration>,
+        semaphore: Arc<tokio::sync::Semaphore>,
     ) -> Uuid {
+        use futures::StreamExt;
+
+        // Bounds how many season/episode tasks are polled concurrently within
+        // this one item's own tree walk; actual network concurrency is capped
+        // by `semaphore` regardless, so this only needs to be "large enough
+        // to not artificially serialize" — reusing the same configured value
+        // keeps it consistent with the outer batch's own concurrency knob.
+        let concurrency = config
+            .meta_concurrency
+            .max(1) as usize;
+
         let original_id = media.id;
 
-        if let Err(e) = self
-            .refresh_meta(&mut media, &ctx, force_refresh, &config)
-            .await
-        {
+        let root_refresh_result = {
+            let permit_wait_started = Instant::now();
+            let _permit = semaphore
+                .acquire()
+                .await
+                .expect("semaphore is never closed");
+            trace!(
+                target: "remux_server::metadata_refresh",
+                id = %media.id,
+                title = %media.title,
+                kind = %media.kind,
+                wait_elapsed = ?permit_wait_started.elapsed(),
+                "top-level metadata item acquired refresh slot"
+            );
+            let refresh_started = Instant::now();
+            let result = self
+                .refresh_meta(&mut media, &ctx, force_refresh, &config)
+                .await;
+            trace!(
+                target: "remux_server::metadata_refresh",
+                id = %media.id,
+                title = %media.title,
+                kind = %media.kind,
+                elapsed = ?refresh_started.elapsed(),
+                success = result.is_ok(),
+                "top-level metadata item root refresh complete"
+            );
+            result
+        };
+        if let Err(e) = root_refresh_result {
             warn!(id = %media.id, error = %e, "failed to refresh metadata, keeping as-is");
             if let Err(e) = db::Media::upsert(&ctx.db, &[media.clone()]).await {
                 error!(id = %media.id, error = %e, "failed to upsert media");
             } else {
                 save_pending_relations(&ctx, &[media.clone()]).await;
                 save_pending_tags(&ctx, &[media.clone()]).await;
-                save_pending_popularity(&ctx, &[media.clone()]).await;
             }
             return media.id;
         }
@@ -2264,7 +2131,58 @@ impl AddonService {
                 root_was_remapped = true;
             }
         }
+        // Upsert root. Images are held back and attached separately below:
+        // `Media::upsert` inserts `media_images` rows keyed on the item's own
+        // `id` in the *same* transaction as the root row's insert, but a
+        // per-kind external-id unique index violation (see the migration
+        // that added them) can redirect that root insert onto a different
+        // existing row via `ON CONFLICT DO UPDATE` — leaving an images
+        // insert keyed on an id that was never actually written, which
+        // fails the deferred `media_images.media_id` foreign key. Inserting
+        // images after the id below is confirmed avoids that entirely.
+        let pending_images = std::mem::take(&mut media.images);
+        if let Err(e) = db::Media::upsert(&ctx.db, &[media.clone()]).await {
+            error!(id = %media.id, error = %e, "failed to upsert root media");
+            return media.id;
+        }
+
+        // The upsert above may have silently landed on a different row than
+        // `media.id`: `Media::upsert`'s `ON CONFLICT DO UPDATE` has no
+        // conflict target, so SQLite fires it for ANY unique index
+        // violation, not just the primary key — including the per-kind
+        // external-id unique indexes. If another concurrent task committed
+        // a row under a different id with the same external id between our
+        // dedup check above and this upsert, our own insert gets silently
+        // redirected onto that row instead of failing or creating a
+        // duplicate. Re-check now (authoritative, since our own write just
+        // committed) and correct our bookkeeping before anything downstream
+        // (season/episode trees, catalog relations) keys off the wrong id.
+        if let Some(existing_id) =
+            db::Media::find_existing_id_by_ext(&ctx.db, &media).await
+        {
+            if existing_id != media.id {
+                if let Err(e) = db::Media::cascade_update_parent_refs(
+                    &ctx.db,
+                    media.id,
+                    existing_id,
+                )
+                .await
+                {
+                    warn!(old = %media.id, new = %existing_id, error = %e,
+                        "cascade_update_parent_refs failed after post-upsert id correction");
+                }
+                media.id = existing_id;
+                root_was_remapped = true;
+            }
+        }
         let actual_root_id = media.id;
+
+        if !pending_images.is_empty() {
+            media.images = pending_images;
+            if let Err(e) = db::Media::upsert(&ctx.db, &[media.clone()]).await {
+                warn!(id = %actual_root_id, error = %e, "failed to attach images to root media");
+            }
+        }
 
         // Build in-memory grandparent stub so children's refresh_meta calls can read
         // the series TMDB/IMDB ID and genres without hitting the DB.
@@ -2290,15 +2208,9 @@ impl AddonService {
             gp
         };
 
-        // Upsert root.
-        if let Err(e) = db::Media::upsert(&ctx.db, &[media.clone()]).await {
-            error!(id = %actual_root_id, error = %e, "failed to upsert root media");
-            return actual_root_id;
-        }
         db::UserMediaState::remap_orphaned_for(&ctx.db, &[media.clone()]).await;
         save_pending_relations(&ctx, &[media.clone()]).await;
         save_pending_tags(&ctx, &[media.clone()]).await;
-        save_pending_popularity(&ctx, &[media.clone()]).await;
 
         let is_continuing = series_is_active(&media.status);
 
@@ -2348,65 +2260,84 @@ impl AddonService {
         })
         .collect();
 
-        let mut level1: Vec<db::Media> = Vec::with_capacity(raw_level1.len());
-        for mut child in raw_level1 {
-            child.parent_id = Some(actual_root_id);
-            child.grandparent = Some(Box::new(gp_stub.clone()));
+        // Seasons/albums fan out concurrently — each one's own `refresh_meta`
+        // still throttles through `semaphore` (shared for the whole batch),
+        // so this can't multiply past the configured budget the way an
+        // independent per-level concurrency cap would.
+        let level1: Vec<db::Media> = futures::stream::iter(raw_level1)
+            .map(|mut child| {
+                let svc = self.clone();
+                let ctx = ctx.clone();
+                let config = Arc::clone(&config);
+                let semaphore = Arc::clone(&semaphore);
+                let gp_stub = gp_stub.clone();
+                let existing_l1 = &existing_l1;
+                async move {
+                    child.parent_id = Some(actual_root_id);
+                    child.grandparent = Some(Box::new(gp_stub));
 
-            // Adopt the existing DB UUID (and refreshed_at) for this (kind, idx)
-            // position if found. The new child UUID may differ from what's stored
-            // (due to UUID scheme changes or root remapping) — adopting the stored
-            // UUID avoids duplicate rows and keeps grandchild parent_id references
-            // intact. `refreshed_at` must also be adopted: this `child` was just
-            // freshly parsed from the addon's raw response, which has no concept
-            // of it, so leaving it unset makes `child_refresh_force` below treat
-            // an already-refreshed child as brand new every single pass.
-            if let Some(idx) = child.idx {
-                let key = (
-                    child
-                        .kind
-                        .to_string(),
-                    idx,
-                );
-                if let Some(&(existing_id, existing_refreshed_at)) =
-                    existing_l1.get(&key)
-                {
-                    child.refreshed_at = existing_refreshed_at;
-                    if existing_id != child.id {
-                        // When the root was remapped, cascade any references to the new
-                        // child UUID (which was never in the DB) before adopting.
-                        if root_was_remapped {
-                            if let Err(e) = db::Media::cascade_update_parent_refs(
-                                &ctx.db,
-                                child.id,
-                                existing_id,
-                            )
-                            .await
-                            {
-                                warn!(old = %child.id, new = %existing_id, error = %e,
-                                    "cascade for level-1 child failed");
+                    // Adopt the existing DB UUID (and refreshed_at) for this (kind, idx)
+                    // position if found. The new child UUID may differ from what's stored
+                    // (due to UUID scheme changes or root remapping) — adopting the stored
+                    // UUID avoids duplicate rows and keeps grandchild parent_id references
+                    // intact. `refreshed_at` must also be adopted: this `child` was just
+                    // freshly parsed from the addon's raw response, which has no concept
+                    // of it, so leaving it unset makes `child_refresh_force` below treat
+                    // an already-refreshed child as brand new every single pass.
+                    if let Some(idx) = child.idx {
+                        let key = (
+                            child
+                                .kind
+                                .to_string(),
+                            idx,
+                        );
+                        if let Some(&(existing_id, existing_refreshed_at)) =
+                            existing_l1.get(&key)
+                        {
+                            child.refreshed_at = existing_refreshed_at;
+                            if existing_id != child.id {
+                                // When the root was remapped, cascade any references to the new
+                                // child UUID (which was never in the DB) before adopting.
+                                if root_was_remapped {
+                                    if let Err(e) = db::Media::cascade_update_parent_refs(
+                                        &ctx.db,
+                                        child.id,
+                                        existing_id,
+                                    )
+                                    .await
+                                    {
+                                        warn!(old = %child.id, new = %existing_id, error = %e,
+                                            "cascade for level-1 child failed");
+                                    }
+                                }
+                                child.id = existing_id;
                             }
                         }
-                        child.id = existing_id;
                     }
-                }
-            }
 
-            let in_active_window = is_continuing
-                && matches!(child.kind, db::MediaKind::Episode)
-                && episode_in_active_window(&child);
-            if let Some(effective_force) =
-                child_refresh_force(force_refresh, in_active_window, &child)
-            {
-                if let Err(e) = self
-                    .refresh_meta(&mut child, &ctx, effective_force, &config)
-                    .await
-                {
-                    warn!(id = %child.id, error = %e, "failed to refresh level-1 child meta");
+                    let in_active_window = is_continuing
+                        && matches!(child.kind, db::MediaKind::Episode)
+                        && episode_in_active_window(&child);
+                    if let Some(effective_force) =
+                        child_refresh_force(force_refresh, in_active_window, &child)
+                    {
+                        let _permit = semaphore
+                            .acquire()
+                            .await
+                            .expect("semaphore is never closed");
+                        if let Err(e) = svc
+                            .refresh_meta(&mut child, &ctx, effective_force, &config)
+                            .await
+                        {
+                            warn!(id = %child.id, error = %e, "failed to refresh level-1 child meta");
+                        }
+                    }
+                    child
                 }
-            }
-            level1.push(child);
-        }
+            })
+            .buffer_unordered(concurrency)
+            .collect()
+            .await;
 
         let mut level1_ok: Vec<&db::Media> = Vec::with_capacity(level1.len());
         for chunk in level1.chunks(db::CHUNK_SIZE) {
@@ -2416,75 +2347,90 @@ impl AddonService {
                 db::UserMediaState::remap_orphaned_for(&ctx.db, chunk).await;
                 save_pending_relations(&ctx, chunk).await;
                 save_pending_tags(&ctx, chunk).await;
-                save_pending_popularity(&ctx, chunk).await;
                 level1_ok.extend(chunk);
             }
         }
 
-        // Level 2: grandchildren (Episodes, Tracks, etc.) — one fetch+upsert per child.
-        // Only process children whose level-1 upsert succeeded to avoid orphaned rows.
-        for child in &level1_ok {
-            let actual_child_id = child.id;
-            let raw_level2 = self
-                .get_direct_children(child, &ctx)
-                .await;
-            if raw_level2.is_empty() {
-                continue;
-            }
+        // Level 2: grandchildren (Episodes, Tracks, etc.) — one fetch+upsert
+        // per level-1 child. Only process children whose level-1 upsert
+        // succeeded to avoid orphaned rows. Different seasons' episode
+        // batches fan out concurrently for the same reason level 1 does;
+        // `semaphore` still bounds the real cost regardless.
+        futures::stream::iter(level1_ok)
+            .for_each_concurrent(concurrency, |child| {
+                let svc = self.clone();
+                let ctx = ctx.clone();
+                let config = Arc::clone(&config);
+                let semaphore = Arc::clone(&semaphore);
+                let gp_stub = gp_stub.clone();
+                let existing_l2 = &existing_l2;
+                async move {
+                    let actual_child_id = child.id;
+                    let raw_level2 = svc
+                        .get_direct_children(child, &ctx)
+                        .await;
+                    if raw_level2.is_empty() {
+                        return;
+                    }
 
-            let mut level2: Vec<db::Media> = Vec::with_capacity(raw_level2.len());
-            for mut gc in raw_level2 {
-                gc.parent_id = Some(actual_child_id);
-                gc.grandparent_id = Some(actual_root_id);
-                gc.grandparent = Some(Box::new(gp_stub.clone()));
+                    let mut level2: Vec<db::Media> = Vec::with_capacity(raw_level2.len());
+                    for mut gc in raw_level2 {
+                        gc.parent_id = Some(actual_child_id);
+                        gc.grandparent_id = Some(actual_root_id);
+                        gc.grandparent = Some(Box::new(gp_stub.clone()));
 
-                // Adopt existing UUID + refreshed_at from the pre-loaded grandchild
-                // map. `gc` is freshly parsed from the addon's raw response, which
-                // has no concept of refreshed_at — without adopting it here too,
-                // child_refresh_force below always treats this episode as never
-                // refreshed, refetching it on every single pass.
-                if let Some(idx) = gc.idx {
-                    let key = (
-                        actual_child_id,
-                        gc.kind
-                            .to_string(),
-                        idx,
-                    );
-                    if let Some(&(existing_id, existing_refreshed_at)) =
-                        existing_l2.get(&key)
-                    {
-                        gc.id = existing_id;
-                        gc.refreshed_at = existing_refreshed_at;
+                        // Adopt existing UUID + refreshed_at from the pre-loaded grandchild
+                        // map. `gc` is freshly parsed from the addon's raw response, which
+                        // has no concept of refreshed_at — without adopting it here too,
+                        // child_refresh_force below always treats this episode as never
+                        // refreshed, refetching it on every single pass.
+                        if let Some(idx) = gc.idx {
+                            let key = (
+                                actual_child_id,
+                                gc.kind
+                                    .to_string(),
+                                idx,
+                            );
+                            if let Some(&(existing_id, existing_refreshed_at)) =
+                                existing_l2.get(&key)
+                            {
+                                gc.id = existing_id;
+                                gc.refreshed_at = existing_refreshed_at;
+                            }
+                        }
+
+                        let in_active_window = is_continuing
+                            && matches!(gc.kind, db::MediaKind::Episode)
+                            && episode_in_active_window(&gc);
+                        if let Some(effective_force) =
+                            child_refresh_force(force_refresh, in_active_window, &gc)
+                        {
+                            let _permit = semaphore
+                                .acquire()
+                                .await
+                                .expect("semaphore is never closed");
+                            if let Err(e) = svc
+                                .refresh_meta(&mut gc, &ctx, effective_force, &config)
+                                .await
+                            {
+                                warn!(id = %gc.id, error = %e, "failed to refresh level-2 child meta");
+                            }
+                        }
+                        level2.push(gc);
+                    }
+
+                    for chunk in level2.chunks(db::CHUNK_SIZE) {
+                        if let Err(e) = db::Media::upsert(&ctx.db, chunk).await {
+                            error!(error = %e, "failed to upsert level-2 children");
+                        } else {
+                            db::UserMediaState::remap_orphaned_for(&ctx.db, chunk).await;
+                            save_pending_relations(&ctx, chunk).await;
+                            save_pending_tags(&ctx, chunk).await;
+                        }
                     }
                 }
-
-                let in_active_window = is_continuing
-                    && matches!(gc.kind, db::MediaKind::Episode)
-                    && episode_in_active_window(&gc);
-                if let Some(effective_force) =
-                    child_refresh_force(force_refresh, in_active_window, &gc)
-                {
-                    if let Err(e) = self
-                        .refresh_meta(&mut gc, &ctx, effective_force, &config)
-                        .await
-                    {
-                        warn!(id = %gc.id, error = %e, "failed to refresh level-2 child meta");
-                    }
-                }
-                level2.push(gc);
-            }
-
-            for chunk in level2.chunks(db::CHUNK_SIZE) {
-                if let Err(e) = db::Media::upsert(&ctx.db, chunk).await {
-                    error!(error = %e, "failed to upsert level-2 children");
-                } else {
-                    db::UserMediaState::remap_orphaned_for(&ctx.db, chunk).await;
-                    save_pending_relations(&ctx, chunk).await;
-                    save_pending_tags(&ctx, chunk).await;
-                    save_pending_popularity(&ctx, chunk).await;
-                }
-            }
-        }
+            })
+            .await;
 
         self.notify_series_done(&media);
         actual_root_id
@@ -2554,7 +2500,8 @@ impl AddonService {
                 .search(kind, query, limit, ctx)
                 .await
             {
-                Ok(Some(results)) => {
+                Ok(Some(mut results)) => {
+                    db::Media::adopt_existing_rows(&ctx.db, &mut results).await;
                     for m in &results {
                         ctx.store
                             .save(
@@ -2948,26 +2895,25 @@ impl AddonService {
             else {
                 return None;
             };
-            let imdb_id = if media.kind == db::MediaKind::Episode {
+            let external_id = if media.kind == db::MediaKind::Episode {
                 media
                     .grandparent
                     .as_deref()
                     .and_then(|gp| {
                         gp.external_ids
-                            .imdb
-                            .as_deref()
+                            .stremio_lookup_id()
                     })
-                    .or(media
-                        .external_ids
-                        .imdb
-                        .as_deref())
+                    .or_else(|| {
+                        media
+                            .external_ids
+                            .stremio_lookup_id()
+                    })
             } else {
                 media
                     .external_ids
-                    .imdb
-                    .as_deref()
+                    .stremio_lookup_id()
             };
-            let Some(imdb_id) = imdb_id else {
+            let Some(external_id) = external_id else {
                 return None;
             };
             let cfg = db::Settings::get_config_or_default(&ctx.db).await;
@@ -2994,7 +2940,7 @@ impl AddonService {
                 cfg.remuxdb_token
                     .as_deref(),
                 Some(crate::common::server_id().as_str()),
-                imdb_id,
+                &external_id,
                 season,
                 episode,
             )
@@ -3329,6 +3275,90 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    // Regression test for the duplicate-row race: two independent "new"
+    // stubs for the exact same content (same tmdb id, as if discovered via
+    // two different addon catalogs at once) must converge on a single row
+    // even when their `process_meta_item` calls genuinely race, because
+    // neither's pre-upsert dedup check can see the other's not-yet-committed
+    // insert. Correctness here depends on the per-kind external-id unique
+    // indexes (migrations/202609080002_media_external_id_unique_indexes.sql)
+    // plus the post-upsert id-correction check in `process_meta_item_inner`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_new_items_with_same_external_id_do_not_duplicate() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let ext = db::ExternalIds {
+            imdb: db::NonEmptyString::try_new("tt9999999").ok(),
+            tmdb: Some(999999),
+            ..Default::default()
+        };
+
+        let config = Arc::new(db::Settings::get_config_or_default(&ctx.db).await);
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(4));
+
+        let a = db::Media {
+            id: uuid::Uuid::new_v4(),
+            kind: db::MediaKind::Movie,
+            title: "Race Movie".into(),
+            external_ids: ext.clone(),
+            ..Default::default()
+        };
+        let b = db::Media {
+            id: uuid::Uuid::new_v4(),
+            kind: db::MediaKind::Movie,
+            title: "Race Movie".into(),
+            external_ids: ext,
+            ..Default::default()
+        };
+
+        let task_a = tokio::spawn({
+            let addons = ctx
+                .addons
+                .clone();
+            let ctx = ctx.clone();
+            let config = config.clone();
+            let semaphore = semaphore.clone();
+            async move {
+                addons
+                    .process_meta_item(a, ctx, false, config, semaphore)
+                    .await
+            }
+        });
+        let task_b = tokio::spawn({
+            let addons = ctx
+                .addons
+                .clone();
+            let ctx = ctx.clone();
+            let config = config.clone();
+            let semaphore = semaphore.clone();
+            async move {
+                addons
+                    .process_meta_item(b, ctx, false, config, semaphore)
+                    .await
+            }
+        });
+
+        let (id_a, id_b) = tokio::join!(task_a, task_b);
+        let id_a = id_a.unwrap();
+        let id_b = id_b.unwrap();
+
+        assert_eq!(
+            id_a, id_b,
+            "both concurrent imports of the same content must converge on one row"
+        );
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM media WHERE kind = 'movie' AND json_extract(external_ids, '$.tmdb') = 999999",
+        )
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap();
+        assert_eq!(count, 1, "exactly one row should survive the race");
     }
 
     #[test]
@@ -3864,6 +3894,140 @@ mod tests {
         assert!(
             !called.load(std::sync::atomic::Ordering::SeqCst),
             "stream-only addon's get_children should never be called"
+        );
+    }
+
+    /// Remote search mints a fresh id (and fresh, possibly-drifted data) per
+    /// request. A result that already exists locally must be replaced with
+    /// the stored row wholesale — not just its id — or a client that keeps
+    /// the id (next episode, continue watching) gets 404 on it once the
+    /// store entry is gone, and in the meantime sees data that can differ
+    /// from what it actually has. Unknown items keep their own id and data.
+    #[tokio::test]
+    async fn search_results_adopt_existing_rows() {
+        use crate::integration_test::{authenticated_server, seed_movie};
+        let (_server, guard, _token) = authenticated_server().await;
+        let ctx = &guard.0;
+        let stored = seed_movie(ctx).await;
+        let mut results = vec![
+            db::Media {
+                id: Uuid::new_v4(),
+                // Deliberately different from the stored row's title, to
+                // prove the whole item is replaced, not just its id.
+                title: "Heat (remote addon's stale title)".into(),
+                kind: db::MediaKind::Movie,
+                external_ids: db::ExternalIds {
+                    imdb: stored
+                        .external_ids
+                        .imdb
+                        .clone(),
+                    ..Default::default()
+                },
+                // Transient, caller-attached bookkeeping unrelated to which
+                // row is correct — must survive the swap.
+                relations: Some(vec![]),
+                ..Default::default()
+            },
+            db::Media {
+                id: Uuid::new_v4(),
+                title: "Unknown".into(),
+                kind: db::MediaKind::Movie,
+                external_ids: db::ExternalIds {
+                    imdb: db::NonEmptyString::try_new("tt0000001".to_string()).ok(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        ];
+        let unknown_id = results[1].id;
+        results.push(db::Media {
+            id: Uuid::new_v4(),
+            title: stored
+                .title
+                .clone(),
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                tmdb: stored
+                    .external_ids
+                    .tmdb,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        db::Media::adopt_existing_rows(&ctx.db, &mut results).await;
+        assert_eq!(
+            results[0].id, stored.id,
+            "known item takes the stored row's id"
+        );
+        assert_eq!(
+            results[0].title, stored.title,
+            "known item is replaced wholesale with the stored row, not just its id"
+        );
+        assert!(
+            results[0]
+                .relations
+                .is_some(),
+            "caller-attached relations survive the swap"
+        );
+        assert_eq!(results[1].id, unknown_id, "unknown item keeps its own id");
+        assert_eq!(
+            results[1].title, "Unknown",
+            "unknown item keeps its own data"
+        );
+        assert_eq!(
+            results[2].id, stored.id,
+            "a match on a lower-priority id adopts the stored row's id too"
+        );
+        assert_eq!(
+            results[2].title, stored.title,
+            "a match on a lower-priority id is also replaced wholesale"
+        );
+    }
+
+    // Regression test: `ExternalIds::is_empty()` only looks at
+    // imdb/tmdb/tvdb/custom_stremio_id, so gating kind-detection on it (as
+    // opposed to the kind-aware `external_id_fields`) silently skipped
+    // Artist/Album/Track adoption entirely — their only identity is
+    // deezer_*/youtube_id.
+    #[tokio::test]
+    async fn search_results_adopt_existing_rows_for_music_kinds() {
+        use crate::integration_test::authenticated_server;
+        let (_server, guard, _token) = authenticated_server().await;
+        let ctx = &guard.0;
+
+        let mut stored = db::Media {
+            id: Uuid::new_v4(),
+            title: "Actual Album".into(),
+            kind: db::MediaKind::Album,
+            external_ids: db::ExternalIds {
+                deezer_album: Some(42),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        stored
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let mut results = vec![db::Media {
+            id: Uuid::new_v4(),
+            title: "Remote Album (stale)".into(),
+            kind: db::MediaKind::Album,
+            external_ids: db::ExternalIds {
+                deezer_album: Some(42),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        db::Media::adopt_existing_rows(&ctx.db, &mut results).await;
+        assert_eq!(
+            results[0].id, stored.id,
+            "a deezer-only match still adopts the stored row"
+        );
+        assert_eq!(
+            results[0].title, stored.title,
+            "a deezer-only match is replaced wholesale too"
         );
     }
 }

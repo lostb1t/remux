@@ -723,18 +723,30 @@ impl StreamSource for TorrentSource {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("P2P is disabled"))
             .context_bad_request("P2P is disabled")?;
+        let lease = torrent
+            .acquire(&self.info_hash)
+            .await;
         let resolved = torrent
             .resolve_url(&self.to_magnet())
             .await
             .context_bad_request("failed to resolve torrent")?;
 
-        HttpSource {
+        let response = HttpSource {
             url: resolved,
             request_headers: Default::default(),
             response_headers: Default::default(),
         }
         .serve_inner(headers, true)
-        .await
+        .await?;
+        let (parts, body) = response.into_parts();
+        let stream = async_stream::stream! {
+            let _lease = lease;
+            let mut stream = body.into_data_stream();
+            while let Some(chunk) = stream.next().await {
+                yield chunk;
+            }
+        };
+        Ok(Response::from_parts(parts, Body::from_stream(stream)))
     }
 }
 

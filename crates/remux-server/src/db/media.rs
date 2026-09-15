@@ -852,13 +852,58 @@ pub struct Rating {
     pub vote_count: Option<u32>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RemuxDbRatingSource {
+    pub source: String,
+    pub value: f64,
+    pub votes: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RemuxDbRatings {
+    pub score: Option<f64>,
+    pub score_average: Option<f64>,
+    pub tomatoes: Option<f64>,
+    #[serde(default)]
+    pub sources: Vec<RemuxDbRatingSource>,
+    pub updated_at: Option<String>,
+}
+
 #[skip_serializing_none]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExternalRatings {
     pub tmdb: Option<Rating>,
+    pub remuxdb: Option<RemuxDbRatings>,
 }
 
 impl ExternalRatings {
+    pub fn merge(&mut self, source: &Self, replace: bool) {
+        if replace
+            || self
+                .tmdb
+                .is_none()
+        {
+            self.tmdb = source
+                .tmdb
+                .clone()
+                .or(self
+                    .tmdb
+                    .clone());
+        }
+        if replace
+            || self
+                .remuxdb
+                .is_none()
+        {
+            self.remuxdb = source
+                .remuxdb
+                .clone()
+                .or(self
+                    .remuxdb
+                    .clone());
+        }
+    }
+
     pub fn audience_rating(&self) -> Option<f64> {
         const PRIOR: f64 = 6.5;
         const M: f64 = 500.0;
@@ -1416,10 +1461,6 @@ pub struct Media {
     //pub description: Option<String>,
     #[sqlx(skip)]
     pub tags: Vec<String>,
-    /// Set by TMDB meta fetch; written to `popularity_raw` by `save_pending_popularity`.
-    #[sqlx(skip)]
-    #[serde(skip)]
-    pub pending_popularity: Option<(String, crate::addons::MetricValue)>,
     #[sqlx(skip)]
     pub child_count: Option<i64>,
     #[sqlx(skip)]
@@ -1639,7 +1680,7 @@ impl Media {
     /// albums, episodes, seasons, and TV programs, storing them as `self.parent` /
     /// `self.grandparent`. The API layer reads titles and image tags from those
     /// preloaded records instead of from flat denormalised fields.
-    pub async fn preload_parents(db: &SqlitePool, records: &mut Vec<Self>) {
+    pub async fn preload_parents(db: &SqlitePool, records: &mut [Self]) {
         let ids_needed: Vec<Uuid> = records
             .iter()
             .filter(|m| {
@@ -1978,12 +2019,32 @@ pub enum MediaError {
 // doesn't coerce across storage classes in a bare `=`), so integer-valued
 // fields must bind as an integer, not a stringified one. Used by
 // `Media::find_by_external_ids` and `Media::resolve_ambiguous_external_id`.
+#[derive(Clone, PartialEq)]
 enum IdValue {
     Text(String),
     Int(i64),
 }
 
 impl Media {
+    /// Series with in-progress episodes, including those outside the requested page.
+    pub async fn resumable_series_ids(
+        db: &SqlitePool,
+        user_id: Uuid,
+    ) -> Result<std::collections::HashSet<Uuid>> {
+        let ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT DISTINCT m.grandparent_id FROM user_media_state ums \
+             JOIN media m ON m.id = ums.media_id \
+             WHERE ums.user_id = ? AND ums.playback_position > 0 \
+             AND m.grandparent_id IS NOT NULL",
+        )
+        .bind(user_id)
+        .fetch_all(db)
+        .await?;
+        Ok(ids
+            .into_iter()
+            .collect())
+    }
+
     pub fn is_live(&self) -> bool {
         self.kind == MediaKind::TvChannel
     }
@@ -2185,15 +2246,6 @@ impl Media {
         }
 
         let missing = match self.kind {
-            MediaKind::Movie | MediaKind::Series => (self
-                .external_ids
-                .imdb
-                .is_none()
-                && self
-                    .external_ids
-                    .custom_stremio_id
-                    .is_none())
-            .then_some("imdb"),
             MediaKind::Season | MediaKind::Episode => self
                 .grandparent_id
                 .is_none()
@@ -2763,11 +2815,168 @@ impl Media {
     /// imdb ▸ custom_stremio_id ▸ tmdb ▸ tvdb ▸ kitsu, or deezer ▸ youtube_id
     /// for music) and the conflict is logged — this is intentionally not
     /// resolved by merging the rows.
-    pub async fn find_by_external_ids(
+    /// Point remote results (search, catalog) that already exist locally at
+    /// their stored row: same kind, matching external id. The whole item is
+    /// replaced with the stored row, not just its id — a remote addon's
+    /// payload can drift from what's actually stored (a user's manual edit,
+    /// `is_locked`/`locked_fields`, images), and the moment a client opens
+    /// the item it gets the stored row anyway (`resolve_item` →
+    /// `get_by_id`), so showing the remote version in the interim is
+    /// actively misleading, not just differently fresh. The remote result's
+    /// `relations` (catalog membership, attached by the caller after
+    /// conversion) is preserved across the swap since it isn't a stored
+    /// column and carries no bearing on which row is correct.
+    ///
+    /// Remote results are minted with a fresh id per request and live in the
+    /// in-memory store for an hour. A client that keeps such an id, for
+    /// next-episode autoplay or a continue-watching entry, is left with a
+    /// dead one after that, or after a restart, and gets 404 on
+    /// `/shows/{id}/seasons` while the stored series is fine. Only results
+    /// with a matching row are rewritten; unknown items keep their id.
+    pub async fn adopt_existing_rows(db: &SqlitePool, items: &mut [Media]) {
+        let mut kinds: Vec<MediaKind> = Vec::new();
+        for m in items.iter() {
+            // `ExternalIds::is_empty()` only looks at imdb/tmdb/tvdb/custom —
+            // checking it here would skip Artist/Album/Track kinds, whose
+            // only identity is deezer_*/youtube_id, entirely.
+            // `external_id_fields` covers every kind correctly.
+            if !Self::external_id_fields(&m.kind, &m.external_ids).is_empty()
+                && !kinds.contains(&m.kind)
+            {
+                kinds.push(
+                    m.kind
+                        .clone(),
+                );
+            }
+        }
+        for kind in kinds {
+            let exts: Vec<ExternalIds> = items
+                .iter()
+                .filter(|m| m.kind == kind)
+                .map(|m| {
+                    m.external_ids
+                        .clone()
+                })
+                .collect();
+            let rows = Self::get_many_by_external_ids(db, &kind, &exts).await;
+            if rows.is_empty() {
+                continue;
+            }
+            for m in items
+                .iter_mut()
+                .filter(|m| m.kind == kind)
+            {
+                let fields = Self::external_id_fields(&kind, &m.external_ids);
+                let hit = fields
+                    .iter()
+                    .find_map(|field| {
+                        rows.iter()
+                            .find(|row| {
+                                Self::external_id_fields(&kind, &row.external_ids)
+                                    .contains(field)
+                            })
+                    });
+                if let Some(stored) = hit {
+                    let relations = m
+                        .relations
+                        .take();
+                    *m = stored.clone();
+                    m.relations = relations;
+                }
+            }
+        }
+        // A swapped-in stored row carries none of the remote result's
+        // preloaded parent/grandparent stubs (Track/Album's artist/album
+        // name and artwork, Episode/Season/TvProgram's series) — re-run
+        // unconditionally so the invariant holds regardless of whether the
+        // caller already preloaded before calling this.
+        Self::preload_parents(db, items).await;
+    }
+
+    /// Appends `kind = ? AND (json_extract(external_ids, '$.a') = ? OR
+    /// json_extract(external_ids, '$.b') = ? OR ...)` for `fields` (which
+    /// must be non-empty) to `qb`. Shared by every external-id lookup below
+    /// so the WHERE-clause shape lives in exactly one place.
+    fn push_external_id_where(
+        qb: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
+        kind: &MediaKind,
+        fields: &[(&'static str, IdValue)],
+    ) {
+        qb.push("kind = ");
+        qb.push_bind(kind.to_string());
+        qb.push(" AND (");
+        for (i, (path, value)) in fields
+            .iter()
+            .enumerate()
+        {
+            if i > 0 {
+                qb.push(" OR ");
+            }
+            qb.push("json_extract(external_ids, '")
+                .push(path)
+                .push("') = ");
+            match value {
+                IdValue::Text(s) => qb.push_bind(s.clone()),
+                IdValue::Int(n) => qb.push_bind(*n),
+            };
+        }
+        qb.push(")");
+    }
+
+    /// Like `find_by_external_ids`, but for many items of the same `kind`
+    /// at once — one query (per `SQLITE_VAR_LIMIT` chunk) instead of one per
+    /// `ext`. Returns every stored row (images included) that shares any
+    /// external id with any of `exts`; callers match each of their own
+    /// items against this set themselves; matches only need to be
+    /// deduplicated, not returned in caller order.
+    async fn get_many_by_external_ids(
         db: &SqlitePool,
         kind: &MediaKind,
+        exts: &[ExternalIds],
+    ) -> Vec<Media> {
+        let mut wanted: Vec<(&'static str, IdValue)> = Vec::new();
+        for ext in exts {
+            for field in Self::external_id_fields(kind, ext) {
+                if !wanted.contains(&field) {
+                    wanted.push(field);
+                }
+            }
+        }
+        if wanted.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for chunk in wanted.chunks(SQLITE_VAR_LIMIT - 1) {
+            let mut qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE ");
+            Self::push_external_id_where(&mut qb, kind, chunk);
+            let mut rows: Vec<Media> = qb
+                .build_query_as()
+                .fetch_all(db)
+                .await
+                .unwrap_or_default();
+            let ids: Vec<Uuid> = rows
+                .iter()
+                .map(|m| m.id)
+                .collect();
+            let mut images = MediaImage::get_for_media_ids(db, &ids)
+                .await
+                .unwrap_or_default();
+            for row in &mut rows {
+                row.images = images
+                    .remove(&row.id)
+                    .unwrap_or_default();
+            }
+            out.extend(rows);
+        }
+        out
+    }
+
+    /// `(json path, bound value)` pairs identifying `ext` for `kind`, in
+    /// priority order.
+    fn external_id_fields(
+        kind: &MediaKind,
         ext: &ExternalIds,
-    ) -> Option<Uuid> {
+    ) -> Vec<(&'static str, IdValue)> {
         // (json path, bound value) in priority order — mirrors stable_media_uuid
         // for Movie/Series/TvProgram; Artist/Album/Track have no priority
         // conflict since each carries at most one provider's id in practice.
@@ -2814,32 +3023,23 @@ impl Media {
             // Season/Episode identity is positional (parent series + index),
             // not a single external id — never deduped this way, their ids
             // are minted deterministically via `season_id`/`episode_id`.
-            _ => return None,
+            _ => {}
         }
+        id_fields
+    }
+
+    pub async fn find_by_external_ids(
+        db: &SqlitePool,
+        kind: &MediaKind,
+        ext: &ExternalIds,
+    ) -> Option<Uuid> {
+        let id_fields = Self::external_id_fields(kind, ext);
         if id_fields.is_empty() {
             return None;
         }
 
-        let mut qb =
-            sqlx::QueryBuilder::new("SELECT DISTINCT id FROM media WHERE kind = ");
-        qb.push_bind(kind.to_string());
-        qb.push(" AND (");
-        for (i, (path, value)) in id_fields
-            .iter()
-            .enumerate()
-        {
-            if i > 0 {
-                qb.push(" OR ");
-            }
-            qb.push("json_extract(external_ids, '")
-                .push(path)
-                .push("') = ");
-            match value {
-                IdValue::Text(s) => qb.push_bind(s.clone()),
-                IdValue::Int(n) => qb.push_bind(*n),
-            };
-        }
-        qb.push(")");
+        let mut qb = sqlx::QueryBuilder::new("SELECT DISTINCT id FROM media WHERE ");
+        Self::push_external_id_where(&mut qb, kind, &id_fields);
 
         let rows: Vec<Uuid> = qb
             .build_query_scalar()
@@ -2880,25 +3080,9 @@ impl Media {
         // `ORDER BY CASE ... END LIMIT 1` — one query picks the
         // strongest match directly, instead of probing each field
         // with a separate round trip.
-        let mut qb = sqlx::QueryBuilder::new("SELECT id FROM media WHERE kind = ");
-        qb.push_bind(kind.to_string());
-        qb.push(" AND (");
-        for (i, (path, value)) in id_fields
-            .iter()
-            .enumerate()
-        {
-            if i > 0 {
-                qb.push(" OR ");
-            }
-            qb.push("json_extract(external_ids, '")
-                .push(path)
-                .push("') = ");
-            match value {
-                IdValue::Text(s) => qb.push_bind(s.clone()),
-                IdValue::Int(n) => qb.push_bind(*n),
-            };
-        }
-        qb.push(") ORDER BY CASE");
+        let mut qb = sqlx::QueryBuilder::new("SELECT id FROM media WHERE ");
+        Self::push_external_id_where(&mut qb, kind, &id_fields);
+        qb.push(" ORDER BY CASE");
         for (i, (path, value)) in id_fields
             .iter()
             .enumerate()
@@ -3567,20 +3751,19 @@ impl Media {
                 .flatten()
         };
 
-        // When sorting by a single-period popularity metric, pre-compute scores via a
-        // LEFT JOIN on a derived table so SQLite materialises popularity_agg once and
-        // joins with a hash-join rather than executing 2 correlated subqueries per
-        // qualifying row in ORDER BY. PopularityAllTime spans 3 periods and stays with
-        // the correlated-subquery path.
-        let pop_period: Option<&'static str> = filter
+        // When sorting by a RemuxDB metric, scan its dedicated descending index and
+        // probe the already-filtered media rows by primary key. This avoids sorting
+        // the complete filtered set before LIMIT can stop the scan.
+        let pop_column: Option<&'static str> = filter
             .sort_by
             .iter()
             .find_map(|s| match s {
-                api::ItemSortBy::TrendingWeek => Some("trend_week"),
-                api::ItemSortBy::TrendingMonth => Some("trend_month"),
-                api::ItemSortBy::PopularityDay => Some("daily"),
-                api::ItemSortBy::PopularityWeek => Some("weekly"),
-                api::ItemSortBy::PopularityMonth => Some("monthly"),
+                api::ItemSortBy::PopularityAllTime => Some("popularity_all_time"),
+                api::ItemSortBy::TrendingWeek => Some("trending_weekly"),
+                api::ItemSortBy::TrendingMonth => Some("trending_monthly"),
+                api::ItemSortBy::PopularityDay => Some("popularity_daily"),
+                api::ItemSortBy::PopularityWeek => Some("popularity_weekly"),
+                api::ItemSortBy::PopularityMonth => Some("popularity_monthly"),
                 _ => None,
             });
         let mut pop_joined = false;
@@ -3716,12 +3899,12 @@ impl Media {
                     );
                     records_qb.push_bind(uid);
                     records_qb.push(" AND media.id = dp.media_id AND 1=1");
-                } else if pop_period.is_some() {
+                } else if pop_column.is_some() {
                     pop_joined = true;
                     // Build a CTE over the media table so the WHERE conditions loop
                     // below can fill it once. After the loop we close the CTE and
-                    // wrap it in a UNION ALL: arm 1 drives from idx_pop_agg_covering
-                    // (scored items in avg-DESC order via the index walk), arm 2
+                    // wrap it in a UNION ALL: arm 1 drives from the selected metrics
+                    // index (scored items in descending order), arm 2
                     // streams unscored items via NOT EXISTS. SQLite evaluates UNION ALL
                     // arms as coroutines — no global sort, LIMIT stops after arm 1 if
                     // there are enough scored items.
@@ -4433,25 +4616,25 @@ impl Media {
         }
 
         // Close the filtered CTE and build the UNION ALL structure.
-        // Arm 1 joins popularity_agg → filtered driving from idx_pop_agg_covering,
-        // producing scored items in avg-DESC order without a sort step.
+        // Arm 1 joins media_metrics → filtered driving from the selected metric
+        // index, producing scored items in descending order without a sort step.
         // Arm 2 streams unscored items after arm 1 is exhausted.
         if pop_joined {
-            let period = pop_period.unwrap();
-            // CROSS JOIN forces popularity_agg as the outer loop (SQLite docs:
+            let column = pop_column.unwrap();
+            // CROSS JOIN forces media_metrics as the outer loop (SQLite docs:
             // "CROSS JOIN prevents the optimizer from rearranging table order").
-            // This guarantees SQLite walks idx_pop_agg_covering in avg-DESC order
+            // This guarantees SQLite walks the selected metric index in DESC order
             // and probes the filtered CTE by PK, producing scored items in score
             // order without a sort step.
             records_qb.push(format!(
                 ") SELECT m.* FROM (\
-                 SELECT f.* FROM popularity_agg pop CROSS JOIN filtered f \
-                 WHERE f.id = pop.media_id AND pop.period = '{period}' AND pop.latest = 1 \
+                 SELECT f.* FROM media_metrics pop CROSS JOIN filtered f \
+                 WHERE f.id = pop.media_id AND pop.{column} IS NOT NULL \
                  UNION ALL \
                  SELECT f.* FROM filtered f \
                  WHERE NOT EXISTS (\
-                     SELECT 1 FROM popularity_agg p \
-                     WHERE p.media_id = f.id AND p.period = '{period}' AND p.latest = 1\
+                     SELECT 1 FROM media_metrics p \
+                     WHERE p.media_id = f.id AND p.{column} IS NOT NULL\
                  )\
                 ) m"
             ));
@@ -4686,66 +4869,52 @@ impl Media {
                             }
                         }
                         api::ItemSortBy::PopularityAllTime => {
-                            // all-time → most recent yearly → most recent monthly → 0
-                            "COALESCE(\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'all' AND pa.period_key = 'all'),\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'yearly' ORDER BY pa.period_key DESC LIMIT 1),\
-                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'monthly' ORDER BY pa.period_key DESC LIMIT 1),\
-                               0) DESC"
+                            "COALESCE((SELECT popularity_all_time FROM media_metrics \
+                              WHERE media_id = media.id), 0) DESC"
                                 .to_string()
                         }
                         api::ItemSortBy::PopularityDay => {
                             if pop_joined {
-                                "pop.avg DESC NULLS LAST".to_string()
+                                format!("pop.{} DESC NULLS LAST", pop_column.unwrap())
                             } else {
-                                "COALESCE(\
-                                   (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'daily' AND pa.period_key = date('now')),\
-                                   (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'daily' ORDER BY pa.period_key DESC LIMIT 1),\
-                                   0) DESC"
+                                "COALESCE((SELECT popularity_daily FROM media_metrics \
+                                  WHERE media_id = media.id), 0) DESC"
                                     .to_string()
                             }
                         }
                         api::ItemSortBy::PopularityWeek => {
                             if pop_joined {
-                                "pop.avg DESC NULLS LAST".to_string()
+                                format!("pop.{} DESC NULLS LAST", pop_column.unwrap())
                             } else {
-                                "COALESCE(\
-                                   (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'weekly' AND pa.period_key = date('now', 'weekday 0', '-6 days')),\
-                                   (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'weekly' ORDER BY pa.period_key DESC LIMIT 1),\
-                                   0) DESC"
+                                "COALESCE((SELECT popularity_weekly FROM media_metrics \
+                                  WHERE media_id = media.id), 0) DESC"
                                     .to_string()
                             }
                         }
                         api::ItemSortBy::PopularityMonth => {
                             if pop_joined {
-                                "pop.avg DESC NULLS LAST".to_string()
+                                format!("pop.{} DESC NULLS LAST", pop_column.unwrap())
                             } else {
-                                "COALESCE(\
-                                   (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'monthly' AND pa.period_key = strftime('%Y-%m', 'now')),\
-                                   (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'monthly' ORDER BY pa.period_key DESC LIMIT 1),\
-                                   0) DESC"
+                                "COALESCE((SELECT popularity_monthly FROM media_metrics \
+                                  WHERE media_id = media.id), 0) DESC"
                                     .to_string()
                             }
                         }
                         api::ItemSortBy::TrendingWeek => {
                             if pop_joined {
-                                "pop.avg DESC NULLS LAST".to_string()
+                                format!("pop.{} DESC NULLS LAST", pop_column.unwrap())
                             } else {
-                                "COALESCE(\
-                                   (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'trend_week' AND pa.period_key = date('now')),\
-                                   (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'trend_week' ORDER BY pa.period_key DESC LIMIT 1),\
-                                   0) DESC"
+                                "COALESCE((SELECT trending_weekly FROM media_metrics \
+                                  WHERE media_id = media.id), 0) DESC"
                                     .to_string()
                             }
                         }
                         api::ItemSortBy::TrendingMonth => {
                             if pop_joined {
-                                "pop.avg DESC NULLS LAST".to_string()
+                                format!("pop.{} DESC NULLS LAST", pop_column.unwrap())
                             } else {
-                                "COALESCE(\
-                                   (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'trend_month' AND pa.period_key = date('now')),\
-                                   (SELECT pa.avg FROM popularity_agg pa WHERE pa.media_id = media.id AND pa.period = 'trend_month' ORDER BY pa.period_key DESC LIMIT 1),\
-                                   0) DESC"
+                                "COALESCE((SELECT trending_monthly FROM media_metrics \
+                                  WHERE media_id = media.id), 0) DESC"
                                     .to_string()
                             }
                         }
@@ -4756,7 +4925,7 @@ impl Media {
                 })
                 .collect();
             // When pop_joined, ordering is handled inside the UNION ALL arms —
-            // arm 1 walks idx_pop_agg_covering in avg-DESC order, arm 2 follows.
+            // arm 1 walks the selected metric index in DESC order, arm 2 follows.
             // Pushing ORDER BY here would force a global sort over the whole result.
             if !pop_joined {
                 records_qb.push(" ORDER BY ");
@@ -8145,6 +8314,66 @@ pub(crate) fn build_genre_relations_from_names(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn movie_and_series_accept_known_external_ids() {
+        for kind in [MediaKind::Movie, MediaKind::Series] {
+            for external_ids in [
+                ExternalIds {
+                    imdb: NonEmptyString::try_new("tt446001".to_string()).ok(),
+                    ..Default::default()
+                },
+                ExternalIds {
+                    tmdb: Some(446001),
+                    ..Default::default()
+                },
+                ExternalIds {
+                    tvdb: Some(446001),
+                    ..Default::default()
+                },
+                ExternalIds {
+                    kitsu: Some(446001),
+                    ..Default::default()
+                },
+                ExternalIds {
+                    custom_stremio_id: Some("custom:446001".into()),
+                    ..Default::default()
+                },
+            ] {
+                let media = Media {
+                    kind: kind.clone(),
+                    external_ids,
+                    ..Default::default()
+                };
+                assert!(
+                    media
+                        .validate()
+                        .is_ok(),
+                    "{:?}",
+                    media.external_ids
+                );
+            }
+            for external_ids in [
+                ExternalIds::default(),
+                ExternalIds {
+                    youtube_id: Some("unrelated".into()),
+                    ..Default::default()
+                },
+            ] {
+                assert!(
+                    Media {
+                        kind: kind.clone(),
+                        external_ids,
+                        ..Default::default()
+                    }
+                    .validate()
+                    .is_err()
+                );
+            }
+        }
+    }
+
+    use super::*;
     use crate::db::MediaIdRaw;
 
     /// `stremio_meta_episode` is the per-episode fast path used by meta refresh;
@@ -10391,8 +10620,7 @@ mod dedup_tests {
     /// Multi-match: incoming carries two ids that resolve to two different
     /// stored rows. The stronger id (imdb over custom_stremio_id) wins, per
     /// priority. Both stored rows carry an id from {imdb, custom_stremio_id}
-    /// so each independently satisfies `validate()`'s Movie rule (imdb OR
-    /// custom_stremio_id — tmdb/tvdb/kitsu alone do not).
+    /// so each independently satisfies the Movie external-ID requirement.
     #[tokio::test]
     async fn strongest_id_wins_on_ambiguous_match() {
         let (_s, guard) = new_test_server()

@@ -666,10 +666,6 @@ pub struct ServerConfiguration {
     /// Number of items to process concurrently during metadata fetch (default: 12).
     #[default(12_i64)]
     pub meta_concurrency: i64,
-    /// Number of media trackers drained concurrently; one tracker's queued
-    /// deliveries always go out in order, one at a time (default: 8).
-    #[default(8_i64)]
-    pub delivery_concurrency: i64,
     #[default(Some(true))]
     pub p2p_enabled: Option<bool>,
     #[default(Some(0_i64))]
@@ -720,6 +716,10 @@ pub struct ServerConfiguration {
     /// Items shorter than this are never shown in continue-watching. Default: 90.
     #[default(Some(90_i64))]
     pub min_resume_duration_seconds: Option<i64>,
+    /// Include the next released episode of started series in Continue Watching.
+    /// Disabled by default to retain Jellyfin's standard resume-only behaviour.
+    #[default(Some(false))]
+    pub enable_next_up_in_continue_watching: Option<bool>,
 }
 
 #[derive(
@@ -1475,6 +1475,9 @@ pub struct GetItemsQuery {
     /// Internal server-side constraint. This is not a Jellyfin query parameter.
     #[serde(skip)]
     pub promoted: Option<bool>,
+    /// Internal list query: do not reinterpret a single ID as a details lookup.
+    #[serde(skip)]
+    pub strict_item_filters: bool,
     // #[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, ItemFields>>")]
     //#[serde_as(as = "Option<StringWithSeparator<CommaSeparator, ItemFields>>")]
     #[serde(
@@ -1921,6 +1924,9 @@ pub struct VideoStreamQuery {
     pub device_id: Option<String>,
     pub audio_codec: Option<String>,
     pub video_codec: Option<String>,
+    /// Sample-entry fourcc for an HEVC stream copy (`hvc1`/`hev1`), resolved
+    /// from the client's DeviceProfile at PlaybackInfo time.
+    pub video_codec_tag: Option<String>,
     pub video_bit_rate: Option<i64>,
     pub audio_bit_rate: Option<i64>,
     pub audio_channels: Option<i64>,
@@ -4698,6 +4704,10 @@ pub struct HlsVideoQuery {
     #[serde(alias = "mediaSourceId")]
     pub media_source_id: Option<Uuid>,
     pub video_codec: Option<String>,
+    /// Sample-entry fourcc for an HEVC stream copy (`hvc1`/`hev1`), resolved
+    /// from the client's DeviceProfile at PlaybackInfo time and carried here
+    /// because the profile isn't available on this request.
+    pub video_codec_tag: Option<String>,
     pub audio_codec: Option<String>,
     pub segment_length: Option<i32>,
     pub start_time_ticks: Option<i64>,
@@ -6005,9 +6015,7 @@ impl Endpoint for GetItemCounts {
 
 #[dto]
 pub struct MetricsStatus {
-    pub daily_days: i64,
     pub last_updated_days_ago: Option<i64>,
-    pub item_count: i64,
 }
 
 #[derive(Debug, Clone, Default)]

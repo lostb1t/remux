@@ -21,11 +21,11 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut cultures: Signal<Vec<CultureDto>> = use_signal(Vec::new);
     let mut catalog_max_items = use_signal(|| 100_i64);
     let mut meta_concurrency = use_signal(|| 12_i64);
-    let mut delivery_concurrency = use_signal(|| 8_i64);
     let mut filter_digital_release = use_signal(|| true);
     let mut digital_release_buffer = use_signal(|| 0_i64);
     let mut subtitle_languages = use_signal(String::new);
     let mut quick_connect_enabled = use_signal(|| true);
+    let mut enable_next_up_in_continue_watching = use_signal(|| false);
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(|| Option::<String>::None);
@@ -60,7 +60,6 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                             .unwrap_or(100),
                     );
                     meta_concurrency.set(cfg.meta_concurrency);
-                    delivery_concurrency.set(cfg.delivery_concurrency);
                     filter_digital_release.set(cfg.filter_by_digital_release_date);
                     digital_release_buffer.set(cfg.digital_release_buffer_days);
                     subtitle_languages.set(
@@ -72,6 +71,10 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                     quick_connect_enabled.set(
                         cfg.quick_connect_available
                             .unwrap_or(true),
+                    );
+                    enable_next_up_in_continue_watching.set(
+                        cfg.enable_next_up_in_continue_watching
+                            .unwrap_or(false),
                     );
                     base_cfg.set(Some(cfg));
                 }
@@ -107,13 +110,13 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
             .clone();
         let max = *catalog_max_items.peek();
         let concurrency = *meta_concurrency.peek();
-        let delivery = *delivery_concurrency.peek();
         let filter_dr = *filter_digital_release.peek();
         let dr_buffer = *digital_release_buffer.peek();
         let sub_langs_str = subtitle_languages
             .peek()
             .clone();
         let qc_enabled = *quick_connect_enabled.peek();
+        let next_up_unified = *enable_next_up_in_continue_watching.peek();
 
         let mut cfg = base_cfg
             .peek()
@@ -123,9 +126,9 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
         cfg.metadata_country_code = Some(country);
         cfg.preferred_metadata_language = Some(language);
         cfg.quick_connect_available = Some(qc_enabled);
+        cfg.enable_next_up_in_continue_watching = Some(next_up_unified);
         cfg.catalog_max_items = Some(max);
         cfg.meta_concurrency = concurrency;
-        cfg.delivery_concurrency = delivery;
         cfg.filter_by_digital_release_date = filter_dr;
         cfg.digital_release_buffer_days = dr_buffer;
         cfg.subtitle_languages = Some(
@@ -248,26 +251,6 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                         }
 
                         div { class: "field",
-                            label { class: "field-label", r#for: "s-delivery-concurrency", "Delivery Concurrency" }
-                            input {
-                                id: "s-delivery-concurrency",
-                                r#type: "number",
-                                class: "field-input",
-                                min: "1",
-                                max: "200",
-                                value: "{delivery_concurrency}",
-                                oninput: move |e| {
-                                    if let Ok(n) = e.value().parse::<i64>() {
-                                        delivery_concurrency.set(n);
-                                    }
-                                },
-                            }
-                            p { class: "field-hint",
-                                "Number of media trackers whose queued watch activity is sent concurrently. One tracker's events are always sent in order, one at a time, so this only controls how many trackers are worked on at once. Default: 8."
-                            }
-                        }
-
-                        div { class: "field",
                             ToggleRow {
                                 label: "Filter by digital release date",
                                 description: "Hide items that haven't been digitally released yet. Items released theatrically within the past year are always hidden when no digital date is available.",
@@ -321,6 +304,15 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                                 description: "Allow clients to log in by entering a code shown on the login screen.",
                                 checked: *quick_connect_enabled.read(),
                                 on_change: move |v| quick_connect_enabled.set(v),
+                            }
+                        }
+
+                        div { class: "field",
+                            ToggleRow {
+                                label: "Include Next Up in Continue Watching",
+                                description: "Add the next released episode of a started series when that series has no episode currently in progress. Disabled by default.",
+                                checked: *enable_next_up_in_continue_watching.read(),
+                                on_change: move |v| enable_next_up_in_continue_watching.set(v),
                             }
                         }
 

@@ -1,6 +1,8 @@
 use crate::{
     api, db,
-    device_profile::{DeviceProfileExt, SubtitleCodec, subtitle_codec_matches_profile},
+    device_profile::{
+        DeviceProfileExt, SubtitleCodec, VideoCodec, subtitle_codec_matches_profile,
+    },
 };
 use remux_sdks::remux::{EmbeddedSubtitleHandling, EncodingOptions};
 use uuid::Uuid;
@@ -259,7 +261,10 @@ fn build_video_transcode(
     // If policy constraints reduced both codecs to copy, this would be a no-op
     // remux. If the source container already matches the transcoding target
     // there is nothing to do — upgrade to direct play.
-    if video_codec == "copy" && audio_codec == "copy" {
+    let needs_hevc_retag = reasons.contains(
+        &api::TranscodeReason::VideoCodecTagNotSupported(String::new()),
+    );
+    if video_codec == "copy" && audio_codec == "copy" && !needs_hevc_retag {
         let src = source
             .container
             .as_ref()
@@ -294,10 +299,34 @@ fn build_video_transcode(
         .start_time_ticks
         .map(|t| format!("&StartTimeTicks={t}"))
         .unwrap_or_default();
+    // The DeviceProfile only exists on this request, but the tag is needed
+    // later when the HLS session builds its ffmpeg args — carry the resolved
+    // value on the URL, like every other per-playback decision above. Only a
+    // stream copy of HEVC has a sample entry to write, so nothing else carries
+    // the parameter.
+    let is_hevc_copy = video_codec == "copy"
+        && source
+            .video_stream()
+            .and_then(|s| {
+                s.codec
+                    .as_deref()
+            })
+            .and_then(|c| {
+                c.parse::<VideoCodec>()
+                    .ok()
+            })
+            .map(|c| c.is_hevc())
+            .unwrap_or(false);
+    let video_codec_tag = q
+        .device_profile
+        .as_ref()
+        .filter(|_| is_hevc_copy)
+        .map(|p| format!("&VideoCodecTag={}", p.hevc_copy_tag(source)))
+        .unwrap_or_default();
 
     let url = if protocol.eq_ignore_ascii_case("hls") {
         format!(
-            "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}{}{}{}&ApiKey={}",
+            "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}{}{}{}{}&ApiKey={}",
             cfg.item_id,
             cfg.play_session_id,
             source.id,
@@ -309,6 +338,7 @@ fn build_video_transcode(
             sub_idx,
             sub_method,
             start_time,
+            video_codec_tag,
             session
                 .device
                 .access_token
@@ -316,7 +346,7 @@ fn build_video_transcode(
         )
     } else {
         format!(
-            "/videos/{}/stream.{}?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}{}{}{}&ApiKey={}",
+            "/videos/{}/stream.{}?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}{}{}{}{}&ApiKey={}",
             cfg.item_id,
             container,
             cfg.play_session_id,
@@ -329,6 +359,7 @@ fn build_video_transcode(
             sub_idx,
             sub_method,
             start_time,
+            video_codec_tag,
             session
                 .device
                 .access_token
@@ -777,6 +808,84 @@ mod tests {
             matches!(decision, TranscodeDecision::DirectPlay),
             "no-op remux should be upgraded to direct play"
         );
+    }
+
+    #[test]
+    fn hevc_tag_mismatch_same_container_still_remuxes() {
+        // Rewriting hvc1/hev1 is the sole purpose of this remux. Returning
+        // direct play merely because the container already matches would leave
+        // the incompatible sample entry untouched.
+        let session =
+            make_session_with_policy(remux_sdks::remux::UserPolicy::default());
+        let mut source = make_video_source(VideoContainer::Ts);
+        source.media_streams[0].codec = Some("hevc".to_string());
+        let mut reasons = api::TranscodeReasons::default();
+        reasons.insert(api::TranscodeReason::VideoCodecTagNotSupported(
+            "hev1".to_string(),
+        ));
+
+        let TranscodeDecision::Transcode(outcome) = build_transcode_decision(
+            &source,
+            &reasons,
+            None,
+            &force_transcode_query(),
+            &session,
+            &base_cfg(EncodingOptions::default()),
+        ) else {
+            panic!("an HEVC sample-entry mismatch must remux, not direct play");
+        };
+        assert!(
+            outcome
+                .url
+                .contains("VideoCodec=copy")
+        );
+    }
+
+    /// An HEVC stream copy out of MKV, so the target container differs and the
+    /// decision reaches the URL builder.
+    fn hevc_copy_outcome(
+        codec: &str,
+        codec_tag: Option<&str>,
+    ) -> super::TranscodeOutcome {
+        let session =
+            make_session_with_policy(remux_sdks::remux::UserPolicy::default());
+        let mut source = make_video_source(VideoContainer::Mkv);
+        source.media_streams[0].codec = Some(codec.to_string());
+        source.media_streams[0].codec_tag = codec_tag.map(str::to_string);
+        let mut q = force_transcode_query();
+        q.device_profile = Some(api::DeviceProfile::default());
+
+        let TranscodeDecision::Transcode(outcome) = build_transcode_decision(
+            &source,
+            &api::TranscodeReasons::default(),
+            None,
+            &q,
+            &session,
+            &base_cfg(EncodingOptions::default()),
+        ) else {
+            panic!("expected a remux");
+        };
+        outcome
+    }
+
+    #[test]
+    fn hevc_copy_url_carries_the_resolved_sample_entry_tag() {
+        let url = hevc_copy_outcome("hevc", Some("hev1")).url;
+        assert!(url.contains("&VideoCodecTag=hev1"), "{url}");
+    }
+
+    #[test]
+    fn hevc_copy_url_keeps_hvc1_for_an_ordinary_source() {
+        let url = hevc_copy_outcome("hevc", Some("hvc1")).url;
+        assert!(url.contains("&VideoCodecTag=hvc1"), "{url}");
+    }
+
+    #[test]
+    fn non_hevc_copy_url_omits_the_sample_entry_tag() {
+        // Only HEVC has a sample entry to rewrite; on anything else the
+        // parameter is noise the session would carry around for nothing.
+        let url = hevc_copy_outcome("h264", Some("avc1")).url;
+        assert!(!url.contains("VideoCodecTag"), "{url}");
     }
 
     #[test]

@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::{
     AppState, IntoApiError, OptionExt, ResultExt, api, common::HideConsole, db,
-    db::auth,
+    db::auth, playback::engine::ffmpeg_reconnect_args,
 };
 
 fn ffmpeg_bin() -> String {
@@ -104,20 +104,10 @@ async fn extract_subtitle_to_cache(
     let mut cmd = tokio::process::Command::new(ffmpeg_bin());
     cmd.hide_console();
     cmd.kill_on_drop(true);
+    cmd.args(["-y", "-nostdin", "-copyts"]);
+    cmd.args(ffmpeg_reconnect_args(input_url));
+    cmd.args(["-i", input_url]);
     cmd.args([
-        "-y",
-        "-nostdin",
-        "-copyts",
-        "-reconnect",
-        "1",
-        "-reconnect_at_eof",
-        "1",
-        "-reconnect_streamed",
-        "1",
-        "-reconnect_delay_max",
-        "5",
-        "-i",
-        input_url,
         "-map",
         map_spec,
         "-an",
@@ -621,18 +611,10 @@ async fn subtitles_stream_inner(
         let mut cmd = tokio::process::Command::new(ffmpeg_bin());
         cmd.hide_console();
         cmd.kill_on_drop(true);
+        cmd.args(["-copyts"]);
+        cmd.args(ffmpeg_reconnect_args(&url));
+        cmd.args(["-i", &url]);
         cmd.args([
-            "-copyts",
-            "-reconnect",
-            "1",
-            "-reconnect_at_eof",
-            "1",
-            "-reconnect_streamed",
-            "1",
-            "-reconnect_delay_max",
-            "5",
-            "-i",
-            &url,
             "-map",
             &map_spec,
             "-an",
