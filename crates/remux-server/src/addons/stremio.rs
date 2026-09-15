@@ -303,7 +303,7 @@ impl CatalogAddon for StremioAddon {
 
     async fn catalog_stream(
         &self,
-        ctx: &AppContext,
+        _ctx: &AppContext,
         local_id: &str,
     ) -> Result<Option<Pin<Box<dyn Stream<Item = db::Media> + Send>>>> {
         let svc = self.service()?;
@@ -323,10 +323,7 @@ impl CatalogAddon for StremioAddon {
                     .any(|e| e.name == "skip")
             })
             .unwrap_or(false);
-        let page_concurrency = db::Settings::get_config_or_default(&ctx.db)
-            .await
-            .meta_concurrency
-            .max(1) as usize;
+        let page_concurrency = crate::common::META_CONCURRENCY;
 
         let stream = svc
             .get_catalog_stream(

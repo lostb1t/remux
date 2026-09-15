@@ -927,9 +927,7 @@ impl MediaResolveService {
             crate::db::Settings::get_config_or_default(&ctx.db).await,
         );
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(
-            (config
-                .meta_concurrency
-                .max(1)) as usize,
+            crate::common::META_CONCURRENCY,
         ));
         // process_meta_item now owns all upserts internally and returns the actual UUID
         // (which may differ from resolved_id if an existing DB row was adopted).
@@ -1001,9 +999,7 @@ impl MediaResolveService {
                         );
                         let semaphore =
                             std::sync::Arc::new(tokio::sync::Semaphore::new(
-                                (config
-                                    .meta_concurrency
-                                    .max(1)) as usize,
+                                crate::common::META_CONCURRENCY,
                             ));
                         bg_ctx
                             .addons
@@ -1057,9 +1053,7 @@ impl MediaResolveService {
                 crate::db::Settings::get_config_or_default(&ctx.db).await,
             );
             let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(
-                (config
-                    .meta_concurrency
-                    .max(1)) as usize,
+                crate::common::META_CONCURRENCY,
             ));
             ctx.addons
                 .process_meta_item(album_root, ctx.clone(), false, config, semaphore)

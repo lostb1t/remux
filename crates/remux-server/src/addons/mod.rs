@@ -1865,12 +1865,7 @@ impl AddonService {
         use futures::StreamExt;
 
         let config = db::Settings::get_config_or_default(&ctx.db).await;
-        // Clamp before casting: a persisted/API-set 0 or negative value would
-        // otherwise stall `buffer_unordered` (0) or wrap around to near
-        // `usize::MAX` (negative), not just fail to throttle.
-        let concurrency = config
-            .meta_concurrency
-            .max(1) as usize;
+        let concurrency = crate::common::META_CONCURRENCY;
         info!(
             items = media.len(),
             force_refresh, concurrency, "metadata batch starting"
@@ -2065,11 +2060,9 @@ impl AddonService {
         // Bounds how many season/episode tasks are polled concurrently within
         // this one item's own tree walk; actual network concurrency is capped
         // by `semaphore` regardless, so this only needs to be "large enough
-        // to not artificially serialize" — reusing the same configured value
-        // keeps it consistent with the outer batch's own concurrency knob.
-        let concurrency = config
-            .meta_concurrency
-            .max(1) as usize;
+        // to not artificially serialize" — reusing the same constant keeps it
+        // consistent with the outer batch's own concurrency budget.
+        let concurrency = crate::common::META_CONCURRENCY;
 
         let original_id = media.id;
 

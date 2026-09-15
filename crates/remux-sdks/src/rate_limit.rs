@@ -259,6 +259,96 @@ mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    mod shared_rate_limit {
+        use super::super::SharedRateLimit;
+        use std::time::Duration;
+        use tokio::time::Instant;
+
+        #[tokio::test(flavor = "current_thread", start_paused = true)]
+        async fn a_fresh_limit_never_blocks() {
+            let limit = SharedRateLimit::new();
+            let started = Instant::now();
+            limit
+                .wait_for_cooldown()
+                .await;
+            assert_eq!(
+                started.elapsed(),
+                Duration::ZERO,
+                "a limit that was never tripped must not delay callers"
+            );
+        }
+
+        #[tokio::test(flavor = "current_thread", start_paused = true)]
+        async fn tripping_the_limit_parks_a_later_waiter_for_the_delay() {
+            let limit = SharedRateLimit::new();
+            limit
+                .block_for(Duration::from_secs(5))
+                .await;
+
+            let started = Instant::now();
+            limit
+                .wait_for_cooldown()
+                .await;
+            assert_eq!(started.elapsed(), Duration::from_secs(5));
+        }
+
+        #[tokio::test(flavor = "current_thread", start_paused = true)]
+        async fn a_shorter_block_never_shrinks_an_existing_longer_cooldown() {
+            let limit = SharedRateLimit::new();
+            limit
+                .block_for(Duration::from_secs(10))
+                .await;
+            // A second, shorter delay (e.g. from a request that raced the first
+            // 429 and got a smaller Retry-After) must not pull the deadline in —
+            // whoever asked for the longest cooldown wins.
+            limit
+                .block_for(Duration::from_secs(1))
+                .await;
+
+            let started = Instant::now();
+            limit
+                .wait_for_cooldown()
+                .await;
+            assert_eq!(
+                started.elapsed(),
+                Duration::from_secs(10),
+                "a shorter subsequent block must not shrink the cooldown"
+            );
+        }
+
+        #[tokio::test(flavor = "current_thread", start_paused = true)]
+        async fn a_longer_block_extends_an_existing_shorter_cooldown() {
+            let limit = SharedRateLimit::new();
+            limit
+                .block_for(Duration::from_secs(1))
+                .await;
+            limit
+                .block_for(Duration::from_secs(10))
+                .await;
+
+            let started = Instant::now();
+            limit
+                .wait_for_cooldown()
+                .await;
+            assert_eq!(started.elapsed(), Duration::from_secs(10));
+        }
+
+        #[tokio::test(flavor = "current_thread", start_paused = true)]
+        async fn concurrent_waiters_all_release_at_the_same_deadline() {
+            let limit = SharedRateLimit::new();
+            limit
+                .block_for(Duration::from_secs(3))
+                .await;
+
+            let started = Instant::now();
+            let (a, b) =
+                tokio::join!(limit.wait_for_cooldown(), limit.wait_for_cooldown());
+            let _: ((), ()) = (a, b);
+            assert_eq!(started.elapsed(), Duration::from_secs(3));
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     mod middleware {
         use crate::{ClientError, Endpoint, RestClient};
         use std::time::{Duration, Instant};
@@ -360,6 +450,63 @@ mod tests {
             );
             assert_eq!(other.hits(), 1);
             limited.abort();
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn clients_sharing_a_rate_limit_block_each_other_after_a_429() {
+            use crate::rate_limit::SharedRateLimit;
+
+            let limited_server = httpmock::MockServer::start();
+            limited_server.mock(|when, then| {
+                when.path("/limited");
+                then.status(429)
+                    .header("Retry-After", "1");
+            });
+            let other_server = httpmock::MockServer::start();
+            let other = other_server.mock(|when, then| {
+                when.path("/ok");
+                then.status(200)
+                    .json_body(serde_json::json!([]));
+            });
+
+            let shared = SharedRateLimit::new();
+            let limited_client = RestClient::new(&limited_server.base_url())
+                .unwrap()
+                .with_shared_rate_limit(shared.clone());
+            // Same shared limit, entirely different underlying host — mirrors
+            // two independently-constructed clients for one logical provider
+            // (see `tmdb_rate_limit`), not two requests to the same server.
+            let other_client = RestClient::new(&other_server.base_url())
+                .unwrap()
+                .with_shared_rate_limit(shared);
+
+            // Spawned so it races the second request instead of fully waiting
+            // out its own cooldown before this task even starts the other
+            // call — otherwise the shared deadline would already be in the
+            // past by the time `other_client` checked it.
+            let limited = tokio::spawn(async move {
+                let _ = limited_client
+                    .execute(Probe("/limited"))
+                    .await;
+            });
+            // Give the spawned request enough of a head start to trip the
+            // limit before this one checks it.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            let started = Instant::now();
+            other_client
+                .execute(Probe("/ok"))
+                .await
+                .unwrap();
+            assert!(
+                started.elapsed() >= Duration::from_millis(700),
+                "a client sharing the tripped limit should have been parked too, took {:?}",
+                started.elapsed()
+            );
+            assert_eq!(other.hits(), 1);
+            limited
+                .await
+                .unwrap();
         }
     }
 }

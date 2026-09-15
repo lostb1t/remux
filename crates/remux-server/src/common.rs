@@ -41,6 +41,14 @@ use uuid::Uuid;
 static SERVER_ID: OnceLock<String> = OnceLock::new();
 static TMDB_RATE_LIMIT: OnceLock<sdks::SharedRateLimit> = OnceLock::new();
 
+/// How many metadata-fetch/refresh operations run concurrently across addon
+/// calls, catalog page fetches, and tree fan-out. Previously an admin-facing
+/// setting; not something operators actually needed to tune, and a stored
+/// override from before per-provider rate limiting was shared (see
+/// `tmdb_rate_limit`) would otherwise keep depressing throughput below what
+/// the current code can safely sustain.
+pub(crate) const META_CONCURRENCY: usize = 50;
+
 /// TMDB clients are built in a few independent paths. They must still share
 /// one cooldown, otherwise concurrent metadata refreshes each evade a 429 by
 /// constructing their own client.

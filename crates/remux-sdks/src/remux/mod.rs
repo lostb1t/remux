@@ -663,9 +663,6 @@ pub struct ServerConfiguration {
     pub transcoding_temp_path: Option<String>,
     #[default(Some(250_i64))]
     pub catalog_max_items: Option<i64>,
-    /// Number of items to process concurrently during metadata fetch (default: 50).
-    #[default(50_i64)]
-    pub meta_concurrency: i64,
     #[default(Some(true))]
     pub p2p_enabled: Option<bool>,
     #[default(Some(0_i64))]
