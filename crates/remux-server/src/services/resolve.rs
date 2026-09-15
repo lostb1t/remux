@@ -5,8 +5,8 @@ use axum::{
 use axum_anyhow::{ApiError, ApiResult as Result};
 use http::StatusCode;
 use remux_sdks::{BearerAuth, RestClient, deezer as dz};
-use std::time::Duration;
-use tracing::{debug, warn};
+use std::time::{Duration, Instant};
+use tracing::{debug, trace, warn};
 use uuid::Uuid;
 
 use crate::{
@@ -382,9 +382,17 @@ impl MediaResolveService {
             {
                 series_tmdb
             } else {
-                let Some((episode_tmdb, series_tmdb)) =
-                    Self::find_episode_tmdb_ids(&media.external_ids, &client).await
-                else {
+                let episode_tmdb_started = Instant::now();
+                let found =
+                    Self::find_episode_tmdb_ids(&media.external_ids, &client).await;
+                trace!(
+                    target: "remux_server::metadata_refresh",
+                    id = %media.id,
+                    elapsed = ?episode_tmdb_started.elapsed(),
+                    success = found.is_some(),
+                    "resolve_external_ids: episode tmdb id lookup complete"
+                );
+                let Some((episode_tmdb, series_tmdb)) = found else {
                     return;
                 };
                 media
@@ -395,9 +403,17 @@ impl MediaResolveService {
             let (Some(season), Some(episode)) = (media.parent_idx, media.idx) else {
                 return;
             };
-            let Ok(Some(ids)) =
-                Self::episode_external_ids(series_tmdb, season, episode, &client).await
-            else {
+            let episode_ids_started = Instant::now();
+            let episode_ids =
+                Self::episode_external_ids(series_tmdb, season, episode, &client).await;
+            trace!(
+                target: "remux_server::metadata_refresh",
+                id = %media.id,
+                elapsed = ?episode_ids_started.elapsed(),
+                success = episode_ids.is_ok(),
+                "resolve_external_ids: episode external ids fetch complete"
+            );
+            let Ok(Some(ids)) = episode_ids else {
                 return;
             };
             media
@@ -436,15 +452,37 @@ impl MediaResolveService {
         {
             Some(id)
         } else {
-            match Self::tmdb_search_key(
+            let search_key_started = Instant::now();
+            let search_key = Self::tmdb_search_key(
                 &media.external_ids,
                 Some(&sdks::kitsu::client()),
             )
-            .await
-            {
+            .await;
+            trace!(
+                target: "remux_server::metadata_refresh",
+                id = %media.id,
+                elapsed = ?search_key_started.elapsed(),
+                found = search_key.is_some(),
+                "resolve_external_ids: tmdb search key resolved"
+            );
+            match search_key {
                 Some((external_id, external_source)) => {
-                    Self::find_tmdb_id_by(external_id, external_source, is_tv, &client)
-                        .await
+                    let find_tmdb_started = Instant::now();
+                    let found = Self::find_tmdb_id_by(
+                        external_id,
+                        external_source,
+                        is_tv,
+                        &client,
+                    )
+                    .await;
+                    trace!(
+                        target: "remux_server::metadata_refresh",
+                        id = %media.id,
+                        elapsed = ?find_tmdb_started.elapsed(),
+                        success = found.is_ok(),
+                        "resolve_external_ids: tmdb find-by-id complete"
+                    );
+                    found
                         .ok()
                         .flatten()
                 }
@@ -459,10 +497,19 @@ impl MediaResolveService {
             .tmdb = Some(tmdb_id);
 
         if force_refresh || needs_imdb || needs_tvdb {
+            let ids_enrich_started = Instant::now();
             if is_tv {
-                if let Ok(series) = client
+                let series_ids = client
                     .execute(series_ids_endpoint(tmdb_id).with_cache(ID_CACHE_TTL))
-                    .await
+                    .await;
+                trace!(
+                    target: "remux_server::metadata_refresh",
+                    id = %media.id,
+                    elapsed = ?ids_enrich_started.elapsed(),
+                    success = series_ids.is_ok(),
+                    "resolve_external_ids: tmdb series ids enrichment complete"
+                );
+                if let Ok(series) = series_ids
                     && let Some(e) = series.external_ids
                 {
                     if force_refresh
@@ -488,16 +535,24 @@ impl MediaResolveService {
                             .tvdb = e.tvdb_id;
                     }
                 }
-            } else if (force_refresh || needs_imdb)
-                && let Ok(movie) = client
+            } else if force_refresh || needs_imdb {
+                let movie_ids = client
                     .execute(movie_ids_endpoint(tmdb_id).with_cache(ID_CACHE_TTL))
-                    .await
-            {
-                media
-                    .external_ids
-                    .imdb = movie
-                    .imdb_id
-                    .and_then(|s| db::NonEmptyString::try_new(s).ok());
+                    .await;
+                trace!(
+                    target: "remux_server::metadata_refresh",
+                    id = %media.id,
+                    elapsed = ?ids_enrich_started.elapsed(),
+                    success = movie_ids.is_ok(),
+                    "resolve_external_ids: tmdb movie ids enrichment complete"
+                );
+                if let Ok(movie) = movie_ids {
+                    media
+                        .external_ids
+                        .imdb = movie
+                        .imdb_id
+                        .and_then(|s| db::NonEmptyString::try_new(s).ok());
+                }
             }
         }
     }

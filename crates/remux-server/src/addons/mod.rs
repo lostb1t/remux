@@ -1150,6 +1150,13 @@ impl PickCap<dyn SubtitleAddon> for AddonRuntime {
     }
 }
 
+/// Cap on a single addon's `meta_fetch` call inside `refresh_meta`. Some addons
+/// (observed: AIO, proxying to a third-party `aiometadata` backend) hang up to
+/// their own ~30s upstream timeout under load; without this, one bad addon
+/// stalls the whole item even though the other addons in the same fan-out
+/// already finished.
+const ADDON_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+
 impl AddonService {
     async fn addons_for<T>(
         &self,
@@ -1662,12 +1669,24 @@ impl AddonService {
                             addon = %addon,
                             "metadata addon request starting"
                         );
-                        let result = r
-                            .meta
-                            .as_ref()
-                            .unwrap()
-                            .meta_fetch(media_ref, ctx, config)
-                            .await;
+                        // A single flaky addon (observed: AIO/aiometadata hanging up to
+                        // its own 30s upstream timeout) must not stall an entire item's
+                        // refresh — the other addons in this join_all already finished.
+                        let result = match tokio::time::timeout(
+                            ADDON_FETCH_TIMEOUT,
+                            r.meta
+                                .as_ref()
+                                .unwrap()
+                                .meta_fetch(media_ref, ctx, config),
+                        )
+                        .await
+                        {
+                            Ok(result) => result,
+                            Err(_) => Err(anyhow!(
+                                "addon meta_fetch timed out after {:?}",
+                                ADDON_FETCH_TIMEOUT
+                            )),
+                        };
                         trace!(
                             target: "remux_server::metadata_refresh",
                             id = %media_ref.id,
@@ -2120,9 +2139,16 @@ impl AddonService {
         // before adopting, so those rows stay attached to the correct parent UUID.
         let computed_id = media.id;
         let mut root_was_remapped = false;
-        if let Some(existing_id) =
-            db::Media::find_existing_id_by_ext(&ctx.db, &media).await
-        {
+        let initial_identity_started = Instant::now();
+        let initial_identity_hit =
+            db::Media::find_existing_id_by_ext(&ctx.db, &media).await;
+        trace!(
+            target: "remux_server::metadata_refresh",
+            id = %media.id,
+            elapsed = ?initial_identity_started.elapsed(),
+            "process_meta_item_inner: initial identity check complete"
+        );
+        if let Some(existing_id) = initial_identity_hit {
             if existing_id != computed_id {
                 if let Err(e) = db::Media::cascade_update_parent_refs(
                     &ctx.db,
@@ -2148,7 +2174,16 @@ impl AddonService {
         // fails the deferred `media_images.media_id` foreign key. Inserting
         // images after the id below is confirmed avoids that entirely.
         let pending_images = std::mem::take(&mut media.images);
-        if let Err(e) = db::Media::upsert(&ctx.db, &[media.clone()]).await {
+        let root_upsert_started = Instant::now();
+        let upsert_result = db::Media::upsert(&ctx.db, &[media.clone()]).await;
+        trace!(
+            target: "remux_server::metadata_refresh",
+            id = %media.id,
+            elapsed = ?root_upsert_started.elapsed(),
+            success = upsert_result.is_ok(),
+            "process_meta_item_inner: root upsert complete"
+        );
+        if let Err(e) = upsert_result {
             error!(id = %media.id, error = %e, "failed to upsert root media");
             return media.id;
         }
@@ -2164,9 +2199,16 @@ impl AddonService {
         // duplicate. Re-check now (authoritative, since our own write just
         // committed) and correct our bookkeeping before anything downstream
         // (season/episode trees, catalog relations) keys off the wrong id.
-        if let Some(existing_id) =
-            db::Media::find_existing_id_by_ext(&ctx.db, &media).await
-        {
+        let post_upsert_identity_started = Instant::now();
+        let post_upsert_identity_hit =
+            db::Media::find_existing_id_by_ext(&ctx.db, &media).await;
+        trace!(
+            target: "remux_server::metadata_refresh",
+            id = %media.id,
+            elapsed = ?post_upsert_identity_started.elapsed(),
+            "process_meta_item_inner: post-upsert identity check complete"
+        );
+        if let Some(existing_id) = post_upsert_identity_hit {
             if existing_id != media.id {
                 if let Err(e) = db::Media::cascade_update_parent_refs(
                     &ctx.db,
@@ -2186,7 +2228,17 @@ impl AddonService {
 
         if !pending_images.is_empty() {
             media.images = pending_images;
-            if let Err(e) = db::Media::upsert(&ctx.db, &[media.clone()]).await {
+            let image_upsert_started = Instant::now();
+            let image_upsert_result =
+                db::Media::upsert(&ctx.db, &[media.clone()]).await;
+            trace!(
+                target: "remux_server::metadata_refresh",
+                id = %actual_root_id,
+                elapsed = ?image_upsert_started.elapsed(),
+                success = image_upsert_result.is_ok(),
+                "process_meta_item_inner: image upsert complete"
+            );
+            if let Err(e) = image_upsert_result {
                 warn!(id = %actual_root_id, error = %e, "failed to attach images to root media");
             }
         }
@@ -2215,16 +2267,31 @@ impl AddonService {
             gp
         };
 
+        let ancillary_persistence_started = Instant::now();
         db::UserMediaState::remap_orphaned_for(&ctx.db, &[media.clone()]).await;
         save_pending_relations(&ctx, &[media.clone()]).await;
         save_pending_tags(&ctx, &[media.clone()]).await;
+        trace!(
+            target: "remux_server::metadata_refresh",
+            id = %actual_root_id,
+            elapsed = ?ancillary_persistence_started.elapsed(),
+            "process_meta_item_inner: ancillary persistence complete"
+        );
 
         let is_continuing = series_is_active(&media.status);
 
         // Level 1: direct children (Seasons, Albums, etc.)
+        let tree_lookup_started = Instant::now();
         let raw_level1 = self
             .get_direct_children(&media, &ctx)
             .await;
+        trace!(
+            target: "remux_server::metadata_refresh",
+            id = %actual_root_id,
+            elapsed = ?tree_lookup_started.elapsed(),
+            children = raw_level1.len(),
+            "process_meta_item_inner: direct children lookup complete"
+        );
         if raw_level1.is_empty() {
             self.notify_series_done(&media);
             return actual_root_id;

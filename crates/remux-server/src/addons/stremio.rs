@@ -68,7 +68,7 @@ impl AddonPreset for StremioPreset {
 
     fn from_cfg(
         &self,
-        _addon_id: Uuid,
+        addon_id: Uuid,
         cfg: &serde_json::Value,
         _config: &crate::Config,
     ) -> Result<AddonCapabilities> {
@@ -81,6 +81,7 @@ impl AddonPreset for StremioPreset {
             .map_err(|e| anyhow!("Invalid manifest_url: {e}"))?;
         let client = super::make_http_client();
         let addon = Arc::new(StremioAddon {
+            addon_id,
             manifest_url,
             client,
             medias_cache: Arc::new(std::sync::Mutex::new(
@@ -191,6 +192,7 @@ where
 }
 
 pub struct StremioAddon {
+    addon_id: Uuid,
     manifest_url: StremioManifestUrl,
     client: reqwest::Client,
     /// Raw Stremio `Meta` cached per series lookup-id for the duration of one tree sync.
@@ -203,7 +205,10 @@ pub struct StremioAddon {
 
 impl StremioAddon {
     fn service(&self) -> Result<stremio_service::StremioService> {
-        stremio_service::StremioService::from_url(&self.manifest_url)
+        Ok(
+            stremio_service::StremioService::from_url(&self.manifest_url)?
+                .with_shared_rate_limit(common::addon_rate_limit(self.addon_id)),
+        )
     }
 }
 
