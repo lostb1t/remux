@@ -1,10 +1,7 @@
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use futures::stream::StreamExt;
-use std::{
-    collections::{HashMap, HashSet},
-    time::Instant,
-};
+use std::collections::{HashMap, HashSet};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -45,14 +42,12 @@ where
     };
 
     loop {
-        let fetch_started = Instant::now();
         let Some(items) = chunks
             .next()
             .await
         else {
             break;
         };
-        let fetch_elapsed = fetch_started.elapsed();
         progress.report(total, max.max(1));
 
         let remaining = max.saturating_sub(total);
@@ -101,22 +96,15 @@ where
         // Remote metadata UUIDs are transient. External IDs are the sole
         // identity source, including when multiple addons describe the same
         // item.
-        let identity_match_started = Instant::now();
-        let original_ids: Vec<Uuid> = items
-            .iter()
-            .map(|item| item.id)
-            .collect();
-        let external_id_match_started = Instant::now();
-        db::Media::adopt_existing_ids(&ctx.db, &mut items).await;
-        let external_id_match_elapsed = external_id_match_started.elapsed();
-        let identity_match_elapsed = identity_match_started.elapsed();
-        let existing_ids: HashSet<Uuid> = items
-            .iter()
-            .zip(&original_ids)
-            .filter_map(|(item, original_id)| {
-                (item.id != *original_id).then_some(item.id)
-            })
-            .collect();
+        //
+        // `adopt_existing_ids` returns which items matched a stored row —
+        // this must be used as-is rather than re-derived from "did item.id
+        // change", since a stub whose deterministic id already equals the
+        // stored row's id is still a real match (no change needed) and was
+        // previously misclassified as new, force-refreshing existing items
+        // on every single import pass.
+        let existing_ids: HashSet<Uuid> =
+            db::Media::adopt_existing_ids(&ctx.db, &mut items).await;
         // Snapshot stream-order weights before partitioning — partition() does not
         // preserve the original order across the two vecs, so new items would
         // otherwise always get the lowest weights within a chunk regardless of where
@@ -134,8 +122,6 @@ where
         let (new_items, existing_items): (Vec<db::Media>, Vec<db::Media>) = items
             .into_iter()
             .partition(|m| !existing_ids.contains(&m.id));
-        let new_item_count = new_items.len();
-        let existing_item_count = existing_items.len();
 
         debug!(
             catalog = media_id,
@@ -157,7 +143,6 @@ where
         // so anything keyed on them (catalog membership rows below, the
         // stale-member diff, series reconciliation) must be remapped through
         // this or it silently targets a row that was never written.
-        let metadata_started = Instant::now();
         let id_remap = match ctx
             .addons
             .process_meta_batch(new_items.clone(), ctx, true, None)
@@ -169,8 +154,6 @@ where
                 continue;
             }
         };
-        let metadata_elapsed = metadata_started.elapsed();
-        let persistence_started = Instant::now();
         let remap = |id: Uuid| {
             id_remap
                 .get(&id)
@@ -348,18 +331,6 @@ where
         total = counts
             .values()
             .sum();
-        info!(
-            catalog = media_id,
-            fetched = new_item_count + existing_item_count,
-            new = new_item_count,
-            existing = existing_item_count,
-            fetch_elapsed = ?fetch_elapsed,
-            identity_match_elapsed = ?identity_match_elapsed,
-            external_id_match_elapsed = ?external_id_match_elapsed,
-            metadata_elapsed = ?metadata_elapsed,
-            persistence_elapsed = ?persistence_started.elapsed(),
-            "catalog import chunk timings"
-        );
         if total >= max {
             break;
         }
@@ -695,5 +666,101 @@ mod tests {
         assert_eq!(new_counts.get(&db::MediaKind::Series.to_string()), Some(&1));
         let members: Vec<Uuid> = sqlx::query_scalar("SELECT right_media_id FROM media_relations WHERE left_media_id = ? AND role = 'catalog'").bind(collection_id).fetch_all(&ctx.db).await.unwrap();
         assert_eq!(members, vec![fresh_id]);
+    }
+
+    /// Regression: a catalog stub whose own precomputed id already equals the
+    /// stored row's id (e.g. TMDB's `stable_media_uuid(kind, "tmdb:{id}")`
+    /// stubs, which are self-consistent once the row exists) must still be
+    /// recognized as existing. `adopt_existing_ids` doesn't need to change
+    /// `item.id` in this case — the previous "existing = id changed" check
+    /// misread that as "not found" and force-refreshed the item on every
+    /// single import pass forever, never converging.
+    #[tokio::test]
+    async fn catalog_recognizes_a_stub_whose_id_already_matches_the_stored_row() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let addon_id = Uuid::new_v4();
+        let collection_id = Uuid::new_v5(&addon_id, b"test");
+        let catalog = ResolvedCatalog {
+            provider_catalog_id: "test".into(),
+            catalog_id: format!("addon:{addon_id}:test"),
+            collection_id,
+            name: "Test".into(),
+            media_kind: Some(db::MediaKind::Movie),
+            collection_media_kind: None,
+            enabled: true,
+            max_items: None,
+            tags: vec![],
+        };
+        let mut collection = db::Media {
+            id: collection_id,
+            kind: db::MediaKind::Collection,
+            title: "Test".into(),
+            ..Default::default()
+        };
+        collection
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let tmdb_id = 603;
+        let stub_id = crate::common::stable_media_uuid(
+            &db::MediaKind::Movie,
+            &format!("tmdb:{tmdb_id}"),
+        );
+        let mut stored = db::Media {
+            id: stub_id,
+            kind: db::MediaKind::Movie,
+            title: "Stored metadata".into(),
+            external_ids: db::ExternalIds {
+                tmdb: Some(tmdb_id),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        stored
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let progress = ProgressReporter::new(Default::default());
+        // Same id as `stored` — this is what a repeat TMDB catalog pass
+        // produces once the row already exists under its deterministic id.
+        let stub = db::Media {
+            id: stub_id,
+            kind: db::MediaKind::Movie,
+            title: "Catalog stub".into(),
+            external_ids: db::ExternalIds {
+                tmdb: Some(tmdb_id),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (counts, new_counts) = import_catalog_items(
+            ctx,
+            &catalog,
+            &catalog.catalog_id,
+            10,
+            futures::stream::iter([stub]),
+            &progress,
+        )
+        .await
+        .unwrap();
+        assert_eq!(counts.get(&db::MediaKind::Movie.to_string()), Some(&1));
+        assert!(
+            new_counts.is_empty(),
+            "a stub whose id already matches the stored row must not be force-refreshed as new"
+        );
+        assert_eq!(
+            db::Media::get_by_id(&ctx.db, &stub_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .title,
+            "Stored metadata",
+            "existing metadata must survive untouched, not be overwritten by the stub"
+        );
     }
 }

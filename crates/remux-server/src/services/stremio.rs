@@ -75,19 +75,34 @@ impl StremioService {
         media_type: sdks::stremio::MediaType,
         id: impl Into<String>,
     ) -> Result<sdks::stremio::Meta> {
-        Ok(self
-            .client
-            .execute(
-                self.ep(sdks::stremio::MetaEndpoint {
-                    media_type,
-                    id: id.into(),
-                    season: None,
-                    episode: None,
-                })
-                .with_cache(Duration::from_secs(3600)),
-            )
-            .await?
-            .meta)
+        let id = id.into();
+        let meta: Result<sdks::stremio::Meta> = remux_utils::retry! {
+            attempts: 3,
+            delay: 500,
+            {
+                let response = self
+                    .client
+                    .execute(
+                        self.ep(sdks::stremio::MetaEndpoint {
+                            media_type: media_type.clone(),
+                            id: id.clone(),
+                            season: None,
+                            episode: None,
+                        })
+                        // Addons sometimes return a 503 as a successful Stremio
+                        // meta payload. Do not cache that transient failure.
+                        .with_cache(Duration::from_secs(3600))
+                        .should_cache(cache_successful_meta),
+                    )
+                    .await?;
+                if is_retryable_meta_error(&response.meta) {
+                    Err(anyhow!("Stremio addon returned a retryable 5xx meta payload"))
+                } else {
+                    Ok(response.meta)
+                }
+            }
+        };
+        meta
     }
 
     pub async fn search(
@@ -213,7 +228,6 @@ impl StremioService {
                 let extra_query = extra_query.clone();
                 async move {
                     let skip = page * page_size;
-                    let started = Instant::now();
                     let mut raw_response = None;
                     let result = client
                         .execute_observed(
@@ -239,7 +253,6 @@ impl StremioService {
                             page,
                             skip,
                             metas = response.metas.len(),
-                            elapsed = ?started.elapsed(),
                             "catalog page fetched"
                         ),
                         Err(error) => {
@@ -259,7 +272,6 @@ impl StremioService {
                                 status,
                                 body = %body,
                                 error = %error,
-                                elapsed = ?started.elapsed(),
                                 "catalog page fetch failed"
                             )
                         }
@@ -328,6 +340,31 @@ impl StremioService {
 
         Ok(Box::pin(pages))
     }
+}
+
+fn cache_successful_meta(response: &sdks::stremio::MetaResponse) -> Option<Duration> {
+    (!response
+        .meta
+        .is_error())
+    .then_some(Duration::from_secs(3600))
+}
+
+fn is_retryable_meta_error(meta: &sdks::stremio::Meta) -> bool {
+    meta.is_error()
+        && meta
+            .description
+            .as_deref()
+            .and_then(|description| {
+                description
+                    .trim_start()
+                    .get(..3)
+            })
+            .and_then(|status| {
+                status
+                    .parse::<u16>()
+                    .ok()
+            })
+            .is_some_and(|status| (500..600).contains(&status))
 }
 
 #[cfg(test)]

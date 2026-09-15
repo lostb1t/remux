@@ -10,6 +10,9 @@ pub mod tmdb;
 
 mod rate_limit;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use rate_limit::SharedRateLimit;
+
 use http::{Extensions, HeaderMap, HeaderValue, Method, header};
 use itertools::Itertools;
 use remux_utils::Secret;
@@ -305,6 +308,7 @@ impl RetryPolicy for DynRetryPolicy {
 fn build_mw(
     retry: Option<Arc<dyn RetryPolicy + Send + Sync>>,
     default_retry_after: Duration,
+    #[cfg(not(target_arch = "wasm32"))] shared_rate_limit: Option<SharedRateLimit>,
 ) -> ClientWithMiddleware {
     let builder = MwClientBuilder::new(SHARED_HTTP_CLIENT.clone());
     let builder = match retry {
@@ -317,6 +321,7 @@ fn build_mw(
     #[cfg(not(target_arch = "wasm32"))]
     let builder = builder.with(rate_limit::RetryAfterMiddleware {
         default_retry_after,
+        shared_rate_limit,
     });
     builder.build()
 }
@@ -329,18 +334,27 @@ pub struct RestClient<A: Auth = NoAuth> {
     map_error: fn(u16, &str, &str) -> ClientError,
     retry: Option<Arc<dyn RetryPolicy + Send + Sync>>,
     default_retry_after: Duration,
+    #[cfg(not(target_arch = "wasm32"))]
+    shared_rate_limit: Option<SharedRateLimit>,
 }
 
 impl RestClient<NoAuth> {
     pub fn new(base: &str) -> Result<Self, url::ParseError> {
         let default_retry_after = rate_limit::DEFAULT_RETRY_AFTER;
         Ok(Self {
-            mw: build_mw(None, default_retry_after),
+            mw: build_mw(
+                None,
+                default_retry_after,
+                #[cfg(not(target_arch = "wasm32"))]
+                None,
+            ),
             base: url::Url::parse(format!("{}/", base.trim_end_matches('/')).as_str())?,
             auth: Arc::new(NoAuth),
             map_error: default_error_mapper,
             retry: None,
             default_retry_after,
+            #[cfg(not(target_arch = "wasm32"))]
+            shared_rate_limit: None,
         })
     }
 }
@@ -354,6 +368,8 @@ impl<A: Auth + Clone> RestClient<A> {
             map_error: self.map_error,
             retry: self.retry,
             default_retry_after: self.default_retry_after,
+            #[cfg(not(target_arch = "wasm32"))]
+            shared_rate_limit: self.shared_rate_limit,
         }
     }
 
@@ -371,6 +387,9 @@ impl<A: Auth + Clone> RestClient<A> {
             self.retry
                 .clone(),
             self.default_retry_after,
+            #[cfg(not(target_arch = "wasm32"))]
+            self.shared_rate_limit
+                .clone(),
         );
         self
     }
@@ -386,6 +405,33 @@ impl<A: Auth + Clone> RestClient<A> {
             self.retry
                 .clone(),
             default,
+            #[cfg(not(target_arch = "wasm32"))]
+            self.shared_rate_limit
+                .clone(),
+        );
+        self
+    }
+
+    /// Shares an upstream 429 cooldown with other clients.
+    ///
+    /// The same [`SharedRateLimit`] should be supplied to every client that
+    /// targets one upstream provider. It is deliberately opt-in: unrelated
+    /// providers must not block each other after one returns a 429.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_shared_rate_limit(
+        mut self,
+        shared_rate_limit: SharedRateLimit,
+    ) -> Self {
+        self.shared_rate_limit = Some(shared_rate_limit);
+        self.mw = build_mw(
+            self.retry
+                .clone(),
+            self.default_retry_after,
+            Some(
+                self.shared_rate_limit
+                    .clone()
+                    .expect("shared rate limit was set"),
+            ),
         );
         self
     }

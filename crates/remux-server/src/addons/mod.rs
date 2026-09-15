@@ -1575,6 +1575,15 @@ impl AddonService {
         force_refresh: bool,
         config: &api::ServerConfiguration,
     ) -> Result<()> {
+        // A catalog's raw Stremio ID is its stable source identity. Metadata
+        // addons can resolve the same item under a different canonical ID
+        // (usually IMDb/TMDB); a forced refresh must not replace the catalog
+        // ID with that lookup ID or the next catalog pass cannot recognise the
+        // stored row and re-enriches it from scratch.
+        let catalog_stremio_id = media
+            .external_ids
+            .custom_stremio_id
+            .clone();
         trace!(
             target: "remux_server::metadata_refresh",
             id = %media.id,
@@ -1682,15 +1691,6 @@ impl AddonService {
                 }),
         )
         .await;
-        info!(
-            id = %media.id,
-            title = %media.title,
-            kind = %media.kind,
-            resolve_external_ids_elapsed = ?resolve_started.elapsed(),
-            addon_fetch_elapsed = ?fetch_started.elapsed(),
-            addons = applicable.len(),
-            "metadata refresh timings"
-        );
         trace!(
             target: "remux_server::metadata_refresh",
             id = %media.id,
@@ -1724,6 +1724,11 @@ impl AddonService {
         }
         if let Some(combined) = combined {
             apply_meta(media, combined, force_refresh);
+        }
+        if let Some(catalog_stremio_id) = catalog_stremio_id {
+            media
+                .external_ids
+                .custom_stremio_id = Some(catalog_stremio_id);
         }
 
         // Apply SxxExx / "Season N" title formatting once, after all patches are merged.
@@ -2068,36 +2073,34 @@ impl AddonService {
 
         let original_id = media.id;
 
-        let (root_refresh_result, semaphore_wait_elapsed, refresh_elapsed) = {
+        let root_refresh_result = {
             let permit_wait_started = Instant::now();
             let _permit = semaphore
                 .acquire()
                 .await
                 .expect("semaphore is never closed");
-            let semaphore_wait_elapsed = permit_wait_started.elapsed();
             trace!(
                 target: "remux_server::metadata_refresh",
                 id = %media.id,
                 title = %media.title,
                 kind = %media.kind,
-                wait_elapsed = ?semaphore_wait_elapsed,
+                wait_elapsed = ?permit_wait_started.elapsed(),
                 "top-level metadata item acquired refresh slot"
             );
             let refresh_started = Instant::now();
             let result = self
                 .refresh_meta(&mut media, &ctx, force_refresh, &config)
                 .await;
-            let refresh_elapsed = refresh_started.elapsed();
             trace!(
                 target: "remux_server::metadata_refresh",
                 id = %media.id,
                 title = %media.title,
                 kind = %media.kind,
-                elapsed = ?refresh_elapsed,
+                elapsed = ?refresh_started.elapsed(),
                 success = result.is_ok(),
                 "top-level metadata item root refresh complete"
             );
-            (result, semaphore_wait_elapsed, refresh_elapsed)
+            result
         };
         if let Err(e) = root_refresh_result {
             warn!(id = %media.id, error = %e, "failed to refresh metadata, keeping as-is");
@@ -2128,7 +2131,6 @@ impl AddonService {
         // before adopting, so those rows stay attached to the correct parent UUID.
         let computed_id = media.id;
         let mut root_was_remapped = false;
-        let initial_identity_started = Instant::now();
         if let Some(existing_id) =
             db::Media::find_existing_id_by_ext(&ctx.db, &media).await
         {
@@ -2147,7 +2149,6 @@ impl AddonService {
                 root_was_remapped = true;
             }
         }
-        let initial_identity_elapsed = initial_identity_started.elapsed();
         // Upsert root. Images are held back and attached separately below:
         // `Media::upsert` inserts `media_images` rows keyed on the item's own
         // `id` in the *same* transaction as the root row's insert, but a
@@ -2158,12 +2159,10 @@ impl AddonService {
         // fails the deferred `media_images.media_id` foreign key. Inserting
         // images after the id below is confirmed avoids that entirely.
         let pending_images = std::mem::take(&mut media.images);
-        let root_upsert_started = Instant::now();
         if let Err(e) = db::Media::upsert(&ctx.db, &[media.clone()]).await {
             error!(id = %media.id, error = %e, "failed to upsert root media");
             return media.id;
         }
-        let root_upsert_elapsed = root_upsert_started.elapsed();
 
         // The upsert above may have silently landed on a different row than
         // `media.id`: `Media::upsert`'s `ON CONFLICT DO UPDATE` has no
@@ -2176,7 +2175,6 @@ impl AddonService {
         // duplicate. Re-check now (authoritative, since our own write just
         // committed) and correct our bookkeeping before anything downstream
         // (season/episode trees, catalog relations) keys off the wrong id.
-        let post_upsert_identity_started = Instant::now();
         if let Some(existing_id) =
             db::Media::find_existing_id_by_ext(&ctx.db, &media).await
         {
@@ -2195,17 +2193,13 @@ impl AddonService {
                 root_was_remapped = true;
             }
         }
-        let post_upsert_identity_elapsed = post_upsert_identity_started.elapsed();
         let actual_root_id = media.id;
 
-        let mut image_upsert_elapsed = std::time::Duration::ZERO;
         if !pending_images.is_empty() {
             media.images = pending_images;
-            let image_upsert_started = Instant::now();
             if let Err(e) = db::Media::upsert(&ctx.db, &[media.clone()]).await {
                 warn!(id = %actual_root_id, error = %e, "failed to attach images to root media");
             }
-            image_upsert_elapsed = image_upsert_started.elapsed();
         }
 
         // Build in-memory grandparent stub so children's refresh_meta calls can read
@@ -2232,35 +2226,17 @@ impl AddonService {
             gp
         };
 
-        let ancillary_persistence_started = Instant::now();
         db::UserMediaState::remap_orphaned_for(&ctx.db, &[media.clone()]).await;
         save_pending_relations(&ctx, &[media.clone()]).await;
         save_pending_tags(&ctx, &[media.clone()]).await;
-        let ancillary_persistence_elapsed = ancillary_persistence_started.elapsed();
 
         let is_continuing = series_is_active(&media.status);
 
         // Level 1: direct children (Seasons, Albums, etc.)
-        let tree_lookup_started = Instant::now();
         let raw_level1 = self
             .get_direct_children(&media, &ctx)
             .await;
-        let tree_lookup_elapsed = tree_lookup_started.elapsed();
         if raw_level1.is_empty() {
-            info!(
-                id = %actual_root_id,
-                title = %media.title,
-                kind = %media.kind,
-                semaphore_wait_elapsed = ?semaphore_wait_elapsed,
-                refresh_elapsed = ?refresh_elapsed,
-                initial_identity_elapsed = ?initial_identity_elapsed,
-                root_upsert_elapsed = ?root_upsert_elapsed,
-                post_upsert_identity_elapsed = ?post_upsert_identity_elapsed,
-                image_upsert_elapsed = ?image_upsert_elapsed,
-                ancillary_persistence_elapsed = ?ancillary_persistence_elapsed,
-                tree_lookup_elapsed = ?tree_lookup_elapsed,
-                "metadata item pipeline timings"
-            );
             self.notify_series_done(&media);
             return actual_root_id;
         }
@@ -2415,11 +2391,21 @@ impl AddonService {
                         return;
                     }
 
-                    let mut level2: Vec<db::Media> = Vec::with_capacity(raw_level2.len());
-                    for mut gc in raw_level2 {
+                    // Queue every episode in this season at once. Refresh permits are
+                    // acquired from the batch-wide semaphore, so root items, seasons,
+                    // and episodes all compete for the same global budget rather than
+                    // serializing each season's episodes behind its parent task.
+                    let level2: Vec<db::Media> = futures::stream::iter(raw_level2)
+                        .map(|mut gc| {
+                            let svc = svc.clone();
+                            let ctx = ctx.clone();
+                            let config = Arc::clone(&config);
+                            let semaphore = Arc::clone(&semaphore);
+                            let gp_stub = gp_stub.clone();
+                            async move {
                         gc.parent_id = Some(actual_child_id);
                         gc.grandparent_id = Some(actual_root_id);
-                        gc.grandparent = Some(Box::new(gp_stub.clone()));
+                                gc.grandparent = Some(Box::new(gp_stub));
 
                         // Adopt existing UUID + refreshed_at from the pre-loaded grandchild
                         // map. `gc` is freshly parsed from the addon's raw response, which
@@ -2451,15 +2437,19 @@ impl AddonService {
                                 .acquire()
                                 .await
                                 .expect("semaphore is never closed");
-                            if let Err(e) = svc
-                                .refresh_meta(&mut gc, &ctx, effective_force, &config)
-                                .await
-                            {
-                                warn!(id = %gc.id, error = %e, "failed to refresh level-2 child meta");
+                                if let Err(e) = svc
+                                    .refresh_meta(&mut gc, &ctx, effective_force, &config)
+                                    .await
+                                {
+                                    warn!(id = %gc.id, error = %e, "failed to refresh level-2 child meta");
+                                }
                             }
-                        }
-                        level2.push(gc);
-                    }
+                                gc
+                            }
+                        })
+                        .buffer_unordered(concurrency)
+                        .collect()
+                        .await;
 
                     for chunk in level2.chunks(db::CHUNK_SIZE) {
                         if let Err(e) = db::Media::upsert(&ctx.db, chunk).await {

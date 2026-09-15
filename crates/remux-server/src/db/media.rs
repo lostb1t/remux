@@ -2909,7 +2909,19 @@ impl Media {
     /// transient remote row to a client. Selecting just IDs and external IDs
     /// here avoids the image and parent preloads required by
     /// `adopt_existing_rows`.
-    pub async fn adopt_existing_ids(db: &SqlitePool, items: &mut [Media]) {
+    ///
+    /// Returns the ids of every item that matched a stored row — including
+    /// ones whose own precomputed id already *was* that stored row's id, so
+    /// `item.id` didn't need to change. Callers must use this return value
+    /// (not "did `item.id` change") to decide new-vs-existing: a stub whose
+    /// deterministic id is already self-consistent with the DB is still a
+    /// real match, and treating it as "new" force-refreshes an existing item
+    /// on every single import pass forever.
+    pub async fn adopt_existing_ids(
+        db: &SqlitePool,
+        items: &mut [Media],
+    ) -> HashSet<Uuid> {
+        let mut matched: HashSet<Uuid> = HashSet::new();
         let mut kinds: Vec<MediaKind> = Vec::new();
         for item in items.iter() {
             if !Self::external_id_fields(&item.kind, &item.external_ids).is_empty()
@@ -2949,9 +2961,11 @@ impl Media {
                     })
                 {
                     item.id = stored.id;
+                    matched.insert(stored.id);
                 }
             }
         }
+        matched
     }
 
     /// Appends `kind = ? AND (json_extract(external_ids, '$.a') = ? OR
@@ -3055,40 +3069,68 @@ impl Media {
             return Vec::new();
         }
 
+        // Query every identifier field together. The old implementation made
+        // one round trip per field (IMDb, Stremio, TMDB, …); this keeps the
+        // lookup partial (`id`, `external_ids` only) while letting SQLite use
+        // its multi-index OR optimisation in one query.
+        let values: Vec<(&'static str, IdValue)> = wanted
+            .into_iter()
+            .flat_map(|(path, values)| {
+                values
+                    .into_iter()
+                    .map(move |value| (path, value))
+            })
+            .collect();
         let mut out = Vec::new();
-        for (path, values) in wanted {
-            for chunk in values.chunks(SQLITE_VAR_LIMIT - 1) {
-                let mut qb = sqlx::QueryBuilder::new(
-                    "SELECT id, external_ids FROM media WHERE kind = ",
-                );
-                qb.push_bind(kind.to_string());
-                // These redundant predicates let SQLite prove that the
-                // partial external-ID indexes apply. Without them it chose a
-                // broad kind index and scanned every movie/series row.
-                if matches!(
-                    kind,
-                    MediaKind::Movie | MediaKind::Series | MediaKind::TvProgram
-                ) {
-                    qb.push(" AND kind IN ('movie', 'series', 'tv_program')");
+        for chunk in values.chunks(SQLITE_VAR_LIMIT - 1) {
+            let mut fields: HashMap<&'static str, Vec<&IdValue>> = HashMap::new();
+            for (path, value) in chunk {
+                fields
+                    .entry(*path)
+                    .or_default()
+                    .push(value);
+            }
+
+            let mut qb = sqlx::QueryBuilder::new(
+                "SELECT id, external_ids FROM media WHERE kind = ",
+            );
+            qb.push_bind(kind.to_string());
+            // These redundant predicates let SQLite prove that the partial
+            // external-ID indexes apply. Without them it chose a broad kind
+            // index and scanned every movie/series row.
+            if matches!(
+                kind,
+                MediaKind::Movie | MediaKind::Series | MediaKind::TvProgram
+            ) {
+                qb.push(" AND kind IN ('movie', 'series', 'tv_program')");
+            }
+            qb.push(" AND (");
+            for (field_idx, (path, values)) in fields
+                .into_iter()
+                .enumerate()
+            {
+                if field_idx > 0 {
+                    qb.push(" OR ");
                 }
-                qb.push(" AND json_extract(external_ids, '")
+                qb.push("json_extract(external_ids, '")
                     .push(path)
                     .push("') IN (");
                 let mut sep = qb.separated(", ");
-                for value in chunk {
+                for value in values {
                     match value {
                         IdValue::Text(s) => sep.push_bind(s.clone()),
                         IdValue::Int(n) => sep.push_bind(*n),
                     };
                 }
                 qb.push(")");
-                out.extend(
-                    qb.build_query_as()
-                        .fetch_all(db)
-                        .await
-                        .unwrap_or_default(),
-                );
             }
+            qb.push(")");
+            out.extend(
+                qb.build_query_as()
+                    .fetch_all(db)
+                    .await
+                    .unwrap_or_default(),
+            );
         }
         out
     }

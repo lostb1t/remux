@@ -39,6 +39,16 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use uuid::Uuid;
 
 static SERVER_ID: OnceLock<String> = OnceLock::new();
+static TMDB_RATE_LIMIT: OnceLock<sdks::SharedRateLimit> = OnceLock::new();
+
+/// TMDB clients are built in a few independent paths. They must still share
+/// one cooldown, otherwise concurrent metadata refreshes each evade a 429 by
+/// constructing their own client.
+pub(crate) fn tmdb_rate_limit() -> sdks::SharedRateLimit {
+    TMDB_RATE_LIMIT
+        .get_or_init(sdks::SharedRateLimit::new)
+        .clone()
+}
 
 pub(crate) fn set_server_id(id: String) {
     let _ = SERVER_ID.set(id);
@@ -313,7 +323,8 @@ pub fn tmdb_client_from_config(
                 // TMDB does not send Retry-After on 429, so use its short
                 // throttle window instead of the SDK's generic 60-second
                 // fallback.
-                .with_default_retry_after(std::time::Duration::from_secs(2))
+                .with_default_retry_after(std::time::Duration::from_secs(1))
+                .with_shared_rate_limit(tmdb_rate_limit())
         })
 }
 

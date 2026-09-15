@@ -1,9 +1,59 @@
 use http::{HeaderMap, header};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Arc;
+
+#[cfg(not(target_arch = "wasm32"))]
+use tokio::{sync::Mutex, time::Instant};
+
 pub(crate) const DEFAULT_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(48 * 60 * 60);
+
+/// Shared 429 cooldown for one provider.
+///
+/// Give clones of one value to every [`RestClient`](crate::RestClient) that
+/// talks to the same upstream. After a 429, it parks all later requests until
+/// the shared cooldown has elapsed. It intentionally does not limit request
+/// concurrency; callers control that themselves.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
+pub struct SharedRateLimit {
+    blocked_until: Arc<Mutex<Instant>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SharedRateLimit {
+    pub fn new() -> Self {
+        Self {
+            blocked_until: Arc::new(Mutex::new(Instant::now())),
+        }
+    }
+
+    async fn block_for(&self, delay: Duration) {
+        let candidate = Instant::now() + delay;
+        let mut blocked_until = self
+            .blocked_until
+            .lock()
+            .await;
+        *blocked_until = (*blocked_until).max(candidate);
+    }
+
+    async fn wait_for_cooldown(&self) {
+        loop {
+            let blocked_until = *self
+                .blocked_until
+                .lock()
+                .await;
+            let now = Instant::now();
+            if blocked_until <= now {
+                return;
+            }
+            tokio::time::sleep_until(blocked_until).await;
+        }
+    }
+}
 
 pub(crate) fn retry_after(
     headers: &HeaderMap,
@@ -49,6 +99,7 @@ fn parse_retry_after(value: &str, now: SystemTime) -> Option<Duration> {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct RetryAfterMiddleware {
     pub(crate) default_retry_after: Duration,
+    pub(crate) shared_rate_limit: Option<SharedRateLimit>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -60,6 +111,11 @@ impl reqwest_middleware::Middleware for RetryAfterMiddleware {
         extensions: &mut http::Extensions,
         next: reqwest_middleware::Next<'_>,
     ) -> reqwest_middleware::Result<reqwest::Response> {
+        if let Some(limit) = &self.shared_rate_limit {
+            limit
+                .wait_for_cooldown()
+                .await;
+        }
         let response = next
             .run(req, extensions)
             .await?;
@@ -78,9 +134,19 @@ impl reqwest_middleware::Middleware for RetryAfterMiddleware {
         tracing::warn!(
             url = %response.url(),
             retry_after_secs = delay.as_secs(),
+            shared = self.shared_rate_limit.is_some(),
             "upstream returned 429; backing off before this request returns"
         );
-        tokio::time::sleep(delay).await;
+        if let Some(limit) = &self.shared_rate_limit {
+            limit
+                .block_for(delay)
+                .await;
+            limit
+                .wait_for_cooldown()
+                .await;
+        } else {
+            tokio::time::sleep(delay).await;
+        }
         Ok(response)
     }
 }
