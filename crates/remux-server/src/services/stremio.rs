@@ -247,7 +247,7 @@ impl StremioService {
                         )
                         .await;
                     match &result {
-                        Ok(response) => tracing::info!(
+                        Ok(response) => tracing::debug!(
                             kind = %kind,
                             id = %id,
                             page,
@@ -289,7 +289,7 @@ impl StremioService {
                             .as_ref()
                             .map(|(_, body)| body.as_str())
                             .unwrap_or_default();
-                        tracing::info!(
+                        tracing::debug!(
                             kind = %kind,
                             id = %id,
                             page,
