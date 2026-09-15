@@ -46,10 +46,7 @@ impl Task for RefreshPopularityTask {
         )
         .fetch_one(&ctx.db)
         .await?;
-        let concurrency = db::Settings::get_config_or_default(&ctx.db)
-            .await
-            .meta_concurrency
-            .max(1) as usize;
+        let concurrency = crate::common::META_CONCURRENCY;
         let client_id = crate::common::server_id().to_string();
 
         const PAGE_SIZE: u32 = 250;

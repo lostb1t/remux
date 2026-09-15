@@ -23,7 +23,7 @@ use super::{
 use crate::{
     AppContext, common, db, sdks,
     sdks::{CachedEndpoint, ClientError},
-    services::{MediaResolveService, stremio as stremio_service},
+    services::stremio as stremio_service,
 };
 
 pub struct StremioPreset;
@@ -68,7 +68,7 @@ impl AddonPreset for StremioPreset {
 
     fn from_cfg(
         &self,
-        _addon_id: Uuid,
+        addon_id: Uuid,
         cfg: &serde_json::Value,
         _config: &crate::Config,
     ) -> Result<AddonCapabilities> {
@@ -81,6 +81,7 @@ impl AddonPreset for StremioPreset {
             .map_err(|e| anyhow!("Invalid manifest_url: {e}"))?;
         let client = super::make_http_client();
         let addon = Arc::new(StremioAddon {
+            addon_id,
             manifest_url,
             client,
             medias_cache: Arc::new(std::sync::Mutex::new(
@@ -191,6 +192,7 @@ where
 }
 
 pub struct StremioAddon {
+    addon_id: Uuid,
     manifest_url: StremioManifestUrl,
     client: reqwest::Client,
     /// Raw Stremio `Meta` cached per series lookup-id for the duration of one tree sync.
@@ -203,7 +205,10 @@ pub struct StremioAddon {
 
 impl StremioAddon {
     fn service(&self) -> Result<stremio_service::StremioService> {
-        stremio_service::StremioService::from_url(&self.manifest_url)
+        Ok(
+            stremio_service::StremioService::from_url(&self.manifest_url)?
+                .with_shared_rate_limit(common::addon_rate_limit(self.addon_id)),
+        )
     }
 }
 
@@ -303,7 +308,7 @@ impl CatalogAddon for StremioAddon {
 
     async fn catalog_stream(
         &self,
-        ctx: &AppContext,
+        _ctx: &AppContext,
         local_id: &str,
     ) -> Result<Option<Pin<Box<dyn Stream<Item = db::Media> + Send>>>> {
         let svc = self.service()?;
@@ -323,28 +328,21 @@ impl CatalogAddon for StremioAddon {
                     .any(|e| e.name == "skip")
             })
             .unwrap_or(false);
+        let page_concurrency = crate::common::META_CONCURRENCY;
 
         let stream = svc
-            .get_catalog_stream(kind.to_string(), id.to_string(), supports_skip)
+            .get_catalog_stream(
+                kind.to_string(),
+                id.to_string(),
+                supports_skip,
+                page_concurrency,
+            )
             .await?;
-        let tmdb_client = crate::common::tmdb_client(
-            &ctx.db,
-            &ctx.config
-                .tmdb_base_url,
-        )
-        .await;
-
         let stream = stream
-            .map(move |mut meta| {
-                let svc = svc.clone();
-                let tmdb = tmdb_client.clone();
+            .map(move |meta| {
                 async move {
                     if meta.is_error() {
                         debug!(id = %meta.id, "catalog item is an error stub, skipping");
-                        return vec![];
-                    }
-                    if !resolve_imdb_id(&mut meta, Some(&svc), tmdb.as_ref()).await {
-                        debug!(id = %meta.id, "could not resolve imdb_id, skipping");
                         return vec![];
                     }
                     match db::stremio_meta_to_medias(meta) {
@@ -563,96 +561,6 @@ fn stremio_type_for_kind(kind: &db::MediaKind) -> Option<&'static str> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Catalog helpers
-// ---------------------------------------------------------------------------
-
-pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
-    meta: &mut sdks::stremio::Meta,
-    svc: Option<&stremio_service::StremioService>,
-    tmdb_client: Option<&sdks::RestClient<A>>,
-) -> bool {
-    let t = Instant::now();
-
-    // Phase 1: build the richest possible ExternalIds before any TMDB calls.
-    let mut ids = db::ExternalIds::from_stremio_id(&meta.id);
-    if ids
-        .imdb
-        .is_none()
-    {
-        ids.imdb = meta
-            .imdb_id
-            .as_deref()
-            .and_then(|s| db::NonEmptyString::try_new(s.to_string()).ok());
-    }
-    if ids
-        .tmdb
-        .is_none()
-    {
-        ids.tmdb = meta
-            .moviedb_id
-            .map(|n| n as i64);
-    }
-
-    // AIO resolve: the addon may map its own ID to an IMDB ID.
-    if ids
-        .imdb
-        .is_none()
-    {
-        if let Some(svc) = svc {
-            match meta
-                .resolve(&svc.client)
-                .await
-            {
-                Ok(()) => {}
-                Err(e) => warn!(id = %meta.id, error = %e, "AIO resolve failed"),
-            }
-            debug!(id = %meta.id, elapsed = ?t.elapsed(), resolved = meta.imdb_id.is_some(), "after AIO resolve");
-            ids.imdb = meta
-                .imdb_id
-                .as_deref()
-                .and_then(|s| db::NonEmptyString::try_new(s.to_string()).ok());
-        }
-    }
-
-    // Phase 2: single TMDB resolution pass (TMDB/TVDB/Kitsu chains handled inside).
-    if ids
-        .imdb
-        .is_none()
-    {
-        if let Some(client) = tmdb_client {
-            if !ids.is_empty() {
-                let is_tv = meta.media_type == sdks::stremio::MediaType::Series;
-                ids.imdb =
-                    MediaResolveService::resolve_imdb_from_ids(&ids, is_tv, client)
-                        .await;
-                debug!(id = %meta.id, elapsed = ?t.elapsed(), resolved = ids.imdb.is_some(), "after TMDB resolve");
-            }
-        }
-    }
-
-    meta.imdb_id = ids
-        .imdb
-        .clone()
-        .map(Into::into);
-
-    if meta
-        .imdb_id
-        .is_none()
-    {
-        // Allow items that have a recognised non-IMDB identity (custom addon prefix or
-        // kitsu ID that couldn't be resolved to IMDB — anime often isn't on IMDB).
-        return ids
-            .custom_stremio_id
-            .is_some()
-            || ids
-                .kitsu
-                .is_some();
-    }
-
-    true
-}
-
 fn is_404(e: &anyhow::Error) -> bool {
     matches!(
         e.downcast_ref::<ClientError>(),
@@ -860,36 +768,39 @@ async fn stremio_meta_fetch(
 
     match media.kind {
         db::MediaKind::Movie | db::MediaKind::Series => {
-            // Patch imdb_id into a mutable clone for root-level conversion and
-            // relations. Only the Movie/Series arm needs the owned copy — cloning
-            // it unconditionally deep-copies every entry in `videos`, which is
-            // ruinous for series with thousands of episodes.
-            let mut meta_patched = (*meta_arc).clone();
-            if meta_patched
-                .imdb_id
-                .is_none()
-                && !is_custom
-            {
-                meta_patched.imdb_id =
-                    db::ExternalIds::from_stremio_id(&meta_patched.id)
-                        .imdb
-                        .map(Into::into)
-                        .or_else(|| imdb_id.map(Into::into));
-            }
-            if meta_patched.is_error() {
+            // `meta_arc` is shared (cached across every season/episode under
+            // this series — see `medias_cache`) and can carry thousands of
+            // `videos` entries for long-running shows. Convert and build
+            // relations straight off the reference instead of cloning the
+            // whole payload just to patch one field and hand over ownership.
+            if meta_arc.is_error() {
                 warn!(
                     id = %media.id,
-                    error_title = %meta_patched.get_name().unwrap_or_default(),
-                    error_description = %meta_patched.description.as_deref().unwrap_or(""),
+                    error_title = %meta_arc.get_name().unwrap_or_default(),
+                    error_description = %meta_arc.description.as_deref().unwrap_or(""),
                     "meta addon returned an error, skipping"
                 );
                 return Ok(None);
             }
             let mut found =
-                db::Media::try_from(meta_patched.clone()).map_err(|e| anyhow!(e))?;
+                db::Media::try_from(meta_arc.as_ref()).map_err(|e| anyhow!(e))?;
             // Preserve the persisted ID — try_from recomputes it from external_ids.
             found.id = media.id;
-            let relations = build_relations(media, &meta_patched);
+            // try_from already resolves an imdb id encoded in meta.id or
+            // meta.imdb_id itself; fall back to the caller's already-known
+            // imdb id (from this item or its grandparent) only if that came
+            // up empty.
+            if found
+                .external_ids
+                .imdb
+                .is_none()
+                && !is_custom
+            {
+                found
+                    .external_ids
+                    .imdb = imdb_id.clone();
+            }
+            let relations = build_relations(media, &meta_arc);
             if !relations.is_empty() {
                 found.relations = Some(relations);
             }
@@ -1876,7 +1787,7 @@ mod tests {
             custom_stremio_type: Some("anime".to_string()),
             ..Default::default()
         });
-        media.grandparent = Some(Box::new(grandparent));
+        media.grandparent = Some(Arc::new(grandparent));
 
         let streams = stremio_streams(&svc, &manifest_url, &media, None)
             .await
@@ -1912,7 +1823,7 @@ mod tests {
             custom_stremio_type: Some("anime".to_string()),
             ..Default::default()
         });
-        media.grandparent = Some(Box::new(grandparent));
+        media.grandparent = Some(Arc::new(grandparent));
 
         let streams = stremio_streams(&svc, &manifest_url, &media, None)
             .await

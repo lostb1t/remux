@@ -617,7 +617,8 @@ fn tmdb_client(
         // fixed rate limiting in 2019), so without this every 429 falls
         // back to the SDK's generic 60s default, which is far longer than
         // TMDB's actual throttle window.
-        .with_default_retry_after(std::time::Duration::from_secs(2)))
+        .with_default_retry_after(std::time::Duration::from_secs(1))
+        .with_shared_rate_limit(common::tmdb_rate_limit()))
 }
 
 async fn tmdb_client_from_ctx(

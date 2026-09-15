@@ -41,10 +41,13 @@ where
         None => Uuid::nil(),
     };
 
-    while let Some(items) = chunks
-        .next()
-        .await
-    {
+    loop {
+        let Some(items) = chunks
+            .next()
+            .await
+        else {
+            break;
+        };
         progress.report(total, max.max(1));
 
         let remaining = max.saturating_sub(total);
@@ -90,60 +93,18 @@ where
         }
 
         // Adopt stored identities before recording positions or partitioning.
-        // A provider's stub UUID can differ from a row discovered through another
-        // provider, even though their external IDs identify the same content.
+        // Remote metadata UUIDs are transient. External IDs are the sole
+        // identity source, including when multiple addons describe the same
+        // item.
         //
-        // Fast path first: a single batched id lookup covers the common case
-        // (re-scanning the same addon's own catalog, where ids already match
-        // exactly) without a query per item. Only items whose own id isn't
-        // already a row fall through to the slower per-item external-ID
-        // match — that's the only path that can find a row saved under a
-        // different provider's id for the same content.
-        let candidate_ids: Vec<Uuid> = items
-            .iter()
-            .map(|i| i.id)
-            .collect();
-        let existing_by_id: HashMap<Uuid, String> = if candidate_ids.is_empty() {
-            HashMap::new()
-        } else {
-            let mut qb = sqlx::QueryBuilder::new(
-                "SELECT id, CAST(kind AS TEXT) FROM media WHERE id IN (",
-            );
-            let mut sep = qb.separated(", ");
-            for id in &candidate_ids {
-                sep.push_bind(id);
-            }
-            qb.push(")");
-            qb.build_query_as::<(Uuid, String)>()
-                .fetch_all(&ctx.db)
-                .await?
-                .into_iter()
-                .collect()
-        };
-
-        let mut existing_ids = HashSet::new();
-        for item in &mut items {
-            let existing_id = match item.kind {
-                // Channels and playlists have provider-defined UUID identities;
-                // the external-ID resolver does not support these kinds, so
-                // only an exact (id, kind) match — never an external-ID
-                // match — counts as "already exists" for them.
-                db::MediaKind::TvChannel | db::MediaKind::Playlist => existing_by_id
-                    .get(&item.id)
-                    .filter(|k| {
-                        **k == item
-                            .kind
-                            .to_string()
-                    })
-                    .map(|_| item.id),
-                _ if existing_by_id.contains_key(&item.id) => Some(item.id),
-                _ => db::Media::find_existing_id_by_ext(&ctx.db, item).await,
-            };
-            if let Some(existing_id) = existing_id {
-                item.id = existing_id;
-                existing_ids.insert(existing_id);
-            }
-        }
+        // `adopt_existing_ids` returns which items matched a stored row —
+        // this must be used as-is rather than re-derived from "did item.id
+        // change", since a stub whose deterministic id already equals the
+        // stored row's id is still a real match (no change needed) and was
+        // previously misclassified as new, force-refreshing existing items
+        // on every single import pass.
+        let existing_ids: HashSet<Uuid> =
+            db::Media::adopt_existing_ids(&ctx.db, &mut items).await;
         // Snapshot stream-order weights before partitioning — partition() does not
         // preserve the original order across the two vecs, so new items would
         // otherwise always get the lowest weights within a chunk regardless of where
@@ -705,5 +666,101 @@ mod tests {
         assert_eq!(new_counts.get(&db::MediaKind::Series.to_string()), Some(&1));
         let members: Vec<Uuid> = sqlx::query_scalar("SELECT right_media_id FROM media_relations WHERE left_media_id = ? AND role = 'catalog'").bind(collection_id).fetch_all(&ctx.db).await.unwrap();
         assert_eq!(members, vec![fresh_id]);
+    }
+
+    /// Regression: a catalog stub whose own precomputed id already equals the
+    /// stored row's id (e.g. TMDB's `stable_media_uuid(kind, "tmdb:{id}")`
+    /// stubs, which are self-consistent once the row exists) must still be
+    /// recognized as existing. `adopt_existing_ids` doesn't need to change
+    /// `item.id` in this case — the previous "existing = id changed" check
+    /// misread that as "not found" and force-refreshed the item on every
+    /// single import pass forever, never converging.
+    #[tokio::test]
+    async fn catalog_recognizes_a_stub_whose_id_already_matches_the_stored_row() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let addon_id = Uuid::new_v4();
+        let collection_id = Uuid::new_v5(&addon_id, b"test");
+        let catalog = ResolvedCatalog {
+            provider_catalog_id: "test".into(),
+            catalog_id: format!("addon:{addon_id}:test"),
+            collection_id,
+            name: "Test".into(),
+            media_kind: Some(db::MediaKind::Movie),
+            collection_media_kind: None,
+            enabled: true,
+            max_items: None,
+            tags: vec![],
+        };
+        let mut collection = db::Media {
+            id: collection_id,
+            kind: db::MediaKind::Collection,
+            title: "Test".into(),
+            ..Default::default()
+        };
+        collection
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let tmdb_id = 603;
+        let stub_id = crate::common::stable_media_uuid(
+            &db::MediaKind::Movie,
+            &format!("tmdb:{tmdb_id}"),
+        );
+        let mut stored = db::Media {
+            id: stub_id,
+            kind: db::MediaKind::Movie,
+            title: "Stored metadata".into(),
+            external_ids: db::ExternalIds {
+                tmdb: Some(tmdb_id),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        stored
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let progress = ProgressReporter::new(Default::default());
+        // Same id as `stored` — this is what a repeat TMDB catalog pass
+        // produces once the row already exists under its deterministic id.
+        let stub = db::Media {
+            id: stub_id,
+            kind: db::MediaKind::Movie,
+            title: "Catalog stub".into(),
+            external_ids: db::ExternalIds {
+                tmdb: Some(tmdb_id),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (counts, new_counts) = import_catalog_items(
+            ctx,
+            &catalog,
+            &catalog.catalog_id,
+            10,
+            futures::stream::iter([stub]),
+            &progress,
+        )
+        .await
+        .unwrap();
+        assert_eq!(counts.get(&db::MediaKind::Movie.to_string()), Some(&1));
+        assert!(
+            new_counts.is_empty(),
+            "a stub whose id already matches the stored row must not be force-refreshed as new"
+        );
+        assert_eq!(
+            db::Media::get_by_id(&ctx.db, &stub_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .title,
+            "Stored metadata",
+            "existing metadata must survive untouched, not be overwritten by the stub"
+        );
     }
 }

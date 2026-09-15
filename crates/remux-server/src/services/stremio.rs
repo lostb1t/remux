@@ -51,6 +51,17 @@ impl StremioService {
         })
     }
 
+    /// Shares a 429 cooldown across every client built for the same addon.
+    /// `from_url` builds a fresh `RestClient` on every call (addons are not
+    /// cached), so without this each concurrent or sequential call starts
+    /// with no memory of a prior 429 from the same addon.
+    pub fn with_shared_rate_limit(mut self, limit: sdks::SharedRateLimit) -> Self {
+        self.client = self
+            .client
+            .with_shared_rate_limit(limit);
+        self
+    }
+
     fn ep<EP: Endpoint + Clone>(&self, endpoint: EP) -> WithExtraQuery<EP> {
         WithExtraQuery {
             endpoint,
@@ -75,19 +86,34 @@ impl StremioService {
         media_type: sdks::stremio::MediaType,
         id: impl Into<String>,
     ) -> Result<sdks::stremio::Meta> {
-        Ok(self
-            .client
-            .execute(
-                self.ep(sdks::stremio::MetaEndpoint {
-                    media_type,
-                    id: id.into(),
-                    season: None,
-                    episode: None,
-                })
-                .with_cache(Duration::from_secs(3600)),
-            )
-            .await?
-            .meta)
+        let id = id.into();
+        let meta: Result<sdks::stremio::Meta> = remux_utils::retry! {
+            attempts: 3,
+            delay: 500,
+            {
+                let response = self
+                    .client
+                    .execute(
+                        self.ep(sdks::stremio::MetaEndpoint {
+                            media_type: media_type.clone(),
+                            id: id.clone(),
+                            season: None,
+                            episode: None,
+                        })
+                        // Addons sometimes return a 503 as a successful Stremio
+                        // meta payload. Do not cache that transient failure.
+                        .with_cache(Duration::from_secs(3600))
+                        .should_cache(cache_successful_meta),
+                    )
+                    .await?;
+                if is_retryable_meta_error(&response.meta) {
+                    Err(anyhow!("Stremio addon returned a retryable 5xx meta payload"))
+                } else {
+                    Ok(response.meta)
+                }
+            }
+        };
+        meta
     }
 
     pub async fn search(
@@ -165,6 +191,7 @@ impl StremioService {
         kind: String,
         id: String,
         supports_skip: bool,
+        page_concurrency: usize,
     ) -> Result<Pin<Box<dyn Stream<Item = sdks::stremio::Meta> + Send>>> {
         let client = self
             .client
@@ -190,7 +217,14 @@ impl StremioService {
         let page_size = first_page
             .metas
             .len() as u32;
-        debug!(kind = %kind, id = %id, page_size, elapsed = ?t0.elapsed(), "catalog first page");
+        debug!(
+            kind = %kind,
+            id = %id,
+            page_size,
+            page_concurrency = page_concurrency.max(1),
+            elapsed = ?t0.elapsed(),
+            "catalog first page"
+        );
         if page_size == 0 || !supports_skip {
             return Ok(Box::pin(stream::iter(first_page.metas)));
         }
@@ -204,22 +238,82 @@ impl StremioService {
                 let id = id.clone();
                 let extra_query = extra_query.clone();
                 async move {
+                    let skip = page * page_size;
+                    let mut raw_response = None;
                     let result = client
-                        .execute(WithExtraQuery {
-                            endpoint: sdks::stremio::CatalogEndpoint {
-                                kind: kind.clone(),
-                                id: id.clone(),
-                                search: None,
-                                genre: None,
-                                skip: Some(page * page_size),
+                        .execute_observed(
+                            WithExtraQuery {
+                                endpoint: sdks::stremio::CatalogEndpoint {
+                                    kind: kind.clone(),
+                                    id: id.clone(),
+                                    search: None,
+                                    genre: None,
+                                    skip: Some(skip),
+                                },
+                                extra: extra_query,
                             },
-                            extra: extra_query,
-                        })
+                            |status, body| {
+                                raw_response = Some((status, body.to_string()))
+                            },
+                        )
                         .await;
+                    match &result {
+                        Ok(response) => tracing::debug!(
+                            kind = %kind,
+                            id = %id,
+                            page,
+                            skip,
+                            metas = response.metas.len(),
+                            "catalog page fetched"
+                        ),
+                        Err(error) => {
+                            let status = raw_response
+                                .as_ref()
+                                .map(|(status, _)| *status)
+                                .unwrap_or_default();
+                            let body = raw_response
+                                .as_ref()
+                                .map(|(_, body)| body.as_str())
+                                .unwrap_or_default();
+                            tracing::info!(
+                                kind = %kind,
+                                id = %id,
+                                page,
+                                skip,
+                                status,
+                                body = %body,
+                                error = %error,
+                                "catalog page fetch failed"
+                            )
+                        }
+                    }
+                    if let Ok(response) = &result
+                        && response
+                            .metas
+                            .is_empty()
+                    {
+                        let status = raw_response
+                            .as_ref()
+                            .map(|(status, _)| *status)
+                            .unwrap_or_default();
+                        let body = raw_response
+                            .as_ref()
+                            .map(|(_, body)| body.as_str())
+                            .unwrap_or_default();
+                        tracing::debug!(
+                            kind = %kind,
+                            id = %id,
+                            page,
+                            skip,
+                            status,
+                            body = %body,
+                            "catalog page returned no metas"
+                        );
+                    }
                     result
                 }
             })
-            .buffered(3);
+            .buffered(page_concurrency.max(1));
 
         let pages = first
             .chain(rest)
@@ -257,6 +351,31 @@ impl StremioService {
 
         Ok(Box::pin(pages))
     }
+}
+
+fn cache_successful_meta(response: &sdks::stremio::MetaResponse) -> Option<Duration> {
+    (!response
+        .meta
+        .is_error())
+    .then_some(Duration::from_secs(3600))
+}
+
+fn is_retryable_meta_error(meta: &sdks::stremio::Meta) -> bool {
+    meta.is_error()
+        && meta
+            .description
+            .as_deref()
+            .and_then(|description| {
+                description
+                    .trim_start()
+                    .get(..3)
+            })
+            .and_then(|status| {
+                status
+                    .parse::<u16>()
+                    .ok()
+            })
+            .is_some_and(|status| (500..600).contains(&status))
 }
 
 #[cfg(test)]
@@ -308,7 +427,7 @@ mod tests {
 
         let svc = StremioService::from_url(&server.base_url()).unwrap();
         let stream = svc
-            .get_catalog_stream("movie".to_string(), "test".to_string(), true)
+            .get_catalog_stream("movie".to_string(), "test".to_string(), true, 3)
             .await
             .unwrap();
         let names: Vec<String> = stream
@@ -333,7 +452,7 @@ mod tests {
 
         let svc = StremioService::from_url(&server.base_url()).unwrap();
         let stream = svc
-            .get_catalog_stream("movie".to_string(), "test".to_string(), true)
+            .get_catalog_stream("movie".to_string(), "test".to_string(), true, 3)
             .await
             .unwrap();
         let names: Vec<String> = stream

@@ -37,11 +37,11 @@ nutype = { version = "0.6", features = ["serde", "regex"] }
 regex = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["sync", "time"] }
 
 [dev-dependencies]
 httpmock = "0.7"
-tokio = { version = "1", features = ["macros", "rt", "time"] }
+tokio = { version = "1", features = ["macros", "rt", "time", "test-util"] }
 
 [features]
 default = []

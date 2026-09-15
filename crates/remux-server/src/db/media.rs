@@ -953,6 +953,16 @@ pub struct ExternalIds {
     pub artist_name: Option<String>,
 }
 
+/// The only stored fields catalog import needs when it recognizes a remote
+/// item. Keeping this separate from `Media` avoids loading every image and
+/// parent row merely to reuse the database UUID.
+#[derive(sqlx::FromRow)]
+struct ExternalIdMatch {
+    id: Uuid,
+    #[sqlx(json)]
+    external_ids: ExternalIds,
+}
+
 impl ExternalIds {
     /// Parse an AIO `meta.id` string into external provider IDs using the
     /// standard Stremio/Jellyfin prefix conventions.
@@ -1490,12 +1500,17 @@ pub struct Media {
     pub user_state: Option<super::UserMediaState>,
     #[sqlx(skip)]
     pub relations: Option<Vec<(MediaRelation, Media)>>,
-    /// Preloaded direct parent (season, album, channel, etc.).
+    /// Preloaded direct parent (season, album, channel, etc.). `Arc`, not
+    /// `Box`: this gets cloned once per child when fanning out a season's/
+    /// series' children (see `process_meta_item_inner`), and a `Box` clone
+    /// there deep-copies the whole stub — including any embedded relations —
+    /// into every single child instead of sharing one allocation.
     #[sqlx(skip)]
-    pub parent: Option<Box<Media>>,
-    /// Preloaded grandparent (series, artist, etc.).
+    pub parent: Option<Arc<Media>>,
+    /// Preloaded grandparent (series, artist, etc.). See `parent` for why
+    /// this is `Arc` rather than `Box`.
     #[sqlx(skip)]
-    pub grandparent: Option<Box<Media>>,
+    pub grandparent: Option<Arc<Media>>,
 
     // stream
     #[sqlx(json(nullable))]
@@ -1773,7 +1788,7 @@ impl Media {
 
         // Build a synthetic Media stub from a ParentRow + its images.
         let make_stub =
-            |row: &ParentRow, images: super::image::MediaImages| -> Box<Media> {
+            |row: &ParentRow, images: super::image::MediaImages| -> Arc<Media> {
                 let mut m = Media::default();
                 m.id = row.id;
                 m.title = row
@@ -1787,7 +1802,7 @@ impl Media {
                     .external_ids
                     .clone();
                 m.images = images;
-                Box::new(m)
+                Arc::new(m)
             };
 
         for media in records.iter_mut() {
@@ -1969,11 +1984,11 @@ impl Media {
 
     /// Build a minimal Media stub with just id and title — used when preloaded
     /// parent/grandparent data is constructed inline rather than fetched from DB.
-    pub fn stub(id: Uuid, title: impl Into<String>) -> Box<Self> {
+    pub fn stub(id: Uuid, title: impl Into<String>) -> Arc<Self> {
         let mut m = Self::default();
         m.id = id;
         m.title = title.into();
-        Box::new(m)
+        Arc::new(m)
     }
 
     pub fn parse_smart_filter(&self) -> Option<&remux_sdks::remux::CollectionFilter> {
@@ -2168,7 +2183,7 @@ impl Media {
         {
             if let Some(gp_id) = self.grandparent_id {
                 if let Some(gp) = Self::get_by_id(db, &gp_id).await? {
-                    self.grandparent = Some(Box::new(gp));
+                    self.grandparent = Some(Arc::new(gp));
                 }
             }
         }
@@ -2893,6 +2908,71 @@ impl Media {
         Self::preload_parents(db, items).await;
     }
 
+    /// Point catalog-import items at matching stored UUIDs without replacing
+    /// their remote metadata. Import only needs identity before deciding which
+    /// entries require enrichment; unlike search results it never exposes the
+    /// transient remote row to a client. Selecting just IDs and external IDs
+    /// here avoids the image and parent preloads required by
+    /// `adopt_existing_rows`.
+    ///
+    /// Returns the ids of every item that matched a stored row — including
+    /// ones whose own precomputed id already *was* that stored row's id, so
+    /// `item.id` didn't need to change. Callers must use this return value
+    /// (not "did `item.id` change") to decide new-vs-existing: a stub whose
+    /// deterministic id is already self-consistent with the DB is still a
+    /// real match, and treating it as "new" force-refreshes an existing item
+    /// on every single import pass forever.
+    pub async fn adopt_existing_ids(
+        db: &SqlitePool,
+        items: &mut [Media],
+    ) -> HashSet<Uuid> {
+        let mut matched: HashSet<Uuid> = HashSet::new();
+        let mut kinds: Vec<MediaKind> = Vec::new();
+        for item in items.iter() {
+            if !Self::external_id_fields(&item.kind, &item.external_ids).is_empty()
+                && !kinds.contains(&item.kind)
+            {
+                kinds.push(
+                    item.kind
+                        .clone(),
+                );
+            }
+        }
+
+        for kind in kinds {
+            let exts: Vec<ExternalIds> = items
+                .iter()
+                .filter(|item| item.kind == kind)
+                .map(|item| {
+                    item.external_ids
+                        .clone()
+                })
+                .collect();
+            let rows = Self::get_existing_ids_by_external_ids(db, &kind, &exts).await;
+
+            for item in items
+                .iter_mut()
+                .filter(|item| item.kind == kind)
+            {
+                let fields = Self::external_id_fields(&kind, &item.external_ids);
+                if let Some(stored) = fields
+                    .iter()
+                    .find_map(|field| {
+                        rows.iter()
+                            .find(|row| {
+                                Self::external_id_fields(&kind, &row.external_ids)
+                                    .contains(field)
+                            })
+                    })
+                {
+                    item.id = stored.id;
+                    matched.insert(stored.id);
+                }
+            }
+        }
+        matched
+    }
+
     /// Appends `kind = ? AND (json_extract(external_ids, '$.a') = ? OR
     /// json_extract(external_ids, '$.b') = ? OR ...)` for `fields` (which
     /// must be non-empty) to `qb`. Shared by every external-id lookup below
@@ -2967,6 +3047,95 @@ impl Media {
                     .unwrap_or_default();
             }
             out.extend(rows);
+        }
+        out
+    }
+
+    /// The lightweight counterpart to `get_many_by_external_ids` for catalog
+    /// import. It deliberately does not hydrate full media records, images, or
+    /// parent relationships.
+    async fn get_existing_ids_by_external_ids(
+        db: &SqlitePool,
+        kind: &MediaKind,
+        exts: &[ExternalIds],
+    ) -> Vec<ExternalIdMatch> {
+        let mut wanted: HashMap<&'static str, Vec<IdValue>> = HashMap::new();
+        for ext in exts {
+            for (path, value) in Self::external_id_fields(kind, ext) {
+                let values = wanted
+                    .entry(path)
+                    .or_default();
+                if !values.contains(&value) {
+                    values.push(value);
+                }
+            }
+        }
+        if wanted.is_empty() {
+            return Vec::new();
+        }
+
+        // Query every identifier field together. The old implementation made
+        // one round trip per field (IMDb, Stremio, TMDB, …); this keeps the
+        // lookup partial (`id`, `external_ids` only) while letting SQLite use
+        // its multi-index OR optimisation in one query.
+        let values: Vec<(&'static str, IdValue)> = wanted
+            .into_iter()
+            .flat_map(|(path, values)| {
+                values
+                    .into_iter()
+                    .map(move |value| (path, value))
+            })
+            .collect();
+        let mut out = Vec::new();
+        for chunk in values.chunks(SQLITE_VAR_LIMIT - 1) {
+            let mut fields: HashMap<&'static str, Vec<&IdValue>> = HashMap::new();
+            for (path, value) in chunk {
+                fields
+                    .entry(*path)
+                    .or_default()
+                    .push(value);
+            }
+
+            let mut qb = sqlx::QueryBuilder::new(
+                "SELECT id, external_ids FROM media WHERE kind = ",
+            );
+            qb.push_bind(kind.to_string());
+            // These redundant predicates let SQLite prove that the partial
+            // external-ID indexes apply. Without them it chose a broad kind
+            // index and scanned every movie/series row.
+            if matches!(
+                kind,
+                MediaKind::Movie | MediaKind::Series | MediaKind::TvProgram
+            ) {
+                qb.push(" AND kind IN ('movie', 'series', 'tv_program')");
+            }
+            qb.push(" AND (");
+            for (field_idx, (path, values)) in fields
+                .into_iter()
+                .enumerate()
+            {
+                if field_idx > 0 {
+                    qb.push(" OR ");
+                }
+                qb.push("json_extract(external_ids, '")
+                    .push(path)
+                    .push("') IN (");
+                let mut sep = qb.separated(", ");
+                for value in values {
+                    match value {
+                        IdValue::Text(s) => sep.push_bind(s.clone()),
+                        IdValue::Int(n) => sep.push_bind(*n),
+                    };
+                }
+                qb.push(")");
+            }
+            qb.push(")");
+            out.extend(
+                qb.build_query_as()
+                    .fetch_all(db)
+                    .await
+                    .unwrap_or_default(),
+            );
         }
         out
     }
@@ -7003,6 +7172,18 @@ impl From<sdks::stremio::Stream> for Media {
 impl TryFrom<sdks::stremio::Meta> for Media {
     type Error = anyhow::Error;
     fn try_from(meta: sdks::stremio::Meta) -> Result<Media> {
+        Media::try_from(&meta)
+    }
+}
+
+/// Borrowing variant of the `Meta` conversion. `videos` can carry thousands of
+/// entries for long-running shows, and this never needs to own it (only ever
+/// peeked via `as_ref`/`as_deref`) — callers holding a shared `Arc<Meta>`
+/// (see `stremio_meta_fetch`) can convert without cloning the whole struct
+/// just to get one owned value.
+impl TryFrom<&sdks::stremio::Meta> for Media {
+    type Error = anyhow::Error;
+    fn try_from(meta: &sdks::stremio::Meta) -> Result<Media> {
         //self.info_hash.is_some()
         // let imdb_id = meta.imdb_id.context("missing IMDB ID")?;
 
@@ -7166,7 +7347,9 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                 .map(|d| d.num_seconds()),
             // rating_critic: meta.rating_critic,
             rating_audience: meta.imdb_rating,
-            description: meta.description,
+            description: meta
+                .description
+                .clone(),
             certification: meta
                 .certification
                 .clone(),
@@ -7184,6 +7367,7 @@ impl TryFrom<sdks::stremio::Meta> for Media {
             },
             country: meta
                 .country
+                .clone()
                 .and_then(|v| {
                     v.into_iter()
                         .next()
@@ -7194,6 +7378,14 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                 if let Some(ref imdb) = meta.imdb_id {
                     ids.imdb = NonEmptyString::try_new(imdb.clone()).ok();
                 }
+                if ids
+                    .tmdb
+                    .is_none()
+                {
+                    ids.tmdb = meta
+                        .moviedb_id
+                        .and_then(|id| i64::try_from(id).ok());
+                }
                 ids.custom_stremio_type = custom_stremio_type(&meta.media_type);
                 ids
             },
@@ -7201,6 +7393,7 @@ impl TryFrom<sdks::stremio::Meta> for Media {
             end_date,
             trailers: meta
                 .trailers
+                .clone()
                 .map(|trailers| {
                     trailers
                         .into_iter()
@@ -7214,14 +7407,23 @@ impl TryFrom<sdks::stremio::Meta> for Media {
         let mut media = media;
         if let Some(url) = meta
             .poster
-            .or(meta.thumbnail)
+            .clone()
+            .or(meta
+                .thumbnail
+                .clone())
         {
             media.set_image(ImageKind::Primary, url);
         }
-        if let Some(url) = meta.logo {
+        if let Some(url) = meta
+            .logo
+            .clone()
+        {
             media.set_image(ImageKind::Logo, url);
         }
-        if let Some(url) = meta.background {
+        if let Some(url) = meta
+            .background
+            .clone()
+        {
             media.set_image(ImageKind::Backdrop, url);
         }
 
@@ -7240,13 +7442,16 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
         .try_into()?;
 
     if imdb_id.is_none() {
-        // Custom-ID path: no IMDB, derive UUIDs from the addon-specific id.
-        let custom_id = ExternalIds::from_stremio_id(&meta.id)
-            .custom_stremio_id
-            .context("imdb_id is missing and meta.id is empty")?;
-        media
-            .external_ids
-            .custom_stremio_id = Some(custom_id.clone());
+        // Catalog entries often arrive with a TMDB/TVDB or addon-specific ID
+        // but no IMDB ID. That identity is enough to import and deduplicate
+        // them; enriching genuinely new rows happens later in metadata refresh.
+        if media
+            .media_id_raw()
+            .canonical()
+            .is_none()
+        {
+            anyhow::bail!("meta is missing a usable external ID");
+        }
         let series_key = media.series_canonical_key();
         let mut media_instances = vec![media.clone()];
         if let MediaKind::Series = media.kind {
@@ -8375,6 +8580,25 @@ mod tests {
 
     use super::*;
     use crate::db::MediaIdRaw;
+
+    #[test]
+    fn stremio_meta_without_imdb_uses_its_tmdb_identity() {
+        let meta: sdks::stremio::Meta = serde_json::from_value(serde_json::json!({
+            "id": "tmdb:42",
+            "type": "movie",
+            "name": "The Answer",
+        }))
+        .expect("fixture meta deserializes");
+
+        let medias = stremio_meta_to_medias(meta).expect("TMDB-only meta converts");
+        assert_eq!(medias.len(), 1);
+        assert_eq!(
+            medias[0]
+                .external_ids
+                .tmdb,
+            Some(42)
+        );
+    }
 
     /// `stremio_meta_episode` is the per-episode fast path used by meta refresh;
     /// it must produce exactly what the whole-season builder produces for the

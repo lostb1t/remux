@@ -858,7 +858,7 @@ impl TreeAddon for OpendalAddon {
                     return Ok(None);
                 }
 
-                let gp_box = Some(Box::new(root.clone()));
+                let gp_box = Some(Arc::new(root.clone()));
                 let seasons = season_nums
                     .into_iter()
                     .map(|s| db::Media {
@@ -882,11 +882,15 @@ impl TreeAddon for OpendalAddon {
 
             db::MediaKind::Season => {
                 // Resolve grandparent (Series) — try in-memory first, then DB.
-                let gp = if let Some(gp) = root
+                // Kept as one shared `Arc`, not cloned into an owned `Media` per
+                // episode below — this stub can carry embedded relations, and a
+                // deep clone per episode is exactly the multiplication that made
+                // large-tree refreshes memory-heavy elsewhere (see `Media::parent`).
+                let gp: Option<Arc<db::Media>> = if let Some(gp) = root
                     .grandparent
-                    .as_deref()
+                    .clone()
                 {
-                    Some(gp.clone())
+                    Some(gp)
                 } else if let Some(gp_id) = root
                     .grandparent_id
                     .or(root.parent_id)
@@ -895,6 +899,7 @@ impl TreeAddon for OpendalAddon {
                         .await
                         .ok()
                         .flatten()
+                        .map(Arc::new)
                 } else {
                     None
                 };
@@ -961,7 +966,7 @@ impl TreeAddon for OpendalAddon {
                             kind: db::MediaKind::Episode,
                             parent_id: Some(root.id),
                             grandparent_id: Some(series_id),
-                            grandparent: Some(Box::new(gp.clone())),
+                            grandparent: Some(gp.clone()),
                             idx: Some(ep_num),
                             parent_idx: Some(season_num),
                             stream_info: Some(crate::stream::StreamInfo {
