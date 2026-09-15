@@ -1500,12 +1500,17 @@ pub struct Media {
     pub user_state: Option<super::UserMediaState>,
     #[sqlx(skip)]
     pub relations: Option<Vec<(MediaRelation, Media)>>,
-    /// Preloaded direct parent (season, album, channel, etc.).
+    /// Preloaded direct parent (season, album, channel, etc.). `Arc`, not
+    /// `Box`: this gets cloned once per child when fanning out a season's/
+    /// series' children (see `process_meta_item_inner`), and a `Box` clone
+    /// there deep-copies the whole stub — including any embedded relations —
+    /// into every single child instead of sharing one allocation.
     #[sqlx(skip)]
-    pub parent: Option<Box<Media>>,
-    /// Preloaded grandparent (series, artist, etc.).
+    pub parent: Option<Arc<Media>>,
+    /// Preloaded grandparent (series, artist, etc.). See `parent` for why
+    /// this is `Arc` rather than `Box`.
     #[sqlx(skip)]
-    pub grandparent: Option<Box<Media>>,
+    pub grandparent: Option<Arc<Media>>,
 
     // stream
     #[sqlx(json(nullable))]
@@ -1783,7 +1788,7 @@ impl Media {
 
         // Build a synthetic Media stub from a ParentRow + its images.
         let make_stub =
-            |row: &ParentRow, images: super::image::MediaImages| -> Box<Media> {
+            |row: &ParentRow, images: super::image::MediaImages| -> Arc<Media> {
                 let mut m = Media::default();
                 m.id = row.id;
                 m.title = row
@@ -1797,7 +1802,7 @@ impl Media {
                     .external_ids
                     .clone();
                 m.images = images;
-                Box::new(m)
+                Arc::new(m)
             };
 
         for media in records.iter_mut() {
@@ -1979,11 +1984,11 @@ impl Media {
 
     /// Build a minimal Media stub with just id and title — used when preloaded
     /// parent/grandparent data is constructed inline rather than fetched from DB.
-    pub fn stub(id: Uuid, title: impl Into<String>) -> Box<Self> {
+    pub fn stub(id: Uuid, title: impl Into<String>) -> Arc<Self> {
         let mut m = Self::default();
         m.id = id;
         m.title = title.into();
-        Box::new(m)
+        Arc::new(m)
     }
 
     pub fn parse_smart_filter(&self) -> Option<&remux_sdks::remux::CollectionFilter> {
@@ -2178,7 +2183,7 @@ impl Media {
         {
             if let Some(gp_id) = self.grandparent_id {
                 if let Some(gp) = Self::get_by_id(db, &gp_id).await? {
-                    self.grandparent = Some(Box::new(gp));
+                    self.grandparent = Some(Arc::new(gp));
                 }
             }
         }

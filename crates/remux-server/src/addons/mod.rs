@@ -2272,6 +2272,12 @@ impl AddonService {
             }
             gp
         };
+        // Shared as one Arc, not deep-cloned per child: every level-1 and
+        // level-2 child below gets its own `.grandparent`, and cloning a
+        // `Media` (including any embedded genre relations) into each of
+        // potentially thousands of children is exactly what made large-tree
+        // refreshes memory-heavy.
+        let gp_stub = Arc::new(gp_stub);
 
         let ancillary_persistence_started = Instant::now();
         db::UserMediaState::remap_orphaned_for(&ctx.db, &[media.clone()]).await;
@@ -2354,7 +2360,7 @@ impl AddonService {
                 let existing_l1 = &existing_l1;
                 async move {
                     child.parent_id = Some(actual_root_id);
-                    child.grandparent = Some(Box::new(gp_stub));
+                    child.grandparent = Some(gp_stub);
 
                     // Adopt the existing DB UUID (and refreshed_at) for this (kind, idx)
                     // position if found. The new child UUID may differ from what's stored
@@ -2467,7 +2473,7 @@ impl AddonService {
                             async move {
                         gc.parent_id = Some(actual_child_id);
                         gc.grandparent_id = Some(actual_root_id);
-                                gc.grandparent = Some(Box::new(gp_stub));
+                                gc.grandparent = Some(gp_stub);
 
                         // Adopt existing UUID + refreshed_at from the pre-loaded grandchild
                         // map. `gc` is freshly parsed from the addon's raw response, which

@@ -1787,7 +1787,7 @@ mod tests {
             custom_stremio_type: Some("anime".to_string()),
             ..Default::default()
         });
-        media.grandparent = Some(Box::new(grandparent));
+        media.grandparent = Some(Arc::new(grandparent));
 
         let streams = stremio_streams(&svc, &manifest_url, &media, None)
             .await
@@ -1823,7 +1823,7 @@ mod tests {
             custom_stremio_type: Some("anime".to_string()),
             ..Default::default()
         });
-        media.grandparent = Some(Box::new(grandparent));
+        media.grandparent = Some(Arc::new(grandparent));
 
         let streams = stremio_streams(&svc, &manifest_url, &media, None)
             .await
