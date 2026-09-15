@@ -1,7 +1,10 @@
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use futures::stream::StreamExt;
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Instant,
+};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -41,10 +44,15 @@ where
         None => Uuid::nil(),
     };
 
-    while let Some(items) = chunks
-        .next()
-        .await
-    {
+    loop {
+        let fetch_started = Instant::now();
+        let Some(items) = chunks
+            .next()
+            .await
+        else {
+            break;
+        };
+        let fetch_elapsed = fetch_started.elapsed();
         progress.report(total, max.max(1));
 
         let remaining = max.saturating_sub(total);
@@ -93,11 +101,15 @@ where
         // Remote metadata UUIDs are transient. External IDs are the sole
         // identity source, including when multiple addons describe the same
         // item.
+        let identity_match_started = Instant::now();
         let original_ids: Vec<Uuid> = items
             .iter()
             .map(|item| item.id)
             .collect();
+        let external_id_match_started = Instant::now();
         db::Media::adopt_existing_ids(&ctx.db, &mut items).await;
+        let external_id_match_elapsed = external_id_match_started.elapsed();
+        let identity_match_elapsed = identity_match_started.elapsed();
         let existing_ids: HashSet<Uuid> = items
             .iter()
             .zip(&original_ids)
@@ -122,6 +134,8 @@ where
         let (new_items, existing_items): (Vec<db::Media>, Vec<db::Media>) = items
             .into_iter()
             .partition(|m| !existing_ids.contains(&m.id));
+        let new_item_count = new_items.len();
+        let existing_item_count = existing_items.len();
 
         debug!(
             catalog = media_id,
@@ -143,6 +157,7 @@ where
         // so anything keyed on them (catalog membership rows below, the
         // stale-member diff, series reconciliation) must be remapped through
         // this or it silently targets a row that was never written.
+        let metadata_started = Instant::now();
         let id_remap = match ctx
             .addons
             .process_meta_batch(new_items.clone(), ctx, true, None)
@@ -154,6 +169,8 @@ where
                 continue;
             }
         };
+        let metadata_elapsed = metadata_started.elapsed();
+        let persistence_started = Instant::now();
         let remap = |id: Uuid| {
             id_remap
                 .get(&id)
@@ -331,6 +348,18 @@ where
         total = counts
             .values()
             .sum();
+        info!(
+            catalog = media_id,
+            fetched = new_item_count + existing_item_count,
+            new = new_item_count,
+            existing = existing_item_count,
+            fetch_elapsed = ?fetch_elapsed,
+            identity_match_elapsed = ?identity_match_elapsed,
+            external_id_match_elapsed = ?external_id_match_elapsed,
+            metadata_elapsed = ?metadata_elapsed,
+            persistence_elapsed = ?persistence_started.elapsed(),
+            "catalog import chunk timings"
+        );
         if total >= max {
             break;
         }

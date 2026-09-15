@@ -403,6 +403,28 @@ impl<A: Auth + Clone> RestClient<A> {
         &self,
         endpoint: EP,
     ) -> Result<Arc<EP::Output>, ClientError> {
+        self.execute_arc_observed(endpoint, |_, _| {})
+            .await
+    }
+
+    /// Executes an endpoint and exposes the final HTTP status and raw response
+    /// body to `on_response` before deserializing it. Cached responses do not
+    /// invoke the callback because no HTTP request was made.
+    pub async fn execute_observed<EP: Endpoint + Clone>(
+        &self,
+        endpoint: EP,
+        on_response: impl FnOnce(u16, &str),
+    ) -> Result<EP::Output, ClientError> {
+        self.execute_arc_observed(endpoint, on_response)
+            .await
+            .map(|arc| Arc::try_unwrap(arc).unwrap_or_else(|arc| (*arc).clone()))
+    }
+
+    async fn execute_arc_observed<EP: Endpoint + Clone>(
+        &self,
+        endpoint: EP,
+        on_response: impl FnOnce(u16, &str),
+    ) -> Result<Arc<EP::Output>, ClientError> {
         let path = endpoint.path();
         let mut url = self
             .base
@@ -482,19 +504,22 @@ impl<A: Auth + Clone> RestClient<A> {
         let status = resp
             .status()
             .as_u16();
-        if status == 429 {
-            let retry_after_secs = rate_limit::retry_after(
+        let retry_after_secs = (status == 429).then(|| {
+            rate_limit::retry_after(
                 resp.headers(),
                 std::time::SystemTime::now(),
                 self.default_retry_after,
             )
-            .as_secs();
-            return Err(ClientError::RateLimited { retry_after_secs });
-        }
+            .as_secs()
+        });
         let text = resp
             .text()
             .await
             .unwrap_or_default();
+        on_response(status, &text);
+        if let Some(retry_after_secs) = retry_after_secs {
+            return Err(ClientError::RateLimited { retry_after_secs });
+        }
         let on_statuses = endpoint
             .cache_options()
             .map(|o| o.on_statuses)

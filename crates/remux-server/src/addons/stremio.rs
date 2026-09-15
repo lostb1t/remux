@@ -323,9 +323,18 @@ impl CatalogAddon for StremioAddon {
                     .any(|e| e.name == "skip")
             })
             .unwrap_or(false);
+        let page_concurrency = db::Settings::get_config_or_default(&ctx.db)
+            .await
+            .meta_concurrency
+            .max(1) as usize;
 
         let stream = svc
-            .get_catalog_stream(kind.to_string(), id.to_string(), supports_skip)
+            .get_catalog_stream(
+                kind.to_string(),
+                id.to_string(),
+                supports_skip,
+                page_concurrency,
+            )
             .await?;
         let stream = stream
             .map(move |meta| {
