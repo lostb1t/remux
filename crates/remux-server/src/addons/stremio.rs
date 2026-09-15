@@ -768,36 +768,39 @@ async fn stremio_meta_fetch(
 
     match media.kind {
         db::MediaKind::Movie | db::MediaKind::Series => {
-            // Patch imdb_id into a mutable clone for root-level conversion and
-            // relations. Only the Movie/Series arm needs the owned copy — cloning
-            // it unconditionally deep-copies every entry in `videos`, which is
-            // ruinous for series with thousands of episodes.
-            let mut meta_patched = (*meta_arc).clone();
-            if meta_patched
-                .imdb_id
-                .is_none()
-                && !is_custom
-            {
-                meta_patched.imdb_id =
-                    db::ExternalIds::from_stremio_id(&meta_patched.id)
-                        .imdb
-                        .map(Into::into)
-                        .or_else(|| imdb_id.map(Into::into));
-            }
-            if meta_patched.is_error() {
+            // `meta_arc` is shared (cached across every season/episode under
+            // this series — see `medias_cache`) and can carry thousands of
+            // `videos` entries for long-running shows. Convert and build
+            // relations straight off the reference instead of cloning the
+            // whole payload just to patch one field and hand over ownership.
+            if meta_arc.is_error() {
                 warn!(
                     id = %media.id,
-                    error_title = %meta_patched.get_name().unwrap_or_default(),
-                    error_description = %meta_patched.description.as_deref().unwrap_or(""),
+                    error_title = %meta_arc.get_name().unwrap_or_default(),
+                    error_description = %meta_arc.description.as_deref().unwrap_or(""),
                     "meta addon returned an error, skipping"
                 );
                 return Ok(None);
             }
             let mut found =
-                db::Media::try_from(meta_patched.clone()).map_err(|e| anyhow!(e))?;
+                db::Media::try_from(meta_arc.as_ref()).map_err(|e| anyhow!(e))?;
             // Preserve the persisted ID — try_from recomputes it from external_ids.
             found.id = media.id;
-            let relations = build_relations(media, &meta_patched);
+            // try_from already resolves an imdb id encoded in meta.id or
+            // meta.imdb_id itself; fall back to the caller's already-known
+            // imdb id (from this item or its grandparent) only if that came
+            // up empty.
+            if found
+                .external_ids
+                .imdb
+                .is_none()
+                && !is_custom
+            {
+                found
+                    .external_ids
+                    .imdb = imdb_id.clone();
+            }
+            let relations = build_relations(media, &meta_arc);
             if !relations.is_empty() {
                 found.relations = Some(relations);
             }

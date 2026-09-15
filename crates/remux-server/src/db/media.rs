@@ -7167,6 +7167,18 @@ impl From<sdks::stremio::Stream> for Media {
 impl TryFrom<sdks::stremio::Meta> for Media {
     type Error = anyhow::Error;
     fn try_from(meta: sdks::stremio::Meta) -> Result<Media> {
+        Media::try_from(&meta)
+    }
+}
+
+/// Borrowing variant of the `Meta` conversion. `videos` can carry thousands of
+/// entries for long-running shows, and this never needs to own it (only ever
+/// peeked via `as_ref`/`as_deref`) — callers holding a shared `Arc<Meta>`
+/// (see `stremio_meta_fetch`) can convert without cloning the whole struct
+/// just to get one owned value.
+impl TryFrom<&sdks::stremio::Meta> for Media {
+    type Error = anyhow::Error;
+    fn try_from(meta: &sdks::stremio::Meta) -> Result<Media> {
         //self.info_hash.is_some()
         // let imdb_id = meta.imdb_id.context("missing IMDB ID")?;
 
@@ -7330,7 +7342,9 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                 .map(|d| d.num_seconds()),
             // rating_critic: meta.rating_critic,
             rating_audience: meta.imdb_rating,
-            description: meta.description,
+            description: meta
+                .description
+                .clone(),
             certification: meta
                 .certification
                 .clone(),
@@ -7348,6 +7362,7 @@ impl TryFrom<sdks::stremio::Meta> for Media {
             },
             country: meta
                 .country
+                .clone()
                 .and_then(|v| {
                     v.into_iter()
                         .next()
@@ -7373,6 +7388,7 @@ impl TryFrom<sdks::stremio::Meta> for Media {
             end_date,
             trailers: meta
                 .trailers
+                .clone()
                 .map(|trailers| {
                     trailers
                         .into_iter()
@@ -7386,14 +7402,23 @@ impl TryFrom<sdks::stremio::Meta> for Media {
         let mut media = media;
         if let Some(url) = meta
             .poster
-            .or(meta.thumbnail)
+            .clone()
+            .or(meta
+                .thumbnail
+                .clone())
         {
             media.set_image(ImageKind::Primary, url);
         }
-        if let Some(url) = meta.logo {
+        if let Some(url) = meta
+            .logo
+            .clone()
+        {
             media.set_image(ImageKind::Logo, url);
         }
-        if let Some(url) = meta.background {
+        if let Some(url) = meta
+            .background
+            .clone()
+        {
             media.set_image(ImageKind::Backdrop, url);
         }
 

@@ -2118,6 +2118,11 @@ impl AddonService {
                 save_pending_relations(&ctx, &[media.clone()]).await;
                 save_pending_tags(&ctx, &[media.clone()]).await;
             }
+            // refresh_meta may have already cached this series' Meta (see
+            // medias_cache) before failing on a later step — evict it here too,
+            // not just on the success paths below, or a series that keeps
+            // failing keeps its (possibly multi-MB) cached payload forever.
+            self.notify_series_done(&media);
             return media.id;
         }
 
@@ -2185,6 +2190,7 @@ impl AddonService {
         );
         if let Err(e) = upsert_result {
             error!(id = %media.id, error = %e, "failed to upsert root media");
+            self.notify_series_done(&media);
             return media.id;
         }
 
