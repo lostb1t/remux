@@ -131,7 +131,6 @@ impl Task for RefreshLibraryTask {
 
                 debug!(catalog = %full_id, max, "importing catalog items");
 
-                let stream_open_started = std::time::Instant::now();
                 let stream = match source
                     .stream(&ctx)
                     .await
@@ -142,12 +141,6 @@ impl Task for RefreshLibraryTask {
                         continue;
                     }
                 };
-
-                info!(
-                    catalog = %full_id,
-                    elapsed = ?stream_open_started.elapsed(),
-                    "catalog stream opened"
-                );
 
                 let (counts, new_counts) = import_catalog_items(
                     &ctx,
