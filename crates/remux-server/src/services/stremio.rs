@@ -84,7 +84,18 @@ impl StremioService {
                     season: None,
                     episode: None,
                 })
-                .with_cache(Duration::from_secs(3600)),
+                .with_cache(Duration::from_secs(3600))
+                // Addons report upstream failures as a 200 OK with an
+                // error-shaped body, not via HTTP status — caching one of
+                // those would replay the same stale failure from the HTTP
+                // cache for up to an hour, regardless of the addon-local
+                // `medias_cache` skip in `fetch_and_cache_meta`.
+                .should_cache(|response: &sdks::stremio::MetaResponse| {
+                    (!response
+                        .meta
+                        .is_error())
+                    .then_some(Duration::from_secs(3600))
+                }),
             )
             .await?
             .meta)
