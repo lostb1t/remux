@@ -1168,13 +1168,6 @@ impl PickCap<dyn SubtitleAddon> for AddonRuntime {
     }
 }
 
-/// Cap on a single addon's `meta_fetch` call inside `refresh_meta`. Some addons
-/// (observed: AIO, proxying to a third-party `aiometadata` backend) hang up to
-/// their own ~30s upstream timeout under load; without this, one bad addon
-/// stalls the whole item even though the other addons in the same fan-out
-/// already finished.
-const ADDON_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
-
 impl AddonService {
     async fn addons_for<T>(
         &self,
@@ -1658,6 +1651,17 @@ impl AddonService {
             return Ok(());
         }
 
+        // Cap on a single addon's `meta_fetch` call, below. Some addons
+        // (observed: AIO, proxying to a third-party `aiometadata` backend)
+        // hang up to their own ~30s upstream timeout under load; without
+        // this, one bad addon stalls the whole item even though the other
+        // addons in the same fan-out already finished.
+        let addon_fetch_timeout = Duration::from_secs(
+            config
+                .addon_fetch_timeout_secs
+                .unwrap_or(5)
+                .max(1) as u64,
+        );
         let fetch_started = std::time::Instant::now();
         let media_ref: &db::Media = media;
         let results = futures::future::join_all(
@@ -1691,7 +1695,7 @@ impl AddonService {
                         let cooldown = meta_addon
                             .rate_limit_cooldown()
                             .await;
-                        let result = if cooldown >= ADDON_FETCH_TIMEOUT {
+                        let result = if cooldown >= addon_fetch_timeout {
                             trace!(
                                 target: "remux_server::metadata_refresh",
                                 id = %media_ref.id,
@@ -1705,7 +1709,7 @@ impl AddonService {
                             // its own 30s upstream timeout) must not stall an entire item's
                             // refresh — the other addons in this join_all already finished.
                             match tokio::time::timeout(
-                                ADDON_FETCH_TIMEOUT,
+                                addon_fetch_timeout,
                                 meta_addon.meta_fetch(media_ref, ctx, config),
                             )
                             .await
@@ -1715,7 +1719,7 @@ impl AddonService {
                                     meta_addon.on_meta_fetch_timeout(media_ref);
                                     Err(anyhow!(
                                         "addon meta_fetch timed out after {:?}",
-                                        ADDON_FETCH_TIMEOUT
+                                        addon_fetch_timeout
                                     ))
                                 }
                             }
