@@ -733,6 +733,17 @@ pub trait MetaAddon: Send + Sync {
     /// and never gets a chance to remember the failure — this is the only
     /// place that can tell the addon a timeout happened for `media`.
     fn on_meta_fetch_timeout(&self, _media: &db::Media) {}
+    /// Time left before this addon's shared upstream cooldown (see
+    /// `SharedRateLimit`) clears, or `Duration::ZERO` if it has none or isn't
+    /// currently blocked. `refresh_meta` checks this before starting a
+    /// timeout-bounded `meta_fetch` call: a cooldown longer than the timeout
+    /// would otherwise consume the entire budget just waiting, and the call
+    /// gets killed before ever sending a request — indistinguishable from a
+    /// genuinely hung addon, but really just the rate limiter working as
+    /// intended.
+    async fn rate_limit_cooldown(&self) -> Duration {
+        Duration::ZERO
+    }
     /// Fetch remote image candidates for manual image selection in the UI.
     async fn images_fetch(
         &self,
@@ -1667,28 +1678,46 @@ impl AddonService {
                             addon = %addon,
                             "metadata addon request starting"
                         );
-                        // A single flaky addon (observed: AIO/aiometadata hanging up to
-                        // its own 30s upstream timeout) must not stall an entire item's
-                        // refresh — the other addons in this join_all already finished.
-                        let result = match tokio::time::timeout(
-                            ADDON_FETCH_TIMEOUT,
-                            r.meta
-                                .as_ref()
-                                .unwrap()
-                                .meta_fetch(media_ref, ctx, config),
-                        )
-                        .await
-                        {
-                            Ok(result) => result,
-                            Err(_) => {
-                                r.meta
-                                    .as_ref()
-                                    .unwrap()
-                                    .on_meta_fetch_timeout(media_ref);
-                                Err(anyhow!(
-                                    "addon meta_fetch timed out after {:?}",
-                                    ADDON_FETCH_TIMEOUT
-                                ))
+                        let meta_addon = r
+                            .meta
+                            .as_ref()
+                            .unwrap();
+                        // A shared upstream cooldown (see `SharedRateLimit`) that outlasts
+                        // our own timeout would otherwise consume the entire budget just
+                        // waiting for it to clear, dying before a request is ever sent —
+                        // indistinguishable from a genuinely hung addon, but really just
+                        // the rate limiter doing its job. Skip the attempt entirely rather
+                        // than let that masquerade as a failure.
+                        let cooldown = meta_addon
+                            .rate_limit_cooldown()
+                            .await;
+                        let result = if cooldown >= ADDON_FETCH_TIMEOUT {
+                            trace!(
+                                target: "remux_server::metadata_refresh",
+                                id = %media_ref.id,
+                                addon = %addon,
+                                cooldown = ?cooldown,
+                                "skipping addon fetch: shared rate limit cooldown exceeds timeout"
+                            );
+                            Ok(None)
+                        } else {
+                            // A single flaky addon (observed: AIO/aiometadata hanging up to
+                            // its own 30s upstream timeout) must not stall an entire item's
+                            // refresh — the other addons in this join_all already finished.
+                            match tokio::time::timeout(
+                                ADDON_FETCH_TIMEOUT,
+                                meta_addon.meta_fetch(media_ref, ctx, config),
+                            )
+                            .await
+                            {
+                                Ok(result) => result,
+                                Err(_) => {
+                                    meta_addon.on_meta_fetch_timeout(media_ref);
+                                    Err(anyhow!(
+                                        "addon meta_fetch timed out after {:?}",
+                                        ADDON_FETCH_TIMEOUT
+                                    ))
+                                }
                             }
                         };
                         trace!(

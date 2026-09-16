@@ -53,6 +53,20 @@ impl SharedRateLimit {
             tokio::time::sleep_until(blocked_until).await;
         }
     }
+
+    /// Time left before the cooldown clears — `Duration::ZERO` if not
+    /// currently blocked. Unlike `wait_for_cooldown`, this never sleeps: a
+    /// caller can use it to decide whether it's even worth starting a
+    /// request under its own bounded timeout, rather than beginning the
+    /// attempt and having the timeout fire mid-wait, indistinguishable from
+    /// a genuinely hung request.
+    pub async fn remaining_cooldown(&self) -> Duration {
+        let blocked_until = *self
+            .blocked_until
+            .lock()
+            .await;
+        blocked_until.saturating_duration_since(Instant::now())
+    }
 }
 
 pub(crate) fn retry_after(
@@ -276,6 +290,36 @@ mod tests {
                 Duration::ZERO,
                 "a limit that was never tripped must not delay callers"
             );
+        }
+
+        #[tokio::test(flavor = "current_thread", start_paused = true)]
+        async fn remaining_cooldown_is_zero_when_not_blocked() {
+            let limit = SharedRateLimit::new();
+            assert_eq!(
+                limit
+                    .remaining_cooldown()
+                    .await,
+                Duration::ZERO
+            );
+        }
+
+        #[tokio::test(flavor = "current_thread", start_paused = true)]
+        async fn remaining_cooldown_reports_time_left_without_waiting() {
+            let limit = SharedRateLimit::new();
+            limit
+                .block_for(Duration::from_secs(5))
+                .await;
+
+            let started = Instant::now();
+            let remaining = limit
+                .remaining_cooldown()
+                .await;
+            assert_eq!(
+                started.elapsed(),
+                Duration::ZERO,
+                "remaining_cooldown must never sleep, unlike wait_for_cooldown"
+            );
+            assert_eq!(remaining, Duration::from_secs(5));
         }
 
         #[tokio::test(flavor = "current_thread", start_paused = true)]

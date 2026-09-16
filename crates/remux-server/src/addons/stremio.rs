@@ -423,6 +423,12 @@ impl MetaAddon for StremioAddon {
         }
     }
 
+    async fn rate_limit_cooldown(&self) -> std::time::Duration {
+        common::addon_rate_limit(self.addon_id)
+            .remaining_cooldown()
+            .await
+    }
+
     fn on_series_done(&self, meta_id: &str) {
         self.medias_cache
             .lock()

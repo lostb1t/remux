@@ -121,6 +121,12 @@ impl MetaAddon for TmdbAddon {
         }
     }
 
+    async fn rate_limit_cooldown(&self) -> Duration {
+        common::tmdb_rate_limit()
+            .remaining_cooldown()
+            .await
+    }
+
     async fn images_fetch(
         &self,
         media: &db::Media,
