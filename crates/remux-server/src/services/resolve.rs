@@ -2182,7 +2182,7 @@ mod tests {
                 kind: db::MediaKind::Episode,
                 parent_id: Some(season.id),
                 grandparent_id: Some(series.id),
-                grandparent: Some(Box::new(db::Media {
+                grandparent: Some(std::sync::Arc::new(db::Media {
                     kind: db::MediaKind::Series,
                     external_ids: db::ExternalIds {
                         tmdb: Some(4242),
@@ -2212,7 +2212,7 @@ mod tests {
             let episode = db::Media {
                 kind: db::MediaKind::Episode,
                 grandparent_id: Some(season.id),
-                grandparent: Some(Box::new(db::Media {
+                grandparent: Some(std::sync::Arc::new(db::Media {
                     kind: db::MediaKind::Season,
                     external_ids: db::ExternalIds {
                         tmdb: Some(4242),
@@ -2693,7 +2693,7 @@ mod tests {
             kind: db::MediaKind::Episode,
             parent_idx: Some(1),
             idx: Some(1),
-            grandparent: Some(Box::new(db::Media {
+            grandparent: Some(std::sync::Arc::new(db::Media {
                 title: "The Wire".into(),
                 kind: db::MediaKind::Series,
                 external_ids: db::ExternalIds {
