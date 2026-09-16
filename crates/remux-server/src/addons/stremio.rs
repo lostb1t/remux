@@ -827,10 +827,19 @@ async fn fetch_and_cache_meta(
     };
 
     let arc = meta;
-    cache
-        .lock()
-        .unwrap()
-        .insert(meta_id, Arc::clone(&arc));
+    // The addon answered 200 OK, but the payload itself signals failure
+    // (Stremio addons report upstream errors this way, not via HTTP status —
+    // e.g. AIO's own upstream coming back empty). Caching this would burn a
+    // transient error in for the rest of this series' tree walk: every other
+    // season/episode would replay the exact same stale error via `cache`,
+    // even seconds later once the addon has recovered. Leave it uncached so
+    // the next lookup for this series actually retries the fetch.
+    if !arc.is_error() {
+        cache
+            .lock()
+            .unwrap()
+            .insert(meta_id, Arc::clone(&arc));
+    }
     Ok(arc)
 }
 
@@ -1876,7 +1885,7 @@ mod tests {
             custom_stremio_type: Some("anime".to_string()),
             ..Default::default()
         });
-        media.grandparent = Some(Box::new(grandparent));
+        media.grandparent = Some(Arc::new(grandparent));
 
         let streams = stremio_streams(&svc, &manifest_url, &media, None)
             .await
@@ -1912,7 +1921,7 @@ mod tests {
             custom_stremio_type: Some("anime".to_string()),
             ..Default::default()
         });
-        media.grandparent = Some(Box::new(grandparent));
+        media.grandparent = Some(Arc::new(grandparent));
 
         let streams = stremio_streams(&svc, &manifest_url, &media, None)
             .await
