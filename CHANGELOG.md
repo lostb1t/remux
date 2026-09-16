@@ -1,3 +1,25 @@
+# [0.32.0](https://github.com/lostb1t/remux/compare/v0.31.0...v0.32.0) (2026-09-16)
+
+
+### Bug Fixes
+
+* **addons:** refresh capabilities when config changes ([#480](https://github.com/lostb1t/remux/issues/480)) ([d296284](https://github.com/lostb1t/remux/commit/d2962844a4ef7249be470f6f9b12ab94ac52e83e))
+* **ffmpeg:** only apply HTTP reconnect flags to HTTP inputs ([#478](https://github.com/lostb1t/remux/issues/478)) ([69b10d8](https://github.com/lostb1t/remux/commit/69b10d84dfe47607307c13e942694e7972f97304))
+* **playback:** honor the probe fallback on the stream request that follows ([#464](https://github.com/lostb1t/remux/issues/464)) ([bf44efc](https://github.com/lostb1t/remux/commit/bf44efcacc0d6c76875dd22049e401e1cff14fd3))
+* **playback:** pick HEVC sample-entry tag from the client's DeviceProfile ([#413](https://github.com/lostb1t/remux/issues/413)) ([31a31c2](https://github.com/lostb1t/remux/commit/31a31c2263e615902982415d446c196050a9b210))
+* **playback:** serve mkv-source direct stream as-is to preserve HTTP Range support ([#440](https://github.com/lostb1t/remux/issues/440)) ([baa6502](https://github.com/lostb1t/remux/commit/baa6502c28eb6e41ab0d6d2320e7510e49b67f17))
+* **search:** replace matched search results with the stored row wholesale ([#479](https://github.com/lostb1t/remux/issues/479)) ([ad896ee](https://github.com/lostb1t/remux/commit/ad896eeee74ef0c0dc34bc11b730baea207588f7))
+* **sessions:** persist stop reports that arrive without a play session ([#463](https://github.com/lostb1t/remux/issues/463)) ([69790b7](https://github.com/lostb1t/remux/commit/69790b7b307d172e5df2314d9195b6bf16bc84d7))
+* stop opendal-local .strm scan from deadlocking on URL collisions ([#467](https://github.com/lostb1t/remux/issues/467)) ([790ba7f](https://github.com/lostb1t/remux/commit/790ba7faf64a778d14374493de86d34bdd08d263))
+* **torrent:** release torrents after their last playback user ([#476](https://github.com/lostb1t/remux/issues/476)) ([c177d11](https://github.com/lostb1t/remux/commit/c177d11f732fa4b9b269f94c759ae146406a9688))
+* **users:** collapse a saved OrderedViews that matches the live default ([#489](https://github.com/lostb1t/remux/issues/489)) ([a4e4933](https://github.com/lostb1t/remux/commit/a4e4933ed451937a6084fdad94a71dd5f7d8b0fe))
+* **webhooks:** include SeriesProviderIds in Episode/Season webhook payloads ([#487](https://github.com/lostb1t/remux/issues/487)) ([53842ca](https://github.com/lostb1t/remux/commit/53842ca9b00274216dda70a1413cb0e8df6e9e40))
+
+
+### Features
+
+* **streams:** make the stream groups page use the drag-and-drop list ([#496](https://github.com/lostb1t/remux/issues/496)) ([1b8a4b6](https://github.com/lostb1t/remux/commit/1b8a4b6341197b6740fc80b18c217356903a47c8))
+
 # [0.31.0](https://github.com/lostb1t/remux/compare/v0.30.0...v0.31.0) (2026-09-11)
 
 
