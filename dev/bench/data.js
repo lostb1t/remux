@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789387648812,
+  "lastUpdate": 1789547658303,
   "repoUrl": "https://github.com/lostb1t/remux",
   "entries": {
     "Benchmark": [
@@ -4351,6 +4351,142 @@ window.BENCHMARK_DATA = {
             "name": "nextup_date_cutoff/30days",
             "value": 269533304,
             "range": "± 77065477",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "semantic-release-bot",
+            "username": "semantic-release-bot",
+            "email": "semantic-release-bot@martynus.net"
+          },
+          "committer": {
+            "name": "semantic-release-bot",
+            "username": "semantic-release-bot",
+            "email": "semantic-release-bot@martynus.net"
+          },
+          "id": "1c848b906a216cf1500c2627beb8e47db1b9b11e",
+          "message": "chore(release): 0.32.0 [skip ci]\n\n# [0.32.0](https://github.com/lostb1t/remux/compare/v0.31.0...v0.32.0) (2026-09-16)\n\n### Bug Fixes\n\n* **addons:** refresh capabilities when config changes ([#480](https://github.com/lostb1t/remux/issues/480)) ([d296284](https://github.com/lostb1t/remux/commit/d2962844a4ef7249be470f6f9b12ab94ac52e83e))\n* **ffmpeg:** only apply HTTP reconnect flags to HTTP inputs ([#478](https://github.com/lostb1t/remux/issues/478)) ([69b10d8](https://github.com/lostb1t/remux/commit/69b10d84dfe47607307c13e942694e7972f97304))\n* **playback:** honor the probe fallback on the stream request that follows ([#464](https://github.com/lostb1t/remux/issues/464)) ([bf44efc](https://github.com/lostb1t/remux/commit/bf44efcacc0d6c76875dd22049e401e1cff14fd3))\n* **playback:** pick HEVC sample-entry tag from the client's DeviceProfile ([#413](https://github.com/lostb1t/remux/issues/413)) ([31a31c2](https://github.com/lostb1t/remux/commit/31a31c2263e615902982415d446c196050a9b210))\n* **playback:** serve mkv-source direct stream as-is to preserve HTTP Range support ([#440](https://github.com/lostb1t/remux/issues/440)) ([baa6502](https://github.com/lostb1t/remux/commit/baa6502c28eb6e41ab0d6d2320e7510e49b67f17))\n* **search:** replace matched search results with the stored row wholesale ([#479](https://github.com/lostb1t/remux/issues/479)) ([ad896ee](https://github.com/lostb1t/remux/commit/ad896eeee74ef0c0dc34bc11b730baea207588f7))\n* **sessions:** persist stop reports that arrive without a play session ([#463](https://github.com/lostb1t/remux/issues/463)) ([69790b7](https://github.com/lostb1t/remux/commit/69790b7b307d172e5df2314d9195b6bf16bc84d7))\n* stop opendal-local .strm scan from deadlocking on URL collisions ([#467](https://github.com/lostb1t/remux/issues/467)) ([790ba7f](https://github.com/lostb1t/remux/commit/790ba7faf64a778d14374493de86d34bdd08d263))\n* **torrent:** release torrents after their last playback user ([#476](https://github.com/lostb1t/remux/issues/476)) ([c177d11](https://github.com/lostb1t/remux/commit/c177d11f732fa4b9b269f94c759ae146406a9688))\n* **users:** collapse a saved OrderedViews that matches the live default ([#489](https://github.com/lostb1t/remux/issues/489)) ([a4e4933](https://github.com/lostb1t/remux/commit/a4e4933ed451937a6084fdad94a71dd5f7d8b0fe))\n* **webhooks:** include SeriesProviderIds in Episode/Season webhook payloads ([#487](https://github.com/lostb1t/remux/issues/487)) ([53842ca](https://github.com/lostb1t/remux/commit/53842ca9b00274216dda70a1413cb0e8df6e9e40))\n\n### Features\n\n* **streams:** make the stream groups page use the drag-and-drop list ([#496](https://github.com/lostb1t/remux/issues/496)) ([1b8a4b6](https://github.com/lostb1t/remux/commit/1b8a4b6341197b6740fc80b18c217356903a47c8))",
+          "timestamp": "2026-09-16T06:15:44Z",
+          "url": "https://github.com/lostb1t/remux/commit/1c848b906a216cf1500c2627beb8e47db1b9b11e"
+        },
+        "date": 1789547656034,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "items_latest/limit=20&recursive=false",
+            "value": 1180672160,
+            "range": "± 121478779",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&recursive=false",
+            "value": 1240080549,
+            "range": "± 102505717",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=500&recursive=false",
+            "value": 1476114956,
+            "range": "± 175404129",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&include_item_types=Movie&recursive=false",
+            "value": 305622746,
+            "range": "± 100335536",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&include_item_types=Series&recursive=false",
+            "value": 359241990,
+            "range": "± 147198376",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=20&recursive=false",
+            "value": 699555644,
+            "range": "± 133494791",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&recursive=false",
+            "value": 691587107,
+            "range": "± 155645536",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=500&recursive=false",
+            "value": 905605011,
+            "range": "± 147514004",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&include_item_types=Movie&recursive=false",
+            "value": 771051017,
+            "range": "± 138656822",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&include_item_types=Series&recursive=false",
+            "value": 1023849958,
+            "range": "± 188158081",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&filters=IsPlayed&recursive=false",
+            "value": 397409349,
+            "range": "± 131146874",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&sort_by=DateCreated&recursive=false",
+            "value": 1382889857,
+            "range": "± 174422187",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=50&recursive=false",
+            "value": 1130686590,
+            "range": "± 103889475",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=200&recursive=false",
+            "value": 1126080736,
+            "range": "± 99770384",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=500&recursive=false",
+            "value": 1121119000,
+            "range": "± 147161692",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/limit=500&enable_resumable=true&recursive=false",
+            "value": 1117778210,
+            "range": "± 100970429",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/limit=500&enable_resumable=false&recursive=false",
+            "value": 1104473122,
+            "range": "± 79175151",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/epoch",
+            "value": 1111086573,
+            "range": "± 126763507",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/30days",
+            "value": 273584107,
+            "range": "± 79760221",
             "unit": "ns/iter"
           }
         ]
