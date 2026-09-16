@@ -335,10 +335,21 @@ impl CatalogAddon for StremioAddon {
                     .any(|e| e.name == "skip")
             })
             .unwrap_or(false);
+        // Catalog pages are fetched speculatively — up to `page_concurrency`
+        // pages start in parallel before the first empty/404 page is even
+        // seen, since there's no way to know the true page count up front.
+        // `meta_concurrency` bounds a very different thing (how many *items*
+        // get enriched concurrently across a whole refresh) and can be set
+        // much higher than is sane for this; capped independently so a large
+        // `meta_concurrency` can't turn a one-page catalog into a burst of
+        // speculative requests (and avoidable 429s) against one addon.
+        const MAX_CATALOG_PAGE_CONCURRENCY: usize = 5;
         let page_concurrency = db::Settings::get_config_or_default(&ctx.db)
             .await
             .meta_concurrency
-            .max(1) as usize;
+            .max(1)
+            .min(MAX_CATALOG_PAGE_CONCURRENCY as i64)
+            as usize;
 
         let stream = svc
             .get_catalog_stream(
@@ -535,6 +546,12 @@ impl TreeAddon for StremioAddon {
             }
             _ => Ok(None),
         }
+    }
+
+    async fn rate_limit_cooldown(&self) -> std::time::Duration {
+        common::addon_rate_limit(self.addon_id)
+            .remaining_cooldown()
+            .await
     }
 }
 
@@ -952,13 +969,26 @@ async fn stremio_meta_fetch(
     // a fresh `error!()` just floods the log without telling anyone anything
     // new. `Ok(None)` (not an Err) means "this addon has nothing to add",
     // the same as an addon that never applied to this item at all.
-    if let Some(meta_id) = stremio_meta_lookup_id(media)
-        && failed
+    //
+    // A cache hit always wins over this, checked first: a concurrent call
+    // for the same series may have already fetched successfully after this
+    // one's own failure was recorded (the two can race, since permits are
+    // shared across an entire batch, not scoped per series), and skipping a
+    // real, cached success because of a marker from an earlier, unrelated
+    // failure would be strictly worse than the redundant lock check.
+    if let Some(meta_id) = stremio_meta_lookup_id(media) {
+        let cached = medias_cache
             .lock()
             .unwrap()
-            .contains(&meta_id)
-    {
-        return Ok(None);
+            .contains_key(&meta_id);
+        if !cached
+            && failed
+                .lock()
+                .unwrap()
+                .contains(&meta_id)
+        {
+            return Ok(None);
+        }
     }
 
     let imdb_id = media

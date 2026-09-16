@@ -345,8 +345,12 @@ pub fn tmdb_client_from_config(
                 )
                 // TMDB does not send Retry-After on 429, so use its short
                 // throttle window instead of the SDK's generic 60-second
-                // fallback.
-                .with_default_retry_after(std::time::Duration::from_secs(1))
+                // fallback. Must match `addons/tmdb.rs`'s own client factory:
+                // both now feed the same shared cooldown, and a 429 seen on
+                // either one installs this value as the block duration — two
+                // different fallbacks would make the effective cooldown
+                // depend on which client happened to see the 429 first.
+                .with_default_retry_after(std::time::Duration::from_secs(2))
                 .with_shared_rate_limit(tmdb_rate_limit())
         })
 }

@@ -608,6 +608,12 @@ impl TreeAddon for TmdbAddon {
             _ => Ok(None),
         }
     }
+
+    async fn rate_limit_cooldown(&self) -> Duration {
+        common::tmdb_rate_limit()
+            .remaining_cooldown()
+            .await
+    }
 }
 
 fn tmdb_client(
@@ -622,7 +628,10 @@ fn tmdb_client(
         // TMDB never sends a `Retry-After` header on 429s (they dropped
         // fixed rate limiting in 2019), so without this every 429 falls
         // back to the SDK's generic 60s default, which is far longer than
-        // TMDB's actual throttle window.
+        // TMDB's actual throttle window. Keep this in sync with
+        // `common::tmdb_client_from_config`'s value — both share one
+        // cooldown, and a 429 seen on either client installs its own
+        // fallback as the block duration.
         .with_default_retry_after(std::time::Duration::from_secs(2))
         // This is the client TmdbAddon's own meta_fetch/tree/catalog use —
         // the highest-traffic TMDB path during a refresh. Without sharing

@@ -763,6 +763,14 @@ pub trait TreeAddon: Send + Sync {
         root: &db::Media,
         ctx: &AppContext,
     ) -> Result<Option<Vec<db::Media>>>;
+    /// Time left before this addon's shared upstream cooldown clears. See
+    /// `MetaAddon::rate_limit_cooldown` — the same reasoning applies here:
+    /// `get_direct_children` bounds this call with a timeout, and without
+    /// this check a long cooldown would consume that whole budget waiting,
+    /// indistinguishable from a genuinely hung tree fetch.
+    async fn rate_limit_cooldown(&self) -> Duration {
+        Duration::ZERO
+    }
 }
 
 #[async_trait]
@@ -1977,7 +1985,14 @@ impl AddonService {
         &self,
         node: &db::Media,
         ctx: &AppContext,
+        config: &api::ServerConfiguration,
     ) -> Vec<db::Media> {
+        let fetch_timeout = Duration::from_secs(
+            config
+                .addon_fetch_timeout_secs
+                .unwrap_or(5)
+                .max(1) as u64,
+        );
         let applicable: Vec<Arc<dyn TreeAddon>> = self
             .inner
             .load()
@@ -2023,10 +2038,30 @@ impl AddonService {
             .collect();
 
         for addon in &applicable {
-            match addon
-                .get_children(node, ctx)
-                .await
+            let cooldown = addon
+                .rate_limit_cooldown()
+                .await;
+            if cooldown >= fetch_timeout {
+                debug!(
+                    id = %node.id,
+                    cooldown = ?cooldown,
+                    "skipping tree fetch: shared rate limit cooldown exceeds timeout"
+                );
+                continue;
+            }
+            let result = match tokio::time::timeout(
+                fetch_timeout,
+                addon.get_children(node, ctx),
+            )
+            .await
             {
+                Ok(result) => result,
+                Err(_) => Err(anyhow!(
+                    "addon get_children timed out after {:?}",
+                    fetch_timeout
+                )),
+            };
+            match result {
                 Ok(Some(children)) if !children.is_empty() => return children,
                 Ok(_) => continue,
                 Err(e) => debug!(id = %node.id, error = %e, "get_children failed"),
@@ -2157,6 +2192,13 @@ impl AddonService {
                 save_pending_relations(&ctx, &[media.clone()]).await;
                 save_pending_tags(&ctx, &[media.clone()]).await;
             }
+            // Evict per-series caches/failure markers here too, not just on
+            // the success paths below — `medias_cache` and `failed` are
+            // scoped to the addon's own lifetime, not one refresh run, so a
+            // series that hits this path and never reaches the eviction call
+            // stays cached (or permanently blacklisted) across every future
+            // refresh until the server restarts.
+            self.notify_series_done(&media);
             return media.id;
         }
 
@@ -2208,6 +2250,7 @@ impl AddonService {
         let pending_images = std::mem::take(&mut media.images);
         if let Err(e) = db::Media::upsert(&ctx.db, &[media.clone()]).await {
             error!(id = %media.id, error = %e, "failed to upsert root media");
+            self.notify_series_done(&media);
             return media.id;
         }
 
@@ -2287,7 +2330,7 @@ impl AddonService {
 
         // Level 1: direct children (Seasons, Albums, etc.)
         let raw_level1 = self
-            .get_direct_children(&media, &ctx)
+            .get_direct_children(&media, &ctx, &config)
             .await;
         if raw_level1.is_empty() {
             self.notify_series_done(&media);
@@ -2438,7 +2481,7 @@ impl AddonService {
                 async move {
                     let actual_child_id = child.id;
                     let raw_level2 = svc
-                        .get_direct_children(child, &ctx)
+                        .get_direct_children(child, &ctx, &config)
                         .await;
                     if raw_level2.is_empty() {
                         return;
@@ -3955,7 +3998,7 @@ mod tests {
             .clone();
 
         let children = service
-            .get_direct_children(&series, &ctx)
+            .get_direct_children(&series, &ctx, &api::ServerConfiguration::default())
             .await;
 
         assert!(

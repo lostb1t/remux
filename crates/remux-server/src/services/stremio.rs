@@ -249,7 +249,17 @@ impl StremioService {
                                 extra: extra_query,
                             },
                             |status, body| {
-                                raw_response = Some((status, body.to_string()))
+                                // Bounded: this fires for every page regardless of
+                                // outcome, including large successful pages whose
+                                // body is never read below — and an addon's raw
+                                // response is untrusted, unbounded-size input that
+                                // must not be logged in full (see the `Secret`
+                                // wrapper `ClientError` itself uses for bodies).
+                                let snippet: String = body
+                                    .chars()
+                                    .take(300)
+                                    .collect();
+                                raw_response = Some((status, snippet))
                             },
                         )
                         .await;
@@ -262,6 +272,19 @@ impl StremioService {
                             metas = response.metas.len(),
                             "catalog page fetched"
                         ),
+                        // A 404 here is the addon's normal "no more pages" signal
+                        // (see `is_404`), not a real failure — every completed
+                        // catalog import ends on one. Logging it as a failure
+                        // would flag completely normal pagination on every run.
+                        Err(error) if is_404(error) => {
+                            tracing::debug!(
+                                kind = %kind,
+                                id = %id,
+                                page,
+                                skip,
+                                "catalog pagination reached end of catalog (404)"
+                            );
+                        }
                         Err(error) => {
                             let status = raw_response
                                 .as_ref()

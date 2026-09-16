@@ -125,6 +125,7 @@ impl Task for RefreshLibraryTask {
                     Some(s) => s,
                     None => {
                         warn!(catalog = %full_id, "no addon found for catalog, skipping");
+                        catalog_item_progress.set(100.0);
                         continue;
                     }
                 };
@@ -138,6 +139,7 @@ impl Task for RefreshLibraryTask {
                     Ok(s) => s,
                     Err(e) => {
                         error!(catalog = %full_id, error = %e, "failed to open catalog stream");
+                        catalog_item_progress.set(100.0);
                         continue;
                     }
                 };

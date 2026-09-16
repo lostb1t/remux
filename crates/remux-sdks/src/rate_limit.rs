@@ -522,7 +522,7 @@ mod tests {
             // (see `tmdb_rate_limit`), not two requests to the same server.
             let other_client = RestClient::new(&other_server.base_url())
                 .unwrap()
-                .with_shared_rate_limit(shared);
+                .with_shared_rate_limit(shared.clone());
 
             // Spawned so it races the second request instead of fully waiting
             // out its own cooldown before this task even starts the other
@@ -533,9 +533,17 @@ mod tests {
                     .execute(Probe("/limited"))
                     .await;
             });
-            // Give the spawned request enough of a head start to trip the
-            // limit before this one checks it.
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            // Wait for the cooldown to actually be recorded rather than
+            // guessing how long that takes — a fixed sleep here would be a
+            // timing race against however long the spawned task takes to
+            // reach that point under CI/executor load.
+            while shared
+                .remaining_cooldown()
+                .await
+                == Duration::ZERO
+            {
+                tokio::task::yield_now().await;
+            }
 
             let started = Instant::now();
             other_client
