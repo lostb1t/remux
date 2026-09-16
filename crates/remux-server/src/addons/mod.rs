@@ -1741,7 +1741,7 @@ impl AddonService {
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    error!(addon = %r.row.name, error = ?e, "meta addon error")
+                    error!(addon = %r.row.name, error = %e, "meta addon error")
                 }
             }
         }
