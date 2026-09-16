@@ -472,7 +472,7 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                                 let gid_del = group.id;
                                 rsx! {
                                     div {
-                                        class: "flex min-h-20 hover:bg-[rgba(0,0,0,0.03)]",
+                                        class: "flex min-h-20 items-center",
                                         key: "{group.id}",
                                         div { class: "h-full flex-1 min-w-0 px-3 py-[10px]",
                                             div { style: "font-weight:500;font-size:.85rem", "{group.name}" }
