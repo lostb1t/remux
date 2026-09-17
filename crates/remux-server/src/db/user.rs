@@ -1,7 +1,7 @@
 use super::{FilterResult, QueryBuilderExt, Settings};
 use crate::{
     IntoApiError, OptionExt, ResultExt,
-    api::{ScrollDirection, SortOrder},
+    api::{ScrollDirection, SortOrder, UpdateUserItemDataDto},
     common::get_uuid,
     sdks,
 };
@@ -930,6 +930,64 @@ impl UserMediaState {
     ) -> Result<Self> {
         let mut ms = Self::get_or_new(db, user, media).await?;
         ms.rating = rating.map(UserRating::value);
+        ms.save(db)
+            .await?;
+        Ok(ms)
+    }
+
+    /// Applies a Jellyfin-compatible partial user-data update (`POST
+    /// /useritems/{id}/userdata`). Deliberately dumb, mirroring Jellyfin's own
+    /// `UserDataManager.SaveUserData(User, BaseItem, UpdateUserItemDataDto,
+    /// _)`: each present field is written independently, with none of
+    /// `Media::mark_played`/`update_playback`'s threshold math, parent/child
+    /// cascading, or automatic `playback_position` reset. Callers that want
+    /// that richer behavior (normal playback reporting, the played-state
+    /// toggle in the UI) should keep using those instead — this exists
+    /// specifically for sync clients (e.g. CrossWatch) restoring state
+    /// verbatim from another server.
+    pub async fn apply_update(
+        db: &SqlitePool,
+        user: &User,
+        media: &super::Media,
+        update: &UpdateUserItemDataDto,
+    ) -> Result<Self> {
+        let mut ms = Self::get_or_new(db, user, media).await?;
+
+        if let Some(ticks) = update.playback_position_ticks {
+            ms.playback_position = ticks / 10_000_000;
+        }
+        if let Some(count) = update.play_count {
+            ms.play_count = count as i64;
+        }
+        if let Some(favorite) = update.is_favorite {
+            ms.favorite = favorite;
+        }
+        if let Some(date) = update.last_played_date {
+            ms.last_played_at = Some(date.naive_utc());
+        }
+        // `played` has no dedicated column — `db_state_to_dto` derives it as
+        // `play_count > 0 || played_at.is_some()` — so honoring an explicit
+        // `false` here means clearing both, not just one. Setting `true` only
+        // needs `play_count` bumped; unlike `Media::apply_played`, this must
+        // not also zero `playback_position` — a real request from CrossWatch
+        // sets both `Played` and `PlaybackPositionTicks` together, and this
+        // path must not overwrite the latter as a side effect of the former.
+        if let Some(played) = update.played {
+            if played {
+                ms.play_count = ms
+                    .play_count
+                    .max(1);
+            } else {
+                ms.play_count = 0;
+                ms.played_at = None;
+            }
+        }
+        if let Some(rating) = update.rating {
+            ms.rating = Some(rating);
+        } else if let Some(likes) = update.likes {
+            ms.rating = Some(UserRating::from_likes(likes).value());
+        }
+
         ms.save(db)
             .await?;
         Ok(ms)
