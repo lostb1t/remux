@@ -47,42 +47,35 @@ fn scoped_id(addon_id: Uuid, raw: &str) -> String {
     format!("{addon_id}:{raw}")
 }
 
-/// Recovers the addon's own id from a scoped one. Returns the whole string when
-/// it carries no scope prefix, so a row written before scoping still resolves.
-fn unscope(addon_id: Uuid, scoped: &str) -> String {
-    scoped
-        .strip_prefix(&format!("{addon_id}:"))
-        .unwrap_or(scoped)
-        .to_string()
+/// Recovers the addon's own id from a scoped one.
+///
+/// Returns `None` for an id scoped to a *different* addon: treating it as this
+/// addon's raw id would let addon B issue requests (`/stream/{raw}`, tree
+/// expansion) against an id addon A minted, which addon B doesn't own and may
+/// not even parse the same way. A string with no recognizable UUID prefix at
+/// all is returned unscoped, so a row written before scoping existed still
+/// resolves.
+fn unscope(addon_id: Uuid, scoped: &str) -> Option<String> {
+    match scoped.split_once(':') {
+        Some((prefix, rest)) => match prefix.parse::<Uuid>() {
+            Ok(scoped_addon_id) if scoped_addon_id == addon_id => {
+                Some(rest.to_string())
+            }
+            Ok(_) => None,
+            Err(_) => Some(scoped.to_string()),
+        },
+        None => Some(scoped.to_string()),
+    }
 }
 
-/// The Eclipse id this media was created from, if any.
+/// The Eclipse id this media was created from, if any. `None` both when the
+/// media has no Eclipse id and when it has one scoped to a different addon.
 fn eclipse_id_of(addon_id: Uuid, media: &db::Media) -> Option<String> {
     media
         .external_ids
         .eclipse_id
         .as_deref()
-        .map(|scoped| unscope(addon_id, scoped))
-}
-
-/// Stable UUID for an Eclipse item.
-///
-/// Tracks key on ISRC when present so the same recording served by two
-/// different addons — or by Eclipse and Deezer — lands on one row; everything
-/// else keys on the scoped id. This mirrors the priority in
-/// `MediaIdRaw::canonical`, which is what actually derives persisted UUIDs.
-fn item_uuid(
-    kind: &db::MediaKind,
-    addon_id: Uuid,
-    raw_id: &str,
-    isrc: Option<&str>,
-) -> Uuid {
-    match (kind, isrc) {
-        (db::MediaKind::Track, Some(isrc)) => {
-            common::stable_media_uuid(kind, &format!("isrc:{isrc}"))
-        }
-        _ => common::stable_media_uuid(kind, &scoped_id(addon_id, raw_id)),
-    }
+        .and_then(|scoped| unscope(addon_id, scoped))
 }
 
 // ---------------------------------------------------------------------------
@@ -115,13 +108,7 @@ fn ids(
 /// names live in `external_ids`, which `Media::artist_name`/`album_name` read.
 fn track_to_media(addon_id: Uuid, t: &ec::Track) -> db::Media {
     let mut media = db::Media {
-        id: item_uuid(
-            &db::MediaKind::Track,
-            addon_id,
-            &t.id,
-            t.isrc
-                .as_deref(),
-        ),
+        id: Uuid::new_v4(),
         title: t
             .title
             .clone(),
@@ -201,7 +188,7 @@ fn album_track_to_media(
 
 fn album_to_media(addon_id: Uuid, a: &ec::Album) -> db::Media {
     let mut media = db::Media {
-        id: item_uuid(&db::MediaKind::Album, addon_id, &a.id, None),
+        id: Uuid::new_v4(),
         title: a
             .title
             .clone(),
@@ -239,7 +226,7 @@ fn album_to_media(addon_id: Uuid, a: &ec::Album) -> db::Media {
 
 fn artist_to_media(addon_id: Uuid, a: &ec::Artist) -> db::Media {
     let mut media = db::Media {
-        id: item_uuid(&db::MediaKind::Artist, addon_id, &a.id, None),
+        id: Uuid::new_v4(),
         title: a
             .name
             .clone(),
@@ -265,7 +252,7 @@ fn artist_to_media(addon_id: Uuid, a: &ec::Artist) -> db::Media {
 /// A playlist, with its tracks attached as `Playlist`-role relations — the
 /// shape the import pipeline's `save_pending_relations` links as members.
 fn playlist_to_media(addon_id: Uuid, p: &ec::Playlist) -> db::Media {
-    let playlist_id = item_uuid(&db::MediaKind::Playlist, addon_id, &p.id, None);
+    let playlist_id = Uuid::new_v4();
     let relations: Vec<(db::MediaRelation, db::Media)> = p
         .tracks
         .iter()
@@ -1299,43 +1286,80 @@ mod tests {
 
     // -- identity ----------------------------------------------------------
 
-    /// Two addons serving the same raw id must not collapse onto one row.
+    /// Item construction assigns a fresh random id every time — mirroring
+    /// `TryFrom<&sdks::stremio::Meta> for Media` — and never derives one from
+    /// the raw id or ISRC. Collapsing/scoping guarantees now live entirely in
+    /// what gets stored in `external_ids` plus the downstream external-id
+    /// search, not in id construction.
+    #[test]
+    fn track_construction_never_reuses_an_id() {
+        let a = Uuid::from_u128(1);
+        let t = track("track_1", "Hello", "Adele");
+        assert_ne!(track_to_media(a, &t).id, track_to_media(a, &t).id);
+    }
+
+    /// Two addons serving the same raw id must not collapse onto one row: the
+    /// id each stores in `external_ids.eclipse_id` is namespaced per addon, so
+    /// a later external-id search sees them as unrelated items.
     #[test]
     fn the_same_raw_id_from_two_addons_is_two_items() {
         let a = Uuid::from_u128(1);
         let b = Uuid::from_u128(2);
+        let t = track("track_1", "Hello", "Adele");
         assert_ne!(
-            item_uuid(&db::MediaKind::Track, a, "track_1", None),
-            item_uuid(&db::MediaKind::Track, b, "track_1", None)
+            track_to_media(a, &t)
+                .external_ids
+                .eclipse_id,
+            track_to_media(b, &t)
+                .external_ids
+                .eclipse_id
         );
     }
 
-    /// The same recording from two addons *must* collapse onto one row, which is
-    /// what makes playback fall back between sources and keeps history intact.
+    /// The same recording from two addons *must* carry the same ISRC, which is
+    /// what makes `Media::find_by_external_ids` collapse them onto one row and
+    /// lets playback fall back between sources and keeps history intact. ISRC
+    /// is deliberately stored unscoped (unlike the addon-scoped raw id).
     #[test]
-    fn the_same_isrc_from_two_addons_is_one_item() {
+    fn the_same_isrc_from_two_addons_carries_through_unscoped() {
         let a = Uuid::from_u128(1);
         let b = Uuid::from_u128(2);
+        let ta = ec::Track {
+            isrc: Some("USRC11903813".to_string()),
+            ..track("track_1", "Hello", "Adele")
+        };
+        let tb = ec::Track {
+            isrc: Some("USRC11903813".to_string()),
+            ..track("different_id", "Hello", "Adele")
+        };
         assert_eq!(
-            item_uuid(&db::MediaKind::Track, a, "track_1", Some("USRC11903813")),
-            item_uuid(
-                &db::MediaKind::Track,
-                b,
-                "different_id",
-                Some("USRC11903813")
-            )
+            track_to_media(a, &ta)
+                .external_ids
+                .isrc,
+            track_to_media(b, &tb)
+                .external_ids
+                .isrc
         );
     }
 
     #[test]
     fn scoping_round_trips() {
         let id = addon_uuid();
-        assert_eq!(unscope(id, &scoped_id(id, "track_1")), "track_1");
+        assert_eq!(
+            unscope(id, &scoped_id(id, "track_1")),
+            Some("track_1".to_string())
+        );
         // A raw id containing the separator survives, since only the leading
         // scope is stripped.
-        assert_eq!(unscope(id, &scoped_id(id, "a:b:c")), "a:b:c");
+        assert_eq!(
+            unscope(id, &scoped_id(id, "a:b:c")),
+            Some("a:b:c".to_string())
+        );
         // An unscoped value is returned whole rather than mangled.
-        assert_eq!(unscope(id, "track_1"), "track_1");
+        assert_eq!(unscope(id, "track_1"), Some("track_1".to_string()));
+        // An id scoped to a *different* addon does not belong to this one.
+        let other = Uuid::from_u128(0xdead);
+        assert_eq!(unscope(id, &scoped_id(other, "track_1")), None);
     }
 
     // -- matching ----------------------------------------------------------

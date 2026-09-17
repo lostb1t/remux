@@ -984,11 +984,15 @@ impl MediaResolveService {
             return Ok(None);
         };
 
-        // Search by external id rather than trusting the deterministic UUID
-        // outright — mirrors how video identity is resolved (and how
-        // `persist_addon_music` above handles Eclipse). A stored artist row
-        // for this `deezer_artist` always wins, even if it lives under a
-        // different UUID than today's derivation would produce.
+        // Identity is external-id search, exactly as video resolves it (and as
+        // `persist_addon_music` above handles Eclipse): a stored artist row for
+        // this `deezer_artist` always wins. When nothing is stored yet, adopt
+        // the candidate id the search result already carries in
+        // `grandparent_id` — Deezer's own track/album construction derives it
+        // deterministically from the same `deezer_artist`, so the clicked
+        // item's existing `grandparent_id` already points at it; deriving a
+        // second, unrelated candidate here would desync the two. Falls back to
+        // a fresh random id only if the item somehow arrived without one.
         let artist_id = db::Media::find_by_external_ids(
             &ctx.db,
             &db::MediaKind::Artist,
@@ -998,12 +1002,8 @@ impl MediaResolveService {
             },
         )
         .await
-        .unwrap_or_else(|| {
-            crate::common::stable_media_uuid(
-                &db::MediaKind::Artist,
-                &deezer_artist.to_string(),
-            )
-        });
+        .or(media.grandparent_id)
+        .unwrap_or_else(Uuid::new_v4);
 
         // Map the transient store key to the item's stable UUID (no-op for
         // deezer-keyed search results).
@@ -1130,10 +1130,18 @@ impl MediaResolveService {
                 .external_ids
                 .deezer_album
             {
-                clicked.parent_id = Some(crate::common::stable_media_uuid(
+                // Only link to an album row that actually exists — there is no
+                // deterministic id to guess at any more, and pointing parent_id
+                // at a nonexistent row would dangle it.
+                clicked.parent_id = db::Media::find_by_external_ids(
+                    &ctx.db,
                     &db::MediaKind::Album,
-                    &dz_album.to_string(),
-                ));
+                    &db::ExternalIds {
+                        deezer_album: Some(dz_album),
+                        ..Default::default()
+                    },
+                )
+                .await;
             }
         }
         if clicked
@@ -1180,7 +1188,32 @@ impl MediaResolveService {
         }
 
         // Playlists carry their members as pending relations; the tracks have to
-        // exist as rows before the relations can reference them.
+        // exist as rows before the relations can reference them. Each member's
+        // id is freshly random (construction never derives identity), so — just
+        // like the playlist itself above — a member may already exist under a
+        // different id (matched by ISRC/eclipse_id from another addon or
+        // provider); adopt that row instead of duplicating it, remapping the
+        // relation to point at the adopted id.
+        if let Some(relations) = media
+            .relations
+            .as_mut()
+        {
+            for (relation, track) in relations.iter_mut() {
+                if let Some(existing_id) =
+                    db::Media::find_existing_id_by_ext(&ctx.db, track).await
+                {
+                    if existing_id != track.id {
+                        track.id = existing_id;
+                        relation.right_media_id = existing_id;
+                        relation.relation_id = Uuid::new_v5(
+                            &relation.left_media_id,
+                            existing_id.as_bytes(),
+                        );
+                    }
+                }
+            }
+        }
+
         let mut rows = vec![media.clone()];
         if let Some(relations) = media
             .relations
@@ -1202,17 +1235,17 @@ impl MediaResolveService {
         Ok(db::Media::get_by_id(&ctx.db, &media_id).await?)
     }
 
-    /// Album root stable-keyed by the Deezer album ID, for tracks whose
-    /// release is not yet in the DB.
+    /// Album stub for a track whose release is not yet in the DB. Its id is a
+    /// fresh random UUID — a mere candidate — because it is only ever passed
+    /// into `process_meta_item`, which adopts any existing row for the same
+    /// `deezer_album` external id before persisting, exactly as it does for
+    /// video.
     fn album_root_for_track(track: &db::Media, artist_id: Uuid) -> Option<db::Media> {
         let deezer_album = track
             .external_ids
             .deezer_album?;
         let mut album = db::Media {
-            id: crate::common::stable_media_uuid(
-                &db::MediaKind::Album,
-                &deezer_album.to_string(),
-            ),
+            id: Uuid::new_v4(),
             title: track
                 .parent
                 .as_ref()
@@ -2497,12 +2530,19 @@ mod tests {
     }
 
     #[test]
-    fn album_root_for_track_builds_stable_album_stub() {
+    fn album_root_for_track_builds_a_fresh_album_stub() {
         let artist_id = stable_id(&db::MediaKind::Artist, "7741572");
         let media = search_track(602456542, 81457652, 7741572);
         let album = MediaResolveService::album_root_for_track(&media, artist_id)
             .expect("album root built for track with deezer_album");
-        assert_eq!(album.id, stable_id(&db::MediaKind::Album, "81457652"));
+        // The id is a fresh random candidate every call, not derived from
+        // deezer_album — `process_meta_item` is what adopts any existing row.
+        assert_ne!(
+            album.id,
+            MediaResolveService::album_root_for_track(&media, artist_id)
+                .unwrap()
+                .id
+        );
         assert_eq!(album.kind, db::MediaKind::Album);
         assert_eq!(album.grandparent_id, Some(artist_id));
         assert_eq!(
@@ -2610,7 +2650,12 @@ mod tests {
         // VA-soundtrack track: absent from the artist's own discography.
         let media = search_track(602456542, 81457652, 7741572);
         let track_id = media.id;
-        let album_id = stable_id(&db::MediaKind::Album, "81457652");
+        // The artist stub adopts the candidate id the search result already
+        // carries in grandparent_id (see persist_music), so it still lands
+        // here deterministically. The album has no such coupling — its stub
+        // gets a fresh random candidate id, adopted-or-created by
+        // process_meta_item — so its id is read back from the resolved track
+        // below rather than precomputed.
         let artist_id = stable_id(&db::MediaKind::Artist, "7741572");
         ctx.store
             .save(
@@ -2633,6 +2678,9 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+        let album_id = resolved
+            .parent_id
+            .expect("clicked track has an album parent after sync");
         assert!(
             db::Media::get_by_id(&ctx.db, &album_id)
                 .await
