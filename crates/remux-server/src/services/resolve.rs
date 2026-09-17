@@ -984,10 +984,26 @@ impl MediaResolveService {
             return Ok(None);
         };
 
-        let artist_id = crate::common::stable_media_uuid(
+        // Search by external id rather than trusting the deterministic UUID
+        // outright — mirrors how video identity is resolved (and how
+        // `persist_addon_music` above handles Eclipse). A stored artist row
+        // for this `deezer_artist` always wins, even if it lives under a
+        // different UUID than today's derivation would produce.
+        let artist_id = db::Media::find_by_external_ids(
+            &ctx.db,
             &db::MediaKind::Artist,
-            &deezer_artist.to_string(),
-        );
+            &db::ExternalIds {
+                deezer_artist: Some(deezer_artist),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_or_else(|| {
+            crate::common::stable_media_uuid(
+                &db::MediaKind::Artist,
+                &deezer_artist.to_string(),
+            )
+        });
 
         // Map the transient store key to the item's stable UUID (no-op for
         // deezer-keyed search results).
@@ -2525,6 +2541,63 @@ mod tests {
             .external_ids
             .deezer_album = None;
         assert!(MediaResolveService::album_root_for_track(&media, artist_id).is_none());
+    }
+
+    /// `persist_music` must search for an existing artist by `deezer_artist`
+    /// rather than trusting the deterministic UUID outright — mirroring how
+    /// video identity resolution already works. A row stored under a UUID
+    /// that doesn't match today's derivation (e.g. linked another way, or
+    /// predating some past scheme change) must still be found and reused,
+    /// not duplicated.
+    #[tokio::test]
+    async fn artist_click_adopts_an_existing_artist_row_under_a_different_uuid() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let deterministic_artist_id = stable_id(&db::MediaKind::Artist, "7741572");
+        let existing_artist_id = Uuid::new_v4();
+        assert_ne!(existing_artist_id, deterministic_artist_id);
+        db::Media {
+            id: existing_artist_id,
+            title: "Blackway".to_string(),
+            kind: db::MediaKind::Artist,
+            external_ids: db::ExternalIds {
+                deezer_artist: Some(7741572),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .save(&ctx.db)
+        .await
+        .unwrap();
+
+        let media = search_track(602456542, 81457652, 7741572);
+        let track_id = media.id;
+        ctx.store
+            .save(
+                track_id.to_string(),
+                media,
+                std::time::Duration::from_secs(60),
+            );
+
+        let resolved = MediaResolveService::resolve_item(track_id, ctx)
+            .await
+            .unwrap()
+            .expect("clicked track resolves");
+        assert_eq!(
+            resolved.grandparent_id,
+            Some(existing_artist_id),
+            "must link to the already-stored artist row"
+        );
+        assert!(
+            db::Media::get_by_id(&ctx.db, &deterministic_artist_id)
+                .await
+                .unwrap()
+                .is_none(),
+            "must not create a duplicate artist row at the deterministic UUID"
+        );
     }
 
     #[tokio::test]
