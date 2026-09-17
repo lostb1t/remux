@@ -433,7 +433,10 @@ pub struct EclipseAddon {
 
 impl EclipseAddon {
     fn service(&self) -> Result<eclipse_service::EclipseService> {
-        eclipse_service::EclipseService::from_url(&self.manifest_url)
+        Ok(
+            eclipse_service::EclipseService::from_url(&self.manifest_url)?
+                .with_shared_rate_limit(common::addon_rate_limit(self.addon_id)),
+        )
     }
 
     /// The addon's own id for `media`, resolving by ISRC when the row carries

@@ -96,6 +96,17 @@ impl EclipseService {
         })
     }
 
+    /// Shares a 429 cooldown across every client built for the same addon.
+    /// `from_url` builds a fresh `RestClient` on every call (addons are not
+    /// cached), so without this each concurrent or sequential call starts
+    /// with no memory of a prior 429 from the same addon.
+    pub fn with_shared_rate_limit(mut self, limit: sdks::SharedRateLimit) -> Self {
+        self.client = self
+            .client
+            .with_shared_rate_limit(limit);
+        self
+    }
+
     fn ep<EP: Endpoint + Clone>(&self, endpoint: EP) -> WithExtraQuery<EP> {
         WithExtraQuery {
             endpoint,
