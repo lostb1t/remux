@@ -8,9 +8,11 @@ pub mod remux;
 pub mod remuxdb;
 pub mod stremio;
 pub mod tmdb;
-pub mod trakt;
 
 mod rate_limit;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use rate_limit::SharedRateLimit;
 
 use http::{Extensions, HeaderMap, HeaderValue, Method, header};
 use itertools::Itertools;
@@ -307,6 +309,7 @@ impl RetryPolicy for DynRetryPolicy {
 fn build_mw(
     retry: Option<Arc<dyn RetryPolicy + Send + Sync>>,
     default_retry_after: Duration,
+    #[cfg(not(target_arch = "wasm32"))] shared_rate_limit: Option<SharedRateLimit>,
 ) -> ClientWithMiddleware {
     let builder = MwClientBuilder::new(SHARED_HTTP_CLIENT.clone());
     let builder = match retry {
@@ -319,6 +322,7 @@ fn build_mw(
     #[cfg(not(target_arch = "wasm32"))]
     let builder = builder.with(rate_limit::RetryAfterMiddleware {
         default_retry_after,
+        shared_rate_limit,
     });
     builder.build()
 }
@@ -331,18 +335,27 @@ pub struct RestClient<A: Auth = NoAuth> {
     map_error: fn(u16, &str, &str) -> ClientError,
     retry: Option<Arc<dyn RetryPolicy + Send + Sync>>,
     default_retry_after: Duration,
+    #[cfg(not(target_arch = "wasm32"))]
+    shared_rate_limit: Option<SharedRateLimit>,
 }
 
 impl RestClient<NoAuth> {
     pub fn new(base: &str) -> Result<Self, url::ParseError> {
         let default_retry_after = rate_limit::DEFAULT_RETRY_AFTER;
         Ok(Self {
-            mw: build_mw(None, default_retry_after),
+            mw: build_mw(
+                None,
+                default_retry_after,
+                #[cfg(not(target_arch = "wasm32"))]
+                None,
+            ),
             base: url::Url::parse(format!("{}/", base.trim_end_matches('/')).as_str())?,
             auth: Arc::new(NoAuth),
             map_error: default_error_mapper,
             retry: None,
             default_retry_after,
+            #[cfg(not(target_arch = "wasm32"))]
+            shared_rate_limit: None,
         })
     }
 }
@@ -356,6 +369,8 @@ impl<A: Auth + Clone> RestClient<A> {
             map_error: self.map_error,
             retry: self.retry,
             default_retry_after: self.default_retry_after,
+            #[cfg(not(target_arch = "wasm32"))]
+            shared_rate_limit: self.shared_rate_limit,
         }
     }
 
@@ -373,6 +388,9 @@ impl<A: Auth + Clone> RestClient<A> {
             self.retry
                 .clone(),
             self.default_retry_after,
+            #[cfg(not(target_arch = "wasm32"))]
+            self.shared_rate_limit
+                .clone(),
         );
         self
     }
@@ -388,6 +406,33 @@ impl<A: Auth + Clone> RestClient<A> {
             self.retry
                 .clone(),
             default,
+            #[cfg(not(target_arch = "wasm32"))]
+            self.shared_rate_limit
+                .clone(),
+        );
+        self
+    }
+
+    /// Shares an upstream 429 cooldown with other clients.
+    ///
+    /// The same [`SharedRateLimit`] should be supplied to every client that
+    /// targets one upstream provider. It is deliberately opt-in: unrelated
+    /// providers must not block each other after one returns a 429.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_shared_rate_limit(
+        mut self,
+        shared_rate_limit: SharedRateLimit,
+    ) -> Self {
+        self.shared_rate_limit = Some(shared_rate_limit);
+        self.mw = build_mw(
+            self.retry
+                .clone(),
+            self.default_retry_after,
+            Some(
+                self.shared_rate_limit
+                    .clone()
+                    .expect("shared rate limit was set"),
+            ),
         );
         self
     }
@@ -404,6 +449,28 @@ impl<A: Auth + Clone> RestClient<A> {
     pub async fn execute_arc<EP: Endpoint + Clone>(
         &self,
         endpoint: EP,
+    ) -> Result<Arc<EP::Output>, ClientError> {
+        self.execute_arc_observed(endpoint, |_, _| {})
+            .await
+    }
+
+    /// Executes an endpoint and exposes the final HTTP status and raw response
+    /// body to `on_response` before deserializing it. Cached responses do not
+    /// invoke the callback because no HTTP request was made.
+    pub async fn execute_observed<EP: Endpoint + Clone>(
+        &self,
+        endpoint: EP,
+        on_response: impl FnOnce(u16, &str),
+    ) -> Result<EP::Output, ClientError> {
+        self.execute_arc_observed(endpoint, on_response)
+            .await
+            .map(|arc| Arc::try_unwrap(arc).unwrap_or_else(|arc| (*arc).clone()))
+    }
+
+    async fn execute_arc_observed<EP: Endpoint + Clone>(
+        &self,
+        endpoint: EP,
+        on_response: impl FnOnce(u16, &str),
     ) -> Result<Arc<EP::Output>, ClientError> {
         let path = endpoint.path();
         let mut url = self
@@ -484,19 +551,22 @@ impl<A: Auth + Clone> RestClient<A> {
         let status = resp
             .status()
             .as_u16();
-        if status == 429 {
-            let retry_after_secs = rate_limit::retry_after(
+        let retry_after_secs = (status == 429).then(|| {
+            rate_limit::retry_after(
                 resp.headers(),
                 std::time::SystemTime::now(),
                 self.default_retry_after,
             )
-            .as_secs();
-            return Err(ClientError::RateLimited { retry_after_secs });
-        }
+            .as_secs()
+        });
         let text = resp
             .text()
             .await
             .unwrap_or_default();
+        on_response(status, &text);
+        if let Some(retry_after_secs) = retry_after_secs {
+            return Err(ClientError::RateLimited { retry_after_secs });
+        }
         let on_statuses = endpoint
             .cache_options()
             .map(|o| o.on_statuses)

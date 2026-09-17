@@ -33,7 +33,7 @@ reqwest = { version = "0.13", default-features = false, features = [
     "stream",
     "rustls",
 ] }
-serde = "1.0"
+serde = { version = "1.0", features = ["rc"] }
 serde_json = "^1.0"
 tokio = { version = "^1.0", features = ["full", "io-util", "time"] }
 axum = { version = "^0.8", features = ["ws"] }

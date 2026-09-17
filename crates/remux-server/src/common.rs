@@ -12,7 +12,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use csv_async::{AsyncDeserializer, AsyncReaderBuilder};
 use reqwest::Client;
 use serde::de::DeserializeOwned;
-use std::{path::Path, pin::Pin};
+use std::{collections::HashMap, path::Path, pin::Pin};
 //use std::task::{Context, Poll};
 use tempfile;
 use tokio::{
@@ -39,6 +39,39 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use uuid::Uuid;
 
 static SERVER_ID: OnceLock<String> = OnceLock::new();
+static TMDB_RATE_LIMIT: OnceLock<sdks::SharedRateLimit> = OnceLock::new();
+static ADDON_RATE_LIMITS: OnceLock<
+    std::sync::Mutex<HashMap<Uuid, sdks::SharedRateLimit>>,
+> = OnceLock::new();
+
+/// TMDB clients are built in a few independent paths. They must still share
+/// one cooldown, otherwise concurrent metadata refreshes each evade a 429 by
+/// constructing their own client.
+pub(crate) fn tmdb_rate_limit() -> sdks::SharedRateLimit {
+    TMDB_RATE_LIMIT
+        .get_or_init(sdks::SharedRateLimit::new)
+        .clone()
+}
+
+/// Addon clients (see `StremioAddon::service`) are built fresh on every call
+/// rather than cached, so without this each concurrent or sequential call to
+/// the same addon starts with no memory of a prior 429 — the exact problem
+/// `SharedRateLimit` exists to solve, just never wired up per addon.
+///
+/// Keyed by addon id, not host: two addon configs can point at the same host
+/// under different auth/quotas, and must not share a cooldown meant for a
+/// different budget. The cost is the mirror case — two configs that really do
+/// share one backend account won't coordinate — an acceptable miss since
+/// remux has no way to know they share a quota.
+pub(crate) fn addon_rate_limit(addon_id: Uuid) -> sdks::SharedRateLimit {
+    ADDON_RATE_LIMITS
+        .get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .entry(addon_id)
+        .or_insert_with(sdks::SharedRateLimit::new)
+        .clone()
+}
 
 pub(crate) fn set_server_id(id: String) {
     let _ = SERVER_ID.set(id);
@@ -310,6 +343,15 @@ pub fn tmdb_client_from_config(
                 .with_retry(
                     sdks::ExponentialBackoff::builder().build_with_max_retries(3),
                 )
+                // TMDB does not send Retry-After on 429, so use its short
+                // throttle window instead of the SDK's generic 60-second
+                // fallback. Must match `addons/tmdb.rs`'s own client factory:
+                // both now feed the same shared cooldown, and a 429 seen on
+                // either one installs this value as the block duration — two
+                // different fallbacks would make the effective cooldown
+                // depend on which client happened to see the 429 first.
+                .with_default_retry_after(std::time::Duration::from_secs(2))
+                .with_shared_rate_limit(tmdb_rate_limit())
         })
 }
 

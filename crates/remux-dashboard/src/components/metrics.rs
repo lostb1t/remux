@@ -39,37 +39,20 @@ pub fn MetricsCard(app_state: AppState) -> Element {
     });
 
     rsx! {
-        Card { title: "Popularity Metrics",
+        Card { title: "RemuxDB Metrics",
             if *loading.read() {
                 LoadingText {}
             } else if let Some(err) = error.read().as_ref() {
                 span { class: "loading-text", style: "color:var(--error)", "{err}" }
             } else if let Some(s) = status.read().as_ref() {
-                if s.item_count == 0 {
-                    span { class: "loading-text",
-                        "No popularity data — run Refresh Popularity to start tracking."
-                    }
-                } else {
-                    div { class: "kv-row",
-                        span { class: "kv-label", "Last updated" }
-                        span { class: "kv-value",
-                            {
-                                s.last_updated_days_ago
-                                    .map(days_ago_label)
-                                    .unwrap_or_else(|| "—".to_string())
-                            }
+                div { class: "kv-row",
+                    span { class: "kv-label", "Last metric sync" }
+                    span { class: "kv-value",
+                        {
+                            s.last_updated_days_ago
+                                .map(days_ago_label)
+                                .unwrap_or_else(|| "Never".to_string())
                         }
-                    }
-                    div { class: "kv-row",
-                        span { class: "kv-label", "Daily coverage" }
-                        span {
-                            class: "kv-value",
-                            "{s.daily_days} days"
-                        }
-                    }
-                    div { class: "kv-row",
-                        span { class: "kv-label", "Items tracked" }
-                        span { class: "kv-value", "{s.item_count}" }
                     }
                 }
             }

@@ -205,6 +205,12 @@
   .table {
     display: table;
   }
+  .h-full {
+    height: 100%;
+  }
+  .min-h-20 {
+    min-height: calc(var(--spacing) * 20);
+  }
   .min-w-0 {
     min-width: calc(var(--spacing) * 0);
   }

@@ -33,7 +33,7 @@ use remux_sdks::remux::Username;
 use super::{
     items::{ItemsQueryResultBuilder, get_items, item, items, items_flat},
     mock_items,
-    shows::{livetv_view_item, next_up_candidates},
+    shows::{livetv_view_id, livetv_view_item, next_up_candidates},
 };
 
 #[post("/users/{user_id}/configuration")]
@@ -41,10 +41,18 @@ pub async fn user_configuration_update(
     State(state): State<AppState>,
     session: auth::AuthSession,
     Path(user_id): Path<Uuid>,
-    Json(payload): Json<api::UserConfiguration>,
+    Json(mut payload): Json<api::UserConfiguration>,
 ) -> Result<impl IntoResponse> {
     require_self_or_admin(user_id, &session)?;
     let target_id = user_id;
+    normalize_ordered_views(
+        &state
+            .ctx
+            .db,
+        target_id,
+        &mut payload,
+    )
+    .await?;
     db::User::save_configuration(
         &state
             .ctx
@@ -66,15 +74,24 @@ pub async fn user_configuration_update(
 pub async fn user_configuration_legacy(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Json(payload): Json<api::UserConfiguration>,
+    Json(mut payload): Json<api::UserConfiguration>,
 ) -> Result<impl IntoResponse> {
+    let target_id = session
+        .user
+        .id;
+    normalize_ordered_views(
+        &state
+            .ctx
+            .db,
+        target_id,
+        &mut payload,
+    )
+    .await?;
     db::User::save_configuration(
         &state
             .ctx
             .db,
-        &session
-            .user
-            .id,
+        &target_id,
         &payload,
     )
     .await?;
@@ -856,6 +873,130 @@ pub async fn delete_item_rating_legacy(
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
+/// Jellyfin's generic user-data sync endpoint, distinct from the narrower
+/// `/rating` and `/userplayeditems` endpoints above: a client (e.g. the
+/// CrossWatch sync tool) restoring state from another server sends whichever
+/// fields it has in one call rather than making several separate requests.
+/// Each present field is applied independently — see
+/// `UserMediaState::apply_update` for why this must not reuse
+/// `mark_played`/`update_playback`.
+#[post("/useritems/{id}/userdata")]
+pub async fn update_item_user_data(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path(id): Path<Uuid>,
+    Json(update): Json<api::UpdateUserItemDataDto>,
+) -> Result<impl IntoResponse> {
+    handle_update_item_user_data(state, user, id, update).await
+}
+
+#[post("/users/{user_id}/items/{id}/userdata")]
+pub async fn update_item_user_data_legacy(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path((_, id)): Path<(Uuid, Uuid)>,
+    Json(update): Json<api::UpdateUserItemDataDto>,
+) -> Result<impl IntoResponse> {
+    handle_update_item_user_data(state, user, id, update).await
+}
+
+/// Shared by the modern and legacy `userdata` routes above.
+async fn handle_update_item_user_data(
+    state: AppState,
+    user: User,
+    id: Uuid,
+    update: api::UpdateUserItemDataDto,
+) -> Result<impl IntoResponse> {
+    let media = MediaResolveService::resolve_item(id, &state.ctx)
+        .await?
+        .context_not_found("not found")?;
+    if let Some(rating) = update.rating {
+        db::UserRating::try_from(rating)
+            .context_bad_request("rating must be between 0 and 10")?;
+    }
+    if update
+        .playback_position_ticks
+        .is_some_and(|t| t < 0)
+    {
+        return Err(anyhow::anyhow!(
+            "PlaybackPositionTicks must not be negative"
+        ))
+        .context_bad_request("PlaybackPositionTicks must not be negative");
+    }
+    if update
+        .play_count
+        .is_some_and(|c| c < 0)
+    {
+        return Err(anyhow::anyhow!("PlayCount must not be negative"))
+            .context_bad_request("PlayCount must not be negative");
+    }
+
+    let ms = db::UserMediaState::apply_update(
+        &state
+            .ctx
+            .db,
+        &user,
+        &media,
+        &update,
+    )
+    .await?;
+
+    if let Some(played) = update.played {
+        state
+            .ctx
+            .signals
+            .emit(if played {
+                Event::MarkPlayed(MarkPlayedInfo {
+                    user_id: user.id,
+                    media_id: media.id,
+                })
+            } else {
+                Event::MarkUnplayed(MarkUnplayedInfo {
+                    user_id: user.id,
+                    media_id: media.id,
+                })
+            });
+    }
+    if let Some(favorite) = update.is_favorite {
+        state
+            .ctx
+            .signals
+            .emit(if favorite {
+                Event::MarkFavorite(MarkFavoriteInfo {
+                    user_id: user.id,
+                    media_id: media.id,
+                })
+            } else {
+                Event::UnmarkFavorite(UnmarkFavoriteInfo {
+                    user_id: user.id,
+                    media_id: media.id,
+                })
+            });
+    }
+    if update
+        .rating
+        .is_some()
+        || update
+            .likes
+            .is_some()
+    {
+        state
+            .ctx
+            .signals
+            .emit(Event::Rating(RatingInfo {
+                user_id: user.id,
+                media_id: media.id,
+                rating: ms
+                    .rating
+                    .map(|r| r as f32),
+            }));
+    }
+
+    Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
+}
+
 #[get("/users/{user_id}/groupingoptions")]
 pub async fn users_groupingoptions(
     State(state): State<AppState>,
@@ -1198,21 +1339,25 @@ struct UserViewsQuery {
     include_hidden: Option<bool>,
 }
 
-#[get("/userviews")]
-pub async fn userviews(
-    State(state): State<AppState>,
-    session: auth::AuthSession,
-    Query(q): Query<UserViewsQuery>,
-) -> Result<impl IntoResponse> {
-    let config = session
-        .user
-        .configuration
-        .as_deref();
-    let policy = session
-        .user
-        .policy
-        .as_deref();
-
+/// The userview population in default (admin-controlled) order: promoted,
+/// non-childless Collection/Folder rows the given policy allows and
+/// `excluded_view_ids` doesn't hide, sorted by `DisplayOrder` (the `media.
+/// sort_order` column, e.g. dashboard drag-reorder) — what a user with no
+/// `OrderedViews` override sees, and also what a saved override is diffed
+/// against so a verbatim restatement of it can collapse back to "no
+/// override" (see `normalize_ordered_views`) instead of freezing the order
+/// against future admin changes.
+///
+/// Returns the ordered rows plus whether a synthetic Live TV view belongs
+/// at the end (any enabled TV channels exist) — callers append `
+/// livetv_view_id()`/`livetv_view_item()` themselves since one wants ids,
+/// the other full DTOs.
+async fn default_userviews(
+    db: &sqlx::SqlitePool,
+    user_id: Uuid,
+    policy: Option<&api::UserPolicy>,
+    excluded_view_ids: Option<&[Uuid]>,
+) -> Result<(Vec<db::Media>, bool)> {
     // When the policy restricts folder access, scope the DB query to only those
     // views — this avoids counting children for every promoted collection.
     let enabled_view_ids: Option<Vec<Uuid>> = policy.and_then(|pol| {
@@ -1231,6 +1376,135 @@ pub async fn userviews(
             None
         }
     });
+
+    let library_filter = db::MediaFilter {
+        kind: Some(vec![db::MediaKind::Collection, db::MediaKind::Folder]),
+        id: enabled_view_ids.clone(),
+        exclude_ids: excluded_view_ids.map(|ids| ids.to_vec()),
+        promoted: Some(true),
+        exclude_childless: true,
+        user_id: Some(user_id),
+        sort_by: vec![api::ItemSortBy::DisplayOrder],
+        sort_order: vec![api::SortOrder::Ascending],
+        policy_filter: policy
+            .and_then(|p| {
+                p.filter_rules
+                    .as_ref()
+            })
+            .cloned(),
+        ..Default::default()
+    };
+    let channel_filter = db::MediaFilter {
+        kind: Some(vec![db::MediaKind::TvChannel]),
+        enabled: Some(true),
+        ..Default::default()
+    };
+    let (library_result, channel_result) = tokio::join!(
+        db::Media::get_by_filter(db, &library_filter),
+        db::Media::get_by_filter(db, &channel_filter),
+    );
+
+    let mut libraries = library_result?.records;
+
+    // Safety net: reuse the same ID sets that were pushed into the DB query.
+    if let Some(allowed) = &enabled_view_ids {
+        libraries.retain(|m| allowed.contains(&m.id));
+    }
+    if let Some(excluded) = excluded_view_ids {
+        libraries.retain(|m| !excluded.contains(&m.id));
+    }
+
+    let has_channels = !channel_result?
+        .records
+        .is_empty();
+    Ok((libraries, has_channels))
+}
+
+/// If `payload.ordered_views` (once parsed) is exactly the default order
+/// `target_id` would currently get with no override — see
+/// `default_userviews` — clear it to empty instead of persisting it
+/// verbatim. Otherwise a save that merely restates today's default (e.g. a
+/// client re-posting its full config unprompted) would freeze that user
+/// out of any order the admin sets later, since a non-empty `OrderedViews`
+/// always wins over the live default in `userviews`.
+///
+/// `OrderedViews` is a *priority* list, not a required full permutation —
+/// `userviews` puts listed ids first (in listed order) and leaves every
+/// other row in its existing default relative order via a stable sort. So
+/// a partial list, one with unparseable/unknown entries, or one that omits
+/// the synthetic Live TV id can still produce an *effective* order
+/// identical to the default even though it isn't the same list — this
+/// compares effective order (by literally applying the same stable sort
+/// `userviews` uses), not the raw posted list, so all of those still
+/// collapse to "no override" too.
+async fn normalize_ordered_views(
+    db: &sqlx::SqlitePool,
+    target_id: Uuid,
+    payload: &mut api::UserConfiguration,
+) -> Result<()> {
+    if payload
+        .ordered_views
+        .is_empty()
+    {
+        return Ok(());
+    }
+    let posted: Vec<Uuid> = payload
+        .ordered_views
+        .iter()
+        .filter_map(|s| Uuid::parse_str(s).ok())
+        .collect();
+
+    let target_policy = db::User::get_by_id(db, &target_id)
+        .await?
+        .and_then(|u| u.policy)
+        .map(|p| p.0);
+    let excluded_view_ids: Vec<Uuid> = payload
+        .my_media_excludes
+        .iter()
+        .filter_map(|s| Uuid::parse_str(s).ok())
+        .collect();
+    let excluded =
+        (!excluded_view_ids.is_empty()).then_some(excluded_view_ids.as_slice());
+
+    // The synthetic Live TV view is appended after userviews' sort step
+    // regardless of where (or whether) it appears in `posted`, so it never
+    // affects whether an override actually changes anything — left out of
+    // this comparison entirely rather than tacked onto both sides.
+    let (libraries, _has_channels) =
+        default_userviews(db, target_id, target_policy.as_ref(), excluded).await?;
+    let default_ids: Vec<Uuid> = libraries
+        .into_iter()
+        .map(|m| m.id)
+        .collect();
+
+    let mut effective = default_ids.clone();
+    effective.sort_by_key(|id| {
+        posted
+            .iter()
+            .position(|p| p == id)
+            .unwrap_or(usize::MAX)
+    });
+
+    if effective == default_ids {
+        payload.ordered_views = Vec::new();
+    }
+    Ok(())
+}
+
+#[get("/userviews")]
+pub async fn userviews(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Query(q): Query<UserViewsQuery>,
+) -> Result<impl IntoResponse> {
+    let config = session
+        .user
+        .configuration
+        .as_deref();
+    let policy = session
+        .user
+        .policy
+        .as_deref();
 
     // Push hidden-view exclusions into the query so their children are never counted.
     let excluded_view_ids: Option<Vec<Uuid>> = if q.include_hidden != Some(true) {
@@ -1253,56 +1527,17 @@ pub async fn userviews(
         None
     };
 
-    let library_filter = db::MediaFilter {
-        kind: Some(vec![db::MediaKind::Collection, db::MediaKind::Folder]),
-        id: enabled_view_ids.clone(),
-        exclude_ids: excluded_view_ids.clone(),
-        promoted: Some(true),
-        exclude_childless: true,
-        user_id: Some(
-            session
-                .user
-                .id,
-        ),
-        sort_by: vec![api::ItemSortBy::DisplayOrder],
-        sort_order: vec![api::SortOrder::Ascending],
-        policy_filter: policy
-            .and_then(|p| {
-                p.filter_rules
-                    .as_ref()
-            })
-            .cloned(),
-        ..Default::default()
-    };
-    let channel_filter = db::MediaFilter {
-        kind: Some(vec![db::MediaKind::TvChannel]),
-        enabled: Some(true),
-        ..Default::default()
-    };
-    let (library_result, channel_result) = tokio::join!(
-        db::Media::get_by_filter(
-            &state
-                .ctx
-                .db,
-            &library_filter
-        ),
-        db::Media::get_by_filter(
-            &state
-                .ctx
-                .db,
-            &channel_filter
-        ),
-    );
-
-    let mut libraries = library_result?.records;
-
-    // Safety net: reuse the same ID sets that were pushed into the DB query.
-    if let Some(ref allowed) = enabled_view_ids {
-        libraries.retain(|m| allowed.contains(&m.id));
-    }
-    if let Some(ref excluded) = excluded_view_ids {
-        libraries.retain(|m| !excluded.contains(&m.id));
-    }
+    let (mut libraries, has_channels) = default_userviews(
+        &state
+            .ctx
+            .db,
+        session
+            .user
+            .id,
+        policy,
+        excluded_view_ids.as_deref(),
+    )
+    .await?;
 
     // Stable-sort by OrderedViews: configured IDs come first in their saved
     // order; any remaining views follow in their original DB order.
@@ -1331,10 +1566,7 @@ pub async fn userviews(
         .collect::<Vec<api::BaseItemDto>>();
 
     // Inject a synthetic Live TV view if any enabled channels exist
-    if !channel_result?
-        .records
-        .is_empty()
-    {
+    if has_channels {
         items.push(livetv_view_item());
     }
 
@@ -3901,6 +4133,138 @@ mod e2e_tests {
         }
     }
 
+    /// Regression test for a Jellyfin-compatible sync client (e.g. CrossWatch)
+    /// restoring watched state: it sends `Played` and `PlaybackPositionTicks`
+    /// in the same request, and the position must not be clobbered as a side
+    /// effect of applying `Played`.
+    #[tokio::test]
+    async fn userdata_endpoint_applies_played_and_position_together() {
+        let (server, ctx, token) = authenticated_server().await;
+        let item = insert_test_source(&ctx.0).await;
+        let auth = || {
+            (
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+        };
+
+        let resp = server
+            .post(&format!("/useritems/{}/userdata", item.id))
+            .add_header(auth().0, auth().1)
+            .json(&json!({
+                "Played": true,
+                "PlaybackPositionTicks": 120_000_000,
+                "LastPlayedDate": "2026-09-16T18:00:00Z",
+            }))
+            .await;
+        let body: serde_json::Value = resp.json();
+        assert_eq!(body["Played"], true);
+        assert_eq!(body["PlaybackPositionTicks"], 120_000_000);
+        assert_eq!(body["LastPlayedDate"], "2026-09-16T18:00:00Z");
+
+        // Regression check: `UserMediaState::save` used to hardcode `now()`
+        // for `last_played_at` regardless of the field actually set on the
+        // struct, so the supplied date only ever appeared in this immediate
+        // response (built from the in-memory value) and was silently
+        // replaced by the time of the very next read.
+        let resp = server
+            .get(&format!("/items/{}", item.id))
+            .add_header(auth().0, auth().1)
+            .await;
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["UserData"]["LastPlayedDate"], "2026-09-16T18:00:00Z",
+            "the supplied LastPlayedDate must survive a fresh read from the database"
+        );
+    }
+
+    /// `Played: false` must clear the derived `played` state (both
+    /// `play_count` and `played_at` in the underlying row — see
+    /// `UserMediaState::apply_update`) without touching fields the request
+    /// didn't mention.
+    #[tokio::test]
+    async fn userdata_endpoint_unplaying_does_not_touch_unrelated_fields() {
+        let (server, ctx, token) = authenticated_server().await;
+        let item = insert_test_source(&ctx.0).await;
+        let auth = || {
+            (
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+        };
+
+        server
+            .post(&format!("/useritems/{}/userdata", item.id))
+            .add_header(auth().0, auth().1)
+            .json(&json!({
+                "Played": true,
+                "PlaybackPositionTicks": 120_000_000,
+                "IsFavorite": true,
+            }))
+            .await;
+
+        let resp = server
+            .post(&format!("/useritems/{}/userdata", item.id))
+            .add_header(auth().0, auth().1)
+            .json(&json!({ "Played": false }))
+            .await;
+        let body: serde_json::Value = resp.json();
+        assert_eq!(body["Played"], false);
+        assert_eq!(
+            body["PlaybackPositionTicks"], 120_000_000,
+            "position must survive an unrelated Played update"
+        );
+        assert_eq!(
+            body["IsFavorite"], true,
+            "favorite must survive an unrelated Played update"
+        );
+    }
+
+    #[tokio::test]
+    async fn userdata_endpoint_rejects_an_out_of_range_rating() {
+        let (server, ctx, token) = authenticated_server().await;
+        let item = insert_test_source(&ctx.0).await;
+
+        let resp = server
+            .post(&format!("/useritems/{}/userdata", item.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+            .json(&json!({ "Rating": 11 }))
+            .expect_failure()
+            .await;
+        assert_eq!(resp.status_code(), http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn userdata_endpoint_rejects_negative_position_and_play_count() {
+        let (server, ctx, token) = authenticated_server().await;
+        let item = insert_test_source(&ctx.0).await;
+        let auth = || {
+            (
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+        };
+
+        let resp = server
+            .post(&format!("/useritems/{}/userdata", item.id))
+            .add_header(auth().0, auth().1)
+            .json(&json!({ "PlaybackPositionTicks": -1 }))
+            .expect_failure()
+            .await;
+        assert_eq!(resp.status_code(), http::StatusCode::BAD_REQUEST);
+
+        let resp = server
+            .post(&format!("/useritems/{}/userdata", item.id))
+            .add_header(auth().0, auth().1)
+            .json(&json!({ "PlayCount": -1 }))
+            .expect_failure()
+            .await;
+        assert_eq!(resp.status_code(), http::StatusCode::BAD_REQUEST);
+    }
+
     #[tokio::test]
     async fn favoriting_for_another_user_does_not_silently_hit_your_own() {
         // The path user_id used to be ignored: an admin favouriting on behalf
@@ -4281,6 +4645,253 @@ mod e2e_tests {
         assert!(
             pos_second < pos_first,
             "OrderedViews ordering not respected"
+        );
+    }
+
+    /// Saving `OrderedViews` that exactly restates the current default order
+    /// (DB order for two rows with no explicit `sort_order`) must be stored
+    /// as empty, not verbatim — otherwise a client that re-posts its full
+    /// config without the user touching the order freezes them out of any
+    /// order the admin sets later, since a non-empty `OrderedViews` always
+    /// wins over the live default.
+    #[tokio::test]
+    async fn saving_the_default_order_verbatim_is_stored_as_no_override() {
+        let (server, ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        let first = insert_promoted_collection(&ctx.0, "First").await;
+        let second = insert_promoted_collection(&ctx.0, "Second").await;
+        let user_id = get_user_id(&server, &auth).await;
+
+        // Read the default order back rather than assuming DB insertion
+        // order, so this test doesn't depend on an implementation detail of
+        // `exclude_childless`/DisplayOrder tie-breaking.
+        let resp = server
+            .get("/userviews")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        let default_ids: Vec<String> = resp.json::<serde_json::Value>()["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| {
+                v["Id"]
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .collect();
+        // `/userviews` serializes ids in simple (no-dash) form; `Uuid::to_string`
+        // is hyphenated — compare via `.simple()` rather than raw strings.
+        assert!(
+            default_ids.contains(
+                &first
+                    .id
+                    .simple()
+                    .to_string()
+            ) && default_ids.contains(
+                &second
+                    .id
+                    .simple()
+                    .to_string()
+            ),
+            "both seeded collections should appear in the default order"
+        );
+
+        server
+            .post(&format!("/users/{}/configuration", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "PlayDefaultAudioTrack": true,
+                "SubtitleMode": "Default",
+                "HidePlayedInLatest": true,
+                "RememberAudioSelections": true,
+                "RememberSubtitleSelections": true,
+                "EnableNextEpisodeAutoPlay": true,
+                "OrderedViews": default_ids
+            }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+
+        let resp = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let user: serde_json::Value = resp.json();
+        assert_eq!(
+            user["Configuration"]["OrderedViews"],
+            serde_json::json!([]),
+            "restating the default order verbatim must be stored as no override"
+        );
+    }
+
+    /// `OrderedViews` is a priority list, not a required full permutation:
+    /// `userviews` puts listed ids first and leaves everything else in its
+    /// default relative order. A partial list naming only the item that's
+    /// already first in the default order has no actual effect, and must
+    /// collapse to "no override" exactly like restating the full list would.
+    #[tokio::test]
+    async fn saving_a_no_op_partial_order_is_stored_as_no_override() {
+        let (server, ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        insert_promoted_collection(&ctx.0, "First").await;
+        insert_promoted_collection(&ctx.0, "Second").await;
+        let user_id = get_user_id(&server, &auth).await;
+
+        let resp = server
+            .get("/userviews")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        let default_ids: Vec<String> = resp.json::<serde_json::Value>()["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| {
+                v["Id"]
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .collect();
+        assert!(
+            default_ids.len() >= 2,
+            "need at least two default views for a partial list to be meaningful"
+        );
+
+        // Naming only the item already in first place changes nothing.
+        server
+            .post(&format!("/users/{}/configuration", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "PlayDefaultAudioTrack": true,
+                "SubtitleMode": "Default",
+                "HidePlayedInLatest": true,
+                "RememberAudioSelections": true,
+                "RememberSubtitleSelections": true,
+                "EnableNextEpisodeAutoPlay": true,
+                "OrderedViews": [default_ids[0].clone()]
+            }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+
+        let resp = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let user: serde_json::Value = resp.json();
+        assert_eq!(
+            user["Configuration"]["OrderedViews"],
+            serde_json::json!([]),
+            "a partial list with no effect on the actual order must be stored as no override"
+        );
+    }
+
+    /// A genuinely custom order (not equal to the default) must still be
+    /// persisted exactly as posted.
+    #[tokio::test]
+    async fn saving_a_real_custom_order_is_persisted_verbatim() {
+        let (server, ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        let first = insert_promoted_collection(&ctx.0, "First").await;
+        let second = insert_promoted_collection(&ctx.0, "Second").await;
+        let user_id = get_user_id(&server, &auth).await;
+
+        // Fetched before saving anything, so it reflects the un-overridden
+        // default — reversing it below is then guaranteed to differ from it
+        // for two distinct rows, regardless of tie-break rules.
+        let resp = server
+            .get("/userviews")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        let mut custom: Vec<String> = resp.json::<serde_json::Value>()["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| {
+                v["Id"]
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .collect();
+        assert!(
+            custom.contains(
+                &first
+                    .id
+                    .simple()
+                    .to_string()
+            ) && custom.contains(
+                &second
+                    .id
+                    .simple()
+                    .to_string()
+            ),
+            "both seeded collections should appear in the default order"
+        );
+        custom.reverse();
+
+        server
+            .post(&format!("/users/{}/configuration", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "PlayDefaultAudioTrack": true,
+                "SubtitleMode": "Default",
+                "HidePlayedInLatest": true,
+                "RememberAudioSelections": true,
+                "RememberSubtitleSelections": true,
+                "EnableNextEpisodeAutoPlay": true,
+                "OrderedViews": custom
+            }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+
+        let resp = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let user: serde_json::Value = resp.json();
+        let stored: Vec<String> = user["Configuration"]["OrderedViews"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|v| {
+                v.as_str()
+                    .map(str::to_string)
+            })
+            .collect();
+        assert_eq!(
+            stored, custom,
+            "a genuinely custom order must be stored verbatim"
         );
     }
 

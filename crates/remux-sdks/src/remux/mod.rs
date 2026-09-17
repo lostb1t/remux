@@ -666,6 +666,10 @@ pub struct ServerConfiguration {
     /// Number of items to process concurrently during metadata fetch (default: 12).
     #[default(12_i64)]
     pub meta_concurrency: i64,
+    /// Max time (seconds) to wait for a single metadata addon's response
+    /// before treating it as failed and moving on (default: 5).
+    #[default(Some(5_i64))]
+    pub addon_fetch_timeout_secs: Option<i64>,
     #[default(Some(true))]
     pub p2p_enabled: Option<bool>,
     #[default(Some(0_i64))]
@@ -1924,6 +1928,9 @@ pub struct VideoStreamQuery {
     pub device_id: Option<String>,
     pub audio_codec: Option<String>,
     pub video_codec: Option<String>,
+    /// Sample-entry fourcc for an HEVC stream copy (`hvc1`/`hev1`), resolved
+    /// from the client's DeviceProfile at PlaybackInfo time.
+    pub video_codec_tag: Option<String>,
     pub video_bit_rate: Option<i64>,
     pub audio_bit_rate: Option<i64>,
     pub audio_channels: Option<i64>,
@@ -3416,6 +3423,23 @@ pub struct UserItemDataDto {
     pub item_id: Uuid,
 }
 
+/// Request body for `POST /useritems/{id}/userdata`. Mirrors Jellyfin's
+/// `UpdateUserItemDataDto`: every field is independently optional, and each
+/// present field is applied on its own with no side effects on the others
+/// (no watched-threshold math, no cascading to parent/child rows) — see
+/// `UserDataManager.SaveUserData` in Jellyfin's own server for the reference
+/// behavior this mirrors.
+#[dto]
+pub struct UpdateUserItemDataDto {
+    pub rating: Option<f64>,
+    pub playback_position_ticks: Option<i64>,
+    pub play_count: Option<i32>,
+    pub is_favorite: Option<bool>,
+    pub likes: Option<bool>,
+    pub last_played_date: Option<DateTime<Utc>>,
+    pub played: Option<bool>,
+}
+
 #[derive(
     Default,
     Clone,
@@ -4701,6 +4725,10 @@ pub struct HlsVideoQuery {
     #[serde(alias = "mediaSourceId")]
     pub media_source_id: Option<Uuid>,
     pub video_codec: Option<String>,
+    /// Sample-entry fourcc for an HEVC stream copy (`hvc1`/`hev1`), resolved
+    /// from the client's DeviceProfile at PlaybackInfo time and carried here
+    /// because the profile isn't available on this request.
+    pub video_codec_tag: Option<String>,
     pub audio_codec: Option<String>,
     pub segment_length: Option<i32>,
     pub start_time_ticks: Option<i64>,
@@ -6008,9 +6036,7 @@ impl Endpoint for GetItemCounts {
 
 #[dto]
 pub struct MetricsStatus {
-    pub daily_days: i64,
     pub last_updated_days_ago: Option<i64>,
-    pub item_count: i64,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -19,11 +19,11 @@ impl Task for PurgeMetricsTask {
     }
 
     fn description(&self) -> &str {
-        "Deletes all popularity snapshots and aggregated trend data from the database. Run this to reset metric history before re-ingesting fresh data."
+        "Deletes all RemuxDB popularity and trending metrics from the database."
     }
 
     fn short_description(&self) -> &str {
-        "Clears all popularity snapshots and trend aggregates"
+        "Clears all RemuxDB media metrics"
     }
 
     fn category(&self) -> TaskCategory {
@@ -39,16 +39,11 @@ impl Task for PurgeMetricsTask {
         _tasks: Arc<TaskService>,
         progress: ProgressReporter,
     ) -> Result<()> {
-        sqlx::query("DELETE FROM popularity_raw")
-            .execute(&ctx.db)
-            .await?;
-        progress.set(50.0);
-
-        sqlx::query("DELETE FROM popularity_agg")
+        sqlx::query("DELETE FROM media_metrics")
             .execute(&ctx.db)
             .await?;
 
-        info!("metrics data purged");
+        info!("media metrics purged");
         progress.set(100.0);
         Ok(())
     }

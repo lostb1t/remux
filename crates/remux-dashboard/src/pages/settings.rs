@@ -21,6 +21,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut cultures: Signal<Vec<CultureDto>> = use_signal(Vec::new);
     let mut catalog_max_items = use_signal(|| 100_i64);
     let mut meta_concurrency = use_signal(|| 12_i64);
+    let mut addon_fetch_timeout_secs = use_signal(|| 5_i64);
     let mut filter_digital_release = use_signal(|| true);
     let mut digital_release_buffer = use_signal(|| 0_i64);
     let mut subtitle_languages = use_signal(String::new);
@@ -60,6 +61,10 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                             .unwrap_or(100),
                     );
                     meta_concurrency.set(cfg.meta_concurrency);
+                    addon_fetch_timeout_secs.set(
+                        cfg.addon_fetch_timeout_secs
+                            .unwrap_or(5),
+                    );
                     filter_digital_release.set(cfg.filter_by_digital_release_date);
                     digital_release_buffer.set(cfg.digital_release_buffer_days);
                     subtitle_languages.set(
@@ -110,6 +115,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
             .clone();
         let max = *catalog_max_items.peek();
         let concurrency = *meta_concurrency.peek();
+        let addon_timeout = *addon_fetch_timeout_secs.peek();
         let filter_dr = *filter_digital_release.peek();
         let dr_buffer = *digital_release_buffer.peek();
         let sub_langs_str = subtitle_languages
@@ -129,6 +135,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
         cfg.enable_next_up_in_continue_watching = Some(next_up_unified);
         cfg.catalog_max_items = Some(max);
         cfg.meta_concurrency = concurrency;
+        cfg.addon_fetch_timeout_secs = Some(addon_timeout);
         cfg.filter_by_digital_release_date = filter_dr;
         cfg.digital_release_buffer_days = dr_buffer;
         cfg.subtitle_languages = Some(
@@ -247,6 +254,26 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                             }
                             p { class: "field-hint",
                                 "Number of items to enrich with metadata concurrently during library import. Higher values are faster but increase memory usage and may trigger rate limits on metadata sources. Default: 12."
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", r#for: "s-addon-timeout", "Addon Fetch Timeout (seconds)" }
+                            input {
+                                id: "s-addon-timeout",
+                                r#type: "number",
+                                class: "field-input",
+                                min: "1",
+                                max: "120",
+                                value: "{addon_fetch_timeout_secs}",
+                                oninput: move |e| {
+                                    if let Ok(n) = e.value().parse::<i64>() {
+                                        addon_fetch_timeout_secs.set(n);
+                                    }
+                                },
+                            }
+                            p { class: "field-hint",
+                                "Max time to wait for a single metadata addon's response before treating it as failed and moving on. Lower values keep a slow or unreachable addon from stalling a refresh; higher values give slow addons more room to respond. Default: 5."
                             }
                         }
 

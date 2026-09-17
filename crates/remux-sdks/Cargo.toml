@@ -42,7 +42,7 @@ tokio = { version = "1", features = ["time"] }
 
 [dev-dependencies]
 httpmock = "0.7"
-tokio = { version = "1", features = ["macros", "rt", "time"] }
+tokio = { version = "1", features = ["macros", "rt", "time", "test-util"] }
 
 [features]
 default = []

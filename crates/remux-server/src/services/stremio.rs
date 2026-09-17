@@ -51,6 +51,17 @@ impl StremioService {
         })
     }
 
+    /// Shares a 429 cooldown across every client built for the same addon.
+    /// `from_url` builds a fresh `RestClient` on every call (addons are not
+    /// cached), so without this each concurrent or sequential call starts
+    /// with no memory of a prior 429 from the same addon.
+    pub fn with_shared_rate_limit(mut self, limit: sdks::SharedRateLimit) -> Self {
+        self.client = self
+            .client
+            .with_shared_rate_limit(limit);
+        self
+    }
+
     fn ep<EP: Endpoint + Clone>(&self, endpoint: EP) -> WithExtraQuery<EP> {
         WithExtraQuery {
             endpoint,
@@ -84,7 +95,18 @@ impl StremioService {
                     season: None,
                     episode: None,
                 })
-                .with_cache(Duration::from_secs(3600)),
+                .with_cache(Duration::from_secs(3600))
+                // Addons report upstream failures as a 200 OK with an
+                // error-shaped body, not via HTTP status — caching one of
+                // those would replay the same stale failure from the HTTP
+                // cache for up to an hour, regardless of the addon-local
+                // `medias_cache` skip in `fetch_and_cache_meta`.
+                .should_cache(|response: &sdks::stremio::MetaResponse| {
+                    (!response
+                        .meta
+                        .is_error())
+                    .then_some(Duration::from_secs(3600))
+                }),
             )
             .await?
             .meta)
@@ -165,6 +187,7 @@ impl StremioService {
         kind: String,
         id: String,
         supports_skip: bool,
+        page_concurrency: usize,
     ) -> Result<Pin<Box<dyn Stream<Item = sdks::stremio::Meta> + Send>>> {
         let client = self
             .client
@@ -190,7 +213,14 @@ impl StremioService {
         let page_size = first_page
             .metas
             .len() as u32;
-        debug!(kind = %kind, id = %id, page_size, elapsed = ?t0.elapsed(), "catalog first page");
+        debug!(
+            kind = %kind,
+            id = %id,
+            page_size,
+            page_concurrency = page_concurrency.max(1),
+            elapsed = ?t0.elapsed(),
+            "catalog first page"
+        );
         if page_size == 0 || !supports_skip {
             return Ok(Box::pin(stream::iter(first_page.metas)));
         }
@@ -204,22 +234,105 @@ impl StremioService {
                 let id = id.clone();
                 let extra_query = extra_query.clone();
                 async move {
+                    let skip = page * page_size;
+                    let mut raw_response = None;
                     let result = client
-                        .execute(WithExtraQuery {
-                            endpoint: sdks::stremio::CatalogEndpoint {
-                                kind: kind.clone(),
-                                id: id.clone(),
-                                search: None,
-                                genre: None,
-                                skip: Some(page * page_size),
+                        .execute_observed(
+                            WithExtraQuery {
+                                endpoint: sdks::stremio::CatalogEndpoint {
+                                    kind: kind.clone(),
+                                    id: id.clone(),
+                                    search: None,
+                                    genre: None,
+                                    skip: Some(skip),
+                                },
+                                extra: extra_query,
                             },
-                            extra: extra_query,
-                        })
+                            |status, body| {
+                                // Bounded: this fires for every page regardless of
+                                // outcome, including large successful pages whose
+                                // body is never read below — and an addon's raw
+                                // response is untrusted, unbounded-size input that
+                                // must not be logged in full (see the `Secret`
+                                // wrapper `ClientError` itself uses for bodies).
+                                let snippet: String = body
+                                    .chars()
+                                    .take(300)
+                                    .collect();
+                                raw_response = Some((status, snippet))
+                            },
+                        )
                         .await;
+                    match &result {
+                        Ok(response) => tracing::debug!(
+                            kind = %kind,
+                            id = %id,
+                            page,
+                            skip,
+                            metas = response.metas.len(),
+                            "catalog page fetched"
+                        ),
+                        // A 404 here is the addon's normal "no more pages" signal
+                        // (see `is_404`), not a real failure — every completed
+                        // catalog import ends on one. Logging it as a failure
+                        // would flag completely normal pagination on every run.
+                        Err(error) if is_404(error) => {
+                            tracing::debug!(
+                                kind = %kind,
+                                id = %id,
+                                page,
+                                skip,
+                                "catalog pagination reached end of catalog (404)"
+                            );
+                        }
+                        Err(error) => {
+                            let status = raw_response
+                                .as_ref()
+                                .map(|(status, _)| *status)
+                                .unwrap_or_default();
+                            let body = raw_response
+                                .as_ref()
+                                .map(|(_, body)| body.as_str())
+                                .unwrap_or_default();
+                            tracing::info!(
+                                kind = %kind,
+                                id = %id,
+                                page,
+                                skip,
+                                status,
+                                body = %body,
+                                error = %error,
+                                "catalog page fetch failed"
+                            )
+                        }
+                    }
+                    if let Ok(response) = &result
+                        && response
+                            .metas
+                            .is_empty()
+                    {
+                        let status = raw_response
+                            .as_ref()
+                            .map(|(status, _)| *status)
+                            .unwrap_or_default();
+                        let body = raw_response
+                            .as_ref()
+                            .map(|(_, body)| body.as_str())
+                            .unwrap_or_default();
+                        tracing::debug!(
+                            kind = %kind,
+                            id = %id,
+                            page,
+                            skip,
+                            status,
+                            body = %body,
+                            "catalog page returned no metas"
+                        );
+                    }
                     result
                 }
             })
-            .buffered(3);
+            .buffered(page_concurrency.max(1));
 
         let pages = first
             .chain(rest)
@@ -308,7 +421,7 @@ mod tests {
 
         let svc = StremioService::from_url(&server.base_url()).unwrap();
         let stream = svc
-            .get_catalog_stream("movie".to_string(), "test".to_string(), true)
+            .get_catalog_stream("movie".to_string(), "test".to_string(), true, 3)
             .await
             .unwrap();
         let names: Vec<String> = stream
@@ -333,7 +446,7 @@ mod tests {
 
         let svc = StremioService::from_url(&server.base_url()).unwrap();
         let stream = svc
-            .get_catalog_stream("movie".to_string(), "test".to_string(), true)
+            .get_catalog_stream("movie".to_string(), "test".to_string(), true, 3)
             .await
             .unwrap();
         let names: Vec<String> = stream
