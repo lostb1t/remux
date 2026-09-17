@@ -1124,7 +1124,6 @@ impl UserMediaState {
             self.user_id, self.media_id
         );
 
-        let now = chrono::Utc::now().naive_utc();
         sqlx::query(
             r#"
             INSERT INTO user_media_state (
@@ -1164,7 +1163,7 @@ impl UserMediaState {
         .bind(self.play_count)
         .bind(self.played_at)
         .bind(self.playback_position)
-        .bind(now)
+        .bind(self.last_played_at)
         .bind(self.subtitle_idx)
         .bind(self.audio_idx)
         .bind(self.rating)
