@@ -69,9 +69,19 @@ impl EclipseService {
     /// off `https://host/{token}/`.
     pub fn from_url(url: &str) -> Result<Self> {
         let parsed = url::Url::parse(url).map_err(|e| anyhow::anyhow!("{e}"))?;
+        // `query_pairs()` percent-decodes, but `RestClient::execute` treats
+        // every `query()` pair as already-encoded and concatenates it into the
+        // URL verbatim (see its comment on double-encoding) — so a setting or
+        // token containing `%`, `&`, `+`, or a space must be re-encoded here,
+        // not carried through decoded.
         let extra_query: Vec<(String, String)> = parsed
             .query_pairs()
-            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .map(|(k, v)| {
+                (
+                    url::form_urlencoded::byte_serialize(k.as_bytes()).collect(),
+                    url::form_urlencoded::byte_serialize(v.as_bytes()).collect(),
+                )
+            })
             .collect();
         let mut clean = parsed.clone();
         clean.set_query(None);
