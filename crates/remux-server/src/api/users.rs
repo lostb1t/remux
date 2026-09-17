@@ -873,6 +873,130 @@ pub async fn delete_item_rating_legacy(
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
+/// Jellyfin's generic user-data sync endpoint, distinct from the narrower
+/// `/rating` and `/userplayeditems` endpoints above: a client (e.g. the
+/// CrossWatch sync tool) restoring state from another server sends whichever
+/// fields it has in one call rather than making several separate requests.
+/// Each present field is applied independently — see
+/// `UserMediaState::apply_update` for why this must not reuse
+/// `mark_played`/`update_playback`.
+#[post("/useritems/{id}/userdata")]
+pub async fn update_item_user_data(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path(id): Path<Uuid>,
+    Json(update): Json<api::UpdateUserItemDataDto>,
+) -> Result<impl IntoResponse> {
+    handle_update_item_user_data(state, user, id, update).await
+}
+
+#[post("/users/{user_id}/items/{id}/userdata")]
+pub async fn update_item_user_data_legacy(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path((_, id)): Path<(Uuid, Uuid)>,
+    Json(update): Json<api::UpdateUserItemDataDto>,
+) -> Result<impl IntoResponse> {
+    handle_update_item_user_data(state, user, id, update).await
+}
+
+/// Shared by the modern and legacy `userdata` routes above.
+async fn handle_update_item_user_data(
+    state: AppState,
+    user: User,
+    id: Uuid,
+    update: api::UpdateUserItemDataDto,
+) -> Result<impl IntoResponse> {
+    let media = MediaResolveService::resolve_item(id, &state.ctx)
+        .await?
+        .context_not_found("not found")?;
+    if let Some(rating) = update.rating {
+        db::UserRating::try_from(rating)
+            .context_bad_request("rating must be between 0 and 10")?;
+    }
+    if update
+        .playback_position_ticks
+        .is_some_and(|t| t < 0)
+    {
+        return Err(anyhow::anyhow!(
+            "PlaybackPositionTicks must not be negative"
+        ))
+        .context_bad_request("PlaybackPositionTicks must not be negative");
+    }
+    if update
+        .play_count
+        .is_some_and(|c| c < 0)
+    {
+        return Err(anyhow::anyhow!("PlayCount must not be negative"))
+            .context_bad_request("PlayCount must not be negative");
+    }
+
+    let ms = db::UserMediaState::apply_update(
+        &state
+            .ctx
+            .db,
+        &user,
+        &media,
+        &update,
+    )
+    .await?;
+
+    if let Some(played) = update.played {
+        state
+            .ctx
+            .signals
+            .emit(if played {
+                Event::MarkPlayed(MarkPlayedInfo {
+                    user_id: user.id,
+                    media_id: media.id,
+                })
+            } else {
+                Event::MarkUnplayed(MarkUnplayedInfo {
+                    user_id: user.id,
+                    media_id: media.id,
+                })
+            });
+    }
+    if let Some(favorite) = update.is_favorite {
+        state
+            .ctx
+            .signals
+            .emit(if favorite {
+                Event::MarkFavorite(MarkFavoriteInfo {
+                    user_id: user.id,
+                    media_id: media.id,
+                })
+            } else {
+                Event::UnmarkFavorite(UnmarkFavoriteInfo {
+                    user_id: user.id,
+                    media_id: media.id,
+                })
+            });
+    }
+    if update
+        .rating
+        .is_some()
+        || update
+            .likes
+            .is_some()
+    {
+        state
+            .ctx
+            .signals
+            .emit(Event::Rating(RatingInfo {
+                user_id: user.id,
+                media_id: media.id,
+                rating: ms
+                    .rating
+                    .map(|r| r as f32),
+            }));
+    }
+
+    Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
+}
+
 #[get("/users/{user_id}/groupingoptions")]
 pub async fn users_groupingoptions(
     State(state): State<AppState>,
@@ -4007,6 +4131,138 @@ mod e2e_tests {
                 "rating={value} derived the wrong Likes"
             );
         }
+    }
+
+    /// Regression test for a Jellyfin-compatible sync client (e.g. CrossWatch)
+    /// restoring watched state: it sends `Played` and `PlaybackPositionTicks`
+    /// in the same request, and the position must not be clobbered as a side
+    /// effect of applying `Played`.
+    #[tokio::test]
+    async fn userdata_endpoint_applies_played_and_position_together() {
+        let (server, ctx, token) = authenticated_server().await;
+        let item = insert_test_source(&ctx.0).await;
+        let auth = || {
+            (
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+        };
+
+        let resp = server
+            .post(&format!("/useritems/{}/userdata", item.id))
+            .add_header(auth().0, auth().1)
+            .json(&json!({
+                "Played": true,
+                "PlaybackPositionTicks": 120_000_000,
+                "LastPlayedDate": "2026-09-16T18:00:00Z",
+            }))
+            .await;
+        let body: serde_json::Value = resp.json();
+        assert_eq!(body["Played"], true);
+        assert_eq!(body["PlaybackPositionTicks"], 120_000_000);
+        assert_eq!(body["LastPlayedDate"], "2026-09-16T18:00:00Z");
+
+        // Regression check: `UserMediaState::save` used to hardcode `now()`
+        // for `last_played_at` regardless of the field actually set on the
+        // struct, so the supplied date only ever appeared in this immediate
+        // response (built from the in-memory value) and was silently
+        // replaced by the time of the very next read.
+        let resp = server
+            .get(&format!("/items/{}", item.id))
+            .add_header(auth().0, auth().1)
+            .await;
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["UserData"]["LastPlayedDate"], "2026-09-16T18:00:00Z",
+            "the supplied LastPlayedDate must survive a fresh read from the database"
+        );
+    }
+
+    /// `Played: false` must clear the derived `played` state (both
+    /// `play_count` and `played_at` in the underlying row — see
+    /// `UserMediaState::apply_update`) without touching fields the request
+    /// didn't mention.
+    #[tokio::test]
+    async fn userdata_endpoint_unplaying_does_not_touch_unrelated_fields() {
+        let (server, ctx, token) = authenticated_server().await;
+        let item = insert_test_source(&ctx.0).await;
+        let auth = || {
+            (
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+        };
+
+        server
+            .post(&format!("/useritems/{}/userdata", item.id))
+            .add_header(auth().0, auth().1)
+            .json(&json!({
+                "Played": true,
+                "PlaybackPositionTicks": 120_000_000,
+                "IsFavorite": true,
+            }))
+            .await;
+
+        let resp = server
+            .post(&format!("/useritems/{}/userdata", item.id))
+            .add_header(auth().0, auth().1)
+            .json(&json!({ "Played": false }))
+            .await;
+        let body: serde_json::Value = resp.json();
+        assert_eq!(body["Played"], false);
+        assert_eq!(
+            body["PlaybackPositionTicks"], 120_000_000,
+            "position must survive an unrelated Played update"
+        );
+        assert_eq!(
+            body["IsFavorite"], true,
+            "favorite must survive an unrelated Played update"
+        );
+    }
+
+    #[tokio::test]
+    async fn userdata_endpoint_rejects_an_out_of_range_rating() {
+        let (server, ctx, token) = authenticated_server().await;
+        let item = insert_test_source(&ctx.0).await;
+
+        let resp = server
+            .post(&format!("/useritems/{}/userdata", item.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+            .json(&json!({ "Rating": 11 }))
+            .expect_failure()
+            .await;
+        assert_eq!(resp.status_code(), http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn userdata_endpoint_rejects_negative_position_and_play_count() {
+        let (server, ctx, token) = authenticated_server().await;
+        let item = insert_test_source(&ctx.0).await;
+        let auth = || {
+            (
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+        };
+
+        let resp = server
+            .post(&format!("/useritems/{}/userdata", item.id))
+            .add_header(auth().0, auth().1)
+            .json(&json!({ "PlaybackPositionTicks": -1 }))
+            .expect_failure()
+            .await;
+        assert_eq!(resp.status_code(), http::StatusCode::BAD_REQUEST);
+
+        let resp = server
+            .post(&format!("/useritems/{}/userdata", item.id))
+            .add_header(auth().0, auth().1)
+            .json(&json!({ "PlayCount": -1 }))
+            .expect_failure()
+            .await;
+        assert_eq!(resp.status_code(), http::StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
