@@ -1218,7 +1218,10 @@ named_eclipse_preset!(
 
 named_eclipse_preset!(
     SpotiFLACPreset,
-    id = "spotiflac",
+    // Must stay "eclipse_spotiflac": persisted addon rows key on this exact
+    // string, and AddonService::load_runtimes does an exact-match lookup that
+    // silently skips a row whose preset id it doesn't recognize.
+    id = "eclipse_spotiflac",
     name = "SpotiFLAC",
     description = "Search and stream lossless music.",
     url = "https://spotiflac.eclipsemusic.app/5baa7290b334d6e2/manifest.json",
@@ -1938,7 +1941,8 @@ mod tests {
             .unwrap();
         assert!(artists.is_empty());
 
-        // A kind Eclipse has no concept of is declined outright.
+        // Searching for a kind Eclipse has no concept of (e.g. Movie) is
+        // declined outright (`None`), not answered with an empty result.
         assert!(
             a.search(&db::MediaKind::Movie, "adele", 10, &ctx)
                 .await
