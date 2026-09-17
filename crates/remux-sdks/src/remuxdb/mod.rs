@@ -277,8 +277,6 @@ pub struct RatingSource {
 pub struct MediaRatings {
     pub score: Option<f64>,
     pub score_average: Option<f64>,
-    /// Rotten Tomatoes critics score, on its native 0–100 percentage scale.
-    pub tomatoes: Option<f64>,
     #[serde(default)]
     pub sources: Vec<RatingSource>,
     pub updated_at: Option<String>,
