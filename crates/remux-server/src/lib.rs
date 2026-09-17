@@ -178,19 +178,18 @@ pub async fn serve(config: Config, paths: FilesystemPaths) -> Result<()> {
     let web_path = paths
         .web_path
         .clone();
-    let port = config.port;
+    let addr = std::net::SocketAddr::new(config.host, config.port);
     let (router, _) = init_app(config, Some(paths), admin, move |pool| {
         WebClientService::from_filesystem(&web_path, pool)
     })
     .await?;
-    bind_and_serve(router, port).await
+    bind_and_serve(router, addr).await
 }
 
-pub async fn bind_and_serve(router: Router, port: u16) -> Result<()> {
-    let addr = format!("0.0.0.0:{port}");
+pub async fn bind_and_serve(router: Router, addr: std::net::SocketAddr) -> Result<()> {
     let app = MapRequestLayer::new(rewrite_request_uri).layer(router);
     info!("starting webserver at {addr}");
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app.into_make_service()).await?;
     Ok(())
 }
@@ -542,6 +541,10 @@ fn default_dashboard_path() -> String {
         .unwrap_or_else(|| "/data/dashboard".to_string())
 }
 
+fn default_host() -> std::net::IpAddr {
+    std::net::Ipv4Addr::UNSPECIFIED.into()
+}
+
 fn default_port() -> u16 {
     3000
 }
@@ -558,6 +561,11 @@ pub struct Config {
     pub database_url: Option<String>,
     /// `None` means derive from `data_dir` — call `resolve()` after loading.
     pub torrent_data_dir: Option<String>,
+    /// Address the HTTP server listens on. Defaults to every IPv4 interface;
+    /// `127.0.0.1` keeps it behind a reverse proxy on the same host, `::`
+    /// listens on IPv6 as well.
+    #[serde(default = "default_host")]
+    pub host: std::net::IpAddr,
     #[serde(default = "default_port")]
     pub port: u16,
     /// Explicit port for the internal torrent HTTP server.
@@ -704,6 +712,7 @@ impl Default for Config {
             data_dir: default_data_dir(),
             database_url: None,
             torrent_data_dir: None,
+            host: default_host(),
             port: default_port(),
             torrent_http_port: default_torrent_http_port_opt(),
             slow_query_threshold_ms: default_slow_query_threshold_ms(),

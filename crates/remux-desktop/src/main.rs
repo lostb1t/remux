@@ -185,7 +185,7 @@ async fn serve(config: remux_server::Config) -> anyhow::Result<()> {
         remux_server::admin_from_filesystem(&paths.dashboard_path)
     };
 
-    let port = config.port;
+    let addr = std::net::SocketAddr::new(config.host, config.port);
     let (router, _) = remux_server::init_app(config, None, admin, |pool| {
         #[cfg(jellyfin_web_built)]
         {
@@ -199,7 +199,7 @@ async fn serve(config: remux_server::Config) -> anyhow::Result<()> {
         }
     })
     .await?;
-    remux_server::bind_and_serve(router, port).await
+    remux_server::bind_and_serve(router, addr).await
 }
 
 fn load_icon() -> tray_icon::Icon {

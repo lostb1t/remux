@@ -12,6 +12,8 @@ use std::path::PathBuf;
 struct Cli {
     #[arg(long, help = "Data directory")]
     datadir: Option<PathBuf>,
+    #[arg(long, help = "Bind address")]
+    host: Option<std::net::IpAddr>,
     #[arg(long, help = "HTTP port")]
     port: Option<u16>,
     #[arg(long, help = "SQLite database URL")]
@@ -54,6 +56,9 @@ async fn main() -> Result<()> {
     if let Some(v) = cli.datadir {
         config.data_dir = v;
     }
+    if let Some(v) = cli.host {
+        config.host = v;
+    }
     if let Some(v) = cli.port {
         config.port = v;
     }
@@ -79,5 +84,34 @@ mod tests {
         let config = load_config(env).unwrap();
 
         assert_eq!(config.port, 5000);
+    }
+
+    #[test]
+    fn parses_host_from_environment_value() {
+        let env = config::Environment::default().source(Some({
+            let mut env = config::Map::new();
+            env.insert("HOST".into(), "::".into());
+            env
+        }));
+
+        let config = load_config(env).unwrap();
+
+        assert_eq!(
+            config.host,
+            std::net::IpAddr::from(std::net::Ipv6Addr::UNSPECIFIED)
+        );
+    }
+
+    #[test]
+    fn host_defaults_to_every_ipv4_interface() {
+        let config = load_config(
+            config::Environment::default().source(Some(config::Map::new())),
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.host,
+            std::net::IpAddr::from(std::net::Ipv4Addr::UNSPECIFIED)
+        );
     }
 }
