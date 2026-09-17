@@ -4,7 +4,7 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 use anyhow::Result;
 use clap::Parser;
-use remux_server::{Config, FilesystemPaths, serve, setup_logging};
+use remux_server::{FilesystemPaths, load_config_from_env, serve, setup_logging};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -22,13 +22,6 @@ struct Cli {
     ffmpeg: Option<PathBuf>,
     #[arg(long, help = "Path to ffprobe binary")]
     ffprobe: Option<PathBuf>,
-}
-
-fn load_config(env: config::Environment) -> Result<Config, config::ConfigError> {
-    config::Config::builder()
-        .add_source(env.try_parsing(true))
-        .build()?
-        .try_deserialize()
 }
 
 fn load_paths() -> FilesystemPaths {
@@ -50,7 +43,7 @@ async fn main() -> Result<()> {
         unsafe { std::env::set_var("FFPROBE_PATH", p) };
     }
 
-    let mut config = load_config(config::Environment::default())?;
+    let mut config = load_config_from_env()?;
 
     // CLI args win over env.
     if let Some(v) = cli.datadir {
@@ -71,7 +64,7 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use remux_server::load_config;
 
     #[test]
     fn parses_port_from_string_environment_value() {
