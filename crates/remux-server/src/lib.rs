@@ -194,6 +194,25 @@ pub async fn bind_and_serve(router: Router, addr: std::net::SocketAddr) -> Resul
     Ok(())
 }
 
+/// Loads `Config` from `env`, layered over the compiled-in defaults. Shared by
+/// every binary embedding this crate (the headless server binary, the desktop
+/// tray app) so they all resolve settings — `HOST`/`PORT`/etc. — the same way,
+/// rather than each reimplementing (or skipping) the config/env merge.
+pub fn load_config(
+    env: config::Environment,
+) -> std::result::Result<Config, config::ConfigError> {
+    config::Config::builder()
+        .add_source(env.try_parsing(true))
+        .build()?
+        .try_deserialize()
+}
+
+/// [`load_config`] against the process environment — the common case for a
+/// binary with no need to inject a custom source (tests aside).
+pub fn load_config_from_env() -> std::result::Result<Config, config::ConfigError> {
+    load_config(config::Environment::default())
+}
+
 #[cfg(unix)]
 const TARGET_OPEN_FILE_LIMIT: libc::rlim_t = 8192;
 
