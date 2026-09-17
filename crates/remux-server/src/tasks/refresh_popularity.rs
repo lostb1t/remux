@@ -135,7 +135,10 @@ async fn persist_metrics(
                 .score_average
                 .filter(|score| score.is_finite());
             let tomatoes = ratings
-                .tomatoes
+                .sources
+                .iter()
+                .find(|source| source.source == "tomatoes")
+                .map(|source| source.value)
                 .filter(|score| score.is_finite() && (0.0..=100.0).contains(score));
             item.rating_audience = score_average;
             item.rating_critic = tomatoes;
@@ -226,4 +229,96 @@ async fn persist_metrics(
             .await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use remux_sdks::remuxdb::{
+        MediaMetrics, MediaRatings, MetricPeriods, RatingSource,
+    };
+
+    fn metrics_with_sources(sources: Vec<(&str, f64)>) -> MediaMetrics {
+        MediaMetrics {
+            popularity: MetricPeriods::default(),
+            trending: MetricPeriods::default(),
+            ratings: Some(MediaRatings {
+                score: Some(80.0),
+                score_average: Some(8.0),
+                sources: sources
+                    .into_iter()
+                    .map(|(source, value)| RatingSource {
+                        source: source.to_string(),
+                        value,
+                        votes: None,
+                    })
+                    .collect(),
+                updated_at: None,
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn critic_rating_comes_from_the_tomatoes_source_entry() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let media = db::Media {
+            title: "The Godfather".to_string(),
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt0068646".to_string()).ok(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let media_id = media.id;
+        let metrics = metrics_with_sources(vec![
+            ("imdb", 9.2),
+            ("tomatoes", 97.0),
+            ("tomatoesaudience", 98.0),
+        ]);
+
+        persist_metrics(&ctx.db, vec![(media, metrics)])
+            .await
+            .unwrap();
+
+        let stored = db::Media::get_by_id(&ctx.db, &media_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.rating_critic, Some(97.0));
+    }
+
+    /// No `tomatoes` entry anywhere leaves the critic rating unset rather than
+    /// guessing from an unrelated source.
+    #[tokio::test]
+    async fn critic_rating_stays_unset_without_a_tomatoes_source() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let media = db::Media {
+            title: "Obscure Movie".to_string(),
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt9999999".to_string()).ok(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let media_id = media.id;
+        let metrics = metrics_with_sources(vec![("imdb", 5.0)]);
+
+        persist_metrics(&ctx.db, vec![(media, metrics)])
+            .await
+            .unwrap();
+
+        let stored = db::Media::get_by_id(&ctx.db, &media_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.rating_critic, None);
+    }
 }
