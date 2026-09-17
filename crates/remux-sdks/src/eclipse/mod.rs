@@ -5,7 +5,7 @@
 //! `GET /stream/{id}` with a playable URL. Everything else is optional.
 //!
 //! Deliberately kept separate from [`crate::stremio`] rather than folded into
-//! it: the two protocols share only the word "addon". Stremio addressses items
+//! it: the two protocols share only the word "addon". Stremio addresses items
 //! by a globally meaningful id (`tt0111161`) under `/{resource}/{type}/{id}.json`
 //! and returns `{"metas": [...]}`; Eclipse addresses them by an id that means
 //! nothing outside the addon that minted it, under flat `/{resource}/{id}`
