@@ -121,6 +121,12 @@ impl MetaAddon for TmdbAddon {
         }
     }
 
+    async fn rate_limit_cooldown(&self) -> Duration {
+        common::tmdb_rate_limit()
+            .remaining_cooldown()
+            .await
+    }
+
     async fn images_fetch(
         &self,
         media: &db::Media,
@@ -602,6 +608,12 @@ impl TreeAddon for TmdbAddon {
             _ => Ok(None),
         }
     }
+
+    async fn rate_limit_cooldown(&self) -> Duration {
+        common::tmdb_rate_limit()
+            .remaining_cooldown()
+            .await
+    }
 }
 
 fn tmdb_client(
@@ -616,8 +628,18 @@ fn tmdb_client(
         // TMDB never sends a `Retry-After` header on 429s (they dropped
         // fixed rate limiting in 2019), so without this every 429 falls
         // back to the SDK's generic 60s default, which is far longer than
-        // TMDB's actual throttle window.
-        .with_default_retry_after(std::time::Duration::from_secs(2)))
+        // TMDB's actual throttle window. Keep this in sync with
+        // `common::tmdb_client_from_config`'s value — both share one
+        // cooldown, and a 429 seen on either client installs its own
+        // fallback as the block duration.
+        .with_default_retry_after(std::time::Duration::from_secs(2))
+        // This is the client TmdbAddon's own meta_fetch/tree/catalog use —
+        // the highest-traffic TMDB path during a refresh. Without sharing
+        // the same cooldown as `common::tmdb_client`, a 429 seen here would
+        // never throttle calls made through that other factory, and vice
+        // versa: two independent clients, two independent (and inconsistent)
+        // views of whether TMDB is currently rate-limiting us.
+        .with_shared_rate_limit(common::tmdb_rate_limit()))
 }
 
 async fn tmdb_client_from_ctx(

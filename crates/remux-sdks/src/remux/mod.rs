@@ -666,6 +666,10 @@ pub struct ServerConfiguration {
     /// Number of items to process concurrently during metadata fetch (default: 12).
     #[default(12_i64)]
     pub meta_concurrency: i64,
+    /// Max time (seconds) to wait for a single metadata addon's response
+    /// before treating it as failed and moving on (default: 5).
+    #[default(Some(5_i64))]
+    pub addon_fetch_timeout_secs: Option<i64>,
     #[default(Some(true))]
     pub p2p_enabled: Option<bool>,
     #[default(Some(0_i64))]

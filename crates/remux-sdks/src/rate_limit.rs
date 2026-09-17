@@ -1,9 +1,73 @@
 use http::{HeaderMap, header};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Arc;
+
+#[cfg(not(target_arch = "wasm32"))]
+use tokio::{sync::Mutex, time::Instant};
+
 pub(crate) const DEFAULT_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(48 * 60 * 60);
+
+/// Shared 429 cooldown for one provider.
+///
+/// Give clones of one value to every [`RestClient`](crate::RestClient) that
+/// talks to the same upstream. After a 429, it parks all later requests until
+/// the shared cooldown has elapsed. It intentionally does not limit request
+/// concurrency; callers control that themselves.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
+pub struct SharedRateLimit {
+    blocked_until: Arc<Mutex<Instant>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SharedRateLimit {
+    pub fn new() -> Self {
+        Self {
+            blocked_until: Arc::new(Mutex::new(Instant::now())),
+        }
+    }
+
+    async fn block_for(&self, delay: Duration) {
+        let candidate = Instant::now() + delay;
+        let mut blocked_until = self
+            .blocked_until
+            .lock()
+            .await;
+        *blocked_until = (*blocked_until).max(candidate);
+    }
+
+    async fn wait_for_cooldown(&self) {
+        loop {
+            let blocked_until = *self
+                .blocked_until
+                .lock()
+                .await;
+            let now = Instant::now();
+            if blocked_until <= now {
+                return;
+            }
+            tokio::time::sleep_until(blocked_until).await;
+        }
+    }
+
+    /// Time left before the cooldown clears — `Duration::ZERO` if not
+    /// currently blocked. Unlike `wait_for_cooldown`, this never sleeps: a
+    /// caller can use it to decide whether it's even worth starting a
+    /// request under its own bounded timeout, rather than beginning the
+    /// attempt and having the timeout fire mid-wait, indistinguishable from
+    /// a genuinely hung request.
+    pub async fn remaining_cooldown(&self) -> Duration {
+        let blocked_until = *self
+            .blocked_until
+            .lock()
+            .await;
+        blocked_until.saturating_duration_since(Instant::now())
+    }
+}
 
 pub(crate) fn retry_after(
     headers: &HeaderMap,
@@ -49,6 +113,7 @@ fn parse_retry_after(value: &str, now: SystemTime) -> Option<Duration> {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct RetryAfterMiddleware {
     pub(crate) default_retry_after: Duration,
+    pub(crate) shared_rate_limit: Option<SharedRateLimit>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -60,6 +125,11 @@ impl reqwest_middleware::Middleware for RetryAfterMiddleware {
         extensions: &mut http::Extensions,
         next: reqwest_middleware::Next<'_>,
     ) -> reqwest_middleware::Result<reqwest::Response> {
+        if let Some(limit) = &self.shared_rate_limit {
+            limit
+                .wait_for_cooldown()
+                .await;
+        }
         let response = next
             .run(req, extensions)
             .await?;
@@ -78,9 +148,19 @@ impl reqwest_middleware::Middleware for RetryAfterMiddleware {
         tracing::warn!(
             url = %response.url(),
             retry_after_secs = delay.as_secs(),
+            shared = self.shared_rate_limit.is_some(),
             "upstream returned 429; backing off before this request returns"
         );
-        tokio::time::sleep(delay).await;
+        if let Some(limit) = &self.shared_rate_limit {
+            limit
+                .block_for(delay)
+                .await;
+            limit
+                .wait_for_cooldown()
+                .await;
+        } else {
+            tokio::time::sleep(delay).await;
+        }
         Ok(response)
     }
 }
@@ -193,6 +273,126 @@ mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    mod shared_rate_limit {
+        use super::super::SharedRateLimit;
+        use std::time::Duration;
+        use tokio::time::Instant;
+
+        #[tokio::test(flavor = "current_thread", start_paused = true)]
+        async fn a_fresh_limit_never_blocks() {
+            let limit = SharedRateLimit::new();
+            let started = Instant::now();
+            limit
+                .wait_for_cooldown()
+                .await;
+            assert_eq!(
+                started.elapsed(),
+                Duration::ZERO,
+                "a limit that was never tripped must not delay callers"
+            );
+        }
+
+        #[tokio::test(flavor = "current_thread", start_paused = true)]
+        async fn remaining_cooldown_is_zero_when_not_blocked() {
+            let limit = SharedRateLimit::new();
+            assert_eq!(
+                limit
+                    .remaining_cooldown()
+                    .await,
+                Duration::ZERO
+            );
+        }
+
+        #[tokio::test(flavor = "current_thread", start_paused = true)]
+        async fn remaining_cooldown_reports_time_left_without_waiting() {
+            let limit = SharedRateLimit::new();
+            limit
+                .block_for(Duration::from_secs(5))
+                .await;
+
+            let started = Instant::now();
+            let remaining = limit
+                .remaining_cooldown()
+                .await;
+            assert_eq!(
+                started.elapsed(),
+                Duration::ZERO,
+                "remaining_cooldown must never sleep, unlike wait_for_cooldown"
+            );
+            assert_eq!(remaining, Duration::from_secs(5));
+        }
+
+        #[tokio::test(flavor = "current_thread", start_paused = true)]
+        async fn tripping_the_limit_parks_a_later_waiter_for_the_delay() {
+            let limit = SharedRateLimit::new();
+            limit
+                .block_for(Duration::from_secs(5))
+                .await;
+
+            let started = Instant::now();
+            limit
+                .wait_for_cooldown()
+                .await;
+            assert_eq!(started.elapsed(), Duration::from_secs(5));
+        }
+
+        #[tokio::test(flavor = "current_thread", start_paused = true)]
+        async fn a_shorter_block_never_shrinks_an_existing_longer_cooldown() {
+            let limit = SharedRateLimit::new();
+            limit
+                .block_for(Duration::from_secs(10))
+                .await;
+            // A second, shorter delay (e.g. from a request that raced the first
+            // 429 and got a smaller Retry-After) must not pull the deadline in —
+            // whoever asked for the longest cooldown wins.
+            limit
+                .block_for(Duration::from_secs(1))
+                .await;
+
+            let started = Instant::now();
+            limit
+                .wait_for_cooldown()
+                .await;
+            assert_eq!(
+                started.elapsed(),
+                Duration::from_secs(10),
+                "a shorter subsequent block must not shrink the cooldown"
+            );
+        }
+
+        #[tokio::test(flavor = "current_thread", start_paused = true)]
+        async fn a_longer_block_extends_an_existing_shorter_cooldown() {
+            let limit = SharedRateLimit::new();
+            limit
+                .block_for(Duration::from_secs(1))
+                .await;
+            limit
+                .block_for(Duration::from_secs(10))
+                .await;
+
+            let started = Instant::now();
+            limit
+                .wait_for_cooldown()
+                .await;
+            assert_eq!(started.elapsed(), Duration::from_secs(10));
+        }
+
+        #[tokio::test(flavor = "current_thread", start_paused = true)]
+        async fn concurrent_waiters_all_release_at_the_same_deadline() {
+            let limit = SharedRateLimit::new();
+            limit
+                .block_for(Duration::from_secs(3))
+                .await;
+
+            let started = Instant::now();
+            let (a, b) =
+                tokio::join!(limit.wait_for_cooldown(), limit.wait_for_cooldown());
+            let _: ((), ()) = (a, b);
+            assert_eq!(started.elapsed(), Duration::from_secs(3));
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     mod middleware {
         use crate::{ClientError, Endpoint, RestClient};
         use std::time::{Duration, Instant};
@@ -294,6 +494,71 @@ mod tests {
             );
             assert_eq!(other.hits(), 1);
             limited.abort();
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn clients_sharing_a_rate_limit_block_each_other_after_a_429() {
+            use crate::rate_limit::SharedRateLimit;
+
+            let limited_server = httpmock::MockServer::start();
+            limited_server.mock(|when, then| {
+                when.path("/limited");
+                then.status(429)
+                    .header("Retry-After", "1");
+            });
+            let other_server = httpmock::MockServer::start();
+            let other = other_server.mock(|when, then| {
+                when.path("/ok");
+                then.status(200)
+                    .json_body(serde_json::json!([]));
+            });
+
+            let shared = SharedRateLimit::new();
+            let limited_client = RestClient::new(&limited_server.base_url())
+                .unwrap()
+                .with_shared_rate_limit(shared.clone());
+            // Same shared limit, entirely different underlying host — mirrors
+            // two independently-constructed clients for one logical provider
+            // (see `tmdb_rate_limit`), not two requests to the same server.
+            let other_client = RestClient::new(&other_server.base_url())
+                .unwrap()
+                .with_shared_rate_limit(shared.clone());
+
+            // Spawned so it races the second request instead of fully waiting
+            // out its own cooldown before this task even starts the other
+            // call — otherwise the shared deadline would already be in the
+            // past by the time `other_client` checked it.
+            let limited = tokio::spawn(async move {
+                let _ = limited_client
+                    .execute(Probe("/limited"))
+                    .await;
+            });
+            // Wait for the cooldown to actually be recorded rather than
+            // guessing how long that takes — a fixed sleep here would be a
+            // timing race against however long the spawned task takes to
+            // reach that point under CI/executor load.
+            while shared
+                .remaining_cooldown()
+                .await
+                == Duration::ZERO
+            {
+                tokio::task::yield_now().await;
+            }
+
+            let started = Instant::now();
+            other_client
+                .execute(Probe("/ok"))
+                .await
+                .unwrap();
+            assert!(
+                started.elapsed() >= Duration::from_millis(700),
+                "a client sharing the tripped limit should have been parked too, took {:?}",
+                started.elapsed()
+            );
+            assert_eq!(other.hits(), 1);
+            limited
+                .await
+                .unwrap();
         }
     }
 }

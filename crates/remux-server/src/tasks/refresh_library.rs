@@ -108,12 +108,7 @@ impl Task for RefreshLibraryTask {
                 .iter()
                 .enumerate()
             {
-                addon_progress.report(
-                    cat_idx,
-                    enabled
-                        .len()
-                        .max(1),
-                );
+                let catalog_item_progress = addon_progress.step(cat_idx, enabled.len());
 
                 let full_id = &cat_info.catalog_id;
                 let max = cat_info
@@ -130,6 +125,7 @@ impl Task for RefreshLibraryTask {
                     Some(s) => s,
                     None => {
                         warn!(catalog = %full_id, "no addon found for catalog, skipping");
+                        catalog_item_progress.set(100.0);
                         continue;
                     }
                 };
@@ -143,6 +139,7 @@ impl Task for RefreshLibraryTask {
                     Ok(s) => s,
                     Err(e) => {
                         error!(catalog = %full_id, error = %e, "failed to open catalog stream");
+                        catalog_item_progress.set(100.0);
                         continue;
                     }
                 };
@@ -153,9 +150,11 @@ impl Task for RefreshLibraryTask {
                     full_id,
                     max,
                     stream,
-                    &addon_progress,
+                    &catalog_item_progress,
                 )
                 .await?;
+
+                catalog_item_progress.set(100.0);
 
                 info!(catalog = %full_id, total = ?counts, new = ?new_counts, "catalog import complete");
             }
