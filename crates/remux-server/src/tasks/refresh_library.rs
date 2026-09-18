@@ -206,7 +206,8 @@ impl Task for RefreshLibraryTask {
                 .process_meta_batch(batch, &ctx, false, None)
                 .await?;
             processed += fetched;
-            info!(
+            debug!(
+                target: "remux_server::metadata_refresh",
                 fetched,
                 processed,
                 total = ?total,
