@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::NaiveDateTime;
 use futures::stream::StreamExt;
 use std::collections::{HashMap, HashSet};
-use tracing::{debug, error, info, warn};
+use tracing::{Instrument, debug, debug_span, error, info, warn};
 use uuid::Uuid;
 
 use super::ProgressReporter;
@@ -11,6 +11,15 @@ use crate::{AppContext, addons::ResolvedCatalog, db};
 /// Consume `stream`, fetching metadata + full tree for new items and upserting everything.
 ///
 /// Returns a map of `kind -> count` for top-level items imported.
+///
+/// Timing: this span plus its `stream_pull`/`id_resolve`/`write_relations`
+/// child spans below (and `process_meta_batch`'s own span, for whatever
+/// portion of this catalog's items are new) cover the whole pipeline from
+/// pulling items out of the addon's stream to the final DB writes — enable
+/// `RUST_LOG=remux_server::metadata_refresh=debug` (span-close events log
+/// automatically for this target, see `setup_logging`) to see per-catalog
+/// timing broken down by phase.
+#[tracing::instrument(level = "debug", target = "remux_server::metadata_refresh", skip_all, fields(catalog = media_id))]
 pub async fn import_catalog_items<S>(
     ctx: &AppContext,
     _catalog: &ResolvedCatalog,
@@ -41,10 +50,17 @@ where
         None => Uuid::nil(),
     };
 
-    while let Some(items) = chunks
-        .next()
-        .await
-    {
+    loop {
+        let next = chunks
+            .next()
+            .instrument(
+                debug_span!(target: "remux_server::metadata_refresh", "stream_pull"),
+            )
+            .await;
+        let Some(items) = next else {
+            break;
+        };
+
         progress.report(total, max.max(1));
 
         let remaining = max.saturating_sub(total);
@@ -99,51 +115,58 @@ where
         // already a row fall through to the slower per-item external-ID
         // match — that's the only path that can find a row saved under a
         // different provider's id for the same content.
-        let candidate_ids: Vec<Uuid> = items
-            .iter()
-            .map(|i| i.id)
-            .collect();
-        let existing_by_id: HashMap<Uuid, String> = if candidate_ids.is_empty() {
-            HashMap::new()
-        } else {
-            let mut qb = sqlx::QueryBuilder::new(
-                "SELECT id, CAST(kind AS TEXT) FROM media WHERE id IN (",
-            );
-            let mut sep = qb.separated(", ");
-            for id in &candidate_ids {
-                sep.push_bind(id);
-            }
-            qb.push(")");
-            qb.build_query_as::<(Uuid, String)>()
-                .fetch_all(&ctx.db)
-                .await?
-                .into_iter()
-                .collect()
-        };
-
-        let mut existing_ids = HashSet::new();
-        for item in &mut items {
-            let existing_id = match item.kind {
-                // Channels and playlists have provider-defined UUID identities;
-                // the external-ID resolver does not support these kinds, so
-                // only an exact (id, kind) match — never an external-ID
-                // match — counts as "already exists" for them.
-                db::MediaKind::TvChannel | db::MediaKind::Playlist => existing_by_id
-                    .get(&item.id)
-                    .filter(|k| {
-                        **k == item
-                            .kind
-                            .to_string()
-                    })
-                    .map(|_| item.id),
-                _ if existing_by_id.contains_key(&item.id) => Some(item.id),
-                _ => db::Media::find_existing_id_by_ext(&ctx.db, item).await,
+        let existing_ids: HashSet<Uuid> = async {
+            let candidate_ids: Vec<Uuid> = items
+                .iter()
+                .map(|i| i.id)
+                .collect();
+            let existing_by_id: HashMap<Uuid, String> = if candidate_ids.is_empty() {
+                HashMap::new()
+            } else {
+                let mut qb = sqlx::QueryBuilder::new(
+                    "SELECT id, CAST(kind AS TEXT) FROM media WHERE id IN (",
+                );
+                let mut sep = qb.separated(", ");
+                for id in &candidate_ids {
+                    sep.push_bind(id);
+                }
+                qb.push(")");
+                qb.build_query_as::<(Uuid, String)>()
+                    .fetch_all(&ctx.db)
+                    .await?
+                    .into_iter()
+                    .collect()
             };
-            if let Some(existing_id) = existing_id {
-                item.id = existing_id;
-                existing_ids.insert(existing_id);
+
+            let mut existing_ids = HashSet::new();
+            for item in &mut items {
+                let existing_id = match item.kind {
+                    // Channels and playlists have provider-defined UUID identities;
+                    // the external-ID resolver does not support these kinds, so
+                    // only an exact (id, kind) match — never an external-ID
+                    // match — counts as "already exists" for them.
+                    db::MediaKind::TvChannel | db::MediaKind::Playlist => {
+                        existing_by_id
+                            .get(&item.id)
+                            .filter(|k| {
+                                **k == item
+                                    .kind
+                                    .to_string()
+                            })
+                            .map(|_| item.id)
+                    }
+                    _ if existing_by_id.contains_key(&item.id) => Some(item.id),
+                    _ => db::Media::find_existing_id_by_ext(&ctx.db, item).await,
+                };
+                if let Some(existing_id) = existing_id {
+                    item.id = existing_id;
+                    existing_ids.insert(existing_id);
+                }
             }
+            Ok::<_, anyhow::Error>(existing_ids)
         }
+        .instrument(debug_span!(target: "remux_server::metadata_refresh", "id_resolve"))
+        .await?;
         // Snapshot stream-order weights before partitioning — partition() does not
         // preserve the original order across the two vecs, so new items would
         // otherwise always get the lowest weights within a chunk regardless of where
@@ -265,6 +288,7 @@ where
         // lock after releasing it tends to keep winning the race over a connection
         // that just started waiting, so unrelated writes (e.g. login) can time out
         // even though no single statement holds the lock for long.
+        async {
         if collection_id != Uuid::nil() {
             let catalog_tags: Vec<String> =
                 if let Some((addon_uuid, local_cat_id)) = membership {
@@ -347,6 +371,9 @@ where
                 }
             }
         }
+        }
+        .instrument(debug_span!(target: "remux_server::metadata_refresh", "write_relations"))
+        .await;
 
         for item in new_items.iter() {
             *new_counts

@@ -86,11 +86,16 @@ fn main() -> Result<()> {
     let log_dir = log_dir();
     std::fs::create_dir_all(&log_dir)?;
     cleanup_old_logs(&log_dir);
-    remux_server::setup_logging(Some(&log_dir));
 
     let mut config = remux_server::load_config_from_env()?;
     config.data_dir = data_dir();
     let config = config.resolve();
+    remux_server::setup_logging(
+        Some(&log_dir),
+        config
+            .otlp_endpoint
+            .as_deref(),
+    );
     ensure_data_dirs(&config)?;
 
     // Start the remux server in a background tokio thread with embedded assets.

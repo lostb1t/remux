@@ -37,7 +37,8 @@ use tower_http::{
 };
 use tracing::{self, debug, error, info, instrument, warn};
 use tracing_subscriber::{
-    EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt,
+    EnvFilter, Layer as TracingLayer, fmt, layer::SubscriberExt,
+    util::SubscriberInitExt,
 };
 use url::Url;
 use uuid::Uuid;
@@ -617,6 +618,10 @@ pub struct Config {
     pub activity_log_retention_days: u32,
     #[serde(default = "default_jellyfin_version")]
     pub jellyfin_version: String,
+    /// OTLP gRPC endpoint (e.g. `http://jaeger-collector:4317`) to export
+    /// tracing spans to. `None` (the default) disables tracing export
+    /// entirely — normal log output is unaffected either way.
+    pub otlp_endpoint: Option<String>,
 }
 
 fn default_jellyfin_version() -> String {
@@ -742,6 +747,7 @@ impl Default for Config {
             remuxdb_url: Some("https://remuxdb.1632022.xyz".to_string()),
             activity_log_retention_days: default_activity_log_retention_days(),
             jellyfin_version: default_jellyfin_version(),
+            otlp_endpoint: None,
         }
         .resolve()
     }
@@ -831,7 +837,52 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
     req
 }
 
-pub fn setup_logging(log_dir: Option<&std::path::Path>) {
+/// Builds the OTLP (gRPC) tracing layer and registers its tracer provider
+/// globally so it stays alive for the process lifetime — dropping it would
+/// silently stop span export. `endpoint` is e.g. `http://jaeger:4317`.
+fn build_otel_layer<S>(
+    endpoint: &str,
+) -> Option<impl tracing_subscriber::Layer<S> + Send + Sync + 'static>
+where
+    S: tracing::Subscriber
+        + Send
+        + Sync
+        + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
+{
+    use opentelemetry::trace::TracerProvider as _;
+    use opentelemetry_otlp::WithExportConfig;
+
+    let exporter = match opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(endpoint)
+        .build()
+    {
+        Ok(exporter) => exporter,
+        Err(e) => {
+            eprintln!("failed to build OTLP exporter for {endpoint}: {e}");
+            return None;
+        }
+    };
+
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(
+            opentelemetry_sdk::Resource::builder()
+                .with_service_name("remux-server")
+                .build(),
+        )
+        .build();
+
+    let tracer = provider.tracer("remux-server");
+    opentelemetry::global::set_tracer_provider(provider);
+    Some(tracing_opentelemetry::layer().with_tracer(tracer))
+}
+
+/// `otlp_endpoint`: when set (e.g. `http://jaeger:4317`), tracing spans are
+/// also exported via OTLP — see `Config::otlp_endpoint`. Gated by the same
+/// `RUST_LOG`/`EnvFilter` as normal log output, so raising the level to see
+/// more logs also sends more spans.
+pub fn setup_logging(log_dir: Option<&std::path::Path>, otlp_endpoint: Option<&str>) {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("warn,remux=info"));
 
@@ -859,10 +910,34 @@ pub fn setup_logging(log_dir: Option<&std::path::Path>) {
             .with_writer(appender)
     });
 
+    // FmtSpan::CLOSE makes every span passing through a layer log its own
+    // duration on exit. Scoped to the `remux_server::metadata_refresh`
+    // target only (every refresh-pipeline span sets this explicitly) via a
+    // dedicated layer + per-layer filter, rather than applied to fmt_layer/
+    // file_layer above — those cover the whole app, and every other
+    // `#[instrument]`'d function (playback, subtitles, etc.) would otherwise
+    // start emitting close events too, at whatever level it happens to be
+    // instrumented at (often its default of INFO).
+    let refresh_span_layer = fmt::layer()
+        .with_timer(fmt::time::ChronoLocal::new("%H:%M:%S".to_string()))
+        .with_target(true)
+        .with_line_number(true)
+        .with_file(false)
+        .with_span_events(fmt::format::FmtSpan::CLOSE)
+        .compact()
+        .with_filter(
+            tracing_subscriber::filter::Targets::new()
+                .with_target("remux_server::metadata_refresh", tracing::Level::TRACE),
+        );
+
+    let otel_layer = otlp_endpoint.and_then(build_otel_layer);
+
     tracing_subscriber::registry()
         .with(filter)
         .with(fmt_layer)
         .with(file_layer)
+        .with(refresh_span_layer)
+        .with(otel_layer)
         .try_init()
         .ok(); // try_init + ok() so tests don't panic on repeated calls
 }

@@ -31,7 +31,7 @@ use std::{
 
 use crate::keyed_lock::KeyedLock;
 use libc;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{Instrument, debug, error, info, trace, warn};
 use uuid::Uuid;
 
 use crate::{
@@ -1593,7 +1593,7 @@ impl AddonService {
         }))
     }
 
-    #[tracing::instrument(skip_all, fields(title = %media.title, kind = %media.kind))]
+    #[tracing::instrument(level = "debug", target = "remux_server::metadata_refresh", skip_all, fields(id = %media.id, title = %media.title, kind = %media.kind, force_refresh))]
     pub async fn refresh_meta(
         &self,
         media: &mut db::Media,
@@ -1601,30 +1601,16 @@ impl AddonService {
         force_refresh: bool,
         config: &api::ServerConfiguration,
     ) -> Result<()> {
-        trace!(
-            target: "remux_server::metadata_refresh",
-            id = %media.id,
-            title = %media.title,
-            kind = %media.kind,
-            force_refresh,
-            "metadata refresh starting"
-        );
-        let grandparent_started = Instant::now();
         media
             .grandparent(&ctx.db)
+            .instrument(tracing::debug_span!(target: "remux_server::metadata_refresh", "grandparent_lookup"))
             .await
             .ok();
-        trace!(
-            target: "remux_server::metadata_refresh",
-            id = %media.id,
-            elapsed = ?grandparent_started.elapsed(),
-            "refresh_meta: grandparent lookup complete"
-        );
 
         // Fill in whatever external ids we can before any addon runs, so
         // every addon in this batch sees the fuller id set rather than each
         // doing its own partial, addon-specific resolution.
-        let resolve_started = Instant::now();
+        //
         // Seasons and episodes already carry the TMDB identity needed by their
         // metadata providers. Do not turn a metadata tree refresh into a
         // per-child external-ID enrichment job; that remains available to
@@ -1632,15 +1618,10 @@ impl AddonService {
         let resolves_external_ids =
             !matches!(media.kind, db::MediaKind::Season | db::MediaKind::Episode);
         if resolves_external_ids {
-            MediaResolveService::resolve_external_ids(media, ctx, false).await;
+            MediaResolveService::resolve_external_ids(media, ctx, false)
+                .instrument(tracing::debug_span!(target: "remux_server::metadata_refresh", "resolve_external_ids"))
+                .await;
         }
-        trace!(
-            target: "remux_server::metadata_refresh",
-            id = %media.id,
-            resolves_external_ids,
-            elapsed = ?resolve_started.elapsed(),
-            "refresh_meta: external ID resolution complete"
-        );
 
         let applicable = self
             .addons_for::<dyn MetaAddon>(media, &ctx.db, None)
@@ -1670,9 +1651,9 @@ impl AddonService {
                 .unwrap_or(5)
                 .max(1) as u64,
         );
-        let fetch_started = std::time::Instant::now();
         let media_ref: &db::Media = media;
-        let results = futures::future::join_all(
+        let results = async {
+        futures::future::join_all(
             applicable
                 .iter()
                 .map(|r| {
@@ -1680,16 +1661,8 @@ impl AddonService {
                         .row
                         .name
                         .clone();
+                    let span = tracing::debug_span!(target: "remux_server::metadata_refresh", "addon_meta_fetch", addon = %addon);
                     async move {
-                        let addon_started = Instant::now();
-                        trace!(
-                            target: "remux_server::metadata_refresh",
-                            id = %media_ref.id,
-                            title = %media_ref.title,
-                            kind = %media_ref.kind,
-                            addon = %addon,
-                            "metadata addon request starting"
-                        );
                         let meta_addon = r
                             .meta
                             .as_ref()
@@ -1703,67 +1676,40 @@ impl AddonService {
                         let cooldown = meta_addon
                             .rate_limit_cooldown()
                             .await;
-                        let result = if cooldown >= addon_fetch_timeout {
-                            trace!(
-                                target: "remux_server::metadata_refresh",
-                                id = %media_ref.id,
+                        if cooldown >= addon_fetch_timeout {
+                            debug!(
                                 addon = %addon,
                                 cooldown = ?cooldown,
                                 "skipping addon fetch: shared rate limit cooldown exceeds timeout"
                             );
-                            Ok(None)
-                        } else {
-                            // A single flaky addon (observed: AIO/aiometadata hanging up to
-                            // its own 30s upstream timeout) must not stall an entire item's
-                            // refresh — the other addons in this join_all already finished.
-                            match tokio::time::timeout(
-                                addon_fetch_timeout,
-                                meta_addon.meta_fetch(media_ref, ctx, config),
-                            )
-                            .await
-                            {
-                                Ok(result) => result,
-                                Err(_) => {
-                                    meta_addon.on_meta_fetch_timeout(media_ref);
-                                    Err(anyhow!(
-                                        "addon meta_fetch timed out after {:?}",
-                                        addon_fetch_timeout
-                                    ))
-                                }
+                            return Ok(None);
+                        }
+                        // A single flaky addon (observed: AIO/aiometadata hanging up to
+                        // its own 30s upstream timeout) must not stall an entire item's
+                        // refresh — the other addons in this join_all already finished.
+                        match tokio::time::timeout(
+                            addon_fetch_timeout,
+                            meta_addon.meta_fetch(media_ref, ctx, config),
+                        )
+                        .await
+                        {
+                            Ok(result) => result,
+                            Err(_) => {
+                                meta_addon.on_meta_fetch_timeout(media_ref);
+                                Err(anyhow!(
+                                    "addon meta_fetch timed out after {:?}",
+                                    addon_fetch_timeout
+                                ))
                             }
-                        };
-                        trace!(
-                            target: "remux_server::metadata_refresh",
-                            id = %media_ref.id,
-                            addon = %addon,
-                            elapsed = ?addon_started.elapsed(),
-                            success = result.is_ok(),
-                            "refresh_meta: addon meta_fetch complete"
-                        );
-                        trace!(
-                            target: "remux_server::metadata_refresh",
-                            id = %media_ref.id,
-                            title = %media_ref.title,
-                            kind = %media_ref.kind,
-                            addon = %addon,
-                            elapsed = ?addon_started.elapsed(),
-                            success = result.is_ok(),
-                            "metadata addon request complete"
-                        );
-                        result
+                        }
                     }
+                    .instrument(span)
                 }),
         )
+        .await
+        }
+        .instrument(tracing::debug_span!(target: "remux_server::metadata_refresh", "addon_meta_fetch_all", addons = applicable.len()))
         .await;
-        trace!(
-            target: "remux_server::metadata_refresh",
-            id = %media.id,
-            title = %media.title,
-            kind = %media.kind,
-            addons = applicable.len(),
-            elapsed = ?fetch_started.elapsed(),
-            "refresh_meta: addon meta_fetch done"
-        );
 
         // Accumulate all addon patches into a fresh empty object so the
         // highest-priority addon (first in list, lowest priority number) wins
@@ -1801,7 +1747,9 @@ impl AddonService {
         // skip them.
         if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
             if let Some(existing_id) =
-                db::Media::find_existing_id_by_ext(&ctx.db, media).await
+                db::Media::find_existing_id_by_ext(&ctx.db, media)
+                    .instrument(tracing::debug_span!(target: "remux_server::metadata_refresh", "find_existing_id_by_ext"))
+                    .await
             {
                 media.id = existing_id;
             }
@@ -1914,6 +1862,7 @@ impl AddonService {
     /// on the pre-call id (catalog membership rows, stale-member diffs, etc.) MUST
     /// remap through this before using it — the row was upserted under `final_id`,
     /// not `original_id`.
+    #[tracing::instrument(level = "debug", target = "remux_server::metadata_refresh", skip_all, fields(items = media.len(), force_refresh))]
     pub async fn process_meta_batch(
         &self,
         media: Vec<db::Media>,
@@ -1981,6 +1930,7 @@ impl AddonService {
 
     /// Fetch the direct children of `node` from the first applicable tree addon.
     /// Returns an empty vec if no addon supports this node or none return children.
+    #[tracing::instrument(level = "debug", target = "remux_server::metadata_refresh", skip_all, fields(node_id = %node.id, node_kind = %node.kind))]
     async fn get_direct_children(
         &self,
         node: &db::Media,
@@ -2049,22 +1999,26 @@ impl AddonService {
                 );
                 continue;
             }
-            let result = match tokio::time::timeout(
+            let result = tokio::time::timeout(
                 fetch_timeout,
-                addon.get_children(node, ctx),
+                addon
+                    .get_children(node, ctx)
+                    .instrument(tracing::debug_span!(target: "remux_server::metadata_refresh", "addon_get_children")),
             )
             .await
-            {
-                Ok(result) => result,
-                Err(_) => Err(anyhow!(
+            .unwrap_or_else(|_| {
+                Err(anyhow!(
                     "addon get_children timed out after {:?}",
                     fetch_timeout
-                )),
-            };
+                ))
+            });
             match result {
-                Ok(Some(children)) if !children.is_empty() => return children,
+                Ok(Some(children)) if !children.is_empty() => {
+                    debug!(children = children.len(), "get_direct_children fetched");
+                    return children;
+                }
                 Ok(_) => continue,
-                Err(e) => debug!(id = %node.id, error = %e, "get_children failed"),
+                Err(e) => debug!(error = %e, "get_children failed"),
             }
         }
         vec![]
@@ -2105,35 +2059,16 @@ impl AddonService {
         config: Arc<api::ServerConfiguration>,
         semaphore: Arc<tokio::sync::Semaphore>,
     ) -> Uuid {
-        let title = media
-            .title
-            .clone();
-        let kind = media
-            .kind
-            .clone();
-        let started = std::time::Instant::now();
-        trace!(
-            target: "remux_server::metadata_refresh",
-            id = %media.id,
-            title = %title,
-            kind = %kind,
-            force_refresh,
-            "top-level metadata item starting"
-        );
-        let id = self
-            .process_meta_item_inner(media, ctx, force_refresh, config, semaphore)
-            .await;
-        trace!(
-            target: "remux_server::metadata_refresh",
-            %id,
-            %title,
-            %kind,
-            elapsed = ?started.elapsed(),
-            "process_meta_item done"
-        );
-        id
+        self.process_meta_item_inner(media, ctx, force_refresh, config, semaphore)
+            .await
     }
 
+    /// Total elapsed here (via span close) covers the whole tree walk for one
+    /// root item — root refresh plus every child/grandchild — see the
+    /// `children_refresh`/`children_upsert`/`grandchildren`/
+    /// `grandchildren_refresh`/`grandchildren_upsert` spans below for the
+    /// breakdown.
+    #[tracing::instrument(level = "debug", target = "remux_server::metadata_refresh", skip_all, fields(id = %media.id, title = %media.title, kind = %media.kind, force_refresh))]
     async fn process_meta_item_inner(
         &self,
         mut media: db::Media,
@@ -2156,33 +2091,13 @@ impl AddonService {
         let original_id = media.id;
 
         let root_refresh_result = {
-            let permit_wait_started = Instant::now();
             let _permit = semaphore
                 .acquire()
+                .instrument(tracing::debug_span!(target: "remux_server::metadata_refresh", "root_permit_wait"))
                 .await
                 .expect("semaphore is never closed");
-            trace!(
-                target: "remux_server::metadata_refresh",
-                id = %media.id,
-                title = %media.title,
-                kind = %media.kind,
-                wait_elapsed = ?permit_wait_started.elapsed(),
-                "top-level metadata item acquired refresh slot"
-            );
-            let refresh_started = Instant::now();
-            let result = self
-                .refresh_meta(&mut media, &ctx, force_refresh, &config)
-                .await;
-            trace!(
-                target: "remux_server::metadata_refresh",
-                id = %media.id,
-                title = %media.title,
-                kind = %media.kind,
-                elapsed = ?refresh_started.elapsed(),
-                success = result.is_ok(),
-                "top-level metadata item root refresh complete"
-            );
-            result
+            self.refresh_meta(&mut media, &ctx, force_refresh, &config)
+                .await
         };
         if let Err(e) = root_refresh_result {
             warn!(id = %media.id, error = %e, "failed to refresh metadata, keeping as-is");
@@ -2328,7 +2243,8 @@ impl AddonService {
 
         let is_continuing = series_is_active(&media.status);
 
-        // Level 1: direct children (Seasons, Albums, etc.)
+        // Level 1: direct children (Seasons, Albums, etc.) — see
+        // `get_direct_children`'s own span for fetch timing.
         let raw_level1 = self
             .get_direct_children(&media, &ctx, &config)
             .await;
@@ -2378,7 +2294,8 @@ impl AddonService {
         // still throttles through `semaphore` (shared for the whole batch),
         // so this can't multiply past the configured budget the way an
         // independent per-level concurrency cap would.
-        let level1: Vec<db::Media> = futures::stream::iter(raw_level1)
+        let level1: Vec<db::Media> = async {
+        futures::stream::iter(raw_level1)
             .map(|mut child| {
                 let svc = self.clone();
                 let ctx = ctx.clone();
@@ -2421,7 +2338,7 @@ impl AddonService {
                                     .await
                                     {
                                         warn!(old = %child.id, new = %existing_id, error = %e,
-                                            "cascade for level-1 child failed");
+                                            "cascade for child failed");
                                     }
                                 }
                                 child.id = existing_id;
@@ -2437,13 +2354,14 @@ impl AddonService {
                     {
                         let _permit = semaphore
                             .acquire()
+                            .instrument(tracing::debug_span!(target: "remux_server::metadata_refresh", "permit_wait"))
                             .await
                             .expect("semaphore is never closed");
                         if let Err(e) = svc
                             .refresh_meta(&mut child, &ctx, effective_force, &config)
                             .await
                         {
-                            warn!(id = %child.id, error = %e, "failed to refresh level-1 child meta");
+                            warn!(id = %child.id, error = %e, "failed to refresh child meta");
                         }
                     }
                     child
@@ -2451,25 +2369,41 @@ impl AddonService {
             })
             .buffer_unordered(concurrency)
             .collect()
-            .await;
+            .await
+        }
+        .instrument(tracing::debug_span!(target: "remux_server::metadata_refresh", "children_refresh"))
+        .await;
 
         let mut level1_ok: Vec<&db::Media> = Vec::with_capacity(level1.len());
-        for chunk in level1.chunks(db::CHUNK_SIZE) {
-            if let Err(e) = db::Media::upsert(&ctx.db, chunk).await {
-                error!(error = %e, "failed to upsert level-1 children");
-            } else {
-                db::UserMediaState::remap_orphaned_for(&ctx.db, chunk).await;
-                save_pending_relations(&ctx, chunk).await;
-                save_pending_tags(&ctx, chunk).await;
-                level1_ok.extend(chunk);
+        async {
+            for chunk in level1.chunks(db::CHUNK_SIZE) {
+                if let Err(e) = db::Media::upsert(&ctx.db, chunk).await {
+                    error!(error = %e, "failed to upsert children");
+                } else {
+                    db::UserMediaState::remap_orphaned_for(&ctx.db, chunk).await;
+                    save_pending_relations(&ctx, chunk).await;
+                    save_pending_tags(&ctx, chunk).await;
+                    level1_ok.extend(chunk);
+                }
             }
         }
+        .instrument(tracing::debug_span!(
+            target: "remux_server::metadata_refresh",
+            "children_upsert",
+            children = level1.len()
+        ))
+        .await;
 
         // Level 2: grandchildren (Episodes, Tracks, etc.) — one fetch+upsert
         // per level-1 child. Only process children whose level-1 upsert
         // succeeded to avoid orphaned rows. Different seasons' episode
         // batches fan out concurrently for the same reason level 1 does;
         // `semaphore` still bounds the real cost regardless.
+        //
+        // Each season's fetch/refresh/write are already their own spans
+        // (`get_direct_children`, `refresh_meta`, `level2_write` below) —
+        // `level2_season` just gives them a common per-season parent so a
+        // trace viewer groups one season's work together.
         futures::stream::iter(level1_ok)
             .for_each_concurrent(concurrency, |child| {
                 let svc = self.clone();
@@ -2479,6 +2413,13 @@ impl AddonService {
                 let gp_stub = gp_stub.clone();
                 let existing_l2 = &existing_l2;
                 async move {
+                    // Created here (first poll), not synchronously in the
+                    // `for_each_concurrent` closure — a season stuck waiting
+                    // for a concurrency slot before this future's first poll
+                    // must not have that queue time counted as if it were
+                    // this span's own idle time.
+                    let child_span = tracing::debug_span!(target: "remux_server::metadata_refresh", "grandchildren", child_id = %child.id);
+                    async move {
                     let actual_child_id = child.id;
                     let raw_level2 = svc
                         .get_direct_children(child, &ctx, &config)
@@ -2487,7 +2428,9 @@ impl AddonService {
                         return;
                     }
 
-                    let mut level2: Vec<db::Media> = Vec::with_capacity(raw_level2.len());
+                    let episode_count = raw_level2.len();
+                    let mut level2: Vec<db::Media> = Vec::with_capacity(episode_count);
+                    async {
                     for mut gc in raw_level2 {
                         gc.parent_id = Some(actual_child_id);
                         gc.grandparent_id = Some(actual_root_id);
@@ -2521,27 +2464,38 @@ impl AddonService {
                         {
                             let _permit = semaphore
                                 .acquire()
+                                .instrument(tracing::debug_span!(target: "remux_server::metadata_refresh", "permit_wait"))
                                 .await
                                 .expect("semaphore is never closed");
                             if let Err(e) = svc
                                 .refresh_meta(&mut gc, &ctx, effective_force, &config)
                                 .await
                             {
-                                warn!(id = %gc.id, error = %e, "failed to refresh level-2 child meta");
+                                warn!(id = %gc.id, error = %e, "failed to refresh grandchild meta");
                             }
                         }
                         level2.push(gc);
                     }
+                    }
+                    .instrument(tracing::debug_span!(target: "remux_server::metadata_refresh", "grandchildren_refresh", grandchildren = episode_count))
+                    .await;
 
-                    for chunk in level2.chunks(db::CHUNK_SIZE) {
-                        if let Err(e) = db::Media::upsert(&ctx.db, chunk).await {
-                            error!(error = %e, "failed to upsert level-2 children");
-                        } else {
-                            db::UserMediaState::remap_orphaned_for(&ctx.db, chunk).await;
-                            save_pending_relations(&ctx, chunk).await;
-                            save_pending_tags(&ctx, chunk).await;
+                    async {
+                        for chunk in level2.chunks(db::CHUNK_SIZE) {
+                            if let Err(e) = db::Media::upsert(&ctx.db, chunk).await {
+                                error!(error = %e, "failed to upsert grandchildren");
+                            } else {
+                                db::UserMediaState::remap_orphaned_for(&ctx.db, chunk).await;
+                                save_pending_relations(&ctx, chunk).await;
+                                save_pending_tags(&ctx, chunk).await;
+                            }
                         }
                     }
+                    .instrument(tracing::debug_span!(target: "remux_server::metadata_refresh", "grandchildren_upsert", grandchildren = level2.len()))
+                    .await;
+                    }
+                    .instrument(child_span)
+                    .await
                 }
             })
             .await;
