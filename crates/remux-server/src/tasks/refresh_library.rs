@@ -135,11 +135,17 @@ impl Task for RefreshLibraryTask {
             .await?;
         let catalog_base = index_actual;
 
+        // `max` is each catalog's configured cap, not its real size — a
+        // catalog that returns far fewer items (or nothing, on a skip/error)
+        // would otherwise consume its whole estimated slice regardless of
+        // actual work done. `item_progress.adjust_total` corrects that once
+        // the real count is known, same as the index-refresh phase above;
+        // `cumulative` advances by the real count too, so later catalogs'
+        // base offsets aren't thrown off by earlier ones' estimates.
         let mut cumulative: usize = 0;
         for (cat_info, max) in &work {
             let catalog_item_progress =
                 item_progress.child(catalog_base + cumulative, *max);
-            cumulative += max;
 
             let full_id = &cat_info.catalog_id;
             valid_collection_ids.insert(cat_info.collection_id);
@@ -152,6 +158,7 @@ impl Task for RefreshLibraryTask {
                 None => {
                     warn!(catalog = %full_id, "no addon found for catalog, skipping");
                     catalog_item_progress.set(100.0);
+                    item_progress.adjust_total(-(*max as i64));
                     continue;
                 }
             };
@@ -166,6 +173,7 @@ impl Task for RefreshLibraryTask {
                 Err(e) => {
                     error!(catalog = %full_id, error = %e, "failed to open catalog stream");
                     catalog_item_progress.set(100.0);
+                    item_progress.adjust_total(-(*max as i64));
                     continue;
                 }
             };
@@ -181,6 +189,12 @@ impl Task for RefreshLibraryTask {
             .await?;
 
             catalog_item_progress.set(100.0);
+
+            let real: usize = counts
+                .values()
+                .sum();
+            item_progress.adjust_total(real as i64 - *max as i64);
+            cumulative += real;
 
             info!(catalog = %full_id, total = ?counts, new = ?new_counts, "catalog import complete");
         }
@@ -199,7 +213,9 @@ impl Task for RefreshLibraryTask {
         )
         .await;
 
-        let meta_base = catalog_base + total_catalog_items;
+        // `cumulative`, not `total_catalog_items`, holds the real post-correction
+        // count now that each catalog's estimate has been reconciled above.
+        let meta_base = catalog_base + cumulative;
         const CHUNK_SIZE: u32 = 100;
         let mut total: Option<u32> = None;
         let mut processed = 0u32;

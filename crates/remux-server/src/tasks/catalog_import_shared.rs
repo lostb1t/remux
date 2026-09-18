@@ -34,15 +34,16 @@ where
     // Stop pulling from the underlying paginated stream once we have enough items.
     // Without this, the stream fetches ALL pages until empty even when max=50.
     //
-    // Chunk size doubles as the progress-reporting granularity: `progress.report`
-    // below fires once per chunk, so a catalog at or under `catalog_max_items`
-    // (default 250) used to run in a single chunk — one report at 0%, then no
-    // visible movement until the caller forces 100% once the whole catalog is
-    // done. A smaller chunk means more chunks means the bar actually advances
-    // through a catalog instead of sitting at 0% for its full duration.
+    // Chunk size is also the unit for `process_meta_batch` and the WAL
+    // checkpoint below — shrinking it to improve progress-reporting
+    // granularity was tried and reverted: it made large catalogs run ~10x as
+    // many metadata-batch/checkpoint cycles for a purely cosmetic benefit.
+    // Progress granularity within a single catalog is a lesser problem than
+    // that overhead; `RefreshLibraryTask::run`'s item-weighted total is what
+    // actually fixed the visible "stuck at 0%" issue this was chasing.
     let mut chunks = stream
         .take(max)
-        .chunks(25);
+        .chunks(250);
     let mut counts: HashMap<String, usize> = HashMap::new();
     let mut new_counts: HashMap<String, usize> = HashMap::new();
     let mut total = 0usize;

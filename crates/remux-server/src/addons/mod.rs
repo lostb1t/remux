@@ -1545,7 +1545,7 @@ impl AddonService {
     /// Refreshes every enabled addon's index, weighting each addon's slice of
     /// `item_progress` by its own item-count estimate (correcting that
     /// estimate against the real count once its scan completes) rather than
-    /// splitting the range evenly — a addon that's disabled or has nothing to
+    /// splitting the range evenly — an addon that's disabled or has nothing to
     /// do no longer eats an equal share of the bar regardless of its actual
     /// size. Returns the real total item count indexed, for the caller to use
     /// as the base offset for the next phase.
@@ -1569,11 +1569,15 @@ impl AddonService {
                 .unwrap_or(Self::INDEX_ESTIMATE_FALLBACK);
             let sub = item_progress.child(offset, estimate);
             if let Err(e) = index
-                .refresh_index(ctx, &runtime.row, sub)
+                .refresh_index(ctx, &runtime.row, sub.clone())
                 .await
             {
                 warn!(addon = %runtime.row.name, error = %e, "refresh_index failed");
             }
+            // Always finish this addon's own slice, whether it succeeded or
+            // failed — otherwise a failure can leave the bar sitting at this
+            // addon's starting point until unrelated later work moves it.
+            sub.set(100.0);
             let actual = index
                 .index_estimate(ctx, &runtime.row)
                 .await
