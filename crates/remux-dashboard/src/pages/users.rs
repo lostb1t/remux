@@ -1,10 +1,15 @@
 use crate::{components::*, pages::streams::StreamFilterEditor, state::AppState};
 use dioxus::prelude::*;
 use remux_sdks::remux::{
-    AddonDto, AdminSetPassword, CollectionFilter, CreateUser, DeleteUser, FilterGroup,
-    FilterMatchMode, GetUserAddons, GetUsers, ListAddons, SetUserAddons, StreamFilter,
-    StreamRule, SubtitleMode, UpdateUser, UpdateUserConfiguration, UpdateUserPolicy,
-    UserConfiguration, UserDto,
+    AddonDto, AdminSetPassword, BeginMediaTrackerDeviceAuth, CollectionFilter,
+    CreateUser, DeleteUser, DeleteUserMediaTracker, FilterGroup, FilterMatchMode,
+    GetMediaTrackerImport, GetMediaTrackerProviders, GetUserAddons,
+    GetUserMediaTrackers, GetUsers, ListAddons, MediaTrackerAuthStatus,
+    MediaTrackerDeviceAuthDto, MediaTrackerImportRunDto, MediaTrackerImportStatus,
+    MediaTrackerProviderDto, PollMediaTrackerDeviceAuth, SetUserAddons,
+    StartMediaTrackerImport, StreamFilter, StreamRule, SubtitleMode, UpdateUser,
+    UpdateUserConfiguration, UpdateUserPolicy, UserConfiguration, UserDto,
+    UserMediaTrackerDto,
 };
 use uuid::Uuid;
 
@@ -389,6 +394,7 @@ pub fn UserForm(
         });
     });
 
+    let submit_app_state = app_state.clone();
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
         let pw = password
@@ -406,7 +412,7 @@ pub fn UserForm(
             return;
         }
 
-        let client = app_state.clone();
+        let client = submit_app_state.clone();
         let name = username
             .peek()
             .clone();
@@ -908,6 +914,13 @@ pub fn UserForm(
                 }
             }
 
+            if let Some(user_id) = edit_user_id {
+                TraktConnectionEditor {
+                    user_id,
+                    app_state: app_state.clone(),
+                }
+            }
+
             if let Some(e) = err.read().as_ref() {
                 ErrorAlert { message: e.clone() }
             }
@@ -925,6 +938,248 @@ pub fn UserForm(
                     disabled: *saving.read(),
                     if *saving.read() { "Saving…" } else { "Save" }
                 }
+            }
+        }
+    }
+}
+
+#[component]
+fn TraktConnectionEditor(user_id: Uuid, app_state: AppState) -> Element {
+    let mut providers: Signal<Vec<MediaTrackerProviderDto>> = use_signal(Vec::new);
+    let mut connections: Signal<Vec<UserMediaTrackerDto>> = use_signal(Vec::new);
+    let mut auth: Signal<Option<MediaTrackerDeviceAuthDto>> = use_signal(|| None);
+    let mut import: Signal<Option<MediaTrackerImportRunDto>> = use_signal(|| None);
+    let mut busy = use_signal(|| false);
+    let mut error = use_signal(|| Option::<String>::None);
+    let client = app_state.clone();
+
+    use_effect(move || {
+        let client = client.clone();
+        spawn(async move {
+            let (provider_result, connection_result) = futures::join!(
+                client.execute(GetMediaTrackerProviders),
+                client.execute(GetUserMediaTrackers { user_id }),
+            );
+            match (provider_result, connection_result) {
+                (Ok(provider_rows), Ok(connection_rows)) => {
+                    providers.set(provider_rows);
+                    connections.set(connection_rows);
+                    error.set(None);
+                }
+                (Err(err), _) | (_, Err(err)) => error.set(Some(err.user_message())),
+            }
+        });
+    });
+
+    let provider = providers
+        .read()
+        .iter()
+        .find(|provider| provider.kind == "trakt")
+        .cloned();
+    let connection = provider
+        .as_ref()
+        .and_then(|provider| {
+            connections
+                .read()
+                .iter()
+                .find(|connection| connection.addon_id == provider.addon_id)
+                .cloned()
+        });
+
+    rsx! {
+        div {
+            style: "margin-top:10px;padding-top:14px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:10px",
+            div {
+                div { class: "field-label", "Trakt" }
+                span { class: "field-hint", "Connect this user's Trakt account, import their watch state, and scrobble future playback." }
+            }
+
+            if let Some(provider) = provider {
+                if let Some(connection) = connection {
+                    div { style: "display:flex;align-items:center;justify-content:space-between;gap:10px",
+                        div {
+                            div { style: "font-size:.8rem;font-weight:600",
+                                "Connected"
+                                if let Some(name) = connection.remote_account_name.as_ref() {
+                                    " as {name}"
+                                }
+                            }
+                            span { class: "field-hint", "Status: {connection.status}" }
+                            if let Some(last_error) = connection.last_error.as_ref() {
+                                div { style: "font-size:.68rem;color:var(--error);margin-top:3px", "{last_error}" }
+                            }
+                        }
+                        div { style: "display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end",
+                            if provider.history_import {
+                                button {
+                                    r#type: "button",
+                                    class: "btn btn-primary",
+                                    disabled: *busy.read(),
+                                    onclick: {
+                                        let client = app_state.clone();
+                                        let tracker_id = connection.id;
+                                        move |_| {
+                                            let client = client.clone();
+                                            busy.set(true);
+                                            error.set(None);
+                                            spawn(async move {
+                                                match client.execute(StartMediaTrackerImport { user_id, tracker_id }).await {
+                                                    Ok(mut run) => {
+                                                        import.set(Some(run.clone()));
+                                                        while matches!(run.status, MediaTrackerImportStatus::Queued | MediaTrackerImportStatus::Running) {
+                                                            gloo_timers::future::TimeoutFuture::new(1_000).await;
+                                                            match client.execute(GetMediaTrackerImport { user_id, tracker_id, run_id: run.id }).await {
+                                                                Ok(next) => {
+                                                                    run = next;
+                                                                    import.set(Some(run.clone()));
+                                                                }
+                                                                Err(err) => {
+                                                                    error.set(Some(err.user_message()));
+                                                                    break;
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(err) => error.set(Some(err.user_message())),
+                                                }
+                                                busy.set(false);
+                                            });
+                                        }
+                                    },
+                                    if *busy.read() { "Importing…" } else { "Import watch history" }
+                                }
+                            }
+                            button {
+                                r#type: "button",
+                                class: "btn btn-ghost",
+                                disabled: *busy.read(),
+                                onclick: {
+                                    let client = app_state.clone();
+                                    let tracker_id = connection.id;
+                                    move |_| {
+                                        let client = client.clone();
+                                        busy.set(true);
+                                        error.set(None);
+                                        spawn(async move {
+                                            match client.execute(DeleteUserMediaTracker { user_id, tracker_id }).await {
+                                                Ok(()) => {
+                                                    connections.write().retain(|item| item.id != tracker_id);
+                                                    import.set(None);
+                                                }
+                                                Err(err) => error.set(Some(err.user_message())),
+                                            }
+                                            busy.set(false);
+                                        });
+                                    }
+                                },
+                                "Disconnect"
+                            }
+                        }
+                    }
+                } else if !provider.configured {
+                    div { class: "field-hint", style: "color:var(--warning)",
+                        "Trakt needs trakt_client_id and trakt_client_secret in the server configuration before accounts can be connected."
+                    }
+                } else {
+                    button {
+                        r#type: "button",
+                        class: "btn btn-primary",
+                        disabled: *busy.read(),
+                        onclick: {
+                            let client = app_state.clone();
+                            let addon_id = provider.addon_id;
+                            move |_| {
+                                let client = client.clone();
+                                busy.set(true);
+                                error.set(None);
+                                spawn(async move {
+                                    match client.execute(BeginMediaTrackerDeviceAuth { user_id, addon_id }).await {
+                                        Ok(device_auth) => {
+                                            auth.set(Some(device_auth.clone()));
+                                            loop {
+                                                gloo_timers::future::TimeoutFuture::new(
+                                                    (device_auth.interval_seconds.max(1) * 1_000).min(u32::MAX as u64) as u32
+                                                ).await;
+                                                match client.execute(PollMediaTrackerDeviceAuth {
+                                                    user_id,
+                                                    addon_id,
+                                                    attempt_id: device_auth.attempt_id,
+                                                }).await {
+                                                    Ok(result) => match result.status {
+                                                        MediaTrackerAuthStatus::Pending => continue,
+                                                        MediaTrackerAuthStatus::Approved => {
+                                                            if let Some(connected) = result.connection {
+                                                                let mut rows = connections.write();
+                                                                rows.retain(|row| row.addon_id != connected.addon_id);
+                                                                rows.push(connected);
+                                                            }
+                                                            auth.set(None);
+                                                            break;
+                                                        }
+                                                        MediaTrackerAuthStatus::Denied => {
+                                                            error.set(Some("Trakt authorization was denied.".into()));
+                                                            auth.set(None);
+                                                            break;
+                                                        }
+                                                        MediaTrackerAuthStatus::Expired => {
+                                                            error.set(Some("Trakt authorization expired. Start again to get a new code.".into()));
+                                                            auth.set(None);
+                                                            break;
+                                                        }
+                                                    },
+                                                    Err(err) => {
+                                                        error.set(Some(err.user_message()));
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Err(err) => error.set(Some(err.user_message())),
+                                    }
+                                    busy.set(false);
+                                });
+                            }
+                        },
+                        if *busy.read() { "Waiting for Trakt…" } else { "Connect Trakt" }
+                    }
+                }
+            } else {
+                span { class: "field-hint", "Trakt provider is unavailable." }
+            }
+
+            if let Some(device_auth) = auth.read().as_ref() {
+                div { style: "padding:10px;border:1px solid var(--border);border-radius:6px;background:var(--surface-2)",
+                    div { style: "font-size:.75rem;margin-bottom:6px", "Open Trakt and enter this code:" }
+                    div { style: "font-size:1.2rem;font-weight:700;letter-spacing:.12em;margin-bottom:7px", "{device_auth.user_code}" }
+                    a {
+                        class: "btn btn-ghost",
+                        href: "{device_auth.verification_url}",
+                        target: "_blank",
+                        rel: "noopener noreferrer",
+                        "Open Trakt"
+                    }
+                }
+            }
+
+            if let Some(run) = import.read().as_ref() {
+                div { class: "field-hint",
+                    match run.status {
+                        MediaTrackerImportStatus::Queued => "Import queued".to_string(),
+                        MediaTrackerImportStatus::Running => "Importing Trakt watch history…".to_string(),
+                        MediaTrackerImportStatus::Succeeded => format!(
+                            "Import complete: {} matched, {} updated, {} unmatched.",
+                            run.matched_count, run.updated_count, run.deferred_count
+                        ),
+                        MediaTrackerImportStatus::Failed => format!(
+                            "Import failed: {}",
+                            run.error.as_deref().unwrap_or("Unknown error")
+                        ),
+                    }
+                }
+            }
+
+            if let Some(message) = error.read().as_ref() {
+                ErrorAlert { message: message.clone() }
             }
         }
     }

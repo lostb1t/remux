@@ -373,10 +373,26 @@ pub async fn init_app(
         signals,
         started_at: Utc::now(),
     };
+    // Imports run in-process. A row left active means the previous process was
+    // interrupted; fail it explicitly so the administrator can retry instead
+    // of seeing a permanently running job.
+    sqlx::query(
+        "UPDATE media_tracker_import_runs SET status = 'failed', \
+         error = 'Import interrupted by server restart', completed_at = ?1 \
+         WHERE status IN ('queued', 'running')",
+    )
+    .bind(Utc::now().naive_utc())
+    .execute(&ctx.db)
+    .await?;
+    sqlx::query("DELETE FROM media_tracker_auth_attempts WHERE expires_at <= ?1")
+        .bind(Utc::now().naive_utc())
+        .execute(&ctx.db)
+        .await?;
     ctx.signals
         .register(services::media_tracker::MediaTrackerSubscriber { ctx: ctx.clone() });
     ctx.signals
         .register(api::webhooks::WebhookSubscriber { ctx: ctx.clone() });
+    services::media_tracker::spawn_outbox_worker(ctx.clone());
 
     // Sync intro items at startup (best-effort; errors are logged not fatal).
     if let Err(e) = intro::sync_intros(&ctx).await {
@@ -610,6 +626,15 @@ pub struct Config {
     /// Base URL for the TMDB API. Overridable for testing.
     #[serde(default = "default_tmdb_base_url")]
     pub tmdb_base_url: String,
+    /// Trakt application credentials. When absent the built-in provider stays
+    /// visible to administrators but cannot start an account connection.
+    #[serde(default)]
+    pub trakt_client_id: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub trakt_client_secret: Option<remux_utils::Secret<String>>,
+    /// Base URL for the Trakt API. Overridable for contract tests.
+    #[serde(default = "default_trakt_base_url")]
+    pub trakt_api_base_url: String,
     /// Base URL for remuxdb. When set, probe results are submitted after each live probe.
     #[serde(default = "default_remuxdb_url")]
     pub remuxdb_url: Option<String>,
@@ -633,6 +658,10 @@ fn default_activity_log_retention_days() -> u32 {
 
 fn default_tmdb_base_url() -> String {
     "https://api.themoviedb.org/3/".to_string()
+}
+
+fn default_trakt_base_url() -> String {
+    "https://api.trakt.tv".to_string()
 }
 
 fn default_bgutil_script_path() -> std::path::PathBuf {
@@ -739,6 +768,9 @@ impl Default for Config {
             torrent_peer_port: default_torrent_peer_port(),
             bgutil_script_path: default_bgutil_script_path(),
             tmdb_base_url: default_tmdb_base_url(),
+            trakt_client_id: None,
+            trakt_client_secret: None,
+            trakt_api_base_url: default_trakt_base_url(),
             remuxdb_url: Some("https://remuxdb.1632022.xyz".to_string()),
             activity_log_retention_days: default_activity_log_retention_days(),
             jellyfin_version: default_jellyfin_version(),
@@ -922,6 +954,24 @@ async fn handle_static_404(req: Request<Body>) -> ApiResult<impl IntoResponse> {
 
 #[cfg(test)]
 pub mod integration_test;
+
+#[cfg(test)]
+mod config_tests {
+    use super::Config;
+
+    #[test]
+    fn trakt_secret_is_never_serialized_into_config_logs() {
+        let config = Config {
+            trakt_client_secret: Some(remux_utils::Secret::new(
+                "do-not-log".to_string(),
+            )),
+            ..Default::default()
+        };
+        let serialized = serde_json::to_string(&config).unwrap();
+        assert!(!serialized.contains("do-not-log"));
+        assert!(!serialized.contains("trakt_client_secret"));
+    }
+}
 
 #[cfg(test)]
 mod rewrite_uri_tests {

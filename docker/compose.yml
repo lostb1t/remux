@@ -3,9 +3,16 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+    env_file:
+      - ../.env
 
     ports:
       - "3001:3000"
+    volumes:
+      - remux-data:/data
     #command: ["bash", "-c", "tail -f /dev/null"]
     #command: ["bash", "-lc", "ls -la ."]
     #command: ["/app/remux-server"]
+
+volumes:
+  remux-data:

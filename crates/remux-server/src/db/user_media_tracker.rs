@@ -77,6 +77,8 @@ pub struct UserMediaTracker {
     #[sqlx(json)]
     #[serde(skip_serializing)]
     pub credentials: MediaTrackerCredentials,
+    pub remote_account_id: Option<String>,
+    pub remote_account_name: Option<String>,
     #[sqlx(json)]
     pub event_filters: Vec<MediaTrackerEventKind>,
     pub last_success_at: Option<NaiveDateTime>,
@@ -87,7 +89,7 @@ pub struct UserMediaTracker {
     pub updated_at: NaiveDateTime,
 }
 
-const COLS: &str = "id, addon_id, user_id, status, credentials, event_filters, \
+const COLS: &str = "id, addon_id, user_id, status, credentials, remote_account_id, remote_account_name, event_filters, \
      last_success_at, last_error_at, last_error, last_error_kind, created_at, updated_at";
 
 impl UserMediaTracker {
@@ -104,6 +106,8 @@ impl UserMediaTracker {
             user_id,
             status: MediaTrackerStatus::Connected,
             credentials,
+            remote_account_id: None,
+            remote_account_name: None,
             event_filters,
             last_success_at: None,
             last_error_at: None,
@@ -185,14 +189,19 @@ impl UserMediaTracker {
     pub async fn upsert(&self, db: &SqlitePool) -> Result<()> {
         sqlx::query(
             "INSERT INTO user_media_trackers \
-             (id, addon_id, user_id, status, credentials, event_filters, \
+             (id, addon_id, user_id, status, credentials, remote_account_id, remote_account_name, event_filters, \
               last_success_at, last_error_at, last_error, last_error_kind, \
               created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) \
              ON CONFLICT(addon_id, user_id) DO UPDATE SET \
                  status = excluded.status, \
                  credentials = excluded.credentials, \
+                 remote_account_id = excluded.remote_account_id, \
+                 remote_account_name = excluded.remote_account_name, \
                  event_filters = excluded.event_filters, \
+                 last_error_at = NULL, \
+                 last_error = NULL, \
+                 last_error_kind = NULL, \
                  updated_at = excluded.updated_at",
         )
         .bind(self.id)
@@ -200,6 +209,8 @@ impl UserMediaTracker {
         .bind(self.user_id)
         .bind(self.status)
         .bind(sqlx::types::Json(&self.credentials))
+        .bind(&self.remote_account_id)
+        .bind(&self.remote_account_name)
         .bind(sqlx::types::Json(&self.event_filters))
         .bind(self.last_success_at)
         .bind(self.last_error_at)
@@ -225,6 +236,24 @@ impl UserMediaTracker {
         )
         .bind(id)
         .bind(sqlx::types::Json(filters))
+        .bind(Utc::now().naive_utc())
+        .execute(db)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn replace_credentials(
+        db: &SqlitePool,
+        id: Uuid,
+        credentials: &MediaTrackerCredentials,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE user_media_trackers SET credentials = ?2, status = 'connected', \
+             last_error = NULL, last_error_at = NULL, last_error_kind = NULL, updated_at = ?3 \
+             WHERE id = ?1",
+        )
+        .bind(id)
+        .bind(sqlx::types::Json(credentials))
         .bind(Utc::now().naive_utc())
         .execute(db)
         .await?;

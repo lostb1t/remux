@@ -148,17 +148,16 @@ pub async fn report_playback_progress(
     session: auth::AuthSession,
     Json(data): Json<api::PlaybackInfo>,
 ) -> Result<impl IntoResponse> {
-    // Jellyfin clients keep reporting while paused, so the transition is what
-    // marks a real pause; the position is read before the session is updated.
-    let was_paused = state
+    // Jellyfin clients keep reporting while paused. Capture the old session so
+    // only pause/resume and real seeks become remote scrobble updates.
+    let previous = state
         .ctx
         .sessions
         .get_by_device(
             &session
                 .device
                 .id,
-        )
-        .is_some_and(|s| s.is_paused);
+        );
     let effective_psid = data
         .play_session_id
         .clone()
@@ -191,30 +190,68 @@ pub async fn report_playback_progress(
             .ctx
             .signals
             .emit(Event::SessionsChanged);
-        if data.is_paused && !was_paused {
+        let state_changed = previous
+            .as_ref()
+            .is_some_and(|old| old.is_paused != data.is_paused);
+        let seeked = previous
+            .as_ref()
+            .is_some_and(|old| {
+                let elapsed_ticks = if old.is_paused {
+                    0
+                } else {
+                    (chrono::Utc::now() - old.last_activity)
+                        .num_milliseconds()
+                        .max(0)
+                        .saturating_mul(10_000)
+                };
+                let expected = old
+                    .position_ticks
+                    .saturating_add(elapsed_ticks);
+                data.position_ticks
+                    .unwrap_or(expected)
+                    .abs_diff(expected)
+                    > 10 * 10_000_000
+            });
+        if state_changed || seeked {
             let playback = state
                 .ctx
                 .sessions
                 .get(psid);
-            state
-                .ctx
-                .signals
-                .emit(Event::PlaybackProgress(PlaybackContext {
-                    user_id: session
-                        .user
-                        .id,
-                    media_id: data.item_id,
-                    position_ticks: data
-                        .position_ticks
-                        .unwrap_or(0),
-                    is_paused: true,
-                    ..PlaybackContext::from_parts(
-                        &session,
-                        &data,
-                        playback.as_ref(),
-                        Some(psid),
-                    )
-                }));
+            let media_id = (!data
+                .item_id
+                .is_nil())
+            .then_some(data.item_id)
+            .or_else(|| {
+                playback
+                    .as_ref()
+                    .map(|playback| playback.item_id)
+            });
+            if let Some(media_id) = media_id {
+                state
+                    .ctx
+                    .signals
+                    .emit(Event::PlaybackProgress(PlaybackContext {
+                        user_id: session
+                            .user
+                            .id,
+                        media_id,
+                        position_ticks: data
+                            .position_ticks
+                            .or_else(|| {
+                                playback
+                                    .as_ref()
+                                    .map(|playback| playback.position_ticks)
+                            })
+                            .unwrap_or(0),
+                        is_paused: data.is_paused,
+                        ..PlaybackContext::from_parts(
+                            &session,
+                            &data,
+                            playback.as_ref(),
+                            Some(psid),
+                        )
+                    }));
+            }
         }
     }
     Ok(StatusCode::NO_CONTENT.into_response())

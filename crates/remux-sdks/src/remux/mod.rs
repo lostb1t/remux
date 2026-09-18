@@ -6438,6 +6438,221 @@ impl Endpoint for DeleteApiKey {
     }
 }
 
+// --- Per-user media trackers (administrator managed) ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaTrackerProviderDto {
+    pub addon_id: Uuid,
+    pub kind: String,
+    pub name: String,
+    pub configured: bool,
+    pub history_import: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserMediaTrackerDto {
+    pub id: Uuid,
+    pub addon_id: Uuid,
+    pub provider: String,
+    pub status: String,
+    pub remote_account_id: Option<String>,
+    pub remote_account_name: Option<String>,
+    pub last_success_at: Option<chrono::NaiveDateTime>,
+    pub last_error_at: Option<chrono::NaiveDateTime>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaTrackerDeviceAuthDto {
+    pub attempt_id: Uuid,
+    pub verification_url: String,
+    pub user_code: String,
+    pub interval_seconds: u64,
+    pub expires_in_seconds: u64,
+}
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::Display,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum MediaTrackerAuthStatus {
+    Pending,
+    Approved,
+    Denied,
+    Expired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaTrackerAuthPollDto {
+    pub status: MediaTrackerAuthStatus,
+    pub connection: Option<UserMediaTrackerDto>,
+}
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::Display,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum MediaTrackerImportStatus {
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaTrackerImportRunDto {
+    pub id: Uuid,
+    pub status: MediaTrackerImportStatus,
+    pub fetched_count: i64,
+    pub matched_count: i64,
+    pub updated_count: i64,
+    pub deferred_count: i64,
+    pub skipped_count: i64,
+    pub error: Option<String>,
+    pub created_at: chrono::NaiveDateTime,
+    pub started_at: Option<chrono::NaiveDateTime>,
+    pub completed_at: Option<chrono::NaiveDateTime>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GetMediaTrackerProviders;
+
+impl Endpoint for GetMediaTrackerProviders {
+    type Output = Vec<MediaTrackerProviderDto>;
+    fn path(&self) -> String {
+        "/remux/media-trackers/providers".into()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GetUserMediaTrackers {
+    pub user_id: Uuid,
+}
+
+impl Endpoint for GetUserMediaTrackers {
+    type Output = Vec<UserMediaTrackerDto>;
+    fn path(&self) -> String {
+        format!("/remux/users/{}/media-trackers", self.user_id)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BeginMediaTrackerDeviceAuth {
+    pub user_id: Uuid,
+    pub addon_id: Uuid,
+}
+
+impl Endpoint for BeginMediaTrackerDeviceAuth {
+    type Output = MediaTrackerDeviceAuthDto;
+    fn path(&self) -> String {
+        format!(
+            "/remux/users/{}/media-trackers/{}/device-auth",
+            self.user_id, self.addon_id
+        )
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PollMediaTrackerDeviceAuth {
+    pub user_id: Uuid,
+    pub addon_id: Uuid,
+    pub attempt_id: Uuid,
+}
+
+impl Endpoint for PollMediaTrackerDeviceAuth {
+    type Output = MediaTrackerAuthPollDto;
+    fn path(&self) -> String {
+        format!(
+            "/remux/users/{}/media-trackers/{}/device-auth/{}/poll",
+            self.user_id, self.addon_id, self.attempt_id
+        )
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StartMediaTrackerImport {
+    pub user_id: Uuid,
+    pub tracker_id: Uuid,
+}
+
+impl Endpoint for StartMediaTrackerImport {
+    type Output = MediaTrackerImportRunDto;
+    fn path(&self) -> String {
+        format!(
+            "/remux/users/{}/media-trackers/{}/imports",
+            self.user_id, self.tracker_id
+        )
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GetMediaTrackerImport {
+    pub user_id: Uuid,
+    pub tracker_id: Uuid,
+    pub run_id: Uuid,
+}
+
+impl Endpoint for GetMediaTrackerImport {
+    type Output = MediaTrackerImportRunDto;
+    fn path(&self) -> String {
+        format!(
+            "/remux/users/{}/media-trackers/{}/imports/{}",
+            self.user_id, self.tracker_id, self.run_id
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeleteUserMediaTracker {
+    pub user_id: Uuid,
+    pub tracker_id: Uuid,
+}
+
+impl Endpoint for DeleteUserMediaTracker {
+    type Output = ();
+    fn path(&self) -> String {
+        format!(
+            "/remux/users/{}/media-trackers/{}",
+            self.user_id, self.tracker_id
+        )
+    }
+    fn method(&self) -> Method {
+        Method::DELETE
+    }
+}
+
 // --- Addons ---
 
 #[derive(Debug, Clone, Default)]

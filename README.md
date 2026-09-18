@@ -39,6 +39,9 @@ Remux is a Jellyfin-compatible media server that brings Stremio add-ons, local f
 - **Playback tracking**  
   Progress syncs across clients with continue watching support.
 
+- **Trakt sync**
+  Connect a separate Trakt account to each user from the admin dashboard, import watched history and paused progress on demand, and scrobble playback automatically.
+
 - **User management**  
   Import users and data from an existing Jellyfin server to get started quickly.
 
@@ -105,6 +108,17 @@ run
 ```
 cargo make dev
 ```
+
+### Trakt
+
+Create a Trakt API application and configure its client ID and client secret on the server:
+
+```env
+TRAKT_CLIENT_ID=your-client-id
+TRAKT_CLIENT_SECRET=your-client-secret
+```
+
+Then open **Admin → Users**, edit a user, and use the Trakt section to connect that user's account. After authorization, click **Import watch history** to merge watched state, play counts, and paused progress into Remux. Playback start, pause/resume, seek, stop, and manual watched/unwatched changes are scrobbled after the account is connected.
 
 ### ❤️ Support the Project
 
