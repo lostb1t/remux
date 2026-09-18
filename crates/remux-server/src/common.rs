@@ -366,7 +366,6 @@ impl ProgressReporter {
     pub fn new(inner: Arc<AtomicU64>) -> Self {
         Self(Arc::new(move |pct: f64| {
             let rounded = (pct.clamp(0.0, 100.0) * 10.0).round() / 10.0;
-            tracing::info!(pct = rounded, "task progress");
             inner.store(rounded.to_bits(), Ordering::Relaxed);
         }))
     }
