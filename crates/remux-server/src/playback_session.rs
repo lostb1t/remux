@@ -137,11 +137,31 @@ impl PlaybackSessionManager {
             None
         };
 
-        let item_kind = db::Media::get_by_id(db, &item_id)
+        let item = db::Media::get_by_id(db, &item_id)
             .await
             .ok()
-            .flatten()
-            .map(|m| m.kind);
+            .flatten();
+        let item_kind = item
+            .as_ref()
+            .map(|m| {
+                m.kind
+                    .clone()
+            });
+
+        // Jellyfin sets LastPlayedDate on playback start (never on a bare
+        // stop) so DatePlayed-sorted lists — Continue Watching, the unified
+        // Next Up feed — can rank an in-progress item by recency even before
+        // it's ever been fully watched or reported any progress.
+        if let Some(ref media) = item {
+            if let Ok(mut state) =
+                db::UserMediaState::get_or_new(db, &auth_session.user, media).await
+            {
+                state.last_played_at = Some(Utc::now().naive_utc());
+                let _ = state
+                    .save(db)
+                    .await;
+            }
+        }
 
         let ps = PlaybackSession {
             play_session_id: play_session_id.clone(),

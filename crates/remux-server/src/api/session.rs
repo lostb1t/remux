@@ -1511,4 +1511,54 @@ mod e2e_tests {
             "no LastPlayedDate for an abandoned session-less play: {user_data}"
         );
     }
+
+    /// A `/sessions/playing` report is the actual playback-start event.
+    /// Per the comment on `UserMediaState::update_playback`, Jellyfin's
+    /// `LastPlayedDate` is meant to come from playback start (a stop never
+    /// writes it — see `abandoned_stop_report_without_play_session_leaves_no_state`
+    /// above) — so starting playback must record it immediately, otherwise an
+    /// item that's only ever been started (never finished, never stopped
+    /// past the resume threshold) has no timestamp at all and DatePlayed-sorted
+    /// lists (Continue Watching, Next Up) can't rank it by recency.
+    #[tokio::test]
+    async fn playback_start_sets_last_played_date() {
+        let (server, ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = seed_movie(&ctx.0).await;
+        let item_id = media
+            .id
+            .simple()
+            .to_string();
+
+        let resp = server
+            .post("/sessions/playing")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": item_id,
+                "PositionTicks": 60 * 10_000_000i64,
+                "CanSeek": true,
+                "IsPaused": false,
+                "IsMuted": false,
+            }))
+            .await;
+        resp.assert_status(StatusCode::NO_CONTENT);
+
+        let resp = server
+            .get(&format!("/items/{item_id}"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let user_data = &body["UserData"];
+        assert!(
+            !user_data["LastPlayedDate"].is_null(),
+            "playback start must set LastPlayedDate: {user_data}"
+        );
+    }
 }

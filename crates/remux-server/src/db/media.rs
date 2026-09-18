@@ -4785,7 +4785,10 @@ impl Media {
                                 format!("COALESCE(wd.effective_date, '{null_date}') {dir}")
                             } else if filter.user_id.is_some() {
                                 // dp alias from the UMS-driven records_qb above.
-                                format!("dp.last_played_at {}", dir)
+                                // COALESCE with played_at: a synced/imported row may only
+                                // carry the older column, and a fully-watched item's own
+                                // completion time is still meaningful for ranking.
+                                format!("COALESCE(dp.last_played_at, dp.played_at) {}", dir)
                             } else {
                                 format!("title COLLATE NOCASE {}", dir)
                             }
