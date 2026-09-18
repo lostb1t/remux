@@ -33,6 +33,14 @@ where
 {
     // Stop pulling from the underlying paginated stream once we have enough items.
     // Without this, the stream fetches ALL pages until empty even when max=50.
+    //
+    // Chunk size is also the unit for `process_meta_batch` and the WAL
+    // checkpoint below — shrinking it to improve progress-reporting
+    // granularity was tried and reverted: it made large catalogs run ~10x as
+    // many metadata-batch/checkpoint cycles for a purely cosmetic benefit.
+    // Progress granularity within a single catalog is a lesser problem than
+    // that overhead; `RefreshLibraryTask::run`'s item-weighted total is what
+    // actually fixed the visible "stuck at 0%" issue this was chasing.
     let mut chunks = stream
         .take(max)
         .chunks(250);

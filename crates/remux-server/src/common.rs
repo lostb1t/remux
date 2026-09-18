@@ -403,6 +403,60 @@ impl ProgressReporter {
     }
 }
 
+/// Drives a `ProgressReporter` from a single running item count against a
+/// total that can be revised after the fact — unlike `scaled`/`step`, whose
+/// bounds are fixed forever at creation. Meant for a task made of several
+/// phases (e.g. index refresh, catalog import, metadata refresh) whose
+/// individual sizes aren't all known upfront: seed the total with a best
+/// guess (or 0), hand out a `child` reporter per phase weighted by its
+/// estimated share, and correct the total via `adjust_total` once a phase's
+/// real size becomes known — every already-created child keeps working
+/// correctly against the corrected total from then on.
+#[derive(Clone)]
+pub struct ItemProgress {
+    reporter: ProgressReporter,
+    total: Arc<std::sync::atomic::AtomicI64>,
+}
+
+impl ItemProgress {
+    pub fn new(reporter: ProgressReporter, initial_total: usize) -> Self {
+        Self {
+            reporter,
+            total: Arc::new(std::sync::atomic::AtomicI64::new(initial_total as i64)),
+        }
+    }
+
+    /// A child reporter covering `weight` items starting at `base` items
+    /// already accounted for elsewhere. When the child reports `pct`, this
+    /// maps to `(base + weight * pct/100) / total` against the *current*
+    /// total — so a later `adjust_total` call still corrects this child's
+    /// contribution to the overall percentage, not just future ones.
+    pub fn child(&self, base: usize, weight: usize) -> ProgressReporter {
+        let total = self
+            .total
+            .clone();
+        let reporter = self
+            .reporter
+            .clone();
+        ProgressReporter(Arc::new(move |pct: f64| {
+            let total = (total
+                .load(Ordering::Relaxed)
+                .max(1)) as f64;
+            let processed = base as f64 + weight as f64 * pct.clamp(0.0, 100.0) / 100.0;
+            reporter.set(processed / total * 100.0);
+        }))
+    }
+
+    /// Correct the total by `delta` (positive or negative) — e.g. replacing
+    /// an upfront guess with a phase's real size once it's known. Does not
+    /// itself move the displayed percentage; the next report through any
+    /// child reflects the corrected total.
+    pub fn adjust_total(&self, delta: i64) {
+        self.total
+            .fetch_add(delta, Ordering::Relaxed);
+    }
+}
+
 pub trait IntoVec<T> {
     fn into_vec<U>(self) -> Vec<U>
     where
@@ -460,5 +514,55 @@ impl HideConsole for std::process::Command {
 impl HideConsole for tokio::process::Command {
     fn hide_console(&mut self) -> &mut Self {
         self
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+
+    fn reporter() -> (ProgressReporter, Arc<AtomicU64>) {
+        let atomic = Arc::new(AtomicU64::new(0));
+        (ProgressReporter::new(atomic.clone()), atomic)
+    }
+
+    fn read(atomic: &Arc<AtomicU64>) -> f64 {
+        f64::from_bits(atomic.load(Ordering::Relaxed))
+    }
+
+    #[test]
+    fn item_progress_child_reports_weighted_share_of_total() {
+        let (root, atomic) = reporter();
+        let item_progress = ItemProgress::new(root, 100);
+        let child_a = item_progress.child(0, 60);
+        let child_b = item_progress.child(60, 40);
+
+        child_a.report(50, 100); // 50% of a 60-item slice = 30 of 100 total.
+        assert_eq!(read(&atomic), 30.0);
+
+        child_b.set(100.0); // finishes the remaining 40-item slice.
+        assert_eq!(read(&atomic), 100.0);
+    }
+
+    #[test]
+    fn item_progress_adjust_total_corrects_already_created_children() {
+        let (root, atomic) = reporter();
+        let item_progress = ItemProgress::new(root, 100);
+        let child = item_progress.child(0, 50);
+
+        child.set(100.0);
+        assert_eq!(read(&atomic), 50.0, "50 of 100 items done");
+
+        // Total revised upward (e.g. a phase's estimate corrected against its
+        // real size) — the *same* child, re-reporting the same percentage of
+        // its own slice, must reflect the corrected total, not the one it was
+        // created against.
+        item_progress.adjust_total(50);
+        child.set(100.0);
+        assert!(
+            (read(&atomic) - 33.3).abs() < 0.2,
+            "expected ~33.3%, got {}",
+            read(&atomic)
+        );
     }
 }
