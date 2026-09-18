@@ -905,6 +905,7 @@ pub fn UserForm(
                 StreamFilterEditor {
                     match_mode: sf_stream_match,
                     rules: sf_stream_rules,
+                    addons: all_addons,
                 }
             }
 

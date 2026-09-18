@@ -6,10 +6,10 @@ use crate::{
 };
 use dioxus::prelude::*;
 use remux_sdks::remux::{
-    common_audio_languages, format_size_rule, language_label, CreateStreamGroup,
-    CreateStreamGroupRequest, DeleteStreamGroup, FilterMatchMode,
-    GetStreamGroupPreview, GetSystemConfiguration, ListStreamGroups, NumericOp,
-    ServerConfiguration, SetOp, StreamCodec, StreamFilter, StreamGroupDto,
+    common_audio_languages, format_size_rule, language_label, AddonDto,
+    CreateStreamGroup, CreateStreamGroupRequest, DeleteStreamGroup, FilterMatchMode,
+    GetStreamGroupPreview, GetSystemConfiguration, ListAddons, ListStreamGroups,
+    NumericOp, ServerConfiguration, SetOp, StreamCodec, StreamFilter, StreamGroupDto,
     StreamGroupPreviewDto, StreamQuality, StreamResolution, StreamRule,
     UpdateStreamGroup, UpdateStreamGroupRequest, UpdateSystemConfiguration,
 };
@@ -21,6 +21,7 @@ pub(crate) fn StreamRuleRow(
     idx: usize,
     rule: StreamRule,
     rules: Signal<Vec<StreamRule>>,
+    addons: Signal<Vec<AddonDto>>,
 ) -> Element {
     let field_val = match &rule {
         StreamRule::Resolution { .. } => "resolution",
@@ -28,13 +29,15 @@ pub(crate) fn StreamRuleRow(
         StreamRule::Codec { .. } => "codec",
         StreamRule::Size { .. } => "size",
         StreamRule::AudioLanguage { .. } => "audio_language",
+        StreamRule::Addon { .. } => "addon",
     };
     let is_size = field_val == "size";
     let op_not_in = match &rule {
         StreamRule::Resolution { op, .. }
         | StreamRule::Quality { op, .. }
         | StreamRule::Codec { op, .. }
-        | StreamRule::AudioLanguage { op, .. } => matches!(op, SetOp::NotIn),
+        | StreamRule::AudioLanguage { op, .. }
+        | StreamRule::Addon { op, .. } => matches!(op, SetOp::NotIn),
         StreamRule::Size { .. } => false,
     };
     let size_op = match &rule {
@@ -57,6 +60,7 @@ pub(crate) fn StreamRuleRow(
                             "audio_language" => {
                                 StreamRule::AudioLanguage { op: SetOp::In, values: vec![] }
                             }
+                            "addon" => StreamRule::Addon { op: SetOp::In, values: vec![] },
                             "size"   => StreamRule::Size { op: NumericOp::Gt, value: 0 },
                             _        => StreamRule::Resolution { op: SetOp::In, values: vec![] },
                         };
@@ -67,6 +71,7 @@ pub(crate) fn StreamRuleRow(
                 option { value: "codec",      selected: field_val == "codec",      "Codec" }
                 option { value: "size",       selected: is_size,                   "Size" }
                 option { value: "audio_language", selected: field_val == "audio_language", "Audio Language" }
+                option { value: "addon", selected: field_val == "addon", "Addon" }
             }
             // Operator selector
             select {
@@ -91,6 +96,7 @@ pub(crate) fn StreamRuleRow(
                                 StreamRule::Quality { values, .. }     => StreamRule::Quality { op: new_op, values },
                                 StreamRule::Codec { values, .. }      => StreamRule::Codec  { op: new_op, values },
                                 StreamRule::AudioLanguage { values, .. } => StreamRule::AudioLanguage { op: new_op, values },
+                                StreamRule::Addon { values, .. } => StreamRule::Addon { op: new_op, values },
                                 StreamRule::Size { .. } => unreachable!("is_size branch handles Size"),
                             };
                         }
@@ -210,6 +216,28 @@ pub(crate) fn StreamRuleRow(
                             }
                         }
                     }
+                } else if field_val == "addon" {
+                    for addon in addons.read().iter() {
+                        {
+                            let addon_id = addon.id;
+                            let addon_name = addon.name.clone();
+                            let checked = match &rule { StreamRule::Addon { values, .. } => values.contains(&addon_id), _ => false };
+                            rsx! {
+                                label { style: "display:flex;align-items:center;gap:3px;font-size:.82rem;cursor:pointer",
+                                    Switch {
+                                        checked,
+                                        on_change: move |v| {
+                                            if let Some(StreamRule::Addon { values, .. }) = rules.write().get_mut(idx) {
+                                                if v { if !values.contains(&addon_id) { values.push(addon_id); } }
+                                                else { values.retain(|a| a != &addon_id); }
+                                            }
+                                        },
+                                    }
+                                    "{addon_name}"
+                                }
+                            }
+                        }
+                    }
                 } else {
                     for codec in StreamCodec::all() {
                         {
@@ -253,6 +281,7 @@ pub(crate) fn StreamRuleRow(
 pub(crate) fn StreamFilterEditor(
     match_mode: Signal<FilterMatchMode>,
     rules: Signal<Vec<StreamRule>>,
+    addons: Signal<Vec<AddonDto>>,
 ) -> Element {
     let rule_count = rules
         .read()
@@ -281,7 +310,7 @@ pub(crate) fn StreamFilterEditor(
                 }
             }
             for (idx, rule) in rules.read().iter().enumerate() {
-                StreamRuleRow { key: "{idx}", idx, rule: rule.clone(), rules }
+                StreamRuleRow { key: "{idx}", idx, rule: rule.clone(), rules, addons }
             }
             button {
                 class: "btn btn-ghost",
@@ -298,6 +327,7 @@ pub(crate) fn StreamFilterEditor(
 #[component]
 pub fn StreamGroupsCard(app_state: AppState) -> Element {
     let mut groups: Signal<Vec<StreamGroupDto>> = use_signal(Vec::new);
+    let addons: Signal<Vec<AddonDto>> = use_signal(Vec::new);
     let mut show_ungrouped = use_signal(|| true);
     let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
     let mut loading = use_signal(|| true);
@@ -366,6 +396,7 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
     });
 
     let app_state_effect = app_state.clone();
+    let mut addons_effect = addons;
     use_effect(move || {
         let _r = *page_refresh.read();
         loading.set(true);
@@ -377,6 +408,12 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
             let cfg_res = client
                 .execute(GetSystemConfiguration)
                 .await;
+            if let Ok(a) = client
+                .execute(ListAddons)
+                .await
+            {
+                addons_effect.set(a);
+            }
             match (groups_res, cfg_res) {
                 (Ok(g), Ok(cfg)) => {
                     show_ungrouped.set(
@@ -498,6 +535,15 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                                                             }
                                                             StreamRule::Size { op, value } => {
                                                                 (format_size_rule(*op, *value), false, "background:rgba(245,158,11,.12);color:rgb(217,119,6);padding:1px 6px;border-radius:4px")
+                                                            }
+                                                            StreamRule::Addon { op, values } => {
+                                                                let known = addons.read();
+                                                                let lbl = values
+                                                                    .iter()
+                                                                    .map(|id| known.iter().find(|a| a.id == *id).map(|a| a.name.clone()).unwrap_or_else(|| "Unknown".to_string()))
+                                                                    .collect::<Vec<_>>()
+                                                                    .join("/");
+                                                                (lbl, matches!(op, SetOp::NotIn), "background:rgba(59,130,246,.12);color:rgb(37,99,235);padding:1px 6px;border-radius:4px")
                                                             }
                                                         };
                                                         let prefix = if is_excl { "NOT " } else { "" };
@@ -704,7 +750,7 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                             }
                         }
                         FormGroup { label: "Filter rules",
-                            StreamFilterEditor { match_mode: create_match, rules: create_rules }
+                            StreamFilterEditor { match_mode: create_match, rules: create_rules, addons }
                         }
                     }
                     div { class: "modal-footer",
@@ -778,7 +824,7 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                             }
                         }
                         FormGroup { label: "Filter rules",
-                            StreamFilterEditor { match_mode: edit_match, rules: edit_rules }
+                            StreamFilterEditor { match_mode: edit_match, rules: edit_rules, addons }
                         }
                         div { class: "form-group",
                             ToggleRow {

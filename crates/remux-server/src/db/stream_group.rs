@@ -478,6 +478,15 @@ impl StreamGroup {
                         NumericOp::Lt => s < *value,
                     }),
                 },
+                // Unknown addon (None) passes through, consistent with Size/
+                // AudioLanguage above.
+                StreamRule::Addon { op, values } => match info.addon_id {
+                    None => MatchOutcome::PassThrough,
+                    Some(id) => {
+                        let hit = values.contains(&id);
+                        bool_to_outcome(matches!(op, SetOp::In | SetOp::Is) == hit)
+                    }
+                },
             }
         };
 
@@ -638,6 +647,13 @@ fn auto_name(filter: &StreamFilter) -> String {
                     .map(|c| language_label(c))
                     .collect(),
                 StreamRule::Size { op, value } => vec![format_size_rule(*op, *value)],
+                StreamRule::Addon { values, .. } => {
+                    if values.len() == 1 {
+                        vec!["1 addon".to_string()]
+                    } else {
+                        vec![format!("{} addons", values.len())]
+                    }
+                }
             };
             if labels.is_empty() {
                 None

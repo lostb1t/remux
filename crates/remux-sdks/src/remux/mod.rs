@@ -6813,6 +6813,12 @@ pub enum StreamRule {
         op: SetOp,
         values: Vec<String>,
     },
+    /// The configured addon that produced this stream. A stream whose addon is
+    /// unknown passes the rule so it isn't silently dropped.
+    Addon {
+        op: SetOp,
+        values: Vec<Uuid>,
+    },
 }
 
 /// Filter stored on a StreamGroup; analogous to CollectionFilter but evaluated
