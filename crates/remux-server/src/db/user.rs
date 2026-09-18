@@ -373,7 +373,12 @@ impl MediaIdRaw {
             MediaKind::Artist => self
                 .external_ids
                 .deezer_artist
-                .map(|id| id.to_string()),
+                .map(|id| id.to_string())
+                .or_else(|| {
+                    self.external_ids
+                        .eclipse_id
+                        .clone()
+                }),
             MediaKind::Album => self
                 .external_ids
                 .deezer_album
@@ -382,16 +387,39 @@ impl MediaIdRaw {
                     self.external_ids
                         .youtube_id
                         .clone()
+                })
+                .or_else(|| {
+                    self.external_ids
+                        .eclipse_id
+                        .clone()
                 }),
+            // An ISRC identifies the recording across providers, so it wins
+            // over a provider-local id. Prefixed so it can never be confused
+            // with the bare numeric string a `deezer_track` produces.
             MediaKind::Track => self
                 .external_ids
-                .deezer_track
-                .map(|id| id.to_string())
+                .isrc
+                .as_ref()
+                .map(|isrc| format!("isrc:{isrc}"))
+                .or_else(|| {
+                    self.external_ids
+                        .deezer_track
+                        .map(|id| id.to_string())
+                })
                 .or_else(|| {
                     self.external_ids
                         .youtube_id
                         .clone()
+                })
+                .or_else(|| {
+                    self.external_ids
+                        .eclipse_id
+                        .clone()
                 }),
+            MediaKind::Playlist => self
+                .external_ids
+                .eclipse_id
+                .clone(),
             MediaKind::Person => self
                 .external_ids
                 .tmdb
@@ -1445,6 +1473,110 @@ impl FromRequestParts<crate::AppState> for User {
         .await
         .map_err(|e| anyhow!(e).context_internal("db error"))?
         .context_not_found("user not found")
+    }
+}
+
+#[cfg(test)]
+mod canonical_tests {
+    use super::*;
+    use crate::db::{ExternalIds, MediaKind};
+
+    fn raw(kind: MediaKind, external_ids: ExternalIds) -> MediaIdRaw {
+        MediaIdRaw {
+            kind,
+            external_ids,
+            season: None,
+            episode: None,
+        }
+    }
+
+    /// An ISRC identifies the recording itself, so it outranks a
+    /// provider-local Deezer id, and is prefixed so it can never be read as
+    /// a bare numeric Deezer id.
+    #[test]
+    fn track_prefers_a_prefixed_isrc_over_a_deezer_track_id() {
+        let canonical = raw(
+            MediaKind::Track,
+            ExternalIds {
+                isrc: Some("USUM71703861".into()),
+                deezer_track: Some(3135556),
+                ..Default::default()
+            },
+        )
+        .canonical();
+        assert_eq!(canonical, Some("isrc:USUM71703861".to_string()));
+    }
+
+    /// Regression guard: `canonical()` feeds `stable_media_uuid` and the
+    /// `user_media_state.media_raw` key, so the string every already-persisted
+    /// row derived must not shift.
+    #[test]
+    fn non_eclipse_music_ids_keep_their_pre_existing_canonical_strings() {
+        for (kind, external_ids, expected) in [
+            (
+                MediaKind::Track,
+                ExternalIds {
+                    deezer_track: Some(3135556),
+                    ..Default::default()
+                },
+                "3135556",
+            ),
+            (
+                MediaKind::Track,
+                ExternalIds {
+                    youtube_id: Some("dQw4w9WgXcQ".into()),
+                    ..Default::default()
+                },
+                "dQw4w9WgXcQ",
+            ),
+            (
+                MediaKind::Album,
+                ExternalIds {
+                    deezer_album: Some(302127),
+                    // A youtube id present alongside must not win.
+                    youtube_id: Some("PLxyz".into()),
+                    ..Default::default()
+                },
+                "302127",
+            ),
+            (
+                MediaKind::Artist,
+                ExternalIds {
+                    deezer_artist: Some(27),
+                    ..Default::default()
+                },
+                "27",
+            ),
+        ] {
+            assert_eq!(
+                raw(kind.clone(), external_ids).canonical(),
+                Some(expected.to_string()),
+                "{kind:?}"
+            );
+        }
+    }
+
+    /// Eclipse items carry no Deezer/YouTube id at all, so `eclipse_id` is
+    /// what their identity has to fall back to — including for Playlist,
+    /// which previously had no canonical form.
+    #[test]
+    fn eclipse_id_is_the_fallback_identity_for_every_music_kind() {
+        for kind in [
+            MediaKind::Track,
+            MediaKind::Album,
+            MediaKind::Artist,
+            MediaKind::Playlist,
+        ] {
+            let canonical = raw(
+                kind.clone(),
+                ExternalIds {
+                    eclipse_id: Some("abc:item_1".into()),
+                    ..Default::default()
+                },
+            )
+            .canonical();
+            assert_eq!(canonical, Some("abc:item_1".to_string()), "{kind:?}");
+        }
     }
 }
 
