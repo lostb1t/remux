@@ -68,6 +68,7 @@ jobs:
     uses: ./.github/workflows/test.yml
 
   bench:
+    if: false # temporarily disabled — self-hosted runner can't reach github.com; re-enable once it's back
     name: Bench
     needs: [version, test]
     uses: ./.github/workflows/bench.yml
