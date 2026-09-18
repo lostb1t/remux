@@ -2164,9 +2164,30 @@ impl AddonService {
         // images after the id below is confirmed avoids that entirely.
         let pending_images = std::mem::take(&mut media.images);
         if let Err(e) = db::Media::upsert(&ctx.db, &[media.clone()]).await {
-            error!(id = %media.id, error = %e, "failed to upsert root media");
-            self.notify_series_done(&media);
-            return media.id;
+            // A unique-index violation here (rather than a plain PK conflict)
+            // means one of `media`'s external IDs is already owned by a
+            // *different* row than the one we just adopted — the ambiguous-
+            // match resolver can only redirect onto one row, so a second,
+            // disjoint match is left dangling. Merge that row into ours and
+            // retry once instead of failing identically on every future
+            // refresh.
+            let is_unique_violation = matches!(
+                e.downcast_ref::<sqlx::Error>(),
+                Some(sqlx::Error::Database(db_err)) if db_err.is_unique_violation()
+            );
+            let merged = is_unique_violation
+                && db::Media::merge_conflicting_duplicate(&ctx.db, &media).await;
+            if !merged {
+                error!(id = %media.id, error = %e, "failed to upsert root media");
+                self.notify_series_done(&media);
+                return media.id;
+            }
+            if let Err(e2) = db::Media::upsert(&ctx.db, &[media.clone()]).await {
+                error!(id = %media.id, error = %e2,
+                    "failed to upsert root media after duplicate merge");
+                self.notify_series_done(&media);
+                return media.id;
+            }
         }
 
         // The upsert above may have silently landed on a different row than

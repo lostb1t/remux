@@ -3075,6 +3075,71 @@ impl Media {
         }
     }
 
+    /// Every existing row that shares any external ID with `ext`, unlike
+    /// `find_by_external_ids` which collapses an ambiguous match down to a
+    /// single winner. Used to find the *other* row(s) a winner's upsert
+    /// collided with, so they can be merged away instead of left to collide
+    /// again on every future refresh.
+    async fn find_all_by_external_ids(
+        db: &SqlitePool,
+        kind: &MediaKind,
+        ext: &ExternalIds,
+    ) -> Vec<Uuid> {
+        let id_fields = Self::external_id_fields(kind, ext);
+        if id_fields.is_empty() {
+            return Vec::new();
+        }
+        let mut qb = sqlx::QueryBuilder::new("SELECT DISTINCT id FROM media WHERE ");
+        Self::push_external_id_where(&mut qb, kind, &id_fields);
+        qb.build_query_scalar()
+            .fetch_all(db)
+            .await
+            .unwrap_or_default()
+    }
+
+    /// Recovers from a root-media upsert that failed because one of
+    /// `media`'s external IDs is already uniquely owned by a *different*
+    /// row than the one it was about to be written to (see the winner-pick
+    /// in `find_existing_id_by_ext`/`resolve_ambiguous_external_id` — it can
+    /// only ever redirect onto one row, so a second, disjoint match is left
+    /// dangling until an incoming item's ID set spans both). SQLite's
+    /// `ON CONFLICT DO UPDATE` can't resolve that: it only redirects the
+    /// initial insert-vs-PK conflict, not a unique-index collision the
+    /// UPDATE's own `SET` introduces, so the upsert fails outright and
+    /// would otherwise repeat identically on every future refresh.
+    ///
+    /// Finds the other row(s) still holding one of `media`'s external IDs
+    /// and merges each into `media.id`: reparents its children/watch
+    /// state/relations (the same cascade used for id-remap-before-insert),
+    /// then deletes it. Returns `true` if a conflicting row was found and
+    /// merged, so the caller can retry the upsert once.
+    pub async fn merge_conflicting_duplicate(db: &SqlitePool, media: &Self) -> bool {
+        let matches =
+            Self::find_all_by_external_ids(db, &media.kind, &media.external_ids).await;
+        let mut merged_any = false;
+        for loser_id in matches {
+            if loser_id == media.id {
+                continue;
+            }
+            if let Err(e) =
+                Self::cascade_update_parent_refs(db, loser_id, media.id).await
+            {
+                warn!(loser = %loser_id, winner = %media.id, error = %e,
+                    "cascade_update_parent_refs failed during duplicate merge");
+                continue;
+            }
+            if let Err(e) = Self::delete(db, &loser_id).await {
+                warn!(loser = %loser_id, winner = %media.id, error = %e,
+                    "failed to delete merged duplicate row");
+                continue;
+            }
+            warn!(loser = %loser_id, winner = %media.id, kind = %media.kind,
+                "merged duplicate root media row sharing an external id");
+            merged_any = true;
+        }
+        merged_any
+    }
+
     async fn resolve_ambiguous_external_id(
         db: &SqlitePool,
         kind: &MediaKind,
@@ -9217,6 +9282,134 @@ mod tests {
             titles.contains(&"Has Digital Release"),
             "movie with digital release date must be shown; got: {:?}",
             titles
+        );
+    }
+
+    /// Two existing rows can each hold a *disjoint* external id for the same
+    /// real title (row A: imdb only, row B: tmdb only) — neither collides
+    /// with the other's unique index alone. Once a refreshed item arrives
+    /// carrying both ids and gets remapped onto row A (the ambiguous-match
+    /// winner), `merge_conflicting_duplicate` must find row B, reparent its
+    /// children onto row A, and delete it — rather than leaving both rows to
+    /// collide identically on every future refresh.
+    #[tokio::test]
+    async fn merge_conflicting_duplicate_reconciles_disjoint_id_rows() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+
+        let ext_a = ExternalIds {
+            imdb: Some(NonEmptyString::try_new("tt9990101".to_string()).unwrap()),
+            ..Default::default()
+        };
+        let id_a = Uuid::from(&MediaIdRaw {
+            kind: MediaKind::Series,
+            external_ids: ext_a.clone(),
+            season: None,
+            episode: None,
+        });
+        let ext_b = ExternalIds {
+            tmdb: Some(9990101),
+            ..Default::default()
+        };
+        let id_b = Uuid::from(&MediaIdRaw {
+            kind: MediaKind::Series,
+            external_ids: ext_b.clone(),
+            season: None,
+            episode: None,
+        });
+
+        let mut row_a = Media {
+            id: id_a,
+            title: "Row A".to_string(),
+            kind: MediaKind::Series,
+            external_ids: ext_a.clone(),
+            ..Default::default()
+        };
+        row_a
+            .save(db)
+            .await
+            .unwrap();
+        let mut row_b = Media {
+            id: id_b,
+            title: "Row B".to_string(),
+            kind: MediaKind::Series,
+            external_ids: ext_b.clone(),
+            ..Default::default()
+        };
+        row_b
+            .save(db)
+            .await
+            .unwrap();
+
+        // A season under row B, to verify it gets reparented onto the winner.
+        let season_id = get_uuid();
+        let mut season_b = Media {
+            id: season_id,
+            title: "Season 1".to_string(),
+            kind: MediaKind::Season,
+            parent_id: Some(id_b),
+            grandparent_id: Some(id_b),
+            idx: Some(1),
+            ..Default::default()
+        };
+        season_b
+            .save(db)
+            .await
+            .unwrap();
+
+        // The refreshed item carries both ids and was already remapped onto
+        // row A's id by the ambiguous-match winner-pick.
+        let merged_ext = ExternalIds {
+            imdb: ext_a.imdb,
+            tmdb: ext_b.tmdb,
+            ..Default::default()
+        };
+        let incoming = Media {
+            id: id_a,
+            title: "Row A".to_string(),
+            kind: MediaKind::Series,
+            external_ids: merged_ext,
+            ..Default::default()
+        };
+
+        let merged = Media::merge_conflicting_duplicate(db, &incoming).await;
+        assert!(
+            merged,
+            "expected the disjoint-id duplicate row to be found and merged"
+        );
+
+        assert!(
+            Media::get_by_id(db, &id_b)
+                .await
+                .unwrap()
+                .is_none(),
+            "loser row should be deleted"
+        );
+        assert!(
+            Media::get_by_id(db, &id_a)
+                .await
+                .unwrap()
+                .is_some(),
+            "winner row should remain"
+        );
+
+        let reparented = Media::get_by_id(db, &season_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reparented.parent_id,
+            Some(id_a),
+            "season should be reparented onto the winner"
+        );
+        assert_eq!(
+            reparented.grandparent_id,
+            Some(id_a),
+            "season's grandparent_id should be reparented onto the winner"
         );
     }
 
