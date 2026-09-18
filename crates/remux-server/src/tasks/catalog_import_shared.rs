@@ -33,9 +33,16 @@ where
 {
     // Stop pulling from the underlying paginated stream once we have enough items.
     // Without this, the stream fetches ALL pages until empty even when max=50.
+    //
+    // Chunk size doubles as the progress-reporting granularity: `progress.report`
+    // below fires once per chunk, so a catalog at or under `catalog_max_items`
+    // (default 250) used to run in a single chunk — one report at 0%, then no
+    // visible movement until the caller forces 100% once the whole catalog is
+    // done. A smaller chunk means more chunks means the bar actually advances
+    // through a catalog instead of sitting at 0% for its full duration.
     let mut chunks = stream
         .take(max)
-        .chunks(250);
+        .chunks(25);
     let mut counts: HashMap<String, usize> = HashMap::new();
     let mut new_counts: HashMap<String, usize> = HashMap::new();
     let mut total = 0usize;

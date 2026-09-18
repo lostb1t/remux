@@ -495,6 +495,24 @@ impl IndexAddon for OpendalAddon {
         Ok(())
     }
 
+    /// Row count from this addon's last completed scan. `None` when nothing
+    /// has been indexed yet (first import) — a genuinely empty library reads
+    /// the same as "never scanned" here, which just means it gets the
+    /// fallback guess and finishes its slice fast; harmless either way.
+    async fn index_estimate(&self, ctx: &AppContext, addon: &Addon) -> Option<usize> {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM opendal_files WHERE addon_id = ?")
+                .bind(addon.id)
+                .fetch_one(&ctx.db)
+                .await
+                .ok()?;
+        if count == 0 {
+            None
+        } else {
+            Some(count as usize)
+        }
+    }
+
     async fn purge_index(&self, ctx: &AppContext, addon: &Addon) -> Result<()> {
         sqlx::query("DELETE FROM opendal_files WHERE addon_id = ?")
             .bind(addon.id)

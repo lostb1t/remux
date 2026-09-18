@@ -5760,12 +5760,29 @@ impl Media {
         after_id: Option<Uuid>,
         total_count: bool,
     ) -> Result<(Vec<Self>, Option<u32>)> {
+        // The missing-digital-date branch used to retry forever with no cutoff:
+        // TMDB's release_dates data often has no Digital/Physical/TV entry at
+        // all for a title (especially older ones), so `digital_released_at`
+        // can never be filled in no matter how many times it's refetched —
+        // that alone made up the vast majority of "refreshable" items in
+        // practice. Give it a week of retries (created_at < 7 days, in case
+        // the first fetch was incomplete/rate-limited or provider data
+        // catches up shortly after import), or keep trying indefinitely while
+        // the title itself is recent enough (released_at < 1 year) that a
+        // digital release is still plausible — otherwise stop selecting it.
         const WHERE: &str = r#"
         WHERE kind IN (?, ?)
           AND (
             refreshed_at IS NULL
             OR (kind = 'series' AND (status IS NULL OR status != 'ended') AND datetime(created_at) < datetime('now', '-1 hour'))
-            OR (digital_released_at IS NULL AND datetime(created_at) < datetime('now', '-1 hour'))
+            OR (
+              digital_released_at IS NULL
+              AND datetime(created_at) < datetime('now', '-1 hour')
+              AND (
+                datetime(created_at) >= datetime('now', '-7 days')
+                OR (released_at IS NOT NULL AND datetime(released_at) >= datetime('now', '-365 days'))
+              )
+            )
           )"#;
 
         let total = if total_count {
@@ -9410,6 +9427,118 @@ mod tests {
             reparented.grandparent_id,
             Some(id_a),
             "season's grandparent_id should be reparented onto the winner"
+        );
+    }
+
+    /// A missing `digital_released_at` used to make an item refreshable
+    /// forever: TMDB's release_dates data often has no Digital/Physical/TV
+    /// entry at all for a title (especially older ones), so the field could
+    /// never be filled in no matter how many times it was refetched.
+    /// `get_refreshable` must stop selecting such an item once it's had a
+    /// fair shot — a week of retries since it was added, or indefinitely
+    /// while the title itself is recent enough that a digital release is
+    /// still plausible — without ever fabricating a value for the field
+    /// itself.
+    #[tokio::test]
+    async fn get_refreshable_gives_up_on_old_items_with_no_digital_date() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let now = chrono::Utc::now().naive_utc();
+
+        let make_ids = |imdb: &str| {
+            let ext = ExternalIds {
+                imdb: Some(NonEmptyString::try_new(imdb.to_string()).unwrap()),
+                ..Default::default()
+            };
+            let id = uuid::Uuid::from(&MediaIdRaw {
+                kind: MediaKind::Movie,
+                external_ids: ext.clone(),
+                season: None,
+                episode: None,
+            });
+            (id, ext)
+        };
+
+        // Old release, imported a month ago, never got a digital date — past
+        // its week-long grace period and not recent enough to keep trying.
+        let (id_stale, ext_stale) = make_ids("tt9990201");
+        let mut stale = Media {
+            id: id_stale,
+            title: "Ancient, Long Imported".to_string(),
+            kind: MediaKind::Movie,
+            external_ids: ext_stale,
+            released_at: Some(now - chrono::Duration::days(3650)),
+            digital_released_at: None,
+            created_at: now - chrono::Duration::days(30),
+            refreshed_at: Some(now - chrono::Duration::days(30)),
+            ..Default::default()
+        };
+        stale
+            .save(db)
+            .await
+            .unwrap();
+
+        // Old release, but only imported yesterday — still within its
+        // week-long grace period regardless of how old the content is.
+        let (id_new, ext_new) = make_ids("tt9990202");
+        let mut recently_added = Media {
+            id: id_new,
+            title: "Ancient, Just Imported".to_string(),
+            kind: MediaKind::Movie,
+            external_ids: ext_new,
+            released_at: Some(now - chrono::Duration::days(3650)),
+            digital_released_at: None,
+            created_at: now - chrono::Duration::days(1),
+            refreshed_at: Some(now - chrono::Duration::days(1)),
+            ..Default::default()
+        };
+        recently_added
+            .save(db)
+            .await
+            .unwrap();
+
+        // Recent release, imported a month ago — a digital date is still
+        // plausible, so it must keep being retried regardless of import age.
+        let (id_recent_release, ext_recent) = make_ids("tt9990203");
+        let mut recent_release = Media {
+            id: id_recent_release,
+            title: "Recent Release".to_string(),
+            kind: MediaKind::Movie,
+            external_ids: ext_recent,
+            released_at: Some(now - chrono::Duration::days(30)),
+            digital_released_at: None,
+            created_at: now - chrono::Duration::days(30),
+            refreshed_at: Some(now - chrono::Duration::days(30)),
+            ..Default::default()
+        };
+        recent_release
+            .save(db)
+            .await
+            .unwrap();
+
+        let (batch, _) = Media::get_refreshable(db, 100, None, false)
+            .await
+            .unwrap();
+        let ids: HashSet<Uuid> = batch
+            .iter()
+            .map(|m| m.id)
+            .collect();
+
+        assert!(
+            !ids.contains(&id_stale),
+            "old item with no digital date, long imported, must stop being retried"
+        );
+        assert!(
+            ids.contains(&id_new),
+            "recently-imported item must still get its week-long grace period"
+        );
+        assert!(
+            ids.contains(&id_recent_release),
+            "recently-released item must keep being retried regardless of import age"
         );
     }
 

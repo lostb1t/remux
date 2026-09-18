@@ -35,7 +35,10 @@ use tracing::{Instrument, debug, error, info, trace, warn};
 use uuid::Uuid;
 
 use crate::{
-    AppContext, api, common::ProgressReporter, db, sdks, services::MediaResolveService,
+    AppContext, api,
+    common::{ItemProgress, ProgressReporter},
+    db, sdks,
+    services::MediaResolveService,
 };
 pub use addon::{Addon, CatalogState, set_user_addon_override, user_addon_override};
 use remux_sdks::remuxdb;
@@ -692,6 +695,15 @@ pub trait IndexAddon: Send + Sync {
         progress: ProgressReporter,
     ) -> Result<()>;
     async fn purge_index(&self, ctx: &AppContext, addon: &Addon) -> Result<()>;
+
+    /// Best-available estimate of how many items this addon's index holds —
+    /// used to size `RefreshLibrary`'s overall progress total before this
+    /// addon's own `refresh_index` has run, and again afterward to correct
+    /// that estimate against the real count. `None` when nothing is known
+    /// yet (e.g. this addon has never completed a scan).
+    async fn index_estimate(&self, _ctx: &AppContext, _addon: &Addon) -> Option<usize> {
+        None
+    }
 }
 
 #[async_trait]
@@ -1492,38 +1504,85 @@ impl AddonService {
         Ok(())
     }
 
-    pub async fn refresh_indexes(
-        &self,
-        ctx: &AppContext,
-        progress: ProgressReporter,
-    ) -> Result<()> {
-        let addons: Vec<AddonRuntime> = self
-            .inner
+    /// Rough per-addon item-count guess when an addon has never been scanned
+    /// before (so `IndexAddon::index_estimate` has nothing to go on yet) —
+    /// just enough to size the progress total sensibly; corrected against the
+    /// real count as soon as that addon's own scan completes.
+    const INDEX_ESTIMATE_FALLBACK: usize = 250;
+
+    fn indexable_addons(&self) -> Vec<AddonRuntime> {
+        self.inner
             .load()
             .iter()
             .filter(|r| {
                 r.row
                     .enabled
+                    && r.index
+                        .is_some()
             })
             .cloned()
-            .collect();
-        let total = addons.len();
-        for (idx, runtime) in addons
-            .iter()
-            .enumerate()
-        {
-            if let Some(index) = &runtime.index {
-                let sub = progress.step(idx, total);
-                if let Err(e) = index
-                    .refresh_index(ctx, &runtime.row, sub)
-                    .await
-                {
-                    warn!(addon = %runtime.row.name, error = %e, "refresh_index failed");
-                }
-            }
+            .collect()
+    }
+
+    /// Sum of each indexable addon's best-known item count (its last real
+    /// scan size, or a fallback guess when it's never been scanned) — sizes
+    /// `RefreshLibrary`'s overall progress total before `refresh_indexes` has
+    /// actually run.
+    pub async fn estimate_index_items(&self, ctx: &AppContext) -> usize {
+        let mut total = 0usize;
+        for runtime in self.indexable_addons() {
+            let Some(index) = &runtime.index else {
+                continue;
+            };
+            total += index
+                .index_estimate(ctx, &runtime.row)
+                .await
+                .unwrap_or(Self::INDEX_ESTIMATE_FALLBACK);
         }
-        progress.set(100.0);
-        Ok(())
+        total
+    }
+
+    /// Refreshes every enabled addon's index, weighting each addon's slice of
+    /// `item_progress` by its own item-count estimate (correcting that
+    /// estimate against the real count once its scan completes) rather than
+    /// splitting the range evenly — a addon that's disabled or has nothing to
+    /// do no longer eats an equal share of the bar regardless of its actual
+    /// size. Returns the real total item count indexed, for the caller to use
+    /// as the base offset for the next phase.
+    pub async fn refresh_indexes(
+        &self,
+        ctx: &AppContext,
+        item_progress: &ItemProgress,
+        base: usize,
+    ) -> Result<usize> {
+        let addons = self.indexable_addons();
+        info!(addons = addons.len(), "starting index refresh");
+        let start = std::time::Instant::now();
+        let mut offset = base;
+        for runtime in &addons {
+            let Some(index) = &runtime.index else {
+                continue;
+            };
+            let estimate = index
+                .index_estimate(ctx, &runtime.row)
+                .await
+                .unwrap_or(Self::INDEX_ESTIMATE_FALLBACK);
+            let sub = item_progress.child(offset, estimate);
+            if let Err(e) = index
+                .refresh_index(ctx, &runtime.row, sub)
+                .await
+            {
+                warn!(addon = %runtime.row.name, error = %e, "refresh_index failed");
+            }
+            let actual = index
+                .index_estimate(ctx, &runtime.row)
+                .await
+                .unwrap_or(estimate);
+            item_progress.adjust_total(actual as i64 - estimate as i64);
+            offset += actual;
+        }
+        info!(addons = addons.len(), elapsed = ?start.elapsed(), items = offset - base, "index refresh complete");
+        Ok(offset - base)
     }
 
     pub fn get_catalog(&self, id: Uuid) -> Option<Arc<dyn CatalogAddon>> {
