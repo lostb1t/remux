@@ -22,6 +22,11 @@ struct Cli {
     ffmpeg: Option<PathBuf>,
     #[arg(long, help = "Path to ffprobe binary")]
     ffprobe: Option<PathBuf>,
+    #[arg(
+        long,
+        help = "OTLP gRPC endpoint for tracing spans (e.g. http://jaeger:4317)"
+    )]
+    otlp_endpoint: Option<String>,
 }
 
 fn load_paths() -> FilesystemPaths {
@@ -31,7 +36,6 @@ fn load_paths() -> FilesystemPaths {
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
-    setup_logging(None);
 
     let cli = Cli::parse();
 
@@ -58,6 +62,17 @@ async fn main() -> Result<()> {
     if let Some(v) = cli.database_url {
         config.database_url = Some(v);
     }
+    if let Some(v) = cli.otlp_endpoint {
+        config.otlp_endpoint = Some(v);
+    }
+
+    // Needs config loaded first — the OTLP endpoint (if any) lives there.
+    setup_logging(
+        None,
+        config
+            .otlp_endpoint
+            .as_deref(),
+    );
 
     serve(config.resolve(), load_paths()).await
 }

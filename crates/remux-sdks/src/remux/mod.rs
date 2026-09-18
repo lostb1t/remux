@@ -663,8 +663,8 @@ pub struct ServerConfiguration {
     pub transcoding_temp_path: Option<String>,
     #[default(Some(250_i64))]
     pub catalog_max_items: Option<i64>,
-    /// Number of items to process concurrently during metadata fetch (default: 12).
-    #[default(12_i64)]
+    /// Number of items to process concurrently during metadata fetch (default: 20).
+    #[default(20_i64)]
     pub meta_concurrency: i64,
     /// Max time (seconds) to wait for a single metadata addon's response
     /// before treating it as failed and moving on (default: 5).
