@@ -1,0 +1,119 @@
+{
+  "Name": "1. MPV",
+  "MaxStaticBitrate": 999999999,
+  "MaxStreamingBitrate": 999999999,
+  "CodecProfiles": [
+    {
+      "Type": "Video",
+      "Codec": "h264,mpeg4,divx,xvid,wmv,vc1,vp8,vp9,av1"
+    },
+    {
+      "Type": "Video",
+      "Codec": "hevc,h265",
+      "Conditions": [
+        {
+          "Condition": "LessThanEqual",
+          "Property": "VideoLevel",
+          "Value": "153",
+          "IsRequired": false
+        },
+        {
+          "Condition": "NotEquals",
+          "Property": "VideoRangeType",
+          "Value": "DOVI",
+          "IsRequired": true
+        }
+      ]
+    },
+    {
+      "Type": "Audio",
+      "Codec": "aac,ac3,eac3,mp3,flac,alac,opus,pcm"
+    }
+  ],
+  "DirectPlayProfiles": [
+    {
+      "Type": "Video",
+      "Container": "mp4,mkv,avi,mov,flv,ts,m2ts,webm,ogv,3gp,hls",
+      "VideoCodec": "h264,hevc,mpeg4,divx,xvid,wmv,vc1,vp8,vp9,av1,avi,mpeg,mpeg2video",
+      "AudioCodec": "aac,mp3,flac,opus,vorbis,ac3,eac3,dts,truehd,alac,wma"
+    },
+    {
+      "Type": "Audio",
+      "Container": "mp3,m4a,aac,flac,alac,wav,aiff,caf",
+      "AudioCodec": "mp3,aac,alac,flac,opus,pcm"
+    }
+  ],
+  "TranscodingProfiles": [
+    {
+      "Type": "Video",
+      "Context": "Streaming",
+      "Protocol": "hls",
+      "Container": "ts",
+      "VideoCodec": "h264,hevc",
+      "AudioCodec": "aac,mp3,ac3,dts",
+      "MaxAudioChannels": "6"
+    },
+    {
+      "Type": "Audio",
+      "Context": "Streaming",
+      "Protocol": "http",
+      "Container": "mp3",
+      "AudioCodec": "mp3",
+      "MaxAudioChannels": "2"
+    }
+  ],
+  "SubtitleProfiles": [
+    { "Format": "dvdsub", "Method": "Embed" },
+    { "Format": "dvdsub", "Method": "Encode" },
+    { "Format": "idx", "Method": "Embed" },
+    { "Format": "idx", "Method": "Encode" },
+    { "Format": "pgs", "Method": "Embed" },
+    { "Format": "pgs", "Method": "Encode" },
+    { "Format": "pgssub", "Method": "Embed" },
+    { "Format": "pgssub", "Method": "Encode" },
+    { "Format": "teletext", "Method": "Embed" },
+    { "Format": "teletext", "Method": "Encode" },
+    { "Format": "vobsub", "Method": "Embed" },
+    { "Format": "vobsub", "Method": "Encode" },
+    { "Format": "xsub", "Method": "Embed" },
+    { "Format": "xsub", "Method": "Encode" },
+    { "Format": "webvtt", "Method": "Embed" },
+    { "Format": "webvtt", "Method": "External" },
+    { "Format": "vtt", "Method": "Embed" },
+    { "Format": "vtt", "Method": "External" },
+    { "Format": "srt", "Method": "Embed" },
+    { "Format": "srt", "Method": "External" },
+    { "Format": "subrip", "Method": "Embed" },
+    { "Format": "subrip", "Method": "External" },
+    { "Format": "ttml", "Method": "Embed" },
+    { "Format": "ttml", "Method": "External" },
+    { "Format": "ass", "Method": "Embed" },
+    { "Format": "ass", "Method": "External" },
+    { "Format": "ssa", "Method": "Embed" },
+    { "Format": "ssa", "Method": "External" },
+    { "Format": "microdvd", "Method": "Embed" },
+    { "Format": "microdvd", "Method": "External" },
+    { "Format": "mov_text", "Method": "Embed" },
+    { "Format": "mov_text", "Method": "External" },
+    { "Format": "mpl2", "Method": "Embed" },
+    { "Format": "mpl2", "Method": "External" },
+    { "Format": "pjs", "Method": "Embed" },
+    { "Format": "pjs", "Method": "External" },
+    { "Format": "realtext", "Method": "Embed" },
+    { "Format": "realtext", "Method": "External" },
+    { "Format": "scc", "Method": "Embed" },
+    { "Format": "scc", "Method": "External" },
+    { "Format": "smi", "Method": "Embed" },
+    { "Format": "smi", "Method": "External" },
+    { "Format": "stl", "Method": "Embed" },
+    { "Format": "stl", "Method": "External" },
+    { "Format": "sub", "Method": "Embed" },
+    { "Format": "sub", "Method": "External" },
+    { "Format": "subviewer", "Method": "Embed" },
+    { "Format": "subviewer", "Method": "External" },
+    { "Format": "text", "Method": "Embed" },
+    { "Format": "text", "Method": "External" },
+    { "Format": "vplayer", "Method": "Embed" },
+    { "Format": "vplayer", "Method": "External" }
+  ]
+}

@@ -19,6 +19,7 @@ use crate::{
     common::{IntoVec, TickUnit, ToRunTimeTicks},
     db,
     db::auth,
+    device_profile::{DeviceProfileExt, MediaSourceCapabilityExt},
     errors::LogErr,
     sdks,
 };
@@ -1609,6 +1610,9 @@ async fn item_for_user(
     let transcoding_enabled = encoding_cfg
         .enable_video_transcoding
         .unwrap_or(true);
+    let subtitle_mode = encoding_cfg
+        .subtitle_mode
+        .unwrap_or_default();
     // Clients that switch versions (Android TV) refetch the item by MediaSource id
     // and then play MediaSources[0], so the requested group must end up first and
     // keep its own UUID instead of the item id stamped by `db_media_to_item`.
@@ -1671,6 +1675,18 @@ async fn item_for_user(
             media.kind,
             db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track
         );
+    // Hoisted so both the ranking pass below and the real resolve_default_streams
+    // pass further down use the same user config — language defaults must apply
+    // even when the user has never saved a configuration (NULL for brand-new
+    // users), so the server's global metadata language is the fallback.
+    let user_cfg = session
+        .user
+        .configuration
+        .as_ref()
+        .map(|c| {
+            c.0.clone()
+        })
+        .unwrap_or_default();
 
     if needs_streams {
         if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
@@ -1762,6 +1778,96 @@ async fn item_for_user(
             }
         }
         media.sources = Some(filtered);
+
+        // Same capability-based ordering PlaybackInfo applies, so the details
+        // page's version list (and MediaSources[0], which several clients
+        // treat as the default choice) agrees with what playback would
+        // actually pick. There's no live DeviceProfile on a plain GET, so this
+        // uses whatever profile the device last sent (persisted on the
+        // device row) — no persisted profile means every source ties on
+        // compatibility and this falls back to a pure quality ordering.
+        // Skipped for a specific group request: the hoist above already put
+        // the requested group's own source first, and that's the contract a
+        // client re-fetching by group id relies on. Also skipped whenever any
+        // source is a stream-group representative: group order is an
+        // explicit, admin-authored priority (drag-and-drop in the dashboard)
+        // — reordering those by capability/quality would fight that intent
+        // the same way reordering the groups themselves would.
+        let sort_mode = server_config
+            .sort_media_sources
+            .unwrap_or_default();
+        if sort_mode != remux_sdks::remux::SortMediaSourcesMode::Disabled
+            && requested_group.is_none()
+            && media
+                .sources
+                .as_deref()
+                .is_some_and(|s| {
+                    s.iter()
+                        .all(|m| {
+                            m.group_id
+                                .is_none()
+                        })
+                })
+        {
+            if let Some(sources) = media
+                .sources
+                .as_mut()
+            {
+                if sources.len() > 1 {
+                    let device_profile = session
+                        .device
+                        .parsed_device_profile();
+                    let mut ranked: Vec<(db::Media, _)> = sources
+                        .drain(..)
+                        .map(|m| {
+                            let mut info = api::MediaSourceInfo::from(m.clone());
+                            // Resolve which subtitle would actually be used so
+                            // subtitle_burn_reason judges the real selection,
+                            // not container order — same inputs the real
+                            // resolve pass further down uses.
+                            info.resolve_default_streams(
+                                &user_cfg,
+                                server_config
+                                    .preferred_metadata_language
+                                    .as_deref(),
+                                media
+                                    .original_language
+                                    .as_deref(),
+                                None,
+                                None,
+                                None,
+                                None,
+                            );
+                            let mut reasons = device_profile
+                                .as_ref()
+                                .map(|p| p.check_direct_play(&info))
+                                .unwrap_or_default();
+                            if let Some(reason) =
+                                crate::device_profile::subtitle_burn_reason(
+                                    &info,
+                                    device_profile.as_ref(),
+                                    subtitle_mode,
+                                    None,
+                                )
+                            {
+                                reasons.insert(reason);
+                            }
+                            info.transcoding_reasons = reasons;
+                            let rank = info
+                                .capability_rank(device_profile.as_ref())
+                                .key(sort_mode);
+                            (m, rank)
+                        })
+                        .collect();
+                    ranked.sort_by_key(|(_, rank)| std::cmp::Reverse(*rank));
+                    *sources = ranked
+                        .into_iter()
+                        .map(|(m, _)| m)
+                        .collect();
+                }
+            }
+        }
+
         media
             .user_state(
                 &state
@@ -1806,6 +1912,96 @@ async fn item_for_user(
             }
         }
         media.sources = Some(filtered);
+
+        // Same capability-based ordering PlaybackInfo applies, so the details
+        // page's version list (and MediaSources[0], which several clients
+        // treat as the default choice) agrees with what playback would
+        // actually pick. There's no live DeviceProfile on a plain GET, so this
+        // uses whatever profile the device last sent (persisted on the
+        // device row) — no persisted profile means every source ties on
+        // compatibility and this falls back to a pure quality ordering.
+        // Skipped for a specific group request: the hoist above already put
+        // the requested group's own source first, and that's the contract a
+        // client re-fetching by group id relies on. Also skipped whenever any
+        // source is a stream-group representative: group order is an
+        // explicit, admin-authored priority (drag-and-drop in the dashboard)
+        // — reordering those by capability/quality would fight that intent
+        // the same way reordering the groups themselves would.
+        let sort_mode = server_config
+            .sort_media_sources
+            .unwrap_or_default();
+        if sort_mode != remux_sdks::remux::SortMediaSourcesMode::Disabled
+            && requested_group.is_none()
+            && media
+                .sources
+                .as_deref()
+                .is_some_and(|s| {
+                    s.iter()
+                        .all(|m| {
+                            m.group_id
+                                .is_none()
+                        })
+                })
+        {
+            if let Some(sources) = media
+                .sources
+                .as_mut()
+            {
+                if sources.len() > 1 {
+                    let device_profile = session
+                        .device
+                        .parsed_device_profile();
+                    let mut ranked: Vec<(db::Media, _)> = sources
+                        .drain(..)
+                        .map(|m| {
+                            let mut info = api::MediaSourceInfo::from(m.clone());
+                            // Resolve which subtitle would actually be used so
+                            // subtitle_burn_reason judges the real selection,
+                            // not container order — same inputs the real
+                            // resolve pass further down uses.
+                            info.resolve_default_streams(
+                                &user_cfg,
+                                server_config
+                                    .preferred_metadata_language
+                                    .as_deref(),
+                                media
+                                    .original_language
+                                    .as_deref(),
+                                None,
+                                None,
+                                None,
+                                None,
+                            );
+                            let mut reasons = device_profile
+                                .as_ref()
+                                .map(|p| p.check_direct_play(&info))
+                                .unwrap_or_default();
+                            if let Some(reason) =
+                                crate::device_profile::subtitle_burn_reason(
+                                    &info,
+                                    device_profile.as_ref(),
+                                    subtitle_mode,
+                                    None,
+                                )
+                            {
+                                reasons.insert(reason);
+                            }
+                            info.transcoding_reasons = reasons;
+                            let rank = info
+                                .capability_rank(device_profile.as_ref())
+                                .key(sort_mode);
+                            (m, rank)
+                        })
+                        .collect();
+                    ranked.sort_by_key(|(_, rank)| std::cmp::Reverse(*rank));
+                    *sources = ranked
+                        .into_iter()
+                        .map(|(m, _)| m)
+                        .collect();
+                }
+            }
+        }
+
         media
             .user_state(
                 &state
@@ -1837,6 +2033,44 @@ async fn item_for_user(
                 .db,
         )
         .await;
+    }
+
+    // Append the Direct Play/Direct Stream/Transcode decision to the video
+    // stream's DisplayTitle, same as PlaybackInfo — done here, after the
+    // filename-guess fallback, so media_streams are as complete as this
+    // endpoint ever gets them (real ffprobe or guessed). No live DeviceProfile
+    // exists on a plain GET, so this only runs when the device has previously
+    // sent one that got persisted.
+    if needs_streams
+        && server_config
+            .show_playback_decision_in_title
+            .unwrap_or(true)
+    {
+        if let Some(device_profile) = session
+            .device
+            .parsed_device_profile()
+        {
+            if let Some(sources) = base_item
+                .media_sources
+                .as_mut()
+            {
+                for source in sources.iter_mut() {
+                    let reasons = device_profile.check_direct_play(source);
+                    let source_bitrate = source.bitrate;
+                    if let Some(video) = source
+                        .media_streams
+                        .iter_mut()
+                        .find(|s| matches!(s.type_, Some(api::MediaStreamType::Video)))
+                    {
+                        crate::device_profile::annotate_video_display_title(
+                            video,
+                            source_bitrate,
+                            &reasons,
+                        );
+                    }
+                }
+            }
+        }
     }
 
     if !transcoding_enabled {
@@ -2038,23 +2272,12 @@ async fn item_for_user(
     }
 
     if want_streams {
-        // Language defaults must apply even when the user has never saved a
-        // configuration (configuration is NULL for brand-new users) — the server's
-        // global metadata language is the fallback for subtitle selection.
-        let cfg = session
-            .user
-            .configuration
-            .as_ref()
-            .map(|c| {
-                c.0.clone()
-            })
-            .unwrap_or_default();
         if let Some(ref mut sources) = base_item.media_sources {
             // Default audio/subtitle stream indexes are per-request API values
             // (never persisted) — derive them here for the detail page.
             for source in sources.iter_mut() {
                 source.resolve_default_streams(
-                    &cfg,
+                    &user_cfg,
                     server_config
                         .preferred_metadata_language
                         .as_deref(),

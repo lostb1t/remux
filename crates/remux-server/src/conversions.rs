@@ -204,6 +204,111 @@ pub(crate) fn guess_media_source_from_filename(filename: &str) -> FilenameProbeG
 /// is checked everywhere a real ffprobe/RemuxDB result would otherwise be
 /// trusted (see `probe_stream` in playback::probe), so a guess here can never
 /// block or stand in for a real probe.
+/// Fills a single `MediaSourceInfo` whose `media_streams` came back empty with
+/// the same best-effort facts as `apply_filename_probe_fallback` (see that
+/// function's docs) — codec/resolution/HDR/bit depth/container guessed from
+/// the release filename, plus a bitrate derived from file size and runtime.
+/// Returns `true` when anything was actually estimated, so callers can decide
+/// whether the result is worth persisting.
+pub(crate) fn apply_filename_guess(
+    info: &mut api::MediaSourceInfo,
+    source: &db::Media,
+) -> bool {
+    if !info
+        .media_streams
+        .is_empty()
+    {
+        return false;
+    }
+    let mut estimated = false;
+
+    if let Some(filename) = source
+        .stream_info
+        .as_ref()
+        .and_then(|si| {
+            si.filename
+                .as_deref()
+        })
+    {
+        let guess = guess_media_source_from_filename(filename);
+        if !guess
+            .media_streams
+            .is_empty()
+        {
+            info.media_streams = guess.media_streams;
+            if info
+                .container
+                .is_none()
+            {
+                info.container = guess.container;
+            }
+            estimated = true;
+        }
+    }
+
+    if info
+        .bitrate
+        .is_none()
+    {
+        let size = source
+            .stream_info
+            .as_ref()
+            .and_then(|si| si.size)
+            .or(info.size);
+        if let (Some(size), Some(ticks)) = (size, info.run_time_ticks) {
+            let secs = common::ticks_to_seconds(ticks);
+            if secs > 0.0 {
+                info.size
+                    .get_or_insert(size);
+                info.bitrate = Some(((size as f64 * 8.0) / secs).round() as i64);
+                estimated = true;
+            }
+        }
+    }
+
+    if estimated {
+        info.remux
+            .get_or_insert_with(Default::default)
+            .source = Some(api::ProbeOrigin::FilenameGuess);
+    }
+    estimated
+}
+
+/// The subset of a filename-guessed `MediaSourceInfo` worth persisting to
+/// `db::Media.probe_data` — everything else is either request-scoped or
+/// would need a real probe to know.
+pub(crate) fn filename_guess_persist_payload(
+    info: &api::MediaSourceInfo,
+) -> api::MediaSourceInfo {
+    api::MediaSourceInfo {
+        media_streams: info
+            .media_streams
+            .clone(),
+        container: info
+            .container
+            .clone(),
+        bitrate: info.bitrate,
+        size: info.size,
+        run_time_ticks: info.run_time_ticks,
+        remux: Some(api::MediaSourceRemuxInfo {
+            source: Some(api::ProbeOrigin::FilenameGuess),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+/// Fills in item-details MediaSources whose `media_streams` came back empty
+/// (RemuxDB miss and never probed) with best-effort facts: codec/resolution/etc.
+/// guessed from the release filename, plus an overall bitrate derived from the
+/// addon-reported file size and the item's known runtime (bitrate = size*8 /
+/// duration — no filename parsing involved for that part). Persists the
+/// result into `db::Media.probe_data` tagged `ProbeOrigin::FilenameGuess` so
+/// later requests don't re-guess — but that tag is exactly what keeps this
+/// out of the playback/transcode path: `MediaSourceInfo::is_filename_guess()`
+/// is checked everywhere a real ffprobe/RemuxDB result would otherwise be
+/// trusted (see `probe_stream` in playback::probe), so a guess here can never
+/// block or stand in for a real probe.
 pub(crate) async fn apply_filename_probe_fallback(
     base_item: &mut api::BaseItemDto,
     sources: &[db::Media],
@@ -219,81 +324,10 @@ pub(crate) async fn apply_filename_probe_fallback(
         .iter_mut()
         .zip(sources.iter())
     {
-        if !info
-            .media_streams
-            .is_empty()
-        {
+        if !apply_filename_guess(info, source) {
             continue;
         }
-        let mut estimated = false;
-
-        if let Some(filename) = source
-            .stream_info
-            .as_ref()
-            .and_then(|si| {
-                si.filename
-                    .as_deref()
-            })
-        {
-            let guess = guess_media_source_from_filename(filename);
-            if !guess
-                .media_streams
-                .is_empty()
-            {
-                info.media_streams = guess.media_streams;
-                if info
-                    .container
-                    .is_none()
-                {
-                    info.container = guess.container;
-                }
-                estimated = true;
-            }
-        }
-
-        if info
-            .bitrate
-            .is_none()
-        {
-            let size = source
-                .stream_info
-                .as_ref()
-                .and_then(|si| si.size)
-                .or(info.size);
-            if let (Some(size), Some(ticks)) = (size, info.run_time_ticks) {
-                let secs = common::ticks_to_seconds(ticks);
-                if secs > 0.0 {
-                    info.size
-                        .get_or_insert(size);
-                    info.bitrate = Some(((size as f64 * 8.0) / secs).round() as i64);
-                    estimated = true;
-                }
-            }
-        }
-
-        if !estimated {
-            continue;
-        }
-        info.remux
-            .get_or_insert_with(Default::default)
-            .source = Some(api::ProbeOrigin::FilenameGuess);
-
-        let persisted = api::MediaSourceInfo {
-            media_streams: info
-                .media_streams
-                .clone(),
-            container: info
-                .container
-                .clone(),
-            bitrate: info.bitrate,
-            size: info.size,
-            run_time_ticks: info.run_time_ticks,
-            remux: Some(api::MediaSourceRemuxInfo {
-                source: Some(api::ProbeOrigin::FilenameGuess),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
+        let persisted = filename_guess_persist_payload(info);
         if let Err(e) = db::Media::save_probe_data(db, &source.id, &persisted).await {
             warn!(id = %source.id, error = %e, "failed to persist filename-guessed probe data");
         }

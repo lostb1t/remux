@@ -39,7 +39,10 @@ use crate::{
 
 use crate::{
     IntoApiError, OptionExt, ResultExt,
-    device_profile::{DeviceProfileExt, SubtitleCodec, subtitle_codec_matches_profile},
+    device_profile::{
+        DeviceProfileExt, MediaSourceCapabilityExt, SubtitleCodec,
+        subtitle_codec_matches_profile,
+    },
     playback::{
         decision::{
             PlaybackConfig, TranscodeDecision, apply_subtitle_delivery,
@@ -153,6 +156,35 @@ async fn items_playbackinfo_inner(
     let device_profile = q
         .device_profile
         .clone();
+
+    if let Some(profile) = device_profile.clone() {
+        let db = state
+            .ctx
+            .db
+            .clone();
+        let device_id = session
+            .device
+            .id
+            .clone();
+        tokio::spawn(async move {
+            if let Err(err) =
+                auth::Device::save_device_profile(&db, &device_id, &profile).await
+            {
+                warn!("failed to persist device profile for {device_id}: {err}");
+            }
+        });
+    }
+    // Fall back to the last DeviceProfile this device sent for MediaSources
+    // sorting only — transcode decisions above still use only what this
+    // specific request sent, so a stale cached profile can't misroute a
+    // direct-play/transcode choice.
+    let sort_device_profile = device_profile
+        .clone()
+        .or_else(|| {
+            session
+                .device
+                .parsed_device_profile()
+        });
 
     let probe_cfg = db::Settings::get_config_or_default(
         &state
@@ -280,6 +312,15 @@ async fn items_playbackinfo_inner(
             .len(),
     );
     let mut sidecar_subtitle_routes = Vec::with_capacity(
+        probed
+            .results
+            .len(),
+    );
+    // Tracked so the capability sort below can be skipped entirely when any
+    // source is a stream-group representative — group order is an explicit,
+    // admin-authored priority (drag-and-drop in the dashboard), not something
+    // a device-capability sort should second-guess.
+    let mut source_group_ids: Vec<Option<Uuid>> = Vec::with_capacity(
         probed
             .results
             .len(),
@@ -419,49 +460,13 @@ async fn items_playbackinfo_inner(
         let effective_sub_idx = q
             .subtitle_stream_index
             .or(source.default_subtitle_stream_index);
-        if let Some(idx) = effective_sub_idx {
-            let needs_burn = subtitle_mode
-                == remux_sdks::remux::EmbeddedSubtitleHandling::Burn
-                && source
-                    .media_streams
-                    .iter()
-                    .any(|s| {
-                        s.index == idx
-                            && matches!(s.type_, Some(api::MediaStreamType::Subtitle))
-                            && !s.is_external
-                            && !s.is_text_subtitle_stream
-                            && !device_profile
-                                .as_ref()
-                                .map(|dp| {
-                                    dp.subtitle_profiles
-                                        .iter()
-                                        .filter_map(|p| {
-                                            p.format
-                                                .as_deref()
-                                        })
-                                        .any(|f| {
-                                            s.codec
-                                                .as_deref()
-                                                .map_or(false, |c| {
-                                                    subtitle_codec_matches_profile(c, f)
-                                                })
-                                        })
-                                })
-                                .unwrap_or(false)
-                    });
-            if needs_burn {
-                let codec = source
-                    .media_streams
-                    .iter()
-                    .find(|s| s.index == idx)
-                    .and_then(|s| {
-                        s.codec
-                            .clone()
-                    })
-                    .unwrap_or_default();
-                transcode_reasons
-                    .insert(api::TranscodeReason::SubtitleCodecNotSupported(codec));
-            }
+        if let Some(reason) = crate::device_profile::subtitle_burn_reason(
+            &source,
+            device_profile.as_ref(),
+            subtitle_mode,
+            q.subtitle_stream_index,
+        ) {
+            transcode_reasons.insert(reason);
         }
 
         debug!(
@@ -518,6 +523,28 @@ async fn items_playbackinfo_inner(
 
         source.transcoding_reasons = transcode_reasons;
 
+        if device_profile.is_some()
+            && probe_cfg
+                .show_playback_decision_in_title
+                .unwrap_or(true)
+        {
+            let source_bitrate = source.bitrate;
+            let reasons = source
+                .transcoding_reasons
+                .clone();
+            if let Some(video) = source
+                .media_streams
+                .iter_mut()
+                .find(|s| matches!(s.type_, Some(api::MediaStreamType::Video)))
+            {
+                crate::device_profile::annotate_video_display_title(
+                    video,
+                    source_bitrate,
+                    &reasons,
+                );
+            }
+        }
+
         // Recompute from codec — never trust the stored DB value (may be stale).
         for s in &mut source.media_streams {
             if matches!(s.type_, Some(api::MediaStreamType::Subtitle)) {
@@ -526,6 +553,7 @@ async fn items_playbackinfo_inner(
         }
 
         sidecar_subtitle_routes.push((subtitle_source_id, routes));
+        source_group_ids.push(stream.group_id);
         media_sources.push(source);
     }
 
@@ -567,6 +595,36 @@ async fn items_playbackinfo_inner(
             saved_audio,
             saved_subtitle,
         );
+    }
+
+    // Rank sources by how well they match the device's capabilities (transcode
+    // cost, confident 4K, HDR tier, bit depth, audio quality, embedded subs)
+    // so the auto-play source below is the best version, not just the first
+    // one probed. Keep `sidecar_subtitle_routes` aligned by permuting it in
+    // lockstep — the later zip below pairs them back up by index.
+    let sort_mode = probe_cfg
+        .sort_media_sources
+        .unwrap_or_default();
+    if sort_mode != remux_sdks::remux::SortMediaSourcesMode::Disabled
+        && source_group_ids
+            .iter()
+            .all(|g| g.is_none())
+    {
+        let mut paired: Vec<_> = media_sources
+            .drain(..)
+            .zip(sidecar_subtitle_routes.drain(..))
+            .collect();
+        paired.sort_by_key(|(source, _)| {
+            std::cmp::Reverse(
+                source
+                    .capability_rank(sort_device_profile.as_ref())
+                    .key(sort_mode),
+            )
+        });
+        for (source, route) in paired {
+            media_sources.push(source);
+            sidecar_subtitle_routes.push(route);
+        }
     }
 
     // Cache the group-resolved stream UUID so the stream endpoint can find it

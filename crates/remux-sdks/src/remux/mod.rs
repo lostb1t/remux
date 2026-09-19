@@ -625,6 +625,39 @@ pub struct Username(String);
 )]
 pub struct AioUrl(String);
 
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    Default,
+    strum_macros::Display,
+    strum_macros::EnumString,
+)]
+#[serde(rename_all = "PascalCase")]
+#[strum(serialize_all = "PascalCase")]
+pub enum SortMediaSourcesMode {
+    /// No capability-based sorting — MediaSources stay in probe/addon order.
+    Disabled,
+    /// Direct Play and Direct Stream are treated as equally good (both are
+    /// low-overhead — Direct Stream is just a container remux, no re-encode),
+    /// so quality decides within that group and a higher-bitrate remux-only
+    /// version outranks a lower-bitrate direct-play one. Anything that
+    /// actually needs a re-encode (audio, then video) still ranks below both.
+    /// The default: a mix of the other two modes.
+    #[default]
+    Best,
+    /// Never prefer a version that needs any transcode over one that direct
+    /// plays, and never prefer a remux-only version over a true direct play,
+    /// even if the transcode-needing one is technically higher quality.
+    Compatibility,
+    /// Best quality always wins, regardless of whether it needs a transcode.
+    Quality,
+}
+
 #[dto]
 pub struct ServerConfiguration {
     #[default(Some(false))]
@@ -724,6 +757,20 @@ pub struct ServerConfiguration {
     /// Disabled by default to retain Jellyfin's standard resume-only behaviour.
     #[default(Some(false))]
     pub enable_next_up_in_continue_watching: Option<bool>,
+    /// How to order MediaSources for the requesting device when a DeviceProfile
+    /// is available: `Disabled` (leave probe/addon order alone), `Best`
+    /// (default — Direct Play and Direct Stream count equally, so quality
+    /// picks the winner between them; a real transcode still ranks below
+    /// both), `Compatibility` (never prefer any transcode-needing version,
+    /// and never prefer a remux over a true direct play), or `Quality` (best
+    /// quality always wins, regardless of transcode cost).
+    #[default(Some(SortMediaSourcesMode::Best))]
+    pub sort_media_sources: Option<SortMediaSourcesMode>,
+    /// Append the playback decision ("Direct Play" / "Direct Stream" /
+    /// "Transcode") to each MediaSource's display title, when a DeviceProfile
+    /// is available to judge it against. Default: true.
+    #[default(Some(true))]
+    pub show_playback_decision_in_title: Option<bool>,
 }
 
 #[derive(
@@ -1856,6 +1903,27 @@ where
     Ok(if items.is_empty() { None } else { Some(items) })
 }
 
+/// Mirrors `deser_csv` so `DeviceProfile` (and friends) round-trip through
+/// our own JSON storage in the same comma-separated-string shape they were
+/// deserialized from, instead of the default `Vec<T>` JSON array shape that
+/// `deser_csv` cannot read back.
+fn ser_csv<S, T>(items: &Option<Vec<T>>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+    T: std::fmt::Display,
+{
+    match items {
+        None => serializer.serialize_none(),
+        Some(items) => serializer.serialize_str(
+            &items
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+        ),
+    }
+}
+
 fn deser_csv_video_containers<'de, D>(
     d: D,
 ) -> Result<Option<Vec<VideoContainer>>, D::Error>
@@ -1972,21 +2040,27 @@ pub struct VideoStreamQuery {
     pub live_stream_id: Option<String>,
 }
 
-#[derive(Default, Debug, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct TranscodingProfile {
     #[serde(deserialize_with = "deser_opt_video_container")]
     pub container: Option<VideoContainer>,
     pub protocol: Option<TranscodingProtocol>,
-    #[serde(deserialize_with = "deser_csv_video_codecs")]
+    #[serde(
+        deserialize_with = "deser_csv_video_codecs",
+        serialize_with = "ser_csv"
+    )]
     pub video_codec: Option<Vec<VideoCodec>>,
-    #[serde(deserialize_with = "deser_csv_audio_codecs")]
+    #[serde(
+        deserialize_with = "deser_csv_audio_codecs",
+        serialize_with = "ser_csv"
+    )]
     pub audio_codec: Option<Vec<AudioCodec>>,
     #[serde(rename = "Type")]
     pub type_: Option<DlnaProfileType>,
 }
 
-#[derive(Default, Debug, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct DeviceProfile {
     pub name: Option<String>,
@@ -2001,20 +2075,29 @@ pub struct DeviceProfile {
     pub subtitle_profiles: Vec<SubtitleProfile>,
 }
 
-#[derive(Default, Debug, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct DirectPlayProfile {
-    #[serde(deserialize_with = "deser_csv_video_containers")]
+    #[serde(
+        deserialize_with = "deser_csv_video_containers",
+        serialize_with = "ser_csv"
+    )]
     pub container: Option<Vec<VideoContainer>>,
-    #[serde(deserialize_with = "deser_csv_audio_codecs")]
+    #[serde(
+        deserialize_with = "deser_csv_audio_codecs",
+        serialize_with = "ser_csv"
+    )]
     pub audio_codec: Option<Vec<AudioCodec>>,
-    #[serde(deserialize_with = "deser_csv_video_codecs")]
+    #[serde(
+        deserialize_with = "deser_csv_video_codecs",
+        serialize_with = "ser_csv"
+    )]
     pub video_codec: Option<Vec<VideoCodec>>,
     #[serde(rename = "Type")]
     pub type_: Option<DlnaProfileType>,
 }
 
-#[derive(Default, Debug, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct ContainerProfile {
     pub type_: Option<DlnaProfileType>,
@@ -2022,16 +2105,16 @@ pub struct ContainerProfile {
     pub conditions: Vec<ProfileCondition>,
 }
 
-#[derive(Default, Debug, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct CodecProfile {
     pub type_: Option<DlnaProfileType>,
-    #[serde(deserialize_with = "deser_csv_strings")]
+    #[serde(deserialize_with = "deser_csv_strings", serialize_with = "ser_csv")]
     pub codec: Option<Vec<String>>,
     pub conditions: Vec<ProfileCondition>,
 }
 
-#[derive(Default, Debug, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct SubtitleProfile {
     pub format: Option<String>,
@@ -2039,7 +2122,7 @@ pub struct SubtitleProfile {
     pub method: Option<SubtitleDeliveryMethod>,
 }
 
-#[derive(Default, Debug, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct ProfileCondition {
     pub condition: Option<String>,
@@ -2490,6 +2573,31 @@ impl MediaSourceInfo {
             .any(|s| s.index == index && matches!(s.type_, Some(t) if t == kind))
     }
 
+    /// Among subtitle streams matching `target`'s two-letter language, prefer
+    /// a text-format one (SRT/ASS/VTT/...) over an image-format one
+    /// (PGS/VobSub/DVDSub) — text works almost everywhere with no burn-in or
+    /// OCR needed, so a release with both an image and a text track in the
+    /// same language should default to the text one.
+    fn best_subtitle_for_language(&self, target: &str) -> Option<&MediaStream> {
+        let matches_lang = |s: &&MediaStream| {
+            matches!(s.type_, Some(MediaStreamType::Subtitle))
+                && s.language
+                    .as_deref()
+                    .and_then(lang_to_two_letter)
+                    .as_deref()
+                    == Some(target)
+        };
+        self.media_streams
+            .iter()
+            .filter(matches_lang)
+            .find(|s| s.is_text_subtitle_stream())
+            .or_else(|| {
+                self.media_streams
+                    .iter()
+                    .find(matches_lang)
+            })
+    }
+
     /// Resolve `default_audio_stream_index` and `default_subtitle_stream_index`
     /// for this source from the user's configuration, the request context and
     /// the container facts on the source itself. These two fields are purely
@@ -2623,18 +2731,7 @@ impl MediaSourceInfo {
             if let Some(ref pref) = user.subtitle_language_preference {
                 let pref_two = lang_to_two_letter(pref);
                 if let Some(ref target) = pref_two {
-                    if let Some(stream) = self
-                        .media_streams
-                        .iter()
-                        .find(|s| {
-                            matches!(s.type_, Some(MediaStreamType::Subtitle))
-                                && s.language
-                                    .as_deref()
-                                    .and_then(lang_to_two_letter)
-                                    .as_deref()
-                                    == Some(target.as_str())
-                        })
-                    {
+                    if let Some(stream) = self.best_subtitle_for_language(target) {
                         self.default_subtitle_stream_index = Some(stream.index);
                         subtitle_decided = true;
                     }
@@ -2649,18 +2746,7 @@ impl MediaSourceInfo {
             if let Some(pref) = server_metadata_language {
                 let pref_two = lang_to_two_letter(pref);
                 if let Some(ref target) = pref_two {
-                    if let Some(stream) = self
-                        .media_streams
-                        .iter()
-                        .find(|s| {
-                            matches!(s.type_, Some(MediaStreamType::Subtitle))
-                                && s.language
-                                    .as_deref()
-                                    .and_then(lang_to_two_letter)
-                                    .as_deref()
-                                    == Some(target.as_str())
-                        })
-                    {
+                    if let Some(stream) = self.best_subtitle_for_language(target) {
                         self.default_subtitle_stream_index = Some(stream.index);
                         subtitle_decided = true;
                     }
@@ -7394,6 +7480,53 @@ mod tests {
         cfg.subtitle_language_preference = Some("eng".to_string());
         src.resolve_default_streams(&cfg, None, None, None, None, None, None);
         assert_eq!(src.default_subtitle_stream_index, Some(4));
+    }
+
+    /// A release with both a PGS (image) and an SRT (text) track in the same
+    /// language must default to the text one — it works almost everywhere
+    /// with no burn-in/OCR needed, unlike the image track. True regardless of
+    /// which one happens to come first in the container's stream order.
+    #[test]
+    fn resolve_subtitle_prefers_text_over_image_in_same_language() {
+        fn source(image_first: bool) -> MediaSourceInfo {
+            let image = MediaStream {
+                type_: Some(MediaStreamType::Subtitle),
+                index: 0,
+                language: Some("eng".to_string()),
+                codec: Some("pgssub".to_string()),
+                ..Default::default()
+            };
+            let text = MediaStream {
+                type_: Some(MediaStreamType::Subtitle),
+                index: 1,
+                language: Some("eng".to_string()),
+                codec: Some("subrip".to_string()),
+                ..Default::default()
+            };
+            MediaSourceInfo {
+                media_streams: if image_first {
+                    vec![image, text]
+                } else {
+                    vec![text, image]
+                },
+                ..Default::default()
+            }
+        }
+        let mut cfg = user_cfg();
+        cfg.subtitle_language_preference = Some("eng".to_string());
+
+        let mut image_first = source(true);
+        image_first.resolve_default_streams(&cfg, None, None, None, None, None, None);
+        assert_eq!(
+            image_first.default_subtitle_stream_index,
+            Some(1),
+            "text (index 1) must win even though the image track (index 0) \
+             comes first"
+        );
+
+        let mut text_first = source(false);
+        text_first.resolve_default_streams(&cfg, None, None, None, None, None, None);
+        assert_eq!(text_first.default_subtitle_stream_index, Some(1));
     }
 
     /// Server metadata language is the fallback when the user has no preference.
