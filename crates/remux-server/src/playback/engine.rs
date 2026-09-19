@@ -522,8 +522,6 @@ pub(crate) fn ffmpeg_reconnect_args(input_url: &str) -> &'static [&'static str] 
         Ok(url) if matches!(url.scheme(), "http" | "https") => &[
             "-reconnect",
             "1",
-            "-reconnect_at_eof",
-            "1",
             "-reconnect_streamed",
             "1",
             "-reconnect_delay_max",
@@ -3206,8 +3204,9 @@ mod tests {
     fn progressive_reconnect_flags_present() {
         let args = build_progressive_args(&default_progressive());
         assert!(args_contains(&args, "-reconnect"));
-        assert!(args_contains(&args, "-reconnect_at_eof"));
         assert!(args_contains(&args, "-reconnect_streamed"));
+        assert!(args_contains(&args, "-reconnect_delay_max"));
+        assert!(!args_contains(&args, "-reconnect_at_eof"));
     }
 
     #[test]
@@ -3251,8 +3250,9 @@ mod tests {
     fn hls_http_input_gets_reconnect_flags() {
         let args = build_hls_args(&default_hls(PathBuf::from("/tmp/test_session")));
         assert!(args_contains(&args, "-reconnect"));
-        assert!(args_contains(&args, "-reconnect_at_eof"));
         assert!(args_contains(&args, "-reconnect_streamed"));
+        assert!(args_contains(&args, "-reconnect_delay_max"));
+        assert!(!args_contains(&args, "-reconnect_at_eof"));
     }
 
     #[test]
