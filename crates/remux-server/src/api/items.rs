@@ -1985,17 +1985,17 @@ async fn item_for_user(
             {
                 for source in sources.iter_mut() {
                     let reasons = device_profile.check_direct_play(source);
-                    let label =
-                        crate::device_profile::playback_decision_label(&reasons);
+                    let source_bitrate = source.bitrate;
                     if let Some(video) = source
                         .media_streams
                         .iter_mut()
                         .find(|s| matches!(s.type_, Some(api::MediaStreamType::Video)))
                     {
-                        let title = video
-                            .display_title
-                            .get_or_insert_with(String::new);
-                        *title = format!("{title} ({label})");
+                        crate::device_profile::annotate_video_display_title(
+                            video,
+                            source_bitrate,
+                            &reasons,
+                        );
                     }
                 }
             }

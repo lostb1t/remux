@@ -642,10 +642,17 @@ pub struct AioUrl(String);
 pub enum SortMediaSourcesMode {
     /// No capability-based sorting — MediaSources stay in probe/addon order.
     Disabled,
-    /// Prefer the best playback experience: direct play / direct stream (no
-    /// video transcoding) always outranks a version that needs one, even if
-    /// that version is technically higher quality.
+    /// Direct Play and Direct Stream are treated as equally good (both are
+    /// low-overhead — Direct Stream is just a container remux, no re-encode),
+    /// so quality decides within that group and a higher-bitrate remux-only
+    /// version outranks a lower-bitrate direct-play one. Anything that
+    /// actually needs a re-encode (audio, then video) still ranks below both.
+    /// The default: a mix of the other two modes.
     #[default]
+    Best,
+    /// Never prefer a version that needs any transcode over one that direct
+    /// plays, and never prefer a remux-only version over a true direct play,
+    /// even if the transcode-needing one is technically higher quality.
     Compatibility,
     /// Best quality always wins, regardless of whether it needs a transcode.
     Quality,
@@ -751,11 +758,13 @@ pub struct ServerConfiguration {
     #[default(Some(false))]
     pub enable_next_up_in_continue_watching: Option<bool>,
     /// How to order MediaSources for the requesting device when a DeviceProfile
-    /// is available: `Disabled` (leave probe/addon order alone), `Compatibility`
-    /// (default — never prefer a version that needs a transcode over one that
-    /// direct-plays/streams, even if it's lower quality), or `Quality` (best
+    /// is available: `Disabled` (leave probe/addon order alone), `Best`
+    /// (default — Direct Play and Direct Stream count equally, so quality
+    /// picks the winner between them; a real transcode still ranks below
+    /// both), `Compatibility` (never prefer any transcode-needing version,
+    /// and never prefer a remux over a true direct play), or `Quality` (best
     /// quality always wins, regardless of transcode cost).
-    #[default(Some(SortMediaSourcesMode::Compatibility))]
+    #[default(Some(SortMediaSourcesMode::Best))]
     pub sort_media_sources: Option<SortMediaSourcesMode>,
     /// Append the playback decision ("Direct Play" / "Direct Stream" /
     /// "Transcode") to each MediaSource's display title, when a DeviceProfile

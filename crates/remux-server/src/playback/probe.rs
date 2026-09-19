@@ -376,7 +376,7 @@ struct FfprobeStream {
 }
 
 /// Derive bit depth from a pixel format string (e.g. "yuv420p10le" → 10, "yuv420p" → 8).
-fn bit_depth_from_pix_fmt(pix_fmt: &str) -> Option<i64> {
+pub(crate) fn bit_depth_from_pix_fmt(pix_fmt: &str) -> Option<i64> {
     // Check for explicit bit-depth suffixes: 9, 10, 12, 14, 16
     for depth in [16u8, 14, 12, 10, 9] {
         if pix_fmt.contains(&depth.to_string()) {

@@ -900,7 +900,7 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
 #[component]
 pub fn StreamSortingSettingsCard(app_state: AppState) -> Element {
     let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
-    let mut sort_mode = use_signal(|| SortMediaSourcesMode::Compatibility);
+    let mut sort_mode = use_signal(|| SortMediaSourcesMode::Best);
     let mut show_decision = use_signal(|| true);
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
@@ -935,8 +935,11 @@ pub fn StreamSortingSettingsCard(app_state: AppState) -> Element {
         SortMediaSourcesMode::Disabled => {
             "MediaSources stay in probe/addon order — no capability-based sorting."
         }
+        SortMediaSourcesMode::Best => {
+            "Direct Play and Direct Stream count equally (Direct Stream is just a low-overhead container remux), so quality picks the winner between them — a higher-bitrate remux can outrank a lower-bitrate direct play. A version that actually needs a re-encode still ranks below both. Recommended for most setups."
+        }
         SortMediaSourcesMode::Compatibility => {
-            "Never prefer a version that needs a transcode over one that direct-plays or direct-streams, even if the transcode-needing one is technically higher quality. Recommended for most setups."
+            "Never prefer a version that needs any transcode over a direct play, and never prefer a remux over a true direct play, even if the transcode-needing one is technically higher quality."
         }
         SortMediaSourcesMode::Quality => {
             "Best quality (resolution, HDR, bit depth, audio) always wins, even if it means transcoding."
@@ -980,6 +983,7 @@ pub fn StreamSortingSettingsCard(app_state: AppState) -> Element {
                                 }
                             },
                             option { value: "Disabled", selected: *sort_mode.read() == SortMediaSourcesMode::Disabled, "Disabled" }
+                            option { value: "Best", selected: *sort_mode.read() == SortMediaSourcesMode::Best, "Best" }
                             option { value: "Compatibility", selected: *sort_mode.read() == SortMediaSourcesMode::Compatibility, "Compatibility" }
                             option { value: "Quality", selected: *sort_mode.read() == SortMediaSourcesMode::Quality, "Quality" }
                         }

@@ -617,6 +617,15 @@ impl MediaSourceRank {
     ) -> (u8, u8, u8, i64, u8, u8, i64, i64) {
         let cost = match mode {
             SortMediaSourcesMode::Compatibility => self.transcode_cost_tier,
+            // Collapse Direct Play (4) and Direct Stream (3) into one tier —
+            // both are low-overhead, so quality (the rest of the tuple)
+            // picks the winner between them. Audio (2) and video (1)
+            // re-encodes stay distinct and still rank below both.
+            SortMediaSourcesMode::Best => match self.transcode_cost_tier {
+                4 | 3 => 2,
+                2 => 1,
+                _ => 0,
+            },
             // Every source ties on this field, so the rest of the tuple
             // (pure quality) decides the order.
             SortMediaSourcesMode::Quality => 0,
@@ -695,6 +704,29 @@ pub fn playback_decision_label(reasons: &TranscodeReasons) -> &'static str {
         3 => "Direct Stream",
         _ => "Transcode",
     }
+}
+
+/// Appends "<bitrate> Mbps (Direct Play|Direct Stream|Transcode)" to a video
+/// stream's `DisplayTitle` — the bitrate first, decision label last.
+/// `source_bitrate` is the MediaSource's overall bitrate, used when the video
+/// stream itself doesn't report its own (common: many releases only carry an
+/// overall container bitrate, dominated by video, not a per-stream one).
+pub fn annotate_video_display_title(
+    video: &mut MediaStream,
+    source_bitrate: Option<i64>,
+    reasons: &TranscodeReasons,
+) {
+    let label = playback_decision_label(reasons);
+    let bitrate_str = video
+        .bit_rate
+        .or(source_bitrate)
+        .filter(|b| *b > 0)
+        .map(|b| format!("{:.1} Mbps ", b as f64 / 1_000_000.0))
+        .unwrap_or_default();
+    let title = video
+        .display_title
+        .get_or_insert_with(String::new);
+    *title = format!("{title} {bitrate_str}({label})");
 }
 
 /// True only when the profile gives an explicit, numeric signal that the
@@ -861,9 +893,26 @@ impl MediaSourceCapabilityExt for MediaSourceInfo {
             transcode_cost_tier: transcode_cost_tier(&self.transcoding_reasons),
             resolution_tier,
             hdr_tier: hdr_tier(video),
+            // A missing BitDepth is common for remote (RemuxDB-sourced)
+            // probe data that never explicitly set it — fall back to
+            // deriving it from PixelFormat (e.g. "yuv420p10le" -> 10), the
+            // same way a local ffprobe conversion already does. Only when
+            // neither is present do we assume 8-bit, the near-universal
+            // baseline — that "unknown" default must never outrank a
+            // genuinely-known higher bit depth, but also must not make an
+            // unknown stream look worse than an ordinary 8-bit one.
             bit_depth: video
-                .and_then(|s| s.bit_depth)
-                .unwrap_or(0),
+                .and_then(|s| {
+                    s.bit_depth
+                        .or_else(|| {
+                            s.pixel_format
+                                .as_deref()
+                                .and_then(
+                                    crate::playback::probe::bit_depth_from_pix_fmt,
+                                )
+                        })
+                })
+                .unwrap_or(8),
             quality_source_tier: quality_source_tier(self),
             audio_tier: audio_codec_tier(audio),
             audio_channels: audio
@@ -880,6 +929,7 @@ impl MediaSourceCapabilityExt for MediaSourceInfo {
 mod tests {
     use super::{
         DeviceProfileExt, MediaSourceCapabilityExt, MediaSourceRank,
+        default_audio_stream, playback_decision_label, primary_video_stream,
         transcode_cost_tier,
     };
     use remux_sdks::remux::{
@@ -1325,6 +1375,80 @@ mod tests {
         rank.key(SortMediaSourcesMode::Quality)
     }
 
+    fn best(rank: MediaSourceRank) -> (u8, u8, u8, i64, u8, u8, i64, i64) {
+        rank.key(SortMediaSourcesMode::Best)
+    }
+
+    fn source_with_reasons(
+        video: MediaStream,
+        audio: MediaStream,
+        reasons: &[TranscodeReason],
+    ) -> MediaSourceInfo {
+        let mut transcoding_reasons = TranscodeReasons::default();
+        for reason in reasons {
+            transcoding_reasons.insert(reason.clone());
+        }
+        MediaSourceInfo {
+            default_audio_stream_index: Some(audio.index),
+            media_streams: vec![video, audio],
+            transcoding_reasons,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn best_mode_lets_a_higher_bitrate_remux_beat_a_lower_bitrate_direct_play() {
+        let direct_play_low_bitrate = with_release(
+            source_with_reasons(
+                video_stream(1920, Some(VideoRangeType::Sdr)),
+                audio_stream("aac", 2),
+                &[],
+            ),
+            "Movie.2024.1080p.WEB-DL.mkv",
+            5_000_000,
+        );
+        let direct_stream_high_bitrate = with_release(
+            source_with_reasons(
+                video_stream(1920, Some(VideoRangeType::Sdr)),
+                audio_stream("aac", 2),
+                &[TranscodeReason::ContainerNotSupported("mkv".to_string())],
+            ),
+            "Movie.2024.1080p.BluRay.REMUX.mkv",
+            25_000_000,
+        );
+        assert!(
+            compat(direct_play_low_bitrate.capability_rank(None))
+                > compat(direct_stream_high_bitrate.capability_rank(None)),
+            "Compatibility must still prefer the true direct play"
+        );
+        assert!(
+            best(direct_stream_high_bitrate.capability_rank(None))
+                > best(direct_play_low_bitrate.capability_rank(None)),
+            "Best must treat direct play and direct stream as equal, letting \
+             the higher-bitrate remux win"
+        );
+    }
+
+    #[test]
+    fn best_mode_still_ranks_a_real_transcode_below_direct_play_and_direct_stream() {
+        let direct_stream = source_with_reasons(
+            video_stream(1920, Some(VideoRangeType::Sdr)),
+            audio_stream("aac", 2),
+            &[TranscodeReason::ContainerNotSupported("mkv".to_string())],
+        );
+        let needs_video_reencode = source_with_reasons(
+            video_stream(3840, Some(VideoRangeType::Dovi)),
+            audio_stream("truehd", 8),
+            &[TranscodeReason::VideoCodecNotSupported("test".to_string())],
+        );
+        assert!(
+            best(direct_stream.capability_rank(None))
+                > best(needs_video_reencode.capability_rank(None)),
+            "a real re-encode must still rank below a container-only remux, \
+             even though it looks better on paper"
+        );
+    }
+
     #[test]
     fn compatibility_mode_prefers_direct_playable_over_everything_else() {
         let compatible_1080p = source_with(
@@ -1761,5 +1885,99 @@ mod tests {
     fn hail_mary_real_versions_on_lenient_streamyfin_profile() {
         let profile = streamyfin_mpv_real_profile();
         ranked_for_profile(&profile, "Streamyfin MPV");
+    }
+
+    /// Manual debug tool, not part of CI: pulls every real Hail Mary stream
+    /// row (with probe_data) straight from the local dev DB and prints the
+    /// full Compatibility-mode order against the real Jellyfin Web profile.
+    /// Run with:
+    ///   cargo test -p remux-server --lib debug_print_hail_mary_full_ranking \
+    ///     -- --ignored --nocapture --test-threads=1
+    #[tokio::test]
+    #[ignore = "manual debug tool against a local prod-db.sqlite copy"]
+    async fn debug_print_hail_mary_full_ranking() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite:///Users/sarendsen/Projects/remux-server/prod-db.sqlite")
+            .await
+            .unwrap();
+        let parent_id =
+            uuid::Uuid::parse_str("3d41b32e-5d95-583f-850f-e2063552099f").unwrap();
+        let rows: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT idx, probe_data FROM media WHERE kind='stream' AND parent_id = ?1 \
+             AND probe_data IS NOT NULL ORDER BY idx",
+        )
+        .bind(parent_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+        let profile = jellyfin_web_real_profile();
+        let mut sources: Vec<(i64, MediaSourceInfo)> = rows
+            .into_iter()
+            .filter_map(|(idx, json)| {
+                serde_json::from_str::<MediaSourceInfo>(&json)
+                    .ok()
+                    .map(|s| (idx, s))
+            })
+            .collect();
+        for (_, source) in &mut sources {
+            source.transcoding_reasons = profile.check_direct_play(source);
+        }
+        sources.sort_by_key(|(_, s)| {
+            std::cmp::Reverse(best(s.capability_rank(Some(&profile))))
+        });
+
+        println!("\n--- Full Hail Mary ranking, Jellyfin Web, Best mode ---");
+        for (idx, s) in &sources {
+            let video = primary_video_stream(s);
+            let audio = default_audio_stream(s);
+            let resolved_bit_depth = video.and_then(|v| {
+                v.bit_depth
+                    .or_else(|| {
+                        v.pixel_format
+                            .as_deref()
+                            .and_then(crate::playback::probe::bit_depth_from_pix_fmt)
+                    })
+            });
+            let mbps = video
+                .and_then(|v| v.bit_rate)
+                .or(s.bitrate)
+                .map(|b| format!("{:.1} Mbps", b as f64 / 1_000_000.0))
+                .unwrap_or_else(|| "?".to_string());
+            let decision = playback_decision_label(&s.transcoding_reasons);
+            println!(
+                "idx={idx:2} {:5} {:5} {:8} {}-bit {:6} ch={:?} {:>10} [{decision:^13}] reasons={:?}",
+                s.container
+                    .as_ref()
+                    .map(|c| c.to_string())
+                    .unwrap_or_default(),
+                video
+                    .and_then(|v| v
+                        .codec
+                        .clone())
+                    .unwrap_or_default(),
+                video
+                    .and_then(|v| v
+                        .video_range_type
+                        .as_ref())
+                    .map(|v| v.as_str())
+                    .unwrap_or("-"),
+                resolved_bit_depth
+                    .map(|b| b.to_string())
+                    .unwrap_or_else(|| "?".to_string()),
+                audio
+                    .and_then(|a| a
+                        .codec
+                        .clone())
+                    .unwrap_or_default(),
+                audio.and_then(|a| a.channels),
+                mbps,
+                s.transcoding_reasons
+                    .0
+                    .iter()
+                    .map(TranscodeReason::name)
+                    .collect::<Vec<_>>()
+            );
+        }
     }
 }

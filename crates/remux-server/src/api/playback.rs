@@ -564,18 +564,20 @@ async fn items_playbackinfo_inner(
                 .show_playback_decision_in_title
                 .unwrap_or(true)
         {
-            let label = crate::device_profile::playback_decision_label(
-                &source.transcoding_reasons,
-            );
+            let source_bitrate = source.bitrate;
+            let reasons = source
+                .transcoding_reasons
+                .clone();
             if let Some(video) = source
                 .media_streams
                 .iter_mut()
                 .find(|s| matches!(s.type_, Some(api::MediaStreamType::Video)))
             {
-                let title = video
-                    .display_title
-                    .get_or_insert_with(String::new);
-                *title = format!("{title} ({label})");
+                crate::device_profile::annotate_video_display_title(
+                    video,
+                    source_bitrate,
+                    &reasons,
+                );
             }
         }
 
