@@ -2913,6 +2913,17 @@ impl AddonService {
             }
         }
     }
+
+    fn deduplicate_streams(streams: Vec<db::Media>) -> Vec<db::Media> {
+        let mut seen = std::collections::HashSet::new();
+        streams
+            .into_iter()
+            .filter(|stream| match Self::stream_dedup_key(stream) {
+                Some(key) => seen.insert(key),
+                None => true,
+            })
+            .collect()
+    }
 }
 
 fn strip_video_ext(name: &str) -> &str {
@@ -3128,16 +3139,10 @@ impl AddonService {
             "raw streams fetched"
         );
 
-        // Dedup by descriptor content; order preserves addon priority (DB load order).
-        // First occurrence wins, so higher-priority addons' streams survive.
-        let mut seen = std::collections::HashSet::new();
-        let deduped: Vec<db::Media> = raw
-            .into_iter()
-            .filter(|s| match Self::stream_dedup_key(s) {
-                Some(key) => seen.insert(key),
-                None => true,
-            })
-            .collect();
+        // Dedup by descriptor content; order preserves addon priority (DB load order)
+        // for which duplicate survives. First occurrence wins, so higher-priority
+        // addons' streams survive ties.
+        let deduped = Self::deduplicate_streams(raw);
 
         let sources: Vec<&str> = {
             let mut seen = std::collections::HashSet::new();
@@ -3538,6 +3543,42 @@ mod tests {
             AddonService::stream_dedup_key(&first),
             AddonService::stream_dedup_key(&second)
         );
+    }
+
+    #[test]
+    fn stream_dedup_preserves_addon_load_order() {
+        let first = torrent_stream("aaa", "Movie.2026.720p.WEBRip.mkv", 0);
+        let duplicate = torrent_stream("AAA", "Movie.2026.720p.WEBRip.mkv", 9);
+        let second = torrent_stream("bbb", "Movie.2026.2160p.BluRay.Remux.mkv", 0);
+        let expected = vec![
+            first
+                .stream_info
+                .as_ref()
+                .unwrap()
+                .filename
+                .clone(),
+            second
+                .stream_info
+                .as_ref()
+                .unwrap()
+                .filename
+                .clone(),
+        ];
+
+        let deduped = AddonService::deduplicate_streams(vec![first, duplicate, second]);
+        let filenames: Vec<_> = deduped
+            .iter()
+            .map(|stream| {
+                stream
+                    .stream_info
+                    .as_ref()
+                    .unwrap()
+                    .filename
+                    .clone()
+            })
+            .collect();
+
+        assert_eq!(filenames, expected);
     }
 
     fn make_image(path: &str) -> db::MediaImage {

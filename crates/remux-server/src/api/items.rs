@@ -19,6 +19,7 @@ use crate::{
     common::{IntoVec, TickUnit, ToRunTimeTicks},
     db,
     db::auth,
+    device_profile::{DeviceProfileExt, SourceRankingContext},
     errors::LogErr,
     sdks,
 };
@@ -1580,6 +1581,42 @@ pub async fn item(
     item_for_user(state, session, id, fields, None).await
 }
 
+fn rank_item_sources(
+    sources: &mut [db::Media],
+    ranking: SourceRankingContext<'_>,
+    user_cfg: &api::UserConfiguration,
+    server_metadata_language: Option<&str>,
+    original_language: Option<&str>,
+) {
+    if ranking.mode == remux_sdks::remux::SortMediaSourcesMode::Disabled
+        || sources.len() < 2
+        || sources
+            .iter()
+            .any(|source| {
+                source
+                    .group_id
+                    .is_some()
+            })
+    {
+        return;
+    }
+
+    sources.sort_by_cached_key(|source| {
+        let mut info = api::MediaSourceInfo::from(source.clone());
+        crate::conversions::apply_filename_guess(&mut info, source);
+        info.resolve_default_streams(
+            user_cfg,
+            server_metadata_language,
+            original_language,
+            None,
+            None,
+            None,
+            None,
+        );
+        std::cmp::Reverse(ranking.key(&info))
+    });
+}
+
 async fn item_for_user(
     state: AppState,
     session: auth::AuthSession,
@@ -1609,6 +1646,9 @@ async fn item_for_user(
     let transcoding_enabled = encoding_cfg
         .enable_video_transcoding
         .unwrap_or(true);
+    let subtitle_mode = encoding_cfg
+        .subtitle_mode
+        .unwrap_or_default();
     // Clients that switch versions (Android TV) refetch the item by MediaSource id
     // and then play MediaSources[0], so the requested group must end up first and
     // keep its own UUID instead of the item id stamped by `db_media_to_item`.
@@ -1671,6 +1711,21 @@ async fn item_for_user(
             media.kind,
             db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track
         );
+    // Hoisted so both the ranking pass below and the real resolve_default_streams
+    // pass further down use the same user config — language defaults must apply
+    // even when the user has never saved a configuration (NULL for brand-new
+    // users), so the server's global metadata language is the fallback.
+    let user_cfg = session
+        .user
+        .configuration
+        .as_ref()
+        .map(|c| {
+            c.0.clone()
+        })
+        .unwrap_or_default();
+    let persisted_device_profile = session
+        .device
+        .parsed_device_profile();
 
     if needs_streams {
         if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
@@ -1762,6 +1817,33 @@ async fn item_for_user(
             }
         }
         media.sources = Some(filtered);
+
+        if requested_group.is_none() {
+            if let Some(sources) = media
+                .sources
+                .as_mut()
+            {
+                rank_item_sources(
+                    sources,
+                    SourceRankingContext {
+                        mode: server_config
+                            .sort_media_sources
+                            .unwrap_or_default(),
+                        device_profile: persisted_device_profile.as_ref(),
+                        subtitle_mode,
+                        explicit_subtitle_index: None,
+                    },
+                    &user_cfg,
+                    server_config
+                        .preferred_metadata_language
+                        .as_deref(),
+                    media
+                        .original_language
+                        .as_deref(),
+                );
+            }
+        }
+
         media
             .user_state(
                 &state
@@ -1806,6 +1888,33 @@ async fn item_for_user(
             }
         }
         media.sources = Some(filtered);
+
+        if requested_group.is_none() {
+            if let Some(sources) = media
+                .sources
+                .as_mut()
+            {
+                rank_item_sources(
+                    sources,
+                    SourceRankingContext {
+                        mode: server_config
+                            .sort_media_sources
+                            .unwrap_or_default(),
+                        device_profile: persisted_device_profile.as_ref(),
+                        subtitle_mode,
+                        explicit_subtitle_index: None,
+                    },
+                    &user_cfg,
+                    server_config
+                        .preferred_metadata_language
+                        .as_deref(),
+                    media
+                        .original_language
+                        .as_deref(),
+                );
+            }
+        }
+
         media
             .user_state(
                 &state
@@ -1839,6 +1948,105 @@ async fn item_for_user(
         .await;
     }
 
+    // When streams were actually fetched but none found, replace the
+    // listing-style stubs with a single "No streams found" stub. Must run
+    // before the resolve/label blocks below so they operate on this final
+    // source instead of the transient two-stub list from db_media_to_item
+    // (whose second entry is an empty placeholder with no real streams).
+    if needs_streams
+        && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode)
+        && media
+            .sources
+            .as_deref()
+            .map_or(false, |s| s.is_empty())
+    {
+        let media_streams = media
+            .probe_data
+            .as_ref()
+            .map(|p| {
+                p.media_streams
+                    .clone()
+            })
+            .unwrap_or_default();
+        base_item.media_sources = Some(vec![api::MediaSourceInfo {
+            id: media.id,
+            e_tag: media.id,
+            name: Some("No streams found".to_string()),
+            protocol: api::MediaProtocol::File,
+            path: Some(format!("/remux/{}", media.id)),
+            media_streams,
+            ..Default::default()
+        }]);
+    }
+
+    if want_streams {
+        if let Some(ref mut sources) = base_item.media_sources {
+            // Default audio/subtitle stream indexes are per-request API values
+            // (never persisted) — derive them here for the detail page. Must
+            // run before the label block below, which needs to know the real
+            // resolved subtitle to judge a possible burn-in.
+            for source in sources.iter_mut() {
+                source.resolve_default_streams(
+                    &user_cfg,
+                    server_config
+                        .preferred_metadata_language
+                        .as_deref(),
+                    media
+                        .original_language
+                        .as_deref(),
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+            }
+        }
+    }
+
+    // Append the Direct Play/Direct Stream/Transcode decision to the video
+    // stream's DisplayTitle, same as PlaybackInfo — done here, after the
+    // filename-guess fallback and default-stream resolution above, so both
+    // the media_streams this endpoint ever gets (real ffprobe or guessed) and
+    // the subtitle/bitrate checks compute_transcode_reasons needs are ready.
+    // No live DeviceProfile exists on a plain GET, so this only runs when the
+    // device has previously sent one that got persisted.
+    if needs_streams
+        && server_config
+            .show_playback_decision_in_title
+            .unwrap_or(true)
+    {
+        if let Some(device_profile) = persisted_device_profile.as_ref() {
+            let ranking = SourceRankingContext {
+                mode: server_config
+                    .sort_media_sources
+                    .unwrap_or_default(),
+                device_profile: Some(device_profile),
+                subtitle_mode,
+                explicit_subtitle_index: None,
+            };
+            if let Some(sources) = base_item
+                .media_sources
+                .as_mut()
+            {
+                for source in sources.iter_mut() {
+                    let assessment = ranking.assess(source);
+                    let source_bitrate = source.bitrate;
+                    if let Some(video) = source
+                        .media_streams
+                        .iter_mut()
+                        .find(|s| matches!(s.type_, Some(api::MediaStreamType::Video)))
+                    {
+                        crate::device_profile::annotate_video_display_title(
+                            video,
+                            source_bitrate,
+                            &assessment.reasons,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     if !transcoding_enabled {
         if let Some(sources) = base_item
             .media_sources
@@ -1870,34 +2078,6 @@ async fn item_for_user(
             source.id = gid;
             source.e_tag = gid;
         }
-    }
-
-    // When streams were actually fetched but none found, replace the
-    // listing-style stubs with a single "No streams found" stub.
-    if needs_streams
-        && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode)
-        && media
-            .sources
-            .as_deref()
-            .map_or(false, |s| s.is_empty())
-    {
-        let media_streams = media
-            .probe_data
-            .as_ref()
-            .map(|p| {
-                p.media_streams
-                    .clone()
-            })
-            .unwrap_or_default();
-        base_item.media_sources = Some(vec![api::MediaSourceInfo {
-            id: media.id,
-            e_tag: media.id,
-            name: Some("No streams found".to_string()),
-            protocol: api::MediaProtocol::File,
-            path: Some(format!("/remux/{}", media.id)),
-            media_streams,
-            ..Default::default()
-        }]);
     }
 
     // For tracks, wrap the Source row(s) as HLS-transcoded MediaSources.
@@ -2035,39 +2215,6 @@ async fn item_for_user(
         base_item.location_type = api::LocationType::Virtual;
         base_item.path = None;
         base_item.can_download = Some(false);
-    }
-
-    if want_streams {
-        // Language defaults must apply even when the user has never saved a
-        // configuration (configuration is NULL for brand-new users) — the server's
-        // global metadata language is the fallback for subtitle selection.
-        let cfg = session
-            .user
-            .configuration
-            .as_ref()
-            .map(|c| {
-                c.0.clone()
-            })
-            .unwrap_or_default();
-        if let Some(ref mut sources) = base_item.media_sources {
-            // Default audio/subtitle stream indexes are per-request API values
-            // (never persisted) — derive them here for the detail page.
-            for source in sources.iter_mut() {
-                source.resolve_default_streams(
-                    &cfg,
-                    server_config
-                        .preferred_metadata_language
-                        .as_deref(),
-                    media
-                        .original_language
-                        .as_deref(),
-                    None,
-                    None,
-                    None,
-                    None,
-                );
-            }
-        }
     }
 
     apply_permissions(&mut base_item, &session.user);

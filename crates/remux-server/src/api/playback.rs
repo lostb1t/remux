@@ -39,7 +39,10 @@ use crate::{
 
 use crate::{
     IntoApiError, OptionExt, ResultExt,
-    device_profile::{DeviceProfileExt, SubtitleCodec, subtitle_codec_matches_profile},
+    device_profile::{
+        DeviceProfileExt, SourceRankingContext, SubtitleCodec,
+        subtitle_codec_matches_profile,
+    },
     playback::{
         decision::{
             PlaybackConfig, TranscodeDecision, apply_subtitle_delivery,
@@ -153,6 +156,39 @@ async fn items_playbackinfo_inner(
     let device_profile = q
         .device_profile
         .clone();
+
+    if let Some(profile) = device_profile.clone() {
+        let db = state
+            .ctx
+            .db
+            .clone();
+        let user_id = session
+            .user
+            .id;
+        let device_id = session
+            .device
+            .id
+            .clone();
+        tokio::spawn(async move {
+            if let Err(err) =
+                auth::Device::save_device_profile(&db, user_id, &device_id, &profile)
+                    .await
+            {
+                warn!("failed to persist device profile for {device_id}: {err}");
+            }
+        });
+    }
+    // Fall back to the last DeviceProfile this device sent for MediaSources
+    // sorting only — transcode decisions above still use only what this
+    // specific request sent, so a stale cached profile can't misroute a
+    // direct-play/transcode choice.
+    let sort_device_profile = device_profile
+        .clone()
+        .or_else(|| {
+            session
+                .device
+                .parsed_device_profile()
+        });
 
     let probe_cfg = db::Settings::get_config_or_default(
         &state
@@ -284,6 +320,15 @@ async fn items_playbackinfo_inner(
             .results
             .len(),
     );
+    // Tracked so the capability sort below can be skipped entirely when any
+    // source is a stream-group representative — group order is an explicit,
+    // admin-authored priority (drag-and-drop in the dashboard), not something
+    // a device-capability sort should second-guess.
+    let mut source_group_ids: Vec<Option<Uuid>> = Vec::with_capacity(
+        probed
+            .results
+            .len(),
+    );
 
     // Per-user playback preferences + remembered selections, resolved per source
     // via `MediaSourceInfo::resolve_default_streams` (see below).
@@ -324,41 +369,10 @@ async fn items_playbackinfo_inner(
             api::inject_lyric_stream(&mut source);
         }
 
-        // Only flag bitrate exceeded when the source bitrate is known and
-        // actually exceeds the cap. An unknown bitrate is treated as within
-        // limits so that clients with a high/unlimited cap aren't forced into
-        // transcoding unnecessarily.
-        let bitrate_exceeded = max_bitrate.map_or(false, |max| {
-            source
-                .bitrate
-                .map_or(false, |b| b > max)
-        });
-
-        let mut transcode_reasons: api::TranscodeReasons = {
-            let mut reasons = device_profile
-                .as_ref()
-                .map(|profile| profile.check_direct_play(&source))
-                .unwrap_or_default();
-            if bitrate_exceeded {
-                reasons.insert(api::TranscodeReason::ContainerBitrateExceedsLimit);
-            }
-            // RTSP streams can only be served via ffmpeg — never direct-playable.
-            if matches!(
-                stream
-                    .stream_info
-                    .as_ref()
-                    .map(|si| &si.descriptor),
-                Some(crate::stream::StreamDescriptor::Rtsp { .. })
-            ) {
-                reasons.insert(api::TranscodeReason::ContainerNotSupported(
-                    "rtsp".to_string(),
-                ));
-            }
-            reasons
-        };
-
         // Strip mode: remove embedded subtitle streams not supported by the client so
         // they don't trigger a transcode. External/addon subs are never touched.
+        // Must run before resolve_default_streams below, so a stripped-out stream
+        // can never end up as the resolved default (a dangling index).
         if subtitle_mode == remux_sdks::remux::EmbeddedSubtitleHandling::Strip {
             source
                 .media_streams
@@ -400,9 +414,9 @@ async fn items_playbackinfo_inner(
         let _ = effective_url;
 
         // Resolve default audio/subtitle stream indexes for this source. These are
-        // per-request API values (never persisted); resolving before the burn
-        // check, transcode decision and subtitle delivery means those consumers
-        // see the stream the client will actually get.
+        // per-request API values (never persisted); resolving before the transcode
+        // decision and subtitle delivery means those consumers see the stream the
+        // client will actually get.
         source.resolve_default_streams(
             &user_cfg,
             server_subtitle_lang,
@@ -412,56 +426,31 @@ async fn items_playbackinfo_inner(
             saved_audio,
             saved_subtitle,
         );
-
-        // Detect embedded subtitle codecs unsupported by the client device profile.
-        // In Burn mode this triggers transcoding so the subtitle can be burned in.
-        // In Extract/Strip modes, no transcode reason is added for subtitles.
         let effective_sub_idx = q
             .subtitle_stream_index
             .or(source.default_subtitle_stream_index);
-        if let Some(idx) = effective_sub_idx {
-            let needs_burn = subtitle_mode
-                == remux_sdks::remux::EmbeddedSubtitleHandling::Burn
-                && source
-                    .media_streams
-                    .iter()
-                    .any(|s| {
-                        s.index == idx
-                            && matches!(s.type_, Some(api::MediaStreamType::Subtitle))
-                            && !s.is_external
-                            && !s.is_text_subtitle_stream
-                            && !device_profile
-                                .as_ref()
-                                .map(|dp| {
-                                    dp.subtitle_profiles
-                                        .iter()
-                                        .filter_map(|p| {
-                                            p.format
-                                                .as_deref()
-                                        })
-                                        .any(|f| {
-                                            s.codec
-                                                .as_deref()
-                                                .map_or(false, |c| {
-                                                    subtitle_codec_matches_profile(c, f)
-                                                })
-                                        })
-                                })
-                                .unwrap_or(false)
-                    });
-            if needs_burn {
-                let codec = source
-                    .media_streams
-                    .iter()
-                    .find(|s| s.index == idx)
-                    .and_then(|s| {
-                        s.codec
-                            .clone()
-                    })
-                    .unwrap_or_default();
-                transcode_reasons
-                    .insert(api::TranscodeReason::SubtitleCodecNotSupported(codec));
-            }
+
+        // check_direct_play, the bitrate cap and the subtitle-burn check (in Burn
+        // mode) all in one place — the same reasons construction ranking below
+        // reuses for the persisted-profile fallback case.
+        let mut transcode_reasons = crate::device_profile::compute_transcode_reasons(
+            &source,
+            device_profile.as_ref(),
+            subtitle_mode,
+            q.subtitle_stream_index,
+            max_bitrate,
+        );
+        // RTSP streams can only be served via ffmpeg — never direct-playable.
+        if matches!(
+            stream
+                .stream_info
+                .as_ref()
+                .map(|si| &si.descriptor),
+            Some(crate::stream::StreamDescriptor::Rtsp { .. })
+        ) {
+            transcode_reasons.insert(api::TranscodeReason::ContainerNotSupported(
+                "rtsp".to_string(),
+            ));
         }
 
         debug!(
@@ -518,6 +507,28 @@ async fn items_playbackinfo_inner(
 
         source.transcoding_reasons = transcode_reasons;
 
+        if device_profile.is_some()
+            && probe_cfg
+                .show_playback_decision_in_title
+                .unwrap_or(true)
+        {
+            let source_bitrate = source.bitrate;
+            let reasons = source
+                .transcoding_reasons
+                .clone();
+            if let Some(video) = source
+                .media_streams
+                .iter_mut()
+                .find(|s| matches!(s.type_, Some(api::MediaStreamType::Video)))
+            {
+                crate::device_profile::annotate_video_display_title(
+                    video,
+                    source_bitrate,
+                    &reasons,
+                );
+            }
+        }
+
         // Recompute from codec — never trust the stored DB value (may be stale).
         for s in &mut source.media_streams {
             if matches!(s.type_, Some(api::MediaStreamType::Subtitle)) {
@@ -526,6 +537,7 @@ async fn items_playbackinfo_inner(
         }
 
         sidecar_subtitle_routes.push((subtitle_source_id, routes));
+        source_group_ids.push(stream.group_id);
         media_sources.push(source);
     }
 
@@ -567,6 +579,36 @@ async fn items_playbackinfo_inner(
             saved_audio,
             saved_subtitle,
         );
+    }
+
+    // Rank sources by how well they match the device's capabilities (transcode
+    // cost, confident 4K, HDR tier, bit depth, audio quality, embedded subs)
+    // so the auto-play source below is the best version, not just the first
+    // one probed. Keep `sidecar_subtitle_routes` aligned by permuting it in
+    // lockstep — the later zip below pairs them back up by index.
+    let sort_mode = probe_cfg
+        .sort_media_sources
+        .unwrap_or_default();
+    if sort_mode != remux_sdks::remux::SortMediaSourcesMode::Disabled
+        && source_group_ids
+            .iter()
+            .all(|g| g.is_none())
+    {
+        let ranking = SourceRankingContext {
+            mode: sort_mode,
+            device_profile: sort_device_profile.as_ref(),
+            subtitle_mode,
+            explicit_subtitle_index: q.subtitle_stream_index,
+        };
+        let mut paired: Vec<_> = media_sources
+            .drain(..)
+            .zip(sidecar_subtitle_routes.drain(..))
+            .collect();
+        paired.sort_by_cached_key(|(source, _)| std::cmp::Reverse(ranking.key(source)));
+        for (source, route) in paired {
+            media_sources.push(source);
+            sidecar_subtitle_routes.push(route);
+        }
     }
 
     // Cache the group-resolved stream UUID so the stream endpoint can find it

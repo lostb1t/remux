@@ -17,12 +17,10 @@ pub enum Route {
     LibraryRoute,
     #[route("/content/iptv")]
     IptvRoute,
+    #[route("/streaming/general")]
+    StreamingGeneralRoute,
     #[route("/streaming/groups")]
     StreamingGroupsRoute,
-    #[route("/streaming/probing")]
-    StreamingProbingRoute,
-    #[route("/streaming/p2p")]
-    StreamingP2pRoute,
     #[route("/settings/general")]
     SettingsGeneralRoute,
     #[route("/settings/playback")]
@@ -79,21 +77,19 @@ pub(crate) fn IptvRoute() -> Element {
 }
 
 #[component]
+pub(crate) fn StreamingGeneralRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! {
+        StreamSortingSettingsCard { app_state: app_state.clone() }
+        ProbeSettingsCard { app_state: app_state.clone() }
+        P2pSettingsCard { app_state }
+    }
+}
+
+#[component]
 pub(crate) fn StreamingGroupsRoute() -> Element {
     let app_state = use_context::<AppState>();
     rsx! { StreamGroupsCard { app_state } }
-}
-
-#[component]
-pub(crate) fn StreamingProbingRoute() -> Element {
-    let app_state = use_context::<AppState>();
-    rsx! { ProbeSettingsCard { app_state } }
-}
-
-#[component]
-pub(crate) fn StreamingP2pRoute() -> Element {
-    let app_state = use_context::<AppState>();
-    rsx! { P2pSettingsCard { app_state } }
 }
 
 #[component]

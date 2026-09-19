@@ -100,9 +100,8 @@ pub fn DashboardLayout() -> Element {
         Route::AddonsRoute => "Addons",
         Route::LibraryRoute => "Library",
         Route::IptvRoute => "IPTV",
+        Route::StreamingGeneralRoute => "Streaming General",
         Route::StreamingGroupsRoute => "Stream Groups",
-        Route::StreamingProbingRoute => "Probing",
-        Route::StreamingP2pRoute => "P2P",
         Route::SettingsGeneralRoute => "General",
         Route::SettingsPlaybackRoute => "Playback",
         Route::SettingsSearchRoute => "Search",
@@ -171,21 +170,16 @@ pub fn DashboardLayout() -> Element {
 
                     SidebarGroup {
                         label: "Streaming",
-                        active: matches!(route, Route::StreamingGroupsRoute | Route::StreamingProbingRoute | Route::StreamingP2pRoute),
+                        active: matches!(route, Route::StreamingGeneralRoute | Route::StreamingGroupsRoute),
+                        NavSubItem {
+                            label: "General",
+                            active: route == Route::StreamingGeneralRoute,
+                            on_click: move |_| { navigator().push(Route::StreamingGeneralRoute); sidebar_open.set(false); },
+                        }
                         NavSubItem {
                             label: "Groups",
                             active: route == Route::StreamingGroupsRoute,
                             on_click: move |_| { navigator().push(Route::StreamingGroupsRoute); sidebar_open.set(false); },
-                        }
-                        NavSubItem {
-                            label: "Probing",
-                            active: route == Route::StreamingProbingRoute,
-                            on_click: move |_| { navigator().push(Route::StreamingProbingRoute); sidebar_open.set(false); },
-                        }
-                        NavSubItem {
-                            label: "P2P",
-                            active: route == Route::StreamingP2pRoute,
-                            on_click: move |_| { navigator().push(Route::StreamingP2pRoute); sidebar_open.set(false); },
                         }
                     }
 
