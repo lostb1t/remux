@@ -7,6 +7,7 @@ use axum::{
 use axum_extra::extract::Query;
 use remux_macros::{delete, get, post};
 use serde::Deserialize;
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::{
@@ -109,9 +110,13 @@ async fn items_images_inner(
                 // Thumb falls back to a synthesized Backdrop+Logo composite
                 // (below) when a Backdrop exists; only falls back to Primary
                 // outright when there's no Backdrop to synthesize from either.
-                // Collection artwork is generated and stored as Primary, but
-                // clients also request it as a wide Backdrop. Use the generated
-                // rendition when a collection has no dedicated backdrop.
+                // Collections have no dedicated Thumb of their own — Thumb is
+                // just the generated Primary artwork (same image, same tag;
+                // see `ImageTags` in api/models.rs). Backdrop, unlike Thumb, is
+                // NOT derived from Primary: a collection's backdrop must be a
+                // real, separately-uploaded image (typically textless) or none
+                // at all — it must never silently alias the text-overlaid
+                // Primary artwork.
                 let img_row = media
                     .images
                     .get(kind)
@@ -131,7 +136,7 @@ async fn items_images_inner(
                         }
                     })
                     .or_else(|| {
-                        if kind == ImageKind::Backdrop && is_collection {
+                        if kind == ImageKind::Thumb && is_collection {
                             media
                                 .images
                                 .get(ImageKind::Primary)
@@ -140,27 +145,63 @@ async fn items_images_inner(
                         }
                     });
 
-                if let Some(img) = img_row {
-                    let source_key = img
-                        .id
-                        .to_string();
-                    if img
-                        .path
-                        .starts_with('/')
-                    {
-                        let path = std::path::PathBuf::from(&img.path);
-                        let (b, ct) = ImageService::serve_local(&path)
-                            .await
-                            .context_not_found("image file not found")?;
-                        (b, ct.to_string(), source_key, false)
-                    } else {
-                        // Always proxy external URLs rather than redirecting — some clients
-                        // (e.g. Infuse) do not follow redirects for image requests.
-                        let (b, ct) = fetch_upstream(&img.path)
-                            .await
-                            .context_not_found("image fetch failed")?;
-                        (b, ct, source_key, true)
+                // A collection's Primary/Thumb can always be regenerated on
+                // demand (see the `library_image` branch below) — so for a
+                // collection, a DB row whose file has since gone missing (or
+                // whose remote URL no longer resolves) should fall through to
+                // regenerating it instead of 404ing outright, same as having no
+                // row at all. Backdrop is deliberately excluded: it must be a
+                // real, separately-uploaded image or nothing — never silently
+                // substituted with the (text-overlaid) generated artwork.
+                let can_regenerate = is_collection
+                    && matches!(
+                        image_type,
+                        api::ImageType::Primary | api::ImageType::Thumb
+                    );
+                let served_from_row = match img_row {
+                    Some(img) => {
+                        let source_key = img
+                            .id
+                            .to_string();
+                        if img
+                            .path
+                            .starts_with('/')
+                        {
+                            let path = std::path::PathBuf::from(&img.path);
+                            match ImageService::serve_local(&path).await {
+                                Ok((b, ct)) => {
+                                    Some((b, ct.to_string(), source_key, false))
+                                }
+                                Err(e) if can_regenerate => {
+                                    warn!(id = %id, error = %e, "stored collection image file missing, regenerating");
+                                    None
+                                }
+                                Err(e) => {
+                                    return Err(e)
+                                        .context_not_found("image file not found");
+                                }
+                            }
+                        } else {
+                            // Always proxy external URLs rather than redirecting — some clients
+                            // (e.g. Infuse) do not follow redirects for image requests.
+                            match fetch_upstream(&img.path).await {
+                                Ok((b, ct)) => Some((b, ct, source_key, true)),
+                                Err(e) if can_regenerate => {
+                                    warn!(id = %id, error = %e, "stored collection image fetch failed, regenerating");
+                                    None
+                                }
+                                Err(e) => {
+                                    return Err(e)
+                                        .context_not_found("image fetch failed");
+                                }
+                            }
+                        }
                     }
+                    None => None,
+                };
+
+                if let Some(t) = served_from_row {
+                    t
                 } else if kind == ImageKind::Thumb
                     && !is_collection
                     && let Some(backdrop) = media
@@ -187,13 +228,7 @@ async fn items_images_inner(
                     .await
                     .context_internal("thumb generation failed")?;
                     (bytes, "image/jpeg".to_string(), cache_key, false)
-                } else if matches!(
-                    image_type,
-                    api::ImageType::Primary
-                        | api::ImageType::Thumb
-                        | api::ImageType::Backdrop
-                ) && is_collection
-                {
+                } else if can_regenerate {
                     let b = ImageService::library_image(
                         &state
                             .ctx

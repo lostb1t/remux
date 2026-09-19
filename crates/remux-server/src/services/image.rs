@@ -64,6 +64,29 @@ static FONT_MERRIWEATHER: &[u8] = include_bytes!("../../assets/fonts/Merriweathe
 static FONT_PLAYFAIR_DISPLAY: &[u8] =
     include_bytes!("../../assets/fonts/PlayfairDisplay.ttf");
 static FONT_BEBAS_NEUE: &[u8] = include_bytes!("../../assets/fonts/BebasNeue.ttf");
+
+/// Glyph-coverage fallback chain for text overlays: `ab_glyph` renders a
+/// whole string with one font, so a codepoint missing from the user's chosen
+/// font (a symbol like ♥ that not every display font includes) draws as
+/// nothing rather than falling back to a font that has it. Tried in this
+/// order for any character the primary font lacks; Merriweather is first
+/// since it happens to carry the widest symbol coverage of the bundled set.
+/// This does not add support for color/pictographic emoji — `ab_glyph` can
+/// only rasterize monochrome vector outlines, so a true emoji codepoint has
+/// no glyph in any of these fonts either and still renders as nothing.
+const FALLBACK_FONT_BYTES: &[&[u8]] = &[
+    FONT_MERRIWEATHER,
+    FONT_ROBOTO,
+    FONT_OPEN_SANS,
+    FONT_LATO,
+    FONT_MONTSERRAT,
+    FONT_POPPINS,
+    FONT_OSWALD,
+    FONT_RALEWAY,
+    FONT_PLAYFAIR_DISPLAY,
+    FONT_BEBAS_NEUE,
+    FONT_BOLD,
+];
 static PROVIDER_LOGO_NETFLIX: &[u8] =
     include_bytes!("../../assets/provider-logos/netflix.png");
 static PROVIDER_LOGO_PRIME_VIDEO: &[u8] =
@@ -235,7 +258,17 @@ pub struct ImageProcessOptions {
 
 impl ImageProcessOptions {
     /// Returns true when any transformation is requested.
+    ///
+    /// Disabled below (always `false`): different clients request wildly
+    /// different exact dimensions for the same item, and `apply_sizing`'s
+    /// crop-to-fill can cut into a generated collection image's text overlay
+    /// depending on which aspect ratio a given client happens to ask for
+    /// (#435). Until sizing is reworked to never crop into overlay content,
+    /// not resizing at all is safer than resizing inconsistently per client.
+    /// The real logic is kept below, dead, for when that rework happens.
+    #[allow(unreachable_code)]
     pub fn needs_processing(&self) -> bool {
+        return false;
         self.fill_width
             .is_some()
             || self
@@ -1341,6 +1374,7 @@ fn apply_overlay_sync(
                 CollectionFontWeight::Bold => 700.0,
             };
             let _ = font.set_variation(b"wght", weight);
+            let fallbacks = fallback_fonts(weight);
 
             let max_w = if centered {
                 OUT_W as f32 * 0.85
@@ -1369,13 +1403,14 @@ fn apply_overlay_sync(
                 } else {
                     TEXT_LEFT_MARGIN
                 };
-                draw_text_mut(
+                draw_text_with_fallback(
                     canvas,
                     Rgba([255, 255, 255, 255]),
                     x,
                     y,
                     scale,
                     &font,
+                    &fallbacks,
                     line,
                 );
             }
@@ -1568,6 +1603,83 @@ fn measure_text_width(font: &FontRef<'_>, scale: PxScale, text: &str) -> f32 {
         prev = Some(glyph_id);
     }
     width
+}
+
+/// Loads the fallback chain (see `FALLBACK_FONT_BYTES`) at the given variable
+/// weight, matching whatever the primary font was set to. Built fresh per
+/// call — cheap, since this only parses font headers, not glyph outlines.
+fn fallback_fonts(weight: f32) -> Vec<FontRef<'static>> {
+    use ab_glyph::VariableFont;
+    FALLBACK_FONT_BYTES
+        .iter()
+        .filter_map(|bytes| FontRef::try_from_slice(bytes).ok())
+        .map(|mut font| {
+            let _ = font.set_variation(b"wght", weight);
+            font
+        })
+        .collect()
+}
+
+/// Whether `font` has a real glyph for `c`. `ab_glyph` returns glyph id 0
+/// (`.notdef`) for anything outside the font's coverage, which is otherwise
+/// indistinguishable from a legitimately empty glyph.
+fn font_covers(font: &FontRef<'_>, c: char) -> bool {
+    c.is_whitespace()
+        || font
+            .glyph_id(c)
+            .0
+            != 0
+}
+
+/// Draws `text` at `(x, y)`, substituting the first fallback font that has a
+/// given character instead of leaving it blank when `primary` doesn't cover
+/// it — e.g. a symbol like ♥ that only some of the bundled fonts include.
+/// Splits `text` into runs by resolved font and draws each run separately;
+/// kerning across a font switch is not applied, a minor cosmetic gap next to
+/// an already-uncommon fallback character. This does not add support for
+/// color/pictographic emoji: `ab_glyph` only rasterizes monochrome vector
+/// outlines, so a true emoji codepoint has no glyph in any of these fonts
+/// either and still renders as nothing.
+fn draw_text_with_fallback<'f>(
+    canvas: &mut RgbaImage,
+    color: Rgba<u8>,
+    x: i32,
+    y: i32,
+    scale: PxScale,
+    primary: &'f FontRef<'f>,
+    fallbacks: &'f [FontRef<'f>],
+    text: &str,
+) {
+    let font_for = |c: char| -> &'f FontRef<'f> {
+        if font_covers(primary, c) {
+            return primary;
+        }
+        fallbacks
+            .iter()
+            .find(|f| font_covers(f, c))
+            .unwrap_or(primary)
+    };
+
+    let mut cursor_x = x as f32;
+    let mut run = String::new();
+    let mut run_font: Option<&'f FontRef<'f>> = None;
+
+    for c in text.chars() {
+        let f = font_for(c);
+        let same = run_font.is_some_and(|rf| std::ptr::eq(rf, f));
+        if !same && !run.is_empty() {
+            let font = run_font.unwrap();
+            draw_text_mut(canvas, color, cursor_x as i32, y, scale, font, &run);
+            cursor_x += measure_text_width(font, scale, &run);
+            run.clear();
+        }
+        run_font = Some(f);
+        run.push(c);
+    }
+    if !run.is_empty() {
+        let font = run_font.unwrap();
+        draw_text_mut(canvas, color, cursor_x as i32, y, scale, font, &run);
+    }
 }
 
 fn ext_for_content_type(ct: &str) -> &'static str {
