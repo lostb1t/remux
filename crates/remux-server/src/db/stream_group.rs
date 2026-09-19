@@ -616,12 +616,8 @@ pub(crate) fn detect_stream_quality(
 }
 
 /// Coarse pre-probe "how good does this look" weight — higher is better.
-/// Call as `media.quality_weight()` and sort with
-/// `sort_by_key(|s| Reverse(s.quality_weight()))`. Used to order stream
-/// candidates before any of them are actually probed (real technical specs,
-/// and device-capability-aware ranking, only exist after that), so the file
-/// that gets the one real probe attempt is a good guess rather than whatever
-/// an addon happened to list first.
+/// Used only to choose probe attempt order before real technical specs are
+/// available. It must not be used to mutate the persisted addon source order.
 pub(crate) trait PreProbeQualityExt {
     fn quality_weight(&self) -> (u8, u8);
 }

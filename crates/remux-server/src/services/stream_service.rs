@@ -1,5 +1,6 @@
 use crate::{
     AppContext, api, db,
+    db::PreProbeQualityExt,
     playback::probe::{probe_stream, resolve_stream_root},
 };
 use remux_sdks::{
@@ -51,6 +52,12 @@ pub(crate) struct StreamService {
     group: Option<(Uuid, String, Vec<db::Media>)>,
     stream: Option<db::Media>,
     pub streams: Vec<db::Media>,
+}
+
+fn quality_ordered_probe_pool(streams: &[db::Media]) -> Vec<db::Media> {
+    let mut pool = streams.to_vec();
+    pool.sort_by_cached_key(|stream| std::cmp::Reverse(stream.quality_weight()));
+    pool
 }
 
 impl StreamService {
@@ -403,21 +410,21 @@ impl StreamService {
                     .candidates()
                     .to_vec(),
                 restrict_resolution: false,
-                probe_only_first: false,
+                preferred_probe_id: None,
                 specific_requested: true,
             };
         }
 
-        let probe_pool = all_streams.clone();
+        let mut probe_pool = all_streams.clone();
 
-        let (candidates, probe_only_first) = if specific_requested {
+        let (candidates, preferred_probe_id) = if specific_requested {
             let sid = requested_id.unwrap();
             (
                 all_streams
                     .into_iter()
                     .filter(|s| s.id == sid)
                     .collect(),
-                false,
+                None,
             )
         } else if requested_id.is_some() {
             // media_source_id == item_id (Android TV auto-play) or stream not found:
@@ -425,18 +432,25 @@ impl StreamService {
             // source[0].id is overridden to item_id below (required for Android TV routing).
             let mut v = all_streams;
             v.truncate(1);
-            (v, false)
+            (v, None)
         } else {
             // No stream ID: return all versions for the selection UI,
-            // probe only the first to avoid spawning N FFmpeg processes.
-            (all_streams, true)
+            // but independently probe the strongest filename-derived candidate
+            // first. This keeps addon order intact for Disabled mode while still
+            // giving capability ranking the best available real probe. The
+            // quality-ordered pool also preserves the previous fallback order.
+            probe_pool = quality_ordered_probe_pool(&all_streams);
+            let preferred = probe_pool
+                .first()
+                .map(|stream| stream.id);
+            (all_streams, preferred)
         };
 
         StreamSelection {
             candidates,
             probe_pool,
             restrict_resolution: true,
-            probe_only_first,
+            preferred_probe_id,
             specific_requested,
         }
     }
@@ -493,10 +507,9 @@ impl StreamService {
             sel.candidates
                 .len(),
         );
-        for (idx, stream) in sel
+        for stream in sel
             .candidates
             .into_iter()
-            .enumerate()
         {
             let url_opt = stream
                 .stream_info
@@ -505,7 +518,9 @@ impl StreamService {
                     si.descriptor
                         .server_input(stream.id, port)
                 });
-            let skip_probe = sel.probe_only_first && idx > 0;
+            let skip_probe = sel
+                .preferred_probe_id
+                .is_some_and(|preferred| stream.id != preferred);
             // A filename guess is never a completed probe — it must not skip
             // submitting a freshly-probed result to RemuxDB.
             let was_cached = stream
@@ -783,8 +798,9 @@ pub(crate) struct StreamSelection {
     pub probe_pool: Vec<db::Media>,
     /// When false (group requests), cross-resolution fallback is intentional.
     pub restrict_resolution: bool,
-    /// Probe only the first candidate to avoid N parallel FFmpeg processes.
-    pub probe_only_first: bool,
+    /// When present, this is the only candidate that receives a real probe;
+    /// the others receive filename guesses without changing presentation order.
+    pub preferred_probe_id: Option<Uuid>,
     /// True when the client named a specific stream — keep its UUID, don't override to item_id.
     pub specific_requested: bool,
 }
@@ -1047,6 +1063,47 @@ mod tests {
             stream_info: Some(info),
             ..Default::default()
         }
+    }
+
+    fn quality_stream(filename: &str) -> db::Media {
+        let mut stream = stream_media(StreamInfo {
+            descriptor: StreamDescriptor::http(format!(
+                "https://example.test/{filename}"
+            )),
+            filename: Some(filename.to_string()),
+            ..Default::default()
+        });
+        stream.id = Uuid::new_v4();
+        stream
+    }
+
+    #[test]
+    fn quality_probe_order_does_not_mutate_addon_order() {
+        let original = vec![
+            quality_stream("Movie.2026.720p.WEBRip.mkv"),
+            quality_stream("Movie.2026.2160p.BluRay.Remux.mkv"),
+            quality_stream("Movie.2026.1080p.WEB-DL.mkv"),
+        ];
+        let original_ids: Vec<_> = original
+            .iter()
+            .map(|stream| stream.id)
+            .collect();
+
+        let probe_pool = quality_ordered_probe_pool(&original);
+        let candidate_ids: Vec<_> = original
+            .iter()
+            .map(|stream| stream.id)
+            .collect();
+        let probe_ids: Vec<_> = probe_pool
+            .iter()
+            .map(|stream| stream.id)
+            .collect();
+
+        assert_eq!(candidate_ids, original_ids);
+        assert_eq!(
+            probe_ids,
+            vec![original_ids[1], original_ids[2], original_ids[0]]
+        );
     }
 
     #[test]

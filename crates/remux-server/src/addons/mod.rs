@@ -37,9 +37,7 @@ use uuid::Uuid;
 use crate::{
     AppContext, api,
     common::{ItemProgress, ProgressReporter},
-    db,
-    db::PreProbeQualityExt,
-    sdks,
+    db, sdks,
     services::MediaResolveService,
 };
 pub use addon::{Addon, CatalogState, set_user_addon_override, user_addon_override};
@@ -2915,6 +2913,17 @@ impl AddonService {
             }
         }
     }
+
+    fn deduplicate_streams(streams: Vec<db::Media>) -> Vec<db::Media> {
+        let mut seen = std::collections::HashSet::new();
+        streams
+            .into_iter()
+            .filter(|stream| match Self::stream_dedup_key(stream) {
+                Some(key) => seen.insert(key),
+                None => true,
+            })
+            .collect()
+    }
 }
 
 fn strip_video_ext(name: &str) -> &str {
@@ -3133,22 +3142,7 @@ impl AddonService {
         // Dedup by descriptor content; order preserves addon priority (DB load order)
         // for which duplicate survives. First occurrence wins, so higher-priority
         // addons' streams survive ties.
-        let mut seen = std::collections::HashSet::new();
-        let mut deduped: Vec<db::Media> = raw
-            .into_iter()
-            .filter(|s| match Self::stream_dedup_key(s) {
-                Some(key) => seen.insert(key),
-                None => true,
-            })
-            .collect();
-
-        // Order the *deduped* list by a coarse pre-probe quality guess (filename-
-        // derived resolution/source tier) so the resulting `idx` — which decides
-        // both within-group candidate order and which single stream gets the one
-        // real ffprobe attempt — favors the best-looking version instead of
-        // whatever an addon happened to return first. Ties (including anything
-        // with no parseable filename) keep addon-priority order via the stable sort.
-        deduped.sort_by_key(|s| std::cmp::Reverse(s.quality_weight()));
+        let deduped = Self::deduplicate_streams(raw);
 
         let sources: Vec<&str> = {
             let mut seen = std::collections::HashSet::new();
@@ -3549,6 +3543,42 @@ mod tests {
             AddonService::stream_dedup_key(&first),
             AddonService::stream_dedup_key(&second)
         );
+    }
+
+    #[test]
+    fn stream_dedup_preserves_addon_load_order() {
+        let first = torrent_stream("aaa", "Movie.2026.720p.WEBRip.mkv", 0);
+        let duplicate = torrent_stream("AAA", "Movie.2026.720p.WEBRip.mkv", 9);
+        let second = torrent_stream("bbb", "Movie.2026.2160p.BluRay.Remux.mkv", 0);
+        let expected = vec![
+            first
+                .stream_info
+                .as_ref()
+                .unwrap()
+                .filename
+                .clone(),
+            second
+                .stream_info
+                .as_ref()
+                .unwrap()
+                .filename
+                .clone(),
+        ];
+
+        let deduped = AddonService::deduplicate_streams(vec![first, duplicate, second]);
+        let filenames: Vec<_> = deduped
+            .iter()
+            .map(|stream| {
+                stream
+                    .stream_info
+                    .as_ref()
+                    .unwrap()
+                    .filename
+                    .clone()
+            })
+            .collect();
+
+        assert_eq!(filenames, expected);
     }
 
     fn make_image(path: &str) -> db::MediaImage {
