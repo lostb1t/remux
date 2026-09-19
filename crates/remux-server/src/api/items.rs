@@ -180,6 +180,32 @@ pub async fn get_danmu_raw(
     StatusCode::NOT_FOUND
 }
 
+/// Per-kind cap on how many remote/local search results to request — a plain
+/// `limit` is tuned for browsing a single kind, so a search fanning out
+/// across many kinds at once would otherwise ask each one for the full
+/// (typically page-sized) limit.
+fn kind_limit(kind: &db::MediaKind, limit: usize) -> usize {
+    match kind {
+        db::MediaKind::Track => limit.min(1000),
+        db::MediaKind::Artist | db::MediaKind::Album => limit.min(10),
+        db::MediaKind::Person => limit.min(20),
+        _ => limit,
+    }
+}
+
+/// Whether a search for `kind` may be dispatched to a remote addon, or must
+/// stay local-only.
+fn is_remote_enabled(cfg: &api::ServerConfiguration, kind: &db::MediaKind) -> bool {
+    match &cfg.search_remote_enabled {
+        // IPTV/EPG content (channels and their program listings) is always
+        // local-only: there's no remote addon concept of searching "for a
+        // program," and dispatching one wastes a round trip at best, errors
+        // at worst.
+        None => !matches!(kind, db::MediaKind::TvChannel | db::MediaKind::TvProgram),
+        Some(list) => list.contains(&kind.to_string()),
+    }
+}
+
 /// Search results: singles/EPs belong under Tracks, not surfaced as Albums
 /// (Deezer `album_kind`). Applies to both live addon results and library hits.
 pub async fn get_items(
@@ -268,25 +294,6 @@ pub async fn get_items(
             let limit = q
                 .limit
                 .unwrap_or(250) as usize;
-
-            fn kind_limit(kind: &db::MediaKind, limit: usize) -> usize {
-                match kind {
-                    db::MediaKind::Track => limit.min(1000),
-                    db::MediaKind::Artist | db::MediaKind::Album => limit.min(10),
-                    db::MediaKind::Person => limit.min(20),
-                    _ => limit,
-                }
-            }
-
-            fn is_remote_enabled(
-                cfg: &api::ServerConfiguration,
-                kind: &db::MediaKind,
-            ) -> bool {
-                match &cfg.search_remote_enabled {
-                    None => !matches!(kind, db::MediaKind::TvChannel),
-                    Some(list) => list.contains(&kind.to_string()),
-                }
-            }
 
             // Requested kinds: explicit from the client, or fall back to the computed
             // defaults (Movie + Series + Episode with exclude_item_types already applied).
@@ -3493,12 +3500,12 @@ pub async fn media_segments(
 
 #[cfg(test)]
 mod tests {
-    use super::{RemoteImagesQuery, external_id_infos_for_kind};
+    use super::{RemoteImagesQuery, external_id_infos_for_kind, is_remote_enabled};
     use chrono::Utc;
     use http::header::HeaderValue;
     use remux_sdks::remux::{
-        CollectionFilter, FilterGroup, FilterMatchMode, FilterRule, NumericOp, SetOp,
-        VideoContainer,
+        CollectionFilter, FilterGroup, FilterMatchMode, FilterRule, GetItemsQuery,
+        MediaType, NumericOp, ServerConfiguration, SetOp, VideoContainer,
     };
     use uuid::Uuid;
 
@@ -3525,6 +3532,28 @@ mod tests {
             Some("Primary")
         );
         assert_eq!(query.include_all_languages, Some(true));
+    }
+
+    /// An unscoped search (no explicit `IncludeItemTypes`) must consider IPTV
+    /// channels and their EPG program listings — otherwise they're silently
+    /// unsearchable outside an explicit type-filtered query (#474).
+    #[test]
+    fn default_requested_item_types_include_tv_channels_and_programs() {
+        let types = GetItemsQuery::default().get_requested_item_types();
+        assert!(types.contains(&MediaType::TvChannel));
+        assert!(types.contains(&MediaType::TvProgram));
+    }
+
+    /// IPTV/EPG content must never be dispatched to a remote addon search —
+    /// there's no remote-addon concept of "search for a program", and it
+    /// should always resolve from the local library instead (#474).
+    #[test]
+    fn tv_channel_and_program_search_is_never_remote_by_default() {
+        let cfg = ServerConfiguration::default();
+        assert!(!is_remote_enabled(&cfg, &db::MediaKind::TvChannel));
+        assert!(!is_remote_enabled(&cfg, &db::MediaKind::TvProgram));
+        // Sanity check the function isn't just always false.
+        assert!(is_remote_enabled(&cfg, &db::MediaKind::Movie));
     }
 
     #[test]

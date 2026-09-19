@@ -1674,6 +1674,8 @@ impl GetItemsQuery {
             MediaType::Audio,
             MediaType::MusicAlbum,
             MediaType::MusicArtist,
+            MediaType::TvChannel,
+            MediaType::TvProgram,
         ];
 
         if let Some(include_types) = &self.include_item_types {
