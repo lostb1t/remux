@@ -337,14 +337,21 @@ impl Device {
     /// Store client capabilities JSON for this device.
     pub async fn save_capabilities(
         db: &SqlitePool,
+        user_id: Uuid,
         device_id: &str,
         caps: &crate::api::ClientCapabilitiesDto,
     ) -> Result<()> {
-        sqlx::query("UPDATE devices SET capabilities = ? WHERE lower(id) = lower(?)")
-            .bind(sqlx::types::Json(caps))
-            .bind(device_id)
-            .execute(db)
-            .await?;
+        // devices' primary key is (user_id, id) — a client-supplied device id
+        // is not unique across users, so filtering by id alone can update
+        // another user's device row entirely.
+        sqlx::query(
+            "UPDATE devices SET capabilities = ? WHERE user_id = ? AND lower(id) = lower(?)",
+        )
+        .bind(sqlx::types::Json(caps))
+        .bind(user_id)
+        .bind(device_id)
+        .execute(db)
+        .await?;
         Ok(())
     }
 
@@ -361,14 +368,20 @@ impl Device {
     /// by capability on later requests that don't resend the full profile).
     pub async fn save_device_profile(
         db: &SqlitePool,
+        user_id: Uuid,
         device_id: &str,
         profile: &remux_sdks::remux::DeviceProfile,
     ) -> Result<()> {
-        sqlx::query("UPDATE devices SET device_profile = ? WHERE lower(id) = lower(?)")
-            .bind(sqlx::types::Json(profile))
-            .bind(device_id)
-            .execute(db)
-            .await?;
+        // Same reasoning as save_capabilities: devices' primary key is
+        // (user_id, id), so a device id alone can match another user's row.
+        sqlx::query(
+            "UPDATE devices SET device_profile = ? WHERE user_id = ? AND lower(id) = lower(?)",
+        )
+        .bind(sqlx::types::Json(profile))
+        .bind(user_id)
+        .bind(device_id)
+        .execute(db)
+        .await?;
         Ok(())
     }
 

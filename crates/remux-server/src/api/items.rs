@@ -1817,14 +1817,24 @@ async fn item_for_user(
                     let device_profile = session
                         .device
                         .parsed_device_profile();
+                    let ranking_max_bitrate = device_profile
+                        .as_ref()
+                        .and_then(|p| p.max_streaming_bitrate);
                     let mut ranked: Vec<(db::Media, _)> = sources
                         .drain(..)
                         .map(|m| {
                             let mut info = api::MediaSourceInfo::from(m.clone());
+                            // A source without real probe_data has empty
+                            // media_streams/bitrate here — apply the same
+                            // filename guess the details response itself falls
+                            // back to (further down), so resolution/codec/HDR/
+                            // bit-depth/bitrate actually participate in ranking
+                            // instead of comparing blanks.
+                            crate::conversions::apply_filename_guess(&mut info, &m);
                             // Resolve which subtitle would actually be used so
-                            // subtitle_burn_reason judges the real selection,
-                            // not container order — same inputs the real
-                            // resolve pass further down uses.
+                            // subtitle_burn_reason (inside compute_transcode_reasons)
+                            // judges the real selection, not container order —
+                            // same inputs the real resolve pass further down uses.
                             info.resolve_default_streams(
                                 &user_cfg,
                                 server_config
@@ -1838,23 +1848,16 @@ async fn item_for_user(
                                 None,
                                 None,
                             );
-                            let mut reasons = device_profile
-                                .as_ref()
-                                .map(|p| p.check_direct_play(&info))
-                                .unwrap_or_default();
-                            if let Some(reason) =
-                                crate::device_profile::subtitle_burn_reason(
+                            let reasons =
+                                crate::device_profile::compute_transcode_reasons(
                                     &info,
                                     device_profile.as_ref(),
                                     subtitle_mode,
                                     None,
-                                )
-                            {
-                                reasons.insert(reason);
-                            }
-                            info.transcoding_reasons = reasons;
+                                    ranking_max_bitrate,
+                                );
                             let rank = info
-                                .capability_rank(device_profile.as_ref())
+                                .capability_rank(device_profile.as_ref(), &reasons)
                                 .key(sort_mode);
                             (m, rank)
                         })
@@ -1951,14 +1954,24 @@ async fn item_for_user(
                     let device_profile = session
                         .device
                         .parsed_device_profile();
+                    let ranking_max_bitrate = device_profile
+                        .as_ref()
+                        .and_then(|p| p.max_streaming_bitrate);
                     let mut ranked: Vec<(db::Media, _)> = sources
                         .drain(..)
                         .map(|m| {
                             let mut info = api::MediaSourceInfo::from(m.clone());
+                            // A source without real probe_data has empty
+                            // media_streams/bitrate here — apply the same
+                            // filename guess the details response itself falls
+                            // back to (further down), so resolution/codec/HDR/
+                            // bit-depth/bitrate actually participate in ranking
+                            // instead of comparing blanks.
+                            crate::conversions::apply_filename_guess(&mut info, &m);
                             // Resolve which subtitle would actually be used so
-                            // subtitle_burn_reason judges the real selection,
-                            // not container order — same inputs the real
-                            // resolve pass further down uses.
+                            // subtitle_burn_reason (inside compute_transcode_reasons)
+                            // judges the real selection, not container order —
+                            // same inputs the real resolve pass further down uses.
                             info.resolve_default_streams(
                                 &user_cfg,
                                 server_config
@@ -1972,23 +1985,16 @@ async fn item_for_user(
                                 None,
                                 None,
                             );
-                            let mut reasons = device_profile
-                                .as_ref()
-                                .map(|p| p.check_direct_play(&info))
-                                .unwrap_or_default();
-                            if let Some(reason) =
-                                crate::device_profile::subtitle_burn_reason(
+                            let reasons =
+                                crate::device_profile::compute_transcode_reasons(
                                     &info,
                                     device_profile.as_ref(),
                                     subtitle_mode,
                                     None,
-                                )
-                            {
-                                reasons.insert(reason);
-                            }
-                            info.transcoding_reasons = reasons;
+                                    ranking_max_bitrate,
+                                );
                             let rank = info
-                                .capability_rank(device_profile.as_ref())
+                                .capability_rank(device_profile.as_ref(), &reasons)
                                 .key(sort_mode);
                             (m, rank)
                         })
@@ -2035,12 +2041,68 @@ async fn item_for_user(
         .await;
     }
 
+    // When streams were actually fetched but none found, replace the
+    // listing-style stubs with a single "No streams found" stub. Must run
+    // before the resolve/label blocks below so they operate on this final
+    // source instead of the transient two-stub list from db_media_to_item
+    // (whose second entry is an empty placeholder with no real streams).
+    if needs_streams
+        && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode)
+        && media
+            .sources
+            .as_deref()
+            .map_or(false, |s| s.is_empty())
+    {
+        let media_streams = media
+            .probe_data
+            .as_ref()
+            .map(|p| {
+                p.media_streams
+                    .clone()
+            })
+            .unwrap_or_default();
+        base_item.media_sources = Some(vec![api::MediaSourceInfo {
+            id: media.id,
+            e_tag: media.id,
+            name: Some("No streams found".to_string()),
+            protocol: api::MediaProtocol::File,
+            path: Some(format!("/remux/{}", media.id)),
+            media_streams,
+            ..Default::default()
+        }]);
+    }
+
+    if want_streams {
+        if let Some(ref mut sources) = base_item.media_sources {
+            // Default audio/subtitle stream indexes are per-request API values
+            // (never persisted) — derive them here for the detail page. Must
+            // run before the label block below, which needs to know the real
+            // resolved subtitle to judge a possible burn-in.
+            for source in sources.iter_mut() {
+                source.resolve_default_streams(
+                    &user_cfg,
+                    server_config
+                        .preferred_metadata_language
+                        .as_deref(),
+                    media
+                        .original_language
+                        .as_deref(),
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+            }
+        }
+    }
+
     // Append the Direct Play/Direct Stream/Transcode decision to the video
     // stream's DisplayTitle, same as PlaybackInfo — done here, after the
-    // filename-guess fallback, so media_streams are as complete as this
-    // endpoint ever gets them (real ffprobe or guessed). No live DeviceProfile
-    // exists on a plain GET, so this only runs when the device has previously
-    // sent one that got persisted.
+    // filename-guess fallback and default-stream resolution above, so both
+    // the media_streams this endpoint ever gets (real ffprobe or guessed) and
+    // the subtitle/bitrate checks compute_transcode_reasons needs are ready.
+    // No live DeviceProfile exists on a plain GET, so this only runs when the
+    // device has previously sent one that got persisted.
     if needs_streams
         && server_config
             .show_playback_decision_in_title
@@ -2050,12 +2112,19 @@ async fn item_for_user(
             .device
             .parsed_device_profile()
         {
+            let label_max_bitrate = device_profile.max_streaming_bitrate;
             if let Some(sources) = base_item
                 .media_sources
                 .as_mut()
             {
                 for source in sources.iter_mut() {
-                    let reasons = device_profile.check_direct_play(source);
+                    let reasons = crate::device_profile::compute_transcode_reasons(
+                        source,
+                        Some(&device_profile),
+                        subtitle_mode,
+                        None,
+                        label_max_bitrate,
+                    );
                     let source_bitrate = source.bitrate;
                     if let Some(video) = source
                         .media_streams
@@ -2104,34 +2173,6 @@ async fn item_for_user(
             source.id = gid;
             source.e_tag = gid;
         }
-    }
-
-    // When streams were actually fetched but none found, replace the
-    // listing-style stubs with a single "No streams found" stub.
-    if needs_streams
-        && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode)
-        && media
-            .sources
-            .as_deref()
-            .map_or(false, |s| s.is_empty())
-    {
-        let media_streams = media
-            .probe_data
-            .as_ref()
-            .map(|p| {
-                p.media_streams
-                    .clone()
-            })
-            .unwrap_or_default();
-        base_item.media_sources = Some(vec![api::MediaSourceInfo {
-            id: media.id,
-            e_tag: media.id,
-            name: Some("No streams found".to_string()),
-            protocol: api::MediaProtocol::File,
-            path: Some(format!("/remux/{}", media.id)),
-            media_streams,
-            ..Default::default()
-        }]);
     }
 
     // For tracks, wrap the Source row(s) as HLS-transcoded MediaSources.
@@ -2269,28 +2310,6 @@ async fn item_for_user(
         base_item.location_type = api::LocationType::Virtual;
         base_item.path = None;
         base_item.can_download = Some(false);
-    }
-
-    if want_streams {
-        if let Some(ref mut sources) = base_item.media_sources {
-            // Default audio/subtitle stream indexes are per-request API values
-            // (never persisted) — derive them here for the detail page.
-            for source in sources.iter_mut() {
-                source.resolve_default_streams(
-                    &user_cfg,
-                    server_config
-                        .preferred_metadata_language
-                        .as_deref(),
-                    media
-                        .original_language
-                        .as_deref(),
-                    None,
-                    None,
-                    None,
-                    None,
-                );
-            }
-        }
     }
 
     apply_permissions(&mut base_item, &session.user);

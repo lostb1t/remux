@@ -665,7 +665,9 @@ fn transcode_cost_tier(reasons: &TranscodeReasons) -> u8 {
     // SubtitleCodecNotSupported is only ever inserted when the resolved
     // default subtitle must be burned in (see api/playback.rs) — burning
     // text into frames means re-encoding the video, same cost as an
-    // incompatible video codec/profile/range/bit depth.
+    // incompatible video codec/profile/range/bit depth. ContainerBitrateExceedsLimit
+    // belongs here too: `build_video_transcode` (playback/decision.rs) treats it
+    // as needing a video re-encode (drops to H.264), not a plain remux.
     let needs_video_reencode = reasons
         .0
         .iter()
@@ -677,6 +679,7 @@ fn transcode_cost_tier(reasons: &TranscodeReasons) -> u8 {
                     | TranscodeReason::VideoProfileNotSupported(_)
                     | TranscodeReason::VideoBitDepthNotSupported(_)
                     | TranscodeReason::SubtitleCodecNotSupported(_)
+                    | TranscodeReason::ContainerBitrateExceedsLimit
             )
         });
     if needs_video_reencode {
@@ -689,9 +692,8 @@ fn transcode_cost_tier(reasons: &TranscodeReasons) -> u8 {
     if needs_audio_reencode {
         return 2;
     }
-    // Only cheap reasons left: ContainerNotSupported, VideoCodecTagNotSupported,
-    // ContainerBitrateExceedsLimit — a remux, not a re-encode (video and audio
-    // both copied).
+    // Only cheap reasons left: ContainerNotSupported, VideoCodecTagNotSupported —
+    // a remux, not a re-encode (video and audio both copied).
     3
 }
 
@@ -746,6 +748,51 @@ pub fn subtitle_burn_reason(
             codec.to_string(),
         ))
     }
+}
+
+/// The full set of device-profile-driven transcode reasons for `source`:
+/// container/codec incompatibility (`check_direct_play`), the bitrate cap,
+/// and (in Burn mode) the resolved subtitle needing to be burned in. This is
+/// the single source of truth both `PlaybackInfo` and item-details ranking
+/// build from, so neither one silently ignores a reason the other applies —
+/// call `resolve_default_streams` on `source` first so the subtitle check
+/// judges the real selection, not container order.
+///
+/// Deliberately does *not* include transport-specific cases like "RTSP can
+/// never direct play" — those depend on the raw stream descriptor, not
+/// anything `MediaSourceInfo` carries, and only matter to the real playback
+/// decision, not to ranking.
+pub fn compute_transcode_reasons(
+    source: &MediaSourceInfo,
+    device_profile: Option<&DeviceProfile>,
+    subtitle_mode: EmbeddedSubtitleHandling,
+    explicit_subtitle_index: Option<i64>,
+    max_bitrate: Option<i64>,
+) -> TranscodeReasons {
+    let mut reasons = device_profile
+        .map(|profile| profile.check_direct_play(source))
+        .unwrap_or_default();
+    // Only flag bitrate exceeded when the source bitrate is known and
+    // actually exceeds the cap. An unknown bitrate is treated as within
+    // limits so that clients with a high/unlimited cap aren't forced into
+    // transcoding unnecessarily.
+    let bitrate_exceeded = max_bitrate.is_some_and(|max| {
+        source
+            .bitrate
+            .is_some_and(|b| b > max)
+    });
+    if bitrate_exceeded {
+        reasons.insert(TranscodeReason::ContainerBitrateExceedsLimit);
+    }
+    if let Some(reason) = subtitle_burn_reason(
+        source,
+        device_profile,
+        subtitle_mode,
+        explicit_subtitle_index,
+    ) {
+        reasons.insert(reason);
+    }
+    reasons
 }
 
 /// Jellyfin's own three-way playback decision, derived from the same cost
@@ -900,11 +947,23 @@ fn audio_codec_tier(stream: Option<&MediaStream>) -> u8 {
 }
 
 /// Rank a `MediaSourceInfo` against a device's capabilities — call as
-/// `source.capability_rank(profile)` and sort with
-/// `sort_by_key(|s| Reverse(s.capability_rank(profile).key(mode)))`, higher is
-/// better.
+/// `source.capability_rank(profile, reasons)` and sort with
+/// `sort_by_key(|s| Reverse(s.capability_rank(profile, reasons).key(mode)))`,
+/// higher is better.
+///
+/// `reasons` is taken as a parameter rather than read from
+/// `self.transcoding_reasons` on purpose: the profile used for *ranking* can
+/// differ from the one used for the actual transcode decision (a request
+/// missing a live DeviceProfile falls back to a persisted one for sorting
+/// only, to avoid a stale profile causing a wrong transcode action) — pass
+/// `compute_transcode_reasons(source, profile, ...)` built against whichever
+/// profile you're ranking with.
 pub trait MediaSourceCapabilityExt {
-    fn capability_rank(&self, profile: Option<&DeviceProfile>) -> MediaSourceRank;
+    fn capability_rank(
+        &self,
+        profile: Option<&DeviceProfile>,
+        reasons: &TranscodeReasons,
+    ) -> MediaSourceRank;
 }
 
 /// Release-source weight (remux > BluRay > WEB-DL > WEBRip > ...), parsed from
@@ -927,9 +986,12 @@ fn quality_source_tier(source: &MediaSourceInfo) -> u8 {
 
 impl MediaSourceCapabilityExt for MediaSourceInfo {
     /// When `profile` is `None`, every source ties except on
-    /// `transcode_cost_tier`, which reflects whatever transcode reasons are
-    /// already on the source.
-    fn capability_rank(&self, profile: Option<&DeviceProfile>) -> MediaSourceRank {
+    /// `transcode_cost_tier`, which reflects whatever `reasons` says.
+    fn capability_rank(
+        &self,
+        profile: Option<&DeviceProfile>,
+        reasons: &TranscodeReasons,
+    ) -> MediaSourceRank {
         let video = primary_video_stream(self);
         let audio = default_audio_stream(self);
 
@@ -944,7 +1006,7 @@ impl MediaSourceCapabilityExt for MediaSourceInfo {
         };
 
         MediaSourceRank {
-            transcode_cost_tier: transcode_cost_tier(&self.transcoding_reasons),
+            transcode_cost_tier: transcode_cost_tier(reasons),
             resolution_tier,
             hdr_tier: hdr_tier(video),
             // A missing BitDepth is common for remote (RemuxDB-sourced)
@@ -1472,13 +1534,27 @@ mod tests {
             25_000_000,
         );
         assert!(
-            compat(direct_play_low_bitrate.capability_rank(None))
-                > compat(direct_stream_high_bitrate.capability_rank(None)),
+            compat(
+                direct_play_low_bitrate.capability_rank(
+                    None,
+                    &direct_play_low_bitrate.transcoding_reasons
+                )
+            ) > compat(direct_stream_high_bitrate.capability_rank(
+                None,
+                &direct_stream_high_bitrate.transcoding_reasons
+            )),
             "Compatibility must still prefer the true direct play"
         );
         assert!(
-            best(direct_stream_high_bitrate.capability_rank(None))
-                > best(direct_play_low_bitrate.capability_rank(None)),
+            best(direct_stream_high_bitrate.capability_rank(
+                None,
+                &direct_stream_high_bitrate.transcoding_reasons
+            )) > best(
+                direct_play_low_bitrate.capability_rank(
+                    None,
+                    &direct_play_low_bitrate.transcoding_reasons
+                )
+            ),
             "Best must treat direct play and direct stream as equal, letting \
              the higher-bitrate remux win"
         );
@@ -1497,8 +1573,12 @@ mod tests {
             &[TranscodeReason::VideoCodecNotSupported("test".to_string())],
         );
         assert!(
-            best(direct_stream.capability_rank(None))
-                > best(needs_video_reencode.capability_rank(None)),
+            best(
+                direct_stream.capability_rank(None, &direct_stream.transcoding_reasons)
+            ) > best(
+                needs_video_reencode
+                    .capability_rank(None, &needs_video_reencode.transcoding_reasons)
+            ),
             "a real re-encode must still rank below a container-only remux, \
              even though it looks better on paper"
         );
@@ -1518,8 +1598,13 @@ mod tests {
         );
         let profile = streamyfin_mpv_profile();
         assert!(
-            compat(compatible_1080p.capability_rank(Some(&profile)))
-                > compat(incompatible_4k_hdr.capability_rank(Some(&profile))),
+            compat(compatible_1080p.capability_rank(
+                Some(&profile),
+                &compatible_1080p.transcoding_reasons
+            )) > compat(incompatible_4k_hdr.capability_rank(
+                Some(&profile),
+                &incompatible_4k_hdr.transcoding_reasons
+            )),
             "a fully direct-playable 1080p source must outrank a 4K/HDR source that needs a transcode"
         );
     }
@@ -1538,8 +1623,13 @@ mod tests {
         );
         let profile = streamyfin_mpv_profile();
         assert!(
-            quality(incompatible_4k_hdr.capability_rank(Some(&profile)))
-                > quality(compatible_1080p.capability_rank(Some(&profile))),
+            quality(incompatible_4k_hdr.capability_rank(
+                Some(&profile),
+                &incompatible_4k_hdr.transcoding_reasons
+            )) > quality(compatible_1080p.capability_rank(
+                Some(&profile),
+                &compatible_1080p.transcoding_reasons
+            )),
             "Quality mode must ignore transcode cost and rank by HDR/audio quality alone"
         );
     }
@@ -1579,8 +1669,13 @@ mod tests {
         );
         let profile = streamyfin_mpv_profile();
         assert!(
-            compat(source_4k.capability_rank(Some(&profile)))
-                > compat(source_1080p.capability_rank(Some(&profile))),
+            compat(
+                source_4k
+                    .capability_rank(Some(&profile), &source_4k.transcoding_reasons)
+            ) > compat(
+                source_1080p
+                    .capability_rank(Some(&profile), &source_1080p.transcoding_reasons)
+            ),
             "profile has an HEVC Level 153 (4K-tier) condition, so 4K should outrank 1080p"
         );
     }
@@ -1600,8 +1695,9 @@ mod tests {
             true,
         );
         assert_eq!(
-            source_4k.capability_rank(Some(&profile)),
-            source_1080p.capability_rank(Some(&profile)),
+            source_4k.capability_rank(Some(&profile), &source_4k.transcoding_reasons),
+            source_1080p
+                .capability_rank(Some(&profile), &source_1080p.transcoding_reasons),
             "without a confident 4K signal, resolution must not affect ranking"
         );
     }
@@ -1615,7 +1711,7 @@ mod tests {
                     audio_stream("aac", 2),
                     true,
                 )
-                .capability_rank(None),
+                .capability_rank(None, &TranscodeReasons::default()),
             )
         };
         assert!(rank_for(VideoRangeType::Dovi) > rank_for(VideoRangeType::Hdr10Plus));
@@ -1633,7 +1729,7 @@ mod tests {
                     audio_stream(codec, 2),
                     true,
                 )
-                .capability_rank(None),
+                .capability_rank(None, &TranscodeReasons::default()),
             )
         };
         assert!(rank_for("truehd") > rank_for("eac3"));
@@ -1785,8 +1881,11 @@ mod tests {
             false,
         );
         assert!(
-            compat(compatible.capability_rank(None))
-                > compat(incompatible_but_better_looking.capability_rank(None))
+            compat(compatible.capability_rank(None, &compatible.transcoding_reasons))
+                > compat(incompatible_but_better_looking.capability_rank(
+                    None,
+                    &incompatible_but_better_looking.transcoding_reasons
+                ))
         );
     }
 
@@ -1831,10 +1930,12 @@ mod tests {
             with_release(base(), "Movie.2024.1080p.WEB-DL.DD5.1-GROUP.mkv", 8_000_000);
 
         assert!(
-            compat(remux.capability_rank(None)) > compat(bluray.capability_rank(None))
+            compat(remux.capability_rank(None, &remux.transcoding_reasons))
+                > compat(bluray.capability_rank(None, &bluray.transcoding_reasons))
         );
         assert!(
-            compat(bluray.capability_rank(None)) > compat(webdl.capability_rank(None))
+            compat(bluray.capability_rank(None, &bluray.transcoding_reasons))
+                > compat(webdl.capability_rank(None, &webdl.transcoding_reasons))
         );
     }
 
@@ -1858,8 +1959,12 @@ mod tests {
             10_000_000,
         );
         assert!(
-            compat(higher_bitrate.capability_rank(None))
-                > compat(lower_bitrate.capability_rank(None))
+            compat(
+                higher_bitrate
+                    .capability_rank(None, &higher_bitrate.transcoding_reasons)
+            ) > compat(
+                lower_bitrate.capability_rank(None, &lower_bitrate.transcoding_reasons)
+            )
         );
     }
 
@@ -1954,10 +2059,13 @@ mod tests {
             jellyfin_web_real_profile().check_direct_play(&on_jellyfin_web);
 
         assert!(
-            compat(on_streamyfin.capability_rank(Some(&streamyfin_mpv_real_profile())))
-                > compat(
-                    on_jellyfin_web.capability_rank(Some(&jellyfin_web_real_profile()))
-                )
+            compat(on_streamyfin.capability_rank(
+                Some(&streamyfin_mpv_real_profile()),
+                &on_streamyfin.transcoding_reasons
+            )) > compat(on_jellyfin_web.capability_rank(
+                Some(&jellyfin_web_real_profile()),
+                &on_jellyfin_web.transcoding_reasons
+            ))
         );
     }
 
@@ -2010,7 +2118,9 @@ mod tests {
             source.transcoding_reasons = profile.check_direct_play(source);
         }
         sources.sort_by_key(|(_, s)| {
-            std::cmp::Reverse(compat(s.capability_rank(Some(profile))))
+            std::cmp::Reverse(compat(
+                s.capability_rank(Some(profile), &s.transcoding_reasons),
+            ))
         });
         println!("\n--- Compatibility-mode order for {label} ---");
         for (name, s) in &sources {
@@ -2083,7 +2193,9 @@ mod tests {
             source.transcoding_reasons = profile.check_direct_play(source);
         }
         sources.sort_by_key(|(_, s)| {
-            std::cmp::Reverse(best(s.capability_rank(Some(&profile))))
+            std::cmp::Reverse(best(
+                s.capability_rank(Some(&profile), &s.transcoding_reasons),
+            ))
         });
 
         println!("\n--- Full Hail Mary ranking, Jellyfin Web, Best mode ---");

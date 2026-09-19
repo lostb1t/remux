@@ -162,13 +162,17 @@ async fn items_playbackinfo_inner(
             .ctx
             .db
             .clone();
+        let user_id = session
+            .user
+            .id;
         let device_id = session
             .device
             .id
             .clone();
         tokio::spawn(async move {
             if let Err(err) =
-                auth::Device::save_device_profile(&db, &device_id, &profile).await
+                auth::Device::save_device_profile(&db, user_id, &device_id, &profile)
+                    .await
             {
                 warn!("failed to persist device profile for {device_id}: {err}");
             }
@@ -365,41 +369,10 @@ async fn items_playbackinfo_inner(
             api::inject_lyric_stream(&mut source);
         }
 
-        // Only flag bitrate exceeded when the source bitrate is known and
-        // actually exceeds the cap. An unknown bitrate is treated as within
-        // limits so that clients with a high/unlimited cap aren't forced into
-        // transcoding unnecessarily.
-        let bitrate_exceeded = max_bitrate.map_or(false, |max| {
-            source
-                .bitrate
-                .map_or(false, |b| b > max)
-        });
-
-        let mut transcode_reasons: api::TranscodeReasons = {
-            let mut reasons = device_profile
-                .as_ref()
-                .map(|profile| profile.check_direct_play(&source))
-                .unwrap_or_default();
-            if bitrate_exceeded {
-                reasons.insert(api::TranscodeReason::ContainerBitrateExceedsLimit);
-            }
-            // RTSP streams can only be served via ffmpeg — never direct-playable.
-            if matches!(
-                stream
-                    .stream_info
-                    .as_ref()
-                    .map(|si| &si.descriptor),
-                Some(crate::stream::StreamDescriptor::Rtsp { .. })
-            ) {
-                reasons.insert(api::TranscodeReason::ContainerNotSupported(
-                    "rtsp".to_string(),
-                ));
-            }
-            reasons
-        };
-
         // Strip mode: remove embedded subtitle streams not supported by the client so
         // they don't trigger a transcode. External/addon subs are never touched.
+        // Must run before resolve_default_streams below, so a stripped-out stream
+        // can never end up as the resolved default (a dangling index).
         if subtitle_mode == remux_sdks::remux::EmbeddedSubtitleHandling::Strip {
             source
                 .media_streams
@@ -441,9 +414,9 @@ async fn items_playbackinfo_inner(
         let _ = effective_url;
 
         // Resolve default audio/subtitle stream indexes for this source. These are
-        // per-request API values (never persisted); resolving before the burn
-        // check, transcode decision and subtitle delivery means those consumers
-        // see the stream the client will actually get.
+        // per-request API values (never persisted); resolving before the transcode
+        // decision and subtitle delivery means those consumers see the stream the
+        // client will actually get.
         source.resolve_default_streams(
             &user_cfg,
             server_subtitle_lang,
@@ -453,20 +426,31 @@ async fn items_playbackinfo_inner(
             saved_audio,
             saved_subtitle,
         );
-
-        // Detect embedded subtitle codecs unsupported by the client device profile.
-        // In Burn mode this triggers transcoding so the subtitle can be burned in.
-        // In Extract/Strip modes, no transcode reason is added for subtitles.
         let effective_sub_idx = q
             .subtitle_stream_index
             .or(source.default_subtitle_stream_index);
-        if let Some(reason) = crate::device_profile::subtitle_burn_reason(
+
+        // check_direct_play, the bitrate cap and the subtitle-burn check (in Burn
+        // mode) all in one place — the same reasons construction ranking below
+        // reuses for the persisted-profile fallback case.
+        let mut transcode_reasons = crate::device_profile::compute_transcode_reasons(
             &source,
             device_profile.as_ref(),
             subtitle_mode,
             q.subtitle_stream_index,
+            max_bitrate,
+        );
+        // RTSP streams can only be served via ffmpeg — never direct-playable.
+        if matches!(
+            stream
+                .stream_info
+                .as_ref()
+                .map(|si| &si.descriptor),
+            Some(crate::stream::StreamDescriptor::Rtsp { .. })
         ) {
-            transcode_reasons.insert(reason);
+            transcode_reasons.insert(api::TranscodeReason::ContainerNotSupported(
+                "rtsp".to_string(),
+            ));
         }
 
         debug!(
@@ -615,9 +599,21 @@ async fn items_playbackinfo_inner(
             .zip(sidecar_subtitle_routes.drain(..))
             .collect();
         paired.sort_by_key(|(source, _)| {
+            // Built from `sort_device_profile` (which may be the persisted
+            // fallback), not `source.transcoding_reasons` (built from the
+            // live-request-only profile) — otherwise a request that omits a
+            // live DeviceProfile would score every source as tier 4 and the
+            // persisted profile would never actually influence the sort.
+            let ranking_reasons = crate::device_profile::compute_transcode_reasons(
+                source,
+                sort_device_profile.as_ref(),
+                subtitle_mode,
+                q.subtitle_stream_index,
+                max_bitrate,
+            );
             std::cmp::Reverse(
                 source
-                    .capability_rank(sort_device_profile.as_ref())
+                    .capability_rank(sort_device_profile.as_ref(), &ranking_reasons)
                     .key(sort_mode),
             )
         });

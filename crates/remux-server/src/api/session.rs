@@ -57,6 +57,9 @@ pub async fn sessions_capabilities(
             &state
                 .ctx
                 .db,
+            session
+                .user
+                .id,
             &session
                 .device
                 .id,
@@ -71,7 +74,7 @@ pub async fn sessions_capabilities(
 pub async fn sessions_capabilities_by_id(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     body: Option<Json<api::ClientCapabilitiesDto>>,
 ) -> Result<StatusCode> {
     if let Some(Json(caps)) = body {
@@ -79,6 +82,9 @@ pub async fn sessions_capabilities_by_id(
             &state
                 .ctx
                 .db,
+            session
+                .user
+                .id,
             &id,
             &caps,
         )
@@ -367,6 +373,9 @@ pub async fn sessions_capabilities_full(
             &state
                 .ctx
                 .db,
+            session
+                .user
+                .id,
             &session
                 .device
                 .id,
@@ -381,7 +390,7 @@ pub async fn sessions_capabilities_full(
 pub async fn sessions_capabilities_full_by_id(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     body: Option<Json<api::ClientCapabilitiesDto>>,
 ) -> Result<StatusCode> {
     if let Some(Json(caps)) = body {
@@ -389,6 +398,9 @@ pub async fn sessions_capabilities_full_by_id(
             &state
                 .ctx
                 .db,
+            session
+                .user
+                .id,
             &id,
             &caps,
         )
