@@ -17,6 +17,8 @@ pub enum Route {
     LibraryRoute,
     #[route("/content/iptv")]
     IptvRoute,
+    #[route("/streaming/general")]
+    StreamingGeneralRoute,
     #[route("/streaming/groups")]
     StreamingGroupsRoute,
     #[route("/streaming/probing")]
@@ -76,6 +78,12 @@ pub(crate) fn LibraryRoute() -> Element {
 pub(crate) fn IptvRoute() -> Element {
     let app_state = use_context::<AppState>();
     rsx! { IptvPage { app_state } }
+}
+
+#[component]
+pub(crate) fn StreamingGeneralRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { StreamSortingSettingsCard { app_state } }
 }
 
 #[component]

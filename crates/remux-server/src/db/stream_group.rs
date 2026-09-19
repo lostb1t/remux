@@ -356,58 +356,9 @@ impl StreamGroup {
             return MatchOutcome::Match;
         }
 
-        let raw = match info
-            .filename
-            .as_deref()
-            .or(info
-                .name
-                .as_deref())
-        {
-            Some(s) => s,
-            None => return MatchOutcome::PassThrough,
+        let Some((resolution, source, codec)) = detect_stream_quality(info) else {
+            return MatchOutcome::PassThrough;
         };
-
-        let candidates: Vec<&str> = if raw.contains('\n') {
-            raw.lines()
-                .filter(|l| {
-                    !l.trim()
-                        .is_empty()
-                })
-                .collect()
-        } else {
-            vec![raw]
-        };
-
-        let best = candidates
-            .iter()
-            .map(|s| hunch::hunch(s))
-            .max_by_key(|p| {
-                (p.screen_size()
-                    .is_some() as u8)
-                    + (p.source()
-                        .is_some() as u8)
-            });
-
-        let parsed = match best {
-            Some(p) => p,
-            None => return MatchOutcome::PassThrough,
-        };
-
-        let resolution = min_screen_size(&parsed)
-            .and_then(StreamResolution::from_hunch)
-            .unwrap_or(StreamResolution::Other);
-        let source = {
-            let s = canonical_source(&parsed);
-            if s == StreamQuality::Other {
-                fallback_source(raw)
-            } else {
-                s
-            }
-        };
-        let codec = parsed
-            .video_codec()
-            .and_then(StreamCodec::from_hunch)
-            .unwrap_or(StreamCodec::Other);
 
         let eval = |rule: &StreamRule| -> MatchOutcome {
             match rule {
@@ -610,6 +561,123 @@ impl StreamGroup {
 /// resolution. Encoders only ever downscale from source, never label a
 /// downscaled encode with a higher resolution, so the smaller candidate is
 /// always the real encode resolution when they disagree.
+/// Parse a stream's filename/name into (resolution, quality source, codec)
+/// hints, the same way group filter matching does. Returns `None` when there
+/// is nothing to parse (no filename/name at all, or hunch found nothing
+/// usable) — callers treat that as "unknown", not "worst".
+pub(crate) fn detect_stream_quality(
+    info: &StreamInfo,
+) -> Option<(StreamResolution, StreamQuality, StreamCodec)> {
+    let raw = info
+        .filename
+        .as_deref()
+        .or(info
+            .name
+            .as_deref())?;
+
+    let candidates: Vec<&str> = if raw.contains('\n') {
+        raw.lines()
+            .filter(|l| {
+                !l.trim()
+                    .is_empty()
+            })
+            .collect()
+    } else {
+        vec![raw]
+    };
+
+    let best = candidates
+        .iter()
+        .map(|s| hunch::hunch(s))
+        .max_by_key(|p| {
+            (p.screen_size()
+                .is_some() as u8)
+                + (p.source()
+                    .is_some() as u8)
+        })?;
+
+    let resolution = min_screen_size(&best)
+        .and_then(StreamResolution::from_hunch)
+        .unwrap_or(StreamResolution::Other);
+    let source = {
+        let s = canonical_source(&best);
+        if s == StreamQuality::Other {
+            fallback_source(raw)
+        } else {
+            s
+        }
+    };
+    let codec = best
+        .video_codec()
+        .and_then(StreamCodec::from_hunch)
+        .unwrap_or(StreamCodec::Other);
+
+    Some((resolution, source, codec))
+}
+
+/// Coarse pre-probe "how good does this look" weight — higher is better.
+/// Call as `media.quality_weight()` and sort with
+/// `sort_by_key(|s| Reverse(s.quality_weight()))`. Used to order stream
+/// candidates before any of them are actually probed (real technical specs,
+/// and device-capability-aware ranking, only exist after that), so the file
+/// that gets the one real probe attempt is a good guess rather than whatever
+/// an addon happened to list first.
+pub(crate) trait PreProbeQualityExt {
+    fn quality_weight(&self) -> (u8, u8);
+}
+
+/// Release-source weight — higher is better — shared by the pre-probe
+/// candidate ordering (`quality_weight`) and the post-probe capability rank
+/// (`device_profile::capability_rank`), so "remux beats BluRay beats WEB-DL"
+/// means the same thing in both places.
+pub(crate) fn source_quality_weight(quality: &StreamQuality) -> u8 {
+    match quality {
+        StreamQuality::BluRayRemux => 6,
+        StreamQuality::BluRay => 5,
+        StreamQuality::WebDl => 4,
+        StreamQuality::WebRip => 3,
+        StreamQuality::Hdtv => 2,
+        StreamQuality::Dvd => 1,
+        StreamQuality::Tv | StreamQuality::Other => 0,
+    }
+}
+
+fn resolution_weight(resolution: &StreamResolution) -> u8 {
+    match resolution {
+        StreamResolution::R2160p => 5,
+        StreamResolution::R1080p => 4,
+        StreamResolution::R720p => 3,
+        StreamResolution::R480p => 2,
+        StreamResolution::R360p => 1,
+        StreamResolution::Other => 0,
+    }
+}
+
+/// Same filename-derived source-quality weight as `quality_weight`, usable
+/// wherever only a `StreamInfo` (not a full `Media` row) is on hand — e.g.
+/// scoring an already-probed `MediaSourceInfo` in `device_profile.rs`.
+pub(crate) fn detect_source_quality_weight(info: Option<&StreamInfo>) -> u8 {
+    info.and_then(detect_stream_quality)
+        .map(|(_resolution, quality, _codec)| source_quality_weight(&quality))
+        .unwrap_or(0)
+}
+
+impl PreProbeQualityExt for Media {
+    fn quality_weight(&self) -> (u8, u8) {
+        let Some((resolution, quality, _codec)) = self
+            .stream_info
+            .as_ref()
+            .and_then(detect_stream_quality)
+        else {
+            return (0, 0);
+        };
+        (
+            resolution_weight(&resolution),
+            source_quality_weight(&quality),
+        )
+    }
+}
+
 pub(crate) fn min_screen_size<'a>(parsed: &'a hunch::HunchResult) -> Option<&'a str> {
     parsed
         .all(hunch::Property::ScreenSize)
@@ -1130,5 +1198,68 @@ mod tests {
             ),
             MatchOutcome::NoMatch
         );
+    }
+
+    // --- detect_stream_quality / quality_weight (pre-probe ordering) ---
+
+    #[test]
+    fn detect_stream_quality_parses_resolution_and_quality_from_filename() {
+        let (resolution, quality, _codec) = detect_stream_quality(&info(
+            "The Martian 2015 UHD BluRay 2160p HDR10 DoVi Atmos x265-GROUP.mkv",
+        ))
+        .expect("expected a parseable filename");
+        assert_eq!(resolution, StreamResolution::R2160p);
+        assert_eq!(quality, StreamQuality::BluRay);
+
+        let (resolution, quality, _codec) =
+            detect_stream_quality(&info("Movie.2024.1080p.WEBRip.mkv"))
+                .expect("expected a parseable filename");
+        assert_eq!(resolution, StreamResolution::R1080p);
+        assert_eq!(quality, StreamQuality::WebRip);
+    }
+
+    #[test]
+    fn detect_stream_quality_returns_none_without_filename_or_name() {
+        let info = StreamInfo {
+            descriptor: StreamDescriptor::default(),
+            ..Default::default()
+        };
+        assert!(detect_stream_quality(&info).is_none());
+    }
+
+    fn stream_media(filename: Option<&str>) -> Media {
+        Media {
+            stream_info: filename.map(|f| info(f)),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn quality_weight_ranks_2160p_above_1080p_above_720p() {
+        let m2160 = stream_media(Some(
+            "The Martian 2015 UHD BluRay 2160p HDR10 DoVi Atmos x265-GROUP.mkv",
+        ));
+        let m1080 = stream_media(Some("Movie.2024.1080p.WEBRip.mkv"));
+        let m720 = stream_media(Some("Movie.2024.720p.WEBRip.mkv"));
+        assert!(m2160.quality_weight() > m1080.quality_weight());
+        assert!(m1080.quality_weight() > m720.quality_weight());
+    }
+
+    #[test]
+    fn quality_weight_ranks_bluray_above_webdl_above_webrip() {
+        let bluray = stream_media(Some(
+            "The Martian 2015 Extended Cut UHD BluRay 1080p DD Atmos 5 1 DoVi HDR10 x265-SM737.mkv",
+        ));
+        let webdl = stream_media(Some("Movie.2024.1080p.WEB-DL.x264-GROUP.mkv"));
+        let webrip = stream_media(Some("Movie.2024.1080p.WEBRip.mkv"));
+        assert!(bluray.quality_weight() > webdl.quality_weight());
+        assert!(webdl.quality_weight() > webrip.quality_weight());
+    }
+
+    #[test]
+    fn quality_weight_of_unparseable_stream_is_worst_but_does_not_panic() {
+        let unknown = stream_media(None);
+        let known = stream_media(Some("Movie.2024.1080p.WEBRip.mkv"));
+        assert!(known.quality_weight() > unknown.quality_weight());
     }
 }

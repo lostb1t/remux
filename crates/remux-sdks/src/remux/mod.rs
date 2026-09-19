@@ -625,6 +625,32 @@ pub struct Username(String);
 )]
 pub struct AioUrl(String);
 
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    Default,
+    strum_macros::Display,
+    strum_macros::EnumString,
+)]
+#[serde(rename_all = "PascalCase")]
+#[strum(serialize_all = "PascalCase")]
+pub enum SortMediaSourcesMode {
+    /// No capability-based sorting — MediaSources stay in probe/addon order.
+    Disabled,
+    /// Prefer the best playback experience: direct play / direct stream (no
+    /// video transcoding) always outranks a version that needs one, even if
+    /// that version is technically higher quality.
+    #[default]
+    Compatibility,
+    /// Best quality always wins, regardless of whether it needs a transcode.
+    Quality,
+}
+
 #[dto]
 pub struct ServerConfiguration {
     #[default(Some(false))]
@@ -724,6 +750,18 @@ pub struct ServerConfiguration {
     /// Disabled by default to retain Jellyfin's standard resume-only behaviour.
     #[default(Some(false))]
     pub enable_next_up_in_continue_watching: Option<bool>,
+    /// How to order MediaSources for the requesting device when a DeviceProfile
+    /// is available: `Disabled` (leave probe/addon order alone), `Compatibility`
+    /// (default — never prefer a version that needs a transcode over one that
+    /// direct-plays/streams, even if it's lower quality), or `Quality` (best
+    /// quality always wins, regardless of transcode cost).
+    #[default(Some(SortMediaSourcesMode::Compatibility))]
+    pub sort_media_sources: Option<SortMediaSourcesMode>,
+    /// Append the playback decision ("Direct Play" / "Direct Stream" /
+    /// "Transcode") to each MediaSource's display title, when a DeviceProfile
+    /// is available to judge it against. Default: true.
+    #[default(Some(true))]
+    pub show_playback_decision_in_title: Option<bool>,
 }
 
 #[derive(
@@ -1856,6 +1894,27 @@ where
     Ok(if items.is_empty() { None } else { Some(items) })
 }
 
+/// Mirrors `deser_csv` so `DeviceProfile` (and friends) round-trip through
+/// our own JSON storage in the same comma-separated-string shape they were
+/// deserialized from, instead of the default `Vec<T>` JSON array shape that
+/// `deser_csv` cannot read back.
+fn ser_csv<S, T>(items: &Option<Vec<T>>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+    T: std::fmt::Display,
+{
+    match items {
+        None => serializer.serialize_none(),
+        Some(items) => serializer.serialize_str(
+            &items
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+        ),
+    }
+}
+
 fn deser_csv_video_containers<'de, D>(
     d: D,
 ) -> Result<Option<Vec<VideoContainer>>, D::Error>
@@ -1972,21 +2031,27 @@ pub struct VideoStreamQuery {
     pub live_stream_id: Option<String>,
 }
 
-#[derive(Default, Debug, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct TranscodingProfile {
     #[serde(deserialize_with = "deser_opt_video_container")]
     pub container: Option<VideoContainer>,
     pub protocol: Option<TranscodingProtocol>,
-    #[serde(deserialize_with = "deser_csv_video_codecs")]
+    #[serde(
+        deserialize_with = "deser_csv_video_codecs",
+        serialize_with = "ser_csv"
+    )]
     pub video_codec: Option<Vec<VideoCodec>>,
-    #[serde(deserialize_with = "deser_csv_audio_codecs")]
+    #[serde(
+        deserialize_with = "deser_csv_audio_codecs",
+        serialize_with = "ser_csv"
+    )]
     pub audio_codec: Option<Vec<AudioCodec>>,
     #[serde(rename = "Type")]
     pub type_: Option<DlnaProfileType>,
 }
 
-#[derive(Default, Debug, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct DeviceProfile {
     pub name: Option<String>,
@@ -2001,20 +2066,29 @@ pub struct DeviceProfile {
     pub subtitle_profiles: Vec<SubtitleProfile>,
 }
 
-#[derive(Default, Debug, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct DirectPlayProfile {
-    #[serde(deserialize_with = "deser_csv_video_containers")]
+    #[serde(
+        deserialize_with = "deser_csv_video_containers",
+        serialize_with = "ser_csv"
+    )]
     pub container: Option<Vec<VideoContainer>>,
-    #[serde(deserialize_with = "deser_csv_audio_codecs")]
+    #[serde(
+        deserialize_with = "deser_csv_audio_codecs",
+        serialize_with = "ser_csv"
+    )]
     pub audio_codec: Option<Vec<AudioCodec>>,
-    #[serde(deserialize_with = "deser_csv_video_codecs")]
+    #[serde(
+        deserialize_with = "deser_csv_video_codecs",
+        serialize_with = "ser_csv"
+    )]
     pub video_codec: Option<Vec<VideoCodec>>,
     #[serde(rename = "Type")]
     pub type_: Option<DlnaProfileType>,
 }
 
-#[derive(Default, Debug, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct ContainerProfile {
     pub type_: Option<DlnaProfileType>,
@@ -2022,16 +2096,16 @@ pub struct ContainerProfile {
     pub conditions: Vec<ProfileCondition>,
 }
 
-#[derive(Default, Debug, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct CodecProfile {
     pub type_: Option<DlnaProfileType>,
-    #[serde(deserialize_with = "deser_csv_strings")]
+    #[serde(deserialize_with = "deser_csv_strings", serialize_with = "ser_csv")]
     pub codec: Option<Vec<String>>,
     pub conditions: Vec<ProfileCondition>,
 }
 
-#[derive(Default, Debug, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct SubtitleProfile {
     pub format: Option<String>,
@@ -2039,7 +2113,7 @@ pub struct SubtitleProfile {
     pub method: Option<SubtitleDeliveryMethod>,
 }
 
-#[derive(Default, Debug, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct ProfileCondition {
     pub condition: Option<String>,

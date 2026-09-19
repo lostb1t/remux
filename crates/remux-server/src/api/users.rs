@@ -375,6 +375,7 @@ pub async fn authenticate_with_quickconnect(
             .into(),
         last_activity_at: None,
         capabilities: None,
+        device_profile: None,
         remote_ip: None,
         created_at: None,
     };

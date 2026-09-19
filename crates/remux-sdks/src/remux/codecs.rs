@@ -111,6 +111,12 @@ impl VideoCodec {
     }
 }
 
+impl serde::Serialize for VideoCodec {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_string())
+    }
+}
+
 #[derive(
     Debug, Clone, PartialEq, Eq, strum_macros::EnumString, strum_macros::Display,
 )]
@@ -180,6 +186,12 @@ pub enum AudioCodec {
     Pcm,
     #[strum(default, to_string = "{0}")]
     Other(String),
+}
+
+impl serde::Serialize for AudioCodec {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_string())
+    }
 }
 
 #[derive(

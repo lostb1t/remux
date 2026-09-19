@@ -19,6 +19,7 @@ use crate::{
     common::{IntoVec, TickUnit, ToRunTimeTicks},
     db,
     db::auth,
+    device_profile::{DeviceProfileExt, MediaSourceCapabilityExt},
     errors::LogErr,
     sdks,
 };
@@ -1762,6 +1763,68 @@ async fn item_for_user(
             }
         }
         media.sources = Some(filtered);
+
+        // Same capability-based ordering PlaybackInfo applies, so the details
+        // page's version list (and MediaSources[0], which several clients
+        // treat as the default choice) agrees with what playback would
+        // actually pick. There's no live DeviceProfile on a plain GET, so this
+        // uses whatever profile the device last sent (persisted on the
+        // device row) — no persisted profile means every source ties on
+        // compatibility and this falls back to a pure quality ordering.
+        // Skipped for a specific group request: the hoist above already put
+        // the requested group's own source first, and that's the contract a
+        // client re-fetching by group id relies on. Also skipped whenever any
+        // source is a stream-group representative: group order is an
+        // explicit, admin-authored priority (drag-and-drop in the dashboard)
+        // — reordering those by capability/quality would fight that intent
+        // the same way reordering the groups themselves would.
+        let sort_mode = server_config
+            .sort_media_sources
+            .unwrap_or_default();
+        if sort_mode != remux_sdks::remux::SortMediaSourcesMode::Disabled
+            && requested_group.is_none()
+            && media
+                .sources
+                .as_deref()
+                .is_some_and(|s| {
+                    s.iter()
+                        .all(|m| {
+                            m.group_id
+                                .is_none()
+                        })
+                })
+        {
+            if let Some(sources) = media
+                .sources
+                .as_mut()
+            {
+                if sources.len() > 1 {
+                    let device_profile = session
+                        .device
+                        .parsed_device_profile();
+                    let mut ranked: Vec<(db::Media, _)> = sources
+                        .drain(..)
+                        .map(|m| {
+                            let mut info = api::MediaSourceInfo::from(m.clone());
+                            info.transcoding_reasons = device_profile
+                                .as_ref()
+                                .map(|p| p.check_direct_play(&info))
+                                .unwrap_or_default();
+                            let rank = info
+                                .capability_rank(device_profile.as_ref())
+                                .key(sort_mode);
+                            (m, rank)
+                        })
+                        .collect();
+                    ranked.sort_by_key(|(_, rank)| std::cmp::Reverse(*rank));
+                    *sources = ranked
+                        .into_iter()
+                        .map(|(m, _)| m)
+                        .collect();
+                }
+            }
+        }
+
         media
             .user_state(
                 &state
@@ -1806,6 +1869,68 @@ async fn item_for_user(
             }
         }
         media.sources = Some(filtered);
+
+        // Same capability-based ordering PlaybackInfo applies, so the details
+        // page's version list (and MediaSources[0], which several clients
+        // treat as the default choice) agrees with what playback would
+        // actually pick. There's no live DeviceProfile on a plain GET, so this
+        // uses whatever profile the device last sent (persisted on the
+        // device row) — no persisted profile means every source ties on
+        // compatibility and this falls back to a pure quality ordering.
+        // Skipped for a specific group request: the hoist above already put
+        // the requested group's own source first, and that's the contract a
+        // client re-fetching by group id relies on. Also skipped whenever any
+        // source is a stream-group representative: group order is an
+        // explicit, admin-authored priority (drag-and-drop in the dashboard)
+        // — reordering those by capability/quality would fight that intent
+        // the same way reordering the groups themselves would.
+        let sort_mode = server_config
+            .sort_media_sources
+            .unwrap_or_default();
+        if sort_mode != remux_sdks::remux::SortMediaSourcesMode::Disabled
+            && requested_group.is_none()
+            && media
+                .sources
+                .as_deref()
+                .is_some_and(|s| {
+                    s.iter()
+                        .all(|m| {
+                            m.group_id
+                                .is_none()
+                        })
+                })
+        {
+            if let Some(sources) = media
+                .sources
+                .as_mut()
+            {
+                if sources.len() > 1 {
+                    let device_profile = session
+                        .device
+                        .parsed_device_profile();
+                    let mut ranked: Vec<(db::Media, _)> = sources
+                        .drain(..)
+                        .map(|m| {
+                            let mut info = api::MediaSourceInfo::from(m.clone());
+                            info.transcoding_reasons = device_profile
+                                .as_ref()
+                                .map(|p| p.check_direct_play(&info))
+                                .unwrap_or_default();
+                            let rank = info
+                                .capability_rank(device_profile.as_ref())
+                                .key(sort_mode);
+                            (m, rank)
+                        })
+                        .collect();
+                    ranked.sort_by_key(|(_, rank)| std::cmp::Reverse(*rank));
+                    *sources = ranked
+                        .into_iter()
+                        .map(|(m, _)| m)
+                        .collect();
+                }
+            }
+        }
+
         media
             .user_state(
                 &state
@@ -1837,6 +1962,44 @@ async fn item_for_user(
                 .db,
         )
         .await;
+    }
+
+    // Append the Direct Play/Direct Stream/Transcode decision to the video
+    // stream's DisplayTitle, same as PlaybackInfo — done here, after the
+    // filename-guess fallback, so media_streams are as complete as this
+    // endpoint ever gets them (real ffprobe or guessed). No live DeviceProfile
+    // exists on a plain GET, so this only runs when the device has previously
+    // sent one that got persisted.
+    if needs_streams
+        && server_config
+            .show_playback_decision_in_title
+            .unwrap_or(true)
+    {
+        if let Some(device_profile) = session
+            .device
+            .parsed_device_profile()
+        {
+            if let Some(sources) = base_item
+                .media_sources
+                .as_mut()
+            {
+                for source in sources.iter_mut() {
+                    let reasons = device_profile.check_direct_play(source);
+                    let label =
+                        crate::device_profile::playback_decision_label(&reasons);
+                    if let Some(video) = source
+                        .media_streams
+                        .iter_mut()
+                        .find(|s| matches!(s.type_, Some(api::MediaStreamType::Video)))
+                    {
+                        let title = video
+                            .display_title
+                            .get_or_insert_with(String::new);
+                        *title = format!("{title} ({label})");
+                    }
+                }
+            }
+        }
     }
 
     if !transcoding_enabled {

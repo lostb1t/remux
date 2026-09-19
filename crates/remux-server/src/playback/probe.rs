@@ -1,6 +1,7 @@
 use crate::{
     IntoApiError, ResultExt, api,
     common::{HideConsole, TickUnit, ToRunTimeTicks},
+    conversions::apply_filename_guess,
     db,
     device_profile::{AudioCodec, SubtitleCodec, VideoCodec},
 };
@@ -1026,7 +1027,20 @@ pub(crate) async fn probe_stream(
     db: &sqlx::SqlitePool,
 ) -> axum_anyhow::ApiResult<(api::MediaSourceInfo, db::Media)> {
     if skip_probe {
-        return Ok((api::MediaSourceInfo::from(stream.clone()), stream.clone()));
+        let mut info = api::MediaSourceInfo::from(stream.clone());
+        // No real probe (RemuxDB miss, and this candidate isn't the one that
+        // gets an actual ffprobe) — best-effort fill from the release filename
+        // so ranking/display aren't comparing against a blank slate. Tagged
+        // FilenameGuess by `apply_filename_guess`, so it never counts as a
+        // completed probe (see `is_reusable_probe_cache` above).
+        if apply_filename_guess(&mut info, stream) {
+            let persisted = crate::conversions::filename_guess_persist_payload(&info);
+            if let Err(e) = db::Media::save_probe_data(db, &stream.id, &persisted).await
+            {
+                warn!(id = %stream.id, error = %e, "failed to persist filename-guessed probe data");
+            }
+        }
+        return Ok((info, stream.clone()));
     }
     if let Some(cached) = &stream.probe_data {
         if is_reusable_probe_cache(cached) {

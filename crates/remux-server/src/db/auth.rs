@@ -49,6 +49,7 @@ pub struct Device {
     pub app_version: String,
     pub last_activity_at: Option<DateTime<Utc>>,
     pub capabilities: Option<sqlx::types::Json<crate::api::ClientCapabilitiesDto>>,
+    pub device_profile: Option<sqlx::types::Json<remux_sdks::remux::DeviceProfile>>,
     pub remote_ip: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
 }
@@ -356,6 +357,30 @@ impl Device {
             })
     }
 
+    /// Store the Jellyfin DeviceProfile for this device (used to sort MediaSources
+    /// by capability on later requests that don't resend the full profile).
+    pub async fn save_device_profile(
+        db: &SqlitePool,
+        device_id: &str,
+        profile: &remux_sdks::remux::DeviceProfile,
+    ) -> Result<()> {
+        sqlx::query("UPDATE devices SET device_profile = ? WHERE lower(id) = lower(?)")
+            .bind(sqlx::types::Json(profile))
+            .bind(device_id)
+            .execute(db)
+            .await?;
+        Ok(())
+    }
+
+    /// Get the stored DeviceProfile for this device, if present.
+    pub fn parsed_device_profile(&self) -> Option<remux_sdks::remux::DeviceProfile> {
+        self.device_profile
+            .as_ref()
+            .map(|j| {
+                j.0.clone()
+            })
+    }
+
     /// Load the user this device belongs to.
     pub async fn user(&self, db: &SqlitePool) -> Result<Option<db::User>> {
         db::User::get_by_id(db, &self.user_id).await
@@ -503,6 +528,7 @@ impl FromRequestParts<AppState> for AuthSession {
             app_version: String::new(),
             last_activity_at: None,
             capabilities: None,
+            device_profile: None,
             remote_ip: None,
             created_at: None,
         };

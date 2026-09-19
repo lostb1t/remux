@@ -37,7 +37,9 @@ use uuid::Uuid;
 use crate::{
     AppContext, api,
     common::{ItemProgress, ProgressReporter},
-    db, sdks,
+    db,
+    db::PreProbeQualityExt,
+    sdks,
     services::MediaResolveService,
 };
 pub use addon::{Addon, CatalogState, set_user_addon_override, user_addon_override};
@@ -3128,16 +3130,25 @@ impl AddonService {
             "raw streams fetched"
         );
 
-        // Dedup by descriptor content; order preserves addon priority (DB load order).
-        // First occurrence wins, so higher-priority addons' streams survive.
+        // Dedup by descriptor content; order preserves addon priority (DB load order)
+        // for which duplicate survives. First occurrence wins, so higher-priority
+        // addons' streams survive ties.
         let mut seen = std::collections::HashSet::new();
-        let deduped: Vec<db::Media> = raw
+        let mut deduped: Vec<db::Media> = raw
             .into_iter()
             .filter(|s| match Self::stream_dedup_key(s) {
                 Some(key) => seen.insert(key),
                 None => true,
             })
             .collect();
+
+        // Order the *deduped* list by a coarse pre-probe quality guess (filename-
+        // derived resolution/source tier) so the resulting `idx` — which decides
+        // both within-group candidate order and which single stream gets the one
+        // real ffprobe attempt — favors the best-looking version instead of
+        // whatever an addon happened to return first. Ties (including anything
+        // with no parseable filename) keep addon-priority order via the stable sort.
+        deduped.sort_by_key(|s| std::cmp::Reverse(s.quality_weight()));
 
         let sources: Vec<&str> = {
             let mut seen = std::collections::HashSet::new();

@@ -7,8 +7,8 @@ use remux_sdks::remux::{
     CountryInfo, CultureDto, EmbeddedSubtitleHandling, EncodingOptions, GetCountries,
     GetCultures, GetEncodingConfiguration, GetIntroConfiguration,
     GetSystemConfiguration, HardwareAccelerationType, IntroOptions, IntroOrder,
-    IntroTriggers, ServerConfiguration, StartTask, UpdateEncodingConfiguration,
-    UpdateIntroConfiguration, UpdateSystemConfiguration,
+    IntroTriggers, ServerConfiguration, SortMediaSourcesMode, StartTask,
+    UpdateEncodingConfiguration, UpdateIntroConfiguration, UpdateSystemConfiguration,
 };
 
 #[component]
@@ -893,6 +893,129 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                         }
                     }
                 }
+        }
+    }
+}
+
+#[component]
+pub fn StreamSortingSettingsCard(app_state: AppState) -> Element {
+    let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
+    let mut sort_mode = use_signal(|| SortMediaSourcesMode::Compatibility);
+    let mut show_decision = use_signal(|| true);
+    let mut loading = use_signal(|| true);
+    let mut saving = use_signal(|| false);
+    let mut error: Signal<Option<String>> = use_signal(|| None);
+
+    let app_state_load = app_state.clone();
+    use_effect(move || {
+        let client = app_state_load.clone();
+        spawn(async move {
+            match client
+                .execute(GetSystemConfiguration)
+                .await
+            {
+                Ok(cfg) => {
+                    sort_mode.set(
+                        cfg.sort_media_sources
+                            .unwrap_or_default(),
+                    );
+                    show_decision.set(
+                        cfg.show_playback_decision_in_title
+                            .unwrap_or(true),
+                    );
+                    base_cfg.set(Some(cfg));
+                }
+                Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
+            }
+            loading.set(false);
+        });
+    });
+
+    let description = match *sort_mode.read() {
+        SortMediaSourcesMode::Disabled => {
+            "MediaSources stay in probe/addon order — no capability-based sorting."
+        }
+        SortMediaSourcesMode::Compatibility => {
+            "Never prefer a version that needs a transcode over one that direct-plays or direct-streams, even if the transcode-needing one is technically higher quality. Recommended for most setups."
+        }
+        SortMediaSourcesMode::Quality => {
+            "Best quality (resolution, HDR, bit depth, audio) always wins, even if it means transcoding."
+        }
+    };
+
+    rsx! {
+        Card { title: "General",
+            if *loading.read() {
+                LoadingText {}
+            } else {
+                div { style: "display:flex;flex-direction:column;gap:14px",
+                    div { class: "field",
+                        label { class: "field-label", r#for: "sort-media-sources", "Sort streams by device capability" }
+                        div { class: "field-hint", "{description}" }
+                        select {
+                            id: "sort-media-sources",
+                            class: "select-input",
+                            disabled: *saving.read(),
+                            value: "{sort_mode.read().to_string()}",
+                            onchange: {
+                                let client = app_state.clone();
+                                move |e: Event<FormData>| {
+                                    let Ok(mode) = e.value().parse::<SortMediaSourcesMode>() else { return };
+                                    sort_mode.set(mode);
+                                    let Some(cfg) = base_cfg.peek().clone() else { return };
+                                    let updated = ServerConfiguration {
+                                        sort_media_sources: Some(mode),
+                                        ..cfg
+                                    };
+                                    saving.set(true);
+                                    error.set(None);
+                                    let c = client.clone();
+                                    spawn(async move {
+                                        match c.execute(UpdateSystemConfiguration { config: updated.clone() }).await {
+                                            Ok(_) => base_cfg.set(Some(updated)),
+                                            Err(e) => error.set(Some(format!("Failed to save: {e}"))),
+                                        }
+                                        saving.set(false);
+                                    });
+                                }
+                            },
+                            option { value: "Disabled", selected: *sort_mode.read() == SortMediaSourcesMode::Disabled, "Disabled" }
+                            option { value: "Compatibility", selected: *sort_mode.read() == SortMediaSourcesMode::Compatibility, "Compatibility" }
+                            option { value: "Quality", selected: *sort_mode.read() == SortMediaSourcesMode::Quality, "Quality" }
+                        }
+                    }
+                    ToggleRow {
+                        label: "Show playback decision in title",
+                        description: "Append \"(Direct Play)\", \"(Direct Stream)\", or \"(Transcode)\" to each stream's display title, judged against the device's last known DeviceProfile. Enabled by default.",
+                        checked: *show_decision.read(),
+                        disabled: *saving.read(),
+                        on_change: {
+                            let client = app_state.clone();
+                            move |v| {
+                                show_decision.set(v);
+                                let Some(cfg) = base_cfg.peek().clone() else { return };
+                                let updated = ServerConfiguration {
+                                    show_playback_decision_in_title: Some(v),
+                                    ..cfg
+                                };
+                                saving.set(true);
+                                error.set(None);
+                                let c = client.clone();
+                                spawn(async move {
+                                    match c.execute(UpdateSystemConfiguration { config: updated.clone() }).await {
+                                        Ok(_) => base_cfg.set(Some(updated)),
+                                        Err(e) => error.set(Some(format!("Failed to save: {e}"))),
+                                    }
+                                    saving.set(false);
+                                });
+                            }
+                        }
+                    }
+                    if let Some(err) = error.read().as_ref() {
+                        ErrorAlert { message: err.clone() }
+                    }
+                }
+            }
         }
     }
 }
