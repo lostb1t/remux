@@ -1,9 +1,10 @@
 pub(crate) use remux_sdks::remux::{AudioCodec, SubtitleCodec, VideoCodec};
 use remux_sdks::remux::{
-    CodecProfile, DeviceProfile, DirectPlayProfile, DlnaProfileType, MediaSourceInfo,
-    MediaStream, MediaStreamType, ProfileCondition, SortMediaSourcesMode,
-    SubtitleDeliveryMethod, TranscodeReason, TranscodeReasons, TranscodingProfile,
-    TranscodingProtocol, VideoContainer, VideoRangeType,
+    CodecProfile, DeviceProfile, DirectPlayProfile, DlnaProfileType,
+    EmbeddedSubtitleHandling, MediaSourceInfo, MediaStream, MediaStreamType,
+    ProfileCondition, SortMediaSourcesMode, SubtitleDeliveryMethod, TranscodeReason,
+    TranscodeReasons, TranscodingProfile, TranscodingProtocol, VideoContainer,
+    VideoRangeType,
 };
 
 pub trait DeviceProfileExt {
@@ -694,6 +695,59 @@ fn transcode_cost_tier(reasons: &TranscodeReasons) -> u8 {
     3
 }
 
+/// Whether the subtitle stream that will actually be used needs to be burned
+/// into the video for `device_profile` — shared by `PlaybackInfo` (the real
+/// transcode decision) and item-details ranking, so both agree on the same
+/// fact instead of one of them silently ignoring subtitles.
+///
+/// Only ever fires in `EmbeddedSubtitleHandling::Burn`: `Extract` converts
+/// the subtitle instead (OCR/sidecar) and `Strip` drops it, so neither ever
+/// forces a transcode. `explicit_subtitle_index` (a client's requested
+/// `SubtitleStreamIndex`, if any) takes priority over
+/// `source.default_subtitle_stream_index` — call `resolve_default_streams`
+/// first so that fallback reflects the real selection, not container order.
+pub fn subtitle_burn_reason(
+    source: &MediaSourceInfo,
+    device_profile: Option<&DeviceProfile>,
+    subtitle_mode: EmbeddedSubtitleHandling,
+    explicit_subtitle_index: Option<i64>,
+) -> Option<TranscodeReason> {
+    if subtitle_mode != EmbeddedSubtitleHandling::Burn {
+        return None;
+    }
+    let idx = explicit_subtitle_index.or(source.default_subtitle_stream_index)?;
+    let stream = source
+        .media_streams
+        .iter()
+        .find(|s| {
+            s.index == idx && matches!(s.type_, Some(MediaStreamType::Subtitle))
+        })?;
+    if stream.is_external || stream.is_text_subtitle_stream() {
+        return None;
+    }
+    let codec = stream
+        .codec
+        .as_deref()?;
+    let supported = device_profile
+        .map(|dp| {
+            dp.subtitle_profiles
+                .iter()
+                .filter_map(|p| {
+                    p.format
+                        .as_deref()
+                })
+                .any(|f| subtitle_codec_matches_profile(codec, f))
+        })
+        .unwrap_or(false);
+    if supported {
+        None
+    } else {
+        Some(TranscodeReason::SubtitleCodecNotSupported(
+            codec.to_string(),
+        ))
+    }
+}
+
 /// Jellyfin's own three-way playback decision, derived from the same cost
 /// tiering used for ranking: tier 4 (no reasons) is Direct Play, tier 3
 /// (remux only — video and audio both copied) is Direct Stream, anything
@@ -930,13 +984,14 @@ mod tests {
     use super::{
         DeviceProfileExt, MediaSourceCapabilityExt, MediaSourceRank,
         default_audio_stream, playback_decision_label, primary_video_stream,
-        transcode_cost_tier,
+        subtitle_burn_reason, transcode_cost_tier,
     };
     use remux_sdks::remux::{
         AudioCodec, CodecProfile, DeviceProfile, DirectPlayProfile, DlnaProfileType,
-        MediaSourceInfo, MediaStream, MediaStreamType, ProfileCondition,
-        SortMediaSourcesMode, SubtitleDeliveryMethod, SubtitleProfile, TranscodeReason,
-        TranscodeReasons, VideoCodec, VideoContainer, VideoRangeType,
+        EmbeddedSubtitleHandling, MediaSourceInfo, MediaStream, MediaStreamType,
+        ProfileCondition, SortMediaSourcesMode, SubtitleDeliveryMethod,
+        SubtitleProfile, TranscodeReason, TranscodeReasons, VideoCodec, VideoContainer,
+        VideoRangeType,
     };
 
     #[test]
@@ -1588,11 +1643,11 @@ mod tests {
 
     #[test]
     fn subtitle_burn_in_reason_costs_as_much_as_a_video_reencode() {
-        // SubtitleCodecNotSupported is only ever inserted (by api/playback.rs)
-        // for the resolved default subtitle when EmbeddedSubtitleHandling is
-        // Burn — at that point burning the text in means re-encoding the
-        // video, so it must rank the same as an incompatible video codec, not
-        // as a cheap remux.
+        // SubtitleCodecNotSupported is only ever inserted by subtitle_burn_reason
+        // (shared by playback.rs and item-details ranking) when
+        // EmbeddedSubtitleHandling is Burn — at that point burning the text in
+        // means re-encoding the video, so it must rank the same as an
+        // incompatible video codec, not as a cheap remux.
         let mut needs_subtitle_burn = TranscodeReasons::default();
         needs_subtitle_burn.insert(TranscodeReason::SubtitleCodecNotSupported(
             "pgssub".to_string(),
@@ -1610,6 +1665,110 @@ mod tests {
         assert!(
             transcode_cost_tier(&remux_only)
                 > transcode_cost_tier(&needs_subtitle_burn)
+        );
+    }
+
+    fn source_with_subtitle(
+        codec: &str,
+        is_external: bool,
+        index: i64,
+    ) -> MediaSourceInfo {
+        MediaSourceInfo {
+            default_subtitle_stream_index: Some(index),
+            media_streams: vec![MediaStream {
+                type_: Some(MediaStreamType::Subtitle),
+                index,
+                codec: Some(codec.to_string()),
+                is_external,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn subtitle_burn_reason_only_fires_in_burn_mode() {
+        let source = source_with_subtitle("pgssub", false, 0);
+        for mode in [
+            EmbeddedSubtitleHandling::Strip,
+            EmbeddedSubtitleHandling::Extract,
+        ] {
+            assert!(
+                subtitle_burn_reason(&source, None, mode, None).is_none(),
+                "{mode:?} must never force a transcode for subtitles"
+            );
+        }
+        assert!(
+            subtitle_burn_reason(&source, None, EmbeddedSubtitleHandling::Burn, None)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn subtitle_burn_reason_ignores_text_and_external_subtitles() {
+        let text = source_with_subtitle("subrip", false, 0);
+        assert!(
+            subtitle_burn_reason(&text, None, EmbeddedSubtitleHandling::Burn, None)
+                .is_none(),
+            "a text subtitle never needs burning in"
+        );
+
+        let external_image = source_with_subtitle("pgssub", true, 0);
+        assert!(
+            subtitle_burn_reason(
+                &external_image,
+                None,
+                EmbeddedSubtitleHandling::Burn,
+                None
+            )
+            .is_none(),
+            "an external subtitle is delivered separately, never burned in"
+        );
+    }
+
+    #[test]
+    fn subtitle_burn_reason_respects_a_profile_that_accepts_the_image_format() {
+        let source = source_with_subtitle("pgssub", false, 0);
+        let profile = DeviceProfile {
+            subtitle_profiles: vec![SubtitleProfile {
+                format: Some("pgssub".to_string()),
+                method: Some(SubtitleDeliveryMethod::Embed),
+            }],
+            ..Default::default()
+        };
+        assert!(
+            subtitle_burn_reason(
+                &source,
+                Some(&profile),
+                EmbeddedSubtitleHandling::Burn,
+                None
+            )
+            .is_none(),
+            "a profile that lists the image format at all needs no burn-in"
+        );
+    }
+
+    #[test]
+    fn subtitle_burn_reason_prefers_the_explicit_index_over_the_resolved_default() {
+        let mut source = source_with_subtitle("subrip", false, 0);
+        source
+            .media_streams
+            .push(MediaStream {
+                type_: Some(MediaStreamType::Subtitle),
+                index: 1,
+                codec: Some("pgssub".to_string()),
+                ..Default::default()
+            });
+        // default_subtitle_stream_index (0, text) would need no burn, but the
+        // client explicitly asked for index 1 (image) instead.
+        assert!(
+            subtitle_burn_reason(
+                &source,
+                None,
+                EmbeddedSubtitleHandling::Burn,
+                Some(1)
+            )
+            .is_some()
         );
     }
 

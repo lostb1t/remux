@@ -2573,6 +2573,31 @@ impl MediaSourceInfo {
             .any(|s| s.index == index && matches!(s.type_, Some(t) if t == kind))
     }
 
+    /// Among subtitle streams matching `target`'s two-letter language, prefer
+    /// a text-format one (SRT/ASS/VTT/...) over an image-format one
+    /// (PGS/VobSub/DVDSub) — text works almost everywhere with no burn-in or
+    /// OCR needed, so a release with both an image and a text track in the
+    /// same language should default to the text one.
+    fn best_subtitle_for_language(&self, target: &str) -> Option<&MediaStream> {
+        let matches_lang = |s: &&MediaStream| {
+            matches!(s.type_, Some(MediaStreamType::Subtitle))
+                && s.language
+                    .as_deref()
+                    .and_then(lang_to_two_letter)
+                    .as_deref()
+                    == Some(target)
+        };
+        self.media_streams
+            .iter()
+            .filter(matches_lang)
+            .find(|s| s.is_text_subtitle_stream())
+            .or_else(|| {
+                self.media_streams
+                    .iter()
+                    .find(matches_lang)
+            })
+    }
+
     /// Resolve `default_audio_stream_index` and `default_subtitle_stream_index`
     /// for this source from the user's configuration, the request context and
     /// the container facts on the source itself. These two fields are purely
@@ -2706,18 +2731,7 @@ impl MediaSourceInfo {
             if let Some(ref pref) = user.subtitle_language_preference {
                 let pref_two = lang_to_two_letter(pref);
                 if let Some(ref target) = pref_two {
-                    if let Some(stream) = self
-                        .media_streams
-                        .iter()
-                        .find(|s| {
-                            matches!(s.type_, Some(MediaStreamType::Subtitle))
-                                && s.language
-                                    .as_deref()
-                                    .and_then(lang_to_two_letter)
-                                    .as_deref()
-                                    == Some(target.as_str())
-                        })
-                    {
+                    if let Some(stream) = self.best_subtitle_for_language(target) {
                         self.default_subtitle_stream_index = Some(stream.index);
                         subtitle_decided = true;
                     }
@@ -2732,18 +2746,7 @@ impl MediaSourceInfo {
             if let Some(pref) = server_metadata_language {
                 let pref_two = lang_to_two_letter(pref);
                 if let Some(ref target) = pref_two {
-                    if let Some(stream) = self
-                        .media_streams
-                        .iter()
-                        .find(|s| {
-                            matches!(s.type_, Some(MediaStreamType::Subtitle))
-                                && s.language
-                                    .as_deref()
-                                    .and_then(lang_to_two_letter)
-                                    .as_deref()
-                                    == Some(target.as_str())
-                        })
-                    {
+                    if let Some(stream) = self.best_subtitle_for_language(target) {
                         self.default_subtitle_stream_index = Some(stream.index);
                         subtitle_decided = true;
                     }
@@ -7477,6 +7480,53 @@ mod tests {
         cfg.subtitle_language_preference = Some("eng".to_string());
         src.resolve_default_streams(&cfg, None, None, None, None, None, None);
         assert_eq!(src.default_subtitle_stream_index, Some(4));
+    }
+
+    /// A release with both a PGS (image) and an SRT (text) track in the same
+    /// language must default to the text one — it works almost everywhere
+    /// with no burn-in/OCR needed, unlike the image track. True regardless of
+    /// which one happens to come first in the container's stream order.
+    #[test]
+    fn resolve_subtitle_prefers_text_over_image_in_same_language() {
+        fn source(image_first: bool) -> MediaSourceInfo {
+            let image = MediaStream {
+                type_: Some(MediaStreamType::Subtitle),
+                index: 0,
+                language: Some("eng".to_string()),
+                codec: Some("pgssub".to_string()),
+                ..Default::default()
+            };
+            let text = MediaStream {
+                type_: Some(MediaStreamType::Subtitle),
+                index: 1,
+                language: Some("eng".to_string()),
+                codec: Some("subrip".to_string()),
+                ..Default::default()
+            };
+            MediaSourceInfo {
+                media_streams: if image_first {
+                    vec![image, text]
+                } else {
+                    vec![text, image]
+                },
+                ..Default::default()
+            }
+        }
+        let mut cfg = user_cfg();
+        cfg.subtitle_language_preference = Some("eng".to_string());
+
+        let mut image_first = source(true);
+        image_first.resolve_default_streams(&cfg, None, None, None, None, None, None);
+        assert_eq!(
+            image_first.default_subtitle_stream_index,
+            Some(1),
+            "text (index 1) must win even though the image track (index 0) \
+             comes first"
+        );
+
+        let mut text_first = source(false);
+        text_first.resolve_default_streams(&cfg, None, None, None, None, None, None);
+        assert_eq!(text_first.default_subtitle_stream_index, Some(1));
     }
 
     /// Server metadata language is the fallback when the user has no preference.

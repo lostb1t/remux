@@ -1610,6 +1610,9 @@ async fn item_for_user(
     let transcoding_enabled = encoding_cfg
         .enable_video_transcoding
         .unwrap_or(true);
+    let subtitle_mode = encoding_cfg
+        .subtitle_mode
+        .unwrap_or_default();
     // Clients that switch versions (Android TV) refetch the item by MediaSource id
     // and then play MediaSources[0], so the requested group must end up first and
     // keep its own UUID instead of the item id stamped by `db_media_to_item`.
@@ -1672,6 +1675,18 @@ async fn item_for_user(
             media.kind,
             db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track
         );
+    // Hoisted so both the ranking pass below and the real resolve_default_streams
+    // pass further down use the same user config — language defaults must apply
+    // even when the user has never saved a configuration (NULL for brand-new
+    // users), so the server's global metadata language is the fallback.
+    let user_cfg = session
+        .user
+        .configuration
+        .as_ref()
+        .map(|c| {
+            c.0.clone()
+        })
+        .unwrap_or_default();
 
     if needs_streams {
         if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
@@ -1806,10 +1821,38 @@ async fn item_for_user(
                         .drain(..)
                         .map(|m| {
                             let mut info = api::MediaSourceInfo::from(m.clone());
-                            info.transcoding_reasons = device_profile
+                            // Resolve which subtitle would actually be used so
+                            // subtitle_burn_reason judges the real selection,
+                            // not container order — same inputs the real
+                            // resolve pass further down uses.
+                            info.resolve_default_streams(
+                                &user_cfg,
+                                server_config
+                                    .preferred_metadata_language
+                                    .as_deref(),
+                                media
+                                    .original_language
+                                    .as_deref(),
+                                None,
+                                None,
+                                None,
+                                None,
+                            );
+                            let mut reasons = device_profile
                                 .as_ref()
                                 .map(|p| p.check_direct_play(&info))
                                 .unwrap_or_default();
+                            if let Some(reason) =
+                                crate::device_profile::subtitle_burn_reason(
+                                    &info,
+                                    device_profile.as_ref(),
+                                    subtitle_mode,
+                                    None,
+                                )
+                            {
+                                reasons.insert(reason);
+                            }
+                            info.transcoding_reasons = reasons;
                             let rank = info
                                 .capability_rank(device_profile.as_ref())
                                 .key(sort_mode);
@@ -1912,10 +1955,38 @@ async fn item_for_user(
                         .drain(..)
                         .map(|m| {
                             let mut info = api::MediaSourceInfo::from(m.clone());
-                            info.transcoding_reasons = device_profile
+                            // Resolve which subtitle would actually be used so
+                            // subtitle_burn_reason judges the real selection,
+                            // not container order — same inputs the real
+                            // resolve pass further down uses.
+                            info.resolve_default_streams(
+                                &user_cfg,
+                                server_config
+                                    .preferred_metadata_language
+                                    .as_deref(),
+                                media
+                                    .original_language
+                                    .as_deref(),
+                                None,
+                                None,
+                                None,
+                                None,
+                            );
+                            let mut reasons = device_profile
                                 .as_ref()
                                 .map(|p| p.check_direct_play(&info))
                                 .unwrap_or_default();
+                            if let Some(reason) =
+                                crate::device_profile::subtitle_burn_reason(
+                                    &info,
+                                    device_profile.as_ref(),
+                                    subtitle_mode,
+                                    None,
+                                )
+                            {
+                                reasons.insert(reason);
+                            }
+                            info.transcoding_reasons = reasons;
                             let rank = info
                                 .capability_rank(device_profile.as_ref())
                                 .key(sort_mode);
@@ -2201,23 +2272,12 @@ async fn item_for_user(
     }
 
     if want_streams {
-        // Language defaults must apply even when the user has never saved a
-        // configuration (configuration is NULL for brand-new users) — the server's
-        // global metadata language is the fallback for subtitle selection.
-        let cfg = session
-            .user
-            .configuration
-            .as_ref()
-            .map(|c| {
-                c.0.clone()
-            })
-            .unwrap_or_default();
         if let Some(ref mut sources) = base_item.media_sources {
             // Default audio/subtitle stream indexes are per-request API values
             // (never persisted) — derive them here for the detail page.
             for source in sources.iter_mut() {
                 source.resolve_default_streams(
-                    &cfg,
+                    &user_cfg,
                     server_config
                         .preferred_metadata_language
                         .as_deref(),

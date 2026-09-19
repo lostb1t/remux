@@ -460,49 +460,13 @@ async fn items_playbackinfo_inner(
         let effective_sub_idx = q
             .subtitle_stream_index
             .or(source.default_subtitle_stream_index);
-        if let Some(idx) = effective_sub_idx {
-            let needs_burn = subtitle_mode
-                == remux_sdks::remux::EmbeddedSubtitleHandling::Burn
-                && source
-                    .media_streams
-                    .iter()
-                    .any(|s| {
-                        s.index == idx
-                            && matches!(s.type_, Some(api::MediaStreamType::Subtitle))
-                            && !s.is_external
-                            && !s.is_text_subtitle_stream
-                            && !device_profile
-                                .as_ref()
-                                .map(|dp| {
-                                    dp.subtitle_profiles
-                                        .iter()
-                                        .filter_map(|p| {
-                                            p.format
-                                                .as_deref()
-                                        })
-                                        .any(|f| {
-                                            s.codec
-                                                .as_deref()
-                                                .map_or(false, |c| {
-                                                    subtitle_codec_matches_profile(c, f)
-                                                })
-                                        })
-                                })
-                                .unwrap_or(false)
-                    });
-            if needs_burn {
-                let codec = source
-                    .media_streams
-                    .iter()
-                    .find(|s| s.index == idx)
-                    .and_then(|s| {
-                        s.codec
-                            .clone()
-                    })
-                    .unwrap_or_default();
-                transcode_reasons
-                    .insert(api::TranscodeReason::SubtitleCodecNotSupported(codec));
-            }
+        if let Some(reason) = crate::device_profile::subtitle_burn_reason(
+            &source,
+            device_profile.as_ref(),
+            subtitle_mode,
+            q.subtitle_stream_index,
+        ) {
+            transcode_reasons.insert(reason);
         }
 
         debug!(
