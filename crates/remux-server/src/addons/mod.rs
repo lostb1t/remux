@@ -427,13 +427,24 @@ pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: b
     }
 }
 
+/// Default display title for a season: Jellyfin calls season 0 "Specials"
+/// (a per-library-configurable name there; a fixed default here).
+pub(crate) fn season_title(idx: i64) -> String {
+    if idx == 0 {
+        "Specials".to_string()
+    } else {
+        format!("Season {idx}")
+    }
+}
+
 pub(crate) fn apply_title_format(media: &mut db::Media) {
-    if media.kind == db::MediaKind::Season {
-        media.title = format!(
-            "Season {}",
+    if media.kind == db::MediaKind::Season
+        && !media.is_field_locked(&db::MetadataField::Name)
+    {
+        media.title = season_title(
             media
                 .idx
-                .unwrap_or(1)
+                .unwrap_or(1),
         );
     }
     if media.kind == db::MediaKind::Episode {

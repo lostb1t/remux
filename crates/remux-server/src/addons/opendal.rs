@@ -884,7 +884,7 @@ impl TreeAddon for OpendalAddon {
                             "season:{}:{}",
                             imdb_id, s
                         )),
-                        title: format!("Season {}", s),
+                        title: crate::addons::season_title(s),
                         kind: db::MediaKind::Season,
                         parent_id: Some(root.id),
                         grandparent_id: Some(root.id),

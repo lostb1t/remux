@@ -510,7 +510,7 @@ impl From<&sdks::tmdb::Season> for db::Media {
             .and_then(|d| d.and_hms_opt(0, 0, 0));
         let mut media = db::Media {
             kind: db::MediaKind::Season,
-            title: format!("Season {}", s.season_number),
+            title: crate::addons::season_title(s.season_number),
             description: s
                 .overview
                 .clone()

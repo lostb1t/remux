@@ -6312,10 +6312,9 @@ impl Media {
                     self.idx
                         .unwrap_or(0)
                 ),
-                MediaKind::Season => format!(
-                    "Season {}",
+                MediaKind::Season => crate::addons::season_title(
                     self.idx
-                        .unwrap_or(0)
+                        .unwrap_or(0),
                 ),
                 _ => self
                     .title
@@ -7414,7 +7413,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                     let season_id = Media::season_id(&series_key, season_idx);
                     let mut season = Media {
                         id: season_id,
-                        title: format!("Season {}", season_idx),
+                        title: crate::addons::season_title(season_idx),
                         kind: MediaKind::Season,
                         idx: Some(season_idx),
                         parent_id: Some(media.id),
@@ -7507,7 +7506,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                 let season_id = Media::season_id(&series_key, season_idx);
                 let mut season = Media {
                     id: season_id,
-                    title: format!("Season {}", season_idx),
+                    title: crate::addons::season_title(season_idx),
                     kind: MediaKind::Season,
                     idx: Some(season_idx),
                     grandparent_id: Some(media.id),
@@ -7628,7 +7627,7 @@ pub fn stremio_meta_seasons(
 
         let mut season = Media {
             id: season_id,
-            title: format!("Season {}", season_idx),
+            title: crate::addons::season_title(season_idx),
             kind: MediaKind::Season,
             idx: Some(season_idx),
             parent_id: Some(series_id),
