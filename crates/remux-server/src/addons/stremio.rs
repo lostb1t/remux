@@ -48,13 +48,22 @@ impl AddonPreset for StremioPreset {
                 AddonMetadata::simple_resource(ResourceType::Subtitles),
                 AddonMetadata::simple_resource(ResourceType::Stream),
             ],
-            supported_types: vec![MediaKind::Movie, MediaKind::Series],
+            supported_types: vec![
+                MediaKind::Movie,
+                MediaKind::Series,
+                MediaKind::TvChannel,
+                MediaKind::TvProgram,
+            ],
             supported_resources_user: vec![
                 ResourceType::Search,
                 ResourceType::Subtitles,
                 ResourceType::Stream,
             ],
-            supported_types_user: vec![MediaKind::Movie, MediaKind::Series],
+            supported_types_user: vec![
+                MediaKind::Movie,
+                MediaKind::Series,
+                MediaKind::TvProgram,
+            ],
             options: vec![AddonOption {
                 id: "manifest_url".to_string(),
                 name: "Manifest URL".to_string(),
@@ -381,11 +390,13 @@ impl CatalogAddon for StremioAddon {
                     }
                     match db::stremio_meta_to_medias(meta) {
                         Ok(mut items) => {
-                            // Only emit the top-level item (series/movie).
-                            // Seasons and episodes are populated by sync_tree
-                            // during RefreshLibrary, avoiding FK constraint
-                            // failures when chunks are split across parents.
-                            items.retain(|x| x.parent_id.is_none());
+                            // Only emit top-level content. Seasons and episodes
+                            // are populated by sync_tree during RefreshLibrary,
+                            // but a scheduled virtual channel's program must be
+                            // imported alongside its channel for the live guide.
+                            items.retain(|x| {
+                                x.parent_id.is_none() || x.kind == db::MediaKind::TvProgram
+                            });
                             if let Some(top) = items.first_mut() {
                                 top.parent_id = None;
                             }
@@ -626,6 +637,7 @@ fn stremio_type_for_kind(kind: &db::MediaKind) -> Option<&'static str> {
         db::MediaKind::Track => Some("track"),
         db::MediaKind::Album => Some("album"),
         db::MediaKind::Artist => Some("artist"),
+        db::MediaKind::TvChannel | db::MediaKind::TvProgram => Some("tv"),
         _ => None,
     }
 }

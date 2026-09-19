@@ -144,7 +144,7 @@ async fn items_playbackinfo_inner(
     state: AppState,
     session: auth::AuthSession,
     id: Uuid,
-    q: api::PlaybackInfoQuery,
+    mut q: api::PlaybackInfoQuery,
 ) -> Result<impl IntoResponse> {
     let media_source_id = q.media_source_id;
 
@@ -208,6 +208,20 @@ async fn items_playbackinfo_inner(
         ),
     });
     let is_live = media.is_live();
+    let is_live_tv_item = matches!(
+        media.kind,
+        db::MediaKind::TvChannel | db::MediaKind::TvProgram
+    );
+
+    // A live channel's source is often an addon relay URL. It may be a valid
+    // HLS stream, but browsers cannot reliably open it directly: redirects,
+    // CORS, and provider-specific request headers are outside their control.
+    // Advertise server HLS from the outset instead of letting Jellyfin Web
+    // attempt the raw source, fail visibly, then fall back to transcoding.
+    if is_live {
+        q.enable_direct_play = Some(false);
+        q.enable_direct_stream = Some(false);
+    }
     let is_track_item = media.is_track();
     let selected_source_language = media
         .original_language
@@ -263,6 +277,7 @@ async fn items_playbackinfo_inner(
         play_session_id: play_session_id.clone(),
         item_id: id,
         subtitle_mode,
+        is_live,
     };
 
     let port = state
@@ -530,7 +545,7 @@ async fn items_playbackinfo_inner(
     }
 
     // Inject external subtitles from AIO (cache-backed)
-    if let Some(ref mut sub_media) = subtitle_media {
+    if !is_live_tv_item && let Some(ref mut sub_media) = subtitle_media {
         let sub_langs = probe_cfg
             .subtitle_languages
             .clone()

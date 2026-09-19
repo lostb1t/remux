@@ -4,7 +4,9 @@ use crate::{
         DeviceProfileExt, SubtitleCodec, VideoCodec, subtitle_codec_matches_profile,
     },
 };
-use remux_sdks::remux::{EmbeddedSubtitleHandling, EncodingOptions};
+use remux_sdks::remux::{
+    DlnaProfileType, EmbeddedSubtitleHandling, EncodingOptions, TranscodingProtocol,
+};
 use uuid::Uuid;
 
 /// Per-request config shared across all streams in the playback loop.
@@ -15,6 +17,7 @@ pub(crate) struct PlaybackConfig {
     pub play_session_id: String,
     pub item_id: Uuid,
     pub subtitle_mode: EmbeddedSubtitleHandling,
+    pub is_live: bool,
 }
 
 pub(crate) struct TranscodeOutcome {
@@ -50,6 +53,25 @@ pub(crate) fn build_transcode_decision(
     session: &db::auth::AuthSession,
     cfg: &PlaybackConfig,
 ) -> TranscodeDecision {
+    let trans_profile = cfg
+        .device_profile
+        .as_ref()
+        .and_then(|p| p.video_transcoding_profile());
+    let (container, protocol) = trans_profile
+        .map(|p| {
+            (
+                p.container
+                    .as_ref()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "ts".to_string()),
+                p.protocol
+                    .as_ref()
+                    .map(|pr| pr.to_string())
+                    .unwrap_or_else(|| "hls".to_string()),
+            )
+        })
+        .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
+
     let transcode_required = !reasons.is_empty()
         || !q
             .enable_direct_play
@@ -167,25 +189,6 @@ fn build_video_transcode(
     session: &db::auth::AuthSession,
     cfg: &PlaybackConfig,
 ) -> TranscodeDecision {
-    let trans_profile = cfg
-        .device_profile
-        .as_ref()
-        .and_then(|p| p.video_transcoding_profile());
-    let (container, protocol) = trans_profile
-        .map(|p| {
-            (
-                p.container
-                    .as_ref()
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| "ts".to_string()),
-                p.protocol
-                    .as_ref()
-                    .map(|pr| pr.to_string())
-                    .unwrap_or_else(|| "hls".to_string()),
-            )
-        })
-        .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
-
     let needs_video_transcode = reasons
         .contains(&api::TranscodeReason::VideoCodecNotSupported(String::new()))
         || reasons.contains(&api::TranscodeReason::ContainerBitrateExceedsLimit)
@@ -237,6 +240,70 @@ fn build_video_transcode(
         "copy"
     }
     .to_string();
+
+    // Jellyfin Web advertises both fMP4 and MPEG-TS HLS profiles. Jellyfin
+    // selects TS for live H.264; match the profile to our HLS output, which
+    // is TS except when copying HEVC as fMP4/CMAF.
+    let is_hevc_copy = video_codec == "copy"
+        && source
+            .video_stream()
+            .and_then(|s| {
+                s.codec
+                    .as_deref()
+            })
+            .and_then(|codec| {
+                codec
+                    .parse::<VideoCodec>()
+                    .ok()
+            })
+            .is_some_and(|codec| codec.is_hevc());
+    let trans_profile = cfg
+        .device_profile
+        .as_ref()
+        .and_then(|profile| {
+            if cfg.is_live && !is_hevc_copy {
+                profile
+                    .transcoding_profiles
+                    .iter()
+                    .find(|candidate| {
+                        matches!(candidate.type_, Some(DlnaProfileType::Video))
+                            && matches!(
+                                candidate.protocol,
+                                Some(TranscodingProtocol::Hls)
+                            )
+                            && candidate
+                                .container
+                                .as_ref()
+                                .is_some_and(|container| {
+                                    container
+                                        .to_string()
+                                        .split(',')
+                                        .any(|value| {
+                                            value
+                                                .trim()
+                                                .eq_ignore_ascii_case("ts")
+                                        })
+                                })
+                    })
+                    .or_else(|| profile.video_transcoding_profile())
+            } else {
+                profile.video_transcoding_profile()
+            }
+        });
+    let (container, protocol) = trans_profile
+        .map(|p| {
+            (
+                p.container
+                    .as_ref()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "ts".to_string()),
+                p.protocol
+                    .as_ref()
+                    .map(|pr| pr.to_string())
+                    .unwrap_or_else(|| "hls".to_string()),
+            )
+        })
+        .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
 
     let subtitle_method = {
         let method = subtitle_burn_method(
@@ -304,19 +371,6 @@ fn build_video_transcode(
     // value on the URL, like every other per-playback decision above. Only a
     // stream copy of HEVC has a sample entry to write, so nothing else carries
     // the parameter.
-    let is_hevc_copy = video_codec == "copy"
-        && source
-            .video_stream()
-            .and_then(|s| {
-                s.codec
-                    .as_deref()
-            })
-            .and_then(|c| {
-                c.parse::<VideoCodec>()
-                    .ok()
-            })
-            .map(|c| c.is_hevc())
-            .unwrap_or(false);
     let video_codec_tag = q
         .device_profile
         .as_ref()
@@ -567,6 +621,7 @@ mod tests {
             play_session_id: "play-session".to_string(),
             item_id: Uuid::new_v4(),
             subtitle_mode: EmbeddedSubtitleHandling::default(),
+            is_live: false,
         };
         // Direct play off is what forces the decision down a transcode branch.
         let q = api::PlaybackInfoQuery {
@@ -642,6 +697,7 @@ mod tests {
             play_session_id: "s".to_string(),
             item_id: Uuid::new_v4(),
             subtitle_mode: EmbeddedSubtitleHandling::default(),
+            is_live: false,
         }
     }
 

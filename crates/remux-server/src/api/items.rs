@@ -3389,6 +3389,15 @@ pub async fn patch_item(
 }
 
 fn warm_providers_cache(ctx: &crate::AppContext, media: &db::Media) {
+    // Live TV sources do not have external subtitles, intro markers, or a
+    // parent metadata tree to warm. Avoid a pointless addon fan-out whenever
+    // a client opens a channel/program detail page.
+    if matches!(
+        media.kind,
+        db::MediaKind::TvChannel | db::MediaKind::TvProgram
+    ) {
+        return;
+    }
     let mut media = media.clone();
     let ctx = ctx.clone();
     tokio::spawn(async move {
