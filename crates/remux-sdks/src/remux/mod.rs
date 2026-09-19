@@ -2100,6 +2100,7 @@ pub struct DirectPlayProfile {
 #[derive(Default, Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct ContainerProfile {
+    #[serde(rename = "Type")]
     pub type_: Option<DlnaProfileType>,
     pub container: Option<String>,
     pub conditions: Vec<ProfileCondition>,
@@ -2108,6 +2109,7 @@ pub struct ContainerProfile {
 #[derive(Default, Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct CodecProfile {
+    #[serde(rename = "Type")]
     pub type_: Option<DlnaProfileType>,
     #[serde(deserialize_with = "deser_csv_strings", serialize_with = "ser_csv")]
     pub codec: Option<Vec<String>>,
@@ -2122,11 +2124,97 @@ pub struct SubtitleProfile {
     pub method: Option<SubtitleDeliveryMethod>,
 }
 
+#[derive(
+    Debug, Clone, PartialEq, Eq, strum_macros::EnumString, strum_macros::Display,
+)]
+#[strum(ascii_case_insensitive)]
+pub enum ProfileConditionType {
+    Equals,
+    NotEquals,
+    EqualsAny,
+    LessThanEqual,
+    GreaterThanEqual,
+    #[strum(default, to_string = "{0}")]
+    Other(String),
+}
+
+impl Serialize for ProfileConditionType {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for ProfileConditionType {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Ok(value
+            .parse()
+            .unwrap_or_else(|_| Self::Other(value)))
+    }
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, strum_macros::EnumString, strum_macros::Display,
+)]
+#[strum(ascii_case_insensitive)]
+pub enum ProfileConditionProperty {
+    VideoRangeType,
+    VideoCodecTag,
+    IsAnamorphic,
+    IsInterlaced,
+    #[strum(to_string = "IsAVC", serialize = "IsAVC", serialize = "IsAvc")]
+    IsAvc,
+    BitDepth,
+    RefFrames,
+    NumAudioStreams,
+    NumVideoStreams,
+    VideoLevel,
+    Level,
+    VideoProfile,
+    Profile,
+    Height,
+    Width,
+    VideoFramerate,
+    Framerate,
+    VideoBitrate,
+    Bitrate,
+    AudioBitrate,
+    AudioChannels,
+    AudioSampleRate,
+    #[strum(default, to_string = "{0}")]
+    Other(String),
+}
+
+impl Serialize for ProfileConditionProperty {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for ProfileConditionProperty {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Ok(value
+            .parse()
+            .unwrap_or_else(|_| Self::Other(value)))
+    }
+}
+
 #[derive(Default, Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct ProfileCondition {
-    pub condition: Option<String>,
-    pub property: Option<String>,
+    pub condition: Option<ProfileConditionType>,
+    pub property: Option<ProfileConditionProperty>,
     #[serde(
         default,
         deserialize_with = "crate::deserialize_option_string_from_any"
@@ -7772,5 +7860,28 @@ mod tests {
             json.contains(r#""Artists":[]"#),
             "Expected 'Artists':[] in JSON: {json}"
         );
+    }
+
+    #[test]
+    fn profile_condition_vocabulary_round_trips_known_and_unknown_values() {
+        let profile: ProfileCondition = serde_json::from_value(serde_json::json!({
+            "Condition": "LessThanEqual",
+            "Property": "FutureJellyfinProperty",
+            "Value": "42",
+            "IsRequired": true
+        }))
+        .unwrap();
+
+        assert_eq!(profile.condition, Some(ProfileConditionType::LessThanEqual));
+        assert_eq!(
+            profile.property,
+            Some(ProfileConditionProperty::Other(
+                "FutureJellyfinProperty".to_string()
+            ))
+        );
+
+        let json = serde_json::to_value(profile).unwrap();
+        assert_eq!(json["Condition"], "LessThanEqual");
+        assert_eq!(json["Property"], "FutureJellyfinProperty");
     }
 }

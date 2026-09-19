@@ -2,9 +2,9 @@ pub(crate) use remux_sdks::remux::{AudioCodec, SubtitleCodec, VideoCodec};
 use remux_sdks::remux::{
     CodecProfile, DeviceProfile, DirectPlayProfile, DlnaProfileType,
     EmbeddedSubtitleHandling, MediaSourceInfo, MediaStream, MediaStreamType,
-    ProfileCondition, SortMediaSourcesMode, SubtitleDeliveryMethod, TranscodeReason,
-    TranscodeReasons, TranscodingProfile, TranscodingProtocol, VideoContainer,
-    VideoRangeType,
+    ProfileCondition, ProfileConditionProperty, ProfileConditionType,
+    SortMediaSourcesMode, SubtitleDeliveryMethod, TranscodeReason, TranscodeReasons,
+    TranscodingProfile, TranscodingProtocol, VideoContainer, VideoRangeType,
 };
 
 pub trait DeviceProfileExt {
@@ -174,8 +174,8 @@ impl DeviceProfileExt for DeviceProfile {
                 .flat_map(|cp| &cp.conditions)
                 .filter(|cond| {
                     cond.property
-                        .as_deref()
-                        == Some("VideoCodecTag")
+                        .as_ref()
+                        == Some(&ProfileConditionProperty::VideoCodecTag)
                 })
                 .any(|cond| !cond.is_satisfied_opt(Some(tag)))
         };
@@ -378,7 +378,7 @@ impl CodecProfileExt for CodecProfile {
         for cond in &self.conditions {
             let property = match cond
                 .property
-                .as_deref()
+                .as_ref()
             {
                 Some(p) => p,
                 None => continue,
@@ -386,7 +386,7 @@ impl CodecProfileExt for CodecProfile {
             let actual = stream_property_value(stream, property);
 
             // HDR10Plus also satisfies HDR10 conditions.
-            if property == "VideoRangeType" {
+            if property == &ProfileConditionProperty::VideoRangeType {
                 if let Some(ref v) = actual {
                     if v.eq_ignore_ascii_case("HDR10Plus")
                         && cond.is_satisfied_opt(Some("HDR10"))
@@ -397,11 +397,14 @@ impl CodecProfileExt for CodecProfile {
             }
 
             if !cond.is_satisfied_opt(actual.as_deref()) {
+                let condition = cond
+                    .condition
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_default();
                 let detail = format!(
                     "property={property} condition={} value={} actual={}",
-                    cond.condition
-                        .as_deref()
-                        .unwrap_or(""),
+                    condition,
                     cond.value
                         .as_deref()
                         .unwrap_or(""),
@@ -410,16 +413,19 @@ impl CodecProfileExt for CodecProfile {
                         .unwrap_or("(unknown)"),
                 );
                 let reason = match property {
-                    "VideoRangeType" => {
+                    ProfileConditionProperty::VideoRangeType => {
                         TranscodeReason::VideoRangeTypeNotSupported(detail)
                     }
-                    "VideoCodecTag" => {
+                    ProfileConditionProperty::VideoCodecTag => {
                         TranscodeReason::VideoCodecTagNotSupported(detail)
                     }
-                    "VideoProfile" | "Profile" => {
+                    ProfileConditionProperty::VideoProfile
+                    | ProfileConditionProperty::Profile => {
                         TranscodeReason::VideoProfileNotSupported(detail)
                     }
-                    "BitDepth" => TranscodeReason::VideoBitDepthNotSupported(detail),
+                    ProfileConditionProperty::BitDepth => {
+                        TranscodeReason::VideoBitDepthNotSupported(detail)
+                    }
                     _ => {
                         if matches!(stream.type_, Some(MediaStreamType::Audio)) {
                             TranscodeReason::AudioCodecNotSupported(detail)
@@ -463,64 +469,75 @@ fn any_codec_matches(entry: &str, source: &str) -> bool {
     }
 }
 
-fn stream_property_value(stream: &MediaStream, property: &str) -> Option<String> {
+fn stream_property_value(
+    stream: &MediaStream,
+    property: &ProfileConditionProperty,
+) -> Option<String> {
     match property {
-        "VideoRangeType" => stream
+        ProfileConditionProperty::VideoRangeType => stream
             .video_range_type
             .as_ref()
             .map(|v| {
                 v.as_str()
                     .to_string()
             }),
-        "VideoCodecTag" => stream
+        ProfileConditionProperty::VideoCodecTag => stream
             .codec_tag
             .clone(),
-        "IsAnamorphic" => Some(
+        ProfileConditionProperty::IsAnamorphic => Some(
             stream
                 .is_anamorphic
                 .unwrap_or(false)
                 .to_string(),
         ),
-        "IsInterlaced" => Some(
+        ProfileConditionProperty::IsInterlaced => Some(
             stream
                 .is_interlaced
                 .to_string(),
         ),
-        "IsAVC" | "IsAvc" => Some(
+        ProfileConditionProperty::IsAvc => Some(
             stream
                 .is_avc
                 .unwrap_or(false)
                 .to_string(),
         ),
-        "BitDepth" => stream
+        ProfileConditionProperty::BitDepth => stream
             .bit_depth
             .map(|v| v.to_string()),
-        "RefFrames" => stream
+        ProfileConditionProperty::RefFrames => stream
             .ref_frames
             .map(|v| v.to_string()),
-        "NumAudioStreams" | "NumVideoStreams" => None,
-        "VideoLevel" | "Level" => stream
-            .level
-            .map(|v| v.to_string()),
-        "VideoProfile" | "Profile" => stream
-            .profile
-            .clone(),
-        "Height" => stream
+        ProfileConditionProperty::NumAudioStreams
+        | ProfileConditionProperty::NumVideoStreams => None,
+        ProfileConditionProperty::VideoLevel | ProfileConditionProperty::Level => {
+            stream
+                .level
+                .map(|v| v.to_string())
+        }
+        ProfileConditionProperty::VideoProfile | ProfileConditionProperty::Profile => {
+            stream
+                .profile
+                .clone()
+        }
+        ProfileConditionProperty::Height => stream
             .height
             .map(|v| v.to_string()),
-        "Width" => stream
+        ProfileConditionProperty::Width => stream
             .width
             .map(|v| v.to_string()),
-        "VideoFramerate" | "Framerate" => stream
+        ProfileConditionProperty::VideoFramerate
+        | ProfileConditionProperty::Framerate => stream
             .real_frame_rate
             .map(|v| v.to_string()),
-        "VideoBitrate" | "Bitrate" | "AudioBitrate" => stream
+        ProfileConditionProperty::VideoBitrate
+        | ProfileConditionProperty::Bitrate
+        | ProfileConditionProperty::AudioBitrate => stream
             .bit_rate
             .map(|v| v.to_string()),
-        "AudioChannels" => stream
+        ProfileConditionProperty::AudioChannels => stream
             .channels
             .map(|v| v.to_string()),
-        "AudioSampleRate" => stream
+        ProfileConditionProperty::AudioSampleRate => stream
             .sample_rate
             .map(|v| v.to_string()),
         _ => None,
@@ -535,7 +552,7 @@ impl ProfileConditionExt for ProfileCondition {
     fn is_satisfied_opt(&self, actual: Option<&str>) -> bool {
         let cond = match self
             .condition
-            .as_deref()
+            .as_ref()
         {
             Some(c) => c,
             None => return true,
@@ -554,12 +571,12 @@ impl ProfileConditionExt for ProfileCondition {
             .unwrap_or("");
 
         match cond {
-            "Equals" => actual.eq_ignore_ascii_case(expected),
-            "NotEquals" => !actual.eq_ignore_ascii_case(expected),
-            "EqualsAny" => expected
+            ProfileConditionType::Equals => actual.eq_ignore_ascii_case(expected),
+            ProfileConditionType::NotEquals => !actual.eq_ignore_ascii_case(expected),
+            ProfileConditionType::EqualsAny => expected
                 .split('|')
                 .any(|v| actual.eq_ignore_ascii_case(v.trim())),
-            "LessThanEqual" => {
+            ProfileConditionType::LessThanEqual => {
                 if let (Ok(a), Ok(e)) = (actual.parse::<f64>(), expected.parse::<f64>())
                 {
                     a <= e
@@ -567,7 +584,7 @@ impl ProfileConditionExt for ProfileCondition {
                     true
                 }
             }
-            "GreaterThanEqual" => {
+            ProfileConditionType::GreaterThanEqual => {
                 if let (Ok(a), Ok(e)) = (actual.parse::<f64>(), expected.parse::<f64>())
                 {
                     a >= e
@@ -593,6 +610,56 @@ pub struct MediaSourceRank {
     audio_tier: u8,
     audio_channels: i64,
     bitrate: i64,
+}
+
+/// All request-independent inputs used to rank sources. Bitrate limits are
+/// intentionally absent: they are live playback policy, not a durable device
+/// capability and therefore must never affect source ordering.
+#[derive(Debug, Clone, Copy)]
+pub struct SourceRankingContext<'a> {
+    pub mode: SortMediaSourcesMode,
+    pub device_profile: Option<&'a DeviceProfile>,
+    pub subtitle_mode: EmbeddedSubtitleHandling,
+    pub explicit_subtitle_index: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SourceAssessment {
+    pub reasons: TranscodeReasons,
+    rank: MediaSourceRank,
+}
+
+impl SourceAssessment {
+    pub fn key(
+        &self,
+        mode: SortMediaSourcesMode,
+    ) -> (u8, u8, u8, i64, u8, u8, i64, i64) {
+        self.rank
+            .key(mode)
+    }
+
+    pub fn playback_label(&self) -> &'static str {
+        playback_decision_label(&self.reasons)
+    }
+}
+
+impl SourceRankingContext<'_> {
+    pub fn assess(&self, source: &MediaSourceInfo) -> SourceAssessment {
+        let reasons = compute_transcode_reasons(
+            source,
+            self.device_profile,
+            self.subtitle_mode,
+            self.explicit_subtitle_index,
+            None,
+        );
+        let rank = source.capability_rank(self.device_profile, &reasons);
+        SourceAssessment { reasons, rank }
+    }
+
+    pub fn key(&self, source: &MediaSourceInfo) -> (u8, u8, u8, i64, u8, u8, i64, i64) {
+        self.assess(source)
+            .key(self.mode)
+    }
 }
 
 impl MediaSourceRank {
@@ -849,7 +916,7 @@ fn confident_4k_capable(profile: &DeviceProfile) -> bool {
         for cond in &cp.conditions {
             let Some(property) = cond
                 .property
-                .as_deref()
+                .as_ref()
             else {
                 continue;
             };
@@ -864,9 +931,10 @@ fn confident_4k_capable(profile: &DeviceProfile) -> bool {
                 continue;
             };
             let confident = match property {
-                "Width" => value >= 3840,
-                "Height" => value >= 2160,
-                "VideoLevel" | "Level" => {
+                ProfileConditionProperty::Width => value >= 3840,
+                ProfileConditionProperty::Height => value >= 2160,
+                ProfileConditionProperty::VideoLevel
+                | ProfileConditionProperty::Level => {
                     (is_hevc && value >= HEVC_4K_LEVEL)
                         || (is_av1 && value >= AV1_4K_LEVEL)
                 }
@@ -985,8 +1053,8 @@ fn quality_source_tier(source: &MediaSourceInfo) -> u8 {
 }
 
 impl MediaSourceCapabilityExt for MediaSourceInfo {
-    /// When `profile` is `None`, every source ties except on
-    /// `transcode_cost_tier`, which reflects whatever `reasons` says.
+    /// A missing profile disables capability-specific checks but still leaves
+    /// the intrinsic quality fields available as deterministic tie-breakers.
     fn capability_rank(
         &self,
         profile: Option<&DeviceProfile>,
@@ -995,15 +1063,38 @@ impl MediaSourceCapabilityExt for MediaSourceInfo {
         let video = primary_video_stream(self);
         let audio = default_audio_stream(self);
 
-        let resolution_tier = match profile {
-            Some(p) if confident_4k_capable(p) => {
-                let is_4k = video
-                    .and_then(|s| s.width)
-                    .is_some_and(|w| w >= 3840);
-                u8::from(is_4k)
-            }
-            _ => 0,
+        let (width, height) = video
+            .map(|stream| {
+                (
+                    stream
+                        .width
+                        .unwrap_or(0),
+                    stream
+                        .height
+                        .unwrap_or(0),
+                )
+            })
+            .unwrap_or_default();
+        let raw_resolution_tier = if width >= 3840 || height >= 2160 {
+            4
+        } else if width >= 1920 || height >= 1080 {
+            3
+        } else if width >= 1280 || height >= 720 {
+            2
+        } else if width > 0 || height > 0 {
+            1
+        } else {
+            0
         };
+        // Without an explicit 4K signal, treat 4K as tied with 1080p rather
+        // than promoting it. Lower resolution tiers remain distinct so a
+        // 720p source cannot beat 1080p merely because of a later tie-breaker.
+        let resolution_tier =
+            if raw_resolution_tier == 4 && !profile.is_some_and(confident_4k_capable) {
+                3
+            } else {
+                raw_resolution_tier
+            };
 
         MediaSourceRank {
             transcode_cost_tier: transcode_cost_tier(reasons),
@@ -1051,9 +1142,9 @@ mod tests {
     use remux_sdks::remux::{
         AudioCodec, CodecProfile, DeviceProfile, DirectPlayProfile, DlnaProfileType,
         EmbeddedSubtitleHandling, MediaSourceInfo, MediaStream, MediaStreamType,
-        ProfileCondition, SortMediaSourcesMode, SubtitleDeliveryMethod,
-        SubtitleProfile, TranscodeReason, TranscodeReasons, VideoCodec, VideoContainer,
-        VideoRangeType,
+        ProfileCondition, ProfileConditionProperty, ProfileConditionType,
+        SortMediaSourcesMode, SubtitleDeliveryMethod, SubtitleProfile, TranscodeReason,
+        TranscodeReasons, VideoCodec, VideoContainer, VideoRangeType,
     };
 
     #[test]
@@ -1187,8 +1278,8 @@ mod tests {
                 type_: Some(DlnaProfileType::Video),
                 codec: Some(vec!["h264".to_string()]),
                 conditions: vec![ProfileCondition {
-                    condition: Some("EqualsAny".to_string()),
-                    property: Some("VideoProfile".to_string()),
+                    condition: Some(ProfileConditionType::EqualsAny),
+                    property: Some(ProfileConditionProperty::VideoProfile),
                     value: Some("high|main|baseline|constrained baseline".to_string()),
                     is_required: Some(false),
                 }],
@@ -1258,8 +1349,8 @@ mod tests {
                 type_: Some(DlnaProfileType::Audio),
                 codec: Some(vec!["aac".to_string()]),
                 conditions: vec![ProfileCondition {
-                    condition: Some("LessThanEqual".to_string()),
-                    property: Some("AudioChannels".to_string()),
+                    condition: Some(ProfileConditionType::LessThanEqual),
+                    property: Some(ProfileConditionProperty::AudioChannels),
                     value: Some("2".to_string()),
                     is_required: Some(false),
                 }],
@@ -1303,8 +1394,12 @@ mod tests {
                 type_: Some(DlnaProfileType::Video),
                 codec: Some(vec!["hevc".to_string()]),
                 conditions: vec![ProfileCondition {
-                    condition: Some(condition.to_string()),
-                    property: Some("VideoCodecTag".to_string()),
+                    condition: Some(
+                        condition
+                            .parse()
+                            .expect("known profile condition"),
+                    ),
+                    property: Some(ProfileConditionProperty::VideoCodecTag),
                     value: Some(value.to_string()),
                     is_required: Some(true),
                 }],
@@ -1361,8 +1456,8 @@ mod tests {
                 type_: Some(DlnaProfileType::Video),
                 codec: Some(vec!["hevc".to_string()]),
                 conditions: vec![ProfileCondition {
-                    condition: Some("EqualsAny".to_string()),
-                    property: Some("VideoProfile".to_string()),
+                    condition: Some(ProfileConditionType::EqualsAny),
+                    property: Some(ProfileConditionProperty::VideoProfile),
                     value: Some("main|main 10".to_string()),
                     is_required: Some(false),
                 }],
@@ -1394,8 +1489,8 @@ mod tests {
                 type_: Some(DlnaProfileType::Video),
                 codec: Some(vec!["h264".to_string()]),
                 conditions: vec![ProfileCondition {
-                    condition: Some("EqualsAny".to_string()),
-                    property: Some("VideoCodecTag".to_string()),
+                    condition: Some(ProfileConditionType::EqualsAny),
+                    property: Some(ProfileConditionProperty::VideoCodecTag),
                     value: Some("avc1".to_string()),
                     is_required: Some(true),
                 }],
@@ -1467,14 +1562,14 @@ mod tests {
                 codec: Some(vec!["hevc".to_string(), "h265".to_string()]),
                 conditions: vec![
                     ProfileCondition {
-                        condition: Some("LessThanEqual".to_string()),
-                        property: Some("VideoLevel".to_string()),
+                        condition: Some(ProfileConditionType::LessThanEqual),
+                        property: Some(ProfileConditionProperty::VideoLevel),
                         value: Some("153".to_string()),
                         is_required: Some(false),
                     },
                     ProfileCondition {
-                        condition: Some("NotEquals".to_string()),
-                        property: Some("VideoRangeType".to_string()),
+                        condition: Some(ProfileConditionType::NotEquals),
+                        property: Some(ProfileConditionProperty::VideoRangeType),
                         value: Some("DOVI".to_string()),
                         is_required: Some(true),
                     },
@@ -1700,6 +1795,61 @@ mod tests {
                 .capability_rank(Some(&profile), &source_1080p.transcoding_reasons),
             "without a confident 4K signal, resolution must not affect ranking"
         );
+    }
+
+    #[test]
+    fn resolution_tiers_keep_1080p_above_720p() {
+        let source_1080p = source_with(
+            video_stream(1920, Some(VideoRangeType::Sdr)),
+            audio_stream("aac", 2),
+            true,
+        );
+        let source_720p = source_with(
+            video_stream(1280, Some(VideoRangeType::Sdr)),
+            audio_stream("truehd", 8),
+            true,
+        );
+
+        assert!(
+            best(source_1080p.capability_rank(None, &TranscodeReasons::default()))
+                > best(source_720p.capability_rank(None, &TranscodeReasons::default())),
+            "resolution must be decided before audio quality"
+        );
+    }
+
+    #[test]
+    fn ranking_context_ignores_profile_bitrate_limits() {
+        let profile = DeviceProfile {
+            max_streaming_bitrate: Some(1),
+            direct_play_profiles: vec![DirectPlayProfile {
+                container: None,
+                video_codec: None,
+                audio_codec: None,
+                type_: Some(DlnaProfileType::Video),
+            }],
+            ..Default::default()
+        };
+        let mut source = source_with(
+            video_stream(1920, Some(VideoRangeType::Sdr)),
+            audio_stream("aac", 2),
+            true,
+        );
+        source.bitrate = Some(50_000_000);
+
+        let assessment = super::SourceRankingContext {
+            mode: SortMediaSourcesMode::Best,
+            device_profile: Some(&profile),
+            subtitle_mode: EmbeddedSubtitleHandling::default(),
+            explicit_subtitle_index: None,
+        }
+        .assess(&source);
+
+        assert!(
+            !assessment
+                .reasons
+                .contains(&TranscodeReason::ContainerBitrateExceedsLimit)
+        );
+        assert_eq!(assessment.playback_label(), "Direct Play");
     }
 
     #[test]
@@ -2154,101 +2304,5 @@ mod tests {
     fn hail_mary_real_versions_on_lenient_streamyfin_profile() {
         let profile = streamyfin_mpv_real_profile();
         ranked_for_profile(&profile, "Streamyfin MPV");
-    }
-
-    /// Manual debug tool, not part of CI: pulls every real Hail Mary stream
-    /// row (with probe_data) straight from the local dev DB and prints the
-    /// full Compatibility-mode order against the real Jellyfin Web profile.
-    /// Run with:
-    ///   cargo test -p remux-server --lib debug_print_hail_mary_full_ranking \
-    ///     -- --ignored --nocapture --test-threads=1
-    #[tokio::test]
-    #[ignore = "manual debug tool against a local prod-db.sqlite copy"]
-    async fn debug_print_hail_mary_full_ranking() {
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .connect("sqlite:///Users/sarendsen/Projects/remux-server/prod-db.sqlite")
-            .await
-            .unwrap();
-        let parent_id =
-            uuid::Uuid::parse_str("3d41b32e-5d95-583f-850f-e2063552099f").unwrap();
-        let rows: Vec<(i64, String)> = sqlx::query_as(
-            "SELECT idx, probe_data FROM media WHERE kind='stream' AND parent_id = ?1 \
-             AND probe_data IS NOT NULL ORDER BY idx",
-        )
-        .bind(parent_id)
-        .fetch_all(&pool)
-        .await
-        .unwrap();
-
-        let profile = jellyfin_web_real_profile();
-        let mut sources: Vec<(i64, MediaSourceInfo)> = rows
-            .into_iter()
-            .filter_map(|(idx, json)| {
-                serde_json::from_str::<MediaSourceInfo>(&json)
-                    .ok()
-                    .map(|s| (idx, s))
-            })
-            .collect();
-        for (_, source) in &mut sources {
-            source.transcoding_reasons = profile.check_direct_play(source);
-        }
-        sources.sort_by_key(|(_, s)| {
-            std::cmp::Reverse(best(
-                s.capability_rank(Some(&profile), &s.transcoding_reasons),
-            ))
-        });
-
-        println!("\n--- Full Hail Mary ranking, Jellyfin Web, Best mode ---");
-        for (idx, s) in &sources {
-            let video = primary_video_stream(s);
-            let audio = default_audio_stream(s);
-            let resolved_bit_depth = video.and_then(|v| {
-                v.bit_depth
-                    .or_else(|| {
-                        v.pixel_format
-                            .as_deref()
-                            .and_then(crate::playback::probe::bit_depth_from_pix_fmt)
-                    })
-            });
-            let mbps = video
-                .and_then(|v| v.bit_rate)
-                .or(s.bitrate)
-                .map(|b| format!("{:.1} Mbps", b as f64 / 1_000_000.0))
-                .unwrap_or_else(|| "?".to_string());
-            let decision = playback_decision_label(&s.transcoding_reasons);
-            println!(
-                "idx={idx:2} {:5} {:5} {:8} {}-bit {:6} ch={:?} {:>10} [{decision:^13}] reasons={:?}",
-                s.container
-                    .as_ref()
-                    .map(|c| c.to_string())
-                    .unwrap_or_default(),
-                video
-                    .and_then(|v| v
-                        .codec
-                        .clone())
-                    .unwrap_or_default(),
-                video
-                    .and_then(|v| v
-                        .video_range_type
-                        .as_ref())
-                    .map(|v| v.as_str())
-                    .unwrap_or("-"),
-                resolved_bit_depth
-                    .map(|b| b.to_string())
-                    .unwrap_or_else(|| "?".to_string()),
-                audio
-                    .and_then(|a| a
-                        .codec
-                        .clone())
-                    .unwrap_or_default(),
-                audio.and_then(|a| a.channels),
-                mbps,
-                s.transcoding_reasons
-                    .0
-                    .iter()
-                    .map(TranscodeReason::name)
-                    .collect::<Vec<_>>()
-            );
-        }
     }
 }

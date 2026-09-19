@@ -40,7 +40,7 @@ use crate::{
 use crate::{
     IntoApiError, OptionExt, ResultExt,
     device_profile::{
-        DeviceProfileExt, MediaSourceCapabilityExt, SubtitleCodec,
+        DeviceProfileExt, SourceRankingContext, SubtitleCodec,
         subtitle_codec_matches_profile,
     },
     playback::{
@@ -594,29 +594,17 @@ async fn items_playbackinfo_inner(
             .iter()
             .all(|g| g.is_none())
     {
+        let ranking = SourceRankingContext {
+            mode: sort_mode,
+            device_profile: sort_device_profile.as_ref(),
+            subtitle_mode,
+            explicit_subtitle_index: q.subtitle_stream_index,
+        };
         let mut paired: Vec<_> = media_sources
             .drain(..)
             .zip(sidecar_subtitle_routes.drain(..))
             .collect();
-        paired.sort_by_key(|(source, _)| {
-            // Built from `sort_device_profile` (which may be the persisted
-            // fallback), not `source.transcoding_reasons` (built from the
-            // live-request-only profile) — otherwise a request that omits a
-            // live DeviceProfile would score every source as tier 4 and the
-            // persisted profile would never actually influence the sort.
-            let ranking_reasons = crate::device_profile::compute_transcode_reasons(
-                source,
-                sort_device_profile.as_ref(),
-                subtitle_mode,
-                q.subtitle_stream_index,
-                max_bitrate,
-            );
-            std::cmp::Reverse(
-                source
-                    .capability_rank(sort_device_profile.as_ref(), &ranking_reasons)
-                    .key(sort_mode),
-            )
-        });
+        paired.sort_by_cached_key(|(source, _)| std::cmp::Reverse(ranking.key(source)));
         for (source, route) in paired {
             media_sources.push(source);
             sidecar_subtitle_routes.push(route);
