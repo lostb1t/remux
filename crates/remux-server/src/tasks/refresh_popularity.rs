@@ -56,34 +56,12 @@ impl Task for RefreshPopularityTask {
         let mut offset = 0;
         let mut completed = 0_i64;
         loop {
-            let page = db::Media::get_by_filter(
-                &ctx.db,
-                &db::MediaFilter {
-                    kind: Some(vec![db::MediaKind::Movie, db::MediaKind::Series]),
-                    limit: Some(PAGE_SIZE),
-                    offset: Some(offset),
-                    total_count: false,
-                    ..Default::default()
-                },
-            )
-            .await?
-            .records;
+            let page =
+                db::Media::list_for_popularity_sync(&ctx.db, PAGE_SIZE, offset).await?;
             if page.is_empty() {
                 break;
             }
             offset += page.len() as u32;
-            let page: Vec<_> = page
-                .into_iter()
-                .filter(|media| {
-                    media
-                        .external_ids
-                        .imdb
-                        .is_some()
-                })
-                .collect();
-            if page.is_empty() {
-                continue;
-            }
             completed += page.len() as i64;
 
             let synced: Vec<_> = stream::iter(page)

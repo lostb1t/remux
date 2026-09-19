@@ -5823,6 +5823,60 @@ impl Media {
         Ok((rows, total))
     }
 
+    /// Minimal per-item projection for `RefreshPopularityTask`, which only
+    /// reads each item's IMDB id and writes back rating/popularity fields.
+    /// The general-purpose `get_by_filter` this used to run through
+    /// unconditionally hydrates full `Media` rows (every JSON blob column)
+    /// plus a batched images load and a batched tags load for every page —
+    /// none of which this task touches — which meant fully materializing
+    /// every movie/series in the library (tens of thousands of rows) just to
+    /// read two fields off each one. This selects only what's actually
+    /// needed: `title`/`kind` must still be carried because `Media::upsert`
+    /// overwrites them unconditionally (not `COALESCE`d) on conflict, and
+    /// `external_ratings` must be carried because it's replaced whole-column
+    /// (also not merged in SQL) — the caller's own merge logic depends on
+    /// starting from the real stored value, not an empty default.
+    pub async fn list_for_popularity_sync(
+        db: &SqlitePool,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<Self>> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            id: Uuid,
+            title: String,
+            kind: MediaKind,
+            #[sqlx(json)]
+            external_ids: ExternalIds,
+            #[sqlx(json(nullable))]
+            external_ratings: Option<ExternalRatings>,
+        }
+
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT id, title, kind, external_ids, external_ratings FROM media \
+             WHERE kind IN (?, ?) AND json_extract(external_ids, '$.imdb') IS NOT NULL \
+             ORDER BY id LIMIT ? OFFSET ?",
+        )
+        .bind(MediaKind::Movie)
+        .bind(MediaKind::Series)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(db)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| Self {
+                id: r.id,
+                title: r.title,
+                kind: r.kind,
+                external_ids: r.external_ids,
+                external_ratings: r.external_ratings,
+                ..Default::default()
+            })
+            .collect())
+    }
+
     pub async fn get_by_jellyfin_filter(
         db: &sqlx::SqlitePool,
         filter: &api::GetItemsQuery,
@@ -9539,6 +9593,115 @@ mod tests {
         assert!(
             ids.contains(&id_recent_release),
             "recently-released item must keep being retried regardless of import age"
+        );
+    }
+
+    /// `list_for_popularity_sync` must carry `title`/`kind`/`external_ratings`
+    /// through its minimal projection, not just `id`/`external_ids` — those
+    /// fields aren't optional extras: `Media::upsert` overwrites `title`/
+    /// `kind` unconditionally on conflict (not `COALESCE`d) and replaces
+    /// `external_ratings` whole-column rather than merging it in SQL, so a
+    /// caller that fetched a blank/default value for any of them and wrote
+    /// it back would silently clobber the real title or wipe out unrelated
+    /// rating sources (e.g. TMDB) that a popularity sync never touches.
+    #[tokio::test]
+    async fn list_for_popularity_sync_round_trips_without_clobbering_other_fields() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+
+        let ext = ExternalIds {
+            imdb: Some(NonEmptyString::try_new("tt9990301".to_string()).unwrap()),
+            ..Default::default()
+        };
+        let id = Uuid::from(&MediaIdRaw {
+            kind: MediaKind::Movie,
+            external_ids: ext.clone(),
+            season: None,
+            episode: None,
+        });
+        let mut original = Media {
+            id,
+            title: "Real Title".to_string(),
+            kind: MediaKind::Movie,
+            external_ids: ext,
+            external_ratings: Some(ExternalRatings {
+                tmdb: Some(Rating {
+                    score: 8.5,
+                    vote_count: Some(1200),
+                }),
+                remuxdb: None,
+            }),
+            ..Default::default()
+        };
+        original
+            .save(db)
+            .await
+            .unwrap();
+
+        let page = Media::list_for_popularity_sync(db, 10, 0)
+            .await
+            .unwrap();
+        let mut fetched = page
+            .into_iter()
+            .find(|m| m.id == id)
+            .expect("item should be returned by the projection");
+
+        assert_eq!(fetched.title, "Real Title");
+        assert_eq!(fetched.kind, MediaKind::Movie);
+        assert_eq!(
+            fetched
+                .external_ratings
+                .as_ref()
+                .and_then(|r| r
+                    .tmdb
+                    .as_ref())
+                .map(|r| r.score),
+            Some(8.5),
+            "pre-existing tmdb rating must survive the minimal projection"
+        );
+
+        // Mimic what `persist_metrics` does: merge a new remuxdb rating into
+        // whatever was already there, then upsert the whole object back.
+        fetched
+            .external_ratings
+            .get_or_insert_default()
+            .remuxdb = Some(RemuxDbRatings {
+            score: Some(7.0),
+            score_average: Some(7.0),
+            tomatoes: None,
+            sources: vec![],
+            updated_at: None,
+        });
+        Media::upsert(db, &[fetched])
+            .await
+            .unwrap();
+
+        let stored = Media::get_by_id(db, &id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.title, "Real Title", "title must not be clobbered");
+        assert_eq!(stored.kind, MediaKind::Movie, "kind must not be clobbered");
+        let ratings = stored
+            .external_ratings
+            .expect("external_ratings must survive the round trip");
+        assert_eq!(
+            ratings
+                .tmdb
+                .map(|r| r.score),
+            Some(8.5),
+            "unrelated tmdb rating must not be wiped out by the popularity sync"
+        );
+        assert_eq!(
+            ratings
+                .remuxdb
+                .and_then(|r| r.score),
+            Some(7.0),
+            "new remuxdb rating must be persisted"
         );
     }
 
