@@ -5,6 +5,7 @@ use crate::{
     state::AppState,
 };
 use dioxus::prelude::*;
+use dioxus_icons::lucide::Settings2;
 use remux_sdks::{
     remux::{
         AddonCatalogDto, AddonDto, AddonMetadata, AddonOption, AddonOptionType,
@@ -972,8 +973,12 @@ pub(crate) fn AddonOptionField(
                                 href: "{configure_url}",
                                 target: "_blank",
                                 rel: "noopener noreferrer",
+                                aria_label: "Open addon configuration",
                                 title: "Open addon configuration",
-                                "Configure"
+                                Settings2 {
+                                    size: "16px",
+                                    "aria-hidden": "true",
+                                }
                             }
                         }
                     }
