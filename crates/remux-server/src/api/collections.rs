@@ -10,10 +10,93 @@ use futures::StreamExt;
 use http::StatusCode;
 use remux_macros::{delete, get, post, query};
 use remux_sdks::CommaSeparatedList;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{AppState, api, db, db::auth::AdminSession};
+
+// ---------------------------------------------------------------------------
+// POST /collections
+// ---------------------------------------------------------------------------
+
+/// Jellyfin collection creation request. The official client sends this as
+/// query parameters, e.g. `POST /Collections?Name=...&Ids=...&IsLocked=true`.
+#[query]
+#[derive(Debug)]
+pub struct CreateCollectionQuery {
+    pub name: String,
+    #[serde(default)]
+    pub ids: CommaSeparatedList<Uuid>,
+    pub parent_id: Option<Uuid>,
+    pub is_locked: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct CollectionCreationResult {
+    pub id: Uuid,
+}
+
+#[post("/collections")]
+pub async fn create_collection(
+    State(state): State<AppState>,
+    _session: AdminSession,
+    Query(q): Query<CreateCollectionQuery>,
+) -> Result<Json<CollectionCreationResult>> {
+    if let Some(parent_id) = q.parent_id {
+        let parent = db::Media::get_by_id(
+            &state
+                .ctx
+                .db,
+            &parent_id,
+        )
+        .await?
+        .context_not_found("Parent collection not found")?;
+        if !parent.is_group_container() {
+            return Err(anyhow::anyhow!("parent is not a collection group"))
+                .context_bad_request("ParentId must be a collection group");
+        }
+    }
+
+    let mut collection = db::Media {
+        title: q.name,
+        kind: db::MediaKind::Collection,
+        collection_kind: Some(db::CollectionKind::Manual),
+        collection_media_kind: Some(db::CollectionMediaKind::Mixed),
+        parent_id: q.parent_id,
+        is_locked: q
+            .is_locked
+            .unwrap_or(false),
+        ..Default::default()
+    };
+    collection
+        .save(
+            &state
+                .ctx
+                .db,
+        )
+        .await
+        .context_bad_request("Failed to create collection")?;
+
+    if !q
+        .ids
+        .is_empty()
+    {
+        let item_ids =
+            crate::services::MediaResolveService::resolve_ids(&q.ids, &state.ctx).await;
+        db::MediaRelation::add_collection_items(
+            &state
+                .ctx
+                .db,
+            &collection.id,
+            &item_ids,
+        )
+        .await
+        .context_bad_request("Failed to add collection items")?;
+    }
+
+    Ok(Json(CollectionCreationResult { id: collection.id }))
+}
 
 // ---------------------------------------------------------------------------
 // GET /collections/{id}/items
@@ -352,6 +435,7 @@ pub async fn import_catalog(
 mod tests {
     use chrono::Utc;
     use http::header::HeaderValue;
+    use uuid::Uuid;
 
     use crate::{
         db,
@@ -617,5 +701,67 @@ mod tests {
             movie_after.parent_id, None,
             "parent_id must not be set for non-group collections"
         );
+    }
+
+    #[tokio::test]
+    async fn create_collection_matches_jellyfin_query_shape() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let first = insert_movie(db, "First", "tt9990002").await;
+        let second = insert_movie(db, "Second", "tt9990003").await;
+
+        let response = server
+            .post("/collections")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[
+                ("Name", "nana"),
+                ("IsLocked", "true"),
+                (
+                    "Ids",
+                    &format!(
+                        "{},{}",
+                        first
+                            .id
+                            .simple(),
+                        second
+                            .id
+                            .simple()
+                    ),
+                ),
+            ])
+            .await;
+        response.assert_status_ok();
+        let body: serde_json::Value = response.json();
+        let collection_id: Uuid = body["Id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let collection = db::Media::get_by_id(db, &collection_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(collection.title, "nana");
+        assert_eq!(collection.kind, db::MediaKind::Collection);
+        assert_eq!(collection.collection_kind, Some(db::CollectionKind::Manual));
+        assert_eq!(
+            collection.collection_media_kind,
+            Some(db::CollectionMediaKind::Mixed)
+        );
+        assert!(collection.is_locked);
+
+        let relations = db::MediaRelation::get_collection_items(db, &collection_id)
+            .await
+            .unwrap();
+        assert_eq!(relations.len(), 2);
+        assert_eq!(relations[0].right_media_id, first.id);
+        assert_eq!(relations[1].right_media_id, second.id);
     }
 }

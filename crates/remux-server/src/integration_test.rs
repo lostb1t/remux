@@ -70,6 +70,7 @@ pub async fn new_test_server() -> Result<(TestServer, TestGuard)> {
     new_test_server_with_config(Config {
         database_url: Some("sqlite::memory:".into()),
         torrent_http_port: None, // OS picks a free ephemeral port
+        torrent_peer_port: None, // avoid the default 6881..6891 range in tests
         disable_dht: true,       // no DHT needed in tests; avoids socket conflicts
         ..Default::default()
     })
