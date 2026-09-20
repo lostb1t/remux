@@ -207,6 +207,28 @@ fn is_remote_enabled(cfg: &api::ServerConfiguration, kind: &db::MediaKind) -> bo
     }
 }
 
+/// Episodes are navigated through their series and season containers rather
+/// than being useful top-level search results. Keep them out of every search
+/// path, including `local:` searches that bypass the remote-search fan-out.
+fn exclude_episodes_from_search(q: &mut api::GetItemsQuery) {
+    if q.search_term
+        .is_none()
+    {
+        return;
+    }
+
+    if let Some(include_types) = &mut q.include_item_types {
+        include_types.retain(|kind| *kind != api::MediaType::Episode);
+    }
+
+    let exclude_types = q
+        .exclude_item_types
+        .get_or_insert_with(Vec::new);
+    if !exclude_types.contains(&api::MediaType::Episode) {
+        exclude_types.push(api::MediaType::Episode);
+    }
+}
+
 /// Search results: singles/EPs belong under Tracks, not surfaced as Albums
 /// (Deezer `album_kind`). Applies to both live addon results and library hits.
 pub async fn get_items(
@@ -215,6 +237,7 @@ pub async fn get_items(
     mut q: api::GetItemsQuery,
     want_count: bool,
 ) -> Result<ItemsQueryResultBuilder> {
+    exclude_episodes_from_search(&mut q);
     if !want_count {
         q.enable_total_record_count = Some(false);
     }
@@ -3647,7 +3670,10 @@ pub async fn media_segments(
 
 #[cfg(test)]
 mod tests {
-    use super::{RemoteImagesQuery, external_id_infos_for_kind, is_remote_enabled};
+    use super::{
+        RemoteImagesQuery, exclude_episodes_from_search, external_id_infos_for_kind,
+        is_remote_enabled,
+    };
     use chrono::Utc;
     use http::header::HeaderValue;
     use remux_sdks::remux::{
@@ -3701,6 +3727,28 @@ mod tests {
         assert!(!is_remote_enabled(&cfg, &db::MediaKind::TvProgram));
         // Sanity check the function isn't just always false.
         assert!(is_remote_enabled(&cfg, &db::MediaKind::Movie));
+    }
+
+    #[test]
+    fn search_excludes_episodes_without_changing_non_search_queries() {
+        let mut search = GetItemsQuery {
+            search_term: Some("term".to_string()),
+            include_item_types: Some(vec![MediaType::Movie, MediaType::Episode]),
+            ..Default::default()
+        };
+
+        exclude_episodes_from_search(&mut search);
+
+        assert_eq!(search.include_item_types, Some(vec![MediaType::Movie]));
+        assert_eq!(search.exclude_item_types, Some(vec![MediaType::Episode]));
+
+        let mut browse = GetItemsQuery {
+            include_item_types: Some(vec![MediaType::Episode]),
+            ..Default::default()
+        };
+        exclude_episodes_from_search(&mut browse);
+        assert_eq!(browse.include_item_types, Some(vec![MediaType::Episode]));
+        assert_eq!(browse.exclude_item_types, None);
     }
 
     #[test]
