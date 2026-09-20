@@ -575,9 +575,8 @@ pub fn CollectionForm(
         CollectionOverlay::StreamingLogo { provider_name, .. } => provider_name.clone(),
         _ => None,
     });
-    let default_background_color =
-        existing_background_color.unwrap_or_else(|| "#000000".to_string());
-    let mut background_color = use_signal(|| default_background_color);
+    let mut background_color = use_signal(|| existing_background_color);
+    let mut background_color_custom = use_signal(|| !should_apply_provider_color);
     let mut poster_layout = use_signal(|| existing_layout);
     let mut overlay_type = use_signal(|| match existing_overlay {
         Some(CollectionOverlay::Text { .. }) => "text".to_string(),
@@ -761,7 +760,7 @@ pub fn CollectionForm(
                                     .color
                                     .as_deref()
                                 {
-                                    provider_background.set(color.to_string());
+                                    provider_background.set(Some(color.to_string()));
                                 }
                             }
                         }
@@ -889,12 +888,10 @@ pub fn CollectionForm(
                     },
                     _ => CollectionOverlay::None,
                 },
-                background_color: HexColor::try_new(
-                    background_color
-                        .peek()
-                        .clone(),
-                )
-                .ok(),
+                background_color: background_color
+                    .peek()
+                    .as_deref()
+                    .and_then(|color| HexColor::try_new(color.to_string()).ok()),
             })
         };
 
@@ -1248,7 +1245,10 @@ pub fn CollectionForm(
                                                     },
                                                     _ => CollectionOverlay::None,
                                                 },
-                                                background_color: HexColor::try_new(background_color.peek().clone()).ok(),
+                                                background_color: background_color
+                                                    .peek()
+                                                    .as_deref()
+                                                    .and_then(|color| HexColor::try_new(color.to_string()).ok()),
                                             };
                                             // A locally-picked file already renders live from an
                                             // in-browser data URL (see the file input's onchange
@@ -1328,8 +1328,12 @@ pub fn CollectionForm(
                             class: "field-input",
                             placeholder: "#000000",
                             title: "Enter a six-digit hex color, with or without # (for example #B20710).",
-                            value: "{background_color}",
-                            oninput: move |e| background_color.set(e.value()),
+                            value: "{background_color.read().as_deref().unwrap_or(\"\")}",
+                            oninput: move |e| {
+                                let value = e.value();
+                                background_color_custom.set(!value.trim().is_empty());
+                                background_color.set((!value.trim().is_empty()).then_some(value));
+                            },
                         }
                     }
                 }
@@ -1426,8 +1430,10 @@ pub fn CollectionForm(
                                             if let Some((provider_name, provider_logo, provider_color)) = selected_provider {
                                                 logo_provider_name.set(Some(provider_name));
                                                 logo_path.set(provider_logo);
-                                                if let Some(color) = provider_color {
-                                                    background_color.set(color);
+                                                if !*background_color_custom.peek() {
+                                                    if let Some(color) = provider_color {
+                                                        background_color.set(Some(color));
+                                                    }
                                                 }
                                             }
                                         } else {
