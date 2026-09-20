@@ -37,16 +37,22 @@ impl HdrTreatment {
         enable_vpp_tonemapping: bool,
         needs_cpu_overlay: bool,
     ) -> Self {
-        let vpp_capable = accel.supports_vpp_tonemap();
         let vpp_blocked_by_overlay =
             needs_cpu_overlay && !accel.supports_gpu_resident_overlay();
         if !hdr {
             Self::Sdr
-        } else if enable_vpp_tonemapping && vpp_capable && !vpp_blocked_by_overlay {
+        } else if enable_vpp_tonemapping
+            && accel.supports_vpp_tonemap()
+            && !vpp_blocked_by_overlay
+        {
             Self::VppTonemap
         } else if enable_tonemapping
             || accel.prefers_sw_tonemap()
-            || (enable_vpp_tonemapping && vpp_capable && vpp_blocked_by_overlay)
+            // A CPU overlay blocking VPP still means the user asked for *some*
+            // tone mapping — fall back to software rather than silently
+            // clamping, regardless of whether this accelerator could ever
+            // have done VPP tonemap in the first place (e.g. NVENC).
+            || (enable_vpp_tonemapping && vpp_blocked_by_overlay)
         {
             Self::SwTonemap
         } else {
@@ -515,6 +521,17 @@ mod tests {
         );
         assert_eq!(
             HdrTreatment::for_source(true, &Nvenc, true, true, false),
+            HdrTreatment::SwTonemap
+        );
+    }
+
+    #[test]
+    fn vpp_toggle_still_sw_tonemaps_on_non_vpp_accelerator_when_burning_a_subtitle() {
+        // NVENC never supports VPP tonemap at all, but a burn-in still means
+        // the user asked for *some* tone mapping — must not silently clamp
+        // just because this accelerator could never have done VPP anyway.
+        assert_eq!(
+            HdrTreatment::for_source(true, &Nvenc, false, true, true),
             HdrTreatment::SwTonemap
         );
     }
