@@ -369,6 +369,7 @@ struct FfprobeStream {
     sample_rate: Option<String>,
     pix_fmt: Option<String>,
     bits_per_raw_sample: Option<String>,
+    refs: Option<i64>,
     #[serde(default)]
     tags: HashMap<String, String>,
     #[serde(default)]
@@ -761,6 +762,9 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     height: meta.height,
                     bit_rate: bitrate,
                     bit_depth,
+                    ref_frames: s
+                        .refs
+                        .and_then(nonzero),
                     average_frame_rate: fps
                         .map(|f| f as f32)
                         .and_then(nonzero),
@@ -1006,11 +1010,34 @@ pub(crate) async fn resolve_stream_root(
 /// request may reuse instead of running ffprobe again. A filename guess
 /// (`ProbeOrigin::FilenameGuess`) is never a completed probe — it must not
 /// block a real ffprobe attempt, even if it happens to carry a "video stream".
+///
+/// An ffprobe result that stored an H.264 video stream without `ref_frames`
+/// predates `refs` being read from ffprobe and is not reusable either: device
+/// profiles routinely carry `RefFrames` rules, so re-probing it once fills the
+/// value in for good instead of leaving the source stuck failing those rules.
 fn is_reusable_probe_cache(cached: &api::MediaSourceInfo) -> bool {
-    cached
-        .video_stream()
-        .is_some()
-        && !cached.is_filename_guess()
+    let Some(video) = cached.video_stream() else {
+        return false;
+    };
+    if cached.is_filename_guess() {
+        return false;
+    }
+    let from_ffprobe = matches!(
+        cached
+            .remux
+            .as_ref()
+            .and_then(|r| r.source),
+        Some(api::ProbeOrigin::Ffprobe)
+    );
+    let is_h264 = video
+        .codec
+        .as_deref()
+        .is_some_and(|c| c.eq_ignore_ascii_case("h264"));
+    !(from_ffprobe
+        && is_h264
+        && video
+            .ref_frames
+            .is_none())
 }
 
 /// Resolve probe data for a single source: cache hit → skip → live probe with fallback.
@@ -1400,6 +1427,45 @@ mod probe_tests {
             ..Default::default()
         };
         assert!(!is_reusable_probe_cache(&guess));
+    }
+
+    #[test]
+    fn is_reusable_probe_cache_reprobes_ffprobe_h264_without_ref_frames() {
+        let source = |origin, codec: &str, ref_frames| api::MediaSourceInfo {
+            media_streams: vec![api::MediaStream {
+                type_: Some(api::MediaStreamType::Video),
+                codec: Some(codec.to_string()),
+                ref_frames,
+                ..Default::default()
+            }],
+            remux: Some(api::MediaSourceRemuxInfo {
+                source: Some(origin),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // Stale: predates refs being read from ffprobe.
+        assert!(!is_reusable_probe_cache(&source(
+            api::ProbeOrigin::Ffprobe,
+            "h264",
+            None
+        )));
+        // Current, or not something ffprobe reports refs for / not ours to redo.
+        assert!(is_reusable_probe_cache(&source(
+            api::ProbeOrigin::Ffprobe,
+            "h264",
+            Some(1)
+        )));
+        assert!(is_reusable_probe_cache(&source(
+            api::ProbeOrigin::Ffprobe,
+            "hevc",
+            None
+        )));
+        assert!(is_reusable_probe_cache(&source(
+            api::ProbeOrigin::RemuxDb,
+            "h264",
+            None
+        )));
     }
 
     #[test]

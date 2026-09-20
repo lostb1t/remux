@@ -171,6 +171,11 @@ impl DeviceProfileExt for DeviceProfile {
                 .iter()
                 .filter(|cp| matches!(cp.type_, Some(DlnaProfileType::Video)))
                 .filter(|cp| cp.applies_to_codec("hevc"))
+                .filter(|cp| {
+                    media_source
+                        .video_stream()
+                        .is_none_or(|stream| cp.applies_to_stream(stream))
+                })
                 .flat_map(|cp| &cp.conditions)
                 .filter(|cond| {
                     cond.property
@@ -221,7 +226,7 @@ fn check_codec_profiles(
                         .codec
                         .as_deref()
                         .unwrap_or("");
-                    if cp.applies_to_codec(codec) {
+                    if cp.applies_to_codec(codec) && cp.applies_to_stream(stream) {
                         for r in cp
                             .check_reasons(stream)
                             .0
@@ -237,7 +242,7 @@ fn check_codec_profiles(
                         .codec
                         .as_deref()
                         .unwrap_or("");
-                    if cp.applies_to_codec(codec) {
+                    if cp.applies_to_codec(codec) && cp.applies_to_stream(stream) {
                         for r in cp
                             .check_reasons(stream)
                             .0
@@ -361,6 +366,7 @@ impl DirectPlayProfileExt for DirectPlayProfile {
 
 pub trait CodecProfileExt {
     fn applies_to_codec(&self, codec: &str) -> bool;
+    fn applies_to_stream(&self, stream: &MediaStream) -> bool;
     fn check_reasons(&self, stream: &MediaStream) -> TranscodeReasons;
 }
 
@@ -373,6 +379,18 @@ impl CodecProfileExt for CodecProfile {
             .any(|entry| any_codec_matches(entry, codec))
     }
 
+    fn applies_to_stream(&self, stream: &MediaStream) -> bool {
+        self.apply_conditions
+            .iter()
+            .all(|cond| {
+                cond.property
+                    .as_ref()
+                    .is_none_or(|property| {
+                        condition_satisfied(cond, property, stream).is_ok()
+                    })
+            })
+    }
+
     fn check_reasons(&self, stream: &MediaStream) -> TranscodeReasons {
         let mut reasons = TranscodeReasons::default();
         for cond in &self.conditions {
@@ -383,20 +401,7 @@ impl CodecProfileExt for CodecProfile {
                 Some(p) => p,
                 None => continue,
             };
-            let actual = stream_property_value(stream, property);
-
-            // HDR10Plus also satisfies HDR10 conditions.
-            if property == &ProfileConditionProperty::VideoRangeType {
-                if let Some(ref v) = actual {
-                    if v.eq_ignore_ascii_case("HDR10Plus")
-                        && cond.is_satisfied_opt(Some("HDR10"))
-                    {
-                        continue;
-                    }
-                }
-            }
-
-            if !cond.is_satisfied_opt(actual.as_deref()) {
+            if let Err(actual) = condition_satisfied(cond, property, stream) {
                 let condition = cond
                     .condition
                     .as_ref()
@@ -426,6 +431,19 @@ impl CodecProfileExt for CodecProfile {
                     ProfileConditionProperty::BitDepth => {
                         TranscodeReason::VideoBitDepthNotSupported(detail)
                     }
+                    ProfileConditionProperty::RefFrames => {
+                        TranscodeReason::RefFramesNotSupported(detail)
+                    }
+                    ProfileConditionProperty::VideoLevel
+                    | ProfileConditionProperty::Level
+                        if is_video_stream(stream) =>
+                    {
+                        TranscodeReason::VideoLevelNotSupported(detail)
+                    }
+                    ProfileConditionProperty::Width
+                    | ProfileConditionProperty::Height => {
+                        TranscodeReason::VideoResolutionNotSupported(detail)
+                    }
                     _ => {
                         if matches!(stream.type_, Some(MediaStreamType::Audio)) {
                             TranscodeReason::AudioCodecNotSupported(detail)
@@ -438,6 +456,37 @@ impl CodecProfileExt for CodecProfile {
             }
         }
         reasons
+    }
+}
+
+fn is_video_stream(stream: &MediaStream) -> bool {
+    matches!(stream.type_, Some(MediaStreamType::Video))
+}
+
+/// Evaluates one profile condition against `stream`. `Err` carries the actual
+/// property value (if the stream has one) for use in failure details.
+fn condition_satisfied(
+    cond: &ProfileCondition,
+    property: &ProfileConditionProperty,
+    stream: &MediaStream,
+) -> Result<(), Option<String>> {
+    let actual = stream_property_value(stream, property);
+
+    // HDR10Plus also satisfies HDR10 conditions.
+    if property == &ProfileConditionProperty::VideoRangeType {
+        if let Some(ref v) = actual {
+            if v.eq_ignore_ascii_case("HDR10Plus")
+                && cond.is_satisfied_opt(Some("HDR10"))
+            {
+                return Ok(());
+            }
+        }
+    }
+
+    if cond.is_satisfied_opt(actual.as_deref()) {
+        Ok(())
+    } else {
+        Err(actual)
     }
 }
 
@@ -745,6 +794,9 @@ fn transcode_cost_tier(reasons: &TranscodeReasons) -> u8 {
                     | TranscodeReason::VideoRangeTypeNotSupported(_)
                     | TranscodeReason::VideoProfileNotSupported(_)
                     | TranscodeReason::VideoBitDepthNotSupported(_)
+                    | TranscodeReason::VideoLevelNotSupported(_)
+                    | TranscodeReason::VideoResolutionNotSupported(_)
+                    | TranscodeReason::RefFramesNotSupported(_)
                     | TranscodeReason::SubtitleCodecNotSupported(_)
                     | TranscodeReason::ContainerBitrateExceedsLimit
             )
@@ -1283,6 +1335,7 @@ mod tests {
                     value: Some("high|main|baseline|constrained baseline".to_string()),
                     is_required: Some(false),
                 }],
+                ..Default::default()
             }],
             ..Default::default()
         }
@@ -1332,6 +1385,147 @@ mod tests {
         );
     }
 
+    fn cond(
+        property: ProfileConditionProperty,
+        condition: ProfileConditionType,
+        value: &str,
+    ) -> ProfileCondition {
+        ProfileCondition {
+            condition: Some(condition),
+            property: Some(property),
+            value: Some(value.to_string()),
+            is_required: Some(true),
+        }
+    }
+
+    /// Moonfin for Android TV 2.5.1's H.264 rules: a lenient ref-frame cap for
+    /// 1200+ wide files and a strict one for 1900+ wide files.
+    fn moonfin_ref_frames_profile() -> DeviceProfile {
+        let scoped = |limit: &str, min_width: &str| CodecProfile {
+            type_: Some(DlnaProfileType::Video),
+            codec: Some(vec!["h264".to_string()]),
+            conditions: vec![cond(
+                ProfileConditionProperty::RefFrames,
+                ProfileConditionType::LessThanEqual,
+                limit,
+            )],
+            apply_conditions: vec![cond(
+                ProfileConditionProperty::Width,
+                ProfileConditionType::GreaterThanEqual,
+                min_width,
+            )],
+        };
+        DeviceProfile {
+            direct_play_profiles: vec![DirectPlayProfile {
+                container: Some(vec![VideoContainer::Mkv]),
+                video_codec: Some(vec![VideoCodec::H264]),
+                audio_codec: Some(vec![AudioCodec::Aac]),
+                type_: Some(DlnaProfileType::Video),
+            }],
+            codec_profiles: vec![scoped("12", "1200"), scoped("4", "1900")],
+            ..Default::default()
+        }
+    }
+
+    fn h264_source_sized(width: i64, ref_frames: Option<i64>) -> MediaSourceInfo {
+        let mut source = h264_source("High");
+        source.media_streams[0].width = Some(width);
+        source.media_streams[0].ref_frames = ref_frames;
+        source
+    }
+
+    #[test]
+    fn apply_conditions_deserialize_from_client_profile() {
+        let cp: CodecProfile = serde_json::from_str(
+            r#"{"Type":"Video","Codec":"h264",
+                "Conditions":[{"Condition":"LessThanEqual","Property":"RefFrames","Value":"4","IsRequired":true}],
+                "ApplyConditions":[{"Condition":"GreaterThanEqual","Property":"Width","Value":"1900","IsRequired":true}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cp.apply_conditions
+                .len(),
+            1
+        );
+        assert_eq!(
+            cp.apply_conditions[0].property,
+            Some(ProfileConditionProperty::Width)
+        );
+    }
+
+    #[test]
+    fn ref_frames_rule_is_skipped_for_streams_below_apply_width() {
+        // 720p with 5 refs: the `<= 4` rule is scoped to Width >= 1900, and the
+        // `<= 12` rule to Width >= 1200 — neither applies, so this direct plays.
+        let reasons = moonfin_ref_frames_profile()
+            .check_direct_play(&h264_source_sized(1280, Some(5)));
+        assert!(reasons.is_empty(), "{reasons:?}");
+    }
+
+    #[test]
+    fn ref_frames_rule_applies_at_apply_width() {
+        let profile = moonfin_ref_frames_profile();
+        assert!(
+            profile
+                .check_direct_play(&h264_source_sized(1920, Some(4)))
+                .is_empty()
+        );
+        let reasons = profile.check_direct_play(&h264_source_sized(1920, Some(5)));
+        assert!(
+            reasons.contains(&TranscodeReason::RefFramesNotSupported(String::new())),
+            "{reasons:?}"
+        );
+    }
+
+    #[test]
+    fn missing_ref_frames_is_reported_as_ref_frames_not_video_codec() {
+        // The issue's failing case: 1920 wide, RefFrames unknown. Still fails
+        // the IsRequired rule, but must not be blamed on the codec.
+        let reasons = moonfin_ref_frames_profile()
+            .check_direct_play(&h264_source_sized(1920, None));
+        assert!(
+            reasons.contains(&TranscodeReason::RefFramesNotSupported(String::new()))
+        );
+        assert!(
+            !reasons.contains(&TranscodeReason::VideoCodecNotSupported(String::new()))
+        );
+    }
+
+    #[test]
+    fn level_and_resolution_failures_get_their_own_reasons() {
+        let mut profile = moonfin_ref_frames_profile();
+        profile.codec_profiles = vec![CodecProfile {
+            type_: Some(DlnaProfileType::Video),
+            codec: Some(vec!["h264".to_string()]),
+            conditions: vec![
+                cond(
+                    ProfileConditionProperty::VideoLevel,
+                    ProfileConditionType::LessThanEqual,
+                    "40",
+                ),
+                cond(
+                    ProfileConditionProperty::Width,
+                    ProfileConditionType::LessThanEqual,
+                    "1280",
+                ),
+            ],
+            ..Default::default()
+        }];
+        let mut source = h264_source_sized(1920, Some(1));
+        source.media_streams[0].level = Some(52.0);
+        let reasons = profile.check_direct_play(&source);
+        assert!(
+            reasons.contains(&TranscodeReason::VideoLevelNotSupported(String::new()))
+        );
+        assert!(
+            reasons
+                .contains(&TranscodeReason::VideoResolutionNotSupported(String::new()))
+        );
+        assert!(
+            !reasons.contains(&TranscodeReason::VideoCodecNotSupported(String::new()))
+        );
+    }
+
     #[test]
     fn audio_channel_limit_does_not_force_video_reencode() {
         // A device that only supports 2-channel audio should trigger an audio
@@ -1354,6 +1548,7 @@ mod tests {
                     value: Some("2".to_string()),
                     is_required: Some(false),
                 }],
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -1403,6 +1598,7 @@ mod tests {
                     value: Some(value.to_string()),
                     is_required: Some(true),
                 }],
+                ..Default::default()
             }],
             ..Default::default()
         }
@@ -1461,6 +1657,7 @@ mod tests {
                     value: Some("main|main 10".to_string()),
                     is_required: Some(false),
                 }],
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -1494,6 +1691,7 @@ mod tests {
                     value: Some("avc1".to_string()),
                     is_required: Some(true),
                 }],
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -1574,6 +1772,7 @@ mod tests {
                         is_required: Some(true),
                     },
                 ],
+                ..Default::default()
             }],
             ..Default::default()
         }

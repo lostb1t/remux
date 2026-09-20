@@ -197,7 +197,14 @@ fn build_video_transcode(
         ))
         || reasons.contains(&api::TranscodeReason::VideoBitDepthNotSupported(
             String::new(),
-        ));
+        ))
+        || reasons
+            .contains(&api::TranscodeReason::VideoLevelNotSupported(String::new()))
+        || reasons.contains(&api::TranscodeReason::VideoResolutionNotSupported(
+            String::new(),
+        ))
+        || reasons
+            .contains(&api::TranscodeReason::RefFramesNotSupported(String::new()));
 
     // When video re-encoding is not allowed (server setting or user policy),
     // fall through with video=copy — remux the container and transcode audio

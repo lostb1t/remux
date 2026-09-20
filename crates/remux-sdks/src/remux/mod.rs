@@ -2114,6 +2114,10 @@ pub struct CodecProfile {
     #[serde(deserialize_with = "deser_csv_strings", serialize_with = "ser_csv")]
     pub codec: Option<Vec<String>>,
     pub conditions: Vec<ProfileCondition>,
+    /// Scopes `conditions` to streams matching every entry here, e.g. a
+    /// `RefFrames <= 4` rule that only applies when `Width >= 1900`. Empty
+    /// means the profile always applies.
+    pub apply_conditions: Vec<ProfileCondition>,
 }
 
 #[derive(Default, Debug, Serialize, Deserialize, Clone)]
@@ -2358,6 +2362,9 @@ pub enum TranscodeReason {
     VideoCodecTagNotSupported(String),
     VideoProfileNotSupported(String),
     VideoBitDepthNotSupported(String),
+    VideoLevelNotSupported(String),
+    VideoResolutionNotSupported(String),
+    RefFramesNotSupported(String),
     ContainerBitrateExceedsLimit,
 }
 
@@ -2372,6 +2379,9 @@ impl TranscodeReason {
             Self::VideoCodecTagNotSupported(_) => "VideoCodecTagNotSupported",
             Self::VideoProfileNotSupported(_) => "VideoProfileNotSupported",
             Self::VideoBitDepthNotSupported(_) => "VideoBitDepthNotSupported",
+            Self::VideoLevelNotSupported(_) => "VideoLevelNotSupported",
+            Self::VideoResolutionNotSupported(_) => "VideoResolutionNotSupported",
+            Self::RefFramesNotSupported(_) => "RefFramesNotSupported",
             Self::ContainerBitrateExceedsLimit => "ContainerBitrateExceedsLimit",
         }
     }
@@ -2397,6 +2407,15 @@ impl std::fmt::Debug for TranscodeReason {
             }
             Self::VideoBitDepthNotSupported(d) => {
                 write!(f, "VideoBitDepthNotSupported({d})")
+            }
+            Self::VideoLevelNotSupported(d) => {
+                write!(f, "VideoLevelNotSupported({d})")
+            }
+            Self::VideoResolutionNotSupported(d) => {
+                write!(f, "VideoResolutionNotSupported({d})")
+            }
+            Self::RefFramesNotSupported(d) => {
+                write!(f, "RefFramesNotSupported({d})")
             }
             Self::ContainerBitrateExceedsLimit => {
                 write!(f, "ContainerBitrateExceedsLimit")
@@ -2495,6 +2514,15 @@ impl TranscodeReasons {
                 }
                 "VideoBitDepthNotSupported" => {
                     Some(TranscodeReason::VideoBitDepthNotSupported(String::new()))
+                }
+                "VideoLevelNotSupported" => {
+                    Some(TranscodeReason::VideoLevelNotSupported(String::new()))
+                }
+                "VideoResolutionNotSupported" => {
+                    Some(TranscodeReason::VideoResolutionNotSupported(String::new()))
+                }
+                "RefFramesNotSupported" => {
+                    Some(TranscodeReason::RefFramesNotSupported(String::new()))
                 }
                 "ContainerBitrateExceedsLimit" => {
                     Some(TranscodeReason::ContainerBitrateExceedsLimit)
