@@ -371,6 +371,20 @@ pub trait MediaTrackerAddon: AddonKind + Send + Sync {
     /// Must be cheap and do no I/O — called while rendering pages.
     fn capabilities(&self) -> MediaTrackerCapabilities;
 
+    /// Whether the server-level application credentials needed to connect an
+    /// account are present. Providers with no operator configuration keep the
+    /// default.
+    fn configured(&self) -> bool {
+        true
+    }
+
+    /// Optional tag used by core to expose imported history as a smart
+    /// catalog. Providers opt in because not every tracker returns enough
+    /// title and identity data to materialize missing media safely.
+    fn history_catalog_tag(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Should hit the provider so a bad token is rejected while the user is
     /// still on the form, not later as a failed scrobble.
     async fn connect_with_token(
@@ -482,6 +496,11 @@ pub trait MediaTrackerAddon: AddonKind + Send + Sync {
 /// `pull_changes`.
 #[derive(Debug, Clone)]
 pub struct RemoteWatch {
+    /// Top-level movie or show title. Providers include this alongside IDs and
+    /// core can use it to materialize a metadata stub when the item is not yet
+    /// present in the local catalog.
+    pub title: String,
+    pub year: Option<i32>,
     pub ids: db::ExternalIds,
     pub season: Option<i64>,
     pub episode: Option<i64>,
@@ -760,6 +779,8 @@ mod tests {
     #[test]
     fn remote_user_data_can_carry_a_favourite_on_its_own() {
         let watch = RemoteWatch {
+            title: "The Matrix".into(),
+            year: Some(1999),
             ids: db::ExternalIds {
                 tmdb: Some(603),
                 ..Default::default()
@@ -783,6 +804,8 @@ mod tests {
     #[test]
     fn remote_user_data_can_carry_a_rating_on_its_own() {
         let watch = RemoteWatch {
+            title: "The Matrix".into(),
+            year: Some(1999),
             ids: db::ExternalIds {
                 tmdb: Some(603),
                 ..Default::default()

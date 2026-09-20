@@ -33,9 +33,34 @@ on:
         type: boolean
         required: false
         default: true
+      registry_image:
+        description: Fully qualified container image name
+        type: string
+        required: false
+        default: ghcr.io/lostb1t/remux
+      registry:
+        description: Container registry hostname used for authentication
+        type: string
+        required: false
+        default: ghcr.io
+      registry_username:
+        description: Container registry username
+        type: string
+        required: false
+        default: lostb1t
+      push:
+        description: Push images and publish the multi-platform manifest
+        type: boolean
+        required: false
+        default: true
+    secrets:
+      GH_TOKEN:
+        required: false
+      registry_password:
+        required: false
 
 env:
-  REGISTRY_IMAGE: ghcr.io/lostb1t/remux
+  REGISTRY_IMAGE: ${{ inputs.registry_image }}
 
 jobs:
   build-jellyfin-web:
@@ -484,15 +509,17 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GitHub Container Registry
+      - name: Log in to container registry
+        if: inputs.push
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: lostb1t
-          password: ${{ secrets.GH_TOKEN }}
+          registry: ${{ inputs.registry }}
+          username: ${{ inputs.registry_username }}
+          password: ${{ secrets.registry_password || secrets.GH_TOKEN }}
 
       - name: Build and push by digest
-        id: build
+        if: inputs.push
+        id: build-push
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -502,13 +529,53 @@ jobs:
           cache-from: type=gha,scope=build-${{ env.PLATFORM_PAIR }}
           cache-to: type=gha,mode=max,scope=build-${{ env.PLATFORM_PAIR }}
 
+      - name: Build PR validation image
+        if: inputs.push == false
+        id: build-local
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: remux-pr:${{ matrix.arch }}
+          cache-from: type=gha,scope=build-${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=build-${{ env.PLATFORM_PAIR }}
+
+      - name: Smoke test image
+        env:
+          PUSH_IMAGE: ${{ inputs.push }}
+          PUSH_DIGEST: ${{ steps.build-push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          name="remux-smoke-${{ matrix.arch }}"
+          if [ "$PUSH_IMAGE" = "true" ]; then
+            image="${REGISTRY_IMAGE}@${PUSH_DIGEST}"
+          else
+            image="remux-pr:${{ matrix.arch }}"
+          fi
+          trap 'docker logs "$name" 2>/dev/null || true; docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
+          docker run --detach --name "$name" --tmpfs /data "$image"
+          for _ in $(seq 1 60); do
+            if docker exec "$name" curl --fail --silent --show-error \
+              http://127.0.0.1:3000/health >/dev/null; then
+              echo "Image passed /health smoke test"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Image failed /health smoke test" >&2
+          exit 1
+
       - name: Export digest
+        if: inputs.push
         run: |
           mkdir -p ${{ runner.temp }}/digests
-          digest="${{ steps.build.outputs.digest }}"
+          digest="${{ steps.build-push.outputs.digest }}"
           touch "${{ runner.temp }}/digests/${digest#sha256:}"
 
       - name: Upload digest
+        if: inputs.push
         uses: actions/upload-artifact@v4
         with:
           name: digests-${{ env.PLATFORM_PAIR }}
@@ -520,6 +587,7 @@ jobs:
     name: Merge Docker manifests
     needs: [build-docker, build-desktop, smoke-test-windows]
     if: |
+      inputs.push &&
       always() &&
       needs.build-docker.result == 'success' &&
       (needs.build-desktop.result == 'success' || needs.build-desktop.result == 'skipped') &&
@@ -536,12 +604,12 @@ jobs:
           pattern: digests-*
           merge-multiple: true
 
-      - name: Log in to GitHub Container Registry
+      - name: Log in to container registry
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: lostb1t
-          password: ${{ secrets.GH_TOKEN }}
+          registry: ${{ inputs.registry }}
+          username: ${{ inputs.registry_username }}
+          password: ${{ secrets.registry_password || secrets.GH_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

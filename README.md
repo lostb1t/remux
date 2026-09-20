@@ -118,7 +118,11 @@ TRAKT_CLIENT_ID=your-client-id
 TRAKT_CLIENT_SECRET=your-client-secret
 ```
 
-Then open **Admin → Users**, edit a user, and use the Trakt section to connect that user's account. After authorization, click **Import watch history** to merge watched state, play counts, and paused progress into Remux. Playback start, pause/resume, seek, stop, and manual watched/unwatched changes are scrobbled after the account is connected.
+Then open **Admin → Users**, edit a user, and use the Trakt section to connect that user's account. After authorization, click **Import watch history** to merge watched state, play counts, and paused progress into Remux. Movies and shows missing from the local library are materialized through the configured metadata providers and appear in the per-user **Trakt History** smart catalog; an item remains unmatched only when Remux cannot resolve its metadata or episode tree. Playback start, pause/resume, seek, stop, and manual watched/unwatched changes are scrobbled after the account is connected.
+
+### Simkl / Crosswatch
+
+For Crosswatch deployments, set `SIMKL_CLIENT_ID` to an OAuth V2 Simkl application ID, restart Remux, then open **Admin → Users**, edit a user, and connect Simkl. The built-in **Simkl History** catalog is enabled automatically. Each connected account also publishes separate **Watching**, **Plan to Watch**, **On Hold**, **Completed**, and **Dropped** catalogs plus its supported custom/followed/collaborated Simkl lists; enable any of them in the Simkl addon's admin catalog settings. Custom-list item access requires Simkl PRO/VIP. Run **Admin → Scheduled Tasks → Refresh Library** to import every item from enabled catalogs into the Remux/Jellyfin library. Remux uses Simkl's TV/anime episode lists as a fallback, so titles absent from other metadata catalogs can still be materialized. There is no separate Simkl import action and Remux does not apply Simkl watch state; Crosswatch remains responsible for watch-state synchronization.
 
 ### ❤️ Support the Project
 

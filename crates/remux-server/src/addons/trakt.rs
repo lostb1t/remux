@@ -219,6 +219,10 @@ impl TraktAddon {
             as f32
     }
 
+    fn should_send_stop(progress: f32) -> bool {
+        progress >= 1.0
+    }
+
     fn history_payload(
         target: &MediaTrackerTarget,
         watched_at: Option<chrono::DateTime<Utc>>,
@@ -254,7 +258,11 @@ impl TraktAddon {
                     }]
                 })
             }
-            _ => unreachable!(),
+            _ => {
+                return Err(MediaTrackerError::permanent(
+                    "Trakt history updates only support movies and episodes",
+                ));
+            }
         })
     }
 }
@@ -285,6 +293,15 @@ impl MediaTrackerAddon for TraktAddon {
             watch_state_sync: SyncDirection::Both,
             ..Default::default()
         }
+    }
+
+    fn history_catalog_tag(&self) -> Option<&'static str> {
+        Some("source:Trakt")
+    }
+
+    fn configured(&self) -> bool {
+        self.client
+            .is_some()
     }
 
     async fn begin_device_auth(
@@ -441,8 +458,15 @@ impl MediaTrackerAddon for TraktAddon {
                     .map_err(Self::map_error)
             }
             MediaTrackerEvent::PlaybackStop { position_ticks, .. } => {
+                let progress = Self::progress(target, *position_ticks);
+                // Trakt treats a stop below its completion threshold as a pause,
+                // but rejects pause progress below 1%. Nothing meaningful has
+                // been watched yet, so acknowledge the event without sending it.
+                if !Self::should_send_stop(progress) {
+                    return Ok(());
+                }
                 let mut payload = Self::target_payload(target)?;
-                payload["progress"] = json!(Self::progress(target, *position_ticks));
+                payload["progress"] = json!(progress);
                 self.client()?
                     .scrobble(TraktScrobbleAction::Stop, &payload, &credentials)
                     .await
@@ -486,6 +510,13 @@ impl MediaTrackerAddon for TraktAddon {
             movies
                 .into_iter()
                 .map(|entry| RemoteWatch {
+                    title: entry
+                        .movie
+                        .title
+                        .clone(),
+                    year: entry
+                        .movie
+                        .year,
                     ids: Self::ids(
                         &entry
                             .movie
@@ -513,6 +544,13 @@ impl MediaTrackerAddon for TraktAddon {
             for season in entry.seasons {
                 for episode in season.episodes {
                     watches.push(RemoteWatch {
+                        title: entry
+                            .show
+                            .title
+                            .clone(),
+                        year: entry
+                            .show
+                            .year,
                         ids: ids.clone(),
                         season: Some(season.number),
                         episode: Some(episode.number),
@@ -533,6 +571,13 @@ impl MediaTrackerAddon for TraktAddon {
             paused_movies
                 .into_iter()
                 .map(|entry| RemoteWatch {
+                    title: entry
+                        .movie
+                        .title
+                        .clone(),
+                    year: entry
+                        .movie
+                        .year,
                     ids: Self::ids(
                         &entry
                             .movie
@@ -557,6 +602,13 @@ impl MediaTrackerAddon for TraktAddon {
             paused_episodes
                 .into_iter()
                 .map(|entry| RemoteWatch {
+                    title: entry
+                        .show
+                        .title
+                        .clone(),
+                    year: entry
+                        .show
+                        .year,
                     ids: Self::ids(
                         &entry
                             .show
@@ -611,6 +663,13 @@ mod tests {
     }
 
     #[test]
+    fn stop_requires_one_percent_progress() {
+        assert!(!TraktAddon::should_send_stop(0.0));
+        assert!(!TraktAddon::should_send_stop(0.99));
+        assert!(TraktAddon::should_send_stop(1.0));
+    }
+
+    #[test]
     fn episode_history_falls_back_to_show_season_and_number() {
         let target = MediaTrackerTarget {
             kind: db::MediaKind::Episode,
@@ -641,5 +700,26 @@ mod tests {
             payload["shows"][0]["seasons"][0]["episodes"][0]["number"],
             2
         );
+    }
+
+    #[test]
+    fn history_payload_rejects_series_without_panicking() {
+        let target = MediaTrackerTarget {
+            kind: db::MediaKind::Series,
+            title: "Example Show".into(),
+            year: Some(2024),
+            ids: db::ExternalIds::default(),
+            series: None,
+            season: None,
+            episode: None,
+            runtime_ticks: None,
+        };
+
+        let error = TraktAddon::history_payload(&target, None).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Trakt history updates only support movies and episodes"
+        );
+        assert!(!error.is_retryable());
     }
 }

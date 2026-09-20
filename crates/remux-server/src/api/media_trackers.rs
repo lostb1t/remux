@@ -127,27 +127,7 @@ pub async fn get_media_tracker_providers(
                 .preset
                 .kind,
             name: addon.name,
-            configured: state
-                .ctx
-                .config
-                .trakt_client_id
-                .as_ref()
-                .is_some_and(|value| {
-                    !value
-                        .trim()
-                        .is_empty()
-                })
-                && state
-                    .ctx
-                    .config
-                    .trakt_client_secret
-                    .as_ref()
-                    .is_some_and(|value| {
-                        !value
-                            .expose()
-                            .trim()
-                            .is_empty()
-                    }),
+            configured: provider.configured(),
             history_import: provider
                 .capabilities()
                 .history_import,
@@ -215,7 +195,7 @@ pub async fn begin_media_tracker_device_auth(
         .begin_device_auth(&tctx)
         .await
         .map_err(anyhow::Error::from)
-        .context_bad_request("Could not start Trakt authorization")?;
+        .context_bad_request("Could not start media tracker authorization")?;
     let attempt_id = crate::common::get_uuid();
     let now = Utc::now().naive_utc();
     let interval_seconds = start
@@ -314,7 +294,7 @@ pub async fn poll_media_tracker_device_auth(
         .poll_device_auth(&attempt.poll_token, &tctx)
         .await
         .map_err(anyhow::Error::from)
-        .context_bad_request("Could not poll Trakt authorization")?
+        .context_bad_request("Could not poll media tracker authorization")?
     {
         DeviceAuthPoll::Pending => Ok(Json(MediaTrackerAuthPollDto {
             status: MediaTrackerAuthStatus::Pending,
@@ -440,6 +420,20 @@ pub async fn start_media_tracker_import(
     .await?
     .filter(|tracker| tracker.user_id == user_id)
     .context_not_found("Media tracker connection not found")?;
+    let provider = state
+        .ctx
+        .addons
+        .media_tracker_for(tracker.addon_id)
+        .context_not_found("Media tracker provider is unavailable")?;
+    if !provider
+        .capabilities()
+        .history_import
+    {
+        return Err(anyhow::anyhow!(
+            "This provider is synchronized by Refresh Library"
+        ))
+        .context_bad_request("History import is not supported");
+    }
     if let Some(existing) = sqlx::query_as::<_, ImportRun>(
         "SELECT id, status, fetched_count, matched_count, updated_count, deferred_count, \
          skipped_count, error, created_at, started_at, completed_at \
@@ -465,12 +459,26 @@ pub async fn start_media_tracker_import(
             .db,
     )
     .await?;
+    tracing::info!(
+        target: "remux_server::media_tracker_import",
+        %run_id,
+        tracker_id = %tracker.id,
+        %user_id,
+        "media tracker import queued"
+    );
 
     let ctx = state
         .ctx
         .clone();
     tokio::spawn(async move {
         let started = Utc::now().naive_utc();
+        tracing::info!(
+            target: "remux_server::media_tracker_import",
+            %run_id,
+            tracker_id = %tracker.id,
+            user_id = %tracker.user_id,
+            "media tracker import started"
+        );
         let _ = sqlx::query(
             "UPDATE media_tracker_import_runs SET status = 'running', started_at = ?2 WHERE id = ?1",
         )
@@ -496,6 +504,17 @@ pub async fn start_media_tracker_import(
                 .bind(Utc::now().naive_utc())
                 .execute(&ctx.db)
                 .await;
+                tracing::info!(
+                    target: "remux_server::media_tracker_import",
+                    %run_id,
+                    tracker_id = %tracker.id,
+                    fetched = stats.fetched,
+                    matched = stats.matched,
+                    updated = stats.updated,
+                    deferred = stats.deferred,
+                    skipped = stats.skipped,
+                    "media tracker import run succeeded"
+                );
             }
             Err(error) => {
                 let message = error.to_string();
@@ -507,6 +526,13 @@ pub async fn start_media_tracker_import(
                 .bind(Utc::now().naive_utc())
                 .execute(&ctx.db)
                 .await;
+                tracing::error!(
+                    target: "remux_server::media_tracker_import",
+                    %run_id,
+                    tracker_id = %tracker.id,
+                    error = %error,
+                    "media tracker import run failed"
+                );
             }
         }
     });

@@ -33,6 +33,7 @@ fn rule_values(rule: &FilterRule) -> Vec<String> {
         FilterRule::MediaKind { values, .. } => values.clone(),
         FilterRule::Favorite { .. } => vec![],
         FilterRule::Played { .. } => vec![],
+        FilterRule::Tracked { .. } => vec![],
         _ => vec![],
     }
 }
@@ -236,6 +237,7 @@ fn field_label(key: &str) -> &'static str {
         "collection_member" => "Collection",
         "favorite" => "Favorite",
         "played" => "Played",
+        "tracked" => "Has User State",
         "media_kind" => "Media Kind",
         _ => "",
     }
@@ -246,7 +248,7 @@ fn ops_for_field(field_key: &str) -> Vec<(&'static str, &'static str)> {
         "year" | "rating_audience" | "rating_critic" => {
             vec![("eq", "is"), ("not_eq", "is not"), ("gt", ">"), ("lt", "<")]
         }
-        "parental_rating" | "has_trailer" | "favorite" | "played" => vec![],
+        "parental_rating" | "has_trailer" | "favorite" | "played" | "tracked" => vec![],
         _ => vec![("is", "is"), ("is_not", "is not")],
     }
 }
@@ -364,6 +366,9 @@ fn rule_to_raw(rule: &FilterRule) -> (String, String, String) {
         FilterRule::Played { value } => {
             ("played".into(), String::new(), value.to_string())
         }
+        FilterRule::Tracked { value } => {
+            ("tracked".into(), String::new(), value.to_string())
+        }
     }
 }
 
@@ -478,6 +483,9 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
             value: value_str == "true",
         },
         "played" => FilterRule::Played {
+            value: value_str == "true",
+        },
+        "tracked" => FilterRule::Tracked {
             value: value_str == "true",
         },
         _ => FilterRule::Genre {
@@ -871,8 +879,10 @@ pub fn FilterRuleRow(
     let is_catalog = field_val == "catalog";
     let is_favorite = field_val == "favorite";
     let is_watched = field_val == "played";
+    let is_tracked = field_val == "tracked";
     let is_media_kind = field_val == "media_kind";
-    let hide_operator = is_trailer || is_parental_rating || is_favorite || is_watched;
+    let hide_operator =
+        is_trailer || is_parental_rating || is_favorite || is_watched || is_tracked;
 
     let fv1 = field_val.clone();
     let fv2 = field_val.clone();
@@ -964,6 +974,7 @@ pub fn FilterRuleRow(
                 if show_field("collection_id")   { option { value: "collection_id",    selected: field_val == "collection_id",    { field_label("collection_id") } } }
                 if show_field("favorite")        { option { value: "favorite",         selected: field_val == "favorite",         { field_label("favorite") } } }
                 if show_field("played")         { option { value: "played",          selected: field_val == "played",          { field_label("played") } } }
+                if show_field("tracked")         { option { value: "tracked",         selected: field_val == "tracked",         { field_label("tracked") } } }
                 if show_field("media_kind")      { option { value: "media_kind",       selected: field_val == "media_kind",       { field_label("media_kind") } } }
             }
             if !hide_operator {
@@ -1078,6 +1089,19 @@ pub fn FilterRuleRow(
                     onchange: move |e| {
                         if let Some(row) = rules.write().get_mut(idx) {
                             *row = raw_to_rule("played", "", &e.value());
+                        }
+                    },
+                    option { value: "true",  selected: value_val == "true",  "Yes" }
+                    option { value: "false", selected: value_val == "false", "No" }
+                }
+            } else if is_tracked {
+                select {
+                    class: "select-input",
+                    style: "flex:2 1 130px;min-width:130px",
+                    value: "{value_val}",
+                    onchange: move |e| {
+                        if let Some(row) = rules.write().get_mut(idx) {
+                            *row = raw_to_rule("tracked", "", &e.value());
                         }
                     },
                     option { value: "true",  selected: value_val == "true",  "Yes" }

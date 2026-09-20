@@ -635,6 +635,13 @@ pub struct Config {
     /// Base URL for the Trakt API. Overridable for contract tests.
     #[serde(default = "default_trakt_base_url")]
     pub trakt_api_base_url: String,
+    /// Simkl OAuth V2 application ID. When absent the built-in provider stays
+    /// visible to administrators but cannot start an account connection.
+    #[serde(default)]
+    pub simkl_client_id: Option<String>,
+    /// Base URL for the Simkl API. Overridable for contract tests.
+    #[serde(default = "default_simkl_base_url")]
+    pub simkl_api_base_url: String,
     /// Base URL for remuxdb. When set, probe results are submitted after each live probe.
     #[serde(default = "default_remuxdb_url")]
     pub remuxdb_url: Option<String>,
@@ -662,6 +669,10 @@ fn default_tmdb_base_url() -> String {
 
 fn default_trakt_base_url() -> String {
     "https://api.trakt.tv".to_string()
+}
+
+fn default_simkl_base_url() -> String {
+    "https://api.simkl.com".to_string()
 }
 
 fn default_bgutil_script_path() -> std::path::PathBuf {
@@ -771,6 +782,8 @@ impl Default for Config {
             trakt_client_id: None,
             trakt_client_secret: None,
             trakt_api_base_url: default_trakt_base_url(),
+            simkl_client_id: None,
+            simkl_api_base_url: default_simkl_base_url(),
             remuxdb_url: Some("https://remuxdb.1632022.xyz".to_string()),
             activity_log_retention_days: default_activity_log_retention_days(),
             jellyfin_version: default_jellyfin_version(),

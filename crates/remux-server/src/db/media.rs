@@ -8194,6 +8194,27 @@ fn filter_rule_to_sql(
             };
             Some((sql, false))
         }
+        R::Tracked { value } => {
+            let user_clause = user_id
+                .map(|id| format!(" AND ums.user_id = X'{}'", id.simple()))
+                .unwrap_or_default();
+            let exists = format!(
+                "(EXISTS (SELECT 1 FROM user_media_state ums \
+                  WHERE ums.media_id = media.id{user_clause}) \
+                 OR EXISTS (SELECT 1 FROM user_media_state ums \
+                  JOIN media ep ON ep.id = ums.media_id \
+                  WHERE media.kind = 'series' AND ep.kind = 'episode' \
+                    AND ep.grandparent_id = media.id{user_clause}))"
+            );
+            Some((
+                if *value {
+                    exists
+                } else {
+                    format!("NOT {exists}")
+                },
+                false,
+            ))
+        }
         R::MediaKind { op, values } if !values.is_empty() => {
             let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
             let mut db_kinds: Vec<&'static str> = Vec::new();

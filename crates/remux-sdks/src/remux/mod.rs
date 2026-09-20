@@ -3663,6 +3663,12 @@ pub enum FilterRule {
     Played {
         value: bool,
     },
+    /// Matches items that have any state for the requesting user. Series also
+    /// match when one of their episodes has state, allowing resume-only remote
+    /// history to appear without marking the whole series played.
+    Tracked {
+        value: bool,
+    },
     /// Matches items whose media kind is (or is not) in the given set.
     /// Accepted values: "movie", "series", "music", "live_tv".
     /// "music" expands to track/album/artist/musicgenre; "live_tv" to tvchannel/tvprogram.

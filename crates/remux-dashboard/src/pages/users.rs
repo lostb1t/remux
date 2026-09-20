@@ -915,9 +915,19 @@ pub fn UserForm(
             }
 
             if let Some(user_id) = edit_user_id {
-                TraktConnectionEditor {
+                MediaTrackerConnectionEditor {
                     user_id,
                     app_state: app_state.clone(),
+                    provider_kind: "trakt".to_string(),
+                    provider_label: "Trakt".to_string(),
+                    description: "Connect this user's Trakt account, import their watch state, and scrobble future playback.".to_string(),
+                }
+                MediaTrackerConnectionEditor {
+                    user_id,
+                    app_state: app_state.clone(),
+                    provider_kind: "simkl".to_string(),
+                    provider_label: "Simkl".to_string(),
+                    description: "Adds this account's watch history to the Simkl catalog during Refresh Library so Crosswatch can resolve every title.".to_string(),
                 }
             }
 
@@ -944,7 +954,13 @@ pub fn UserForm(
 }
 
 #[component]
-fn TraktConnectionEditor(user_id: Uuid, app_state: AppState) -> Element {
+fn MediaTrackerConnectionEditor(
+    user_id: Uuid,
+    app_state: AppState,
+    provider_kind: String,
+    provider_label: String,
+    description: String,
+) -> Element {
     let mut providers: Signal<Vec<MediaTrackerProviderDto>> = use_signal(Vec::new);
     let mut connections: Signal<Vec<UserMediaTrackerDto>> = use_signal(Vec::new);
     let mut auth: Signal<Option<MediaTrackerDeviceAuthDto>> = use_signal(|| None);
@@ -974,7 +990,7 @@ fn TraktConnectionEditor(user_id: Uuid, app_state: AppState) -> Element {
     let provider = providers
         .read()
         .iter()
-        .find(|provider| provider.kind == "trakt")
+        .find(|provider| provider.kind == provider_kind)
         .cloned();
     let connection = provider
         .as_ref()
@@ -990,8 +1006,8 @@ fn TraktConnectionEditor(user_id: Uuid, app_state: AppState) -> Element {
         div {
             style: "margin-top:10px;padding-top:14px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:10px",
             div {
-                div { class: "field-label", "Trakt" }
-                span { class: "field-hint", "Connect this user's Trakt account, import their watch state, and scrobble future playback." }
+                div { class: "field-label", "{provider_label}" }
+                span { class: "field-hint", "{description}" }
             }
 
             if let Some(provider) = provider {
@@ -1078,7 +1094,7 @@ fn TraktConnectionEditor(user_id: Uuid, app_state: AppState) -> Element {
                     }
                 } else if !provider.configured {
                     div { class: "field-hint", style: "color:var(--warning)",
-                        "Trakt needs trakt_client_id and trakt_client_secret in the server configuration before accounts can be connected."
+                        "{provider_label} needs its application client credentials in the server configuration before accounts can be connected."
                     }
                 } else {
                     button {
@@ -1088,8 +1104,10 @@ fn TraktConnectionEditor(user_id: Uuid, app_state: AppState) -> Element {
                         onclick: {
                             let client = app_state.clone();
                             let addon_id = provider.addon_id;
+                            let provider_label = provider_label.clone();
                             move |_| {
                                 let client = client.clone();
+                                let provider_label = provider_label.clone();
                                 busy.set(true);
                                 error.set(None);
                                 spawn(async move {
@@ -1117,12 +1135,12 @@ fn TraktConnectionEditor(user_id: Uuid, app_state: AppState) -> Element {
                                                             break;
                                                         }
                                                         MediaTrackerAuthStatus::Denied => {
-                                                            error.set(Some("Trakt authorization was denied.".into()));
+                                                            error.set(Some(format!("{provider_label} authorization was denied.")));
                                                             auth.set(None);
                                                             break;
                                                         }
                                                         MediaTrackerAuthStatus::Expired => {
-                                                            error.set(Some("Trakt authorization expired. Start again to get a new code.".into()));
+                                                            error.set(Some(format!("{provider_label} authorization expired. Start again to get a new code.")));
                                                             auth.set(None);
                                                             break;
                                                         }
@@ -1140,23 +1158,23 @@ fn TraktConnectionEditor(user_id: Uuid, app_state: AppState) -> Element {
                                 });
                             }
                         },
-                        if *busy.read() { "Waiting for Trakt…" } else { "Connect Trakt" }
+                        if *busy.read() { "Waiting for {provider_label}…" } else { "Connect {provider_label}" }
                     }
                 }
             } else {
-                span { class: "field-hint", "Trakt provider is unavailable." }
+                span { class: "field-hint", "{provider_label} provider is unavailable." }
             }
 
             if let Some(device_auth) = auth.read().as_ref() {
                 div { style: "padding:10px;border:1px solid var(--border);border-radius:6px;background:var(--surface-2)",
-                    div { style: "font-size:.75rem;margin-bottom:6px", "Open Trakt and enter this code:" }
+                    div { style: "font-size:.75rem;margin-bottom:6px", "Open {provider_label} and enter this code:" }
                     div { style: "font-size:1.2rem;font-weight:700;letter-spacing:.12em;margin-bottom:7px", "{device_auth.user_code}" }
                     a {
                         class: "btn btn-ghost",
                         href: "{device_auth.verification_url}",
                         target: "_blank",
                         rel: "noopener noreferrer",
-                        "Open Trakt"
+                        "Open {provider_label}"
                     }
                 }
             }
@@ -1165,7 +1183,7 @@ fn TraktConnectionEditor(user_id: Uuid, app_state: AppState) -> Element {
                 div { class: "field-hint",
                     match run.status {
                         MediaTrackerImportStatus::Queued => "Import queued".to_string(),
-                        MediaTrackerImportStatus::Running => "Importing Trakt watch history…".to_string(),
+                        MediaTrackerImportStatus::Running => format!("Importing {provider_label} watch history…"),
                         MediaTrackerImportStatus::Succeeded => format!(
                             "Import complete: {} matched, {} updated, {} unmatched.",
                             run.matched_count, run.updated_count, run.deferred_count
