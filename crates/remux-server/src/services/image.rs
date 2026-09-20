@@ -703,6 +703,28 @@ impl ImageService {
             .as_ref()
             .map(|c| c.layout)
             .unwrap_or_default();
+        let background_color = config
+            .as_ref()
+            .and_then(|config| {
+                config
+                    .background_color
+                    .as_ref()
+                    .and_then(|color| parse_hex_color(color.as_ref()))
+            })
+            .or_else(|| {
+                config
+                    .as_ref()
+                    .and_then(|config| match &config.overlay {
+                        CollectionOverlay::StreamingLogo { provider_name, .. } => {
+                            provider_name
+                                .as_deref()
+                                .and_then(crate::services::stream_provider::StreamProvider::brand_color)
+                        }
+                        _ => None,
+                    })
+                    .and_then(parse_hex_color)
+            })
+            .unwrap_or([0, 0, 0]);
 
         // Resolve a custom background before looking up the poster grid. It is
         // the entire composition when present, so poster downloads would be
@@ -812,9 +834,7 @@ impl ImageService {
                         )
                         .into_rgba8()
                 })
-                .unwrap_or_else(|| {
-                    RgbaImage::from_pixel(OUT_W, OUT_H, Rgba([18, 18, 22, 255]))
-                });
+                .unwrap_or_else(|| gradient_background(background_color));
 
             let max_n = if layout == CollectionPosterLayout::Grid {
                 GRID_POSTER_LIMIT
@@ -1574,7 +1594,37 @@ fn wrap_words(
 }
 
 fn solid_background() -> RgbImage {
-    RgbImage::from_pixel(OUT_W, OUT_H, Rgb([30, 30, 30]))
+    RgbImage::from_pixel(OUT_W, OUT_H, Rgb([0, 0, 0]))
+}
+
+fn parse_hex_color(value: &str) -> Option<[u8; 3]> {
+    let value = value.strip_prefix('#')?;
+    if value.len() != 6 {
+        return None;
+    }
+    Some([
+        u8::from_str_radix(&value[0..2], 16).ok()?,
+        u8::from_str_radix(&value[2..4], 16).ok()?,
+        u8::from_str_radix(&value[4..6], 16).ok()?,
+    ])
+}
+
+fn gradient_background(color: [u8; 3]) -> RgbaImage {
+    let mut image = RgbaImage::new(OUT_W, OUT_H);
+    for y in 0..OUT_H {
+        let t = y as f32 / (OUT_H.saturating_sub(1)) as f32;
+        let factor = 0.7 + t * 0.3;
+        let pixel = Rgba([
+            (color[0] as f32 * factor) as u8,
+            (color[1] as f32 * factor) as u8,
+            (color[2] as f32 * factor) as u8,
+            255,
+        ]);
+        for x in 0..OUT_W {
+            image.put_pixel(x, y, pixel);
+        }
+    }
+    image
 }
 
 /// Blend a semi-transparent black overlay over the image to darken it,

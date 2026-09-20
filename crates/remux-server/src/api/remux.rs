@@ -675,11 +675,16 @@ pub async fn remux_meta(
 // Watch providers
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
-pub struct WatchProviderDto {
-    pub provider_id: i64,
-    pub provider_name: String,
-    pub logo_path: Option<String>,
+fn watch_provider_key(name: &str) -> String {
+    match name
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "amazon prime video" | "prime video" => "amazon prime video".to_string(),
+        "discovery+" | "discovery plus" => "discovery plus".to_string(),
+        name => name.to_string(),
+    }
 }
 
 /// `GET /remux/watch-providers` — list all streaming providers available on TMDB.
@@ -687,7 +692,7 @@ pub struct WatchProviderDto {
 pub async fn get_watch_providers(
     State(state): State<AppState>,
     _session: auth::AdminSession,
-) -> Result<Json<Vec<WatchProviderDto>>> {
+) -> Result<Json<Vec<crate::services::stream_provider::StreamProvider>>> {
     let tmdb_base = state
         .ctx
         .config
@@ -716,18 +721,18 @@ pub async fn get_watch_providers(
         })?
         .results;
 
-    let mut dtos: Vec<WatchProviderDto> = providers
+    let mut dtos: Vec<crate::services::stream_provider::StreamProvider> = providers
         .into_iter()
-        .map(|p| WatchProviderDto {
-            provider_id: p.provider_id,
-            provider_name: p.provider_name,
-            logo_path: p.logo_path,
+        .map(|p| {
+            crate::services::stream_provider::StreamProvider::new(
+                p.provider_id,
+                p.provider_name,
+                p.logo_path,
+            )
         })
         .collect();
-    dtos.sort_by(|a, b| {
-        a.provider_name
-            .cmp(&b.provider_name)
-    });
+    dtos.sort_by_key(|provider| watch_provider_key(&provider.name));
+    dtos.dedup_by(|a, b| watch_provider_key(&a.name) == watch_provider_key(&b.name));
     Ok(Json(dtos))
 }
 
