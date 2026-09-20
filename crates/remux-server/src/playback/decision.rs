@@ -197,6 +197,25 @@ fn build_video_transcode(
         ))
         || reasons.contains(&api::TranscodeReason::VideoBitDepthNotSupported(
             String::new(),
+        ))
+        || reasons
+            .contains(&api::TranscodeReason::VideoLevelNotSupported(String::new()))
+        || reasons.contains(&api::TranscodeReason::VideoResolutionNotSupported(
+            String::new(),
+        ))
+        || reasons.contains(&api::TranscodeReason::VideoFramerateNotSupported(
+            String::new(),
+        ))
+        || reasons.contains(&api::TranscodeReason::VideoBitrateNotSupported(
+            String::new(),
+        ))
+        || reasons
+            .contains(&api::TranscodeReason::RefFramesNotSupported(String::new()))
+        || reasons.contains(&api::TranscodeReason::AnamorphicVideoNotSupported(
+            String::new(),
+        ))
+        || reasons.contains(&api::TranscodeReason::InterlacedVideoNotSupported(
+            String::new(),
         ));
 
     // When video re-encoding is not allowed (server setting or user policy),
@@ -219,8 +238,26 @@ fn build_video_transcode(
         "copy"
     }
     .to_string();
-    let needs_audio_transcode =
-        reasons.contains(&api::TranscodeReason::AudioCodecNotSupported(String::new()));
+    let needs_audio_transcode = reasons
+        .contains(&api::TranscodeReason::AudioCodecNotSupported(String::new()))
+        || reasons.contains(&api::TranscodeReason::AudioChannelsNotSupported(
+            String::new(),
+        ))
+        || reasons.contains(&api::TranscodeReason::AudioProfileNotSupported(
+            String::new(),
+        ))
+        || reasons.contains(&api::TranscodeReason::AudioSampleRateNotSupported(
+            String::new(),
+        ))
+        || reasons.contains(&api::TranscodeReason::AudioBitDepthNotSupported(
+            String::new(),
+        ))
+        || reasons.contains(&api::TranscodeReason::AudioBitrateNotSupported(
+            String::new(),
+        ))
+        || reasons.contains(&api::TranscodeReason::SecondaryAudioNotSupported(
+            String::new(),
+        ));
     let audio_transcode_allowed = cfg
         .encoding_cfg
         .enable_audio_transcoding
@@ -264,7 +301,13 @@ fn build_video_transcode(
     let needs_hevc_retag = reasons.contains(
         &api::TranscodeReason::VideoCodecTagNotSupported(String::new()),
     );
-    if video_codec == "copy" && audio_codec == "copy" && !needs_hevc_retag {
+    let needs_stream_filter =
+        reasons.contains(&api::TranscodeReason::StreamCountExceedsLimit(String::new()));
+    if video_codec == "copy"
+        && audio_codec == "copy"
+        && !needs_hevc_retag
+        && !needs_stream_filter
+    {
         let src = source
             .container
             .as_ref()

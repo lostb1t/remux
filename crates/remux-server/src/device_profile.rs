@@ -167,10 +167,13 @@ impl DeviceProfileExt for DeviceProfile {
     /// hasn't ruled `hev1` out.
     fn hevc_copy_tag(&self, media_source: &MediaSourceInfo) -> &'static str {
         let client_rejects = |tag: &str| {
+            let Some(video_stream) = media_source.video_stream() else {
+                return false;
+            };
             self.codec_profiles
                 .iter()
                 .filter(|cp| matches!(cp.type_, Some(DlnaProfileType::Video)))
-                .filter(|cp| cp.applies_to_codec("hevc"))
+                .filter(|cp| cp.applies_to_media(media_source, video_stream, "hevc"))
                 .flat_map(|cp| &cp.conditions)
                 .filter(|cond| {
                     cond.property
@@ -221,9 +224,9 @@ fn check_codec_profiles(
                         .codec
                         .as_deref()
                         .unwrap_or("");
-                    if cp.applies_to_codec(codec) {
+                    if cp.applies_to_media(media_source, stream, codec) {
                         for r in cp
-                            .check_reasons(stream)
+                            .check_reasons(media_source, stream)
                             .0
                         {
                             reasons.insert(r);
@@ -237,9 +240,9 @@ fn check_codec_profiles(
                         .codec
                         .as_deref()
                         .unwrap_or("");
-                    if cp.applies_to_codec(codec) {
+                    if cp.applies_to_media(media_source, stream, codec) {
                         for r in cp
-                            .check_reasons(stream)
+                            .check_reasons(media_source, stream)
                             .0
                         {
                             reasons.insert(r);
@@ -361,7 +364,17 @@ impl DirectPlayProfileExt for DirectPlayProfile {
 
 pub trait CodecProfileExt {
     fn applies_to_codec(&self, codec: &str) -> bool;
-    fn check_reasons(&self, stream: &MediaStream) -> TranscodeReasons;
+    fn applies_to_media(
+        &self,
+        media_source: &MediaSourceInfo,
+        stream: &MediaStream,
+        codec: &str,
+    ) -> bool;
+    fn check_reasons(
+        &self,
+        media_source: &MediaSourceInfo,
+        stream: &MediaStream,
+    ) -> TranscodeReasons;
 }
 
 impl CodecProfileExt for CodecProfile {
@@ -373,7 +386,51 @@ impl CodecProfileExt for CodecProfile {
             .any(|entry| any_codec_matches(entry, codec))
     }
 
-    fn check_reasons(&self, stream: &MediaStream) -> TranscodeReasons {
+    fn applies_to_media(
+        &self,
+        media_source: &MediaSourceInfo,
+        stream: &MediaStream,
+        codec: &str,
+    ) -> bool {
+        if !self.applies_to_codec(codec) {
+            return false;
+        }
+        if let Some(containers) = self
+            .container
+            .as_deref()
+            .filter(|value| {
+                !value
+                    .trim()
+                    .is_empty()
+            })
+        {
+            let Some(source_container) = media_source
+                .container
+                .as_ref()
+            else {
+                return false;
+            };
+            if !containers
+                .split(',')
+                .map(str::trim)
+                .any(|candidate| {
+                    candidate == "*"
+                        || container_name_matches(candidate, source_container)
+                })
+            {
+                return false;
+            }
+        }
+        self.apply_conditions
+            .iter()
+            .all(|condition| condition_satisfied(condition, media_source, stream))
+    }
+
+    fn check_reasons(
+        &self,
+        media_source: &MediaSourceInfo,
+        stream: &MediaStream,
+    ) -> TranscodeReasons {
         let mut reasons = TranscodeReasons::default();
         for cond in &self.conditions {
             let property = match cond
@@ -383,20 +440,8 @@ impl CodecProfileExt for CodecProfile {
                 Some(p) => p,
                 None => continue,
             };
-            let actual = stream_property_value(stream, property);
-
-            // HDR10Plus also satisfies HDR10 conditions.
-            if property == &ProfileConditionProperty::VideoRangeType {
-                if let Some(ref v) = actual {
-                    if v.eq_ignore_ascii_case("HDR10Plus")
-                        && cond.is_satisfied_opt(Some("HDR10"))
-                    {
-                        continue;
-                    }
-                }
-            }
-
-            if !cond.is_satisfied_opt(actual.as_deref()) {
+            let actual = condition_property_value(media_source, stream, property);
+            if !condition_satisfied_for_value(cond, property, actual.as_deref()) {
                 let condition = cond
                     .condition
                     .as_ref()
@@ -412,29 +457,10 @@ impl CodecProfileExt for CodecProfile {
                         .as_deref()
                         .unwrap_or("(unknown)"),
                 );
-                let reason = match property {
-                    ProfileConditionProperty::VideoRangeType => {
-                        TranscodeReason::VideoRangeTypeNotSupported(detail)
-                    }
-                    ProfileConditionProperty::VideoCodecTag => {
-                        TranscodeReason::VideoCodecTagNotSupported(detail)
-                    }
-                    ProfileConditionProperty::VideoProfile
-                    | ProfileConditionProperty::Profile => {
-                        TranscodeReason::VideoProfileNotSupported(detail)
-                    }
-                    ProfileConditionProperty::BitDepth => {
-                        TranscodeReason::VideoBitDepthNotSupported(detail)
-                    }
-                    _ => {
-                        if matches!(stream.type_, Some(MediaStreamType::Audio)) {
-                            TranscodeReason::AudioCodecNotSupported(detail)
-                        } else {
-                            TranscodeReason::VideoCodecNotSupported(detail)
-                        }
-                    }
-                };
-                reasons.insert(reason);
+                if let Some(reason) = failed_condition_reason(property, stream, detail)
+                {
+                    reasons.insert(reason);
+                }
             }
         }
         reasons
@@ -469,7 +495,57 @@ fn any_codec_matches(entry: &str, source: &str) -> bool {
     }
 }
 
-fn stream_property_value(
+fn container_name_matches(candidate: &str, source: &VideoContainer) -> bool {
+    let parsed = candidate
+        .parse::<VideoContainer>()
+        .unwrap_or_else(|_| VideoContainer::Other(candidate.to_string()));
+    match (&parsed, source) {
+        (VideoContainer::Other(a), VideoContainer::Other(b)) => {
+            a.eq_ignore_ascii_case(b)
+        }
+        _ => &parsed == source,
+    }
+}
+
+fn condition_satisfied(
+    condition: &ProfileCondition,
+    media_source: &MediaSourceInfo,
+    stream: &MediaStream,
+) -> bool {
+    let Some(property) = condition
+        .property
+        .as_ref()
+    else {
+        return true;
+    };
+    if matches!(property, ProfileConditionProperty::Other(_)) {
+        return true;
+    }
+    condition_satisfied_for_value(
+        condition,
+        property,
+        condition_property_value(media_source, stream, property).as_deref(),
+    )
+}
+
+fn condition_satisfied_for_value(
+    condition: &ProfileCondition,
+    property: &ProfileConditionProperty,
+    actual: Option<&str>,
+) -> bool {
+    // Jellyfin treats HDR10+ as satisfying HDR10 compatibility constraints.
+    // Keep this rule shared by both Conditions and ApplyConditions.
+    if property == &ProfileConditionProperty::VideoRangeType
+        && actual.is_some_and(|value| value.eq_ignore_ascii_case("HDR10Plus"))
+        && condition.is_satisfied_opt(Some("HDR10"))
+    {
+        return true;
+    }
+    condition.is_satisfied_opt(actual)
+}
+
+fn condition_property_value(
+    media_source: &MediaSourceInfo,
     stream: &MediaStream,
     property: &ProfileConditionProperty,
 ) -> Option<String> {
@@ -484,31 +560,47 @@ fn stream_property_value(
         ProfileConditionProperty::VideoCodecTag => stream
             .codec_tag
             .clone(),
-        ProfileConditionProperty::IsAnamorphic => Some(
-            stream
-                .is_anamorphic
-                .unwrap_or(false)
-                .to_string(),
-        ),
+        ProfileConditionProperty::IsAnamorphic => stream
+            .is_anamorphic
+            .map(|value| value.to_string()),
         ProfileConditionProperty::IsInterlaced => Some(
             stream
                 .is_interlaced
                 .to_string(),
         ),
-        ProfileConditionProperty::IsAvc => Some(
-            stream
-                .is_avc
-                .unwrap_or(false)
-                .to_string(),
-        ),
-        ProfileConditionProperty::BitDepth => stream
+        ProfileConditionProperty::IsAvc => stream
+            .is_avc
+            .map(|value| value.to_string()),
+        ProfileConditionProperty::VideoBitDepth
+        | ProfileConditionProperty::BitDepth
+        | ProfileConditionProperty::AudioBitDepth => stream
             .bit_depth
             .map(|v| v.to_string()),
         ProfileConditionProperty::RefFrames => stream
             .ref_frames
             .map(|v| v.to_string()),
-        ProfileConditionProperty::NumAudioStreams
-        | ProfileConditionProperty::NumVideoStreams => None,
+        ProfileConditionProperty::NumStreams => Some(
+            media_source
+                .media_streams
+                .len()
+                .to_string(),
+        ),
+        ProfileConditionProperty::NumAudioStreams => Some(
+            media_source
+                .media_streams
+                .iter()
+                .filter(|stream| matches!(stream.type_, Some(MediaStreamType::Audio)))
+                .count()
+                .to_string(),
+        ),
+        ProfileConditionProperty::NumVideoStreams => Some(
+            media_source
+                .media_streams
+                .iter()
+                .filter(|stream| matches!(stream.type_, Some(MediaStreamType::Video)))
+                .count()
+                .to_string(),
+        ),
         ProfileConditionProperty::VideoLevel | ProfileConditionProperty::Level => {
             stream
                 .level
@@ -537,10 +629,98 @@ fn stream_property_value(
         ProfileConditionProperty::AudioChannels => stream
             .channels
             .map(|v| v.to_string()),
+        ProfileConditionProperty::AudioProfile => stream
+            .profile
+            .clone(),
         ProfileConditionProperty::AudioSampleRate => stream
             .sample_rate
             .map(|v| v.to_string()),
+        ProfileConditionProperty::PacketLength => stream
+            .packet_length
+            .map(|v| v.to_string()),
+        ProfileConditionProperty::IsSecondaryAudio => Some("false".to_string()),
+        ProfileConditionProperty::Has64BitOffsets
+        | ProfileConditionProperty::VideoTimestamp => None,
         _ => None,
+    }
+}
+
+fn failed_condition_reason(
+    property: &ProfileConditionProperty,
+    stream: &MediaStream,
+    detail: String,
+) -> Option<TranscodeReason> {
+    match property {
+        ProfileConditionProperty::VideoRangeType => {
+            Some(TranscodeReason::VideoRangeTypeNotSupported(detail))
+        }
+        ProfileConditionProperty::VideoCodecTag => {
+            Some(TranscodeReason::VideoCodecTagNotSupported(detail))
+        }
+        ProfileConditionProperty::VideoProfile | ProfileConditionProperty::Profile => {
+            Some(TranscodeReason::VideoProfileNotSupported(detail))
+        }
+        ProfileConditionProperty::VideoBitDepth
+        | ProfileConditionProperty::BitDepth => {
+            Some(TranscodeReason::VideoBitDepthNotSupported(detail))
+        }
+        ProfileConditionProperty::VideoLevel | ProfileConditionProperty::Level => {
+            Some(TranscodeReason::VideoLevelNotSupported(detail))
+        }
+        ProfileConditionProperty::Width | ProfileConditionProperty::Height => {
+            Some(TranscodeReason::VideoResolutionNotSupported(detail))
+        }
+        ProfileConditionProperty::VideoFramerate
+        | ProfileConditionProperty::Framerate => {
+            Some(TranscodeReason::VideoFramerateNotSupported(detail))
+        }
+        ProfileConditionProperty::VideoBitrate => {
+            Some(TranscodeReason::VideoBitrateNotSupported(detail))
+        }
+        ProfileConditionProperty::RefFrames => {
+            Some(TranscodeReason::RefFramesNotSupported(detail))
+        }
+        ProfileConditionProperty::IsAnamorphic => {
+            Some(TranscodeReason::AnamorphicVideoNotSupported(detail))
+        }
+        ProfileConditionProperty::IsInterlaced => {
+            Some(TranscodeReason::InterlacedVideoNotSupported(detail))
+        }
+        ProfileConditionProperty::AudioChannels => {
+            Some(TranscodeReason::AudioChannelsNotSupported(detail))
+        }
+        ProfileConditionProperty::AudioProfile => {
+            Some(TranscodeReason::AudioProfileNotSupported(detail))
+        }
+        ProfileConditionProperty::AudioSampleRate => {
+            Some(TranscodeReason::AudioSampleRateNotSupported(detail))
+        }
+        ProfileConditionProperty::AudioBitDepth => {
+            Some(TranscodeReason::AudioBitDepthNotSupported(detail))
+        }
+        ProfileConditionProperty::AudioBitrate => {
+            Some(TranscodeReason::AudioBitrateNotSupported(detail))
+        }
+        ProfileConditionProperty::IsSecondaryAudio => {
+            Some(TranscodeReason::SecondaryAudioNotSupported(detail))
+        }
+        ProfileConditionProperty::NumStreams
+        | ProfileConditionProperty::NumAudioStreams
+        | ProfileConditionProperty::NumVideoStreams => {
+            Some(TranscodeReason::StreamCountExceedsLimit(detail))
+        }
+        ProfileConditionProperty::Bitrate => {
+            if matches!(stream.type_, Some(MediaStreamType::Audio)) {
+                Some(TranscodeReason::AudioBitrateNotSupported(detail))
+            } else {
+                Some(TranscodeReason::VideoBitrateNotSupported(detail))
+            }
+        }
+        ProfileConditionProperty::Has64BitOffsets
+        | ProfileConditionProperty::PacketLength
+        | ProfileConditionProperty::VideoTimestamp
+        | ProfileConditionProperty::IsAvc
+        | ProfileConditionProperty::Other(_) => None,
     }
 }
 
@@ -562,7 +742,7 @@ impl ProfileConditionExt for ProfileCondition {
             _ => {
                 return !self
                     .is_required
-                    .unwrap_or(true);
+                    .unwrap_or(false);
             }
         };
         let expected = self
@@ -581,7 +761,7 @@ impl ProfileConditionExt for ProfileCondition {
                 {
                     a <= e
                 } else {
-                    true
+                    false
                 }
             }
             ProfileConditionType::GreaterThanEqual => {
@@ -589,7 +769,7 @@ impl ProfileConditionExt for ProfileCondition {
                 {
                     a >= e
                 } else {
-                    true
+                    false
                 }
             }
             _ => true,
@@ -745,6 +925,13 @@ fn transcode_cost_tier(reasons: &TranscodeReasons) -> u8 {
                     | TranscodeReason::VideoRangeTypeNotSupported(_)
                     | TranscodeReason::VideoProfileNotSupported(_)
                     | TranscodeReason::VideoBitDepthNotSupported(_)
+                    | TranscodeReason::VideoLevelNotSupported(_)
+                    | TranscodeReason::VideoResolutionNotSupported(_)
+                    | TranscodeReason::VideoFramerateNotSupported(_)
+                    | TranscodeReason::VideoBitrateNotSupported(_)
+                    | TranscodeReason::RefFramesNotSupported(_)
+                    | TranscodeReason::AnamorphicVideoNotSupported(_)
+                    | TranscodeReason::InterlacedVideoNotSupported(_)
                     | TranscodeReason::SubtitleCodecNotSupported(_)
                     | TranscodeReason::ContainerBitrateExceedsLimit
             )
@@ -755,7 +942,18 @@ fn transcode_cost_tier(reasons: &TranscodeReasons) -> u8 {
     let needs_audio_reencode = reasons
         .0
         .iter()
-        .any(|r| matches!(r, TranscodeReason::AudioCodecNotSupported(_)));
+        .any(|r| {
+            matches!(
+                r,
+                TranscodeReason::AudioCodecNotSupported(_)
+                    | TranscodeReason::AudioChannelsNotSupported(_)
+                    | TranscodeReason::AudioProfileNotSupported(_)
+                    | TranscodeReason::AudioSampleRateNotSupported(_)
+                    | TranscodeReason::AudioBitDepthNotSupported(_)
+                    | TranscodeReason::AudioBitrateNotSupported(_)
+                    | TranscodeReason::SecondaryAudioNotSupported(_)
+            )
+        });
     if needs_audio_reencode {
         return 2;
     }
@@ -1135,9 +1333,9 @@ impl MediaSourceCapabilityExt for MediaSourceInfo {
 #[cfg(test)]
 mod tests {
     use super::{
-        DeviceProfileExt, MediaSourceCapabilityExt, MediaSourceRank,
-        default_audio_stream, playback_decision_label, primary_video_stream,
-        subtitle_burn_reason, transcode_cost_tier,
+        CodecProfileExt, DeviceProfileExt, MediaSourceCapabilityExt, MediaSourceRank,
+        default_audio_stream, failed_condition_reason, playback_decision_label,
+        primary_video_stream, subtitle_burn_reason, transcode_cost_tier,
     };
     use remux_sdks::remux::{
         AudioCodec, CodecProfile, DeviceProfile, DirectPlayProfile, DlnaProfileType,
@@ -1283,6 +1481,7 @@ mod tests {
                     value: Some("high|main|baseline|constrained baseline".to_string()),
                     is_required: Some(false),
                 }],
+                ..Default::default()
             }],
             ..Default::default()
         }
@@ -1332,10 +1531,305 @@ mod tests {
         );
     }
 
+    fn moonfin_ref_frames_profile() -> DeviceProfile {
+        let codec_profiles: Vec<CodecProfile> =
+            serde_json::from_value(serde_json::json!([
+                {
+                    "Type": "Video",
+                    "Codec": "h264",
+                    "Container": "mkv",
+                    "Conditions": [{
+                        "Condition": "LessThanEqual",
+                        "Property": "RefFrames",
+                        "Value": "12",
+                        "IsRequired": true
+                    }],
+                    "ApplyConditions": [{
+                        "Condition": "GreaterThanEqual",
+                        "Property": "Width",
+                        "Value": "1200",
+                        "IsRequired": true
+                    }]
+                },
+                {
+                    "Type": "Video",
+                    "Codec": "h264",
+                    "Container": "mkv",
+                    "Conditions": [{
+                        "Condition": "LessThanEqual",
+                        "Property": "RefFrames",
+                        "Value": "4",
+                        "IsRequired": true
+                    }],
+                    "ApplyConditions": [{
+                        "Condition": "GreaterThanEqual",
+                        "Property": "Width",
+                        "Value": "1900",
+                        "IsRequired": true
+                    }]
+                }
+            ]))
+            .expect("Moonfin codec profiles deserialize");
+        DeviceProfile {
+            direct_play_profiles: vec![DirectPlayProfile {
+                container: Some(vec![VideoContainer::Mkv]),
+                video_codec: Some(vec![VideoCodec::H264]),
+                audio_codec: Some(vec![AudioCodec::Aac]),
+                type_: Some(DlnaProfileType::Video),
+            }],
+            codec_profiles,
+            ..Default::default()
+        }
+    }
+
+    fn h264_ref_frames_source(width: i64, ref_frames: Option<i64>) -> MediaSourceInfo {
+        let mut source = h264_source("High");
+        let video = source
+            .media_streams
+            .iter_mut()
+            .find(|stream| matches!(stream.type_, Some(MediaStreamType::Video)))
+            .expect("video stream");
+        video.width = Some(width);
+        video.ref_frames = ref_frames;
+        source
+    }
+
+    #[test]
+    fn moonfin_apply_conditions_scope_ref_frame_limits() {
+        let profile = moonfin_ref_frames_profile();
+
+        let reasons = profile.check_direct_play(&h264_ref_frames_source(1280, Some(5)));
+        assert!(
+            reasons.is_empty(),
+            "the <=4 rule is only applicable at widths >=1900: {reasons:?}"
+        );
+
+        let reasons = profile.check_direct_play(&h264_ref_frames_source(1920, Some(5)));
+        assert!(
+            reasons.contains(&TranscodeReason::RefFramesNotSupported(String::new())),
+            "a 1920-wide stream with five refs must fail with the precise reason: {reasons:?}"
+        );
+        assert!(
+            !reasons.contains(&TranscodeReason::VideoCodecNotSupported(String::new()))
+        );
+    }
+
+    #[test]
+    fn required_missing_ref_frames_has_precise_reason() {
+        let reasons = moonfin_ref_frames_profile()
+            .check_direct_play(&h264_ref_frames_source(1920, None));
+        assert!(
+            reasons.contains(&TranscodeReason::RefFramesNotSupported(String::new()))
+        );
+    }
+
+    #[test]
+    fn codec_profile_container_limits_are_honoured() {
+        let mut profile = moonfin_ref_frames_profile();
+        for codec_profile in &mut profile.codec_profiles {
+            codec_profile.container = Some("mp4".to_string());
+        }
+        let reasons =
+            profile.check_direct_play(&h264_ref_frames_source(1920, Some(99)));
+        assert!(
+            reasons.is_empty(),
+            "MP4-only codec restrictions must not apply to MKV: {reasons:?}"
+        );
+    }
+
+    #[test]
+    fn jellyfin_video_bit_depth_property_deserializes() {
+        let condition: ProfileCondition = serde_json::from_value(serde_json::json!({
+            "Condition": "LessThanEqual",
+            "Property": "VideoBitDepth",
+            "Value": "10"
+        }))
+        .expect("VideoBitDepth condition");
+        assert_eq!(
+            condition.property,
+            Some(ProfileConditionProperty::VideoBitDepth)
+        );
+    }
+
+    #[test]
+    fn stream_count_conditions_use_media_source_context() {
+        let profile = DeviceProfile {
+            direct_play_profiles: moonfin_ref_frames_profile().direct_play_profiles,
+            codec_profiles: vec![CodecProfile {
+                type_: Some(DlnaProfileType::Video),
+                codec: Some(vec!["h264".to_string()]),
+                conditions: vec![ProfileCondition {
+                    condition: Some(ProfileConditionType::LessThanEqual),
+                    property: Some(ProfileConditionProperty::NumAudioStreams),
+                    value: Some("1".to_string()),
+                    is_required: Some(true),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut source = h264_ref_frames_source(1920, Some(1));
+        source
+            .media_streams
+            .push(MediaStream {
+                codec: Some("aac".to_string()),
+                type_: Some(MediaStreamType::Audio),
+                index: 2,
+                ..Default::default()
+            });
+        let reasons = profile.check_direct_play(&source);
+        assert!(
+            reasons.contains(&TranscodeReason::StreamCountExceedsLimit(String::new()))
+        );
+    }
+
+    #[test]
+    fn absent_is_required_defaults_to_jellyfin_false() {
+        let profile = DeviceProfile {
+            direct_play_profiles: moonfin_ref_frames_profile().direct_play_profiles,
+            codec_profiles: vec![CodecProfile {
+                type_: Some(DlnaProfileType::Video),
+                codec: Some(vec!["h264".to_string()]),
+                conditions: vec![ProfileCondition {
+                    condition: Some(ProfileConditionType::LessThanEqual),
+                    property: Some(ProfileConditionProperty::RefFrames),
+                    value: Some("4".to_string()),
+                    is_required: None,
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(
+            profile
+                .check_direct_play(&h264_ref_frames_source(1920, None))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn hdr10_plus_satisfies_hdr10_apply_condition() {
+        let source = MediaSourceInfo {
+            media_streams: vec![MediaStream {
+                codec: Some("hevc".to_string()),
+                type_: Some(MediaStreamType::Video),
+                video_range_type: Some(VideoRangeType::Hdr10Plus),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let profile = CodecProfile {
+            type_: Some(DlnaProfileType::Video),
+            codec: Some(vec!["hevc".to_string()]),
+            apply_conditions: vec![ProfileCondition {
+                condition: Some(ProfileConditionType::Equals),
+                property: Some(ProfileConditionProperty::VideoRangeType),
+                value: Some("HDR10".to_string()),
+                is_required: Some(true),
+            }],
+            ..Default::default()
+        };
+        let stream = source
+            .video_stream()
+            .expect("video stream");
+
+        assert!(profile.applies_to_media(&source, stream, "hevc"));
+    }
+
+    #[test]
+    fn failed_conditions_map_to_precise_transcode_reasons() {
+        let video = MediaStream {
+            type_: Some(MediaStreamType::Video),
+            ..Default::default()
+        };
+        let audio = MediaStream {
+            type_: Some(MediaStreamType::Audio),
+            ..Default::default()
+        };
+        let cases = [
+            (
+                ProfileConditionProperty::VideoLevel,
+                &video,
+                "VideoLevelNotSupported",
+            ),
+            (
+                ProfileConditionProperty::Width,
+                &video,
+                "VideoResolutionNotSupported",
+            ),
+            (
+                ProfileConditionProperty::VideoFramerate,
+                &video,
+                "VideoFramerateNotSupported",
+            ),
+            (
+                ProfileConditionProperty::VideoBitrate,
+                &video,
+                "VideoBitrateNotSupported",
+            ),
+            (
+                ProfileConditionProperty::RefFrames,
+                &video,
+                "RefFramesNotSupported",
+            ),
+            (
+                ProfileConditionProperty::IsAnamorphic,
+                &video,
+                "AnamorphicVideoNotSupported",
+            ),
+            (
+                ProfileConditionProperty::IsInterlaced,
+                &video,
+                "InterlacedVideoNotSupported",
+            ),
+            (
+                ProfileConditionProperty::AudioChannels,
+                &audio,
+                "AudioChannelsNotSupported",
+            ),
+            (
+                ProfileConditionProperty::AudioProfile,
+                &audio,
+                "AudioProfileNotSupported",
+            ),
+            (
+                ProfileConditionProperty::AudioSampleRate,
+                &audio,
+                "AudioSampleRateNotSupported",
+            ),
+            (
+                ProfileConditionProperty::AudioBitDepth,
+                &audio,
+                "AudioBitDepthNotSupported",
+            ),
+            (
+                ProfileConditionProperty::AudioBitrate,
+                &audio,
+                "AudioBitrateNotSupported",
+            ),
+            (
+                ProfileConditionProperty::IsSecondaryAudio,
+                &audio,
+                "SecondaryAudioNotSupported",
+            ),
+            (
+                ProfileConditionProperty::NumAudioStreams,
+                &video,
+                "StreamCountExceedsLimit",
+            ),
+        ];
+
+        for (property, stream, expected) in cases {
+            let reason = failed_condition_reason(&property, stream, "test".to_string())
+                .expect("known condition must have a reason");
+            assert_eq!(reason.name(), expected, "property {property}");
+        }
+    }
+
     #[test]
     fn audio_channel_limit_does_not_force_video_reencode() {
         // A device that only supports 2-channel audio should trigger an audio
-        // transcode (AudioCodecNotSupported), not a video re-encode. Before the
+        // transcode (AudioChannelsNotSupported), not a video re-encode. Before the
         // fix, the catch-all `_ => VideoCodecNotSupported` in check_reasons was
         // reached for "AudioChannels", causing a full h264 re-encode on 5.1 files.
         let profile = DeviceProfile {
@@ -1354,6 +1848,7 @@ mod tests {
                     value: Some("2".to_string()),
                     is_required: Some(false),
                 }],
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -1379,8 +1874,9 @@ mod tests {
         };
         let reasons = profile.check_direct_play(&source);
         assert!(
-            reasons.contains(&TranscodeReason::AudioCodecNotSupported(String::new())),
-            "a 5.1 channel limit violation should produce AudioCodecNotSupported: {reasons:?}"
+            reasons
+                .contains(&TranscodeReason::AudioChannelsNotSupported(String::new())),
+            "a 5.1 channel limit violation should produce AudioChannelsNotSupported: {reasons:?}"
         );
         assert!(
             !reasons.contains(&TranscodeReason::VideoCodecNotSupported(String::new())),
@@ -1403,6 +1899,7 @@ mod tests {
                     value: Some(value.to_string()),
                     is_required: Some(true),
                 }],
+                ..Default::default()
             }],
             ..Default::default()
         }
@@ -1461,6 +1958,7 @@ mod tests {
                     value: Some("main|main 10".to_string()),
                     is_required: Some(false),
                 }],
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -1494,6 +1992,7 @@ mod tests {
                     value: Some("avc1".to_string()),
                     is_required: Some(true),
                 }],
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -1574,6 +2073,7 @@ mod tests {
                         is_required: Some(true),
                     },
                 ],
+                ..Default::default()
             }],
             ..Default::default()
         }
@@ -2052,6 +2552,7 @@ mod tests {
             })
             .ok(),
             source: None,
+            ..Default::default()
         });
         source
     }

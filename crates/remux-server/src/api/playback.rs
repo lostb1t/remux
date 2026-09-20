@@ -1466,6 +1466,7 @@ mod tests {
                 media_streams: vec![
                     MediaStream {
                         codec: Some("h264".to_string()),
+                        ref_frames: Some(1),
                         type_: Some(MediaStreamType::Video),
                         index: 0,
                         ..Default::default()
@@ -2603,6 +2604,7 @@ mod tests {
                 media_streams: vec![
                     MediaStream {
                         codec: Some("h264".to_string()),
+                        ref_frames: Some(1),
                         type_: Some(MediaStreamType::Video),
                         index: 0,
                         width: Some(1920),
@@ -2817,6 +2819,7 @@ mod tests {
             media_streams: vec![
                 MediaStream {
                     codec: Some("h264".to_string()),
+                    ref_frames: Some(1),
                     type_: Some(MediaStreamType::Video),
                     index: 0,
                     width: Some(1920),
@@ -3065,6 +3068,7 @@ mod tests {
             media_streams: vec![
                 MediaStream {
                     codec: Some("h264".to_string()),
+                    ref_frames: Some(1),
                     type_: Some(MediaStreamType::Video),
                     index: 0,
                     width: Some(1920),
@@ -3228,6 +3232,7 @@ mod tests {
             media_streams: vec![
                 MediaStream {
                     codec: Some("h264".to_string()),
+                    ref_frames: Some(1),
                     type_: Some(MediaStreamType::Video),
                     index: 0,
                     width: Some(1920),
@@ -3490,6 +3495,7 @@ mod tests {
             media_streams: vec![
                 api::MediaStream {
                     codec: Some("h264".to_string()),
+                    ref_frames: Some(1),
                     type_: Some(api::MediaStreamType::Video),
                     index: 0,
                     width: Some(1920),
@@ -3721,6 +3727,7 @@ mod tests {
             media_streams: vec![
                 MediaStream {
                     codec: Some("h264".to_string()),
+                    ref_frames: Some(1),
                     type_: Some(MediaStreamType::Video),
                     index: 0,
                     width: Some(1920),

@@ -2113,7 +2113,10 @@ pub struct CodecProfile {
     pub type_: Option<DlnaProfileType>,
     #[serde(deserialize_with = "deser_csv_strings", serialize_with = "ser_csv")]
     pub codec: Option<Vec<String>>,
+    pub container: Option<String>,
+    pub sub_container: Option<String>,
     pub conditions: Vec<ProfileCondition>,
+    pub apply_conditions: Vec<ProfileCondition>,
 }
 
 #[derive(Default, Debug, Serialize, Deserialize, Clone)]
@@ -2169,6 +2172,8 @@ pub enum ProfileConditionProperty {
     IsInterlaced,
     #[strum(to_string = "IsAVC", serialize = "IsAVC", serialize = "IsAvc")]
     IsAvc,
+    VideoBitDepth,
+    /// Legacy alias accepted by some clients.
     BitDepth,
     RefFrames,
     NumAudioStreams,
@@ -2184,8 +2189,15 @@ pub enum ProfileConditionProperty {
     VideoBitrate,
     Bitrate,
     AudioBitrate,
+    AudioProfile,
     AudioChannels,
     AudioSampleRate,
+    AudioBitDepth,
+    NumStreams,
+    Has64BitOffsets,
+    PacketLength,
+    VideoTimestamp,
+    IsSecondaryAudio,
     #[strum(default, to_string = "{0}")]
     Other(String),
 }
@@ -2358,6 +2370,20 @@ pub enum TranscodeReason {
     VideoCodecTagNotSupported(String),
     VideoProfileNotSupported(String),
     VideoBitDepthNotSupported(String),
+    VideoLevelNotSupported(String),
+    VideoResolutionNotSupported(String),
+    VideoFramerateNotSupported(String),
+    VideoBitrateNotSupported(String),
+    RefFramesNotSupported(String),
+    AnamorphicVideoNotSupported(String),
+    InterlacedVideoNotSupported(String),
+    AudioChannelsNotSupported(String),
+    AudioProfileNotSupported(String),
+    AudioSampleRateNotSupported(String),
+    AudioBitDepthNotSupported(String),
+    AudioBitrateNotSupported(String),
+    SecondaryAudioNotSupported(String),
+    StreamCountExceedsLimit(String),
     ContainerBitrateExceedsLimit,
 }
 
@@ -2372,6 +2398,20 @@ impl TranscodeReason {
             Self::VideoCodecTagNotSupported(_) => "VideoCodecTagNotSupported",
             Self::VideoProfileNotSupported(_) => "VideoProfileNotSupported",
             Self::VideoBitDepthNotSupported(_) => "VideoBitDepthNotSupported",
+            Self::VideoLevelNotSupported(_) => "VideoLevelNotSupported",
+            Self::VideoResolutionNotSupported(_) => "VideoResolutionNotSupported",
+            Self::VideoFramerateNotSupported(_) => "VideoFramerateNotSupported",
+            Self::VideoBitrateNotSupported(_) => "VideoBitrateNotSupported",
+            Self::RefFramesNotSupported(_) => "RefFramesNotSupported",
+            Self::AnamorphicVideoNotSupported(_) => "AnamorphicVideoNotSupported",
+            Self::InterlacedVideoNotSupported(_) => "InterlacedVideoNotSupported",
+            Self::AudioChannelsNotSupported(_) => "AudioChannelsNotSupported",
+            Self::AudioProfileNotSupported(_) => "AudioProfileNotSupported",
+            Self::AudioSampleRateNotSupported(_) => "AudioSampleRateNotSupported",
+            Self::AudioBitDepthNotSupported(_) => "AudioBitDepthNotSupported",
+            Self::AudioBitrateNotSupported(_) => "AudioBitrateNotSupported",
+            Self::SecondaryAudioNotSupported(_) => "SecondaryAudioNotSupported",
+            Self::StreamCountExceedsLimit(_) => "StreamCountExceedsLimit",
             Self::ContainerBitrateExceedsLimit => "ContainerBitrateExceedsLimit",
         }
     }
@@ -2397,6 +2437,44 @@ impl std::fmt::Debug for TranscodeReason {
             }
             Self::VideoBitDepthNotSupported(d) => {
                 write!(f, "VideoBitDepthNotSupported({d})")
+            }
+            Self::VideoLevelNotSupported(d) => write!(f, "VideoLevelNotSupported({d})"),
+            Self::VideoResolutionNotSupported(d) => {
+                write!(f, "VideoResolutionNotSupported({d})")
+            }
+            Self::VideoFramerateNotSupported(d) => {
+                write!(f, "VideoFramerateNotSupported({d})")
+            }
+            Self::VideoBitrateNotSupported(d) => {
+                write!(f, "VideoBitrateNotSupported({d})")
+            }
+            Self::RefFramesNotSupported(d) => write!(f, "RefFramesNotSupported({d})"),
+            Self::AnamorphicVideoNotSupported(d) => {
+                write!(f, "AnamorphicVideoNotSupported({d})")
+            }
+            Self::InterlacedVideoNotSupported(d) => {
+                write!(f, "InterlacedVideoNotSupported({d})")
+            }
+            Self::AudioChannelsNotSupported(d) => {
+                write!(f, "AudioChannelsNotSupported({d})")
+            }
+            Self::AudioProfileNotSupported(d) => {
+                write!(f, "AudioProfileNotSupported({d})")
+            }
+            Self::AudioSampleRateNotSupported(d) => {
+                write!(f, "AudioSampleRateNotSupported({d})")
+            }
+            Self::AudioBitDepthNotSupported(d) => {
+                write!(f, "AudioBitDepthNotSupported({d})")
+            }
+            Self::AudioBitrateNotSupported(d) => {
+                write!(f, "AudioBitrateNotSupported({d})")
+            }
+            Self::SecondaryAudioNotSupported(d) => {
+                write!(f, "SecondaryAudioNotSupported({d})")
+            }
+            Self::StreamCountExceedsLimit(d) => {
+                write!(f, "StreamCountExceedsLimit({d})")
             }
             Self::ContainerBitrateExceedsLimit => {
                 write!(f, "ContainerBitrateExceedsLimit")
@@ -2495,6 +2573,48 @@ impl TranscodeReasons {
                 }
                 "VideoBitDepthNotSupported" => {
                     Some(TranscodeReason::VideoBitDepthNotSupported(String::new()))
+                }
+                "VideoLevelNotSupported" => {
+                    Some(TranscodeReason::VideoLevelNotSupported(String::new()))
+                }
+                "VideoResolutionNotSupported" => {
+                    Some(TranscodeReason::VideoResolutionNotSupported(String::new()))
+                }
+                "VideoFramerateNotSupported" => {
+                    Some(TranscodeReason::VideoFramerateNotSupported(String::new()))
+                }
+                "VideoBitrateNotSupported" => {
+                    Some(TranscodeReason::VideoBitrateNotSupported(String::new()))
+                }
+                "RefFramesNotSupported" => {
+                    Some(TranscodeReason::RefFramesNotSupported(String::new()))
+                }
+                "AnamorphicVideoNotSupported" => {
+                    Some(TranscodeReason::AnamorphicVideoNotSupported(String::new()))
+                }
+                "InterlacedVideoNotSupported" => {
+                    Some(TranscodeReason::InterlacedVideoNotSupported(String::new()))
+                }
+                "AudioChannelsNotSupported" => {
+                    Some(TranscodeReason::AudioChannelsNotSupported(String::new()))
+                }
+                "AudioProfileNotSupported" => {
+                    Some(TranscodeReason::AudioProfileNotSupported(String::new()))
+                }
+                "AudioSampleRateNotSupported" => {
+                    Some(TranscodeReason::AudioSampleRateNotSupported(String::new()))
+                }
+                "AudioBitDepthNotSupported" => {
+                    Some(TranscodeReason::AudioBitDepthNotSupported(String::new()))
+                }
+                "AudioBitrateNotSupported" => {
+                    Some(TranscodeReason::AudioBitrateNotSupported(String::new()))
+                }
+                "SecondaryAudioNotSupported" => {
+                    Some(TranscodeReason::SecondaryAudioNotSupported(String::new()))
+                }
+                "StreamCountExceedsLimit" => {
+                    Some(TranscodeReason::StreamCountExceedsLimit(String::new()))
                 }
                 "ContainerBitrateExceedsLimit" => {
                     Some(TranscodeReason::ContainerBitrateExceedsLimit)
@@ -2979,6 +3099,9 @@ pub enum ProbeOrigin {
 pub struct MediaSourceRemuxInfo {
     pub provider_info: Option<serde_json::Value>,
     pub source: Option<ProbeOrigin>,
+    /// Version of Remux's local ffprobe mapping. Old versions are re-probed
+    /// when newly mapped stream fields would otherwise remain missing.
+    pub probe_version: Option<u32>,
 }
 
 impl MediaSourceInfo {

@@ -358,6 +358,9 @@ struct FfprobeStream {
     codec_tag_string: Option<String>,
     profile: Option<String>,
     level: Option<f64>,
+    refs: Option<i64>,
+    is_avc: Option<FfprobeBool>,
+    nal_length_size: Option<String>,
     width: Option<i64>,
     height: Option<i64>,
     bit_rate: Option<String>,
@@ -374,6 +377,38 @@ struct FfprobeStream {
     #[serde(default)]
     disposition: FfprobeDisposition,
 }
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum FfprobeBool {
+    Bool(bool),
+    String(String),
+    Integer(i64),
+}
+
+impl FfprobeBool {
+    fn value(&self) -> Option<bool> {
+        match self {
+            Self::Bool(value) => Some(*value),
+            Self::String(value)
+                if value.eq_ignore_ascii_case("true") || value == "1" =>
+            {
+                Some(true)
+            }
+            Self::String(value)
+                if value.eq_ignore_ascii_case("false") || value == "0" =>
+            {
+                Some(false)
+            }
+            Self::String(_) => None,
+            Self::Integer(value) => Some(*value != 0),
+        }
+    }
+}
+
+/// Bump whenever the ffprobe JSON mapping gains fields that affect playback
+/// compatibility. Cached local probes from older versions are refreshed once.
+const FFPROBE_MAPPING_VERSION: u32 = 1;
 
 /// Derive bit depth from a pixel format string (e.g. "yuv420p10le" → 10, "yuv420p" → 8).
 pub(crate) fn bit_depth_from_pix_fmt(pix_fmt: &str) -> Option<i64> {
@@ -757,6 +792,12 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                         .profile
                         .clone(),
                     level: s.level,
+                    // ffprobe reports zero when the reference-frame count is
+                    // unknown. Jellyfin treats that as absent rather than as a
+                    // real value that could satisfy a device limit.
+                    ref_frames: s
+                        .refs
+                        .and_then(nonzero),
                     width: meta.width,
                     height: meta.height,
                     bit_rate: bitrate,
@@ -769,7 +810,13 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                         .and_then(nonzero),
                     is_default: Some(is_default),
                     is_forced,
-                    is_avc: Some(false),
+                    is_avc: s
+                        .is_avc
+                        .as_ref()
+                        .and_then(FfprobeBool::value),
+                    nal_length_size: s
+                        .nal_length_size
+                        .clone(),
                     time_base: Some("1/1000".to_string()),
                     audio_spatial_format: Some("None".to_string()),
                     video_range: Some(video_range),
@@ -968,6 +1015,7 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
             size: file_size,
             remux: Some(api::MediaSourceRemuxInfo {
                 source: Some(api::ProbeOrigin::Ffprobe),
+                probe_version: Some(FFPROBE_MAPPING_VERSION),
                 ..Default::default()
             }),
             ..Default::default()
@@ -1007,10 +1055,39 @@ pub(crate) async fn resolve_stream_root(
 /// (`ProbeOrigin::FilenameGuess`) is never a completed probe — it must not
 /// block a real ffprobe attempt, even if it happens to carry a "video stream".
 fn is_reusable_probe_cache(cached: &api::MediaSourceInfo) -> bool {
-    cached
-        .video_stream()
-        .is_some()
-        && !cached.is_filename_guess()
+    let Some(video) = cached.video_stream() else {
+        return false;
+    };
+    if cached.is_filename_guess() {
+        return false;
+    }
+    let origin = cached
+        .remux
+        .as_ref()
+        .and_then(|remux| remux.source);
+    let current_ffprobe_mapping = origin == Some(api::ProbeOrigin::Ffprobe)
+        && cached
+            .remux
+            .as_ref()
+            .and_then(|remux| remux.probe_version)
+            .is_some_and(|version| version >= FFPROBE_MAPPING_VERSION);
+
+    // Older persisted data may predate both ProbeOrigin and probe_version.
+    // H.264 compatibility rules need RefFrames, so refresh any unversioned or
+    // RemuxDB result that lacks it; a current local probe is accepted even if
+    // ffprobe genuinely could not determine the value, avoiding a probe loop.
+    let missing_h264_refs = video
+        .codec
+        .as_deref()
+        .is_some_and(|codec| codec.eq_ignore_ascii_case("h264"))
+        && video
+            .ref_frames
+            .is_none();
+    if missing_h264_refs && !current_ffprobe_mapping {
+        return false;
+    }
+
+    origin != Some(api::ProbeOrigin::Ffprobe) || current_ffprobe_mapping
 }
 
 /// Resolve probe data for a single source: cache hit → skip → live probe with fallback.
@@ -1359,11 +1436,56 @@ mod probe_tests {
             }],
             remux: Some(api::MediaSourceRemuxInfo {
                 source: Some(api::ProbeOrigin::Ffprobe),
+                probe_version: Some(FFPROBE_MAPPING_VERSION),
                 ..Default::default()
             }),
             ..Default::default()
         };
         assert!(is_reusable_probe_cache(&real));
+    }
+
+    #[test]
+    fn is_reusable_probe_cache_rejects_legacy_ffprobe_mapping() {
+        let legacy = api::MediaSourceInfo {
+            media_streams: vec![api::MediaStream {
+                type_: Some(api::MediaStreamType::Video),
+                ..Default::default()
+            }],
+            remux: Some(api::MediaSourceRemuxInfo {
+                source: Some(api::ProbeOrigin::Ffprobe),
+                probe_version: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(!is_reusable_probe_cache(&legacy));
+    }
+
+    #[test]
+    fn ffprobe_stream_deserializes_reference_frames() {
+        let stream: FfprobeStream = serde_json::from_value(serde_json::json!({
+            "index": 0,
+            "codec_type": "video",
+            "codec_name": "h264",
+            "refs": 4,
+            "is_avc": "true",
+            "nal_length_size": "4"
+        }))
+        .expect("ffprobe stream");
+        assert_eq!(stream.refs, Some(4));
+        assert_eq!(
+            stream
+                .is_avc
+                .as_ref()
+                .and_then(FfprobeBool::value),
+            Some(true)
+        );
+        assert_eq!(
+            stream
+                .nal_length_size
+                .as_deref(),
+            Some("4")
+        );
     }
 
     #[test]
@@ -1380,6 +1502,24 @@ mod probe_tests {
             ..Default::default()
         };
         assert!(is_reusable_probe_cache(&remuxdb));
+    }
+
+    #[test]
+    fn is_reusable_probe_cache_refreshes_h264_without_ref_frames() {
+        let incomplete = api::MediaSourceInfo {
+            media_streams: vec![api::MediaStream {
+                type_: Some(api::MediaStreamType::Video),
+                codec: Some("h264".to_string()),
+                ref_frames: None,
+                ..Default::default()
+            }],
+            remux: Some(api::MediaSourceRemuxInfo {
+                source: Some(api::ProbeOrigin::RemuxDb),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(!is_reusable_probe_cache(&incomplete));
     }
 
     #[test]

@@ -369,12 +369,21 @@ impl From<db::Media> for api::MediaSourceInfo {
                     .as_ref()
             })
             .and_then(|r| r.source);
+        let probe_version = source
+            .probe_data
+            .as_ref()
+            .and_then(|p| {
+                p.remux
+                    .as_ref()
+            })
+            .and_then(|r| r.probe_version);
         let remux = Some(api::MediaSourceRemuxInfo {
             provider_info: source
                 .stream_info
                 .as_ref()
                 .and_then(|si| serde_json::to_value(si).ok()),
             source: probe_source,
+            probe_version,
         });
 
         let path = Some({
