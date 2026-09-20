@@ -15,7 +15,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
     common::{HideConsole, TickUnit, ToRunTimeTicks},
     device_profile::{AudioCodec, VideoCodec},
-    playback::hw_accel::{Accelerator, NoAccel},
+    playback::hw_accel::{Accelerator, HdrTreatment, NoAccel},
 };
 use remux_sdks::remux::{EncodingPreset, HardwareAccelerationType, VideoRangeType};
 
@@ -415,6 +415,31 @@ fn build_qsv_scale_filter(max_width: Option<u32>, max_height: Option<u32>) -> St
     }
 }
 
+/// Main-video chain for QSV when frames stay on the GPU from decode to encode:
+/// `scale_vaapi` on the VAAPI-decoded surface, then the accelerator's suffix
+/// (VPP tone map, BT.709 relabel, or plain `hwmap` into QSV memory). Used for
+/// both the `-vf` path and the `overlay_qsv` main branch.
+fn build_qsv_main_video(
+    accel: &dyn Accelerator,
+    treatment: HdrTreatment,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+) -> String {
+    let scale = build_qsv_scale_filter(max_width, max_height);
+    match accel.hw_filter_suffix(treatment) {
+        Some(suffix) => format!("{scale},{suffix}"),
+        None => scale,
+    }
+}
+
+/// True when the QSV pipeline keeps frames in GPU memory end to end. Only an
+/// explicit software tone map pulls frames onto the CPU; every other HDR
+/// treatment (including subtitle burn-in via `overlay_qsv`) stays resident.
+fn qsv_gpu_resident(accel: &dyn Accelerator, treatment: HdrTreatment) -> bool {
+    accel.as_type() == HardwareAccelerationType::Qsv
+        && treatment != HdrTreatment::SwTonemap
+}
+
 /// Build the main video processing chain for a CPU-based subtitle overlay.
 ///
 /// Applies optional scaling and, for HDR sources, the appropriate colour treatment:
@@ -561,22 +586,20 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             .subtitle_stream_index
             .is_some();
 
-    // Tone-map decisions (only apply to HDR + transcode, never to copy).
-    //
-    // VPP (hardware) tonemap requires hw-decoded frames to flow straight
-    // through to the encoder. Subtitle burn-in always routes through the CPU
-    // overlay filter (yuv420p), which VPP tonemap filters (e.g. tonemap_vaapi)
-    // can't consume — see issue #378. Fall back to software tonemapping in
-    // that case instead of silently dropping tonemap and washing out HDR.
-    let do_vpp_tonemap = hdr
-        && params.enable_vpp_tonemapping
-        && accel.supports_vpp_tonemap()
-        && !burn_subtitle_filter;
-    let do_sw_tonemap = hdr
-        && (params.enable_tonemapping
-            || accel.prefers_sw_tonemap()
-            || (params.enable_vpp_tonemapping && burn_subtitle_filter))
-        && !do_vpp_tonemap;
+    // Tone-map decision (only applies to HDR + transcode, never to copy). On
+    // QSV the subtitle overlay runs on the GPU after tone mapping, so
+    // burn-in doesn't affect the choice there; other VPP-tonemap-capable
+    // accelerators (VAAPI) have no GPU-resident overlay and still need to
+    // fall back to software tone mapping when burning a subtitle in.
+    let treatment = HdrTreatment::for_source(
+        hdr,
+        accel,
+        params.enable_tonemapping,
+        params.enable_vpp_tonemapping,
+        burn_subtitle_filter,
+    );
+    let do_vpp_tonemap = treatment == HdrTreatment::VppTonemap;
+    let do_sw_tonemap = treatment == HdrTreatment::SwTonemap;
 
     let ffmpeg_video_codec = {
         let base = match params
@@ -665,8 +688,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             params
                 .source_video_codec
                 .as_deref(),
-            hdr,
-            do_vpp_tonemap,
+            treatment,
         ),
     );
 
@@ -712,7 +734,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         "2048".into(),
     ]);
 
-    let hw_suffix = accel.hw_filter_suffix(hdr, do_vpp_tonemap);
+    let hw_suffix = accel.hw_filter_suffix(treatment);
 
     // Stream mapping
     if params.burn_subtitle {
@@ -736,14 +758,12 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
                 format!("scale,{sub_scale}")
             };
 
-            let filter = if is_hw
-                && accel.as_type() == HardwareAccelerationType::Qsv
-                && !hdr
-                && !do_vpp_tonemap
-            {
+            let filter = if is_hw && qsv_gpu_resident(accel, treatment) {
                 // QSV path: keep VAAPI hw decode throughout. Sub is prepared on CPU
                 // (format=bgra) then uploaded to the QSV device. overlay_qsv composites
-                // both surfaces on-GPU — no CPU round-trip for video frames.
+                // both surfaces on-GPU — no CPU round-trip for video frames. Any tone
+                // map or BT.709 relabel happens on the main branch before the overlay,
+                // so tonemap_vaapi never sees CPU overlay output.
                 // Mirrors Jellyfin's GetIntelQsvVaapiVidFiltersPrefered graphical-sub path.
                 let sub_upload =
                     "format=bgra,hwupload=derive_device=qsv:extra_hw_frames=64";
@@ -753,13 +773,15 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
                 };
                 let overlay_qsv =
                     format!("overlay_qsv=eof_action=pass:repeatlast=0{overlay_size}");
-                // Video: scale_vaapi (still in VAAPI memory after decode) then map to QSV
-                // surface. overlay_qsv output is already in QSV format for the encoder.
-                let video_scale =
-                    build_qsv_scale_filter(params.max_width, params.max_height);
+                let main_video = build_qsv_main_video(
+                    accel,
+                    treatment,
+                    params.max_width,
+                    params.max_height,
+                );
                 format!(
                     "[0:{sub_idx}]{sub_preproc},{sub_upload}[sub];\
-                     [0:v:0]{video_scale},hwmap=derive_device=qsv,format=qsv[vmain];\
+                     [0:v:0]{main_video}[vmain];\
                      [vmain][sub]{overlay_qsv}[v]"
                 )
             } else {
@@ -787,13 +809,10 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             }
         }
     } else {
-        // QSV uses VAAPI hw scale when: normal (non-HDR) path, or VPP tonemap path
-        // (frames already in VAAPI memory from hw decode). SW tonemap + HDR always
-        // uses CPU scale regardless of hw type.
+        // QSV scales on the GPU whenever frames are VAAPI-resident; only the
+        // SW tonemap path decodes to CPU memory and needs the CPU scale filter.
         let scale_filter = if ffmpeg_video_codec != "copy" {
-            if accel.as_type() == HardwareAccelerationType::Qsv
-                && (!hdr || do_vpp_tonemap)
-            {
+            if qsv_gpu_resident(accel, treatment) {
                 Some(build_qsv_scale_filter(params.max_width, params.max_height))
             } else {
                 build_scale_filter(params)
@@ -846,6 +865,9 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
                     Some(s) => format!("{s},{tonemapx}{upload}"),
                     None => format!("{tonemapx}{upload}"),
                 })
+            } else if qsv_gpu_resident(accel, treatment) {
+                // QSV clamp: setparams already trails hwmap in hw_suffix.
+                vf
             } else {
                 // No tone mapping: rewrite colour metadata so clients treat output as SDR.
                 let setparams =
@@ -1389,20 +1411,15 @@ pub(crate) fn build_progressive_args(
             .subtitle_stream_index
             .is_some();
 
-    // VPP (hardware) tonemap requires hw-decoded frames to flow straight
-    // through to the encoder. Subtitle burn-in always routes through the CPU
-    // overlay filter (yuv420p), which VPP tonemap filters (e.g. tonemap_vaapi)
-    // can't consume — see issue #378. Fall back to software tonemapping in
-    // that case instead of silently dropping tonemap and washing out HDR.
-    let do_vpp_tonemap = hdr
-        && params.enable_vpp_tonemapping
-        && accel.supports_vpp_tonemap()
-        && !burn_subtitle_filter;
-    let do_sw_tonemap = hdr
-        && (params.enable_tonemapping
-            || accel.prefers_sw_tonemap()
-            || (params.enable_vpp_tonemapping && burn_subtitle_filter))
-        && !do_vpp_tonemap;
+    let treatment = HdrTreatment::for_source(
+        hdr,
+        accel,
+        params.enable_tonemapping,
+        params.enable_vpp_tonemapping,
+        burn_subtitle_filter,
+    );
+    let do_vpp_tonemap = treatment == HdrTreatment::VppTonemap;
+    let do_sw_tonemap = treatment == HdrTreatment::SwTonemap;
 
     let ffmpeg_video_codec = {
         let base = match params
@@ -1476,8 +1493,7 @@ pub(crate) fn build_progressive_args(
             params
                 .source_video_codec
                 .as_deref(),
-            hdr,
-            do_vpp_tonemap,
+            treatment,
         ),
     );
 
@@ -1494,12 +1510,11 @@ pub(crate) fn build_progressive_args(
             .clone(),
     ]);
 
-    let hw_suffix = accel.hw_filter_suffix(hdr, do_vpp_tonemap);
+    let hw_suffix = accel.hw_filter_suffix(treatment);
 
     // Stream mapping
     let scale_filter = if ffmpeg_video_codec != "copy" {
-        if accel.as_type() == HardwareAccelerationType::Qsv && (!hdr || do_vpp_tonemap)
-        {
+        if qsv_gpu_resident(accel, treatment) {
             Some(build_qsv_scale_filter(params.max_width, params.max_height))
         } else {
             let tp = TranscodeParams {
@@ -1529,12 +1544,9 @@ pub(crate) fn build_progressive_args(
                 format!("scale,{sub_scale}")
             };
 
-            let filter = if is_hw
-                && accel.as_type() == HardwareAccelerationType::Qsv
-                && !hdr
-                && !do_vpp_tonemap
-            {
-                // QSV path: overlay_qsv keeps video in GPU memory throughout.
+            let filter = if is_hw && qsv_gpu_resident(accel, treatment) {
+                // QSV path: overlay_qsv keeps video in GPU memory throughout;
+                // tone map / relabel runs on the main branch before the overlay.
                 let sub_upload =
                     "format=bgra,hwupload=derive_device=qsv:extra_hw_frames=64";
                 let overlay_size = match (out_w, out_h) {
@@ -1543,10 +1555,10 @@ pub(crate) fn build_progressive_args(
                 };
                 let overlay_qsv =
                     format!("overlay_qsv=eof_action=pass:repeatlast=0{overlay_size}");
-                let video_scale = build_qsv_scale_filter(out_w, out_h);
+                let main_video = build_qsv_main_video(accel, treatment, out_w, out_h);
                 format!(
                     "[0:{sub_idx}]{sub_preproc},{sub_upload}[sub];\
-                     [0:v:0]{video_scale},hwmap=derive_device=qsv,format=qsv[vmain];\
+                     [0:v:0]{main_video}[vmain];\
                      [vmain][sub]{overlay_qsv}[v]"
                 )
             } else {
@@ -1614,6 +1626,8 @@ pub(crate) fn build_progressive_args(
                     Some(s) => format!("{s},{tonemapx}{upload}"),
                     None => format!("{tonemapx}{upload}"),
                 })
+            } else if qsv_gpu_resident(accel, treatment) {
+                vf
             } else {
                 let setparams =
                     "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709";
@@ -2894,6 +2908,44 @@ mod tests {
     }
 
     #[test]
+    fn hls_vaapi_vpp_tonemap_with_subtitle_falls_back_to_sw_tonemap() {
+        // VAAPI has no GPU-resident overlay filter (unlike QSV's overlay_qsv):
+        // the CPU `overlay` filter that composites the subtitle outputs plain
+        // yuv420p frames, which tonemap_vaapi can't consume (issue #378).
+        // Burning a subtitle in on VAAPI must still fall back to software
+        // tone mapping instead of silently clamping HDR to SDR metadata with
+        // no actual tone map.
+        let dir = PathBuf::from("/tmp/test_vaapi_vpp_sub");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(hw_accel::Vaapi {
+                device: "/dev/dri/renderD128".into(),
+                driver: "iHD".into(),
+            }),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_vpp_tonemapping: true,
+            tonemapping_algorithm: "hable".into(),
+            burn_subtitle: true,
+            subtitle_stream_index: Some(2),
+            ..default_hls(dir)
+        });
+
+        let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
+        assert!(
+            fc.contains("tonemapx"),
+            "must fall back to SW tonemapx when VPP+subtitle on VAAPI: {fc}"
+        );
+        assert!(
+            !fc.contains("tonemap_vaapi"),
+            "tonemap_vaapi is incompatible with the CPU overlay's yuv420p output: {fc}"
+        );
+        assert!(
+            fc.contains("overlay"),
+            "must still burn the subtitle in: {fc}"
+        );
+    }
+
+    #[test]
     fn hls_codec_list_defaults_to_h264() {
         let dir = PathBuf::from("/tmp/test_codec_list");
         let args = build_hls_args(&TranscodeParams {
@@ -3022,13 +3074,76 @@ mod tests {
         );
     }
 
+    fn has_pair(args: &[String], k: &str, v: &str) -> bool {
+        args.windows(2)
+            .any(|w| w[0] == k && w[1] == v)
+    }
+
+    fn assert_qsv_hw_decode(args: &[String]) {
+        assert!(
+            has_pair(args, "-hwaccel", "vaapi")
+                && has_pair(args, "-hwaccel_output_format", "vaapi"),
+            "QSV must hardware-decode when the graph stays on the GPU: {args:?}"
+        );
+    }
+
+    fn assert_qsv_sw_decode(args: &[String]) {
+        assert!(
+            !has_pair(args, "-hwaccel_output_format", "vaapi"),
+            "QSV must software-decode when the graph runs CPU filters: {args:?}"
+        );
+        assert!(
+            has_pair(args, "-init_hw_device", "qsv=qs@va"),
+            "QSV encoder still needs the device chain: {args:?}"
+        );
+    }
+
+    /// Asserts the GPU-resident overlay graph: subtitle uploaded to QSV,
+    /// main branch on VAAPI/QSV surfaces, `overlay_qsv` composite, and no
+    /// CPU `overlay`/`format=yuv420p` anywhere.
+    fn assert_qsv_gpu_overlay(fc: &str) {
+        assert!(
+            fc.contains("hwupload=derive_device=qsv"),
+            "subtitle must be uploaded to QSV: {fc}"
+        );
+        assert!(
+            fc.contains("scale_vaapi"),
+            "main branch must scale on GPU: {fc}"
+        );
+        assert!(
+            fc.contains("hwmap=derive_device=qsv,format=qsv"),
+            "main branch must map into QSV memory: {fc}"
+        );
+        assert!(
+            fc.contains("overlay_qsv="),
+            "must composite with overlay_qsv: {fc}"
+        );
+        assert!(
+            !fc.contains("]overlay="),
+            "CPU overlay must not appear in the GPU graph: {fc}"
+        );
+        assert!(
+            !fc.contains("format=yuv420p") && !fc.contains("tonemapx"),
+            "no CPU colour filters in the GPU graph: {fc}"
+        );
+        let main_end = fc
+            .find("[vmain]")
+            .expect("main branch label");
+        let overlay_at = fc
+            .find("overlay_qsv=")
+            .unwrap();
+        assert!(
+            main_end < overlay_at,
+            "main-branch colour handling must precede the overlay: {fc}"
+        );
+    }
+
     #[test]
-    fn hls_qsv_vpp_tonemap_with_subtitle_falls_back_to_sw_tonemap_and_sw_decode() {
-        // Issue #378: QSV + HDR10 + VPP tonemap + subtitle burn-in.
-        // tonemap_vaapi requires VAAPI frames; the CPU overlay outputs yuv420p —
-        // incompatible. The fix must be consistent end to end: decode falls back
-        // to software (no -hwaccel_output_format vaapi) to match the CPU filter
-        // graph, which uses SW tonemapx instead of tonemap_vaapi.
+    fn hls_qsv_vpp_tonemap_with_subtitle_stays_on_gpu() {
+        // Issue #378 originally forced software decode + tonemapx here because
+        // tonemap_vaapi cannot consume CPU overlay output. With overlay_qsv the
+        // overlay follows the tone map on the GPU, so the whole graph stays
+        // hardware-resident.
         let dir = PathBuf::from("/tmp/test_qsv_vpp_sub");
         let args = build_hls_args(&TranscodeParams {
             video_codec: "libx264".into(),
@@ -3043,37 +3158,119 @@ mod tests {
             ..default_hls(dir)
         });
 
+        assert_qsv_hw_decode(&args);
         let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
+        assert_qsv_gpu_overlay(fc);
+        assert!(fc.contains("tonemap_vaapi"), "expected VPP tone map: {fc}");
         assert!(
-            fc.contains("tonemapx"),
-            "should use SW tonemapx when VPP+subtitle: {fc}"
+            fc.find("tonemap_vaapi")
+                .unwrap()
+                < fc.find("overlay_qsv")
+                    .unwrap(),
+            "tone map must run before the overlay: {fc}"
         );
-        assert!(
-            !fc.contains("tonemap_vaapi"),
-            "tonemap_vaapi incompatible with CPU overlay frames: {fc}"
-        );
-        assert!(fc.contains("overlay"), "must still burn subtitle: {fc}");
-        assert!(
-            fc.contains("format=nv12"),
-            "nv12 suffix needed for QSV encoder: {fc}"
-        );
-        // The critical part missed by treating this as a filter-string-only fix:
-        // the decoder must not still be requesting VAAPI hw frames while the
-        // filter graph runs pure CPU filters on them.
-        assert!(
-            !args
-                .windows(2)
-                .any(|w| w[0] == "-hwaccel_output_format" && w[1] == "vaapi"),
-            "decode must fall back to software when the filter graph is CPU-only, \
-             otherwise ffmpeg receives VAAPI frames it can't feed into tonemapx: {args:?}"
-        );
+        assert_eq!(arg_after(&args, "-c:v"), Some("h264_qsv"));
     }
 
     #[test]
-    fn progressive_qsv_vpp_tonemap_with_subtitle_falls_back_to_sw_tonemap_and_sw_decode()
-     {
-        // Same #378 scenario via the progressive (stdout) path, which has its
-        // own copy of the tonemap decision logic.
+    fn hls_qsv_hdr_clamp_with_subtitle_stays_on_gpu() {
+        // Both tone-mapping toggles off (the default): HDR is clamped to SDR
+        // via a BT.709 relabel on the GPU, and the overlay is overlay_qsv.
+        let dir = PathBuf::from("/tmp/test_qsv_clamp_sub");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(qsv()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            burn_subtitle: true,
+            subtitle_stream_index: Some(5),
+            ..default_hls(dir)
+        });
+
+        assert_qsv_hw_decode(&args);
+        let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
+        assert_qsv_gpu_overlay(fc);
+        assert!(
+            fc.contains("scale_vaapi=format=nv12"),
+            "10-bit source must be converted to nv12 on the GPU: {fc}"
+        );
+        assert!(
+            fc.contains(
+                "format=qsv,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
+            ),
+            "BT.709 relabel must follow the hwmap: {fc}"
+        );
+        assert!(!fc.contains("tonemap_vaapi"), "no tone map requested: {fc}");
+    }
+
+    #[test]
+    fn hls_qsv_hdr_clamp_without_subtitle_uses_hw_decode() {
+        // The decode gate is shared with the subtitle path: an HDR source with
+        // no tone mapping and no burn-in must also stay on the GPU.
+        let dir = PathBuf::from("/tmp/test_qsv_clamp_nosub");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(qsv()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            max_width: Some(1920),
+            max_height: Some(1080),
+            ..default_hls(dir)
+        });
+
+        assert_qsv_hw_decode(&args);
+        let vf = arg_after(&args, "-vf").expect("-vf missing");
+        assert!(vf.starts_with("scale_vaapi="), "GPU scale first: {vf}");
+        assert!(
+            vf.ends_with(
+                "hwmap=derive_device=qsv,format=qsv,\
+                 setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
+            ),
+            "hwmap then BT.709 relabel: {vf}"
+        );
+        assert_eq!(
+            vf.matches("setparams")
+                .count(),
+            1,
+            "setparams must not be prepended a second time: {vf}"
+        );
+        assert!(
+            !vf.contains("format=nv12,") || vf.contains("scale_vaapi"),
+            "{vf}"
+        );
+        assert!(!vf.contains("tonemapx"), "{vf}");
+    }
+
+    #[test]
+    fn hls_qsv_sw_tonemap_with_subtitle_keeps_cpu_graph() {
+        // Explicit software tonemapx is the one remaining CPU path on QSV:
+        // software decode, CPU overlay, format=nv12 into the QSV encoder.
+        let dir = PathBuf::from("/tmp/test_qsv_sw_sub");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(qsv()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_tonemapping: true,
+            tonemapping_algorithm: "hable".into(),
+            burn_subtitle: true,
+            subtitle_stream_index: Some(2),
+            ..default_hls(dir)
+        });
+
+        assert_qsv_sw_decode(&args);
+        let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
+        assert!(fc.contains("tonemapx"), "explicit SW tone map: {fc}");
+        assert!(fc.contains("]overlay="), "CPU overlay: {fc}");
+        assert!(fc.contains("format=nv12"), "nv12 into QSV encoder: {fc}");
+        assert!(
+            !fc.contains("overlay_qsv") && !fc.contains("hwmap"),
+            "no GPU filters on CPU frames: {fc}"
+        );
+        assert_eq!(arg_after(&args, "-c:v"), Some("h264_qsv"));
+    }
+
+    #[test]
+    fn progressive_qsv_vpp_tonemap_with_subtitle_stays_on_gpu() {
+        // Same as the HLS case via the progressive (stdout) path, which has its
+        // own copy of the graph construction.
         let args = build_progressive_args(&ProgressiveTranscodeParams {
             video_codec: "libx264".into(),
             accelerator: Box::new(qsv()),
@@ -3085,20 +3282,68 @@ mod tests {
             ..default_progressive()
         });
 
+        assert_qsv_hw_decode(&args);
         let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
+        assert_qsv_gpu_overlay(fc);
+        assert!(fc.contains("tonemap_vaapi"), "expected VPP tone map: {fc}");
+    }
+
+    #[test]
+    fn progressive_qsv_hdr_clamp_with_subtitle_stays_on_gpu() {
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(qsv()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            burn_subtitle: true,
+            subtitle_stream_index: Some(2),
+            ..default_progressive()
+        });
+
+        assert_qsv_hw_decode(&args);
+        let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
+        assert_qsv_gpu_overlay(fc);
+        assert!(fc.contains("setparams=color_primaries=bt709"), "{fc}");
+    }
+
+    #[test]
+    fn progressive_qsv_sw_tonemap_with_subtitle_keeps_cpu_graph() {
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(qsv()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_tonemapping: true,
+            tonemapping_algorithm: "hable".into(),
+            burn_subtitle: true,
+            subtitle_stream_index: Some(2),
+            ..default_progressive()
+        });
+
+        assert_qsv_sw_decode(&args);
+        let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
+        assert!(fc.contains("tonemapx") && fc.contains("]overlay="), "{fc}");
+        assert!(!fc.contains("overlay_qsv"), "{fc}");
+    }
+
+    #[test]
+    fn hls_qsv_sdr_subtitle_overlay_unchanged() {
+        // SDR + burn-in on QSV: the pre-existing overlay_qsv graph, no colour
+        // handling at all.
+        let dir = PathBuf::from("/tmp/test_qsv_sdr_sub");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(qsv()),
+            source_video_range_type: Some(VideoRangeType::Sdr),
+            burn_subtitle: true,
+            subtitle_stream_index: Some(2),
+            ..default_hls(dir)
+        });
+
+        assert_qsv_hw_decode(&args);
+        let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
+        assert_qsv_gpu_overlay(fc);
         assert!(
-            fc.contains("tonemapx"),
-            "should use SW tonemapx when VPP+subtitle: {fc}"
-        );
-        assert!(
-            !fc.contains("tonemap_vaapi"),
-            "tonemap_vaapi incompatible with CPU overlay frames: {fc}"
-        );
-        assert!(
-            !args
-                .windows(2)
-                .any(|w| w[0] == "-hwaccel_output_format" && w[1] == "vaapi"),
-            "decode must fall back to software in the progressive path too: {args:?}"
+            !fc.contains("setparams") && !fc.contains("tonemap"),
+            "SDR needs no colour handling: {fc}"
         );
     }
 
@@ -3328,5 +3573,87 @@ mod tests {
             ..default_progressive()
         });
         assert!(!args_contains(&args, "loudnorm=I=-14:TP=-1:LRA=11"));
+    }
+
+    /// Manual debug tool — prints the real ffmpeg command line(s) for the
+    /// issue #520 repro (4K HEVC Main10 HDR10 + PGS subtitle burn on QSV) so
+    /// they can be copy-pasted and run by hand against real Arc/QSV hardware,
+    /// without needing a live server request or a device profile to hit this
+    /// code path. Override via env vars; defaults match the issue report.
+    ///
+    /// cargo test -p remux-server --lib print_qsv_hdr_subtitle_ffmpeg_cmd -- --ignored --nocapture
+    #[test]
+    #[ignore = "manual debug tool — prints an ffmpeg command line to run by hand"]
+    fn print_qsv_hdr_subtitle_ffmpeg_cmd() {
+        let input = std::env::var("FFMPEG_TEST_INPUT")
+            .unwrap_or_else(|_| "/path/to/source.mkv".to_string());
+        let output_dir = std::env::var("FFMPEG_TEST_OUTPUT_DIR")
+            .unwrap_or_else(|_| "/tmp/qsv_hdr_sub_test".to_string());
+        let sub_index: i32 = std::env::var("FFMPEG_TEST_SUB_INDEX")
+            .ok()
+            .and_then(|s| {
+                s.parse()
+                    .ok()
+            })
+            .unwrap_or(3);
+        let vaapi_device = std::env::var("FFMPEG_TEST_VAAPI_DEVICE")
+            .unwrap_or_else(|_| "/dev/dri/renderD128".to_string());
+        let vaapi_driver = std::env::var("FFMPEG_TEST_VAAPI_DRIVER")
+            .unwrap_or_else(|_| "iHD".to_string());
+
+        let qsv_accel = || {
+            Box::new(hw_accel::Qsv {
+                vaapi_device: vaapi_device.clone(),
+                vaapi_driver: vaapi_driver.clone(),
+            }) as Box<dyn Accelerator>
+        };
+
+        let hls_args = build_hls_args(&TranscodeParams {
+            input_url: input.clone(),
+            output_dir: PathBuf::from(&output_dir),
+            video_codec: "libx264".into(),
+            audio_codec: "aac".into(),
+            accelerator: qsv_accel(),
+            source_video_codec: Some("hevc".into()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_vpp_tonemapping: true,
+            tonemapping_algorithm: "hable".into(),
+            tonemapping_desat: 0.0,
+            tonemapping_peak: 100.0,
+            burn_subtitle: true,
+            subtitle_stream_index: Some(sub_index),
+            ..default_hls(PathBuf::from(&output_dir))
+        });
+
+        let progressive_args = build_progressive_args(&ProgressiveTranscodeParams {
+            input_url: input,
+            container: "mp4".into(),
+            video_codec: "libx264".into(),
+            audio_codec: "aac".into(),
+            accelerator: qsv_accel(),
+            source_video_codec: Some("hevc".into()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_vpp_tonemapping: true,
+            tonemapping_algorithm: "hable".into(),
+            tonemapping_desat: 0.0,
+            tonemapping_peak: 100.0,
+            burn_subtitle: true,
+            subtitle_stream_index: Some(sub_index),
+            ..default_progressive()
+        });
+
+        println!("\n=== HLS (writes segments under {output_dir}) ===");
+        println!("mkdir -p {output_dir} && ffmpeg {}", hls_args.join(" "));
+
+        println!("\n=== Progressive (pipes to stdout, redirect to a file) ===");
+        println!(
+            "ffmpeg {} > /tmp/qsv_hdr_sub_test.mp4",
+            progressive_args.join(" ")
+        );
+
+        println!(
+            "\nOverride with FFMPEG_TEST_INPUT / FFMPEG_TEST_OUTPUT_DIR / \
+             FFMPEG_TEST_SUB_INDEX / FFMPEG_TEST_VAAPI_DEVICE / FFMPEG_TEST_VAAPI_DRIVER"
+        );
     }
 }

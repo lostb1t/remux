@@ -257,13 +257,6 @@ fn raise_open_file_limit() {
                 error = %std::io::Error::last_os_error(),
                 "failed to raise open-file limit"
             );
-        } else {
-            info!(
-                previous,
-                desired,
-                hard = limits.rlim_max,
-                "raised open-file limit"
-            );
         }
     }
 }
