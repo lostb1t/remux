@@ -588,11 +588,11 @@ pub async fn shows_upcoming(
                 .id,
         );
 
-    // Use start-of-today so episodes stored as midnight UTC on today's date are included.
-    let today = chrono::Utc::now()
-        .date_naive()
-        .and_hms_opt(0, 0, 0)
-        .unwrap();
+    // Use the current instant so episodes stored at midnight UTC cannot fill the
+    // page after they have already aired. Jellyfin's date-only grace period is
+    // useful for a normal-sized library, but this server can contain thousands
+    // of same-day entries whose timestamps are all midnight.
+    let now = chrono::Utc::now().naive_utc();
 
     // Resolve the ParentId if provided. Clients often send the TV library view UUID
     // (a Collection/Folder). We map it to the right filter field:
@@ -644,7 +644,7 @@ pub async fn shows_upcoming(
             parent_id: episode_parent_id,
             grandparent_id: episode_grandparent_id,
             grandparent_ids: episode_grandparent_ids,
-            released_after: Some(today),
+            released_after: Some(now),
             digital_released_before: None,
             limit: q.limit,
             offset: q.start_index,
@@ -1789,12 +1789,9 @@ pub(crate) mod test {
             .db;
 
         let now = Utc::now().naive_utc();
-        let today_midnight = now
-            .date()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
-        let future = today_midnight + chrono::Duration::days(7);
-        let past = today_midnight - chrono::Duration::days(7);
+        let upcoming_today = now + chrono::Duration::minutes(1);
+        let future = now + chrono::Duration::days(7);
+        let past = now - chrono::Duration::days(7);
 
         let (_, episodes_today) =
             insert_series_with_episodes(db, "Upcoming Today Series", &["Ep Today"])
@@ -1808,7 +1805,7 @@ pub(crate) mod test {
         // Set released_at directly (insert_series_with_episodes sets digital_released_at to 2020-01-01).
         // Override released_at for our test episodes.
         sqlx::query("UPDATE media SET released_at = ? WHERE id = ?")
-            .bind(today_midnight)
+            .bind(upcoming_today)
             .bind(episodes_today[0].id)
             .execute(db)
             .await
