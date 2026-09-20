@@ -15,6 +15,7 @@ use remux_sdks::{
     stremio::ResourceType,
 };
 use std::collections::HashMap;
+use url::Url;
 use uuid::Uuid;
 
 #[component]
@@ -929,6 +930,9 @@ pub(crate) fn AddonOptionField(
         .get(&id)
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let configure_url = (id == "manifest_url")
+        .then(|| manifest_configure_url(&current_str))
+        .flatten();
 
     if matches!(option.kind, AddonOptionType::Boolean) {
         return rsx! {
@@ -950,14 +954,28 @@ pub(crate) fn AddonOptionField(
             match &option.kind {
                 AddonOptionType::Boolean => unreachable!(),
                 AddonOptionType::Url | AddonOptionType::String => rsx! {
-                    input {
-                        class: "form-input",
-                        r#type: "text",
-                        value: "{current_str}",
-                        oninput: move |e| {
-                            let mut map = values.write();
-                            map.insert(id_change.clone(), serde_json::Value::String(e.value()));
-                        },
+                    div {
+                        style: "display:flex;gap:6px;align-items:center",
+                        input {
+                            class: "form-input",
+                            style: "flex:1;min-width:0",
+                            r#type: "text",
+                            value: "{current_str}",
+                            oninput: move |e| {
+                                let mut map = values.write();
+                                map.insert(id_change.clone(), serde_json::Value::String(e.value()));
+                            },
+                        }
+                        if let Some(configure_url) = configure_url {
+                            a {
+                                class: "btn btn-secondary btn-sm",
+                                href: "{configure_url}",
+                                target: "_blank",
+                                rel: "noopener noreferrer",
+                                title: "Open addon configuration",
+                                "Configure"
+                            }
+                        }
                     }
                 },
                 AddonOptionType::Password => rsx! {
@@ -1107,5 +1125,60 @@ pub(crate) fn AddonOptionField(
                 }
             }
         }
+    }
+}
+
+/// Builds the Stremio addon's configuration endpoint from its manifest URL.
+///
+/// Stremio addon manifests conventionally live at `/manifest.json`, while the
+/// corresponding setup page is served from the same base path at `/configure`.
+/// Query parameters and fragments are intentionally retained.
+fn manifest_configure_url(value: &str) -> Option<String> {
+    let mut url = Url::parse(value.trim()).ok()?;
+    let path = url
+        .path()
+        .trim_end_matches('/');
+    let base = path
+        .strip_suffix("/manifest.json")
+        .or_else(|| path.strip_suffix("/configure"))
+        .unwrap_or(path);
+    let configure_path = if base.is_empty() {
+        "/configure".to_string()
+    } else {
+        format!("{base}/configure")
+    };
+    url.set_path(&configure_path);
+    Some(url.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::manifest_configure_url;
+
+    #[test]
+    fn manifest_configure_url_replaces_manifest_path_and_preserves_query() {
+        assert_eq!(
+            manifest_configure_url(
+                "https://example.test/addon/manifest.json?token=abc#settings"
+            ),
+            Some("https://example.test/addon/configure?token=abc#settings".to_string())
+        );
+    }
+
+    #[test]
+    fn manifest_configure_url_handles_root_and_existing_configure_paths() {
+        assert_eq!(
+            manifest_configure_url("https://example.test/manifest.json"),
+            Some("https://example.test/configure".to_string())
+        );
+        assert_eq!(
+            manifest_configure_url("https://example.test/addon/configure/"),
+            Some("https://example.test/addon/configure".to_string())
+        );
+    }
+
+    #[test]
+    fn manifest_configure_url_returns_none_for_invalid_urls() {
+        assert_eq!(manifest_configure_url("not a url"), None);
     }
 }
