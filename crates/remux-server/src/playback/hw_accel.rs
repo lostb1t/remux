@@ -1,5 +1,64 @@
 use remux_sdks::remux::{EncodingOptions, HardwareAccelerationType};
 
+/// How the colour range of the source is handled on the way to an SDR output.
+///
+/// Derived once per transcode by [`HdrTreatment::for_source`] and threaded
+/// through the accelerator and filter-graph builders, so decode flags, filter
+/// chains and overlay placement all agree on where frames live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HdrTreatment {
+    /// Source is SDR; no colour handling needed.
+    Sdr,
+    /// HDR source, no tone mapping: colour metadata is relabelled BT.709 and
+    /// the frame is truncated to 8-bit. Cheap but washed out.
+    Clamp,
+    /// Hardware tone mapping (`tonemap_vaapi`) on GPU-resident frames.
+    VppTonemap,
+    /// Software tone mapping (`tonemapx`) on CPU frames. Forces software
+    /// decode on accelerators whose filter chain would otherwise stay on GPU.
+    SwTonemap,
+}
+
+impl HdrTreatment {
+    /// `needs_cpu_overlay` is true when a subtitle burn-in is requested and
+    /// the accelerator has no GPU-resident overlay (only QSV's `overlay_qsv`
+    /// qualifies — see [`Accelerator::supports_gpu_resident_overlay`]). In
+    /// that case VPP tonemap is unusable: `tonemap_vaapi` requires
+    /// VAAPI-resident frames, but the CPU `overlay` filter that composites
+    /// the subtitle outputs plain `yuv420p` CPU frames (issue #378). Falling
+    /// through to `VppTonemap` anyway would silently skip tone mapping
+    /// (the CPU overlay path only reads `SwTonemap` to decide whether to run
+    /// `tonemapx`) and wash out the picture instead of erroring — so this
+    /// case must be routed to `SwTonemap` explicitly.
+    pub fn for_source(
+        hdr: bool,
+        accel: &dyn Accelerator,
+        enable_tonemapping: bool,
+        enable_vpp_tonemapping: bool,
+        needs_cpu_overlay: bool,
+    ) -> Self {
+        let vpp_capable = accel.supports_vpp_tonemap();
+        let vpp_blocked_by_overlay =
+            needs_cpu_overlay && !accel.supports_gpu_resident_overlay();
+        if !hdr {
+            Self::Sdr
+        } else if enable_vpp_tonemapping && vpp_capable && !vpp_blocked_by_overlay {
+            Self::VppTonemap
+        } else if enable_tonemapping
+            || accel.prefers_sw_tonemap()
+            || (enable_vpp_tonemapping && vpp_capable && vpp_blocked_by_overlay)
+        {
+            Self::SwTonemap
+        } else {
+            Self::Clamp
+        }
+    }
+
+    pub fn is_hdr(self) -> bool {
+        self != Self::Sdr
+    }
+}
+
 pub trait Accelerator: Send {
     fn has_av1_decode(&self) -> bool {
         false
@@ -13,6 +72,15 @@ pub trait Accelerator: Send {
     /// True for VideoToolbox — it has no hardware tone mapper, so HDR always
     /// falls back to the CPU tonemapx filter.
     fn prefers_sw_tonemap(&self) -> bool {
+        false
+    }
+
+    /// True only for QSV: its `overlay_qsv` filter composites a subtitle onto
+    /// GPU-resident frames, so a burn-in doesn't force the video through the
+    /// CPU `overlay` filter. VAAPI (the other VPP-tonemap-capable
+    /// accelerator) has no such filter — its burn-in path always runs on the
+    /// CPU — so it must not be treated as GPU-resident here.
+    fn supports_gpu_resident_overlay(&self) -> bool {
         false
     }
 
@@ -72,27 +140,27 @@ pub trait Accelerator: Send {
     /// this instead of `input_args()` directly.
     ///
     /// The default skips `input_args()` when `requires_software_decode` is set.
-    /// QSV overrides to emit device-init-only args when HDR needs SW decode but
-    /// the QSV encoder still needs the device chain in place.
+    /// QSV overrides to emit device-init-only args when software tone mapping
+    /// needs CPU frames but the QSV encoder still needs the device chain.
     fn decode_input_args(
         &self,
         source_codec: Option<&str>,
-        hdr: bool,
-        _do_vpp_tonemap: bool,
+        treatment: HdrTreatment,
     ) -> Vec<String> {
-        if self.requires_software_decode(source_codec, hdr) {
+        if self.requires_software_decode(source_codec, treatment.is_hdr()) {
             vec![]
         } else {
             self.input_args()
         }
     }
 
-    /// Hardware filter suffix accounting for HDR and VPP tonemapping mode.
-    /// Callers use this instead of `filter_suffix()` directly.
+    /// Hardware filter suffix accounting for the HDR treatment.  Callers use
+    /// this instead of `filter_suffix()` directly.
     ///
     /// The default is just `filter_suffix()`.  QSV overrides to swap in the
-    /// VPP tonemap chain or a bare `format=nv12` depending on the decode path.
-    fn hw_filter_suffix(&self, _hdr: bool, _do_vpp_tonemap: bool) -> Option<String> {
+    /// VPP tonemap chain, the BT.709 relabel, or a bare `format=nv12`
+    /// depending on where frames live.
+    fn hw_filter_suffix(&self, _treatment: HdrTreatment) -> Option<String> {
         self.filter_suffix()
     }
 
@@ -217,6 +285,10 @@ impl Accelerator for Qsv {
         Some("_qsv")
     }
 
+    fn supports_gpu_resident_overlay(&self) -> bool {
+        true
+    }
+
     fn input_args(&self) -> Vec<String> {
         let mut args = self.init_only_args();
         args.extend([
@@ -247,30 +319,33 @@ impl Accelerator for Qsv {
     fn decode_input_args(
         &self,
         _source_codec: Option<&str>,
-        hdr: bool,
-        do_vpp_tonemap: bool,
+        treatment: HdrTreatment,
     ) -> Vec<String> {
-        if hdr && !do_vpp_tonemap {
-            // SW decode so CPU filters can run; device chain still needed for
-            // the QSV encoder.
-            self.init_only_args()
-        } else {
-            self.input_args()
+        match treatment {
+            // tonemapx needs CPU frames; device chain still needed for the
+            // QSV encoder.
+            HdrTreatment::SwTonemap => self.init_only_args(),
+            _ => self.input_args(),
         }
     }
 
-    fn hw_filter_suffix(&self, hdr: bool, do_vpp_tonemap: bool) -> Option<String> {
-        if do_vpp_tonemap {
-            Some(
+    fn hw_filter_suffix(&self, treatment: HdrTreatment) -> Option<String> {
+        match treatment {
+            HdrTreatment::Sdr => self.filter_suffix(),
+            HdrTreatment::VppTonemap => Some(
                 "tonemap_vaapi=format=nv12:p=bt709:t=bt709:m=bt709:extra_hw_frames=32,\
                  hwmap=derive_device=qsv,format=qsv"
                     .to_string(),
-            )
-        } else if hdr {
-            // SW-decode path — frames are in CPU memory; format=nv12 before encoder.
-            Some("format=nv12".to_string())
-        } else {
-            self.filter_suffix()
+            ),
+            // Frames are already NV12 after scale_vaapi; setparams is
+            // metadata-only and passes QSV surfaces through untouched.
+            HdrTreatment::Clamp => Some(
+                "hwmap=derive_device=qsv,format=qsv,\
+                 setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
+                    .to_string(),
+            ),
+            // CPU frames after tonemapx; format=nv12 before the encoder.
+            HdrTreatment::SwTonemap => Some("format=nv12".to_string()),
         }
     }
 
@@ -396,5 +471,160 @@ pub fn from_encoding_opts(opts: &EncodingOptions) -> Box<dyn Accelerator> {
         HardwareAccelerationType::Amf => Box::new(Amf),
         HardwareAccelerationType::V4l2m2m => Box::new(V4l2m2m),
         HardwareAccelerationType::Rkmpp => Box::new(Rkmpp),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn qsv() -> Qsv {
+        Qsv {
+            vaapi_device: "/dev/dri/renderD128".into(),
+            vaapi_driver: "iHD".into(),
+        }
+    }
+
+    #[test]
+    fn sdr_source_ignores_tonemap_toggles() {
+        assert_eq!(
+            HdrTreatment::for_source(false, &qsv(), true, true, false),
+            HdrTreatment::Sdr
+        );
+    }
+
+    #[test]
+    fn vpp_wins_over_sw_when_accelerator_supports_it() {
+        assert_eq!(
+            HdrTreatment::for_source(true, &qsv(), true, true, false),
+            HdrTreatment::VppTonemap
+        );
+        assert_eq!(
+            HdrTreatment::for_source(true, &qsv(), false, true, false),
+            HdrTreatment::VppTonemap
+        );
+    }
+
+    #[test]
+    fn vpp_toggle_falls_back_to_clamp_without_hw_tonemap() {
+        // NVENC has no VPP tone mapper; with only the VPP toggle on nothing
+        // tone-maps and the source is clamped.
+        assert_eq!(
+            HdrTreatment::for_source(true, &Nvenc, false, true, false),
+            HdrTreatment::Clamp
+        );
+        assert_eq!(
+            HdrTreatment::for_source(true, &Nvenc, true, true, false),
+            HdrTreatment::SwTonemap
+        );
+    }
+
+    #[test]
+    fn explicit_sw_tonemap_and_clamp() {
+        assert_eq!(
+            HdrTreatment::for_source(true, &qsv(), true, false, false),
+            HdrTreatment::SwTonemap
+        );
+        assert_eq!(
+            HdrTreatment::for_source(true, &qsv(), false, false, false),
+            HdrTreatment::Clamp
+        );
+    }
+
+    #[test]
+    fn qsv_vpp_tonemap_survives_subtitle_burn_in() {
+        // QSV's overlay_qsv composites onto GPU-resident frames, so a
+        // burn-in doesn't block VPP tone mapping.
+        assert_eq!(
+            HdrTreatment::for_source(true, &qsv(), false, true, true),
+            HdrTreatment::VppTonemap
+        );
+    }
+
+    #[test]
+    fn vaapi_vpp_tonemap_falls_back_to_sw_when_burning_a_subtitle() {
+        // VAAPI has no GPU-resident overlay: tonemap_vaapi output can't
+        // feed the CPU `overlay` filter (issue #378), so a burn-in must
+        // force software tone mapping instead of silently dropping it.
+        let vaapi = Vaapi {
+            device: "/dev/dri/renderD128".into(),
+            driver: "iHD".into(),
+        };
+        assert_eq!(
+            HdrTreatment::for_source(true, &vaapi, false, true, true),
+            HdrTreatment::SwTonemap
+        );
+        // Without a burn-in, VAAPI still gets VPP tone mapping.
+        assert_eq!(
+            HdrTreatment::for_source(true, &vaapi, false, true, false),
+            HdrTreatment::VppTonemap
+        );
+    }
+
+    #[test]
+    fn videotoolbox_always_prefers_sw_tonemap() {
+        let vt = VideoToolbox {
+            av1_hw_decode: false,
+        };
+        assert_eq!(
+            HdrTreatment::for_source(true, &vt, false, false, false),
+            HdrTreatment::SwTonemap
+        );
+        assert_eq!(
+            HdrTreatment::for_source(true, &vt, false, true, false),
+            HdrTreatment::SwTonemap
+        );
+    }
+
+    #[test]
+    fn qsv_only_sw_tonemap_decodes_in_software() {
+        let q = qsv();
+        for t in [
+            HdrTreatment::Sdr,
+            HdrTreatment::Clamp,
+            HdrTreatment::VppTonemap,
+        ] {
+            let args = q.decode_input_args(None, t);
+            assert!(
+                args.iter()
+                    .any(|a| a == "-hwaccel_output_format"),
+                "{t:?} should hw-decode: {args:?}"
+            );
+        }
+        let args = q.decode_input_args(None, HdrTreatment::SwTonemap);
+        assert!(
+            !args
+                .iter()
+                .any(|a| a == "-hwaccel"),
+            "{args:?}"
+        );
+        assert!(
+            args.iter()
+                .any(|a| a == "qsv=qs@va"),
+            "{args:?}"
+        );
+    }
+
+    #[test]
+    fn qsv_suffix_per_treatment() {
+        let q = qsv();
+        assert_eq!(
+            q.hw_filter_suffix(HdrTreatment::Sdr)
+                .unwrap(),
+            "hwmap=derive_device=qsv,format=qsv"
+        );
+        let clamp = q
+            .hw_filter_suffix(HdrTreatment::Clamp)
+            .unwrap();
+        assert!(clamp.starts_with("hwmap=derive_device=qsv,format=qsv,setparams="));
+        let vpp = q
+            .hw_filter_suffix(HdrTreatment::VppTonemap)
+            .unwrap();
+        assert!(vpp.starts_with("tonemap_vaapi=") && vpp.ends_with("format=qsv"));
+        assert_eq!(
+            q.hw_filter_suffix(HdrTreatment::SwTonemap)
+                .unwrap(),
+            "format=nv12"
+        );
     }
 }
