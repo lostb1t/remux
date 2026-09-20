@@ -1,8 +1,8 @@
 pub mod codecs;
 pub mod provider_ids;
 pub use codecs::{
-    AudioCodec, AudioContainer, DlnaProfileType, SubtitleCodec, TranscodingProtocol,
-    VideoCodec, VideoContainer,
+    AudioCodec, AudioContainer, CodecProfileType, DlnaProfileType, SubtitleCodec,
+    TranscodingProtocol, VideoCodec, VideoContainer,
 };
 pub use provider_ids::{AnyProviderIds, ExternalIdProvider};
 
@@ -2110,11 +2110,10 @@ pub struct ContainerProfile {
 #[serde(rename_all = "PascalCase", default)]
 pub struct CodecProfile {
     #[serde(rename = "Type")]
-    pub type_: Option<DlnaProfileType>,
+    pub type_: Option<CodecProfileType>,
     #[serde(deserialize_with = "deser_csv_strings", serialize_with = "ser_csv")]
     pub codec: Option<Vec<String>>,
     pub container: Option<String>,
-    pub sub_container: Option<String>,
     pub conditions: Vec<ProfileCondition>,
     pub apply_conditions: Vec<ProfileCondition>,
 }

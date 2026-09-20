@@ -1,6 +1,6 @@
 pub(crate) use remux_sdks::remux::{AudioCodec, SubtitleCodec, VideoCodec};
 use remux_sdks::remux::{
-    CodecProfile, DeviceProfile, DirectPlayProfile, DlnaProfileType,
+    CodecProfile, CodecProfileType, DeviceProfile, DirectPlayProfile, DlnaProfileType,
     EmbeddedSubtitleHandling, MediaSourceInfo, MediaStream, MediaStreamType,
     ProfileCondition, ProfileConditionProperty, ProfileConditionType,
     SortMediaSourcesMode, SubtitleDeliveryMethod, TranscodeReason, TranscodeReasons,
@@ -172,7 +172,7 @@ impl DeviceProfileExt for DeviceProfile {
             };
             self.codec_profiles
                 .iter()
-                .filter(|cp| matches!(cp.type_, Some(DlnaProfileType::Video)))
+                .filter(|cp| matches!(cp.type_, Some(CodecProfileType::Video)))
                 .filter(|cp| cp.applies_to_media(media_source, video_stream, "hevc"))
                 .flat_map(|cp| &cp.conditions)
                 .filter(|cond| {
@@ -216,41 +216,34 @@ fn check_codec_profiles(
     media_source: &MediaSourceInfo,
     reasons: &mut TranscodeReasons,
 ) {
+    let has_video = media_source
+        .video_stream()
+        .is_some();
     for cp in &profile.codec_profiles {
-        match cp.type_ {
-            Some(DlnaProfileType::Video) => {
-                if let Some(stream) = media_source.video_stream() {
-                    let codec = stream
-                        .codec
-                        .as_deref()
-                        .unwrap_or("");
-                    if cp.applies_to_media(media_source, stream, codec) {
-                        for r in cp
-                            .check_reasons(media_source, stream)
-                            .0
-                        {
-                            reasons.insert(r);
-                        }
-                    }
-                }
+        let stream = match &cp.type_ {
+            None | Some(CodecProfileType::Video) => media_source.video_stream(),
+            Some(CodecProfileType::VideoAudio) if has_video => {
+                selected_audio_stream(media_source)
             }
-            Some(DlnaProfileType::Audio) => {
-                if let Some(stream) = media_source.audio_stream() {
-                    let codec = stream
-                        .codec
-                        .as_deref()
-                        .unwrap_or("");
-                    if cp.applies_to_media(media_source, stream, codec) {
-                        for r in cp
-                            .check_reasons(media_source, stream)
-                            .0
-                        {
-                            reasons.insert(r);
-                        }
-                    }
-                }
+            Some(CodecProfileType::Audio) if !has_video => {
+                selected_audio_stream(media_source)
             }
-            _ => {}
+            _ => None,
+        };
+        let Some(stream) = stream else {
+            continue;
+        };
+        let codec = stream
+            .codec
+            .as_deref()
+            .unwrap_or("");
+        if cp.applies_to_media(media_source, stream, codec) {
+            for reason in cp
+                .check_reasons(media_source, stream)
+                .0
+            {
+                reasons.insert(reason);
+            }
         }
     }
 }
@@ -638,7 +631,9 @@ fn condition_property_value(
         ProfileConditionProperty::PacketLength => stream
             .packet_length
             .map(|v| v.to_string()),
-        ProfileConditionProperty::IsSecondaryAudio => Some("false".to_string()),
+        ProfileConditionProperty::IsSecondaryAudio => {
+            is_secondary_audio(media_source, stream).map(|value| value.to_string())
+        }
         ProfileConditionProperty::Has64BitOffsets
         | ProfileConditionProperty::VideoTimestamp => None,
         _ => None,
@@ -719,9 +714,40 @@ fn failed_condition_reason(
         ProfileConditionProperty::Has64BitOffsets
         | ProfileConditionProperty::PacketLength
         | ProfileConditionProperty::VideoTimestamp
-        | ProfileConditionProperty::IsAvc
-        | ProfileConditionProperty::Other(_) => None,
+        | ProfileConditionProperty::IsAvc => {
+            Some(TranscodeReason::VideoCodecNotSupported(detail))
+        }
+        ProfileConditionProperty::Other(_) => None,
     }
+}
+
+fn selected_audio_stream(source: &MediaSourceInfo) -> Option<&MediaStream> {
+    source
+        .default_audio_stream_index
+        .and_then(|index| {
+            source
+                .media_streams
+                .iter()
+                .find(|stream| {
+                    stream.index == index
+                        && matches!(stream.type_, Some(MediaStreamType::Audio))
+                })
+        })
+        .or_else(|| source.audio_stream())
+}
+
+fn is_secondary_audio(source: &MediaSourceInfo, stream: &MediaStream) -> Option<bool> {
+    if stream.is_external {
+        return Some(false);
+    }
+    source
+        .media_streams
+        .iter()
+        .find(|candidate| {
+            matches!(candidate.type_, Some(MediaStreamType::Audio))
+                && !candidate.is_external
+        })
+        .map(|primary| primary.index != stream.index)
 }
 
 pub trait ProfileConditionExt {
@@ -1106,7 +1132,7 @@ fn confident_4k_capable(profile: &DeviceProfile) -> bool {
     const AV1_4K_LEVEL: i64 = 13; // AV1 Level 5.0
 
     for cp in &profile.codec_profiles {
-        if !matches!(cp.type_, None | Some(DlnaProfileType::Video)) {
+        if !matches!(cp.type_, None | Some(CodecProfileType::Video)) {
             continue;
         }
         let is_hevc = codec_list_contains(&cp.codec, &["hevc", "h265"]);
@@ -1338,11 +1364,12 @@ mod tests {
         primary_video_stream, subtitle_burn_reason, transcode_cost_tier,
     };
     use remux_sdks::remux::{
-        AudioCodec, CodecProfile, DeviceProfile, DirectPlayProfile, DlnaProfileType,
-        EmbeddedSubtitleHandling, MediaSourceInfo, MediaStream, MediaStreamType,
-        ProfileCondition, ProfileConditionProperty, ProfileConditionType,
-        SortMediaSourcesMode, SubtitleDeliveryMethod, SubtitleProfile, TranscodeReason,
-        TranscodeReasons, VideoCodec, VideoContainer, VideoRangeType,
+        AudioCodec, CodecProfile, CodecProfileType, DeviceProfile, DirectPlayProfile,
+        DlnaProfileType, EmbeddedSubtitleHandling, MediaSourceInfo, MediaStream,
+        MediaStreamType, ProfileCondition, ProfileConditionProperty,
+        ProfileConditionType, SortMediaSourcesMode, SubtitleDeliveryMethod,
+        SubtitleProfile, TranscodeReason, TranscodeReasons, VideoCodec, VideoContainer,
+        VideoRangeType,
     };
 
     #[test]
@@ -1473,7 +1500,7 @@ mod tests {
                 type_: Some(DlnaProfileType::Video),
             }],
             codec_profiles: vec![CodecProfile {
-                type_: Some(DlnaProfileType::Video),
+                type_: Some(CodecProfileType::Video),
                 codec: Some(vec!["h264".to_string()]),
                 conditions: vec![ProfileCondition {
                     condition: Some(ProfileConditionType::EqualsAny),
@@ -1656,7 +1683,7 @@ mod tests {
         let profile = DeviceProfile {
             direct_play_profiles: moonfin_ref_frames_profile().direct_play_profiles,
             codec_profiles: vec![CodecProfile {
-                type_: Some(DlnaProfileType::Video),
+                type_: Some(CodecProfileType::Video),
                 codec: Some(vec!["h264".to_string()]),
                 conditions: vec![ProfileCondition {
                     condition: Some(ProfileConditionType::LessThanEqual),
@@ -1688,7 +1715,7 @@ mod tests {
         let profile = DeviceProfile {
             direct_play_profiles: moonfin_ref_frames_profile().direct_play_profiles,
             codec_profiles: vec![CodecProfile {
-                type_: Some(DlnaProfileType::Video),
+                type_: Some(CodecProfileType::Video),
                 codec: Some(vec!["h264".to_string()]),
                 conditions: vec![ProfileCondition {
                     condition: Some(ProfileConditionType::LessThanEqual),
@@ -1719,7 +1746,7 @@ mod tests {
             ..Default::default()
         };
         let profile = CodecProfile {
-            type_: Some(DlnaProfileType::Video),
+            type_: Some(CodecProfileType::Video),
             codec: Some(vec!["hevc".to_string()]),
             apply_conditions: vec![ProfileCondition {
                 condition: Some(ProfileConditionType::Equals),
@@ -1817,6 +1844,26 @@ mod tests {
                 &video,
                 "StreamCountExceedsLimit",
             ),
+            (
+                ProfileConditionProperty::IsAvc,
+                &video,
+                "VideoCodecNotSupported",
+            ),
+            (
+                ProfileConditionProperty::PacketLength,
+                &video,
+                "VideoCodecNotSupported",
+            ),
+            (
+                ProfileConditionProperty::Has64BitOffsets,
+                &video,
+                "VideoCodecNotSupported",
+            ),
+            (
+                ProfileConditionProperty::VideoTimestamp,
+                &video,
+                "VideoCodecNotSupported",
+            ),
         ];
 
         for (property, stream, expected) in cases {
@@ -1824,6 +1871,53 @@ mod tests {
                 .expect("known condition must have a reason");
             assert_eq!(reason.name(), expected, "property {property}");
         }
+        assert!(
+            failed_condition_reason(
+                &ProfileConditionProperty::Other("FutureProperty".to_string()),
+                &video,
+                "test".to_string(),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn video_audio_profile_uses_selected_secondary_audio_stream() {
+        let profile: CodecProfile = serde_json::from_value(serde_json::json!({
+            "Type": "VideoAudio",
+            "Codec": "aac",
+            "Conditions": [{
+                "Condition": "Equals",
+                "Property": "IsSecondaryAudio",
+                "Value": "false",
+                "IsRequired": true
+            }]
+        }))
+        .expect("VideoAudio codec profile");
+        assert_eq!(profile.type_, Some(CodecProfileType::VideoAudio));
+
+        let device_profile = DeviceProfile {
+            direct_play_profiles: moonfin_ref_frames_profile().direct_play_profiles,
+            codec_profiles: vec![profile],
+            ..Default::default()
+        };
+        let mut source = h264_ref_frames_source(1920, Some(1));
+        source
+            .media_streams
+            .push(MediaStream {
+                codec: Some("aac".to_string()),
+                type_: Some(MediaStreamType::Audio),
+                index: 2,
+                ..Default::default()
+            });
+        source.default_audio_stream_index = Some(2);
+
+        let reasons = device_profile.check_direct_play(&source);
+        assert!(
+            reasons
+                .contains(&TranscodeReason::SecondaryAudioNotSupported(String::new())),
+            "selected second internal track must be secondary: {reasons:?}"
+        );
     }
 
     #[test]
@@ -1840,7 +1934,7 @@ mod tests {
                 type_: Some(DlnaProfileType::Video),
             }],
             codec_profiles: vec![CodecProfile {
-                type_: Some(DlnaProfileType::Audio),
+                type_: Some(CodecProfileType::VideoAudio),
                 codec: Some(vec!["aac".to_string()]),
                 conditions: vec![ProfileCondition {
                     condition: Some(ProfileConditionType::LessThanEqual),
@@ -1887,7 +1981,7 @@ mod tests {
     fn hevc_tag_condition(condition: &str, value: &str) -> DeviceProfile {
         DeviceProfile {
             codec_profiles: vec![CodecProfile {
-                type_: Some(DlnaProfileType::Video),
+                type_: Some(CodecProfileType::Video),
                 codec: Some(vec!["hevc".to_string()]),
                 conditions: vec![ProfileCondition {
                     condition: Some(
@@ -1950,7 +2044,7 @@ mod tests {
         // because its parameter sets are in-band and hvc1 would be a lie.
         let silent = DeviceProfile {
             codec_profiles: vec![CodecProfile {
-                type_: Some(DlnaProfileType::Video),
+                type_: Some(CodecProfileType::Video),
                 codec: Some(vec!["hevc".to_string()]),
                 conditions: vec![ProfileCondition {
                     condition: Some(ProfileConditionType::EqualsAny),
@@ -1984,7 +2078,7 @@ mod tests {
     fn hevc_copy_tag_ignores_tag_conditions_scoped_to_other_codecs() {
         let profile = DeviceProfile {
             codec_profiles: vec![CodecProfile {
-                type_: Some(DlnaProfileType::Video),
+                type_: Some(CodecProfileType::Video),
                 codec: Some(vec!["h264".to_string()]),
                 conditions: vec![ProfileCondition {
                     condition: Some(ProfileConditionType::EqualsAny),
@@ -2057,7 +2151,7 @@ mod tests {
     fn streamyfin_mpv_profile() -> DeviceProfile {
         DeviceProfile {
             codec_profiles: vec![CodecProfile {
-                type_: Some(DlnaProfileType::Video),
+                type_: Some(CodecProfileType::Video),
                 codec: Some(vec!["hevc".to_string(), "h265".to_string()]),
                 conditions: vec![
                     ProfileCondition {
