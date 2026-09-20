@@ -4,8 +4,8 @@ use remux_sdks::remux::{
     BaseItemDto, CollectionFilter, CollectionImageConfig, CollectionOverlay,
     CollectionPosterLayout, CollectionType, CreateVirtualFolder,
     CreateVirtualFolderPayload, DeleteVirtualFolder, FilterGroup, FilterMatchMode,
-    GetItems, GetItemsQuery, GetWatchProviders, ItemSortBy, MediaType, PatchItem,
-    PatchItemPayload, SortOrder, WatchProviderItem,
+    GetItems, GetItemsQuery, GetWatchProviders, HexColor, ItemSortBy, MediaType,
+    PatchItem, PatchItemPayload, SortOrder, WatchProviderItem,
 };
 use std::collections::HashMap;
 
@@ -564,6 +564,20 @@ pub fn CollectionForm(
             .to_string()
         })
         .unwrap_or_else(|| "grid".to_string());
+    let existing_background_color = existing_image_config.and_then(|config| {
+        config
+            .background_color
+            .as_ref()
+            .map(ToString::to_string)
+    });
+    let should_apply_provider_color = existing_background_color.is_none();
+    let existing_provider_name = existing_overlay.and_then(|overlay| match overlay {
+        CollectionOverlay::StreamingLogo { provider_name, .. } => provider_name.clone(),
+        _ => None,
+    });
+    let default_background_color =
+        existing_background_color.unwrap_or_else(|| "#000000".to_string());
+    let mut background_color = use_signal(|| default_background_color);
     let mut poster_layout = use_signal(|| existing_layout);
     let mut overlay_type = use_signal(|| match existing_overlay {
         Some(CollectionOverlay::Text { .. }) => "text".to_string(),
@@ -708,6 +722,7 @@ pub fn CollectionForm(
         .unwrap_or_default();
 
     let app_state_providers = app_state.clone();
+    let mut provider_background = background_color;
     use_effect(move || {
         if overlay_type
             .read()
@@ -725,12 +740,34 @@ pub fn CollectionForm(
         providers_loading.set(true);
         providers_error.set(None);
         let client = app_state_providers.clone();
+        let provider_name = existing_provider_name.clone();
         spawn(async move {
             match client
                 .execute(GetWatchProviders)
                 .await
             {
-                Ok(providers) => watch_providers.set(providers),
+                Ok(providers) => {
+                    if should_apply_provider_color {
+                        if let Some(name) = provider_name.as_deref() {
+                            if let Some(provider) = providers
+                                .iter()
+                                .find(|provider| {
+                                    provider
+                                        .provider_name
+                                        .eq_ignore_ascii_case(name)
+                                })
+                            {
+                                if let Some(color) = provider
+                                    .color
+                                    .as_deref()
+                                {
+                                    provider_background.set(color.to_string());
+                                }
+                            }
+                        }
+                    }
+                    watch_providers.set(providers)
+                }
                 Err(error) => providers_error.set(Some(error.user_message())),
             }
             providers_loaded.set(true);
@@ -852,6 +889,12 @@ pub fn CollectionForm(
                     },
                     _ => CollectionOverlay::None,
                 },
+                background_color: HexColor::try_new(
+                    background_color
+                        .peek()
+                        .clone(),
+                )
+                .ok(),
             })
         };
 
@@ -1205,6 +1248,7 @@ pub fn CollectionForm(
                                                     },
                                                     _ => CollectionOverlay::None,
                                                 },
+                                                background_color: HexColor::try_new(background_color.peek().clone()).ok(),
                                             };
                                             // A locally-picked file already renders live from an
                                             // in-browser data URL (see the file input's onchange
@@ -1271,6 +1315,21 @@ pub fn CollectionForm(
                             option { value: "grid", selected: *poster_layout.read() == "grid", "Grid" }
                             option { value: "row", selected: *poster_layout.read() == "row", "Row" }
                             option { value: "scatter", selected: *poster_layout.read() == "scatter", "Scatter" }
+                        }
+                    }
+                }
+                if !*has_custom_image_source.read() {
+                    div { class: "field",
+                        label { class: "field-label", r#for: "collection-background-color", "Background color" }
+                        p { class: "field-hint", "Used as the base color for a bottom-to-top gradient behind the posters." }
+                        input {
+                            id: "collection-background-color",
+                            r#type: "text",
+                            class: "field-input",
+                            placeholder: "#000000",
+                            pattern: "#?[0-9a-fA-F]{6}",
+                            value: "{background_color}",
+                            oninput: move |e| background_color.set(e.value()),
                         }
                     }
                 }
@@ -1357,9 +1416,19 @@ pub fn CollectionForm(
                                             logo_provider_id.set(Some(pid));
                                             // Find logo_path and name from the list
                                             let providers = watch_providers.read();
-                                            if let Some(p) = providers.iter().find(|p| p.provider_id == pid) {
-                                                logo_provider_name.set(Some(p.provider_name.clone()));
-                                                logo_path.set(p.logo_path.clone());
+                                            let selected_provider = providers
+                                                .iter()
+                                                .find(|p| p.provider_id == pid)
+                                                .map(|p| {
+                                                    (p.provider_name.clone(), p.logo_path.clone(), p.color.clone())
+                                                });
+                                            drop(providers);
+                                            if let Some((provider_name, provider_logo, provider_color)) = selected_provider {
+                                                logo_provider_name.set(Some(provider_name));
+                                                logo_path.set(provider_logo);
+                                                if let Some(color) = provider_color {
+                                                    background_color.set(color);
+                                                }
                                             }
                                         } else {
                                             logo_provider_id.set(None);
