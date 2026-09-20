@@ -1022,6 +1022,32 @@ fn stem_without_ext(name: &str) -> String {
     }
 }
 
+fn movie_title_from_stem(
+    stem: &str,
+    parsed_title: Option<&str>,
+    year: Option<i64>,
+) -> String {
+    // Jellyfin treats the complete text before a parenthesized year as the
+    // movie title. Its multipart rules only match numeric/a-d suffixes at the
+    // end of a filename, so a title such as "Dune Part Two (2024)" must retain
+    // "Part Two" even though hunch classifies it as Part=2.
+    if let (Some(parsed_title), Some(year)) = (parsed_title, year) {
+        let year_marker = format!("({year})");
+        if let Some(prefix) = stem
+            .split_once(&year_marker)
+            .map(|(prefix, _)| prefix.trim())
+            .filter(|prefix| prefix.len() > parsed_title.len())
+            .filter(|prefix| prefix.starts_with(parsed_title))
+        {
+            return prefix.to_string();
+        }
+    }
+
+    parsed_title
+        .unwrap_or(stem)
+        .to_string()
+}
+
 /// Split a subtitle stem (filename without its subtitle extension) into its base and subtitle metadata.
 ///
 /// For `Breaking.Bad.S01E01.en.forced` returns `("Breaking.Bad.S01E01", Some("en"), true, false)`.
@@ -1560,10 +1586,8 @@ async fn scan_addon(
                     let year = parsed
                         .year()
                         .map(|y| y as i64);
-                    let clean_title = parsed
-                        .title()
-                        .unwrap_or(stem.as_str())
-                        .to_string();
+                    let clean_title =
+                        movie_title_from_stem(&stem, parsed.title(), year);
 
                     let existing_imdb =
                         fetch_existing_imdb(ctx, addon.id, &stored_path).await?;
@@ -2650,16 +2674,39 @@ mod tests {
 
         for c in &cases {
             let parsed = hunch::hunch(c.stem);
-            assert_eq!(
+            let title = movie_title_from_stem(
+                c.stem,
+                parsed.title(),
                 parsed
-                    .title()
-                    .unwrap_or(""),
-                c.title,
-                "title mismatch for {:?}",
-                c.stem
+                    .year()
+                    .map(|y| y as i64),
             );
+            assert_eq!(title, c.title, "title mismatch for {:?}", c.stem);
             assert_eq!(parsed.year(), c.year, "year mismatch for {:?}", c.stem);
         }
+    }
+
+    #[test]
+    fn trash_guides_movie_path_preserves_part_title() {
+        let path = "/media/movies/Dune Part Two (2024)/Dune Part Two (2024).mkv";
+        let stem = std::path::Path::new(path)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap();
+        let parsed = hunch::hunch(stem);
+
+        assert_eq!(
+            movie_title_from_stem(
+                stem,
+                parsed.title(),
+                parsed
+                    .year()
+                    .map(|y| y as i64),
+            ),
+            "Dune Part Two"
+        );
+        assert_eq!(parsed.year(), Some(2024));
+        assert_eq!(parsed.part(), Some(2));
     }
 
     // ---------------------------------------------------------------------------
