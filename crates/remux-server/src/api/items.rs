@@ -318,6 +318,7 @@ pub async fn get_items(
             let limit = q
                 .limit
                 .unwrap_or(250) as usize;
+            let fetch_limit = (skip as usize).saturating_add(limit);
 
             // Requested kinds: explicit from the client, or fall back to the computed
             // defaults (Movie + Series + Episode with exclude_item_types already applied).
@@ -364,7 +365,7 @@ pub async fn get_items(
                         .search(
                             k,
                             s,
-                            kind_limit(k, limit),
+                            kind_limit(k, fetch_limit),
                             &state.ctx,
                             Some(
                                 session
@@ -418,7 +419,7 @@ pub async fn get_items(
                 local_q.include_item_types = Some(local_types);
                 local_q.parent_id = None;
                 local_q.start_index = None;
-                local_q.limit = Some(limit as u32);
+                local_q.limit = Some(fetch_limit.min(u32::MAX as usize) as u32);
                 match db::Media::get_by_jellyfin_filter(
                     &state
                         .ctx

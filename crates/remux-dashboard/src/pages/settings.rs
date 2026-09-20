@@ -1243,7 +1243,7 @@ pub fn SearchSettingsCard(app_state: AppState) -> Element {
             .peek()
             .clone()
             .unwrap_or_default();
-        let mut remote_enabled: Vec<String> = vec!["person".to_string()];
+        let mut remote_enabled: Vec<String> = Vec::new();
         if *movies_remote.peek() {
             remote_enabled.push("movie".to_string());
         }

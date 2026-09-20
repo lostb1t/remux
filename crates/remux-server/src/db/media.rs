@@ -4997,6 +4997,15 @@ impl Media {
                     col
                 })
                 .collect();
+            if filter
+                .title_contains
+                .is_some()
+            {
+                order_clauses.insert(
+                    0,
+                    "CASE WHEN LOWER(kind) = 'person' THEN 1 ELSE 0 END".to_string(),
+                );
+            }
             // When pop_joined, ordering is handled inside the UNION ALL arms —
             // arm 1 walks the selected metric index in DESC order, arm 2 follows.
             // Pushing ORDER BY here would force a global sort over the whole result.
@@ -5014,6 +5023,23 @@ impl Media {
             records_qb.push(
                 " ORDER BY (sort_order IS NULL), COALESCE(sort_order, channel_number, 999999), title COLLATE NOCASE",
             );
+        } else if filter
+            .title_contains
+            .is_some()
+        {
+            // Local searches use a contains predicate, but prefix matches are more
+            // useful than titles that only contain the term later. Keep person rows
+            // at the end because they are secondary search results in Jellyfin.
+            records_qb
+                .push(" ORDER BY CASE WHEN LOWER(kind) = 'person' THEN 2 WHEN title LIKE ")
+                .push_bind(format!(
+                    "{}%",
+                    filter
+                        .title_contains
+                        .as_deref()
+                        .unwrap_or_default()
+                ))
+                .push(" THEN 0 ELSE 1 END, title COLLATE NOCASE ASC");
         } else {
             // Universal fallback: sort by index numbers so episodes/seasons/tracks
             // always come back in natural order when the client sends no SortBy.
