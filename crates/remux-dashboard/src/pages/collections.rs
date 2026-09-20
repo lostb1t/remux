@@ -1327,7 +1327,7 @@ pub fn CollectionForm(
                             r#type: "text",
                             class: "field-input",
                             placeholder: "#000000",
-                            pattern: "#?[0-9a-fA-F]{6}",
+                            title: "Enter a six-digit hex color, with or without # (for example #B20710).",
                             value: "{background_color}",
                             oninput: move |e| background_color.set(e.value()),
                         }
