@@ -1890,16 +1890,15 @@ pub(crate) mod test {
             .db;
 
         let now = Utc::now().naive_utc();
-        let today = now
-            .date()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
+        // /shows/upcoming filters by the current instant, not the start of
+        // today (see eb1790a4) — midnight-today would already be in the past.
+        let upcoming_today = now + chrono::Duration::minutes(1);
 
         let (_, episodes) =
             insert_series_with_episodes(db, "Upcoming Virtual Parent Test", &["Ep1"])
                 .await;
         sqlx::query("UPDATE media SET released_at = ? WHERE id = ?")
-            .bind(today)
+            .bind(upcoming_today)
             .bind(episodes[0].id)
             .execute(db)
             .await
@@ -1956,10 +1955,9 @@ pub(crate) mod test {
             .db;
 
         let now = Utc::now().naive_utc();
-        let today = now
-            .date()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
+        // /shows/upcoming filters by the current instant, not the start of
+        // today (see eb1790a4) — midnight-today would already be in the past.
+        let upcoming_today = now + chrono::Duration::minutes(1);
 
         let (series_in, eps_in) =
             insert_series_with_episodes(db, "In Collection Series", &["In Ep"]).await;
@@ -1970,7 +1968,7 @@ pub(crate) mod test {
         // Set both episodes to today.
         for ep in [&eps_in[0], &eps_out[0]] {
             sqlx::query("UPDATE media SET released_at = ? WHERE id = ?")
-                .bind(today)
+                .bind(upcoming_today)
                 .bind(ep.id)
                 .execute(db)
                 .await
@@ -2062,11 +2060,10 @@ pub(crate) mod test {
             .unwrap();
 
         let now = Utc::now().naive_utc();
-        let today = now
-            .date()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
-        let future_digital = today + chrono::Duration::days(14); // digital release in 2 weeks
+        // /shows/upcoming filters by the current instant, not the start of
+        // today (see eb1790a4) — midnight-today would already be in the past.
+        let upcoming_today = now + chrono::Duration::minutes(1);
+        let future_digital = upcoming_today + chrono::Duration::days(14); // digital release in 2 weeks
 
         let (_, episodes) =
             insert_series_with_episodes(db, "Aired Not Digital Series", &["Ep Aired"])
@@ -2076,7 +2073,7 @@ pub(crate) mod test {
         sqlx::query(
             "UPDATE media SET released_at = ?, digital_released_at = ? WHERE id = ?",
         )
-        .bind(today)
+        .bind(upcoming_today)
         .bind(future_digital)
         .bind(episodes[0].id)
         .execute(db)
