@@ -53,6 +53,12 @@ pub fn fixture() -> &'static Fixture {
                 database_url: Some("sqlite::memory:".into()),
                 disable_dht: true,
                 torrent_http_port: None,
+                // The default startup-triggered library refresh would run
+                // concurrently with this file's own bulk fixture seeding
+                // (~1.3M rows) and race it on the same in-memory DB: a
+                // fixture row's own write reports success but never
+                // persists, later surfacing as a spurious FK violation.
+                disable_startup_tasks: true,
                 ..Default::default()
             };
             let (router, ctx) = init_app_with_ctx(config)
