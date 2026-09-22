@@ -2184,6 +2184,7 @@ pub enum ProfileConditionProperty {
     Height,
     Width,
     VideoFramerate,
+    VideoRotation,
     Framerate,
     VideoBitrate,
     Bitrate,
@@ -2386,6 +2387,7 @@ pub enum TranscodeReason {
     VideoLevelNotSupported(String),
     VideoResolutionNotSupported(String),
     VideoFramerateNotSupported(String),
+    VideoRotationNotSupported(String),
     VideoBitrateNotSupported(String),
     RefFramesNotSupported(String),
     AnamorphicVideoNotSupported(String),
@@ -7862,6 +7864,18 @@ mod tests {
 
     #[test]
     fn profile_condition_vocabulary_round_trips_known_and_unknown_values() {
+        let rotation: ProfileCondition = serde_json::from_value(serde_json::json!({
+            "Condition": "Equals",
+            "Property": "VideoRotation",
+            "Value": "0",
+            "IsRequired": true
+        }))
+        .unwrap();
+        assert_eq!(
+            rotation.property,
+            Some(ProfileConditionProperty::VideoRotation)
+        );
+
         let profile: ProfileCondition = serde_json::from_value(serde_json::json!({
             "Condition": "LessThanEqual",
             "Property": "FutureJellyfinProperty",
@@ -7881,5 +7895,27 @@ mod tests {
         let json = serde_json::to_value(profile).unwrap();
         assert_eq!(json["Condition"], "LessThanEqual");
         assert_eq!(json["Property"], "FutureJellyfinProperty");
+    }
+
+    #[test]
+    fn transcode_reason_names_round_trip_through_strum() {
+        let reasons = TranscodeReasons::from_query_value(
+            "VideoRotationNotSupported,AudioChannelsNotSupported,FutureReason",
+        );
+
+        assert!(
+            reasons
+                .contains(&TranscodeReason::VideoRotationNotSupported(String::new()))
+        );
+        assert!(
+            reasons
+                .contains(&TranscodeReason::AudioChannelsNotSupported(String::new()))
+        );
+        assert_eq!(
+            reasons
+                .to_query_value()
+                .as_deref(),
+            Some("VideoRotationNotSupported,AudioChannelsNotSupported")
+        );
     }
 }

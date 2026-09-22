@@ -373,9 +373,33 @@ struct FfprobeStream {
     pix_fmt: Option<String>,
     bits_per_raw_sample: Option<String>,
     #[serde(default)]
+    side_data_list: Vec<FfprobeSideData>,
+    #[serde(default)]
     tags: HashMap<String, String>,
     #[serde(default)]
     disposition: FfprobeDisposition,
+}
+
+#[derive(Deserialize)]
+struct FfprobeSideData {
+    rotation: Option<i64>,
+}
+
+impl FfprobeStream {
+    fn rotation(&self) -> Option<i64> {
+        self.side_data_list
+            .iter()
+            .find_map(|data| data.rotation)
+            .or_else(|| {
+                self.tags
+                    .get("rotate")
+                    .and_then(|value| {
+                        value
+                            .parse()
+                            .ok()
+                    })
+            })
+    }
 }
 
 #[derive(Deserialize)]
@@ -813,6 +837,7 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     nal_length_size: s
                         .nal_length_size
                         .clone(),
+                    rotation: s.rotation(),
                     time_base: Some("1/1000".to_string()),
                     audio_spatial_format: Some("None".to_string()),
                     video_range: Some(video_range),
@@ -1462,14 +1487,18 @@ mod probe_tests {
     }
 
     #[test]
-    fn ffprobe_stream_deserializes_reference_frames() {
+    fn ffprobe_stream_deserializes_device_profile_fields() {
         let stream: FfprobeStream = serde_json::from_value(serde_json::json!({
             "index": 0,
             "codec_type": "video",
             "codec_name": "h264",
             "refs": 4,
             "is_avc": "true",
-            "nal_length_size": "4"
+            "nal_length_size": "4",
+            "side_data_list": [{
+                "side_data_type": "Display Matrix",
+                "rotation": -90
+            }]
         }))
         .expect("ffprobe stream");
         assert_eq!(stream.refs, Some(4));
@@ -1486,6 +1515,7 @@ mod probe_tests {
                 .as_deref(),
             Some("4")
         );
+        assert_eq!(stream.rotation(), Some(-90));
     }
 
     #[test]

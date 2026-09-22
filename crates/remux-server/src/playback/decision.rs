@@ -206,6 +206,9 @@ fn build_video_transcode(
         || reasons.contains(&api::TranscodeReason::VideoFramerateNotSupported(
             String::new(),
         ))
+        || reasons.contains(&api::TranscodeReason::VideoRotationNotSupported(
+            String::new(),
+        ))
         || reasons.contains(&api::TranscodeReason::VideoBitrateNotSupported(
             String::new(),
         ))
