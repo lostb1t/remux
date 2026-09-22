@@ -973,25 +973,17 @@ fn transcode_cost_tier(reasons: &TranscodeReasons) -> u8 {
     let needs_video_reencode = reasons
         .0
         .iter()
-        .any(|r| {
-            matches!(
-                r,
-                TranscodeReason::VideoCodecNotSupported(_)
-                    | TranscodeReason::VideoRangeTypeNotSupported(_)
-                    | TranscodeReason::VideoProfileNotSupported(_)
-                    | TranscodeReason::VideoBitDepthNotSupported(_)
-                    | TranscodeReason::VideoLevelNotSupported(_)
-                    | TranscodeReason::VideoResolutionNotSupported(_)
-                    | TranscodeReason::VideoFramerateNotSupported(_)
-                    | TranscodeReason::VideoRotationNotSupported(_)
-                    | TranscodeReason::VideoBitrateNotSupported(_)
-                    | TranscodeReason::RefFramesNotSupported(_)
-                    | TranscodeReason::AnamorphicVideoNotSupported(_)
-                    | TranscodeReason::InterlacedVideoNotSupported(_)
-                    | TranscodeReason::SubtitleCodecNotSupported(_)
-                    | TranscodeReason::ContainerBitrateExceedsLimit
-            )
-        });
+        .any(TranscodeReason::is_video)
+        || reasons
+            .0
+            .iter()
+            .any(|reason| {
+                matches!(
+                    reason,
+                    TranscodeReason::SubtitleCodecNotSupported(_)
+                        | TranscodeReason::ContainerBitrateExceedsLimit
+                )
+            });
     if needs_video_reencode {
         return 1;
     }

@@ -187,39 +187,10 @@ fn build_video_transcode(
         .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
 
     let needs_video_transcode = reasons
-        .contains(&api::TranscodeReason::VideoCodecNotSupported(String::new()))
-        || reasons.contains(&api::TranscodeReason::ContainerBitrateExceedsLimit)
-        || reasons.contains(&api::TranscodeReason::VideoRangeTypeNotSupported(
-            String::new(),
-        ))
-        || reasons.contains(&api::TranscodeReason::VideoProfileNotSupported(
-            String::new(),
-        ))
-        || reasons.contains(&api::TranscodeReason::VideoBitDepthNotSupported(
-            String::new(),
-        ))
-        || reasons
-            .contains(&api::TranscodeReason::VideoLevelNotSupported(String::new()))
-        || reasons.contains(&api::TranscodeReason::VideoResolutionNotSupported(
-            String::new(),
-        ))
-        || reasons.contains(&api::TranscodeReason::VideoFramerateNotSupported(
-            String::new(),
-        ))
-        || reasons.contains(&api::TranscodeReason::VideoRotationNotSupported(
-            String::new(),
-        ))
-        || reasons.contains(&api::TranscodeReason::VideoBitrateNotSupported(
-            String::new(),
-        ))
-        || reasons
-            .contains(&api::TranscodeReason::RefFramesNotSupported(String::new()))
-        || reasons.contains(&api::TranscodeReason::AnamorphicVideoNotSupported(
-            String::new(),
-        ))
-        || reasons.contains(&api::TranscodeReason::InterlacedVideoNotSupported(
-            String::new(),
-        ));
+        .0
+        .iter()
+        .any(api::TranscodeReason::is_video)
+        || reasons.contains(&api::TranscodeReason::ContainerBitrateExceedsLimit);
 
     // When video re-encoding is not allowed (server setting or user policy),
     // fall through with video=copy — remux the container and transcode audio

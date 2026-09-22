@@ -2415,6 +2415,11 @@ impl TranscodeReason {
         self.kind()
             .is_audio()
     }
+
+    pub fn is_video(&self) -> bool {
+        self.kind()
+            .is_video()
+    }
 }
 
 impl TranscodeReasonKind {
@@ -2428,6 +2433,24 @@ impl TranscodeReasonKind {
                 | Self::AudioBitDepthNotSupported
                 | Self::AudioBitrateNotSupported
                 | Self::SecondaryAudioNotSupported
+        )
+    }
+
+    pub const fn is_video(self) -> bool {
+        matches!(
+            self,
+            Self::VideoCodecNotSupported
+                | Self::VideoRangeTypeNotSupported
+                | Self::VideoProfileNotSupported
+                | Self::VideoBitDepthNotSupported
+                | Self::VideoLevelNotSupported
+                | Self::VideoResolutionNotSupported
+                | Self::VideoFramerateNotSupported
+                | Self::VideoRotationNotSupported
+                | Self::VideoBitrateNotSupported
+                | Self::RefFramesNotSupported
+                | Self::AnamorphicVideoNotSupported
+                | Self::InterlacedVideoNotSupported
         )
     }
 }
@@ -7911,6 +7934,8 @@ mod tests {
             reasons
                 .contains(&TranscodeReason::AudioChannelsNotSupported(String::new()))
         );
+        assert!(TranscodeReason::VideoRotationNotSupported(String::new()).is_video());
+        assert!(!TranscodeReason::AudioChannelsNotSupported(String::new()).is_video());
         assert_eq!(
             reasons
                 .to_query_value()
