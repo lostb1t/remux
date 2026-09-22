@@ -496,7 +496,7 @@ impl PlaybackSessionManager {
             play_session_id = psid,
             position_source,
             position_ticks = ?final_ticks,
-            persisted = final_ticks.is_some(),
+            position_available = final_ticks.is_some(),
             "Playback stopped"
         );
         Ok(played)
