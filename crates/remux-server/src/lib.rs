@@ -377,8 +377,8 @@ pub async fn init_app(
         warn!(err = ?e, "intro sync failed at startup");
     }
 
-    // Kill idle sessions after 30 minutes of no activity.
-    // 30 min matches a "stepped away" scenario; pings keep active sessions alive indefinitely.
+    // Kill idle sessions after 15 minutes of no activity.
+    // Pings keep active sessions alive indefinitely.
     ctx.sessions
         .clone()
         .spawn_cleanup_task(

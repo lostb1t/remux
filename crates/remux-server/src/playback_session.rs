@@ -453,7 +453,7 @@ impl PlaybackSessionManager {
     ///
     /// Removes the playback session (stopping any active transcode), persists
     /// the final position to the DB (with the 90 % watched-mark check), and
-    /// emits a debug log line.
+    /// emits an info log line.
     ///
     /// Returns whether this stop crossed the watched threshold.
     pub async fn stopped(
@@ -482,12 +482,30 @@ impl PlaybackSessionManager {
 
         let played = Self::persist_stop(db, user, item_id, final_ticks).await?;
 
-        debug!(play_session_id = psid, "Playback stopped");
+        let position_source = if data
+            .position_ticks
+            .is_some()
+        {
+            "report"
+        } else if ps.is_some() {
+            "session"
+        } else {
+            "missing"
+        };
+        info!(
+            play_session_id = psid,
+            position_source,
+            position_ticks = ?final_ticks,
+            position_available = final_ticks.is_some(),
+            "Playback stopped"
+        );
         Ok(played)
     }
 
     /// Persist the final position of a stop report (with the 90 % watched-mark
-    /// check) for `item_id`, if it names a known media row.
+    /// check) for `item_id`, if it names a known media row. A stop without an
+    /// authoritative position is a no-op so it cannot overwrite a saved
+    /// position with zero.
     ///
     /// Shared by session-backed stops and stop reports that arrive without any
     /// play session: some clients never call
@@ -506,6 +524,9 @@ impl PlaybackSessionManager {
         let Some(item_id) = item_id else {
             return Ok(false);
         };
+        let Some(final_ticks) = final_ticks else {
+            return Ok(false);
+        };
         let Ok(Some(media)) = db::Media::get_by_id(db, &item_id).await else {
             return Ok(false);
         };
@@ -513,12 +534,33 @@ impl PlaybackSessionManager {
             db,
             user,
             &media,
-            final_ticks.unwrap_or(0),
+            final_ticks,
             None, // don't overwrite stream selections on stop
             None,
             media.runtime, // Some(runtime) triggers watched-threshold check
         )
         .await
+    }
+
+    /// Read the last persisted playback position for an item. This is used
+    /// when a stop arrives after the in-memory session has been evicted and
+    /// the client omitted its final position.
+    pub async fn persisted_position_ticks(
+        db: &sqlx::SqlitePool,
+        user: &db::User,
+        item_id: uuid::Uuid,
+    ) -> Option<i64> {
+        let media = db::Media::get_by_id(db, &item_id)
+            .await
+            .ok()??;
+        let state = db::UserMediaState::get_or_new(db, user, &media)
+            .await
+            .ok()?;
+        Some(
+            state
+                .playback_position
+                .saturating_mul(10_000_000),
+        )
     }
 
     /// Insert (or replace) a playback session, preserving any transcode that was
