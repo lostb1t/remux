@@ -968,18 +968,7 @@ fn transcode_cost_tier(reasons: &TranscodeReasons) -> u8 {
     let needs_audio_reencode = reasons
         .0
         .iter()
-        .any(|r| {
-            matches!(
-                r,
-                TranscodeReason::AudioCodecNotSupported(_)
-                    | TranscodeReason::AudioChannelsNotSupported(_)
-                    | TranscodeReason::AudioProfileNotSupported(_)
-                    | TranscodeReason::AudioSampleRateNotSupported(_)
-                    | TranscodeReason::AudioBitDepthNotSupported(_)
-                    | TranscodeReason::AudioBitrateNotSupported(_)
-                    | TranscodeReason::SecondaryAudioNotSupported(_)
-            )
-        });
+        .any(TranscodeReason::is_audio);
     if needs_audio_reencode {
         return 2;
     }

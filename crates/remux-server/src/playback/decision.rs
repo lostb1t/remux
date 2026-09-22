@@ -239,25 +239,9 @@ fn build_video_transcode(
     }
     .to_string();
     let needs_audio_transcode = reasons
-        .contains(&api::TranscodeReason::AudioCodecNotSupported(String::new()))
-        || reasons.contains(&api::TranscodeReason::AudioChannelsNotSupported(
-            String::new(),
-        ))
-        || reasons.contains(&api::TranscodeReason::AudioProfileNotSupported(
-            String::new(),
-        ))
-        || reasons.contains(&api::TranscodeReason::AudioSampleRateNotSupported(
-            String::new(),
-        ))
-        || reasons.contains(&api::TranscodeReason::AudioBitDepthNotSupported(
-            String::new(),
-        ))
-        || reasons.contains(&api::TranscodeReason::AudioBitrateNotSupported(
-            String::new(),
-        ))
-        || reasons.contains(&api::TranscodeReason::SecondaryAudioNotSupported(
-            String::new(),
-        ));
+        .0
+        .iter()
+        .any(api::TranscodeReason::is_audio);
     let audio_transcode_allowed = cfg
         .encoding_cfg
         .enable_audio_transcoding

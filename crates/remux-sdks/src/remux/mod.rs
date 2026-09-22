@@ -2359,7 +2359,20 @@ pub struct RecommendationDto {
     pub items: Vec<BaseItemDto>,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    strum_macros::EnumMessage,
+    strum_macros::EnumDiscriminants,
+)]
+#[strum(serialize_all = "PascalCase")]
+#[strum_discriminants(name(TranscodeReasonKind))]
+#[strum_discriminants(
+    derive(strum_macros::EnumString, strum_macros::EnumMessage),
+    strum(serialize_all = "PascalCase")
+)]
 pub enum TranscodeReason {
     ContainerNotSupported(String),
     VideoCodecNotSupported(String),
@@ -2388,97 +2401,31 @@ pub enum TranscodeReason {
 
 impl TranscodeReason {
     pub fn name(&self) -> &'static str {
-        match self {
-            Self::ContainerNotSupported(_) => "ContainerNotSupported",
-            Self::VideoCodecNotSupported(_) => "VideoCodecNotSupported",
-            Self::AudioCodecNotSupported(_) => "AudioCodecNotSupported",
-            Self::SubtitleCodecNotSupported(_) => "SubtitleCodecNotSupported",
-            Self::VideoRangeTypeNotSupported(_) => "VideoRangeTypeNotSupported",
-            Self::VideoCodecTagNotSupported(_) => "VideoCodecTagNotSupported",
-            Self::VideoProfileNotSupported(_) => "VideoProfileNotSupported",
-            Self::VideoBitDepthNotSupported(_) => "VideoBitDepthNotSupported",
-            Self::VideoLevelNotSupported(_) => "VideoLevelNotSupported",
-            Self::VideoResolutionNotSupported(_) => "VideoResolutionNotSupported",
-            Self::VideoFramerateNotSupported(_) => "VideoFramerateNotSupported",
-            Self::VideoBitrateNotSupported(_) => "VideoBitrateNotSupported",
-            Self::RefFramesNotSupported(_) => "RefFramesNotSupported",
-            Self::AnamorphicVideoNotSupported(_) => "AnamorphicVideoNotSupported",
-            Self::InterlacedVideoNotSupported(_) => "InterlacedVideoNotSupported",
-            Self::AudioChannelsNotSupported(_) => "AudioChannelsNotSupported",
-            Self::AudioProfileNotSupported(_) => "AudioProfileNotSupported",
-            Self::AudioSampleRateNotSupported(_) => "AudioSampleRateNotSupported",
-            Self::AudioBitDepthNotSupported(_) => "AudioBitDepthNotSupported",
-            Self::AudioBitrateNotSupported(_) => "AudioBitrateNotSupported",
-            Self::SecondaryAudioNotSupported(_) => "SecondaryAudioNotSupported",
-            Self::StreamCountExceedsLimit(_) => "StreamCountExceedsLimit",
-            Self::ContainerBitrateExceedsLimit => "ContainerBitrateExceedsLimit",
-        }
+        strum::EnumMessage::get_serializations(self)[0]
+    }
+
+    pub fn kind(&self) -> TranscodeReasonKind {
+        self.into()
+    }
+
+    pub fn is_audio(&self) -> bool {
+        self.kind()
+            .is_audio()
     }
 }
 
-impl std::fmt::Debug for TranscodeReason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ContainerNotSupported(d) => write!(f, "ContainerNotSupported({d})"),
-            Self::VideoCodecNotSupported(d) => write!(f, "VideoCodecNotSupported({d})"),
-            Self::AudioCodecNotSupported(d) => write!(f, "AudioCodecNotSupported({d})"),
-            Self::SubtitleCodecNotSupported(d) => {
-                write!(f, "SubtitleCodecNotSupported({d})")
-            }
-            Self::VideoRangeTypeNotSupported(d) => {
-                write!(f, "VideoRangeTypeNotSupported({d})")
-            }
-            Self::VideoCodecTagNotSupported(d) => {
-                write!(f, "VideoCodecTagNotSupported({d})")
-            }
-            Self::VideoProfileNotSupported(d) => {
-                write!(f, "VideoProfileNotSupported({d})")
-            }
-            Self::VideoBitDepthNotSupported(d) => {
-                write!(f, "VideoBitDepthNotSupported({d})")
-            }
-            Self::VideoLevelNotSupported(d) => write!(f, "VideoLevelNotSupported({d})"),
-            Self::VideoResolutionNotSupported(d) => {
-                write!(f, "VideoResolutionNotSupported({d})")
-            }
-            Self::VideoFramerateNotSupported(d) => {
-                write!(f, "VideoFramerateNotSupported({d})")
-            }
-            Self::VideoBitrateNotSupported(d) => {
-                write!(f, "VideoBitrateNotSupported({d})")
-            }
-            Self::RefFramesNotSupported(d) => write!(f, "RefFramesNotSupported({d})"),
-            Self::AnamorphicVideoNotSupported(d) => {
-                write!(f, "AnamorphicVideoNotSupported({d})")
-            }
-            Self::InterlacedVideoNotSupported(d) => {
-                write!(f, "InterlacedVideoNotSupported({d})")
-            }
-            Self::AudioChannelsNotSupported(d) => {
-                write!(f, "AudioChannelsNotSupported({d})")
-            }
-            Self::AudioProfileNotSupported(d) => {
-                write!(f, "AudioProfileNotSupported({d})")
-            }
-            Self::AudioSampleRateNotSupported(d) => {
-                write!(f, "AudioSampleRateNotSupported({d})")
-            }
-            Self::AudioBitDepthNotSupported(d) => {
-                write!(f, "AudioBitDepthNotSupported({d})")
-            }
-            Self::AudioBitrateNotSupported(d) => {
-                write!(f, "AudioBitrateNotSupported({d})")
-            }
-            Self::SecondaryAudioNotSupported(d) => {
-                write!(f, "SecondaryAudioNotSupported({d})")
-            }
-            Self::StreamCountExceedsLimit(d) => {
-                write!(f, "StreamCountExceedsLimit({d})")
-            }
-            Self::ContainerBitrateExceedsLimit => {
-                write!(f, "ContainerBitrateExceedsLimit")
-            }
-        }
+impl TranscodeReasonKind {
+    pub const fn is_audio(self) -> bool {
+        matches!(
+            self,
+            Self::AudioCodecNotSupported
+                | Self::AudioChannelsNotSupported
+                | Self::AudioProfileNotSupported
+                | Self::AudioSampleRateNotSupported
+                | Self::AudioBitDepthNotSupported
+                | Self::AudioBitrateNotSupported
+                | Self::SecondaryAudioNotSupported
+        )
     }
 }
 
