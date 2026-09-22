@@ -1524,6 +1524,86 @@ mod e2e_tests {
         );
     }
 
+    /// A stop may arrive after the in-memory playback session was evicted. If
+    /// it carries no position, it must not replace the position already saved
+    /// by a progress report with zero.
+    #[tokio::test]
+    async fn positionless_stop_after_session_eviction_preserves_resume_point() {
+        let (server, ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = seed_movie(&ctx.0).await;
+        let item_id = media
+            .id
+            .simple()
+            .to_string();
+        let play_session_id = "evicted-play-session";
+        let position_ticks: i64 = 600 * 10_000_000;
+
+        server
+            .post("/sessions/playing")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": item_id,
+                "PlaySessionId": play_session_id,
+                "PositionTicks": 0,
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        server
+            .post("/sessions/playing/progress")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": item_id,
+                "PlaySessionId": play_session_id,
+                "PositionTicks": position_ticks,
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        // Model idle cleanup/session replacement without waiting for the
+        // background timer. The progress position has already been persisted.
+        ctx.0
+            .sessions
+            .stop(play_session_id)
+            .await;
+
+        server
+            .post("/sessions/playing/stopped")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": item_id,
+                "PlaySessionId": play_session_id,
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        let response = server
+            .get(&format!("/items/{item_id}"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        response.assert_status_ok();
+        let body: serde_json::Value = response.json();
+        assert_eq!(
+            body["UserData"]["PlaybackPositionTicks"].as_i64(),
+            Some(position_ticks),
+            "a positionless stop after eviction must not clear saved progress"
+        );
+        assert_eq!(body["UserData"]["Played"].as_bool(), Some(false));
+    }
+
     /// A `/sessions/playing` report is the actual playback-start event.
     /// Per the comment on `UserMediaState::update_playback`, Jellyfin's
     /// `LastPlayedDate` is meant to come from playback start (a stop never
