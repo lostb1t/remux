@@ -647,21 +647,22 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                 if edit_resources.read().contains("stream") {
                                     div { class: "form-group",
                                         ToggleRow {
-                                            label: "Direct stream",
-                                            description: "Send the client directly to the source URL instead of proxying through remux. Only applies to HTTP streams and direct play — transcoding always routes through remux.",
+                                            label: "Bypass Remux proxy",
+                                            description: "Only for Direct Play: send compatible HTTP sources directly to the client instead of proxying through Remux. Direct Stream and Transcode always run through Remux.",
                                             checked: *edit_http_redirect_stream.read(),
                                             on_change: move |v| edit_http_redirect_stream.set(v),
                                         }
+                                        span { class: "field-hint", "Direct Play plays the source unchanged. Direct Stream repackages it without re-encoding. Transcode re-encodes audio or video for compatibility." }
                                     }
                                     div { class: "form-group",
-                                        label { class: "form-label", "Direct stream service filter" }
+                                        label { class: "form-label", "Bypass proxy service filter" }
                                         input {
                                             class: "form-input",
                                             placeholder: "real-debrid, alldebrid",
                                             value: "{edit_service_filter}",
                                             oninput: move |e| edit_service_filter.set(e.value()),
                                         }
-                                        span { class: "field-hint", "Comma-separated list of service IDs (from streamData.service.id) or addon names (from streamData.addon) to stream directly. Leave empty to apply to all." }
+                                        span { class: "field-hint", "Comma-separated list of service IDs (from streamData.service.id) or addon names (from streamData.addon) to bypass Remux's proxy. Leave empty to apply to all." }
                                     }
                                 }
                                 // Catalogs section (only shown for global addons with catalog resource active)
