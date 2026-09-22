@@ -2364,6 +2364,7 @@ pub struct RecommendationDto {
     Debug,
     PartialEq,
     Eq,
+    strum_macros::EnumString,
     strum_macros::EnumMessage,
     strum_macros::EnumDiscriminants,
 )]
@@ -2495,80 +2496,11 @@ impl TranscodeReasons {
     pub fn from_query_value(s: &str) -> Self {
         let mut out = Self::default();
         for part in s.split(',') {
-            let reason = match part.trim() {
-                "ContainerNotSupported" => {
-                    Some(TranscodeReason::ContainerNotSupported(String::new()))
-                }
-                "VideoCodecNotSupported" => {
-                    Some(TranscodeReason::VideoCodecNotSupported(String::new()))
-                }
-                "AudioCodecNotSupported" => {
-                    Some(TranscodeReason::AudioCodecNotSupported(String::new()))
-                }
-                "SubtitleCodecNotSupported" => {
-                    Some(TranscodeReason::SubtitleCodecNotSupported(String::new()))
-                }
-                "VideoRangeTypeNotSupported" => {
-                    Some(TranscodeReason::VideoRangeTypeNotSupported(String::new()))
-                }
-                "VideoCodecTagNotSupported" => {
-                    Some(TranscodeReason::VideoCodecTagNotSupported(String::new()))
-                }
-                "VideoProfileNotSupported" => {
-                    Some(TranscodeReason::VideoProfileNotSupported(String::new()))
-                }
-                "VideoBitDepthNotSupported" => {
-                    Some(TranscodeReason::VideoBitDepthNotSupported(String::new()))
-                }
-                "VideoLevelNotSupported" => {
-                    Some(TranscodeReason::VideoLevelNotSupported(String::new()))
-                }
-                "VideoResolutionNotSupported" => {
-                    Some(TranscodeReason::VideoResolutionNotSupported(String::new()))
-                }
-                "VideoFramerateNotSupported" => {
-                    Some(TranscodeReason::VideoFramerateNotSupported(String::new()))
-                }
-                "VideoBitrateNotSupported" => {
-                    Some(TranscodeReason::VideoBitrateNotSupported(String::new()))
-                }
-                "RefFramesNotSupported" => {
-                    Some(TranscodeReason::RefFramesNotSupported(String::new()))
-                }
-                "AnamorphicVideoNotSupported" => {
-                    Some(TranscodeReason::AnamorphicVideoNotSupported(String::new()))
-                }
-                "InterlacedVideoNotSupported" => {
-                    Some(TranscodeReason::InterlacedVideoNotSupported(String::new()))
-                }
-                "AudioChannelsNotSupported" => {
-                    Some(TranscodeReason::AudioChannelsNotSupported(String::new()))
-                }
-                "AudioProfileNotSupported" => {
-                    Some(TranscodeReason::AudioProfileNotSupported(String::new()))
-                }
-                "AudioSampleRateNotSupported" => {
-                    Some(TranscodeReason::AudioSampleRateNotSupported(String::new()))
-                }
-                "AudioBitDepthNotSupported" => {
-                    Some(TranscodeReason::AudioBitDepthNotSupported(String::new()))
-                }
-                "AudioBitrateNotSupported" => {
-                    Some(TranscodeReason::AudioBitrateNotSupported(String::new()))
-                }
-                "SecondaryAudioNotSupported" => {
-                    Some(TranscodeReason::SecondaryAudioNotSupported(String::new()))
-                }
-                "StreamCountExceedsLimit" => {
-                    Some(TranscodeReason::StreamCountExceedsLimit(String::new()))
-                }
-                "ContainerBitrateExceedsLimit" => {
-                    Some(TranscodeReason::ContainerBitrateExceedsLimit)
-                }
-                _ => None,
-            };
-            if let Some(r) = reason {
-                out.insert(r);
+            if let Ok(reason) = part
+                .trim()
+                .parse::<TranscodeReason>()
+            {
+                out.insert(reason);
             }
         }
         out
