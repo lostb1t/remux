@@ -371,6 +371,7 @@ struct FfprobeStream {
     channel_layout: Option<String>,
     sample_rate: Option<String>,
     pix_fmt: Option<String>,
+    bits_per_sample: Option<i64>,
     bits_per_raw_sample: Option<String>,
     #[serde(default)]
     side_data_list: Vec<FfprobeSideData>,
@@ -890,6 +891,19 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                 let channel_layout = s
                     .channel_layout
                     .as_deref();
+                let bit_depth = s
+                    .bits_per_sample
+                    .and_then(nonzero)
+                    .or_else(|| {
+                        s.bits_per_raw_sample
+                            .as_deref()
+                            .and_then(|value| {
+                                value
+                                    .parse::<i64>()
+                                    .ok()
+                            })
+                            .and_then(nonzero)
+                    });
 
                 let meta = StreamMeta {
                     language,
@@ -917,6 +931,10 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     channel_layout: channel_layout.map(str::to_string),
                     sample_rate,
                     bit_rate: bitrate,
+                    bit_depth,
+                    profile: s
+                        .profile
+                        .clone(),
                     is_default: Some(is_default),
                     is_forced,
                     is_avc: Some(false),
@@ -1070,33 +1088,52 @@ pub(crate) async fn resolve_stream_root(
     }
 }
 
+/// Cache-freshness rules for persisted probe data.
+pub(crate) trait ProbeDataExt {
+    /// Whether this cache predates metadata required for H.264 device-profile
+    /// matching and should receive one local ffprobe refresh.
+    fn needs_reprobe(&self) -> bool;
+}
+
+impl ProbeDataExt for api::MediaSourceInfo {
+    fn needs_reprobe(&self) -> bool {
+        if self.is_filename_guess() {
+            return false;
+        }
+        let Some(video) = self.video_stream() else {
+            return false;
+        };
+        let origin = self
+            .remux
+            .as_ref()
+            .and_then(|remux| remux.source);
+        video
+            .codec
+            .as_deref()
+            .and_then(VideoCodec::parse_known)
+            .is_some_and(|codec| codec == VideoCodec::H264)
+            && video
+                .ref_frames
+                .is_none_or(|frames| frames <= 0)
+            && origin != Some(api::ProbeOrigin::Ffprobe)
+    }
+}
+
 /// Whether cached `probe_data` counts as a completed probe that a playback
 /// request may reuse instead of running ffprobe again. A filename guess
 /// (`ProbeOrigin::FilenameGuess`) is never a completed probe — it must not
 /// block a real ffprobe attempt, even if it happens to carry a "video stream".
 fn is_reusable_probe_cache(cached: &api::MediaSourceInfo) -> bool {
-    let Some(video) = cached.video_stream() else {
+    let Some(_video) = cached.video_stream() else {
         return false;
     };
     if cached.is_filename_guess() {
         return false;
     }
-    let origin = cached
-        .remux
-        .as_ref()
-        .and_then(|remux| remux.source);
     // H.264 compatibility rules need RefFrames. RemuxDB or other imported
     // metadata that lacks it gets one local probe; a local ffprobe result is
     // accepted even when ffprobe genuinely could not determine the value.
-    let missing_h264_refs = video
-        .codec
-        .as_deref()
-        .and_then(VideoCodec::parse_known)
-        .is_some_and(|codec| codec == VideoCodec::H264)
-        && video
-            .ref_frames
-            .is_none();
-    if missing_h264_refs && origin != Some(api::ProbeOrigin::Ffprobe) {
+    if cached.needs_reprobe() {
         return false;
     }
 
@@ -1516,6 +1553,22 @@ mod probe_tests {
             Some("4")
         );
         assert_eq!(stream.rotation(), Some(-90));
+
+        let audio: FfprobeStream = serde_json::from_value(serde_json::json!({
+            "index": 1,
+            "codec_type": "audio",
+            "codec_name": "aac",
+            "profile": "LC",
+            "bits_per_sample": 16
+        }))
+        .expect("ffprobe audio stream");
+        assert_eq!(
+            audio
+                .profile
+                .as_deref(),
+            Some("LC")
+        );
+        assert_eq!(audio.bits_per_sample, Some(16));
     }
 
     #[test]
@@ -1535,13 +1588,19 @@ mod probe_tests {
     }
 
     #[test]
-    fn is_reusable_probe_cache_refreshes_h264_without_ref_frames() {
-        for codec in ["h264", "avc", "avc1", "H.264"] {
+    fn is_reusable_probe_cache_refreshes_h264_without_usable_ref_frames() {
+        for (codec, ref_frames) in [
+            ("h264", None),
+            ("avc", None),
+            ("avc1", None),
+            ("H.264", None),
+            ("h264", Some(0)),
+        ] {
             let incomplete = api::MediaSourceInfo {
                 media_streams: vec![api::MediaStream {
                     type_: Some(api::MediaStreamType::Video),
                     codec: Some(codec.to_string()),
-                    ref_frames: None,
+                    ref_frames,
                     ..Default::default()
                 }],
                 remux: Some(api::MediaSourceRemuxInfo {
@@ -1552,7 +1611,7 @@ mod probe_tests {
             };
             assert!(
                 !is_reusable_probe_cache(&incomplete),
-                "alias {codec} must refresh"
+                "codec={codec}, ref_frames={ref_frames:?} must refresh"
             );
         }
     }

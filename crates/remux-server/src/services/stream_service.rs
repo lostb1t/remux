@@ -1,7 +1,7 @@
 use crate::{
     AppContext, api, db,
     db::PreProbeQualityExt,
-    playback::probe::{probe_stream, resolve_stream_root},
+    playback::probe::{ProbeDataExt, probe_stream, resolve_stream_root},
 };
 use remux_sdks::{
     remux::{MediaStreamType, StreamFilter, VideoRangeType},
@@ -520,7 +520,15 @@ impl StreamService {
                 });
             let skip_probe = sel
                 .preferred_probe_id
-                .is_some_and(|preferred| stream.id != preferred);
+                .is_some_and(|preferred| stream.id != preferred)
+                // A legacy/RemuxDB H.264 result without a usable ref-frame
+                // count is deliberately stale. Probe it even when it is not
+                // the preferred candidate so compatibility ranking has the
+                // metadata it needs.
+                && !stream
+                    .probe_data
+                    .as_ref()
+                    .is_some_and(ProbeDataExt::needs_reprobe);
             // A filename guess is never a completed probe — it must not skip
             // submitting a freshly-probed result to RemuxDB.
             let was_cached = stream

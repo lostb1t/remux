@@ -176,7 +176,7 @@ impl DeviceProfileExt for DeviceProfile {
             };
             self.codec_profiles
                 .iter()
-                .filter(|cp| matches!(cp.type_, Some(CodecProfileType::Video)))
+                .filter(|cp| matches!(cp.type_, None | Some(CodecProfileType::Video)))
                 .filter(|cp| cp.applies_to_media(media_source, video_stream, "hevc"))
                 .flat_map(|cp| &cp.conditions)
                 .filter(|cond| {
@@ -596,9 +596,11 @@ fn condition_property_value(
         | ProfileConditionProperty::AudioBitDepth => {
             optional_condition_value(stream.bit_depth)
         }
-        ProfileConditionProperty::RefFrames => {
-            optional_condition_value(stream.ref_frames)
-        }
+        ProfileConditionProperty::RefFrames => optional_condition_value(
+            stream
+                .ref_frames
+                .filter(|frames| *frames > 0),
+        ),
         ProfileConditionProperty::NumStreams => ConditionValue::Known(
             media_source
                 .media_streams
@@ -1646,6 +1648,15 @@ mod tests {
     }
 
     #[test]
+    fn required_zero_ref_frames_has_precise_reason() {
+        let reasons = moonfin_ref_frames_profile()
+            .check_direct_play(&h264_ref_frames_source(1920, Some(0)));
+        assert!(
+            reasons.contains(&TranscodeReason::RefFramesNotSupported(String::new()))
+        );
+    }
+
+    #[test]
     fn codec_profile_container_limits_are_honoured() {
         let mut profile = moonfin_ref_frames_profile();
         for codec_profile in &mut profile.codec_profiles {
@@ -2077,6 +2088,13 @@ mod tests {
         // Declared constraints outrank the source: even an hev1 source has to
         // be retagged for a client that only accepts hvc1.
         let profile = hevc_tag_condition("EqualsAny", "hvc1|dvh1");
+        assert_eq!(profile.hevc_copy_tag(&hevc_source(Some("hev1"))), "hvc1");
+    }
+
+    #[test]
+    fn hevc_copy_tag_honours_type_omitted_codec_profiles() {
+        let mut profile = hevc_tag_condition("EqualsAny", "hvc1|dvh1");
+        profile.codec_profiles[0].type_ = None;
         assert_eq!(profile.hevc_copy_tag(&hevc_source(Some("hev1"))), "hvc1");
     }
 
