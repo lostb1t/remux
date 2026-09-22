@@ -513,6 +513,99 @@ pub(crate) fn channel_versions(
     rows
 }
 
+/// Id of the synced `Recording` item for one Dispatcharr recording. Derived,
+/// not stored, so it is known before the row is synced.
+pub(crate) fn recording_media_id(addon_id: Uuid, recording_id: i64) -> Uuid {
+    Uuid::new_v5(&addon_id, format!("recording:{recording_id}").as_bytes())
+}
+
+/// Builds the parent `Recording` row for one Dispatcharr DVR recording —
+/// same shape `channel_to_media` uses for channels. The playable file itself
+/// is a separate `Stream`-kind child (`recording_stream_to_media`), never
+/// this row's own `stream_info`.
+pub(crate) fn recording_to_media(
+    rec: &super::dispatcharr_dvr::DispatcharrRecording,
+    addon_id: Uuid,
+    source_id: &str,
+) -> db::Media {
+    let id = recording_media_id(addon_id, rec.id);
+    db::Media {
+        id,
+        title: rec
+            .program_title()
+            .unwrap_or("Recording")
+            .to_string(),
+        kind: db::MediaKind::Recording,
+        description: rec
+            .program_description()
+            .map(str::to_owned),
+        live_start: Some(
+            rec.start_time
+                .naive_utc(),
+        ),
+        live_end: Some(
+            rec.end_time
+                .naive_utc(),
+        ),
+        runtime: Some(
+            (rec.end_time - rec.start_time)
+                .num_seconds()
+                .max(0),
+        ),
+        parent_id: Some(Uuid::new_v5(
+            &addon_id,
+            format!("channel:{}", rec.channel).as_bytes(),
+        )),
+        external_ids: db::ExternalIds {
+            iptv_source_id: Some(source_id.to_owned()),
+            dispatcharr_recording_id: Some(rec.id),
+            ..Default::default()
+        },
+        enabled: true,
+        ..Default::default()
+    }
+}
+
+/// Loopback URL of a recording's own playback endpoint
+/// (`GET /livetv/liverecordings/{id}/stream`), the address the internal
+/// ffprobe pass and `/videos/{id}/stream` read a recording through.
+///
+/// Dispatcharr's own `/file/` redirects an in-progress recording to a playlist
+/// whose segments need `X-API-Key`, which ffprobe cannot send; this endpoint
+/// rewrites them to route back through remux.
+pub(crate) fn recording_stream_url(port: u16, recording_media_id: Uuid) -> String {
+    format!("http://127.0.0.1:{port}/livetv/liverecordings/{recording_media_id}/stream")
+}
+
+/// The single playable `Stream`-kind child of a synced `Recording` row.
+/// `stream_info` points at remux's own recording endpoint
+/// (`recording_stream_url`), which attaches Dispatcharr's `X-API-Key`
+/// server-side, so no credentials are stored on the row.
+pub(crate) fn recording_stream_to_media(
+    rec: &super::dispatcharr_dvr::DispatcharrRecording,
+    recording_media_id: Uuid,
+    stream_url: &str,
+    now: chrono::NaiveDateTime,
+) -> db::Media {
+    db::Media {
+        id: Uuid::new_v5(&recording_media_id, b"stream"),
+        title: rec
+            .program_title()
+            .unwrap_or("Recording")
+            .to_string(),
+        kind: db::MediaKind::Stream,
+        parent_id: Some(recording_media_id),
+        idx: Some(0),
+        created_at: now,
+        updated_at: now,
+        stream_info: Some(crate::stream::StreamInfo {
+            descriptor: crate::stream::StreamDescriptor::http(stream_url),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Runtime addon
 // ---------------------------------------------------------------------------
@@ -617,6 +710,7 @@ impl StreamAddon for DispatcharrAddon {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::addons::dispatcharr_dvr::DispatcharrRecording;
     use serde_json::json;
 
     const ADDON: Uuid = Uuid::from_u128(0xd15b);
@@ -634,6 +728,23 @@ mod tests {
 
     fn stream(v: serde_json::Value) -> DispatcharrStream {
         serde_json::from_value(v).unwrap()
+    }
+
+    fn recording(v: serde_json::Value) -> DispatcharrRecording {
+        serde_json::from_value(v).unwrap()
+    }
+
+    fn sample_recording() -> DispatcharrRecording {
+        recording(json!({
+            "id": 5,
+            "channel": 42,
+            "start_time": "2026-09-15T20:00:00Z",
+            "end_time": "2026-09-15T21:30:00Z",
+            "custom_properties": {
+                "status": "completed",
+                "program": { "title": "Match of the Day", "description": "Highlights." }
+            }
+        }))
     }
 
     fn http_parts(
@@ -986,6 +1097,99 @@ mod tests {
         assert_eq!(headers.len(), 1);
     }
 
+    // -- recordings ---------------------------------------------------
+
+    #[test]
+    fn recording_to_media_maps_fields() {
+        let m = recording_to_media(&sample_recording(), ADDON, "src");
+        assert_eq!(m.kind, db::MediaKind::Recording);
+        assert_eq!(m.title, "Match of the Day");
+        assert_eq!(
+            m.description
+                .as_deref(),
+            Some("Highlights.")
+        );
+        assert_eq!(m.runtime, Some(90 * 60));
+        assert_eq!(
+            m.live_start
+                .unwrap()
+                .to_string(),
+            "2026-09-15 20:00:00"
+        );
+        assert_eq!(
+            m.live_end
+                .unwrap()
+                .to_string(),
+            "2026-09-15 21:30:00"
+        );
+        assert_eq!(
+            m.external_ids
+                .dispatcharr_recording_id,
+            Some(5)
+        );
+        assert_eq!(
+            m.external_ids
+                .iptv_source_id
+                .as_deref(),
+            Some("src")
+        );
+        assert_eq!(m.id, Uuid::new_v5(&ADDON, b"recording:5"));
+    }
+
+    #[test]
+    fn recording_is_parented_to_the_synced_channel_row() {
+        // The FK only holds if both sides derive the id the same way.
+        let ch = channel(json!({ "id": 42, "uuid": "u", "name": "BBC One" }));
+        let channel_row = channel_to_media(&ch, ADDON, "src");
+        let rec = recording_to_media(&sample_recording(), ADDON, "src");
+        assert_eq!(rec.parent_id, Some(channel_row.id));
+    }
+
+    #[test]
+    fn recording_title_falls_back_when_unnamed() {
+        let rec = recording(json!({
+            "id": 1, "channel": 1,
+            "start_time": "2026-09-15T20:00:00Z",
+            "end_time": "2026-09-15T21:00:00Z",
+        }));
+        let m = recording_to_media(&rec, ADDON, "s");
+        assert_eq!(m.title, "Recording");
+        assert_eq!(m.description, None);
+    }
+
+    #[test]
+    fn recording_runtime_never_goes_negative() {
+        let rec = recording(json!({
+            "id": 1, "channel": 1,
+            "start_time": "2026-09-15T21:00:00Z",
+            "end_time": "2026-09-15T20:00:00Z",
+        }));
+        assert_eq!(recording_to_media(&rec, ADDON, "s").runtime, Some(0));
+    }
+
+    #[test]
+    fn recording_stream_points_at_remuxs_own_endpoint() {
+        let rec = sample_recording();
+        let parent = recording_to_media(&rec, ADDON, "s");
+        let url = recording_stream_url(3000, parent.id);
+        let m = recording_stream_to_media(&rec, parent.id, &url, now());
+        assert_eq!(m.kind, db::MediaKind::Stream);
+        assert_eq!(m.parent_id, Some(parent.id));
+        assert_eq!(m.idx, Some(0));
+        assert_eq!(m.id, Uuid::new_v5(&parent.id, b"stream"));
+        assert_eq!(m.title, "Match of the Day");
+        let (got, headers) = http_parts(&m);
+        assert_eq!(
+            got,
+            format!(
+                "http://127.0.0.1:3000/livetv/liverecordings/{}/stream",
+                parent.id
+            )
+        );
+        // No Dispatcharr credentials are stored on the row.
+        assert!(headers.is_empty());
+    }
+
     // -- channel versions ---------------------------------------------
 
     fn versions(n: usize) -> Vec<db::Media> {
@@ -1136,6 +1340,7 @@ mod tests {
         };
         assert!(addon.supports(&of(db::MediaKind::TvChannel)));
         assert!(!addon.supports(&of(db::MediaKind::Movie)));
+        assert!(!addon.supports(&of(db::MediaKind::Recording)));
     }
 
     #[test]

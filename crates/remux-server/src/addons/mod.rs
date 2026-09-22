@@ -5,6 +5,7 @@ pub mod addon;
 pub mod betterposters;
 pub mod deezer;
 pub mod dispatcharr;
+pub mod dispatcharr_dvr;
 pub mod eclipse;
 pub mod introdb;
 pub mod iptv;

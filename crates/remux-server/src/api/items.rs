@@ -1947,9 +1947,14 @@ async fn item_for_user(
                 &session.user,
             )
             .await?;
-    } else if want_streams && media.kind == db::MediaKind::TvChannel {
-        // Channels resolve to their already-synced `Stream` rows, in `idx`
-        // order — no addon dispatch, no probing.
+    } else if want_streams
+        && matches!(
+            media.kind,
+            db::MediaKind::TvChannel | db::MediaKind::Recording
+        )
+    {
+        // Channels and recordings resolve to their already-synced `Stream`
+        // rows, in `idx` order — no addon dispatch, no probing.
         media.sources = Some(
             media
                 .streams(
@@ -2245,7 +2250,9 @@ async fn item_for_user(
             .is_none_or(|s| s.is_empty())
         && !matches!(
             media.kind,
-            db::MediaKind::TvChannel | db::MediaKind::TvProgram
+            db::MediaKind::TvChannel
+                | db::MediaKind::TvProgram
+                | db::MediaKind::Recording
         )
     {
         base_item.location_type = api::LocationType::Virtual;

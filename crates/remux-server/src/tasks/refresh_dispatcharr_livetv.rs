@@ -250,6 +250,22 @@ impl Task for RefreshDispatcharrLiveTvTask {
                 }
             }
 
+            // Unconditional, unlike the programs below: a recording on a
+            // channel with no guide data assigned must still sync.
+            let dvr_cfg = crate::services::dvr_service::DvrConfig {
+                addon_id,
+                base_url: base_url.clone(),
+                api_key: token.clone(),
+            };
+            match crate::services::DvrService::sync_recordings(&ctx, &dvr_cfg).await {
+                Ok(count) => {
+                    info!(addon = %addon_id, recordings = count, "Dispatcharr recordings synced");
+                }
+                Err(e) => {
+                    warn!(addon = %addon_id, error = %e, "failed to sync Dispatcharr recordings");
+                }
+            }
+
             if tvg_map.is_empty() {
                 continue;
             }

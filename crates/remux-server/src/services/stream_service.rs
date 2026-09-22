@@ -222,11 +222,9 @@ impl StreamService {
         media: db::Media,
     ) -> anyhow::Result<db::Media> {
         match media.kind {
-            db::MediaKind::TvChannel => {
+            db::MediaKind::Recording | db::MediaKind::TvChannel => {
                 // Versions are the `Stream` children synced ahead of time, so
                 // resolve within them rather than dispatching to the addon.
-                // A channel must start instantly and its list only changes
-                // with the provider's config.
                 // `requested_id` picks one; the item's own id means the first,
                 // since that is what PlaybackInfo stamps on `MediaSources[0]`.
                 let mut media = media;
@@ -237,7 +235,11 @@ impl StreamService {
                 if sources.is_empty() {
                     // A channel with its own `stream_info` (iptv-m3u) syncs no
                     // children and is played from the row.
-                    return Ok(media);
+                    return if media.kind == db::MediaKind::TvChannel {
+                        Ok(media)
+                    } else {
+                        Err(anyhow::anyhow!("no playable sources for {}", item_id))
+                    };
                 }
                 match requested_id.filter(|&sid| sid != item_id && sid != media_id) {
                     Some(sid) => sources
@@ -996,6 +998,55 @@ mod tests {
     use super::*;
     use crate::stream::{StreamDescriptor, StreamInfo};
 
+    /// Seeds a channel, a `Recording` under it, and `n` synced `Stream`
+    /// children (idx 0..n), the way `DvrService::sync_recordings` writes them.
+    async fn seed_recording(
+        ctx: &crate::AppContext,
+        n: i64,
+    ) -> (db::Media, Vec<db::Media>) {
+        let addon = Uuid::from_u128(0xd15b);
+        let ch: crate::addons::dispatcharr::DispatcharrChannel =
+            serde_json::from_value(
+                serde_json::json!({ "id": 42, "uuid": "u", "name": "BBC" }),
+            )
+            .unwrap();
+        let rec: crate::addons::dispatcharr_dvr::DispatcharrRecording =
+            serde_json::from_value(serde_json::json!({
+                "id": 5, "channel": 42,
+                "start_time": "2026-09-15T20:00:00Z",
+                "end_time": "2026-09-15T21:00:00Z",
+            }))
+            .unwrap();
+        let channel = crate::addons::dispatcharr::channel_to_media(&ch, addon, "src");
+        let recording =
+            crate::addons::dispatcharr::recording_to_media(&rec, addon, "src");
+        db::Media::upsert(&ctx.db, &vec![channel])
+            .await
+            .unwrap();
+        db::Media::upsert(&ctx.db, &vec![recording.clone()])
+            .await
+            .unwrap();
+
+        let now = chrono::Utc::now().naive_utc();
+        let children: Vec<db::Media> = (0..n)
+            .map(|i| {
+                let mut c = crate::addons::dispatcharr::recording_stream_to_media(
+                    &rec,
+                    recording.id,
+                    "http://d",
+                    now,
+                );
+                c.id = Uuid::new_v5(&recording.id, format!("child:{i}").as_bytes());
+                c.idx = Some(i);
+                c
+            })
+            .collect();
+        db::Media::upsert(&ctx.db, &children)
+            .await
+            .unwrap();
+        (recording, children)
+    }
+
     /// Seeds a Dispatcharr channel with `n` synced `Stream` children (idx 0..n).
     async fn seed_channel(
         ctx: &crate::AppContext,
@@ -1096,6 +1147,77 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(media.id, channel.id);
+    }
+
+    #[tokio::test]
+    async fn recording_lookup_defaults_to_its_first_stream() {
+        use crate::integration_test::new_test_server;
+
+        let (_server, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let (rec, children) = seed_recording(ctx, 2).await;
+
+        let plain = StreamService::lookup(ctx, rec.id, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(plain.id, children[0].id);
+
+        // PlaybackInfo rewrites source[0].Id to the item's own id.
+        let auto = StreamService::lookup(ctx, rec.id, Some(rec.id), None, None)
+            .await
+            .unwrap();
+        assert_eq!(auto.id, children[0].id);
+    }
+
+    #[tokio::test]
+    async fn recording_lookup_honours_an_explicit_stream_id() {
+        use crate::integration_test::new_test_server;
+
+        let (_server, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let (rec, children) = seed_recording(ctx, 2).await;
+
+        let picked =
+            StreamService::lookup(ctx, rec.id, Some(children[1].id), None, None)
+                .await
+                .unwrap();
+        assert_eq!(picked.id, children[1].id);
+    }
+
+    #[tokio::test]
+    async fn recording_lookup_fails_without_a_matching_or_any_stream() {
+        use crate::integration_test::new_test_server;
+
+        let (_server, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let (rec, _children) = seed_recording(ctx, 1).await;
+        let err = StreamService::lookup(
+            ctx,
+            rec.id,
+            Some(Uuid::from_u128(0xdead)),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("not found"), "{err}");
+
+        let (_server2, guard2) = new_test_server()
+            .await
+            .unwrap();
+        let (bare, _) = seed_recording(&guard2.0, 0).await;
+        let err = StreamService::lookup(&guard2.0, bare.id, None, None, None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no playable sources"), "{err}");
     }
 
     /// A `MediaSourceId` that is an item id (auto-play, or the PlaybackInfo

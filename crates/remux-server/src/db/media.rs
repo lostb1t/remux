@@ -187,6 +187,9 @@ pub enum MediaKind {
     StreamGroup,
     Subtitle,
     Intro,
+    /// A DVR recording, finished or still being written. Like `TvChannel`,
+    /// the row carries no `stream_info`; its synced `Stream` child does.
+    Recording,
 }
 
 impl MediaKind {
@@ -208,7 +211,11 @@ impl MediaKind {
     pub fn is_playable_leaf(&self) -> bool {
         matches!(
             self,
-            Self::Movie | Self::Episode | Self::Track | Self::TvChannel
+            Self::Movie
+                | Self::Episode
+                | Self::Track
+                | Self::TvChannel
+                | Self::Recording
         )
     }
 }
@@ -298,6 +305,7 @@ impl Into<sdks::remux::MediaKind> for MediaKind {
             MediaKind::StreamGroup => sdks::remux::MediaKind::Stream,
             MediaKind::Subtitle => sdks::remux::MediaKind::Stream,
             MediaKind::Intro => sdks::remux::MediaKind::Stream,
+            MediaKind::Recording => sdks::remux::MediaKind::Stream,
         }
     }
 }
@@ -940,6 +948,9 @@ pub struct ExternalIds {
     pub youtube_id: Option<String>,
     pub iptv_source_id: Option<String>,
     pub iptv_group: Option<String>,
+    /// Dispatcharr's integer recording id, kept because the `Uuid::new_v5`
+    /// row id it is hashed into cannot be reversed back into DVR API calls.
+    pub dispatcharr_recording_id: Option<i64>,
     /// Raw addon-specific ID for content that has no IMDB/TMDB/TVDB equivalent.
     /// Derived from the Stremio `meta.id` when no known provider prefix matches.
     pub custom_stremio_id: Option<String>,
@@ -11547,5 +11558,43 @@ mod attach_streams_tests {
                 .sources
                 .is_some()
         );
+    }
+}
+
+#[cfg(test)]
+mod dispatcharr_recording_tests {
+    use super::*;
+
+    #[test]
+    fn recording_kind_uses_the_string_the_raw_sql_expects() {
+        // `DvrService::sync_recordings` and the refresh task match these
+        // literals in hand-written SQL.
+        assert_eq!(MediaKind::Recording.to_string(), "recording");
+        assert_eq!(
+            "recording"
+                .parse::<MediaKind>()
+                .unwrap(),
+            MediaKind::Recording
+        );
+        assert_eq!(MediaKind::Stream.to_string(), "stream");
+        assert_eq!(MediaKind::TvProgram.to_string(), "tv_program");
+    }
+
+    #[test]
+    fn recording_is_a_playable_leaf_and_not_a_folder() {
+        assert!(MediaKind::Recording.is_playable_leaf());
+        assert!(!MediaKind::Recording.is_folder());
+        assert!(MediaKind::TvChannel.is_playable_leaf());
+    }
+
+    #[test]
+    fn dispatcharr_recording_id_survives_a_json_round_trip() {
+        let ids = ExternalIds {
+            dispatcharr_recording_id: Some(5),
+            ..Default::default()
+        };
+        let back: ExternalIds =
+            serde_json::from_str(&serde_json::to_string(&ids).unwrap()).unwrap();
+        assert_eq!(back.dispatcharr_recording_id, Some(5));
     }
 }

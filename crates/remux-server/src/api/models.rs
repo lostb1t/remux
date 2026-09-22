@@ -172,6 +172,7 @@ impl Into<MediaType> for db::MediaKind {
             db::MediaKind::Stream | db::MediaKind::StreamGroup => MediaType::Video,
             db::MediaKind::Subtitle => MediaType::Video,
             db::MediaKind::Intro => MediaType::Video,
+            db::MediaKind::Recording => MediaType::Recording,
         }
     }
 }
@@ -496,7 +497,8 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             | db::MediaKind::Episode
             | db::MediaKind::TvChannel
             | db::MediaKind::TvProgram
-            | db::MediaKind::Intro => MediaType::Video,
+            | db::MediaKind::Intro
+            | db::MediaKind::Recording => MediaType::Video,
             db::MediaKind::Track => MediaType::Audio,
             db::MediaKind::Playlist => match media.collection_media_kind {
                 Some(db::CollectionMediaKind::Music) => MediaType::Audio,
@@ -1192,6 +1194,30 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
         item.media_sources = Some(synced_media_sources(&media, |info| info));
     }
 
+    if media.kind == db::MediaKind::Recording {
+        item.location_type = LocationType::Remote;
+        item.can_delete = Some(true);
+        item.can_download = Some(false);
+        item.lock_data = Some(false);
+        item.is_place_holder = Some(false);
+
+        let run_time_ticks = media
+            .runtime
+            .and_then(|r| r.to_ticks(TickUnit::Seconds));
+        let recording_id = media.id;
+        // A recording is a finite file, and it is read through the endpoint
+        // that resolves Dispatcharr's file-vs-playlist split, not the generic
+        // `/stream/{id}` proxy `proxied_media_source` assigns.
+        let finite = move |mut info: MediaSourceInfo| {
+            info.is_infinite_stream = false;
+            info.run_time_ticks = run_time_ticks;
+            info.path = Some(format!("/livetv/liverecordings/{recording_id}/stream"));
+            info
+        };
+        item.media_sources = Some(synced_media_sources(&media, finite));
+        item.run_time_ticks = run_time_ticks;
+    }
+
     if media.kind == db::MediaKind::Collection {
         item.collection_type = media
             .collection_media_kind
@@ -1408,5 +1434,82 @@ mod live_tv_source_tests {
             assert_eq!(got[0].id, Uuid::from_u128(0xc0));
             assert!(got[0].is_infinite_stream);
         }
+    }
+
+    // -- Recording ----------------------------------------------------
+
+    #[test]
+    fn recording_sources_are_finite_and_use_the_recording_stream_path() {
+        let a = source(
+            1,
+            "Show",
+            "http://d/api/channels/recordings/5/file/",
+            &[("X-API-Key", "k")],
+        );
+        let mut rec = parent(db::MediaKind::Recording, Some(vec![a]));
+        rec.runtime = Some(3600);
+        let rec_id = rec.id;
+        let item = db_media_to_item(rec, false);
+
+        let got = infos(&item);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].id, rec_id);
+        assert!(!got[0].is_infinite_stream);
+        assert_eq!(got[0].run_time_ticks, Some(36_000_000_000));
+        assert_eq!(
+            got[0]
+                .path
+                .as_deref(),
+            Some(format!("/livetv/liverecordings/{rec_id}/stream").as_str())
+        );
+        assert_eq!(item.run_time_ticks, Some(36_000_000_000));
+    }
+
+    #[test]
+    fn every_recording_version_uses_the_recording_stream_path() {
+        let a = source(1, "A", "http://d/a", &[("X-API-Key", "k")]);
+        let b = source(2, "B", "http://d/b", &[("X-API-Key", "k")]);
+        let rec = parent(db::MediaKind::Recording, Some(vec![a, b]));
+        let rec_id = rec.id;
+        let item = db_media_to_item(rec, false);
+        let want = format!("/livetv/liverecordings/{rec_id}/stream");
+        assert!(
+            infos(&item)
+                .iter()
+                .all(|i| i
+                    .path
+                    .as_deref()
+                    == Some(want.as_str()))
+        );
+    }
+
+    #[test]
+    fn recording_without_versions_still_gets_a_playable_path() {
+        let rec = parent(db::MediaKind::Recording, None);
+        let rec_id = rec.id;
+        let item = db_media_to_item(rec, false);
+        let got = infos(&item);
+        assert_eq!(got.len(), 1);
+        assert!(!got[0].is_infinite_stream);
+        assert_eq!(
+            got[0]
+                .path
+                .as_deref(),
+            Some(format!("/livetv/liverecordings/{rec_id}/stream").as_str())
+        );
+        assert_eq!(item.run_time_ticks, None, "no runtime, no ticks");
+    }
+
+    #[test]
+    fn recording_is_a_remote_deletable_video() {
+        let item = db_media_to_item(parent(db::MediaKind::Recording, None), false);
+        assert_eq!(item.location_type, LocationType::Remote);
+        assert_eq!(item.can_delete, Some(true));
+        assert_eq!(item.can_download, Some(false));
+        assert_eq!(item.media_type, MediaType::Video);
+
+        // Channels, by contrast, are not deletable through the API.
+        let channel = db_media_to_item(parent(db::MediaKind::TvChannel, None), false);
+        assert_eq!(channel.can_delete, Some(false));
     }
 }
