@@ -1195,7 +1195,6 @@ mod test {
             .as_str()
             .expect("default branding should include CSS");
         assert!(css.contains("ElegantFin-jellyfin-theme-build-latest-minified.css"));
-        assert!(css.contains("media-bar-plugin-support-latest-min.css"));
         assert!(css.contains("ElegantFin-jf12-modern-latest.css"));
     }
 

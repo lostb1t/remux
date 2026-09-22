@@ -562,8 +562,6 @@ pub struct BrandingOptions {
     #[default(Some(concat!(
         "/* Main ElegantFin CSS */\n",
         "@import url(\"https://cdn.jsdelivr.net/gh/lscambo13/ElegantFin@main/Theme/ElegantFin-jellyfin-theme-build-latest-minified.css\");\n",
-        "/* ElegantFin Media Bar CSS */\n",
-        "@import url(\"https://cdn.jsdelivr.net/gh/lscambo13/ElegantFin@main/Theme/assets/add-ons/media-bar-plugin-support-latest-min.css\");\n",
         "/* ElegantFin 12 Companion CSS */\n",
         "@import url(\"https://cdn.jsdelivr.net/gh/mihaif7/elegantfin-jf12@main/Theme/ElegantFin-jf12-modern-latest.css\");"
     ).to_string()))]
@@ -7270,12 +7268,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn branding_defaults_to_all_elegantfin_stylesheets() {
+    fn branding_defaults_to_elegantfin_stylesheets() {
         let css = BrandingOptions::default()
             .custom_css
             .expect("default branding should include CSS");
         assert!(css.contains("ElegantFin-jellyfin-theme-build-latest-minified.css"));
-        assert!(css.contains("media-bar-plugin-support-latest-min.css"));
         assert!(css.contains("ElegantFin-jf12-modern-latest.css"));
     }
 
