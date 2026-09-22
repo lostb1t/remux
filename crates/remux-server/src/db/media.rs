@@ -11376,3 +11376,176 @@ mod dedup_tests {
         assert_eq!(found, Some(album.id));
     }
 }
+
+#[cfg(test)]
+mod attach_streams_tests {
+    use super::*;
+    use crate::addons::dispatcharr::{DispatcharrStream, stream_to_media};
+
+    async fn test_db() -> sqlx::SqlitePool {
+        let db = crate::db::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        crate::db::migrate(&db)
+            .await
+            .unwrap();
+        db
+    }
+
+    fn at(hour: u32, min: u32) -> NaiveDateTime {
+        chrono::NaiveDate::from_ymd_opt(2026, 9, 15)
+            .unwrap()
+            .and_hms_opt(hour, min, 0)
+            .unwrap()
+    }
+
+    fn channel(n: u128) -> Media {
+        Media {
+            id: Uuid::from_u128(n),
+            title: format!("Channel {n}"),
+            kind: MediaKind::TvChannel,
+            ..Default::default()
+        }
+    }
+
+    fn version(
+        parent: &Media,
+        stream_id: i64,
+        idx: i64,
+        updated: NaiveDateTime,
+    ) -> Media {
+        let s: DispatcharrStream = serde_json::from_value(serde_json::json!({
+            "id": stream_id, "name": format!("v{stream_id}"),
+        }))
+        .unwrap();
+        stream_to_media(&s, parent.id, idx, "p", "http://d", "k", updated)
+    }
+
+    fn titles(m: &Media) -> Vec<&str> {
+        m.sources
+            .as_deref()
+            .unwrap()
+            .iter()
+            .map(|s| {
+                s.title
+                    .as_str()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn attach_streams_groups_children_by_parent_in_idx_order() {
+        let db = test_db().await;
+        let (a, b) = (channel(1), channel(2));
+        Media::upsert(&db, &vec![a.clone(), b.clone()])
+            .await
+            .unwrap();
+        // Inserted out of order on purpose.
+        Media::upsert(
+            &db,
+            &vec![
+                version(&a, 12, 2, at(12, 0)),
+                version(&b, 21, 0, at(12, 0)),
+                version(&a, 10, 0, at(12, 0)),
+                version(&a, 11, 1, at(12, 0)),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let mut parents = vec![a, b];
+        Media::attach_streams(&db, &mut parents)
+            .await
+            .unwrap();
+        assert_eq!(titles(&parents[0]), ["v10", "v11", "v12"]);
+        assert_eq!(titles(&parents[1]), ["v21"]);
+    }
+
+    #[tokio::test]
+    async fn attach_streams_drops_children_older_than_the_last_refresh() {
+        let db = test_db().await;
+        let a = channel(1);
+        Media::upsert(&db, &vec![a.clone()])
+            .await
+            .unwrap();
+        let (fresh, stale) =
+            (version(&a, 10, 0, at(12, 0)), version(&a, 11, 1, at(12, 0)));
+        Media::upsert(&db, &vec![fresh, stale.clone()])
+            .await
+            .unwrap();
+        // `upsert` stamps `updated_at` itself, so age the stale row directly.
+        sqlx::query("UPDATE media SET updated_at = ? WHERE id = ?")
+            .bind(at(9, 0))
+            .bind(stale.id)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let mut parents = vec![Media {
+            streams_refreshed_at: Some(at(12, 0)),
+            ..a
+        }];
+        Media::attach_streams(&db, &mut parents)
+            .await
+            .unwrap();
+        assert_eq!(titles(&parents[0]), ["v10"]);
+    }
+
+    #[tokio::test]
+    async fn attach_streams_leaves_loaded_parents_and_fills_empty_ones() {
+        let db = test_db().await;
+        let (loaded, empty) = (channel(1), channel(2));
+        Media::upsert(&db, &vec![loaded.clone(), empty.clone()])
+            .await
+            .unwrap();
+        Media::upsert(&db, &vec![version(&loaded, 10, 0, at(12, 0))])
+            .await
+            .unwrap();
+
+        let preset = Media {
+            sources: Some(vec![]),
+            ..loaded
+        };
+        let mut parents = vec![preset, empty];
+        Media::attach_streams(&db, &mut parents)
+            .await
+            .unwrap();
+        assert_eq!(
+            parents[0]
+                .sources
+                .as_deref()
+                .map(<[_]>::len),
+            Some(0),
+            "already-loaded parent is untouched"
+        );
+        assert_eq!(
+            parents[1]
+                .sources
+                .as_deref()
+                .map(<[_]>::len),
+            Some(0),
+            "no children gives an empty list, not None"
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_streams_with_nothing_to_load_is_a_no_op() {
+        let db = test_db().await;
+        let mut none: Vec<Media> = vec![];
+        Media::attach_streams(&db, &mut none)
+            .await
+            .unwrap();
+        let mut loaded = vec![Media {
+            sources: Some(vec![]),
+            ..channel(1)
+        }];
+        Media::attach_streams(&db, &mut loaded)
+            .await
+            .unwrap();
+        assert!(
+            loaded[0]
+                .sources
+                .is_some()
+        );
+    }
+}

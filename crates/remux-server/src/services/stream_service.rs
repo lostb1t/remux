@@ -996,6 +996,108 @@ mod tests {
     use super::*;
     use crate::stream::{StreamDescriptor, StreamInfo};
 
+    /// Seeds a Dispatcharr channel with `n` synced `Stream` children (idx 0..n).
+    async fn seed_channel(
+        ctx: &crate::AppContext,
+        n: i64,
+    ) -> (db::Media, Vec<db::Media>) {
+        let addon = Uuid::from_u128(0xd15b);
+        let ch: crate::addons::dispatcharr::DispatcharrChannel =
+            serde_json::from_value(
+                serde_json::json!({ "id": 42, "uuid": "u", "name": "BBC" }),
+            )
+            .unwrap();
+        let channel = crate::addons::dispatcharr::channel_to_media(&ch, addon, "src");
+        db::Media::upsert(&ctx.db, &vec![channel.clone()])
+            .await
+            .unwrap();
+        let children: Vec<db::Media> = (0..n)
+            .map(|i| db::Media {
+                id: Uuid::new_v5(&channel.id, format!("child:{i}").as_bytes()),
+                kind: db::MediaKind::Stream,
+                parent_id: Some(channel.id),
+                idx: Some(i),
+                stream_info: Some(StreamInfo {
+                    descriptor: StreamDescriptor::http(format!("http://d/{i}.ts")),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .collect();
+        db::Media::upsert(&ctx.db, &children)
+            .await
+            .unwrap();
+        (channel, children)
+    }
+
+    #[tokio::test]
+    async fn channel_lookup_defaults_to_its_first_synced_stream() {
+        use crate::integration_test::new_test_server;
+
+        let (_server, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let (channel, children) = seed_channel(ctx, 2).await;
+
+        let plain = StreamService::lookup(ctx, channel.id, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(plain.id, children[0].id);
+
+        // PlaybackInfo stamps source[0].Id with the channel's own id.
+        let auto = StreamService::lookup(ctx, channel.id, Some(channel.id), None, None)
+            .await
+            .unwrap();
+        assert_eq!(auto.id, children[0].id);
+    }
+
+    #[tokio::test]
+    async fn channel_lookup_honours_an_explicit_stream_id() {
+        use crate::integration_test::new_test_server;
+
+        let (_server, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let (channel, children) = seed_channel(ctx, 2).await;
+
+        let picked =
+            StreamService::lookup(ctx, channel.id, Some(children[1].id), None, None)
+                .await
+                .unwrap();
+        assert_eq!(picked.id, children[1].id);
+
+        let err = StreamService::lookup(
+            ctx,
+            channel.id,
+            Some(Uuid::from_u128(0xdead)),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("not found"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn channel_lookup_without_children_serves_the_channel_row() {
+        use crate::integration_test::new_test_server;
+
+        let (_server, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let (channel, _) = seed_channel(ctx, 0).await;
+
+        let media =
+            StreamService::lookup(ctx, channel.id, Some(channel.id), None, None)
+                .await
+                .unwrap();
+        assert_eq!(media.id, channel.id);
+    }
+
     /// A `MediaSourceId` that is an item id (auto-play, or the PlaybackInfo
     /// rewrite of `source[0].Id` — the sibling's UUID when duplicate items share
     /// one IMDB id) must resolve to a stream. Before the fix the Movie arm looked
