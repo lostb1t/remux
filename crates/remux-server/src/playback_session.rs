@@ -542,6 +542,27 @@ impl PlaybackSessionManager {
         .await
     }
 
+    /// Read the last persisted playback position for an item. This is used
+    /// when a stop arrives after the in-memory session has been evicted and
+    /// the client omitted its final position.
+    pub async fn persisted_position_ticks(
+        db: &sqlx::SqlitePool,
+        user: &db::User,
+        item_id: uuid::Uuid,
+    ) -> Option<i64> {
+        let media = db::Media::get_by_id(db, &item_id)
+            .await
+            .ok()??;
+        let state = db::UserMediaState::get_or_new(db, user, &media)
+            .await
+            .ok()?;
+        Some(
+            state
+                .playback_position
+                .saturating_mul(10_000_000),
+        )
+    }
+
     /// Insert (or replace) a playback session, preserving any transcode that was
     /// pre-attached before `report_playback_start` fired.
     /// Removes stale sessions for the same device so `get_sessions` always

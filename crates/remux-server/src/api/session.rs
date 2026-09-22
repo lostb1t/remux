@@ -253,16 +253,6 @@ pub async fn report_playback_stopped(
             .ctx
             .sessions
             .get(psid);
-        let position_ticks = data
-            .position_ticks
-            .or_else(|| {
-                playback
-                    .as_ref()
-                    .map(|playback| playback.position_ticks)
-            })
-            .unwrap_or(0);
-        let pctx =
-            PlaybackContext::from_parts(&session, &data, playback.as_ref(), Some(psid));
         let changed_item_id = (!data
             .item_id
             .is_nil())
@@ -273,6 +263,31 @@ pub async fn report_playback_stopped(
                 .map(|playback| playback.item_id)
                 .filter(|item_id| !item_id.is_nil())
         });
+        let position_ticks = if let Some(position_ticks) = data.position_ticks {
+            position_ticks
+        } else if let Some(position_ticks) = playback
+            .as_ref()
+            .map(|p| p.position_ticks)
+        {
+            position_ticks
+        } else {
+            match changed_item_id {
+                Some(item_id) => {
+                    playback_session::PlaybackSessionManager::persisted_position_ticks(
+                        &state
+                            .ctx
+                            .db,
+                        &session.user,
+                        item_id,
+                    )
+                    .await
+                    .unwrap_or(0)
+                }
+                None => 0,
+            }
+        };
+        let pctx =
+            PlaybackContext::from_parts(&session, &data, playback.as_ref(), Some(psid));
         // Whether this counted as a watch is decided by the threshold check
         // inside `stopped`, so its answer is carried out rather than inferred
         // from `played_at`, which stays set from every earlier watch.
@@ -1567,12 +1582,21 @@ mod e2e_tests {
             .await
             .assert_status(StatusCode::NO_CONTENT);
 
-        // Model idle cleanup/session replacement without waiting for the
-        // background timer. The progress position has already been persisted.
-        ctx.0
-            .sessions
-            .stop(play_session_id)
-            .await;
+        // A new playback from the same device evicts the old in-memory
+        // session. The progress position has already been persisted.
+        server
+            .post("/sessions/playing")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": item_id,
+                "PlaySessionId": "replacement-session",
+                "PositionTicks": 0,
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
 
         server
             .post("/sessions/playing/stopped")
@@ -1588,7 +1612,7 @@ mod e2e_tests {
             .assert_status(StatusCode::NO_CONTENT);
 
         let response = server
-            .get(&format!("/items/{item_id}"))
+            .get("/users/me/items/resume")
             .add_header(
                 http::header::AUTHORIZATION,
                 HeaderValue::from_str(&auth).unwrap(),
@@ -1596,12 +1620,17 @@ mod e2e_tests {
             .await;
         response.assert_status_ok();
         let body: serde_json::Value = response.json();
+        let item = body["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["Id"].as_str() == Some(item_id.as_str()))
+            .expect("evicted playback should remain in Continue Watching");
         assert_eq!(
-            body["UserData"]["PlaybackPositionTicks"].as_i64(),
+            item["UserData"]["PlaybackPositionTicks"].as_i64(),
             Some(position_ticks),
             "a positionless stop after eviction must not clear saved progress"
         );
-        assert_eq!(body["UserData"]["Played"].as_bool(), Some(false));
     }
 
     /// A `/sessions/playing` report is the actual playback-start event.
