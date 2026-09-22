@@ -6,6 +6,7 @@ pub mod dashboard;
 pub mod devices;
 pub mod iptv;
 pub mod settings;
+pub mod streaming;
 pub mod streams;
 pub mod users;
 pub mod webhooks;
@@ -18,10 +19,10 @@ pub use dashboard::DashboardPage;
 pub use devices::DevicesPage;
 pub use iptv::IptvPage;
 pub use settings::{
-    IntroSettingsCard, JellyfinImportCard, P2pSettingsCard, PlaybackSettingsCard,
-    ProbeSettingsCard, RemuxdbSettingsCard, SearchSettingsCard, ServerSettingsCard,
-    StreamSortingSettingsCard,
+    IntroSettingsCard, JellyfinImportCard, PlaybackSettingsCard, RemuxdbSettingsCard,
+    SearchSettingsCard, ServerSettingsCard,
 };
+pub use streaming::StreamingGeneralSettingsPage;
 pub use streams::StreamGroupsCard;
 pub use users::UsersPage;
 pub use webhooks::WebhooksPage;

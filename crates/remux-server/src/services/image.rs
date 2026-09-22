@@ -30,14 +30,14 @@ const MAX_TEXT_FRACTION: f32 = 0.90;
 const POSTER_W: u32 = 190;
 const POSTER_H: u32 = 285;
 
-/// A four-by-four poster sheet gives the grid enough depth to overflow the frame.
-const GRID_POSTER_LIMIT: usize = 16;
+/// A three-by-three poster sheet gives the grid enough depth to overflow the frame.
+const GRID_POSTER_LIMIT: usize = 9;
 /// A grid cell should use its own source poster whenever the collection has
 /// enough artwork. Repeating posters makes the projected sheet look synthetic.
 const GRID_SOURCE_POSTER_LIMIT: usize = GRID_POSTER_LIMIT;
-const GRID_COLUMNS: usize = 4;
-const GRID_POSTER_W: u32 = 161;
-const GRID_POSTER_H: u32 = 241;
+const GRID_COLUMNS: usize = 3;
+const GRID_POSTER_W: u32 = 260;
+const GRID_POSTER_H: u32 = 390;
 const GRID_GUTTER: u32 = 10;
 
 /// Inset for text overlays, so copy does not sit flush with the image edge.
@@ -494,8 +494,8 @@ impl ImageService {
             match logo {
                 Some(logo) => {
                     let mut canvas = DynamicImage::ImageRgb8(dimmed).into_rgba8();
-                    let max_logo_h = OUT_H / 3;
-                    let max_logo_w = (OUT_W as f32 * 0.7) as u32;
+                    let max_logo_h = OUT_H * 3 / 4;
+                    let max_logo_w = (OUT_W as f32 * 0.9) as u32;
                     let scale = (max_logo_h as f32 / logo.height() as f32)
                         .min(max_logo_w as f32 / logo.width() as f32);
                     let lw = (logo.width() as f32 * scale) as u32;
@@ -703,6 +703,28 @@ impl ImageService {
             .as_ref()
             .map(|c| c.layout)
             .unwrap_or_default();
+        let background_color = config
+            .as_ref()
+            .and_then(|config| {
+                config
+                    .background_color
+                    .as_ref()
+                    .and_then(|color| parse_hex_color(color.as_ref()))
+            })
+            .or_else(|| {
+                config
+                    .as_ref()
+                    .and_then(|config| match &config.overlay {
+                        CollectionOverlay::StreamingLogo { provider_name, .. } => {
+                            provider_name
+                                .as_deref()
+                                .and_then(crate::services::stream_provider::StreamProvider::brand_color)
+                        }
+                        _ => None,
+                    })
+                    .and_then(parse_hex_color)
+            })
+            .unwrap_or([0, 0, 0]);
 
         // Resolve a custom background before looking up the poster grid. It is
         // the entire composition when present, so poster downloads would be
@@ -812,9 +834,7 @@ impl ImageService {
                         )
                         .into_rgba8()
                 })
-                .unwrap_or_else(|| {
-                    RgbaImage::from_pixel(OUT_W, OUT_H, Rgba([18, 18, 22, 255]))
-                });
+                .unwrap_or_else(|| gradient_background(background_color));
 
             let max_n = if layout == CollectionPosterLayout::Grid {
                 GRID_POSTER_LIMIT
@@ -1098,9 +1118,9 @@ async fn find_backdrop_url_from_collection(
 
 /// Poster positions (canvas center_x, center_y, clockwise angle°) for a given layout and n posters.
 fn layout_positions(layout: CollectionPosterLayout, n: usize) -> Vec<(i64, i64, f32)> {
-    match layout {
+    let positions = match layout {
         // No posters are stamped for either layout — None skips them entirely,
-        // and Grid is rendered as one transformed 4×4 plane by `stamp_grid`.
+        // and Grid is rendered as one transformed 3×3 plane by `stamp_grid`.
         CollectionPosterLayout::None | CollectionPosterLayout::Grid => Vec::new(),
         // Clean horizontal shelf, barely overlapping.
         CollectionPosterLayout::Row => match n {
@@ -1126,6 +1146,18 @@ fn layout_positions(layout: CollectionPosterLayout, n: usize) -> Vec<(i64, i64, 
                 (882, 244, 17.0),
             ],
         },
+    };
+
+    if matches!(
+        layout,
+        CollectionPosterLayout::Row | CollectionPosterLayout::Scatter
+    ) {
+        positions
+            .into_iter()
+            .map(|(x, y, angle)| (x + 50, y, angle))
+            .collect()
+    } else {
+        positions
     }
 }
 
@@ -1153,7 +1185,7 @@ fn apply_rounded_corners(img: &mut RgbaImage) {
     }
 }
 
-/// Build a non-overlapping 4×4 poster sheet, then project it as a single
+/// Build a non-overlapping 3×3 poster sheet, then project it as a single
 /// skewed plane. The plane starts beyond the text area and is intentionally
 /// larger than the output canvas, so it reads as a background element.
 fn stamp_grid(canvas: &mut RgbaImage, posters: &[RgbaImage]) {
@@ -1186,12 +1218,12 @@ fn stamp_grid(canvas: &mut RgbaImage, posters: &[RgbaImage]) {
     }
 
     // An affine projection with a subtle clockwise rotation and horizontal
-    // shear. Its centre sits off the right edge; most of the 4×4 sheet is
+    // shear. Its centre sits off the right edge; most of the 3×3 sheet is
     // therefore clipped, leaving roughly the right third of the image visible.
-    let (a, b, c, d) = (0.78f32, -0.12f32, 0.12f32, 0.75f32);
+    let (a, b, c, d) = (0.74f32, -0.23f32, 0.23f32, 0.71f32);
     let determinant = a * d - b * c;
-    let centre_x = 875.0;
-    let centre_y = 270.0;
+    let centre_x = 835.0;
+    let centre_y = 320.0;
     let half_w = grid_w as f32 / 2.0;
     let half_h = grid_h as f32 / 2.0;
     let mut projected = RgbaImage::new(OUT_W, OUT_H);
@@ -1417,11 +1449,15 @@ fn apply_overlay_sync(
         }
         CollectionOverlay::StreamingLogo { .. } => {
             if let Some(logo) = logo_image {
-                let max_logo_h = OUT_H / 3;
+                let max_logo_h = if centered {
+                    OUT_H * 9 / 25
+                } else {
+                    OUT_H * 3 / 10
+                };
                 let max_logo_w = if centered {
                     (OUT_W as f32 * 0.7) as u32
                 } else {
-                    (TEXT_AREA_END - TEXT_LEFT_MARGIN as u32).min(OUT_W / 3)
+                    (OUT_W as f32 * 0.34) as u32
                 };
                 let scale = (max_logo_h as f32 / logo.height() as f32)
                     .min(max_logo_w as f32 / logo.width() as f32);
@@ -1439,6 +1475,16 @@ fn apply_overlay_sync(
                     TEXT_LEFT_MARGIN as i64
                 };
                 let ly = (OUT_H.saturating_sub(lh) / 2) as i64;
+                let mut shadow = scaled.clone();
+                for pixel in shadow.pixels_mut() {
+                    if pixel[3] > 0 {
+                        pixel[0] = 0;
+                        pixel[1] = 0;
+                        pixel[2] = 0;
+                        pixel[3] = (pixel[3] as f32 * 0.35) as u8;
+                    }
+                }
+                image::imageops::overlay(canvas, &shadow, lx + 3, ly + 3);
                 image::imageops::overlay(canvas, &scaled, lx, ly);
             }
         }
@@ -1548,7 +1594,37 @@ fn wrap_words(
 }
 
 fn solid_background() -> RgbImage {
-    RgbImage::from_pixel(OUT_W, OUT_H, Rgb([30, 30, 30]))
+    RgbImage::from_pixel(OUT_W, OUT_H, Rgb([0, 0, 0]))
+}
+
+fn parse_hex_color(value: &str) -> Option<[u8; 3]> {
+    let value = value.strip_prefix('#')?;
+    if value.len() != 6 {
+        return None;
+    }
+    Some([
+        u8::from_str_radix(&value[0..2], 16).ok()?,
+        u8::from_str_radix(&value[2..4], 16).ok()?,
+        u8::from_str_radix(&value[4..6], 16).ok()?,
+    ])
+}
+
+fn gradient_background(color: [u8; 3]) -> RgbaImage {
+    let mut image = RgbaImage::new(OUT_W, OUT_H);
+    for y in 0..OUT_H {
+        let t = y as f32 / (OUT_H.saturating_sub(1)) as f32;
+        let factor = 0.7 + t * 0.3;
+        let pixel = Rgba([
+            (color[0] as f32 * factor) as u8,
+            (color[1] as f32 * factor) as u8,
+            (color[2] as f32 * factor) as u8,
+            255,
+        ]);
+        for x in 0..OUT_W {
+            image.put_pixel(x, y, pixel);
+        }
+    }
+    image
 }
 
 /// Blend a semi-transparent black overlay over the image to darken it,
@@ -1824,8 +1900,8 @@ mod tests {
         assert_eq!(
             grid_dimensions(),
             (
-                4 * GRID_POSTER_W + 3 * GRID_GUTTER,
-                4 * GRID_POSTER_H + 3 * GRID_GUTTER,
+                3 * GRID_POSTER_W + 2 * GRID_GUTTER,
+                3 * GRID_POSTER_H + 2 * GRID_GUTTER,
             )
         );
     }

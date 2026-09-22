@@ -79,11 +79,7 @@ pub(crate) fn IptvRoute() -> Element {
 #[component]
 pub(crate) fn StreamingGeneralRoute() -> Element {
     let app_state = use_context::<AppState>();
-    rsx! {
-        StreamSortingSettingsCard { app_state: app_state.clone() }
-        ProbeSettingsCard { app_state: app_state.clone() }
-        P2pSettingsCard { app_state }
-    }
+    rsx! { StreamingGeneralSettingsPage { app_state } }
 }
 
 #[component]

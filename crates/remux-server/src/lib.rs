@@ -257,13 +257,6 @@ fn raise_open_file_limit() {
                 error = %std::io::Error::last_os_error(),
                 "failed to raise open-file limit"
             );
-        } else {
-            info!(
-                previous,
-                desired,
-                hard = limits.rlim_max,
-                "raised open-file limit"
-            );
         }
     }
 }
@@ -400,9 +393,14 @@ pub async fn init_app(
     task_service
         .start()
         .await?;
-    task_service
-        .run_startup_tasks()
-        .await?;
+    if !ctx
+        .config
+        .disable_startup_tasks
+    {
+        task_service
+            .run_startup_tasks()
+            .await?;
+    }
 
     let state = AppState {
         ctx: ctx.clone(),
@@ -599,6 +597,13 @@ pub struct Config {
     /// configured or when running in a restricted network environment.
     #[serde(default)]
     pub disable_dht: bool,
+    /// Skip running `StartupTrigger`-tagged tasks (e.g. the default library
+    /// refresh) during `init_app`. Only meant for test/benchmark harnesses
+    /// that bulk-write their own fixture data immediately after startup —
+    /// letting the real startup tasks run concurrently races the same
+    /// tables and can corrupt fixture writes.
+    #[serde(default)]
+    pub disable_startup_tasks: bool,
     /// TCP port range for librqbit peer connections.  Announced to trackers so
     /// they return us in peer lists.  Defaults to 6881.  Does not need to be
     /// forwarded/open for outbound-only operation, but must be a real port
@@ -741,6 +746,7 @@ impl Default for Config {
             torrent_http_port: default_torrent_http_port_opt(),
             slow_query_threshold_ms: default_slow_query_threshold_ms(),
             disable_dht: false,
+            disable_startup_tasks: false,
             torrent_peer_port: default_torrent_peer_port(),
             bgutil_script_path: default_bgutil_script_path(),
             tmdb_base_url: default_tmdb_base_url(),

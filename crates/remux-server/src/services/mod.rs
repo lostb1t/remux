@@ -1,6 +1,7 @@
 pub mod image;
 pub mod media_tracker;
 pub(crate) mod resolve;
+pub mod stream_provider;
 pub(crate) mod stream_service;
 pub mod stremio;
 

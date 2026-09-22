@@ -4753,8 +4753,21 @@ impl Media {
                         api::ItemSortBy::DateCreated => {
                             format!("datetime(created_at) {}", dir)
                         }
-                        api::ItemSortBy::PremiereDate
-                        | api::ItemSortBy::ProductionYear => {
+                        api::ItemSortBy::PremiereDate => {
+                            // Upcoming queries filter on released_at and have no
+                            // digital-release fallback. Keeping the same column
+                            // in ORDER BY lets the (kind, released_at) index serve
+                            // both the range and ordering without a temp sort.
+                            if filter.released_after.is_some() {
+                                format!("released_at {}", dir)
+                            } else {
+                                format!(
+                                    "COALESCE(released_at, digital_released_at) {}",
+                                    dir
+                                )
+                            }
+                        }
+                        api::ItemSortBy::ProductionYear => {
                             format!(
                                 "COALESCE(released_at, digital_released_at) {}",
                                 dir

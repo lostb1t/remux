@@ -4046,12 +4046,30 @@ pub enum CollectionPosterLayout {
 }
 
 /// Stored in `media.collection_image_config` (JSON).
+#[nutype(
+    sanitize(with = |value: String| {
+        let value = value.trim().to_string();
+        if value.starts_with('#') {
+            value
+        } else {
+            format!("#{value}")
+        }
+    }),
+    validate(regex = r"^#[0-9a-fA-F]{6}$"),
+    derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, AsRef, Deref, Display)
+)]
+pub struct HexColor(String);
+
+/// Stored in `media.collection_image_config` (JSON).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct CollectionImageConfig {
     #[serde(default)]
     pub overlay: CollectionOverlay,
     #[serde(default)]
     pub layout: CollectionPosterLayout,
+    /// Hex background color used for the generated artwork gradient.
+    #[serde(default)]
+    pub background_color: Option<HexColor>,
 }
 
 #[dto]
@@ -7213,6 +7231,7 @@ pub struct WatchProviderItem {
     pub provider_name: String,
     #[serde(rename = "logo_path", alias = "logoPath")]
     pub logo_path: Option<String>,
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
