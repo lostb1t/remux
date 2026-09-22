@@ -406,10 +406,6 @@ impl FfprobeBool {
     }
 }
 
-/// Bump whenever the ffprobe JSON mapping gains fields that affect playback
-/// compatibility. Cached local probes from older versions are refreshed once.
-const FFPROBE_MAPPING_VERSION: u32 = 1;
-
 /// Derive bit depth from a pixel format string (e.g. "yuv420p10le" → 10, "yuv420p" → 8).
 pub(crate) fn bit_depth_from_pix_fmt(pix_fmt: &str) -> Option<i64> {
     // Check for explicit bit-depth suffixes: 9, 10, 12, 14, 16
@@ -1015,7 +1011,6 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
             size: file_size,
             remux: Some(api::MediaSourceRemuxInfo {
                 source: Some(api::ProbeOrigin::Ffprobe),
-                probe_version: Some(FFPROBE_MAPPING_VERSION),
                 ..Default::default()
             }),
             ..Default::default()
@@ -1065,17 +1060,9 @@ fn is_reusable_probe_cache(cached: &api::MediaSourceInfo) -> bool {
         .remux
         .as_ref()
         .and_then(|remux| remux.source);
-    let current_ffprobe_mapping = origin == Some(api::ProbeOrigin::Ffprobe)
-        && cached
-            .remux
-            .as_ref()
-            .and_then(|remux| remux.probe_version)
-            .is_some_and(|version| version >= FFPROBE_MAPPING_VERSION);
-
-    // Older persisted data may predate both ProbeOrigin and probe_version.
-    // H.264 compatibility rules need RefFrames, so refresh any unversioned or
-    // RemuxDB result that lacks it; a current local probe is accepted even if
-    // ffprobe genuinely could not determine the value, avoiding a probe loop.
+    // H.264 compatibility rules need RefFrames. RemuxDB or other imported
+    // metadata that lacks it gets one local probe; a local ffprobe result is
+    // accepted even when ffprobe genuinely could not determine the value.
     let missing_h264_refs = video
         .codec
         .as_deref()
@@ -1084,11 +1071,11 @@ fn is_reusable_probe_cache(cached: &api::MediaSourceInfo) -> bool {
         && video
             .ref_frames
             .is_none();
-    if missing_h264_refs && !current_ffprobe_mapping {
+    if missing_h264_refs && origin != Some(api::ProbeOrigin::Ffprobe) {
         return false;
     }
 
-    origin != Some(api::ProbeOrigin::Ffprobe) || current_ffprobe_mapping
+    true
 }
 
 fn can_fallback_to_stale_probe_cache(cached: &api::MediaSourceInfo) -> bool {
@@ -1467,29 +1454,11 @@ mod probe_tests {
             }],
             remux: Some(api::MediaSourceRemuxInfo {
                 source: Some(api::ProbeOrigin::Ffprobe),
-                probe_version: Some(FFPROBE_MAPPING_VERSION),
                 ..Default::default()
             }),
             ..Default::default()
         };
         assert!(is_reusable_probe_cache(&real));
-    }
-
-    #[test]
-    fn is_reusable_probe_cache_rejects_legacy_ffprobe_mapping() {
-        let legacy = api::MediaSourceInfo {
-            media_streams: vec![api::MediaStream {
-                type_: Some(api::MediaStreamType::Video),
-                ..Default::default()
-            }],
-            remux: Some(api::MediaSourceRemuxInfo {
-                source: Some(api::ProbeOrigin::Ffprobe),
-                probe_version: None,
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        assert!(!is_reusable_probe_cache(&legacy));
     }
 
     #[test]
@@ -1563,10 +1532,11 @@ mod probe_tests {
         let stale = api::MediaSourceInfo {
             media_streams: vec![api::MediaStream {
                 type_: Some(api::MediaStreamType::Video),
+                codec: Some("h264".to_string()),
                 ..Default::default()
             }],
             remux: Some(api::MediaSourceRemuxInfo {
-                source: Some(api::ProbeOrigin::Ffprobe),
+                source: Some(api::ProbeOrigin::RemuxDb),
                 ..Default::default()
             }),
             ..Default::default()
@@ -1580,19 +1550,19 @@ mod probe_tests {
         });
         assert!(!can_fallback_to_stale_probe_cache(&guess));
 
-        let current = api::MediaSourceInfo {
+        let local_probe = api::MediaSourceInfo {
             media_streams: vec![api::MediaStream {
                 type_: Some(api::MediaStreamType::Video),
+                codec: Some("h264".to_string()),
                 ..Default::default()
             }],
             remux: Some(api::MediaSourceRemuxInfo {
                 source: Some(api::ProbeOrigin::Ffprobe),
-                probe_version: Some(FFPROBE_MAPPING_VERSION),
                 ..Default::default()
             }),
             ..Default::default()
         };
-        assert!(!can_fallback_to_stale_probe_cache(&current));
+        assert!(!can_fallback_to_stale_probe_cache(&local_probe));
     }
 
     #[test]

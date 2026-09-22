@@ -610,17 +610,12 @@ impl StreamService {
                 .remux
                 .as_ref()
                 .and_then(|r| r.source);
-            let probe_version = source
-                .remux
-                .as_ref()
-                .and_then(|r| r.probe_version);
             source.remux = Some(api::MediaSourceRemuxInfo {
                 provider_info: stream
                     .stream_info
                     .as_ref()
                     .and_then(|si| serde_json::to_value(si).ok()),
                 source: probe_source,
-                probe_version,
             });
 
             let remuxdb_enabled = probe_cfg

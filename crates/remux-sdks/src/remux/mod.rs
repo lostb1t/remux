@@ -2977,9 +2977,6 @@ pub enum ProbeOrigin {
 pub struct MediaSourceRemuxInfo {
     pub provider_info: Option<serde_json::Value>,
     pub source: Option<ProbeOrigin>,
-    /// Version of Remux's local ffprobe mapping. Old versions are re-probed
-    /// when newly mapped stream fields would otherwise remain missing.
-    pub probe_version: Option<u32>,
 }
 
 impl MediaSourceInfo {
