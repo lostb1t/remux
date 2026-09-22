@@ -319,8 +319,76 @@ fn stub_sources(media: &db::Media) -> Vec<MediaSourceInfo> {
     ]
 }
 
+/// One version of a channel or recording, as a direct-play HTTP source.
+///
+/// A descriptor carrying request headers cannot be direct-played — the client
+/// has no way to attach them — so its path becomes remux's `/stream/{id}`
+/// proxy, which forwards them. Header-free sources keep their raw URL.
+fn proxied_media_source(source: &db::Media) -> MediaSourceInfo {
+    let needs_proxy = matches!(
+        source.stream_info.as_ref().map(|si| &si.descriptor),
+        Some(crate::stream::StreamDescriptor::Http { request_headers, .. })
+            if !request_headers.is_empty()
+    );
+    let path = if needs_proxy {
+        Some(format!("/stream/{}", source.id))
+    } else {
+        source
+            .stream_info
+            .as_ref()
+            .and_then(|si| {
+                si.descriptor
+                    .as_http_url()
+                    .map(str::to_owned)
+            })
+    };
+    MediaSourceInfo {
+        id: source.id,
+        e_tag: source.id,
+        name: Some(
+            source
+                .title
+                .clone(),
+        ),
+        path,
+        protocol: MediaProtocol::Http,
+        is_remote: true,
+        is_infinite_stream: true,
+        supports_direct_play: true,
+        supports_direct_stream: true,
+        supports_transcoding: true,
+        type_: MediaSourceType::Placeholder,
+        video_type: VideoType::VideoFile,
+        ..Default::default()
+    }
+}
+
+/// The versions of a channel or recording: its synced `Stream` children in
+/// `idx` order, or the row itself when an addon syncs none. `adapt` applies
+/// any per-kind adjustment to each one.
+fn synced_media_sources(
+    media: &db::Media,
+    adapt: impl Fn(MediaSourceInfo) -> MediaSourceInfo,
+) -> Vec<MediaSourceInfo> {
+    let mut infos: Vec<MediaSourceInfo> = match media
+        .sources
+        .as_deref()
+    {
+        Some(sources) if !sources.is_empty() => sources
+            .iter()
+            .map(proxied_media_source)
+            .map(&adapt)
+            .collect(),
+        _ => vec![adapt(proxied_media_source(media))],
+    };
+    // Clients expect the first source's id to equal the item's own.
+    infos[0].id = media.id;
+    infos[0].e_tag = media.id;
+    infos
+}
+
 pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
-    use crate::common::{IntoVec, ToRunTimeTicks};
+    use crate::common::{IntoVec, TickUnit, ToRunTimeTicks};
 
     let type_ = media
         .kind
@@ -1121,33 +1189,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
         item.can_download = Some(false);
         item.lock_data = Some(false);
         item.is_place_holder = Some(false);
-        // Channels use direct-play passthrough — no GStreamer probe needed.
-        item.media_sources = Some(vec![MediaSourceInfo {
-            id: media.id,
-            e_tag: media.id,
-            name: Some(
-                media
-                    .title
-                    .clone(),
-            ),
-            path: media
-                .stream_info
-                .as_ref()
-                .and_then(|si| {
-                    si.descriptor
-                        .as_http_url()
-                        .map(str::to_owned)
-                }),
-            protocol: MediaProtocol::Http,
-            is_remote: true,
-            is_infinite_stream: true,
-            supports_direct_play: true,
-            supports_direct_stream: true,
-            supports_transcoding: true,
-            type_: MediaSourceType::Placeholder,
-            video_type: VideoType::VideoFile,
-            ..Default::default()
-        }]);
+        item.media_sources = Some(synced_media_sources(&media, |info| info));
     }
 
     if media.kind == db::MediaKind::Collection {
@@ -1226,4 +1268,145 @@ pub struct RemoteSubtitleInfo {
     pub is_hash_match: Option<bool>,
     pub ai_translated: Option<bool>,
     pub machine_translated: Option<bool>,
+}
+
+#[cfg(test)]
+mod live_tv_source_tests {
+    use super::*;
+    use crate::stream::{StreamDescriptor, StreamInfo};
+    use std::collections::HashMap;
+    use uuid::Uuid;
+
+    fn source(n: u128, title: &str, url: &str, headers: &[(&str, &str)]) -> db::Media {
+        db::Media {
+            id: Uuid::from_u128(n),
+            title: title.into(),
+            kind: db::MediaKind::Stream,
+            stream_info: Some(StreamInfo {
+                descriptor: StreamDescriptor::Http {
+                    url: url.into(),
+                    request_headers: headers
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .collect::<HashMap<_, _>>(),
+                    response_headers: Default::default(),
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn parent(kind: db::MediaKind, sources: Option<Vec<db::Media>>) -> db::Media {
+        db::Media {
+            id: Uuid::from_u128(0xc0),
+            title: "Parent".into(),
+            kind,
+            sources,
+            ..Default::default()
+        }
+    }
+
+    fn infos(item: &BaseItemDto) -> &[MediaSourceInfo] {
+        item.media_sources
+            .as_deref()
+            .expect("media sources")
+    }
+
+    // -- proxied_media_source -----------------------------------------
+
+    #[test]
+    fn source_needing_a_header_goes_through_the_stream_proxy() {
+        let s = source(7, "v", "http://d/proxy/ts/stream/x", &[("X-API-Key", "k")]);
+        let info = proxied_media_source(&s);
+        assert_eq!(
+            info.path
+                .as_deref(),
+            Some(format!("/stream/{}", s.id).as_str())
+        );
+    }
+
+    #[test]
+    fn source_without_headers_keeps_the_raw_url() {
+        let s = source(7, "v", "http://plain/stream.ts", &[]);
+        assert_eq!(
+            proxied_media_source(&s)
+                .path
+                .as_deref(),
+            Some("http://plain/stream.ts")
+        );
+    }
+
+    #[test]
+    fn source_without_stream_info_has_no_path() {
+        let s = db::Media {
+            id: Uuid::from_u128(7),
+            ..Default::default()
+        };
+        assert_eq!(proxied_media_source(&s).path, None);
+    }
+
+    #[test]
+    fn proxied_source_describes_an_infinite_remote_stream() {
+        let s = source(7, "Channel (1080p)", "http://plain/x", &[]);
+        let info = proxied_media_source(&s);
+        assert_eq!(info.id, s.id);
+        assert_eq!(info.e_tag, s.id);
+        assert_eq!(
+            info.name
+                .as_deref(),
+            Some("Channel (1080p)")
+        );
+        assert!(info.is_remote);
+        assert!(info.is_infinite_stream);
+        assert!(info.supports_direct_play && info.supports_direct_stream);
+    }
+
+    // -- TvChannel ----------------------------------------------------
+
+    #[test]
+    fn channel_lists_every_version_in_order() {
+        let a = source(1, "Best", "http://d/a", &[("X-API-Key", "k")]);
+        let b = source(2, "Backup", "http://d/b", &[("X-API-Key", "k")]);
+        let channel =
+            parent(db::MediaKind::TvChannel, Some(vec![a.clone(), b.clone()]));
+        let channel_id = channel.id;
+        let item = db_media_to_item(channel, false);
+
+        let got = infos(&item);
+        assert_eq!(got.len(), 2);
+        let names: Vec<_> = got
+            .iter()
+            .map(|i| {
+                i.name
+                    .as_deref()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(names, ["Best", "Backup"]);
+        // Clients expect the first source to carry the parent item's id.
+        assert_eq!(got[0].id, channel_id);
+        assert_eq!(got[0].e_tag, channel_id);
+        // Every other version keeps its own id so it can be picked by
+        // `mediaSourceId`.
+        assert_eq!(got[1].id, b.id);
+        assert_eq!(
+            got[1]
+                .path
+                .as_deref(),
+            Some(format!("/stream/{}", b.id).as_str())
+        );
+    }
+
+    #[test]
+    fn channel_without_synced_versions_falls_back_to_a_single_source() {
+        for sources in [None, Some(vec![])] {
+            let channel = parent(db::MediaKind::TvChannel, sources);
+            let item = db_media_to_item(channel, false);
+            let got = infos(&item);
+            assert_eq!(got.len(), 1);
+            assert_eq!(got[0].id, Uuid::from_u128(0xc0));
+            assert!(got[0].is_infinite_stream);
+        }
+    }
 }

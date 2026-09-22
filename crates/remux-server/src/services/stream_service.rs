@@ -222,6 +222,34 @@ impl StreamService {
         media: db::Media,
     ) -> anyhow::Result<db::Media> {
         match media.kind {
+            db::MediaKind::TvChannel => {
+                // Versions are the `Stream` children synced ahead of time, so
+                // resolve within them rather than dispatching to the addon.
+                // A channel must start instantly and its list only changes
+                // with the provider's config.
+                // `requested_id` picks one; the item's own id means the first,
+                // since that is what PlaybackInfo stamps on `MediaSources[0]`.
+                let mut media = media;
+                let media_id = media.id;
+                let sources = media
+                    .streams(&ctx.db)
+                    .await?;
+                if sources.is_empty() {
+                    // A channel with its own `stream_info` (iptv-m3u) syncs no
+                    // children and is played from the row.
+                    return Ok(media);
+                }
+                match requested_id.filter(|&sid| sid != item_id && sid != media_id) {
+                    Some(sid) => sources
+                        .into_iter()
+                        .find(|s| s.id == sid)
+                        .ok_or_else(|| anyhow::anyhow!("stream not found: {}", sid)),
+                    None => Ok(sources
+                        .into_iter()
+                        .next()
+                        .expect("sources checked non-empty")),
+                }
+            }
             db::MediaKind::StreamGroup => {
                 let gid = media.id;
                 let mut candidates =

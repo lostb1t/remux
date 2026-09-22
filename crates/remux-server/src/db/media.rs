@@ -6587,6 +6587,69 @@ impl Media {
             .to_vec())
     }
 
+    /// `streams()` for many parents in one query, grouped back by
+    /// `parent_id`, instead of one query each.
+    pub async fn attach_streams(
+        db: &sqlx::SqlitePool,
+        parents: &mut [Media],
+    ) -> Result<()> {
+        let parent_ids: Vec<Uuid> = parents
+            .iter()
+            .filter(|m| {
+                m.sources
+                    .is_none()
+            })
+            .map(|m| m.id)
+            .collect();
+        if parent_ids.is_empty() {
+            return Ok(());
+        }
+
+        let mut sources = Self::get_by_filter(
+            db,
+            &MediaFilter {
+                kind: Some(vec![MediaKind::Stream]),
+                parent_ids: Some(parent_ids),
+                ..Default::default()
+            },
+        )
+        .await?
+        .records;
+        sources.sort_by(|a, b| {
+            a.idx
+                .cmp(&b.idx)
+        });
+
+        let mut by_parent: HashMap<Uuid, Vec<Media>> = HashMap::new();
+        for source in sources {
+            if let Some(parent_id) = source.parent_id {
+                by_parent
+                    .entry(parent_id)
+                    .or_default()
+                    .push(source);
+            }
+        }
+
+        for parent in parents.iter_mut() {
+            if parent
+                .sources
+                .is_some()
+            {
+                continue;
+            }
+            let mut own = by_parent
+                .remove(&parent.id)
+                .unwrap_or_default();
+            // Same freshness rule as `streams()`: exclude sources that
+            // predate the last refresh.
+            if let Some(refreshed) = parent.streams_refreshed_at {
+                own.retain(|s| s.updated_at >= refreshed);
+            }
+            parent.sources = Some(own);
+        }
+        Ok(())
+    }
+
     pub async fn seasons(&mut self, db: &sqlx::SqlitePool) -> Result<Vec<Media>> {
         if self.kind != MediaKind::Series {
             return Ok(vec![]);

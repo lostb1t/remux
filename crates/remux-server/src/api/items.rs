@@ -1947,6 +1947,18 @@ async fn item_for_user(
                 &session.user,
             )
             .await?;
+    } else if want_streams && media.kind == db::MediaKind::TvChannel {
+        // Channels resolve to their already-synced `Stream` rows, in `idx`
+        // order — no addon dispatch, no probing.
+        media.sources = Some(
+            media
+                .streams(
+                    &state
+                        .ctx
+                        .db,
+                )
+                .await?,
+        );
     }
     // info!("Seasons length: {:?}", media.seasons(&state.ctx.db).await?.len());
     media
