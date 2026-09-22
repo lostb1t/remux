@@ -1,8 +1,8 @@
 pub mod codecs;
 pub mod provider_ids;
 pub use codecs::{
-    AudioCodec, AudioContainer, DlnaProfileType, SubtitleCodec, TranscodingProtocol,
-    VideoCodec, VideoContainer,
+    AudioCodec, AudioContainer, CodecProfileType, DlnaProfileType, SubtitleCodec,
+    TranscodingProtocol, VideoCodec, VideoContainer,
 };
 pub use provider_ids::{AnyProviderIds, ExternalIdProvider};
 
@@ -2110,10 +2110,12 @@ pub struct ContainerProfile {
 #[serde(rename_all = "PascalCase", default)]
 pub struct CodecProfile {
     #[serde(rename = "Type")]
-    pub type_: Option<DlnaProfileType>,
+    pub type_: Option<CodecProfileType>,
     #[serde(deserialize_with = "deser_csv_strings", serialize_with = "ser_csv")]
     pub codec: Option<Vec<String>>,
+    pub container: Option<String>,
     pub conditions: Vec<ProfileCondition>,
+    pub apply_conditions: Vec<ProfileCondition>,
 }
 
 #[derive(Default, Debug, Serialize, Deserialize, Clone)]
@@ -2169,6 +2171,8 @@ pub enum ProfileConditionProperty {
     IsInterlaced,
     #[strum(to_string = "IsAVC", serialize = "IsAVC", serialize = "IsAvc")]
     IsAvc,
+    VideoBitDepth,
+    /// Legacy alias accepted by some clients.
     BitDepth,
     RefFrames,
     NumAudioStreams,
@@ -2180,12 +2184,20 @@ pub enum ProfileConditionProperty {
     Height,
     Width,
     VideoFramerate,
+    VideoRotation,
     Framerate,
     VideoBitrate,
     Bitrate,
     AudioBitrate,
+    AudioProfile,
     AudioChannels,
     AudioSampleRate,
+    AudioBitDepth,
+    NumStreams,
+    Has64BitOffsets,
+    PacketLength,
+    VideoTimestamp,
+    IsSecondaryAudio,
     #[strum(default, to_string = "{0}")]
     Other(String),
 }
@@ -2348,7 +2360,21 @@ pub struct RecommendationDto {
     pub items: Vec<BaseItemDto>,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    strum_macros::EnumString,
+    strum_macros::EnumMessage,
+    strum_macros::EnumDiscriminants,
+)]
+#[strum(serialize_all = "PascalCase")]
+#[strum_discriminants(name(TranscodeReasonKind))]
+#[strum_discriminants(
+    derive(strum_macros::EnumString, strum_macros::EnumMessage),
+    strum(serialize_all = "PascalCase")
+)]
 pub enum TranscodeReason {
     ContainerNotSupported(String),
     VideoCodecNotSupported(String),
@@ -2358,50 +2384,74 @@ pub enum TranscodeReason {
     VideoCodecTagNotSupported(String),
     VideoProfileNotSupported(String),
     VideoBitDepthNotSupported(String),
+    VideoLevelNotSupported(String),
+    VideoResolutionNotSupported(String),
+    VideoFramerateNotSupported(String),
+    VideoRotationNotSupported(String),
+    VideoBitrateNotSupported(String),
+    RefFramesNotSupported(String),
+    AnamorphicVideoNotSupported(String),
+    InterlacedVideoNotSupported(String),
+    AudioChannelsNotSupported(String),
+    AudioProfileNotSupported(String),
+    AudioSampleRateNotSupported(String),
+    AudioBitDepthNotSupported(String),
+    AudioBitrateNotSupported(String),
+    SecondaryAudioNotSupported(String),
+    StreamCountExceedsLimit(String),
     ContainerBitrateExceedsLimit,
 }
 
 impl TranscodeReason {
     pub fn name(&self) -> &'static str {
-        match self {
-            Self::ContainerNotSupported(_) => "ContainerNotSupported",
-            Self::VideoCodecNotSupported(_) => "VideoCodecNotSupported",
-            Self::AudioCodecNotSupported(_) => "AudioCodecNotSupported",
-            Self::SubtitleCodecNotSupported(_) => "SubtitleCodecNotSupported",
-            Self::VideoRangeTypeNotSupported(_) => "VideoRangeTypeNotSupported",
-            Self::VideoCodecTagNotSupported(_) => "VideoCodecTagNotSupported",
-            Self::VideoProfileNotSupported(_) => "VideoProfileNotSupported",
-            Self::VideoBitDepthNotSupported(_) => "VideoBitDepthNotSupported",
-            Self::ContainerBitrateExceedsLimit => "ContainerBitrateExceedsLimit",
-        }
+        strum::EnumMessage::get_serializations(self)[0]
+    }
+
+    pub fn kind(&self) -> TranscodeReasonKind {
+        self.into()
+    }
+
+    pub fn is_audio(&self) -> bool {
+        self.kind()
+            .is_audio()
+    }
+
+    pub fn is_video(&self) -> bool {
+        self.kind()
+            .is_video()
     }
 }
 
-impl std::fmt::Debug for TranscodeReason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ContainerNotSupported(d) => write!(f, "ContainerNotSupported({d})"),
-            Self::VideoCodecNotSupported(d) => write!(f, "VideoCodecNotSupported({d})"),
-            Self::AudioCodecNotSupported(d) => write!(f, "AudioCodecNotSupported({d})"),
-            Self::SubtitleCodecNotSupported(d) => {
-                write!(f, "SubtitleCodecNotSupported({d})")
-            }
-            Self::VideoRangeTypeNotSupported(d) => {
-                write!(f, "VideoRangeTypeNotSupported({d})")
-            }
-            Self::VideoCodecTagNotSupported(d) => {
-                write!(f, "VideoCodecTagNotSupported({d})")
-            }
-            Self::VideoProfileNotSupported(d) => {
-                write!(f, "VideoProfileNotSupported({d})")
-            }
-            Self::VideoBitDepthNotSupported(d) => {
-                write!(f, "VideoBitDepthNotSupported({d})")
-            }
-            Self::ContainerBitrateExceedsLimit => {
-                write!(f, "ContainerBitrateExceedsLimit")
-            }
-        }
+impl TranscodeReasonKind {
+    pub const fn is_audio(self) -> bool {
+        matches!(
+            self,
+            Self::AudioCodecNotSupported
+                | Self::AudioChannelsNotSupported
+                | Self::AudioProfileNotSupported
+                | Self::AudioSampleRateNotSupported
+                | Self::AudioBitDepthNotSupported
+                | Self::AudioBitrateNotSupported
+                | Self::SecondaryAudioNotSupported
+        )
+    }
+
+    pub const fn is_video(self) -> bool {
+        matches!(
+            self,
+            Self::VideoCodecNotSupported
+                | Self::VideoRangeTypeNotSupported
+                | Self::VideoProfileNotSupported
+                | Self::VideoBitDepthNotSupported
+                | Self::VideoLevelNotSupported
+                | Self::VideoResolutionNotSupported
+                | Self::VideoFramerateNotSupported
+                | Self::VideoRotationNotSupported
+                | Self::VideoBitrateNotSupported
+                | Self::RefFramesNotSupported
+                | Self::AnamorphicVideoNotSupported
+                | Self::InterlacedVideoNotSupported
+        )
     }
 }
 
@@ -2471,38 +2521,11 @@ impl TranscodeReasons {
     pub fn from_query_value(s: &str) -> Self {
         let mut out = Self::default();
         for part in s.split(',') {
-            let reason = match part.trim() {
-                "ContainerNotSupported" => {
-                    Some(TranscodeReason::ContainerNotSupported(String::new()))
-                }
-                "VideoCodecNotSupported" => {
-                    Some(TranscodeReason::VideoCodecNotSupported(String::new()))
-                }
-                "AudioCodecNotSupported" => {
-                    Some(TranscodeReason::AudioCodecNotSupported(String::new()))
-                }
-                "SubtitleCodecNotSupported" => {
-                    Some(TranscodeReason::SubtitleCodecNotSupported(String::new()))
-                }
-                "VideoRangeTypeNotSupported" => {
-                    Some(TranscodeReason::VideoRangeTypeNotSupported(String::new()))
-                }
-                "VideoCodecTagNotSupported" => {
-                    Some(TranscodeReason::VideoCodecTagNotSupported(String::new()))
-                }
-                "VideoProfileNotSupported" => {
-                    Some(TranscodeReason::VideoProfileNotSupported(String::new()))
-                }
-                "VideoBitDepthNotSupported" => {
-                    Some(TranscodeReason::VideoBitDepthNotSupported(String::new()))
-                }
-                "ContainerBitrateExceedsLimit" => {
-                    Some(TranscodeReason::ContainerBitrateExceedsLimit)
-                }
-                _ => None,
-            };
-            if let Some(r) = reason {
-                out.insert(r);
+            if let Ok(reason) = part
+                .trim()
+                .parse::<TranscodeReason>()
+            {
+                out.insert(reason);
             }
         }
         out
@@ -7883,6 +7906,18 @@ mod tests {
 
     #[test]
     fn profile_condition_vocabulary_round_trips_known_and_unknown_values() {
+        let rotation: ProfileCondition = serde_json::from_value(serde_json::json!({
+            "Condition": "Equals",
+            "Property": "VideoRotation",
+            "Value": "0",
+            "IsRequired": true
+        }))
+        .unwrap();
+        assert_eq!(
+            rotation.property,
+            Some(ProfileConditionProperty::VideoRotation)
+        );
+
         let profile: ProfileCondition = serde_json::from_value(serde_json::json!({
             "Condition": "LessThanEqual",
             "Property": "FutureJellyfinProperty",
@@ -7902,5 +7937,29 @@ mod tests {
         let json = serde_json::to_value(profile).unwrap();
         assert_eq!(json["Condition"], "LessThanEqual");
         assert_eq!(json["Property"], "FutureJellyfinProperty");
+    }
+
+    #[test]
+    fn transcode_reason_names_round_trip_through_strum() {
+        let reasons = TranscodeReasons::from_query_value(
+            "VideoRotationNotSupported,AudioChannelsNotSupported,FutureReason",
+        );
+
+        assert!(
+            reasons
+                .contains(&TranscodeReason::VideoRotationNotSupported(String::new()))
+        );
+        assert!(
+            reasons
+                .contains(&TranscodeReason::AudioChannelsNotSupported(String::new()))
+        );
+        assert!(TranscodeReason::VideoRotationNotSupported(String::new()).is_video());
+        assert!(!TranscodeReason::AudioChannelsNotSupported(String::new()).is_video());
+        assert_eq!(
+            reasons
+                .to_query_value()
+                .as_deref(),
+            Some("VideoRotationNotSupported,AudioChannelsNotSupported")
+        );
     }
 }

@@ -358,6 +358,9 @@ struct FfprobeStream {
     codec_tag_string: Option<String>,
     profile: Option<String>,
     level: Option<f64>,
+    refs: Option<i64>,
+    is_avc: Option<FfprobeBool>,
+    nal_length_size: Option<String>,
     width: Option<i64>,
     height: Option<i64>,
     bit_rate: Option<String>,
@@ -368,11 +371,64 @@ struct FfprobeStream {
     channel_layout: Option<String>,
     sample_rate: Option<String>,
     pix_fmt: Option<String>,
+    bits_per_sample: Option<i64>,
     bits_per_raw_sample: Option<String>,
+    #[serde(default)]
+    side_data_list: Vec<FfprobeSideData>,
     #[serde(default)]
     tags: HashMap<String, String>,
     #[serde(default)]
     disposition: FfprobeDisposition,
+}
+
+#[derive(Deserialize)]
+struct FfprobeSideData {
+    rotation: Option<i64>,
+}
+
+impl FfprobeStream {
+    fn rotation(&self) -> Option<i64> {
+        self.side_data_list
+            .iter()
+            .find_map(|data| data.rotation)
+            .or_else(|| {
+                self.tags
+                    .get("rotate")
+                    .and_then(|value| {
+                        value
+                            .parse()
+                            .ok()
+                    })
+            })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum FfprobeBool {
+    Bool(bool),
+    String(String),
+    Integer(i64),
+}
+
+impl FfprobeBool {
+    fn value(&self) -> Option<bool> {
+        match self {
+            Self::Bool(value) => Some(*value),
+            Self::String(value)
+                if value.eq_ignore_ascii_case("true") || value == "1" =>
+            {
+                Some(true)
+            }
+            Self::String(value)
+                if value.eq_ignore_ascii_case("false") || value == "0" =>
+            {
+                Some(false)
+            }
+            Self::String(_) => None,
+            Self::Integer(value) => Some(*value != 0),
+        }
+    }
 }
 
 /// Derive bit depth from a pixel format string (e.g. "yuv420p10le" → 10, "yuv420p" → 8).
@@ -757,6 +813,12 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                         .profile
                         .clone(),
                     level: s.level,
+                    // ffprobe reports zero when the reference-frame count is
+                    // unknown. Jellyfin treats that as absent rather than as a
+                    // real value that could satisfy a device limit.
+                    ref_frames: s
+                        .refs
+                        .and_then(nonzero),
                     width: meta.width,
                     height: meta.height,
                     bit_rate: bitrate,
@@ -769,7 +831,14 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                         .and_then(nonzero),
                     is_default: Some(is_default),
                     is_forced,
-                    is_avc: Some(false),
+                    is_avc: s
+                        .is_avc
+                        .as_ref()
+                        .and_then(FfprobeBool::value),
+                    nal_length_size: s
+                        .nal_length_size
+                        .clone(),
+                    rotation: s.rotation(),
                     time_base: Some("1/1000".to_string()),
                     audio_spatial_format: Some("None".to_string()),
                     video_range: Some(video_range),
@@ -822,6 +891,19 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                 let channel_layout = s
                     .channel_layout
                     .as_deref();
+                let bit_depth = s
+                    .bits_per_sample
+                    .and_then(nonzero)
+                    .or_else(|| {
+                        s.bits_per_raw_sample
+                            .as_deref()
+                            .and_then(|value| {
+                                value
+                                    .parse::<i64>()
+                                    .ok()
+                            })
+                            .and_then(nonzero)
+                    });
 
                 let meta = StreamMeta {
                     language,
@@ -849,6 +931,10 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     channel_layout: channel_layout.map(str::to_string),
                     sample_rate,
                     bit_rate: bitrate,
+                    bit_depth,
+                    profile: s
+                        .profile
+                        .clone(),
                     is_default: Some(is_default),
                     is_forced,
                     is_avc: Some(false),
@@ -1002,15 +1088,67 @@ pub(crate) async fn resolve_stream_root(
     }
 }
 
+/// Cache-freshness rules for persisted probe data.
+pub(crate) trait ProbeDataExt {
+    /// Whether this cache predates metadata required for H.264 device-profile
+    /// matching and should receive one local ffprobe refresh.
+    fn needs_reprobe(&self) -> bool;
+}
+
+impl ProbeDataExt for api::MediaSourceInfo {
+    fn needs_reprobe(&self) -> bool {
+        if self.is_filename_guess() {
+            return false;
+        }
+        let Some(video) = self.video_stream() else {
+            return false;
+        };
+        let origin = self
+            .remux
+            .as_ref()
+            .and_then(|remux| remux.source);
+        video
+            .codec
+            .as_deref()
+            .and_then(VideoCodec::parse_known)
+            .is_some_and(|codec| codec == VideoCodec::H264)
+            && video
+                .ref_frames
+                .is_none_or(|frames| frames <= 0)
+            && origin != Some(api::ProbeOrigin::Ffprobe)
+    }
+}
+
 /// Whether cached `probe_data` counts as a completed probe that a playback
 /// request may reuse instead of running ffprobe again. A filename guess
 /// (`ProbeOrigin::FilenameGuess`) is never a completed probe — it must not
 /// block a real ffprobe attempt, even if it happens to carry a "video stream".
 fn is_reusable_probe_cache(cached: &api::MediaSourceInfo) -> bool {
-    cached
-        .video_stream()
-        .is_some()
+    let Some(_video) = cached.video_stream() else {
+        return false;
+    };
+    if cached.is_filename_guess() {
+        return false;
+    }
+    // H.264 compatibility rules need RefFrames. RemuxDB or other imported
+    // metadata that lacks it gets one local probe; a local ffprobe result is
+    // accepted even when ffprobe genuinely could not determine the value.
+    if cached.needs_reprobe() {
+        return false;
+    }
+
+    true
+}
+
+fn can_fallback_to_stale_probe_cache(cached: &api::MediaSourceInfo) -> bool {
+    !is_reusable_probe_cache(cached)
         && !cached.is_filename_guess()
+        && (cached
+            .video_stream()
+            .is_some()
+            || cached
+                .audio_stream()
+                .is_some())
 }
 
 /// Resolve probe data for a single source: cache hit → skip → live probe with fallback.
@@ -1042,6 +1180,10 @@ pub(crate) async fn probe_stream(
         }
         return Ok((info, stream.clone()));
     }
+    let can_fallback_to_stale = stream
+        .probe_data
+        .as_ref()
+        .is_some_and(can_fallback_to_stale_probe_cache);
     if let Some(cached) = &stream.probe_data {
         if is_reusable_probe_cache(cached) {
             let alive = match stream
@@ -1066,7 +1208,7 @@ pub(crate) async fn probe_stream(
             debug!(id = %stream.id, "probe cache stale or filename-guess only, re-probing");
         }
     }
-    probe_with_fallback(
+    let result = probe_with_fallback(
         stream.clone(),
         url_opt,
         timeout_secs,
@@ -1078,7 +1220,22 @@ pub(crate) async fn probe_stream(
         db,
         |url| probe_media(&url),
     )
-    .await
+    .await;
+
+    match result {
+        Ok(result) => Ok(result),
+        Err(error) if can_fallback_to_stale => {
+            warn!(
+                id = %stream.id,
+                error = ?error,
+                "probe refresh failed, falling back to stale cached metadata"
+            );
+            let mut info = api::MediaSourceInfo::from(stream.clone());
+            apply_video_bitrate_fallback(&mut info.media_streams, info.bitrate);
+            Ok((info, stream.clone()))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn select_candidates(
@@ -1367,6 +1524,54 @@ mod probe_tests {
     }
 
     #[test]
+    fn ffprobe_stream_deserializes_device_profile_fields() {
+        let stream: FfprobeStream = serde_json::from_value(serde_json::json!({
+            "index": 0,
+            "codec_type": "video",
+            "codec_name": "h264",
+            "refs": 4,
+            "is_avc": "true",
+            "nal_length_size": "4",
+            "side_data_list": [{
+                "side_data_type": "Display Matrix",
+                "rotation": -90
+            }]
+        }))
+        .expect("ffprobe stream");
+        assert_eq!(stream.refs, Some(4));
+        assert_eq!(
+            stream
+                .is_avc
+                .as_ref()
+                .and_then(FfprobeBool::value),
+            Some(true)
+        );
+        assert_eq!(
+            stream
+                .nal_length_size
+                .as_deref(),
+            Some("4")
+        );
+        assert_eq!(stream.rotation(), Some(-90));
+
+        let audio: FfprobeStream = serde_json::from_value(serde_json::json!({
+            "index": 1,
+            "codec_type": "audio",
+            "codec_name": "aac",
+            "profile": "LC",
+            "bits_per_sample": 16
+        }))
+        .expect("ffprobe audio stream");
+        assert_eq!(
+            audio
+                .profile
+                .as_deref(),
+            Some("LC")
+        );
+        assert_eq!(audio.bits_per_sample, Some(16));
+    }
+
+    #[test]
     fn is_reusable_probe_cache_accepts_remuxdb_match_with_video() {
         let remuxdb = api::MediaSourceInfo {
             media_streams: vec![api::MediaStream {
@@ -1380,6 +1585,73 @@ mod probe_tests {
             ..Default::default()
         };
         assert!(is_reusable_probe_cache(&remuxdb));
+    }
+
+    #[test]
+    fn is_reusable_probe_cache_refreshes_h264_without_usable_ref_frames() {
+        for (codec, ref_frames) in [
+            ("h264", None),
+            ("avc", None),
+            ("avc1", None),
+            ("H.264", None),
+            ("h264", Some(0)),
+        ] {
+            let incomplete = api::MediaSourceInfo {
+                media_streams: vec![api::MediaStream {
+                    type_: Some(api::MediaStreamType::Video),
+                    codec: Some(codec.to_string()),
+                    ref_frames,
+                    ..Default::default()
+                }],
+                remux: Some(api::MediaSourceRemuxInfo {
+                    source: Some(api::ProbeOrigin::RemuxDb),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            assert!(
+                !is_reusable_probe_cache(&incomplete),
+                "codec={codec}, ref_frames={ref_frames:?} must refresh"
+            );
+        }
+    }
+
+    #[test]
+    fn failed_refresh_can_fall_back_to_real_but_stale_probe_data() {
+        let stale = api::MediaSourceInfo {
+            media_streams: vec![api::MediaStream {
+                type_: Some(api::MediaStreamType::Video),
+                codec: Some("h264".to_string()),
+                ..Default::default()
+            }],
+            remux: Some(api::MediaSourceRemuxInfo {
+                source: Some(api::ProbeOrigin::RemuxDb),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(can_fallback_to_stale_probe_cache(&stale));
+
+        let mut guess = stale;
+        guess.remux = Some(api::MediaSourceRemuxInfo {
+            source: Some(api::ProbeOrigin::FilenameGuess),
+            ..Default::default()
+        });
+        assert!(!can_fallback_to_stale_probe_cache(&guess));
+
+        let local_probe = api::MediaSourceInfo {
+            media_streams: vec![api::MediaStream {
+                type_: Some(api::MediaStreamType::Video),
+                codec: Some("h264".to_string()),
+                ..Default::default()
+            }],
+            remux: Some(api::MediaSourceRemuxInfo {
+                source: Some(api::ProbeOrigin::Ffprobe),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(!can_fallback_to_stale_probe_cache(&local_probe));
     }
 
     #[test]
