@@ -5,6 +5,7 @@ default_to_workspace = false
 CONFIG = "./config"
 DB="db.sqlite"
 SLOW_QUERY_THRESHOLD_MS=700
+JELLYFIN_WEB_TAG="v12.1"
 
 [tasks.db-prepare]
 command = "cargo"
@@ -18,8 +19,17 @@ args = ["test", "--", "--nocapture"]
 
 [tasks.jellyfin-web-ensure]
 description = "Ensure jellyfin-web is built"
-condition = { files_not_exist = ["./jellyfin-web/dist"] }
-run_task = "jellyfin-web"
+script = '''
+CURRENT=""
+if [ -d "jellyfin-web/.git" ]; then
+  CURRENT=$(git -C jellyfin-web describe --tags --exact-match 2>/dev/null || true)
+fi
+if [ ! -d "jellyfin-web/dist" ] || [ "$CURRENT" != "$JELLYFIN_WEB_TAG" ]; then
+  cargo make jellyfin-web
+else
+  echo "jellyfin-web $JELLYFIN_WEB_TAG already built"
+fi
+'''
 
 
 [tasks.dev]
@@ -70,7 +80,6 @@ args = ["buildx", "build", "--network", "host", "-f", "docker/Dockerfile", "-t",
 [tasks.jellyfin-web-checkout]
 description = "Clone jellyfin-web if not already present"
 script = '''
-JELLYFIN_WEB_TAG="v10.11.11"
 if [ ! -d "jellyfin-web" ]; then
   git clone --depth 1 --branch "$JELLYFIN_WEB_TAG" https://github.com/jellyfin/jellyfin-web.git jellyfin-web
 else
@@ -90,7 +99,6 @@ fi
 description = "Install deps and build jellyfin-web"
 cwd = "jellyfin-web"
 script = '''
-echo "engine-strict=false" > .npmrc
 npm install
 npm run build:production
 '''
