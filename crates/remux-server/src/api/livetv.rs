@@ -861,6 +861,36 @@ pub async fn livetv_live_recording_stream(
     };
     let url = format!("{}{file_url}", cfg.base_url);
 
+    if file_url.contains("/hls/") || file_url.ends_with(".m3u8") {
+        let resp = crate::addons::dispatcharr::CLIENT
+            .get(&url)
+            .header("X-API-Key", &cfg.api_key)
+            .send()
+            .await
+            .context_bad_request("upstream HLS request failed")?
+            .error_for_status()
+            .context_bad_request("upstream HLS request failed")?
+            .text()
+            .await
+            .context_bad_request("failed reading upstream playlist")?;
+        // Only a recording still being written can grow.
+        let growth = (rec.status() == DispatcharrRecordingStatus::Recording
+            && rec.end_time > Utc::now())
+        .then(|| Growth {
+            scheduled_secs: (rec.end_time - rec.start_time).num_milliseconds() as f64
+                / 1000.0,
+            elapsed_secs: ((Utc::now() - rec.start_time).num_milliseconds() as f64
+                / 1000.0)
+                .max(0.0),
+        });
+        let rewritten = recording_vod_playlist(&resp, recording_id, growth);
+        return Ok((
+            [(http::header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
+            rewritten,
+        )
+            .into_response());
+    }
+
     let source = HttpSource {
         url,
         request_headers: std::collections::HashMap::from([(
@@ -873,6 +903,225 @@ pub async fn livetv_live_recording_stream(
         .serve(&state, &headers)
         .await?
         .into_response())
+}
+
+/// How far a recording that is still being written is expected to grow.
+struct Growth {
+    /// Length between the recording's scheduled start and end.
+    scheduled_secs: f64,
+    /// Time since the scheduled start.
+    elapsed_secs: f64,
+}
+
+/// Rewrites Dispatcharr's live playlist into a finite VOD one
+/// (`PLAYLIST-TYPE:VOD` + `ENDLIST`), with segment URIs pointed at our segment
+/// proxy so the client need not attach `X-API-Key`.
+///
+/// Given `growth`, it is padded to the recording's expected final length with
+/// not-yet-written segments, continuing Dispatcharr's `seg_NNNNN.ts` numbering
+/// at the mean duration of the real ones; the segment proxy holds a request
+/// for one until it exists. Without `growth` it lists only what exists.
+fn recording_vod_playlist(
+    upstream: &str,
+    recording_id: Uuid,
+    growth: Option<Growth>,
+) -> String {
+    let route = |seg: &str| format!("/livetv/liverecordings/{recording_id}/hls/{seg}");
+    let mut out: Vec<String> = Vec::new();
+    let mut durations: Vec<f64> = Vec::new();
+    let mut last_segment: Option<String> = None;
+    let mut target_duration = 4.0_f64;
+
+    for line in upstream
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+    {
+        if line.starts_with("#EXT-X-PLAYLIST-TYPE")
+            || line.starts_with("#EXT-X-ENDLIST")
+        {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("#EXTINF:") {
+            if let Some(d) = rest
+                .split(',')
+                .next()
+                .and_then(|d| {
+                    d.trim()
+                        .parse::<f64>()
+                        .ok()
+                })
+            {
+                durations.push(d);
+            }
+        } else if let Some(rest) = line.strip_prefix("#EXT-X-TARGETDURATION:") {
+            target_duration = rest
+                .trim()
+                .parse()
+                .unwrap_or(target_duration);
+        }
+        if line.starts_with('#') {
+            out.push(line.to_string());
+        } else {
+            let seg = line
+                .rsplit('/')
+                .next()
+                .unwrap_or(line);
+            out.push(route(seg));
+            last_segment = Some(seg.to_string());
+        }
+    }
+    out.insert(
+        usize::from(
+            out.first()
+                .is_some_and(|l| l == "#EXTM3U"),
+        ),
+        "#EXT-X-PLAYLIST-TYPE:VOD".to_string(),
+    );
+
+    if let Some(growth) = growth {
+        // `seg_00017.ts` -> ("seg_", 17, width 5, ".ts"). A name that doesn't
+        // follow that shape can't be continued, so the playlist stays a snapshot.
+        let (prefix, next, width, ext) = match &last_segment {
+            None => ("seg_".to_string(), 0, 5, ".ts".to_string()),
+            Some(seg) => {
+                let Some((stem, ext)) = seg.rsplit_once('.') else {
+                    return finish_playlist(out);
+                };
+                let digits = stem
+                    .chars()
+                    .rev()
+                    .take_while(char::is_ascii_digit)
+                    .count();
+                let (prefix, number) = stem.split_at(stem.len() - digits);
+                let Ok(n) = number.parse::<u64>() else {
+                    return finish_playlist(out);
+                };
+                (prefix.to_string(), n + 1, digits, format!(".{ext}"))
+            }
+        };
+        let mean = if durations.is_empty() {
+            target_duration
+        } else {
+            durations
+                .iter()
+                .sum::<f64>()
+                / durations.len() as f64
+        };
+        // Dispatcharr records a roughly constant lead ahead of the wall
+        // clock, so it overruns its scheduled length by that much; carry the
+        // lead measured so far or the tail is cut off.
+        let recorded = durations
+            .iter()
+            .sum::<f64>();
+        let lead = (recorded - growth.elapsed_secs).max(0.0);
+        let remaining = growth.scheduled_secs + lead - recorded;
+        if mean > 0.0 && remaining > 0.5 {
+            let count = ((remaining / mean).ceil() as u64).min(MAX_PADDED_SEGMENTS);
+            for k in 0..count {
+                // The last one takes whatever is left, so the total matches.
+                let d = if k + 1 == count {
+                    (remaining - (count - 1) as f64 * mean).max(0.001)
+                } else {
+                    mean
+                };
+                out.push(format!("#EXTINF:{d:.6},"));
+                out.push(route(&format!("{prefix}{:0width$}{ext}", next + k)));
+            }
+        }
+    }
+    finish_playlist(out)
+}
+
+fn finish_playlist(mut lines: Vec<String>) -> String {
+    lines.push("#EXT-X-ENDLIST".to_string());
+    let mut playlist = lines.join("\n");
+    playlist.push('\n');
+    playlist
+}
+
+/// Upper bound on how many not-yet-written segments a playlist is padded
+/// with (~22 hours at 4 s), so a bogus schedule can't build a huge playlist.
+const MAX_PADDED_SEGMENTS: u64 = 20_000;
+
+/// How long a request for an unwritten segment is held, and its poll
+/// interval. A client with a shorter HTTP timeout errors first.
+const SEGMENT_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+const SEGMENT_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+// --------------------------------------------------------------------------
+// GET /livetv/liverecordings/{recordingId}/hls/{segPath}
+// --------------------------------------------------------------------------
+
+#[get("/livetv/liverecordings/{recording_id}/hls/{seg_path}")]
+pub async fn livetv_recording_hls_segment(
+    State(state): State<AppState>,
+    Path((recording_id, seg_path)): Path<(Uuid, String)>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    let Some((cfg, rec)) =
+        DvrService::recording_playback_target(&state.ctx, recording_id).await?
+    else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
+    let url = format!(
+        "{}/api/channels/recordings/{}/hls/{seg_path}",
+        cfg.base_url, rec.id
+    );
+    if rec.status() == DispatcharrRecordingStatus::Recording {
+        wait_for_segment(&url, &cfg.api_key, SEGMENT_WAIT, SEGMENT_POLL, || async {
+            matches!(
+                DvrService::recording_playback_target(&state.ctx, recording_id).await,
+                Ok(Some((_, rec))) if rec.status() == DispatcharrRecordingStatus::Recording
+            )
+        })
+        .await;
+    }
+    let source = HttpSource {
+        url,
+        request_headers: std::collections::HashMap::from([(
+            "X-API-Key".to_string(),
+            cfg.api_key,
+        )]),
+        response_headers: Default::default(),
+    };
+    Ok(source
+        .serve(&state, &headers)
+        .await?
+        .into_response())
+}
+
+/// Holds the request while Dispatcharr 404s a segment the padded playlist
+/// lists but has not written yet. Returns once the segment exists,
+/// `still_running` reports the recording has stopped, or `wait` elapses.
+async fn wait_for_segment<F, Fut>(
+    url: &str,
+    api_key: &str,
+    wait: std::time::Duration,
+    poll: std::time::Duration,
+    still_running: F,
+) where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = tokio::time::Instant::now() + wait;
+    let mut polls = 0u32;
+    loop {
+        let missing = crate::addons::dispatcharr::CLIENT
+            .head(url)
+            .header("X-API-Key", api_key)
+            .send()
+            .await
+            .is_ok_and(|r| r.status() == StatusCode::NOT_FOUND);
+        if !missing || tokio::time::Instant::now() >= deadline {
+            return;
+        }
+        tokio::time::sleep(poll).await;
+        polls += 1;
+        if polls % 10 == 0 && !still_running().await {
+            return;
+        }
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -1336,5 +1585,277 @@ fn channel_to_editor_dto(m: &db::Media) -> ChannelEditorDto {
         country: m
             .country
             .clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ID: Uuid = Uuid::from_u128(7);
+
+    /// Dispatcharr's playlist for a recording with `n` segments so far.
+    fn upstream(n: usize) -> String {
+        let mut p = String::from(
+            "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:5\n#EXT-X-MEDIA-SEQUENCE:0\n\
+             #EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-DISCONTINUITY\n",
+        );
+        for i in 0..n {
+            p.push_str(&format!(
+                "#EXTINF:4.000000,\nhttp://d:9191/api/channels/recordings/12/hls/seg_{i:05}.ts\n"
+            ));
+        }
+        p
+    }
+
+    /// A recording that has been running far longer than what it has produced,
+    /// so there is no lead to add.
+    fn grow(scheduled_secs: f64) -> Option<Growth> {
+        Some(Growth {
+            scheduled_secs,
+            elapsed_secs: 1e9,
+        })
+    }
+
+    fn segment_uris(playlist: &str) -> Vec<&str> {
+        playlist
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.is_empty())
+            .collect()
+    }
+
+    fn total_secs(playlist: &str) -> f64 {
+        playlist
+            .lines()
+            .filter_map(|l| l.strip_prefix("#EXTINF:"))
+            .filter_map(|l| {
+                l.trim_end_matches(',')
+                    .parse::<f64>()
+                    .ok()
+            })
+            .sum()
+    }
+
+    #[test]
+    fn snapshot_is_a_finite_vod_routed_through_remux() {
+        let p = recording_vod_playlist(&upstream(3), ID, None);
+        assert!(p.starts_with("#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n"));
+        assert!(
+            p.trim_end()
+                .ends_with("#EXT-X-ENDLIST")
+        );
+        assert_eq!(
+            segment_uris(&p),
+            (0..3)
+                .map(|i| format!("/livetv/liverecordings/{ID}/hls/seg_{i:05}.ts"))
+                .collect::<Vec<_>>()
+        );
+        // Dispatcharr's own tags survive.
+        assert!(p.contains("#EXT-X-DISCONTINUITY"));
+        assert!(!p.contains("dispatcharr") && !p.contains("9191"));
+    }
+
+    #[test]
+    fn never_carries_two_playlist_types_or_endlists() {
+        let live = format!(
+            "{}#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-ENDLIST\n",
+            upstream(2)
+        );
+        let p = recording_vod_playlist(&live, ID, grow(60.0));
+        assert_eq!(
+            p.matches("#EXT-X-PLAYLIST-TYPE")
+                .count(),
+            1
+        );
+        assert_eq!(
+            p.matches("#EXT-X-ENDLIST")
+                .count(),
+            1
+        );
+        assert!(p.contains("#EXT-X-PLAYLIST-TYPE:VOD"));
+    }
+
+    #[test]
+    fn pads_to_the_scheduled_length_continuing_the_numbering() {
+        let p = recording_vod_playlist(&upstream(3), ID, grow(30.0));
+        let uris = segment_uris(&p);
+        assert_eq!(
+            uris.last()
+                .copied(),
+            Some(format!("/livetv/liverecordings/{ID}/hls/seg_00007.ts").as_str())
+        );
+        assert_eq!(uris.len(), 8, "3 real + ceil(18 / 4) padded");
+        assert!((total_secs(&p) - 30.0).abs() < 1e-3, "{}", total_secs(&p));
+        // Every entry stays within the target duration the header promises.
+        assert!(
+            p.lines()
+                .filter_map(|l| l.strip_prefix("#EXTINF:"))
+                .all(|l| l
+                    .trim_end_matches(',')
+                    .parse::<f64>()
+                    .unwrap()
+                    <= 5.0)
+        );
+    }
+
+    #[test]
+    fn allows_for_the_lead_dispatcharrs_recording_runs_ahead_of_the_clock() {
+        // 5 segments = 20 s of content only 2 s after the scheduled start: the
+        // recording is 18 s ahead, so it will end 18 s past its schedule.
+        let growth = Growth {
+            scheduled_secs: 30.0,
+            elapsed_secs: 2.0,
+        };
+        let p = recording_vod_playlist(&upstream(5), ID, Some(growth));
+        assert!((total_secs(&p) - 48.0).abs() < 1e-3, "{}", total_secs(&p));
+    }
+
+    #[test]
+    fn a_recording_behind_the_clock_gets_no_lead() {
+        let growth = Growth {
+            scheduled_secs: 30.0,
+            elapsed_secs: 100.0,
+        };
+        let p = recording_vod_playlist(&upstream(5), ID, Some(growth));
+        assert!((total_secs(&p) - 30.0).abs() < 1e-3, "{}", total_secs(&p));
+    }
+
+    #[test]
+    fn does_not_pad_when_already_long_enough() {
+        let p = recording_vod_playlist(&upstream(3), ID, grow(12.2));
+        assert_eq!(segment_uris(&p).len(), 3);
+        let p = recording_vod_playlist(&upstream(3), ID, grow(5.0));
+        assert_eq!(segment_uris(&p).len(), 3);
+    }
+
+    #[test]
+    fn a_recording_with_no_segments_yet_starts_from_zero() {
+        let p = recording_vod_playlist(&upstream(0), ID, grow(12.0));
+        assert_eq!(
+            segment_uris(&p),
+            (0..3)
+                .map(|i| format!("/livetv/liverecordings/{ID}/hls/seg_{i:05}.ts"))
+                .collect::<Vec<_>>(),
+            "falls back to TARGETDURATION (5 s) per segment"
+        );
+    }
+
+    #[test]
+    fn an_unrecognised_segment_name_is_left_as_a_snapshot() {
+        let odd =
+            "#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXTINF:4.0,\nhttp://d/hls/chunk.ts\n";
+        let p = recording_vod_playlist(odd, ID, grow(60.0));
+        assert_eq!(segment_uris(&p).len(), 1);
+        assert!(
+            p.trim_end()
+                .ends_with("#EXT-X-ENDLIST")
+        );
+    }
+
+    #[test]
+    fn a_bogus_schedule_cannot_build_an_unbounded_playlist() {
+        let p = recording_vod_playlist(&upstream(1), ID, grow(1e12));
+        assert_eq!(segment_uris(&p).len() as u64, 1 + MAX_PADDED_SEGMENTS);
+    }
+
+    // -- waiting for a segment ----------------------------------------
+
+    use std::time::{Duration as StdDuration, Instant};
+
+    const POLL: StdDuration = StdDuration::from_millis(20);
+
+    #[tokio::test]
+    async fn returns_at_once_when_the_segment_exists() {
+        let server = httpmock::MockServer::start();
+        let head = server.mock(|when, then| {
+            when.method(httpmock::Method::HEAD)
+                .path("/seg_00001.ts")
+                .header("X-API-Key", "k");
+            then.status(200);
+        });
+        let started = Instant::now();
+        wait_for_segment(
+            &server.url("/seg_00001.ts"),
+            "k",
+            StdDuration::from_secs(10),
+            POLL,
+            || async { true },
+        )
+        .await;
+        assert!(started.elapsed() < StdDuration::from_secs(2));
+        head.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn keeps_polling_until_the_segment_appears() {
+        let server = httpmock::MockServer::start();
+        let mut missing = server.mock(|when, then| {
+            when.method(httpmock::Method::HEAD)
+                .path("/seg_00009.ts");
+            then.status(404);
+        });
+        let url = server.url("/seg_00009.ts");
+        let waiter = tokio::spawn(async move {
+            let started = Instant::now();
+            wait_for_segment(&url, "k", StdDuration::from_secs(10), POLL, || async {
+                true
+            })
+            .await;
+            started.elapsed()
+        });
+        tokio::time::sleep(StdDuration::from_millis(300)).await;
+        missing.delete();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::HEAD)
+                .path("/seg_00009.ts");
+            then.status(200);
+        });
+        let waited = waiter
+            .await
+            .unwrap();
+        assert!(waited >= StdDuration::from_millis(250), "{waited:?}");
+        assert!(waited < StdDuration::from_secs(5), "{waited:?}");
+    }
+
+    #[tokio::test]
+    async fn gives_up_after_the_wait_limit() {
+        let server = httpmock::MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::HEAD)
+                .path("/seg_00042.ts");
+            then.status(404);
+        });
+        let started = Instant::now();
+        wait_for_segment(
+            &server.url("/seg_00042.ts"),
+            "k",
+            StdDuration::from_millis(300),
+            POLL,
+            || async { true },
+        )
+        .await;
+        let waited = started.elapsed();
+        assert!(waited >= StdDuration::from_millis(300), "{waited:?}");
+        assert!(waited < StdDuration::from_secs(3), "{waited:?}");
+    }
+
+    #[tokio::test]
+    async fn stops_waiting_once_the_recording_is_no_longer_running() {
+        let server = httpmock::MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::HEAD)
+                .path("/seg_00042.ts");
+            then.status(404);
+        });
+        let started = Instant::now();
+        wait_for_segment(
+            &server.url("/seg_00042.ts"),
+            "k",
+            StdDuration::from_secs(30),
+            POLL,
+            || async { false },
+        )
+        .await;
+        assert!(started.elapsed() < StdDuration::from_secs(3));
     }
 }
