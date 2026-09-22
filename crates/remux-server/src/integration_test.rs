@@ -153,6 +153,7 @@ async fn insert_source(
         media_streams: vec![
             MediaStream {
                 codec: Some("h264".to_string()),
+                ref_frames: Some(1),
                 type_: Some(MediaStreamType::Video),
                 index: 0,
                 width: Some(1920),

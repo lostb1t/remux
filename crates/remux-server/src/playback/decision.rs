@@ -187,17 +187,10 @@ fn build_video_transcode(
         .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
 
     let needs_video_transcode = reasons
-        .contains(&api::TranscodeReason::VideoCodecNotSupported(String::new()))
-        || reasons.contains(&api::TranscodeReason::ContainerBitrateExceedsLimit)
-        || reasons.contains(&api::TranscodeReason::VideoRangeTypeNotSupported(
-            String::new(),
-        ))
-        || reasons.contains(&api::TranscodeReason::VideoProfileNotSupported(
-            String::new(),
-        ))
-        || reasons.contains(&api::TranscodeReason::VideoBitDepthNotSupported(
-            String::new(),
-        ));
+        .0
+        .iter()
+        .any(api::TranscodeReason::is_video)
+        || reasons.contains(&api::TranscodeReason::ContainerBitrateExceedsLimit);
 
     // When video re-encoding is not allowed (server setting or user policy),
     // fall through with video=copy — remux the container and transcode audio
@@ -219,8 +212,10 @@ fn build_video_transcode(
         "copy"
     }
     .to_string();
-    let needs_audio_transcode =
-        reasons.contains(&api::TranscodeReason::AudioCodecNotSupported(String::new()));
+    let needs_audio_transcode = reasons
+        .0
+        .iter()
+        .any(api::TranscodeReason::is_audio);
     let audio_transcode_allowed = cfg
         .encoding_cfg
         .enable_audio_transcoding
@@ -264,7 +259,13 @@ fn build_video_transcode(
     let needs_hevc_retag = reasons.contains(
         &api::TranscodeReason::VideoCodecTagNotSupported(String::new()),
     );
-    if video_codec == "copy" && audio_codec == "copy" && !needs_hevc_retag {
+    let needs_stream_filter =
+        reasons.contains(&api::TranscodeReason::StreamCountExceedsLimit(String::new()));
+    if video_codec == "copy"
+        && audio_codec == "copy"
+        && !needs_hevc_retag
+        && !needs_stream_filter
+    {
         let src = source
             .container
             .as_ref()
