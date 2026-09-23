@@ -174,16 +174,19 @@ pub async fn stream_group_preview(
     session: auth::AuthSession,
     Query(q): Query<PreviewQuery>,
 ) -> Result<impl IntoResponse> {
+    // The Bitrate rule estimates size ÷ runtime for unprobed streams. The
+    // preview title is The Matrix (136 min), so its runtime is hardcoded.
     let stub = Media {
         kind: MediaKind::Movie,
         external_ids: ExternalIds {
             imdb: NonEmptyString::try_new(q.imdb_id).ok(),
             ..Default::default()
         },
+        runtime: Some(136 * 60),
         ..Default::default()
     };
 
-    let raw_streams = state
+    let mut raw_streams = state
         .ctx
         .addons
         .get_streams(
@@ -196,6 +199,11 @@ pub async fn stream_group_preview(
             ),
         )
         .await?;
+    for s in &mut raw_streams {
+        s.runtime = s
+            .runtime
+            .or(stub.runtime);
+    }
 
     let groups = StreamGroup::list(
         &state
