@@ -534,6 +534,9 @@ async fn streams_metadata(state: &AppState, id: Uuid) -> AnyResult<StreamsRespon
                     StreamRule::Bitrate { op, value } => {
                         format_bitrate_rule(*op, *value)
                     }
+                    StreamRule::Cached { value } => {
+                        if *value { "Cached" } else { "Uncached" }.to_string()
+                    }
                     StreamRule::Addon { values, .. } => {
                         if values.len() == 1 {
                             "1 addon".to_string()
