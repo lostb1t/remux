@@ -2915,32 +2915,14 @@ impl AddonService {
     }
 
     fn deduplicate_streams(streams: Vec<db::Media>) -> Vec<db::Media> {
-        let mut positions: std::collections::HashMap<String, usize> =
-            std::collections::HashMap::new();
-        let mut deduplicated: Vec<db::Media> = Vec::with_capacity(streams.len());
-        for stream in streams {
-            if let Some(key) = Self::stream_dedup_key(&stream) {
-                if let Some(&position) = positions.get(&key) {
-                    let existing_cached = deduplicated[position]
-                        .stream_info
-                        .as_ref()
-                        .and_then(|info| info.service_cached)
-                        == Some(true);
-                    let incoming_cached = stream
-                        .stream_info
-                        .as_ref()
-                        .and_then(|info| info.service_cached)
-                        == Some(true);
-                    if incoming_cached && !existing_cached {
-                        deduplicated[position] = stream;
-                    }
-                    continue;
-                }
-                positions.insert(key, deduplicated.len());
-            }
-            deduplicated.push(stream);
-        }
-        deduplicated
+        let mut seen = std::collections::HashSet::new();
+        streams
+            .into_iter()
+            .filter(|stream| match Self::stream_dedup_key(stream) {
+                Some(key) => seen.insert(key),
+                None => true,
+            })
+            .collect()
     }
 }
 
@@ -3597,30 +3579,6 @@ mod tests {
             .collect();
 
         assert_eq!(filenames, expected);
-    }
-
-    #[test]
-    fn stream_dedup_prefers_confirmed_cached_duplicate_without_reordering() {
-        let mut uncached = torrent_stream("aaa", "Movie.2026.720p.WEBRip.mkv", 0);
-        uncached
-            .stream_info
-            .as_mut()
-            .unwrap()
-            .service_cached = Some(false);
-        let second = torrent_stream("bbb", "Movie.2026.2160p.BluRay.Remux.mkv", 0);
-        let mut cached = torrent_stream("AAA", "Movie.2026.720p.WEBRip.mkv", 9);
-        cached
-            .stream_info
-            .as_mut()
-            .unwrap()
-            .service_cached = Some(true);
-        let cached_id = cached.id;
-        let second_id = second.id;
-
-        let deduped = AddonService::deduplicate_streams(vec![uncached, second, cached]);
-        assert_eq!(deduped.len(), 2);
-        assert_eq!(deduped[0].id, cached_id);
-        assert_eq!(deduped[1].id, second_id);
     }
 
     fn make_image(path: &str) -> db::MediaImage {
