@@ -893,9 +893,26 @@ impl SourceRankingContext<'_> {
         SourceAssessment { reasons, rank }
     }
 
-    pub fn key(&self, source: &MediaSourceInfo) -> (u8, u8, u8, i64, u8, u8, i64, i64) {
-        self.assess(source)
-            .key(self.mode)
+    /// Uncached debrid streams rank last; unknown counts as cached.
+    pub fn key(
+        &self,
+        source: &MediaSourceInfo,
+    ) -> (bool, (u8, u8, u8, i64, u8, u8, i64, i64)) {
+        let cached = source
+            .remux
+            .as_ref()
+            .and_then(|r| {
+                r.provider_info
+                    .as_ref()
+            })
+            .and_then(|p| p.get("cached"))
+            .and_then(|c| c.as_bool())
+            != Some(false);
+        (
+            cached,
+            self.assess(source)
+                .key(self.mode),
+        )
     }
 }
 
@@ -2515,6 +2532,31 @@ mod tests {
                 > best(source_720p.capability_rank(None, &TranscodeReasons::default())),
             "resolution must be decided before audio quality"
         );
+    }
+
+    #[test]
+    fn ranking_context_puts_uncached_streams_last() {
+        let ranking = super::SourceRankingContext {
+            mode: SortMediaSourcesMode::Best,
+            device_profile: None,
+            subtitle_mode: EmbeddedSubtitleHandling::default(),
+            explicit_subtitle_index: None,
+        };
+        let with_cached = |width, cached: Option<bool>| {
+            let mut source = source_with(
+                video_stream(width, Some(VideoRangeType::Sdr)),
+                audio_stream("aac", 2),
+                true,
+            );
+            source.remux = Some(remux_sdks::remux::MediaSourceRemuxInfo {
+                provider_info: Some(serde_json::json!({ "cached": cached })),
+                ..Default::default()
+            });
+            source
+        };
+        let cached_720p = ranking.key(&with_cached(1280, Some(true)));
+        assert!(cached_720p > ranking.key(&with_cached(1920, Some(false))));
+        assert!(ranking.key(&with_cached(1920, None)) > cached_720p);
     }
 
     #[test]
