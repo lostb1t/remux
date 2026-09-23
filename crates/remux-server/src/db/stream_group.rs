@@ -2,8 +2,8 @@ use anyhow::Result;
 use chrono::Utc;
 use remux_sdks::remux::{
     FilterMatchMode, NumericOp, SetOp, StreamCodec, StreamFilter, StreamQuality,
-    StreamResolution, StreamRule, format_size_rule, language_label,
-    normalize_lang_code,
+    StreamResolution, StreamRule, format_bitrate_rule, format_size_rule,
+    language_label, normalize_lang_code,
 };
 use sqlx::SqlitePool;
 use std::collections::HashSet;
@@ -267,10 +267,11 @@ impl StreamGroup {
                     s.stream_info
                         .as_ref()
                         .map_or(false, |info| {
-                            group.match_outcome(
+                            group.match_stream(
                                 info,
                                 s.probe_data
                                     .as_ref(),
+                                s.runtime,
                             ) == MatchOutcome::Match
                         })
                 })
@@ -332,10 +333,11 @@ pub fn apply_stream_filter(filter: &StreamFilter, sources: Vec<Media>) -> Vec<Me
             s.stream_info
                 .as_ref()
                 .map_or(true, |info| {
-                    temp.match_outcome(
+                    temp.match_stream(
                         info,
                         s.probe_data
                             .as_ref(),
+                        s.runtime,
                     ) != MatchOutcome::NoMatch
                 })
         })
@@ -343,10 +345,21 @@ pub fn apply_stream_filter(filter: &StreamFilter, sources: Vec<Media>) -> Vec<Me
 }
 
 impl StreamGroup {
+    #[cfg(test)]
     pub fn match_outcome(
         &self,
         info: &StreamInfo,
         probe_data: Option<&crate::api::MediaSourceInfo>,
+    ) -> MatchOutcome {
+        self.match_stream(info, probe_data, None)
+    }
+
+    /// `runtime_secs` feeds the Bitrate rule's size ÷ runtime estimate.
+    pub fn match_stream(
+        &self,
+        info: &StreamInfo,
+        probe_data: Option<&crate::api::MediaSourceInfo>,
+        runtime_secs: Option<i64>,
     ) -> MatchOutcome {
         let filter = &self.filter;
         if filter
@@ -429,6 +442,27 @@ impl StreamGroup {
                         NumericOp::Lt => s < *value,
                     }),
                 },
+                StreamRule::Cached { value } => match info.cached {
+                    None => MatchOutcome::PassThrough,
+                    Some(c) => bool_to_outcome(c == *value),
+                },
+                StreamRule::Bitrate { op, value } => {
+                    let bitrate = probe_data
+                        .and_then(|p| p.bitrate)
+                        .or_else(|| {
+                            let secs = runtime_secs.filter(|s| *s > 0)?;
+                            Some(info.size? * 8 / secs)
+                        });
+                    match bitrate {
+                        None => MatchOutcome::PassThrough,
+                        Some(b) => bool_to_outcome(match op {
+                            NumericOp::Eq => b == *value,
+                            NumericOp::NotEq => b != *value,
+                            NumericOp::Gt => b > *value,
+                            NumericOp::Lt => b < *value,
+                        }),
+                    }
+                }
                 // Unknown addon (None) passes through, consistent with Size/
                 // AudioLanguage above.
                 StreamRule::Addon { op, values } => match info.addon_id {
@@ -482,10 +516,11 @@ impl StreamGroup {
                 s.stream_info
                     .as_ref()
                     .map_or(false, |info| {
-                        group.match_outcome(
+                        group.match_stream(
                             info,
                             s.probe_data
                                 .as_ref(),
+                            s.runtime,
                         ) == MatchOutcome::Match
                     })
             })
@@ -711,6 +746,12 @@ fn auto_name(filter: &StreamFilter) -> String {
                     .map(|c| language_label(c))
                     .collect(),
                 StreamRule::Size { op, value } => vec![format_size_rule(*op, *value)],
+                StreamRule::Bitrate { op, value } => {
+                    vec![format_bitrate_rule(*op, *value)]
+                }
+                StreamRule::Cached { value } => {
+                    vec![if *value { "Cached" } else { "Uncached" }.to_string()]
+                }
                 StreamRule::Addon { values, .. } => {
                     if values.len() == 1 {
                         vec!["1 addon".to_string()]
@@ -1193,6 +1234,64 @@ mod tests {
                 None
             ),
             MatchOutcome::NoMatch
+        );
+    }
+
+    #[test]
+    fn bitrate_uses_probe_else_size_over_runtime() {
+        const GIB: i64 = 1024 * 1024 * 1024;
+        let mut group = group_size(NumericOp::Lt, 0);
+        group
+            .filter
+            .rules = vec![StreamRule::Bitrate {
+            op: NumericOp::Lt,
+            value: 8_000_000,
+        }];
+        let file = |size| info_with_size("Movie.1080p.WEB-DL.mkv", size);
+        let probe = crate::api::MediaSourceInfo {
+            bitrate: Some(20_000_000),
+            ..Default::default()
+        };
+        // 150 min: 2 GiB ≈ 1.9 Mbps, 10 GiB ≈ 9.5 Mbps; 22 min: 2 GiB ≈ 13 Mbps.
+        let cases = [
+            (Some(2 * GIB), None, Some(9000), MatchOutcome::Match),
+            (Some(10 * GIB), None, Some(9000), MatchOutcome::NoMatch),
+            (Some(2 * GIB), None, Some(1320), MatchOutcome::NoMatch),
+            (
+                Some(2 * GIB),
+                Some(&probe),
+                Some(9000),
+                MatchOutcome::NoMatch,
+            ),
+            (None, None, Some(9000), MatchOutcome::PassThrough),
+            (Some(2 * GIB), None, None, MatchOutcome::PassThrough),
+        ];
+        for (size, probe, runtime, want) in cases {
+            assert_eq!(group.match_stream(&file(size), probe, runtime), want);
+        }
+    }
+
+    #[test]
+    fn cached_rule_matches_flag_and_passes_unknown() {
+        let mut group = group_size(NumericOp::Lt, 0);
+        group
+            .filter
+            .rules = vec![StreamRule::Cached { value: false }];
+        let file = |cached| StreamInfo {
+            cached,
+            ..info("Movie.1080p.WEB-DL.mkv")
+        };
+        assert_eq!(
+            group.match_outcome(&file(Some(false)), None),
+            MatchOutcome::Match
+        );
+        assert_eq!(
+            group.match_outcome(&file(Some(true)), None),
+            MatchOutcome::NoMatch
+        );
+        assert_eq!(
+            group.match_outcome(&file(None), None),
+            MatchOutcome::PassThrough
         );
     }
 

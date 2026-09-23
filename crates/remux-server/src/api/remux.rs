@@ -482,10 +482,11 @@ async fn streams_metadata(state: &AppState, id: Uuid) -> AnyResult<StreamsRespon
                 s.stream_info
                     .as_ref()
                     .map_or(false, |info| {
-                        group.match_outcome(
+                        group.match_stream(
                             info,
                             s.probe_data
                                 .as_ref(),
+                            s.runtime,
                         ) == db::MatchOutcome::Match
                     })
             })
@@ -501,7 +502,9 @@ async fn streams_metadata(state: &AppState, id: Uuid) -> AnyResult<StreamsRespon
 
         let best = matching[0];
         let description = {
-            use remux_sdks::remux::{StreamRule, format_size_rule, language_label};
+            use remux_sdks::remux::{
+                StreamRule, format_bitrate_rule, format_size_rule, language_label,
+            };
             let parts: Vec<String> = group
                 .filter
                 .rules
@@ -528,6 +531,12 @@ async fn streams_metadata(state: &AppState, id: Uuid) -> AnyResult<StreamsRespon
                         .collect::<Vec<_>>()
                         .join("/"),
                     StreamRule::Size { op, value } => format_size_rule(*op, *value),
+                    StreamRule::Bitrate { op, value } => {
+                        format_bitrate_rule(*op, *value)
+                    }
+                    StreamRule::Cached { value } => {
+                        if *value { "Cached" } else { "Uncached" }.to_string()
+                    }
                     StreamRule::Addon { values, .. } => {
                         if values.len() == 1 {
                             "1 addon".to_string()

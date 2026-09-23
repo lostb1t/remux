@@ -6,11 +6,11 @@ use crate::{
 };
 use dioxus::prelude::*;
 use remux_sdks::remux::{
-    common_audio_languages, format_size_rule, language_label, AddonDto,
-    CreateStreamGroup, CreateStreamGroupRequest, DeleteStreamGroup, FilterMatchMode,
-    GetStreamGroupPreview, GetSystemConfiguration, ListAddons, ListStreamGroups,
-    NumericOp, ServerConfiguration, SetOp, StreamCodec, StreamFilter, StreamGroupDto,
-    StreamGroupPreviewDto, StreamQuality, StreamResolution, StreamRule,
+    common_audio_languages, format_bitrate_rule, format_size_rule, language_label,
+    AddonDto, CreateStreamGroup, CreateStreamGroupRequest, DeleteStreamGroup,
+    FilterMatchMode, GetStreamGroupPreview, GetSystemConfiguration, ListAddons,
+    ListStreamGroups, NumericOp, ServerConfiguration, SetOp, StreamCodec, StreamFilter,
+    StreamGroupDto, StreamGroupPreviewDto, StreamQuality, StreamResolution, StreamRule,
     UpdateStreamGroup, UpdateStreamGroupRequest, UpdateSystemConfiguration,
 };
 use std::collections::HashMap;
@@ -28,20 +28,25 @@ pub(crate) fn StreamRuleRow(
         StreamRule::Quality { .. } => "quality",
         StreamRule::Codec { .. } => "codec",
         StreamRule::Size { .. } => "size",
+        StreamRule::Bitrate { .. } => "bitrate",
+        StreamRule::Cached { .. } => "cached",
         StreamRule::AudioLanguage { .. } => "audio_language",
         StreamRule::Addon { .. } => "addon",
     };
     let is_size = field_val == "size";
+    let is_numeric = is_size || field_val == "bitrate";
     let op_not_in = match &rule {
         StreamRule::Resolution { op, .. }
         | StreamRule::Quality { op, .. }
         | StreamRule::Codec { op, .. }
         | StreamRule::AudioLanguage { op, .. }
         | StreamRule::Addon { op, .. } => matches!(op, SetOp::NotIn),
-        StreamRule::Size { .. } => false,
+        StreamRule::Size { .. }
+        | StreamRule::Bitrate { .. }
+        | StreamRule::Cached { .. } => false,
     };
     let size_op = match &rule {
-        StreamRule::Size { op, .. } => Some(*op),
+        StreamRule::Size { op, .. } | StreamRule::Bitrate { op, .. } => Some(*op),
         _ => None,
     };
 
@@ -62,6 +67,8 @@ pub(crate) fn StreamRuleRow(
                             }
                             "addon" => StreamRule::Addon { op: SetOp::In, values: vec![] },
                             "size"   => StreamRule::Size { op: NumericOp::Gt, value: 0 },
+                            "bitrate" => StreamRule::Bitrate { op: NumericOp::Lt, value: 0 },
+                            "cached" => StreamRule::Cached { value: true },
                             _        => StreamRule::Resolution { op: SetOp::In, values: vec![] },
                         };
                     }
@@ -70,6 +77,8 @@ pub(crate) fn StreamRuleRow(
                 option { value: "quality",     selected: field_val == "quality",     "Quality" }
                 option { value: "codec",      selected: field_val == "codec",      "Codec" }
                 option { value: "size",       selected: is_size,                   "Size" }
+                option { value: "bitrate",    selected: field_val == "bitrate",    "Bitrate" }
+                option { value: "cached",     selected: field_val == "cached",     "Cached" }
                 option { value: "audio_language", selected: field_val == "audio_language", "Audio Language" }
                 option { value: "addon", selected: field_val == "addon", "Addon" }
             }
@@ -79,16 +88,20 @@ pub(crate) fn StreamRuleRow(
                 style: "flex:1",
                 onchange: move |e| {
                     if let Some(r) = rules.write().get_mut(idx) {
-                        if is_size {
+                        if field_val == "cached" {
+                            *r = StreamRule::Cached { value: e.value() == "yes" };
+                        } else if is_numeric {
                             let new_op = match e.value().as_str() {
                                 "lt"     => NumericOp::Lt,
                                 "eq"     => NumericOp::Eq,
                                 "not_eq" => NumericOp::NotEq,
                                 _        => NumericOp::Gt,
                             };
-                            if let StreamRule::Size { value, .. } = r.clone() {
-                                *r = StreamRule::Size { op: new_op, value };
-                            }
+                            *r = match r.clone() {
+                                StreamRule::Size { value, .. } => StreamRule::Size { op: new_op, value },
+                                StreamRule::Bitrate { value, .. } => StreamRule::Bitrate { op: new_op, value },
+                                other => other,
+                            };
                         } else {
                             let new_op = if e.value() == "not_in" { SetOp::NotIn } else { SetOp::In };
                             *r = match r.clone() {
@@ -97,12 +110,17 @@ pub(crate) fn StreamRuleRow(
                                 StreamRule::Codec { values, .. }      => StreamRule::Codec  { op: new_op, values },
                                 StreamRule::AudioLanguage { values, .. } => StreamRule::AudioLanguage { op: new_op, values },
                                 StreamRule::Addon { values, .. } => StreamRule::Addon { op: new_op, values },
-                                StreamRule::Size { .. } => unreachable!("is_size branch handles Size"),
+                                StreamRule::Size { .. } | StreamRule::Bitrate { .. } | StreamRule::Cached { .. } => {
+                                    unreachable!("handled above")
+                                }
                             };
                         }
                     }
                 },
-                if is_size {
+                if let StreamRule::Cached { value } = rule {
+                    option { value: "yes", selected: value,  "Is" }
+                    option { value: "no",  selected: !value, "Is not" }
+                } else if is_numeric {
                     option { value: "gt",     selected: size_op == Some(NumericOp::Gt),    ">" }
                     option { value: "lt",     selected: size_op == Some(NumericOp::Lt),    "<" }
                     option { value: "eq",     selected: size_op == Some(NumericOp::Eq),    "=" }
@@ -114,14 +132,15 @@ pub(crate) fn StreamRuleRow(
             }
             // Value checkboxes
             div { style: "flex:2;display:flex;flex-wrap:wrap;gap:6px;padding-top:2px",
-                if is_size {
+                if is_numeric {
                     {
-                        // Stored as bytes; the field shows GiB and converts on edit.
-                        let gib = match &rule {
-                            StreamRule::Size { value, .. } => *value as f64 / (1024.0 * 1024.0 * 1024.0),
+                        // Stored as bytes/bits per second; shown as GiB/Mbps.
+                        let (scale, unit) = if is_size { (1024.0 * 1024.0 * 1024.0, "GiB") } else { (1_000_000.0, "Mbps") };
+                        let shown = match &rule {
+                            StreamRule::Size { value, .. } | StreamRule::Bitrate { value, .. } => *value as f64 / scale,
                             _ => 0.0,
                         };
-                        let gib_str = format!("{gib:.2}");
+                        let shown_str = format!("{shown:.2}");
                         rsx! {
                             label { style: "display:flex;align-items:center;gap:4px;font-size:.82rem",
                                 input {
@@ -130,19 +149,19 @@ pub(crate) fn StreamRuleRow(
                                     style: "width:90px",
                                     step: "0.01",
                                     min: "0",
-                                    value: "{gib_str}",
+                                    value: "{shown_str}",
                                     onchange: move |e| {
-                                        let bytes = (e.value().parse::<f64>().unwrap_or(0.0)
-                                            * 1024.0 * 1024.0 * 1024.0)
-                                            .round() as i64;
+                                        let value = (e.value().parse::<f64>().unwrap_or(0.0) * scale).round() as i64;
                                         if let Some(r) = rules.write().get_mut(idx) {
-                                            if let StreamRule::Size { op, .. } = r.clone() {
-                                                *r = StreamRule::Size { op, value: bytes };
-                                            }
+                                            *r = match r.clone() {
+                                                StreamRule::Size { op, .. } => StreamRule::Size { op, value },
+                                                StreamRule::Bitrate { op, .. } => StreamRule::Bitrate { op, value },
+                                                other => other,
+                                            };
                                         }
                                     },
                                 }
-                                "GiB"
+                                "{unit}"
                             }
                         }
                     }
@@ -238,7 +257,7 @@ pub(crate) fn StreamRuleRow(
                             }
                         }
                     }
-                } else {
+                } else if field_val == "codec" {
                     for codec in StreamCodec::all() {
                         {
                             let codec = codec.clone();
@@ -535,6 +554,12 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                                                             }
                                                             StreamRule::Size { op, value } => {
                                                                 (format_size_rule(*op, *value), false, "background:rgba(245,158,11,.12);color:rgb(217,119,6);padding:1px 6px;border-radius:4px")
+                                                            }
+                                                            StreamRule::Bitrate { op, value } => {
+                                                                (format_bitrate_rule(*op, *value), false, "background:rgba(245,158,11,.12);color:rgb(217,119,6);padding:1px 6px;border-radius:4px")
+                                                            }
+                                                            StreamRule::Cached { value } => {
+                                                                ((if *value { "Cached" } else { "Uncached" }).to_string(), false, "background:rgba(16,185,129,.12);color:rgb(5,150,105);padding:1px 6px;border-radius:4px")
                                                             }
                                                             StreamRule::Addon { op, values } => {
                                                                 let known = addons.read();

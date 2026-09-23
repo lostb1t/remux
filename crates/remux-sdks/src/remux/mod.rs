@@ -7001,6 +7001,17 @@ pub fn format_size_rule(op: NumericOp, value: i64) -> String {
     format!("{sym} {n:.2} {unit}")
 }
 
+/// Label for a [`StreamRule::Bitrate`] condition, e.g. `"< 8.0 Mbps"`.
+pub fn format_bitrate_rule(op: NumericOp, value: i64) -> String {
+    let sym = match op {
+        NumericOp::Eq => "=",
+        NumericOp::NotEq => "≠",
+        NumericOp::Gt => ">",
+        NumericOp::Lt => "<",
+    };
+    format!("{sym} {:.1} Mbps", value as f64 / 1_000_000.0)
+}
+
 /// One condition in a stream group filter. Mirrors `FilterRule` but for stream attributes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "field", rename_all = "snake_case")]
@@ -7022,6 +7033,15 @@ pub enum StreamRule {
     Size {
         op: NumericOp,
         value: i64,
+    },
+    /// Bits per second (probed, else size ÷ runtime). Unknown passes, like `Size`.
+    Bitrate {
+        op: NumericOp,
+        value: i64,
+    },
+    /// Debrid cache status (`streamData.service.cached`). Unknown passes, like `Size`.
+    Cached {
+        value: bool,
     },
     /// Audio track language (ISO 639-2/B code, e.g. "rus", "eng"). Matches if any
     /// audio stream in `probe_data` has a listed language. A stream with no probe
@@ -7497,6 +7517,27 @@ mod tests {
         assert_eq!(json, r#"{"field":"size","op":"gt","value":20000000000}"#);
         let back: StreamRule = serde_json::from_str(&json).unwrap();
         assert_eq!(rule, back);
+    }
+
+    #[test]
+    fn stream_rule_bitrate_round_trips_and_formats() {
+        let rule = StreamRule::Bitrate {
+            op: NumericOp::Lt,
+            value: 8_000_000,
+        };
+        let json = serde_json::to_string(&rule).unwrap();
+        assert_eq!(json, r#"{"field":"bitrate","op":"lt","value":8000000}"#);
+        let back: StreamRule = serde_json::from_str(&json).unwrap();
+        assert_eq!(rule, back);
+        assert_eq!(format_bitrate_rule(NumericOp::Lt, 8_000_000), "< 8.0 Mbps");
+    }
+
+    #[test]
+    fn stream_rule_cached_round_trips() {
+        let rule = StreamRule::Cached { value: false };
+        let json = serde_json::to_string(&rule).unwrap();
+        assert_eq!(json, r#"{"field":"cached","value":false}"#);
+        assert_eq!(serde_json::from_str::<StreamRule>(&json).unwrap(), rule);
     }
 
     #[test]

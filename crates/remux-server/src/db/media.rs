@@ -6580,6 +6580,16 @@ impl Media {
 
             self.sources = Some(sources);
         };
+        // Unprobed streams need the item's runtime for size-based bitrate.
+        for source in self
+            .sources
+            .iter_mut()
+            .flatten()
+        {
+            source.runtime = source
+                .runtime
+                .or(self.runtime);
+        }
         Ok(self
             .sources
             .as_deref()
@@ -7161,6 +7171,7 @@ impl From<sdks::stremio::Stream> for Media {
             torrent_info_hash: None,
             torrent_file_idx: None,
             service_id: None,
+            cached: None,
         });
 
         // Merge name + description: AIOStreams puts the provider/addon name in `name`
