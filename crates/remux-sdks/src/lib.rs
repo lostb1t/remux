@@ -367,6 +367,59 @@ fn build_mw(
     builder.build()
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod retry_strategy_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn timed_out_request_is_not_retried() {
+        let server = httpmock::MockServer::start();
+        let _slow = server.mock(|when, then| {
+            when.path("/slow");
+            then.status(200)
+                .delay(Duration::from_secs(1));
+        });
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_millis(100))
+            .build()
+            .unwrap();
+        let error = client
+            .get(server.url("/slow"))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(error.is_timeout());
+
+        let retryable =
+            NoTimeoutRetryStrategy.handle(&Err(MiddlewareError::Reqwest(error)));
+        assert!(matches!(retryable, Some(Retryable::Fatal)));
+    }
+
+    #[tokio::test]
+    async fn connection_failure_remains_retryable() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener
+            .local_addr()
+            .unwrap();
+        drop(listener);
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap();
+        let error = client
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(error.is_connect());
+
+        let retryable =
+            NoTimeoutRetryStrategy.handle(&Err(MiddlewareError::Reqwest(error)));
+        assert!(matches!(retryable, Some(Retryable::Transient)));
+    }
+}
+
 #[derive(Clone)]
 pub struct RestClient<A: Auth = NoAuth> {
     mw: ClientWithMiddleware,
