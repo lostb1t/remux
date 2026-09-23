@@ -839,14 +839,36 @@ impl ProfileConditionExt for ProfileCondition {
 /// Every field is "higher is better".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MediaSourceRank {
+    cached: bool,
+    bitrate_plausibility_tier: u8,
     transcode_cost_tier: u8,
     resolution_tier: u8,
+    hdr_class: u8,
     hdr_tier: u8,
     bit_depth: i64,
     quality_source_tier: u8,
     audio_tier: u8,
     audio_channels: i64,
     bitrate: i64,
+}
+
+/// Compared lexicographically. Confirmed cache availability precedes quality
+/// and playback cost. Plausibility precedes cost in Best/Quality mode, but
+/// follows it in Compatibility mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MediaSourceSortKey {
+    cached: bool,
+    plausibility_before_cost: u8,
+    cost: u8,
+    plausibility_after_cost: u8,
+    resolution: u8,
+    hdr_class: u8,
+    release_quality: u8,
+    bitrate: i64,
+    bit_depth: i64,
+    audio_tier: u8,
+    audio_channels: i64,
+    hdr_variant: u8,
 }
 
 /// All request-independent inputs used to rank sources. Bitrate limits are
@@ -867,10 +889,7 @@ pub struct SourceAssessment {
 }
 
 impl SourceAssessment {
-    pub fn key(
-        &self,
-        mode: SortMediaSourcesMode,
-    ) -> (u8, u8, u8, i64, u8, u8, i64, i64) {
+    pub fn key(&self, mode: SortMediaSourcesMode) -> MediaSourceSortKey {
         self.rank
             .key(mode)
     }
@@ -893,7 +912,7 @@ impl SourceRankingContext<'_> {
         SourceAssessment { reasons, rank }
     }
 
-    pub fn key(&self, source: &MediaSourceInfo) -> (u8, u8, u8, i64, u8, u8, i64, i64) {
+    pub fn key(&self, source: &MediaSourceInfo) -> MediaSourceSortKey {
         self.assess(source)
             .key(self.mode)
     }
@@ -903,11 +922,15 @@ impl MediaSourceRank {
     /// Sort key for `mode` — a *greater* value is a *better* match. Compared
     /// lexicographically, most significant tier first.
     ///
-    /// `Compatibility` puts `transcode_cost_tier` first: a version that direct
+    /// A confirmed upstream cache hit always wins. Then `Compatibility` puts
+    /// `transcode_cost_tier` first: a version that direct
     /// plays (or only needs a cheap remux) always outranks one that needs a
-    /// real re-encode, no matter how much better it looks on paper.
+    /// real re-encode, no matter how much better it looks on paper. `Best`
+    /// and `Quality` first demote only severely under-bitrated video sources.
     /// `Quality` drops cost from the key entirely — best quality wins even if
     /// it means transcoding. `Disabled` has no key; callers must not sort.
+    /// All HDR formats share a primary tier; release quality and bitrate
+    /// outrank HDR subtype, which is only a late tie-breaker.
     ///
     /// There's no separate subtitle field: whether the resolved default
     /// subtitle needs burning in is already reflected in
@@ -916,10 +939,7 @@ impl MediaSourceRank {
     /// will actually be used and to `EmbeddedSubtitleHandling::Burn` mode) —
     /// re-deriving it here from every embedded subtitle stream would ignore
     /// which one is actually selected and double-count the same fact.
-    pub fn key(
-        &self,
-        mode: SortMediaSourcesMode,
-    ) -> (u8, u8, u8, i64, u8, u8, i64, i64) {
+    pub fn key(&self, mode: SortMediaSourcesMode) -> MediaSourceSortKey {
         let cost = match mode {
             SortMediaSourcesMode::Compatibility => self.transcode_cost_tier,
             // Collapse Direct Play (4) and Direct Stream (3) into one tier —
@@ -942,16 +962,24 @@ impl MediaSourceRank {
                 0
             }
         };
-        (
+        let (plausibility_before_cost, plausibility_after_cost) = match mode {
+            SortMediaSourcesMode::Compatibility => (1, self.bitrate_plausibility_tier),
+            _ => (self.bitrate_plausibility_tier, 0),
+        };
+        MediaSourceSortKey {
+            cached: self.cached,
+            plausibility_before_cost,
             cost,
-            self.resolution_tier,
-            self.hdr_tier,
-            self.bit_depth,
-            self.quality_source_tier,
-            self.audio_tier,
-            self.audio_channels,
-            self.bitrate,
-        )
+            plausibility_after_cost,
+            resolution: self.resolution_tier,
+            hdr_class: self.hdr_class,
+            release_quality: self.quality_source_tier,
+            bitrate: self.bitrate,
+            bit_depth: self.bit_depth,
+            audio_tier: self.audio_tier,
+            audio_channels: self.audio_channels,
+            hdr_variant: self.hdr_tier,
+        }
     }
 }
 
@@ -1261,16 +1289,47 @@ pub trait MediaSourceCapabilityExt {
 /// `conversions.rs` always stamps the original `StreamInfo` (as JSON) into
 /// `remux.provider_info`, so that's recovered here instead of threading a
 /// second parameter through every call site.
-fn quality_source_tier(source: &MediaSourceInfo) -> u8 {
-    let stream_info: Option<crate::stream::StreamInfo> = source
+fn source_stream_info(source: &MediaSourceInfo) -> Option<crate::stream::StreamInfo> {
+    source
         .remux
         .as_ref()
         .and_then(|r| {
             r.provider_info
                 .as_ref()
         })
-        .and_then(|v| serde_json::from_value(v.clone()).ok());
-    crate::db::detect_source_quality_weight(stream_info.as_ref())
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+}
+
+/// Only demote extreme bitrate/resolution mismatches. One bit per four pixels
+/// per second corresponds to about 0.5 Mbps at 1080p or 2 Mbps at 4K; this
+/// is a plausibility check, not an estimate of visual quality. Below 100 Kbps
+/// is suspect even without dimensions; otherwise missing facts stay neutral.
+fn bitrate_plausibility_tier(
+    source: &MediaSourceInfo,
+    video: Option<&MediaStream>,
+) -> u8 {
+    let Some(bitrate) = source
+        .bitrate
+        .filter(|bps| *bps > 0)
+    else {
+        return 1;
+    };
+    if bitrate < 100_000 {
+        return 0;
+    }
+    let Some((width, height)) = video.and_then(|stream| {
+        Some((
+            stream
+                .width
+                .filter(|v| *v > 0)?,
+            stream
+                .height
+                .filter(|v| *v > 0)?,
+        ))
+    }) else {
+        return 1;
+    };
+    u8::from((bitrate as i128) * 4 >= (width as i128) * (height as i128))
 }
 
 impl MediaSourceCapabilityExt for MediaSourceInfo {
@@ -1283,6 +1342,7 @@ impl MediaSourceCapabilityExt for MediaSourceInfo {
     ) -> MediaSourceRank {
         let video = primary_video_stream(self);
         let audio = selected_audio_stream(self);
+        let stream_info = source_stream_info(self);
 
         let (width, height) = video
             .map(|stream| {
@@ -1296,13 +1356,19 @@ impl MediaSourceCapabilityExt for MediaSourceInfo {
                 )
             })
             .unwrap_or_default();
-        let raw_resolution_tier = if width >= 3840 || height >= 2160 {
-            4
-        } else if width >= 1920 || height >= 1080 {
-            3
-        } else if width >= 1280 || height >= 720 {
+        // Release dimensions are often cropped (e.g. 3836x2072 or
+        // 1920x800). Bucket by the longer side instead of exact display
+        // dimensions so these remain 4K and 1080p respectively.
+        let long_side = width.max(height);
+        let raw_resolution_tier = if long_side >= 3200 {
+            5 // 4K
+        } else if long_side >= 2300 {
+            4 // 1440p
+        } else if long_side >= 1600 {
+            3 // 1080p
+        } else if long_side >= 1100 {
             2
-        } else if width > 0 || height > 0 {
+        } else if long_side > 0 {
             1
         } else {
             0
@@ -1311,16 +1377,28 @@ impl MediaSourceCapabilityExt for MediaSourceInfo {
         // than promoting it. Lower resolution tiers remain distinct so a
         // 720p source cannot beat 1080p merely because of a later tie-breaker.
         let resolution_tier =
-            if raw_resolution_tier == 4 && !profile.is_some_and(confident_4k_capable) {
+            if raw_resolution_tier == 5 && !profile.is_some_and(confident_4k_capable) {
                 3
             } else {
                 raw_resolution_tier
             };
+        // An absent video-range tag is not evidence of quality below SDR.
+        // Treat it as the SDR baseline for ordering, without claiming the
+        // source was actually probed as SDR.
+        let hdr_tier = hdr_tier(video).max(1);
 
         MediaSourceRank {
+            cached: stream_info
+                .as_ref()
+                .and_then(|info| info.service_cached)
+                == Some(true),
+            bitrate_plausibility_tier: bitrate_plausibility_tier(self, video),
             transcode_cost_tier: transcode_cost_tier(reasons),
             resolution_tier,
-            hdr_tier: hdr_tier(video),
+            // HDR vs SDR matters; Dolby Vision vs HDR10 only breaks otherwise
+            // equal ranks after release quality, bitrate, bit depth and audio.
+            hdr_class: if hdr_tier > 1 { 2 } else { 1 },
+            hdr_tier,
             // A missing BitDepth is common for remote (RemuxDB-sourced)
             // probe data that never explicitly set it — fall back to
             // deriving it from PixelFormat (e.g. "yuv420p10le" -> 10), the
@@ -1341,7 +1419,9 @@ impl MediaSourceCapabilityExt for MediaSourceInfo {
                         })
                 })
                 .unwrap_or(8),
-            quality_source_tier: quality_source_tier(self),
+            quality_source_tier: crate::db::detect_source_quality_weight(
+                stream_info.as_ref(),
+            ),
             audio_tier: audio_codec_tier(audio),
             audio_channels: audio
                 .and_then(|s| s.channels)
@@ -1357,8 +1437,9 @@ impl MediaSourceCapabilityExt for MediaSourceInfo {
 mod tests {
     use super::{
         CodecProfileExt, DeviceProfileExt, MediaSourceCapabilityExt, MediaSourceRank,
-        failed_condition_reason, playback_decision_label, primary_video_stream,
-        subtitle_burn_reason, transcode_cost_tier,
+        MediaSourceSortKey, SourceRankingContext, failed_condition_reason,
+        playback_decision_label, primary_video_stream, subtitle_burn_reason,
+        transcode_cost_tier,
     };
     use remux_sdks::remux::{
         AudioCodec, CodecProfile, CodecProfileType, DeviceProfile, DirectPlayProfile,
@@ -2246,15 +2327,15 @@ mod tests {
         }
     }
 
-    fn compat(rank: MediaSourceRank) -> (u8, u8, u8, i64, u8, u8, i64, i64) {
+    fn compat(rank: MediaSourceRank) -> MediaSourceSortKey {
         rank.key(SortMediaSourcesMode::Compatibility)
     }
 
-    fn quality(rank: MediaSourceRank) -> (u8, u8, u8, i64, u8, u8, i64, i64) {
+    fn quality(rank: MediaSourceRank) -> MediaSourceSortKey {
         rank.key(SortMediaSourcesMode::Quality)
     }
 
-    fn best(rank: MediaSourceRank) -> (u8, u8, u8, i64, u8, u8, i64, i64) {
+    fn best(rank: MediaSourceRank) -> MediaSourceSortKey {
         rank.key(SortMediaSourcesMode::Best)
     }
 
@@ -2518,6 +2599,155 @@ mod tests {
     }
 
     #[test]
+    fn cropped_dimensions_use_coarse_resolution_buckets() {
+        let profile = streamyfin_mpv_profile();
+        let tier = |width, height| {
+            let mut video = video_stream(width, Some(VideoRangeType::Sdr));
+            video.height = Some(height);
+            source_with(video, audio_stream("aac", 2), true)
+                .capability_rank(Some(&profile), &TranscodeReasons::default())
+                .resolution_tier
+        };
+
+        assert_eq!(tier(3840, 2160), tier(3836, 2072));
+        assert_eq!(tier(3840, 1600), 5);
+        assert_eq!(tier(2560, 1440), 4);
+        assert_eq!(tier(1920, 800), 3);
+        assert_eq!(tier(1280, 536), 2);
+        assert_eq!(tier(1024, 554), 1);
+    }
+
+    #[test]
+    fn hdr_variant_only_breaks_ties_after_bitrate() {
+        let hdr10_high_bitrate = with_release(
+            source_with(
+                video_stream(3840, Some(VideoRangeType::Hdr10)),
+                audio_stream("aac", 2),
+                true,
+            ),
+            "Movie.2024.2160p.WEB-DL.mkv",
+            90_000_000,
+        );
+        let dovi_low_bitrate = with_release(
+            source_with(
+                video_stream(3840, Some(VideoRangeType::Dovi)),
+                audio_stream("aac", 2),
+                true,
+            ),
+            "Movie.2024.2160p.WEB-DL.mkv",
+            30_000_000,
+        );
+        assert!(
+            best(
+                hdr10_high_bitrate.capability_rank(None, &TranscodeReasons::default())
+            ) > best(
+                dovi_low_bitrate.capability_rank(None, &TranscodeReasons::default())
+            )
+        );
+
+        let mut dovi_equal_bitrate = dovi_low_bitrate;
+        dovi_equal_bitrate.bitrate = Some(90_000_000);
+        assert!(
+            best(
+                dovi_equal_bitrate.capability_rank(None, &TranscodeReasons::default())
+            ) > best(
+                hdr10_high_bitrate.capability_rank(None, &TranscodeReasons::default())
+            )
+        );
+    }
+
+    #[test]
+    fn unknown_video_range_uses_sdr_baseline_for_ranking() {
+        let rank_for = |range| {
+            best(
+                source_with(video_stream(1920, range), audio_stream("aac", 2), true)
+                    .capability_rank(None, &TranscodeReasons::default()),
+            )
+        };
+        assert_eq!(rank_for(None), rank_for(Some(VideoRangeType::Sdr)));
+        assert!(rank_for(Some(VideoRangeType::Hdr10)) > rank_for(None));
+    }
+
+    #[test]
+    fn severe_bitrate_mismatch_loses_in_best_but_not_compatibility() {
+        let mut tiny_4k_video = video_stream(3840, Some(VideoRangeType::Dovi));
+        tiny_4k_video.height = Some(2160);
+        let tiny_4k = with_release(
+            source_with(tiny_4k_video, audio_stream("aac", 2), true),
+            "Movie.2024.2160p.WEB-DL.mkv",
+            798_266,
+        );
+        let mut healthy_1080p_video = video_stream(1920, Some(VideoRangeType::Sdr));
+        healthy_1080p_video.height = Some(1080);
+        let healthy_1080p = with_release(
+            source_with_reasons(
+                healthy_1080p_video,
+                audio_stream("aac", 2),
+                &[TranscodeReason::VideoCodecNotSupported("test".to_string())],
+            ),
+            "Movie.2024.1080p.WEB-DL.mkv",
+            3_000_000,
+        );
+        let tiny_rank = tiny_4k.capability_rank(None, &tiny_4k.transcoding_reasons);
+        let healthy_rank =
+            healthy_1080p.capability_rank(None, &healthy_1080p.transcoding_reasons);
+
+        assert_eq!(tiny_rank.bitrate_plausibility_tier, 0);
+        assert_eq!(healthy_rank.bitrate_plausibility_tier, 1);
+        assert!(best(healthy_rank) > best(tiny_rank));
+        assert!(quality(healthy_rank) > quality(tiny_rank));
+        assert!(compat(tiny_rank) > compat(healthy_rank));
+    }
+
+    #[test]
+    fn bitrate_plausibility_uses_pixel_count_and_ignores_unknowns() {
+        let mut video_4k = video_stream(3840, Some(VideoRangeType::Hdr10));
+        video_4k.height = Some(2160);
+        let mut plausible_4k =
+            source_with(video_4k.clone(), audio_stream("aac", 2), true);
+        plausible_4k.bitrate = Some(30_000_000);
+        assert_eq!(
+            plausible_4k
+                .capability_rank(None, &TranscodeReasons::default())
+                .bitrate_plausibility_tier,
+            1
+        );
+
+        let mut tiny_4k = plausible_4k.clone();
+        tiny_4k.bitrate = Some(798_266);
+        assert_eq!(
+            tiny_4k
+                .capability_rank(None, &TranscodeReasons::default())
+                .bitrate_plausibility_tier,
+            0
+        );
+
+        let mut unknown_bitrate = plausible_4k;
+        unknown_bitrate.bitrate = None;
+        assert_eq!(
+            unknown_bitrate
+                .capability_rank(None, &TranscodeReasons::default())
+                .bitrate_plausibility_tier,
+            1
+        );
+        let mut unknown_height = tiny_4k;
+        unknown_height.media_streams[0].height = None;
+        assert_eq!(
+            unknown_height
+                .capability_rank(None, &TranscodeReasons::default())
+                .bitrate_plausibility_tier,
+            1
+        );
+        unknown_height.bitrate = Some(34_000);
+        assert_eq!(
+            unknown_height
+                .capability_rank(None, &TranscodeReasons::default())
+                .bitrate_plausibility_tier,
+            0
+        );
+    }
+
+    #[test]
     fn ranking_context_ignores_profile_bitrate_limits() {
         let profile = DeviceProfile {
             max_streaming_bitrate: Some(1),
@@ -2758,6 +2988,58 @@ mod tests {
     }
 
     #[test]
+    fn confirmed_cache_hit_precedes_quality_and_compatibility_in_every_sort_mode() {
+        let source = || {
+            source_with(
+                video_stream(1920, Some(VideoRangeType::Sdr)),
+                audio_stream("ac3", 6),
+                true,
+            )
+        };
+        let mut cached = with_release(source(), "Movie.1080p.WEBRip.mkv", 1_000_000);
+        cached
+            .remux
+            .as_mut()
+            .unwrap()
+            .provider_info = serde_json::to_value(crate::stream::StreamInfo {
+            filename: Some("Movie.1080p.WEBRip.mkv".to_string()),
+            service_cached: Some(true),
+            ..Default::default()
+        })
+        .ok();
+        cached
+            .transcoding_reasons
+            .insert(TranscodeReason::VideoCodecNotSupported("test".to_string()));
+        let uncached = with_release(source(), "Movie.2160p.BDRemux.mkv", 90_000_000);
+        let mut explicitly_uncached = uncached.clone();
+        explicitly_uncached
+            .remux
+            .as_mut()
+            .unwrap()
+            .provider_info = serde_json::to_value(crate::stream::StreamInfo {
+            filename: Some("Movie.2160p.BDRemux.mkv".to_string()),
+            service_cached: Some(false),
+            ..Default::default()
+        })
+        .ok();
+
+        let cached_rank = cached.capability_rank(None, &cached.transcoding_reasons);
+        for other in [&uncached, &explicitly_uncached] {
+            let other_rank = other.capability_rank(None, &other.transcoding_reasons);
+            for mode in [
+                SortMediaSourcesMode::Best,
+                SortMediaSourcesMode::Quality,
+                SortMediaSourcesMode::Compatibility,
+            ] {
+                assert!(
+                    cached_rank.key(mode) > other_rank.key(mode),
+                    "mode={mode:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn quality_source_tier_prefers_remux_over_bluray_over_webdl_at_equal_technical_quality()
      {
         let base = || {
@@ -2791,7 +3073,7 @@ mod tests {
     }
 
     #[test]
-    fn bitrate_is_the_final_tiebreaker_at_equal_everything_else() {
+    fn bitrate_breaks_ties_at_equal_release_quality() {
         let base = || {
             source_with(
                 video_stream(1920, Some(VideoRangeType::Sdr)),
@@ -2843,6 +3125,148 @@ mod tests {
     fn jellyfin_web_real_profile() -> DeviceProfile {
         serde_json::from_str(include_str!("testdata/jellyfin_web_device_profile.json"))
             .expect("fixture must deserialize")
+    }
+
+    #[derive(serde::Deserialize)]
+    struct BackroomsSourceFixture {
+        name: String,
+        filename: String,
+        #[serde(default)]
+        service_cached: Option<bool>,
+        probe_data: MediaSourceInfo,
+    }
+
+    /// The saved Backrooms probes exercise the real client ranking path. The
+    /// expected order is a separate JSON fixture so changes to any position
+    /// show up as a reviewable test failure, not just changed console output.
+    #[test]
+    fn backrooms_web_best_mode_ranking() {
+        let fixtures: Vec<BackroomsSourceFixture> =
+            serde_json::from_str(include_str!("testdata/backrooms_web_sources.json"))
+                .expect("Backrooms fixture must deserialize");
+        assert_eq!(fixtures.len(), 28);
+        let expected_order: Vec<String> = serde_json::from_str(include_str!(
+            "testdata/backrooms_web_best_order.json"
+        ))
+        .expect("Backrooms expected order must deserialize");
+        assert_eq!(expected_order.len(), fixtures.len());
+
+        let profile = jellyfin_web_real_profile();
+        let ranking = SourceRankingContext {
+            mode: SortMediaSourcesMode::Best,
+            device_profile: Some(&profile),
+            subtitle_mode: EmbeddedSubtitleHandling::default(),
+            explicit_subtitle_index: None,
+        };
+        let mut ranked: Vec<_> = fixtures
+            .into_iter()
+            .map(|fixture| {
+                let media = crate::db::Media {
+                    title: fixture
+                        .name
+                        .clone(),
+                    stream_info: Some(crate::stream::StreamInfo {
+                        filename: Some(
+                            fixture
+                                .filename
+                                .clone(),
+                        ),
+                        service_cached: fixture.service_cached,
+                        ..Default::default()
+                    }),
+                    probe_data: Some(fixture.probe_data),
+                    ..Default::default()
+                };
+                let mut source = crate::api::MediaSourceInfo::from(media.clone());
+                crate::conversions::apply_filename_guess(&mut source, &media);
+                source.resolve_default_streams(
+                    &crate::api::UserConfiguration::default(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+                let assessment = ranking.assess(&source);
+                (fixture.filename, fixture.name, source, assessment)
+            })
+            .collect();
+        ranked.sort_by_cached_key(|(_, _, _, assessment)| {
+            std::cmp::Reverse(assessment.key(SortMediaSourcesMode::Best))
+        });
+
+        let actual_order: Vec<&str> = ranked
+            .iter()
+            .map(|(filename, _, _, _)| filename.as_str())
+            .collect();
+        let expected_order: Vec<&str> = expected_order
+            .iter()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(actual_order, expected_order);
+
+        assert!(
+            ranked[0]
+                .1
+                .contains("3.2 Mbps"),
+            "the confirmed cached source must rank before better uncached sources"
+        );
+        let position_of = |needle: &str| {
+            ranked
+                .iter()
+                .position(|(_, name, _, _)| name.contains(needle))
+                .expect("source must be in the Backrooms fixture")
+        };
+        assert!(
+            position_of("34.2 Mbps") < position_of("4.38 Mbps"),
+            "unknown video range must not rank below SDR before bitrate is considered"
+        );
+        assert!(
+            position_of("798 Kbps") > position_of("3.34 Mbps"),
+            "the severely under-bitrated 4K source should lose to a credible transcoding source"
+        );
+        assert!(
+            position_of("43.2 Kbps") > position_of("3.34 Mbps"),
+            "the severely under-bitrated 1080p source should lose to a credible transcoding source"
+        );
+        assert!(
+            position_of("34 Kbps") > position_of("3.34 Mbps"),
+            "missing dimensions must not exempt an extremely low bitrate"
+        );
+
+        println!("\n--- Backrooms / Jellyfin Web / Best mode ---");
+        for (position, (_, name, source, assessment)) in ranked
+            .iter()
+            .enumerate()
+        {
+            let video = source
+                .media_streams
+                .iter()
+                .find(|stream| stream.type_ == Some(MediaStreamType::Video));
+            println!(
+                "#{:02} key={:?} decision={} video={:?} {}x{} bitrate={:?} reasons={:?} name={name}",
+                position + 1,
+                assessment.key(SortMediaSourcesMode::Best),
+                assessment.playback_label(),
+                video.and_then(|v| v
+                    .codec
+                    .as_deref()),
+                video
+                    .and_then(|v| v.width)
+                    .unwrap_or(0),
+                video
+                    .and_then(|v| v.height)
+                    .unwrap_or(0),
+                source.bitrate,
+                assessment
+                    .reasons
+                    .0
+                    .iter()
+                    .map(TranscodeReason::name)
+                    .collect::<Vec<_>>(),
+            );
+        }
     }
 
     #[test]

@@ -1746,6 +1746,12 @@ async fn stremio_streams(
                         s.id.as_deref()
                     })
                     .map(|s| s.to_lowercase()),
+                service_cached: sd
+                    .and_then(|d| {
+                        d.service
+                            .as_ref()
+                    })
+                    .and_then(|service| service.cached),
                 probe_data: s
                     .behavior_hints
                     .as_ref()
@@ -2001,7 +2007,10 @@ mod tests {
         let captured = server.mock(|when, then| {
             when.path("/stream/anime/fk-ep-1.json");
             then.status(200)
-                .json_body(serde_json::json!({"streams": [{"url": "https://example.com/1.mp4"}]}));
+                .json_body(serde_json::json!({"streams": [{
+                    "url": "https://example.com/1.mp4",
+                    "streamData": {"service": {"id": "torbox", "cached": true}}
+                }]}));
         });
 
         let svc =
@@ -2028,6 +2037,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(streams.len(), 1);
+        assert_eq!(
+            streams[0]
+                .service_id
+                .as_deref(),
+            Some("torbox")
+        );
+        assert_eq!(streams[0].service_cached, Some(true));
         captured.assert();
         reconstructed.assert_hits(0);
     }

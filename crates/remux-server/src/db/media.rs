@@ -7161,6 +7161,14 @@ impl From<sdks::stremio::Stream> for Media {
             torrent_info_hash: None,
             torrent_file_idx: None,
             service_id: None,
+            service_cached: source
+                .stream_data
+                .as_ref()
+                .and_then(|data| {
+                    data.service
+                        .as_ref()
+                })
+                .and_then(|service| service.cached),
         });
 
         // Merge name + description: AIOStreams puts the provider/addon name in `name`
