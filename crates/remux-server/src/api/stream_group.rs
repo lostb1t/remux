@@ -174,17 +174,43 @@ pub async fn stream_group_preview(
     session: auth::AuthSession,
     Query(q): Query<PreviewQuery>,
 ) -> Result<impl IntoResponse> {
-    // The Bitrate rule estimates size ÷ runtime for unprobed streams. The
-    // preview title is The Matrix (136 min), so its runtime is hardcoded.
-    let stub = Media {
+    let mut stub = Media {
         kind: MediaKind::Movie,
         external_ids: ExternalIds {
             imdb: NonEmptyString::try_new(q.imdb_id).ok(),
             ..Default::default()
         },
-        runtime: Some(136 * 60),
         ..Default::default()
     };
+
+    // The Bitrate rule estimates size ÷ runtime for unprobed streams, so the
+    // preview needs the item's runtime just like `Media::streams` provides.
+    let db = &state
+        .ctx
+        .db;
+    stub.runtime =
+        match Media::find_by_external_ids(db, &stub.kind, &stub.external_ids).await {
+            Some(id) => Media::get_by_id(db, &id)
+                .await?
+                .and_then(|m| m.runtime),
+            None => None,
+        };
+    if stub
+        .runtime
+        .is_none()
+    {
+        let config = crate::db::Settings::get_config_or_default(db).await;
+        let mut meta = stub.clone();
+        if state
+            .ctx
+            .addons
+            .refresh_meta(&mut meta, &state.ctx, false, &config)
+            .await
+            .is_ok()
+        {
+            stub.runtime = meta.runtime;
+        }
+    }
 
     let mut raw_streams = state
         .ctx
