@@ -442,6 +442,10 @@ impl StreamGroup {
                         NumericOp::Lt => s < *value,
                     }),
                 },
+                StreamRule::Cached { value } => match info.cached {
+                    None => MatchOutcome::PassThrough,
+                    Some(c) => bool_to_outcome(c == *value),
+                },
                 StreamRule::Bitrate { op, value } => {
                     let bitrate = probe_data
                         .and_then(|p| p.bitrate)
@@ -744,6 +748,9 @@ fn auto_name(filter: &StreamFilter) -> String {
                 StreamRule::Size { op, value } => vec![format_size_rule(*op, *value)],
                 StreamRule::Bitrate { op, value } => {
                     vec![format_bitrate_rule(*op, *value)]
+                }
+                StreamRule::Cached { value } => {
+                    vec![if *value { "Cached" } else { "Uncached" }.to_string()]
                 }
                 StreamRule::Addon { values, .. } => {
                     if values.len() == 1 {
@@ -1262,6 +1269,30 @@ mod tests {
         for (size, probe, runtime, want) in cases {
             assert_eq!(group.match_stream(&file(size), probe, runtime), want);
         }
+    }
+
+    #[test]
+    fn cached_rule_matches_flag_and_passes_unknown() {
+        let mut group = group_size(NumericOp::Lt, 0);
+        group
+            .filter
+            .rules = vec![StreamRule::Cached { value: false }];
+        let file = |cached| StreamInfo {
+            cached,
+            ..info("Movie.1080p.WEB-DL.mkv")
+        };
+        assert_eq!(
+            group.match_outcome(&file(Some(false)), None),
+            MatchOutcome::Match
+        );
+        assert_eq!(
+            group.match_outcome(&file(Some(true)), None),
+            MatchOutcome::NoMatch
+        );
+        assert_eq!(
+            group.match_outcome(&file(None), None),
+            MatchOutcome::PassThrough
+        );
     }
 
     // --- detect_stream_quality / quality_weight (pre-probe ordering) ---

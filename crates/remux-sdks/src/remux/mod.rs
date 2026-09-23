@@ -7039,6 +7039,10 @@ pub enum StreamRule {
         op: NumericOp,
         value: i64,
     },
+    /// Debrid cache status (`streamData.service.cached`). Unknown passes, like `Size`.
+    Cached {
+        value: bool,
+    },
     /// Audio track language (ISO 639-2/B code, e.g. "rus", "eng"). Matches if any
     /// audio stream in `probe_data` has a listed language. A stream with no probe
     /// data passes the rule so unprobed sources are not silently dropped.
@@ -7526,6 +7530,14 @@ mod tests {
         let back: StreamRule = serde_json::from_str(&json).unwrap();
         assert_eq!(rule, back);
         assert_eq!(format_bitrate_rule(NumericOp::Lt, 8_000_000), "< 8.0 Mbps");
+    }
+
+    #[test]
+    fn stream_rule_cached_round_trips() {
+        let rule = StreamRule::Cached { value: false };
+        let json = serde_json::to_string(&rule).unwrap();
+        assert_eq!(json, r#"{"field":"cached","value":false}"#);
+        assert_eq!(serde_json::from_str::<StreamRule>(&json).unwrap(), rule);
     }
 
     #[test]
