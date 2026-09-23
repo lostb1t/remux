@@ -7161,14 +7161,7 @@ impl From<sdks::stremio::Stream> for Media {
             torrent_info_hash: None,
             torrent_file_idx: None,
             service_id: None,
-            service_cached: source
-                .stream_data
-                .as_ref()
-                .and_then(|data| {
-                    data.service
-                        .as_ref()
-                })
-                .and_then(|service| service.cached),
+            service_cached: source.cached_status(),
         });
 
         // Merge name + description: AIOStreams puts the provider/addon name in `name`
@@ -8522,6 +8515,23 @@ mod tests {
                 serde_json::from_value(serde_json::json!({
                     "url": "https://example.com/movie.mp4",
                     "streamData": {"service": service}
+                }))
+                .unwrap();
+            let media = Media::from(source);
+            assert_eq!(
+                media
+                    .stream_info
+                    .unwrap()
+                    .service_cached,
+                expected
+            );
+        }
+
+        for (cached, expected) in [(true, Some(true)), (false, Some(false))] {
+            let source: sdks::stremio::Stream =
+                serde_json::from_value(serde_json::json!({
+                    "url": "https://example.com/movie.mp4",
+                    "behaviorHints": {"cached": cached}
                 }))
                 .unwrap();
             let media = Media::from(source);

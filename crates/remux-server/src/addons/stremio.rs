@@ -1746,12 +1746,7 @@ async fn stremio_streams(
                         s.id.as_deref()
                     })
                     .map(|s| s.to_lowercase()),
-                service_cached: sd
-                    .and_then(|d| {
-                        d.service
-                            .as_ref()
-                    })
-                    .and_then(|service| service.cached),
+                service_cached: s.cached_status(),
                 probe_data: s
                     .behavior_hints
                     .as_ref()
