@@ -8506,6 +8506,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stremio_stream_conversion_preserves_cache_status() {
+        for (service, expected) in [
+            (
+                serde_json::json!({"id": "torbox", "cached": true}),
+                Some(true),
+            ),
+            (
+                serde_json::json!({"id": "torbox", "cached": false}),
+                Some(false),
+            ),
+            (serde_json::json!({"id": "torbox"}), None),
+        ] {
+            let source: sdks::stremio::Stream =
+                serde_json::from_value(serde_json::json!({
+                    "url": "https://example.com/movie.mp4",
+                    "streamData": {"service": service}
+                }))
+                .unwrap();
+            let media = Media::from(source);
+            assert_eq!(
+                media
+                    .stream_info
+                    .unwrap()
+                    .service_cached,
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn movie_and_series_accept_known_external_ids() {
         for kind in [MediaKind::Movie, MediaKind::Series] {
             for external_ids in [

@@ -835,7 +835,7 @@ impl ProfileConditionExt for ProfileCondition {
 }
 
 /// Individual quality/compatibility signals for one `MediaSourceInfo`, from
-/// which a `SortMediaSourcesMode`-specific sort key is built via `.key()`.
+/// which a `SortMediaSourcesMode`-specific sort key is built via `.sort_key()`.
 /// Every field is "higher is better".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MediaSourceRank {
@@ -889,9 +889,19 @@ pub struct SourceAssessment {
 }
 
 impl SourceAssessment {
-    pub fn key(&self, mode: SortMediaSourcesMode) -> MediaSourceSortKey {
+    /// Legacy eight-element ranking tuple retained for callers using the
+    /// public API. Internal source ordering uses `sort_key` instead.
+    pub fn key(
+        &self,
+        mode: SortMediaSourcesMode,
+    ) -> (u8, u8, u8, i64, u8, u8, i64, i64) {
         self.rank
             .key(mode)
+    }
+
+    pub fn sort_key(&self, mode: SortMediaSourcesMode) -> MediaSourceSortKey {
+        self.rank
+            .sort_key(mode)
     }
 
     pub fn playback_label(&self) -> &'static str {
@@ -912,13 +922,53 @@ impl SourceRankingContext<'_> {
         SourceAssessment { reasons, rank }
     }
 
-    pub fn key(&self, source: &MediaSourceInfo) -> MediaSourceSortKey {
+    /// Legacy ranking tuple; use `sort_key` for cache-aware source ordering.
+    pub fn key(&self, source: &MediaSourceInfo) -> (u8, u8, u8, i64, u8, u8, i64, i64) {
         self.assess(source)
             .key(self.mode)
+    }
+
+    pub fn sort_key(&self, source: &MediaSourceInfo) -> MediaSourceSortKey {
+        self.assess(source)
+            .sort_key(self.mode)
     }
 }
 
 impl MediaSourceRank {
+    /// Legacy public tuple key, preserving its shape and ordering semantics.
+    /// New source sorting uses `sort_key` so existing callers still compile.
+    pub fn key(
+        &self,
+        mode: SortMediaSourcesMode,
+    ) -> (u8, u8, u8, i64, u8, u8, i64, i64) {
+        let cost = match mode {
+            SortMediaSourcesMode::Compatibility => self.transcode_cost_tier,
+            SortMediaSourcesMode::Best => match self.transcode_cost_tier {
+                4 | 3 => 2,
+                2 => 1,
+                _ => 0,
+            },
+            SortMediaSourcesMode::Quality => 0,
+            SortMediaSourcesMode::Disabled => {
+                debug_assert!(
+                    false,
+                    "capability_rank().key() called with mode Disabled"
+                );
+                0
+            }
+        };
+        (
+            cost,
+            self.resolution_tier,
+            self.hdr_tier,
+            self.bit_depth,
+            self.quality_source_tier,
+            self.audio_tier,
+            self.audio_channels,
+            self.bitrate,
+        )
+    }
+
     /// Sort key for `mode` — a *greater* value is a *better* match. Compared
     /// lexicographically, most significant tier first.
     ///
@@ -939,7 +989,7 @@ impl MediaSourceRank {
     /// will actually be used and to `EmbeddedSubtitleHandling::Burn` mode) —
     /// re-deriving it here from every embedded subtitle stream would ignore
     /// which one is actually selected and double-count the same fact.
-    pub fn key(&self, mode: SortMediaSourcesMode) -> MediaSourceSortKey {
+    pub fn sort_key(&self, mode: SortMediaSourcesMode) -> MediaSourceSortKey {
         let cost = match mode {
             SortMediaSourcesMode::Compatibility => self.transcode_cost_tier,
             // Collapse Direct Play (4) and Direct Stream (3) into one tier —
@@ -1265,7 +1315,7 @@ fn audio_codec_tier(stream: Option<&MediaStream>) -> u8 {
 
 /// Rank a `MediaSourceInfo` against a device's capabilities — call as
 /// `source.capability_rank(profile, reasons)` and sort with
-/// `sort_by_key(|s| Reverse(s.capability_rank(profile, reasons).key(mode)))`,
+/// `sort_by_key(|s| Reverse(s.capability_rank(profile, reasons).sort_key(mode)))`,
 /// higher is better.
 ///
 /// `reasons` is taken as a parameter rather than read from
@@ -2328,15 +2378,15 @@ mod tests {
     }
 
     fn compat(rank: MediaSourceRank) -> MediaSourceSortKey {
-        rank.key(SortMediaSourcesMode::Compatibility)
+        rank.sort_key(SortMediaSourcesMode::Compatibility)
     }
 
     fn quality(rank: MediaSourceRank) -> MediaSourceSortKey {
-        rank.key(SortMediaSourcesMode::Quality)
+        rank.sort_key(SortMediaSourcesMode::Quality)
     }
 
     fn best(rank: MediaSourceRank) -> MediaSourceSortKey {
-        rank.key(SortMediaSourcesMode::Best)
+        rank.sort_key(SortMediaSourcesMode::Best)
     }
 
     fn source_with_reasons(
@@ -3032,7 +3082,7 @@ mod tests {
                 SortMediaSourcesMode::Compatibility,
             ] {
                 assert!(
-                    cached_rank.key(mode) > other_rank.key(mode),
+                    cached_rank.sort_key(mode) > other_rank.sort_key(mode),
                     "mode={mode:?}"
                 );
             }
@@ -3193,7 +3243,7 @@ mod tests {
             })
             .collect();
         ranked.sort_by_cached_key(|(_, _, _, assessment)| {
-            std::cmp::Reverse(assessment.key(SortMediaSourcesMode::Best))
+            std::cmp::Reverse(assessment.sort_key(SortMediaSourcesMode::Best))
         });
 
         let actual_order: Vec<&str> = ranked
@@ -3247,7 +3297,7 @@ mod tests {
             println!(
                 "#{:02} key={:?} decision={} video={:?} {}x{} bitrate={:?} reasons={:?} name={name}",
                 position + 1,
-                assessment.key(SortMediaSourcesMode::Best),
+                assessment.sort_key(SortMediaSourcesMode::Best),
                 assessment.playback_label(),
                 video.and_then(|v| v
                     .codec
