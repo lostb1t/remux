@@ -14,8 +14,9 @@ use crate::{
     AppState, IntoApiError, OptionExt, ResultExt,
     addons::{
         Addon, AddonCapabilities, AddonCatalogDto, AddonDto, AddonMetadata,
-        AddonPreset, CreateAddonRequest, UpdateAddonCatalogRequest, UpdateAddonRequest,
-        registered_presets, set_user_addon_override, user_addon_override,
+        AddonPreset, AddonService, CreateAddonRequest, UpdateAddonCatalogRequest,
+        UpdateAddonRequest, registered_presets, set_user_addon_override,
+        user_addon_override,
     },
     db::{MediaKind as DbMediaKind, auth},
 };
@@ -73,7 +74,7 @@ async fn capability_snapshot(
     Ok((resources, types))
 }
 
-async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
+fn addon_to_dto(addon: Addon, addons: &AddonService) -> AddonDto {
     let preset = registered_presets()
         .into_iter()
         .find(|p| {
@@ -89,71 +90,32 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
         supported_resources_user,
         supported_types_user,
     ) = if let Some(ref p) = preset {
-        let meta = p.metadata();
+        // Runtime metadata was resolved when the addon was loaded. Listing
+        // addons must not make another remote manifest request: one stalled
+        // provider would otherwise hold the entire dashboard response open.
+        let meta = addons
+            .get(addon.id)
+            .map(|runtime| {
+                runtime
+                    .caps
+                    .metadata
+            })
+            .unwrap_or_else(|| p.metadata());
         let resources_user = meta
             .supported_resources_user
             .clone();
         let types_user = meta
             .supported_types_user
             .clone();
-        match p.from_cfg(
-            addon.id,
-            addon
-                .preset
-                .config
-                .expose(),
-            config,
-        ) {
-            Ok(caps) => {
-                let kind = caps
-                    .kind
-                    .as_ref()
-                    .map(|k| k.as_ref());
-                let info = if let Some(k) = kind {
-                    k.available_info()
-                        .await
-                        .ok()
-                        .flatten()
-                } else {
-                    None
-                };
-                match info {
-                    Some((resource_refs, raw_types)) => {
-                        let resources = resource_refs
-                            .into_iter()
-                            .map(|r| r.name)
-                            .collect();
-                        let types = raw_types
-                            .into_iter()
-                            .filter_map(|t| {
-                                DbMediaKind::try_from(t)
-                                    .ok()
-                                    .map(Into::into)
-                            })
-                            .collect();
-                        (resources, types, resources_user, types_user)
-                    }
-                    None => (
-                        meta.supported_resources
-                            .into_iter()
-                            .map(|r| r.name)
-                            .collect(),
-                        meta.supported_types,
-                        resources_user,
-                        types_user,
-                    ),
-                }
-            }
-            Err(_) => (
-                meta.supported_resources
-                    .into_iter()
-                    .map(|r| r.name)
-                    .collect(),
-                meta.supported_types,
-                resources_user,
-                types_user,
-            ),
-        }
+        (
+            meta.supported_resources
+                .into_iter()
+                .map(|r| r.name)
+                .collect(),
+            meta.supported_types,
+            resources_user,
+            types_user,
+        )
     } else {
         (vec![], vec![], vec![], vec![])
     };
@@ -221,19 +183,17 @@ pub async fn list_addons(
             .db,
     )
     .await?;
-    let dtos = futures::future::join_all(
-        addons
-            .into_iter()
-            .map(|a| {
-                addon_to_dto(
-                    a,
-                    &state
-                        .ctx
-                        .config,
-                )
-            }),
-    )
-    .await;
+    let dtos = addons
+        .into_iter()
+        .map(|addon| {
+            addon_to_dto(
+                addon,
+                &state
+                    .ctx
+                    .addons,
+            )
+        })
+        .collect();
     Ok(Json(dtos))
 }
 
@@ -252,15 +212,12 @@ pub async fn get_addon(
     )
     .await?
     .context_not_found("Addon not found")?;
-    Ok(Json(
-        addon_to_dto(
-            addon,
-            &state
-                .ctx
-                .config,
-        )
-        .await,
-    ))
+    Ok(Json(addon_to_dto(
+        addon,
+        &state
+            .ctx
+            .addons,
+    )))
 }
 
 /// Create a new addon instance.
@@ -380,15 +337,12 @@ pub async fn create_addon(
         .await?;
     Ok((
         StatusCode::CREATED,
-        Json(
-            addon_to_dto(
-                addon,
-                &state
-                    .ctx
-                    .config,
-            )
-            .await,
-        ),
+        Json(addon_to_dto(
+            addon,
+            &state
+                .ctx
+                .addons,
+        )),
     ))
 }
 
@@ -550,15 +504,12 @@ pub async fn update_addon(
                 .config,
         )
         .await?;
-    Ok(Json(
-        addon_to_dto(
-            addon,
-            &state
-                .ctx
-                .config,
-        )
-        .await,
-    ))
+    Ok(Json(addon_to_dto(
+        addon,
+        &state
+            .ctx
+            .addons,
+    )))
 }
 
 /// Delete an addon instance.

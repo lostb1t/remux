@@ -16,9 +16,14 @@ pub use rate_limit::SharedRateLimit;
 use http::{Extensions, HeaderMap, HeaderValue, Method, header};
 use itertools::Itertools;
 use remux_utils::Secret;
-use reqwest_middleware::{ClientBuilder as MwClientBuilder, ClientWithMiddleware};
+use reqwest_middleware::{
+    ClientBuilder as MwClientBuilder, ClientWithMiddleware, Error as MiddlewareError,
+};
 pub use reqwest_retry::policies::ExponentialBackoff;
-use reqwest_retry::{RetryPolicy, RetryTransientMiddleware};
+use reqwest_retry::{
+    RetryPolicy, RetryTransientMiddleware, Retryable, RetryableStrategy,
+    default_on_request_failure, default_on_request_success,
+};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use std::{collections::HashMap, fmt, iter, ops, sync::Arc, time::Duration};
 #[cfg(not(target_arch = "wasm32"))]
@@ -28,6 +33,20 @@ use {md5, remux_utils::Store};
 static HTTP_CACHE: std::sync::LazyLock<Store> =
     std::sync::LazyLock::new(|| Store::new_weighted(32 * 1024 * 1024)); // 32 MB weight cap
 
+#[cfg(not(target_arch = "wasm32"))]
+const SHARED_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[cfg(not(target_arch = "wasm32"))]
+static SHARED_HTTP_CLIENT: std::sync::LazyLock<reqwest::Client> =
+    std::sync::LazyLock::new(|| {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(SHARED_HTTP_REQUEST_TIMEOUT)
+            .build()
+            .expect("failed to build shared HTTP client")
+    });
+
+#[cfg(target_arch = "wasm32")]
 static SHARED_HTTP_CLIENT: std::sync::LazyLock<reqwest::Client> =
     std::sync::LazyLock::new(reqwest::Client::new);
 
@@ -305,6 +324,26 @@ impl RetryPolicy for DynRetryPolicy {
     }
 }
 
+/// Keeps retrying transient upstream failures, but never retries a request
+/// that already exceeded the client's deadline. A retry after a timeout turns
+/// one bounded request into several consecutive timeout windows.
+struct NoTimeoutRetryStrategy;
+
+impl RetryableStrategy for NoTimeoutRetryStrategy {
+    fn handle(
+        &self,
+        result: &Result<reqwest::Response, MiddlewareError>,
+    ) -> Option<Retryable> {
+        match result {
+            Err(MiddlewareError::Reqwest(error)) if error.is_timeout() => {
+                Some(Retryable::Fatal)
+            }
+            Ok(response) => default_on_request_success(response),
+            Err(error) => default_on_request_failure(error),
+        }
+    }
+}
+
 fn build_mw(
     retry: Option<Arc<dyn RetryPolicy + Send + Sync>>,
     default_retry_after: Duration,
@@ -312,10 +351,12 @@ fn build_mw(
 ) -> ClientWithMiddleware {
     let builder = MwClientBuilder::new(SHARED_HTTP_CLIENT.clone());
     let builder = match retry {
-        Some(policy) => builder.with(
-            RetryTransientMiddleware::new_with_policy(DynRetryPolicy(policy))
-                .with_retry_log_level(tracing::Level::DEBUG),
-        ),
+        Some(policy) => {
+            builder.with(RetryTransientMiddleware::new_with_policy_and_strategy(
+                DynRetryPolicy(policy),
+                NoTimeoutRetryStrategy,
+            ))
+        }
         None => builder,
     };
     #[cfg(not(target_arch = "wasm32"))]
