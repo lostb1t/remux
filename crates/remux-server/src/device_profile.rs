@@ -936,36 +936,23 @@ impl SourceRankingContext<'_> {
 
 impl MediaSourceRank {
     /// Legacy public tuple key, preserving its shape and ordering semantics.
-    /// New source sorting uses `sort_key` so existing callers still compile.
+    /// It projects the current sort key into the old eight-field shape, so
+    /// cache status and bitrate plausibility cannot be represented here.
+    /// New source sorting uses `sort_key` instead.
     pub fn key(
         &self,
         mode: SortMediaSourcesMode,
     ) -> (u8, u8, u8, i64, u8, u8, i64, i64) {
-        let cost = match mode {
-            SortMediaSourcesMode::Compatibility => self.transcode_cost_tier,
-            SortMediaSourcesMode::Best => match self.transcode_cost_tier {
-                4 | 3 => 2,
-                2 => 1,
-                _ => 0,
-            },
-            SortMediaSourcesMode::Quality => 0,
-            SortMediaSourcesMode::Disabled => {
-                debug_assert!(
-                    false,
-                    "capability_rank().key() called with mode Disabled"
-                );
-                0
-            }
-        };
+        let key = self.sort_key(mode);
         (
-            cost,
-            self.resolution_tier,
-            self.hdr_tier,
-            self.bit_depth,
-            self.quality_source_tier,
-            self.audio_tier,
-            self.audio_channels,
-            self.bitrate,
+            key.cost,
+            key.resolution,
+            key.hdr_variant,
+            key.bit_depth,
+            key.release_quality,
+            key.audio_tier,
+            key.audio_channels,
+            key.bitrate,
         )
     }
 
@@ -3035,6 +3022,41 @@ mod tests {
             ..Default::default()
         });
         source
+    }
+
+    #[test]
+    fn legacy_tuple_is_a_projection_of_the_current_sort_key() {
+        let source = with_release(
+            source_with(
+                video_stream(1920, Some(VideoRangeType::Sdr)),
+                audio_stream("ac3", 6),
+                true,
+            ),
+            "Movie.1080p.WEB-DL.mkv",
+            8_000_000,
+        );
+        let rank = source.capability_rank(None, &source.transcoding_reasons);
+        for mode in [
+            SortMediaSourcesMode::Best,
+            SortMediaSourcesMode::Quality,
+            SortMediaSourcesMode::Compatibility,
+        ] {
+            let key = rank.sort_key(mode);
+            let legacy: (u8, u8, u8, i64, u8, u8, i64, i64) = rank.key(mode);
+            assert_eq!(
+                legacy,
+                (
+                    key.cost,
+                    key.resolution,
+                    key.hdr_variant,
+                    key.bit_depth,
+                    key.release_quality,
+                    key.audio_tier,
+                    key.audio_channels,
+                    key.bitrate,
+                )
+            );
+        }
     }
 
     #[test]
