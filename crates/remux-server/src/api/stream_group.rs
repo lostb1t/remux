@@ -218,10 +218,11 @@ pub async fn stream_group_preview(
                 s.stream_info
                     .as_ref()
                     .map_or(false, |info| {
-                        group.match_outcome(
+                        group.match_stream(
                             info,
                             s.probe_data
                                 .as_ref(),
+                            s.runtime,
                         ) == MatchOutcome::Match
                     })
             })
