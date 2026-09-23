@@ -6580,6 +6580,16 @@ impl Media {
 
             self.sources = Some(sources);
         };
+        // Unprobed streams need the item's runtime for size-based bitrate.
+        for source in self
+            .sources
+            .iter_mut()
+            .flatten()
+        {
+            source.runtime = source
+                .runtime
+                .or(self.runtime);
+        }
         Ok(self
             .sources
             .as_deref()
