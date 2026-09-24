@@ -156,26 +156,40 @@ async fn items_playbackinfo_inner(
         .device_profile
         .clone();
 
-    if let Some(profile) = reported_device_profile.clone() {
-        let db = state
-            .ctx
-            .db
-            .clone();
-        let user_id = session
-            .user
-            .id;
-        let device_id = session
+    if let Some(profile) = reported_device_profile.as_ref() {
+        // Compare serialized rather than deriving PartialEq across the whole
+        // DeviceProfile tree, and await the write (not fire-and-forget): a
+        // client's very next request (e.g. an immediate subtitle fetch) reads
+        // this profile back via `parsed_device_profile`, so it must be
+        // committed before this response returns.
+        let unchanged = session
             .device
-            .id
-            .clone();
-        tokio::spawn(async move {
-            if let Err(err) =
-                auth::Device::save_device_profile(&db, user_id, &device_id, &profile)
-                    .await
+            .parsed_device_profile()
+            .and_then(|stored| serde_json::to_string(&stored).ok())
+            == serde_json::to_string(profile).ok();
+        if !unchanged {
+            if let Err(err) = auth::Device::save_device_profile(
+                &state
+                    .ctx
+                    .db,
+                session
+                    .user
+                    .id,
+                &session
+                    .device
+                    .id,
+                profile,
+            )
+            .await
             {
-                warn!("failed to persist device profile for {device_id}: {err}");
+                warn!(
+                    "failed to persist device profile for {}: {err}",
+                    session
+                        .device
+                        .id
+                );
             }
-        });
+        }
     }
     let device_profile = crate::jellyfin_client::merge_device_profile_subtitles(
         &session.device,
@@ -285,6 +299,12 @@ async fn items_playbackinfo_inner(
         .ctx
         .config
         .port;
+    // When no explicit media_source_id was requested, `media` (just resolved
+    // above) already IS the top-level item this branch would otherwise
+    // re-fetch by `id` — clone it instead of a second identical DB round-trip.
+    let subtitle_media_hint = media_source_id
+        .is_none()
+        .then(|| media.clone());
     let (probed, (subtitle_media, external_subtitles)) = tokio::join!(
         async {
             service
@@ -298,15 +318,18 @@ async fn items_playbackinfo_inner(
             // `id` is the top-level Movie/Episode UUID even when the request
             // targets a child source. Fetch subtitle addons while stream addons
             // load and their candidates are probed.
-            let mut subtitle_media = db::Media::get_by_id(
-                &state
-                    .ctx
-                    .db,
-                &id,
-            )
-            .await
-            .ok()
-            .flatten();
+            let mut subtitle_media = match subtitle_media_hint {
+                Some(hint) => Some(hint),
+                None => db::Media::get_by_id(
+                    &state
+                        .ctx
+                        .db,
+                    &id,
+                )
+                .await
+                .ok()
+                .flatten(),
+            };
             let external_subtitles = if let Some(ref mut sub_media) = subtitle_media {
                 state
                     .ctx
@@ -970,6 +993,7 @@ async fn videos_stream_inner(
         .or_else(|| {
             StreamService::recent_probe_fallback_for(
                 &state.ctx,
+                user_id,
                 id,
                 q.media_source_id
                     .unwrap_or(id),
