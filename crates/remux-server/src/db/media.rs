@@ -208,7 +208,11 @@ impl MediaKind {
     pub fn is_playable_leaf(&self) -> bool {
         matches!(
             self,
-            Self::Movie | Self::Episode | Self::Track | Self::TvChannel
+            Self::Movie
+                | Self::Episode
+                | Self::Track
+                | Self::TvChannel
+                | Self::TvProgram
         )
     }
 }
@@ -1097,7 +1101,10 @@ impl ExternalIds {
         grandparent_ext: Option<&ExternalIds>,
     ) -> Vec<String> {
         match kind {
-            MediaKind::Movie | MediaKind::Series | MediaKind::TvProgram => {
+            MediaKind::Movie
+            | MediaKind::Series
+            | MediaKind::TvChannel
+            | MediaKind::TvProgram => {
                 let mut ids = Vec::new();
                 if let Some(ref imdb) = self.imdb {
                     ids.push(imdb.to_string());
@@ -4456,22 +4463,25 @@ impl Media {
             }
 
             if let Some(parent_enabled) = &filter.parent_enabled {
-                qb.push(" AND parent_id IN (SELECT id FROM media WHERE kind = 'tv_channel' AND enabled = ")
+                // A channel has no parent; only guide programs need their
+                // parent channel's enabled state checked.
+                qb.push(" AND (kind != 'tv_program' OR parent_id IN (SELECT id FROM media WHERE kind = 'tv_channel' AND enabled = ")
                     .push_bind(*parent_enabled)
-                    .push(")");
+                    .push("))");
             }
 
             if let Some(has_aired) = filter.has_aired {
                 if has_aired {
                     qb.push(" AND live_end < datetime('now')");
                 } else {
-                    qb.push(" AND live_end >= datetime('now')");
+                    qb.push(" AND (live_end IS NULL OR live_end >= datetime('now'))");
                 }
             }
 
             if let Some(min_end) = &filter.min_end_date {
-                qb.push(" AND live_end >= ")
-                    .push_bind(min_end);
+                qb.push(" AND (live_end IS NULL OR live_end >= ")
+                    .push_bind(min_end)
+                    .push(")");
             }
 
             if let Some(max_start) = &filter.max_start_date {
@@ -4775,6 +4785,9 @@ impl Media {
                         }
                         api::ItemSortBy::DigitalReleaseDate => {
                             format!("COALESCE(digital_released_at, released_at) {}", dir)
+                        }
+                        api::ItemSortBy::StartDate => {
+                            format!("live_start {}", dir)
                         }
                         api::ItemSortBy::CommunityRating => {
                             format!("COALESCE(rating_audience, rating_critic) {}", dir)
@@ -7343,6 +7356,14 @@ impl TryFrom<sdks::stremio::Meta> for Media {
             released_at: meta
                 .released
                 .map(|x| x.naive_utc()),
+            live_start: (media_kind == MediaKind::TvProgram)
+                .then(|| {
+                    meta.released
+                        .map(|x| x.naive_utc())
+                })
+                .flatten(),
+            program_kind: (media_kind == MediaKind::TvProgram)
+                .then_some(ProgramKind::Sports),
             digital_released_at,
             runtime: meta
                 .runtime
@@ -7390,7 +7411,15 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                         .filter_map(|t| t.source)
                         .collect::<Vec<String>>()
                 }),
-            id: Uuid::new_v4(),
+            // Live channels have no external-ID deduplication path during catalog
+            // import, so their primary key must be derived from the provider's
+            // stable Stremio ID. Other media kinds are reconciled by their
+            // external IDs after import.
+            id: if media_kind == MediaKind::TvChannel {
+                crate::common::stable_media_uuid(&media_kind, &meta.id)
+            } else {
+                Uuid::new_v4()
+            },
             ..Default::default()
         };
 
@@ -7421,6 +7450,33 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
     let mut media: Media = meta
         .clone()
         .try_into()?;
+
+    // A dated `tv` listing is a scheduled, single-program virtual channel.
+    // Keep the channel playable in its catalog and add a guide program below
+    // it. Prefer the runtime when the addon supplies one; otherwise use a
+    // conservative 24-hour placeholder. Items absent from the next refresh
+    // are pruned.
+    if media.kind == MediaKind::TvChannel {
+        if let Some(start) = meta
+            .released
+            .map(|released| released.naive_utc())
+        {
+            let mut program = media.clone();
+            program.id =
+                crate::common::stable_media_uuid(&MediaKind::TvProgram, &meta.id);
+            program.kind = MediaKind::TvProgram;
+            program.parent_id = Some(media.id);
+            program.live_start = Some(start);
+            let duration = media
+                .runtime
+                .filter(|seconds| *seconds > 0)
+                .map(chrono::Duration::seconds)
+                .unwrap_or_else(|| chrono::Duration::hours(24));
+            program.live_end = Some(start + duration);
+            program.program_kind = Some(ProgramKind::Sports);
+            return Ok(vec![media, program]);
+        }
+    }
 
     if imdb_id.is_none() {
         // Custom-ID path: no IMDB, derive UUIDs from the addon-specific id.
@@ -9044,6 +9100,69 @@ mod tests {
                 .external_ids
                 .custom_stremio_type,
             Some("anime".to_string())
+        );
+    }
+
+    #[test]
+    fn stremio_tv_channel_id_is_stable_across_catalog_refreshes() {
+        let json = r#"{
+            "id": "nuvio_sport_spk_admin-rally-tv",
+            "type": "tv",
+            "name": "Rally TV"
+        }"#;
+        let first: Media = serde_json::from_str::<sdks::stremio::Meta>(json)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let second: Media = serde_json::from_str::<sdks::stremio::Meta>(json)
+            .unwrap()
+            .try_into()
+            .unwrap();
+
+        assert_eq!(first.kind, MediaKind::TvChannel);
+        assert_eq!(first.id, second.id);
+        assert_eq!(
+            first.id,
+            crate::common::stable_media_uuid(
+                &MediaKind::TvChannel,
+                "nuvio_sport_spk_admin-rally-tv"
+            )
+        );
+    }
+
+    #[test]
+    fn dated_stremio_tv_listing_creates_a_channel_and_program() {
+        let meta: sdks::stremio::Meta = serde_json::from_str(
+            r#"{
+                "id": "nuvio_sport_spk_arsenal-vs-chelsea",
+                "type": "tv",
+                "name": "Arsenal vs Chelsea",
+                "released": "2026-09-14T16:00:00.000Z",
+                "runtime": "90 min"
+            }"#,
+        )
+        .unwrap();
+
+        let items = stremio_meta_to_medias(meta).unwrap();
+        assert_eq!(items.len(), 2);
+        let channel = items
+            .iter()
+            .find(|item| item.kind == MediaKind::TvChannel)
+            .unwrap();
+        let program = items
+            .iter()
+            .find(|item| item.kind == MediaKind::TvProgram)
+            .unwrap();
+
+        assert_eq!(program.parent_id, Some(channel.id));
+        assert_eq!(
+            program.live_end,
+            Some(
+                program
+                    .live_start
+                    .unwrap()
+                    + chrono::Duration::minutes(90)
+            )
         );
     }
 

@@ -349,6 +349,10 @@ pub async fn livetv_programs(
         } else {
             Some(program_kinds)
         },
+        // Jellyfin defaults guide queries to StartDate ascending when clients
+        // do not request an explicit order.
+        sort_by: vec![api::ItemSortBy::StartDate],
+        sort_order: vec![api::SortOrder::Ascending],
         user_id: Some(
             session
                 .user
@@ -454,6 +458,9 @@ pub async fn livetv_programs_post(
             .max_start_date
             .as_deref()
             .and_then(parse_dt),
+        // Match Jellyfin's default guide ordering for the POST variant too.
+        sort_by: vec![api::ItemSortBy::StartDate],
+        sort_order: vec![api::SortOrder::Ascending],
         user_id: Some(
             session
                 .user

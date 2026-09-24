@@ -239,7 +239,11 @@ impl StreamService {
                 candidates.extend(cascade);
                 Ok(candidates.remove(0))
             }
-            db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track => {
+            db::MediaKind::Movie
+            | db::MediaKind::Episode
+            | db::MediaKind::Track
+            | db::MediaKind::TvChannel
+            | db::MediaKind::TvProgram => {
                 let mut media = media;
                 let media_id = media.id;
                 let _ = ctx

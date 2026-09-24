@@ -92,6 +92,7 @@ where
                     | db::MediaKind::Series
                     | db::MediaKind::Artist
                     | db::MediaKind::TvChannel
+                    | db::MediaKind::TvProgram
                     | db::MediaKind::Album
                     | db::MediaKind::Track
                     | db::MediaKind::Playlist
@@ -181,6 +182,7 @@ where
         // they actually appeared in the catalog.
         let mut item_weights: Vec<(Uuid, i64)> = items
             .iter()
+            .filter(|item| item.kind != db::MediaKind::TvProgram)
             .map(|item| {
                 let w = catalog_position;
                 catalog_position += 1;
@@ -192,6 +194,13 @@ where
         let (new_items, existing_items): (Vec<db::Media>, Vec<db::Media>) = items
             .into_iter()
             .partition(|m| !existing_ids.contains(&m.id));
+        let new_item_kinds: Vec<db::MediaKind> = new_items
+            .iter()
+            .map(|item| {
+                item.kind
+                    .clone()
+            })
+            .collect();
 
         debug!(
             catalog = media_id,
@@ -213,17 +222,49 @@ where
         // so anything keyed on them (catalog membership rows below, the
         // stale-member diff, series reconciliation) must be remapped through
         // this or it silently targets a row that was never written.
-        let id_remap = match ctx
+        // A scheduled Stremio listing emits a channel plus a child program.
+        // Persist channels first so the program's parent foreign key is valid;
+        // `process_meta_batch` otherwise runs items concurrently.
+        let (new_programs, new_roots): (Vec<db::Media>, Vec<db::Media>) = new_items
+            .into_iter()
+            .partition(|item| {
+                item.kind == db::MediaKind::TvProgram
+                    && item
+                        .parent_id
+                        .is_some()
+            });
+        let mut id_remap = match ctx
             .addons
-            .process_meta_batch(new_items.clone(), ctx, true, None)
+            .process_meta_batch(new_roots, ctx, true, None)
             .await
         {
             Ok(map) => map,
             Err(e) => {
-                error!(catalog = media_id, error = %e, "failed to process new items chunk");
+                error!(catalog = media_id, error = %e, "failed to process new catalog roots chunk");
                 continue;
             }
         };
+        let mut new_programs = new_programs;
+        for program in &mut new_programs {
+            if let Some(parent_id) = program.parent_id {
+                program.parent_id = Some(
+                    *id_remap
+                        .get(&parent_id)
+                        .unwrap_or(&parent_id),
+                );
+            }
+        }
+        match ctx
+            .addons
+            .process_meta_batch(new_programs, ctx, true, None)
+            .await
+        {
+            Ok(program_remap) => id_remap.extend(program_remap),
+            Err(e) => {
+                error!(catalog = media_id, error = %e, "failed to process new catalog programs chunk");
+                continue;
+            }
+        }
         let remap = |id: Uuid| {
             id_remap
                 .get(&id)
@@ -242,20 +283,22 @@ where
             db::reconcile_series_played_state(&ctx.db, remap(id)).await;
         }
 
-        // Re-upsert already-known TV channels too (skipping the metadata-fetch step
+        // Re-upsert already-known live-TV rows too (skipping the metadata-fetch step
         // `process_meta_batch` does for new items — a no-op for this kind anyway).
         // Without this, a channel's `updated_at` is frozen from its first import, so
         // the stale-channel prune in `prune_stale_iptv_channels` would treat every
-        // still-present channel as stale and delete it. Other kinds (movie/series/
+        // still-present channel or program as stale and delete it. Other kinds (movie/series/
         // etc.) deliberately skip this to avoid re-running their (real) metadata fetch.
-        let existing_tv_channels: Vec<db::Media> = existing_items
+        let existing_live_tv: Vec<db::Media> = existing_items
             .iter()
-            .filter(|m| m.kind == db::MediaKind::TvChannel)
+            .filter(|m| {
+                matches!(m.kind, db::MediaKind::TvChannel | db::MediaKind::TvProgram)
+            })
             .cloned()
             .collect();
-        if !existing_tv_channels.is_empty() {
-            if let Err(e) = db::Media::upsert(&ctx.db, &existing_tv_channels).await {
-                warn!(catalog = media_id, error = %e, "failed to refresh existing tv channels");
+        if !existing_live_tv.is_empty() {
+            if let Err(e) = db::Media::upsert(&ctx.db, &existing_live_tv).await {
+                warn!(catalog = media_id, error = %e, "failed to refresh existing live TV rows");
             }
         }
 
@@ -349,13 +392,19 @@ where
             }
 
             if !catalog_tags.is_empty() {
-                let tag_rows: Vec<(Uuid, &String)> = new_items
+                let tag_rows: Vec<(Uuid, &String)> = item_weights
                     .iter()
-                    .chain(existing_items.iter())
-                    .flat_map(|item| {
+                    .map(|(item_id, _)| item_id)
+                    .chain(
+                        existing_items
+                            .iter()
+                            .filter(|item| item.kind != db::MediaKind::TvProgram)
+                            .map(|item| &item.id),
+                    )
+                    .flat_map(|item_id| {
                         catalog_tags
                             .iter()
-                            .map(move |tag| (item.id, tag))
+                            .map(move |tag| (*item_id, tag))
                     })
                     .collect();
 
@@ -383,23 +432,21 @@ where
         .instrument(debug_span!(target: "remux_server::metadata_refresh", "write_relations"))
         .await;
 
-        for item in new_items.iter() {
+        for kind in &new_item_kinds {
             *new_counts
-                .entry(
-                    item.kind
-                        .to_string(),
-                )
+                .entry(kind.to_string())
                 .or_insert(0) += 1;
         }
-        for item in new_items
+        for kind in new_item_kinds
             .iter()
-            .chain(existing_items.iter())
+            .chain(
+                existing_items
+                    .iter()
+                    .map(|item| &item.kind),
+            )
         {
             *counts
-                .entry(
-                    item.kind
-                        .to_string(),
-                )
+                .entry(kind.to_string())
                 .or_insert(0) += 1;
         }
         total = counts
@@ -588,6 +635,16 @@ pub async fn prune_stale_iptv_channels(db: &sqlx::SqlitePool, cutoff: NaiveDateT
         }
         Ok(_) => {}
         Err(e) => warn!(error = %e, "failed to prune stale IPTV channels"),
+    }
+
+    if let Err(e) = sqlx::query(
+        "DELETE FROM media WHERE kind = 'tv_program' AND parent_id IS NULL AND updated_at < ?",
+    )
+    .bind(cutoff)
+    .execute(db)
+    .await
+    {
+        warn!(error = %e, "failed to prune stale Stremio guide programs");
     }
 }
 

@@ -526,24 +526,35 @@ fn is_hls_input_url(input_url: &str) -> bool {
         .path()
         .to_ascii_lowercase();
     path.ends_with(".m3u8")
-        || (path.ends_with("/hls")
-            && url
-                .query_pairs()
-                .any(|(name, _)| name.eq_ignore_ascii_case("url")))
+        // Some stream relays expose their HLS manifest through a generic
+        // endpoint such as `/api/manifest?url=https://origin/live.m3u8`.
+        || url.query_pairs().any(|(name, value)| {
+            name.eq_ignore_ascii_case("url")
+                && url::Url::parse(&value)
+                    .ok()
+                    .is_some_and(|target| target.path().to_ascii_lowercase().ends_with(".m3u8"))
+        })
 }
 
-/// FFmpeg's `-reconnect*` flags are options of its `http`/`https` protocol
-/// handler — passing them on a local file path or another protocol (rtsp,
-/// etc.) makes ffmpeg fail outright ("Option reconnect not found"). Checked
-/// against the *resolved* input string (what ffmpeg actually opens), not
-/// the originating `StreamDescriptor`: Torrent/Opendal sources resolve to
-/// remux's own `http://127.0.0.1:{port}/...` proxy (see
-/// `StreamDescriptor::server_input`), which is a real HTTP input ffmpeg
-/// benefits from reconnecting on (a stalled torrent read looks just like a
-/// dropped connection) even though `StreamDescriptor::as_http_url` reports
-/// `None` for it.
-pub(crate) fn ffmpeg_reconnect_args(input_url: &str) -> &'static [&'static str] {
+/// FFmpeg HTTP input options, checked against the resolved input string (what
+/// FFmpeg actually opens), not the originating `StreamDescriptor`.
+///
+/// HTTP persistence is disabled because some stream proxies redirect an HLS
+/// manifest to a different host. FFmpeg otherwise tries to reuse the proxy
+/// connection for the redirected host and aborts the input.
+///
+/// The reconnect options are intentionally omitted for HLS: FFmpeg's HLS
+/// demuxer opens the playlists and segments itself, while `-reconnect_streamed`
+/// can leave proxied master playlists waiting indefinitely before the first
+/// rendition is opened.
+pub(crate) fn ffmpeg_http_input_args(input_url: &str) -> &'static [&'static str] {
     match url::Url::parse(input_url) {
+        Ok(url)
+            if matches!(url.scheme(), "http" | "https")
+                && is_hls_input_url(input_url) =>
+        {
+            &["-http_persistent", "0"]
+        }
         Ok(url) if matches!(url.scheme(), "http" | "https") => &[
             "-reconnect",
             "1",
@@ -551,6 +562,8 @@ pub(crate) fn ffmpeg_reconnect_args(input_url: &str) -> &'static [&'static str] 
             "1",
             "-reconnect_delay_max",
             "5",
+            "-http_persistent",
+            "0",
         ],
         _ => &[],
     }
@@ -717,7 +730,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     add_hls_extension_compat_args(&mut args, &params.input_url);
 
     args.extend(
-        ffmpeg_reconnect_args(&params.input_url)
+        ffmpeg_http_input_args(&params.input_url)
             .iter()
             .map(|s| (*s).into()),
     );
@@ -1039,6 +1052,12 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         segment
             .to_string_lossy()
             .into_owned(),
+    ]);
+
+    // Keep all segments for the playback session. This is also Jellyfin's
+    // live-TV HLS behavior: EVENT playlists grow for the duration of a live
+    // session and let clients start from its beginning.
+    args.extend([
         "-hls_playlist_type".into(),
         "event".into(),
         "-hls_list_size".into(),
@@ -1483,7 +1502,7 @@ pub(crate) fn build_progressive_args(
         "5000000".into(),
     ];
     args.extend(
-        ffmpeg_reconnect_args(&params.input_url)
+        ffmpeg_http_input_args(&params.input_url)
             .iter()
             .map(|s| (*s).into()),
     );
@@ -3455,14 +3474,18 @@ mod tests {
     }
 
     #[test]
-    fn ffmpeg_reconnect_args_only_for_http() {
+    fn ffmpeg_http_input_args_depend_on_protocol_and_container() {
         for url in [
             "http://127.0.0.1:8080/torrents/1/stream/0",
             "https://cdn.example.com/video.mkv",
         ] {
             assert!(
-                !ffmpeg_reconnect_args(url).is_empty(),
+                !ffmpeg_http_input_args(url).is_empty(),
                 "expected reconnect args for {url}"
+            );
+            assert!(
+                ffmpeg_http_input_args(url).contains(&"-http_persistent"),
+                "expected HTTP persistence setting for {url}"
             );
         }
         for url in [
@@ -3473,10 +3496,22 @@ mod tests {
             "rtsp://camera.example.com/live",
         ] {
             assert!(
-                ffmpeg_reconnect_args(url).is_empty(),
+                ffmpeg_http_input_args(url).is_empty(),
                 "expected no reconnect args for {url}"
             );
         }
+
+        let hls = ffmpeg_http_input_args(
+            "https://relay.example/api/manifest?url=https%3A%2F%2Forigin.example%2Flive.m3u8",
+        );
+        assert_eq!(hls, ["-http_persistent", "0"]);
+
+        // A generic relay endpoint is not necessarily HLS. DASH inputs still
+        // need the normal reconnect options.
+        let dash = ffmpeg_http_input_args(
+            "https://relay.example/hls?url=https%3A%2F%2Forigin.example%2Flive.mpd",
+        );
+        assert!(dash.contains(&"-reconnect"));
     }
 
     #[test]
