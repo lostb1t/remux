@@ -347,24 +347,6 @@ pub(crate) fn save_sidecar_subtitle_routes(
         );
 }
 
-/// The highest index a cached sidecar route already claims for this
-/// device/item/source, if any. Callers that assign new subtitle indexes for
-/// the same source (e.g. `append_external_subtitles`) must start after this,
-/// or a later request for that index resolves to the cached sidecar instead
-/// of whatever the caller is about to advertise.
-pub(crate) fn cached_sidecar_next_index(
-    ctx: &crate::AppContext,
-    device_id: &str,
-    item_id: Uuid,
-    media_source_id: Uuid,
-) -> Option<i64> {
-    load_sidecar_subtitle_routes(ctx, device_id, item_id, media_source_id)?
-        .iter()
-        .map(|route| route.index)
-        .max()
-        .map(|max| max + 1)
-}
-
 fn load_sidecar_subtitle_routes(
     ctx: &crate::AppContext,
     device_id: &str,
@@ -849,15 +831,11 @@ pub(crate) fn descriptor_to_subtitle_url(sub: &crate::addons::SubtitleInfo) -> S
     }
 }
 
-/// Add prefetched subtitles to real-probed sources. Item details and
-/// PlaybackInfo share this path so their selection and indexes stay aligned.
-///
-/// `reserved_next_index` lets a caller that doesn't itself inject sidecar
-/// subtitles into `media_streams` (Items detail, unlike PlaybackInfo, never
-/// loads the torrent manager to discover them) still avoid handing out an
-/// index a cached sidecar route already claims for that source. Pass an
-/// empty map when the source's `media_streams` already accounts for
-/// everything that needs reserving (as PlaybackInfo's does).
+/// Add prefetched subtitles to real-probed sources. Only called from
+/// PlaybackInfo — Items detail deliberately never shows subtitle tracks (see
+/// the stripping step in `items.rs`), so index alignment only has to hold
+/// within a single PlaybackInfo response and the download endpoint that
+/// follows it.
 pub(crate) fn append_external_subtitles(
     media_sources: &mut [api::MediaSourceInfo],
     subs: &[crate::addons::SubtitleInfo],
@@ -865,7 +843,6 @@ pub(crate) fn append_external_subtitles(
     device_profile: Option<&api::DeviceProfile>,
     item_id: Uuid,
     api_key: &str,
-    reserved_next_index: &std::collections::HashMap<Uuid, i64>,
 ) {
     for source in media_sources.iter_mut() {
         if !has_real_probe_data(source) {
@@ -876,13 +853,7 @@ pub(crate) fn append_external_subtitles(
             .iter()
             .map(|s| s.index)
             .max()
-            .map_or(0, |m| m + 1)
-            .max(
-                reserved_next_index
-                    .get(&source.id)
-                    .copied()
-                    .unwrap_or(0),
-            );
+            .map_or(0, |m| m + 1);
 
         let source_filename = source
             .remux
@@ -1228,15 +1199,7 @@ mod tests {
             ai_translated: None,
         }];
 
-        append_external_subtitles(
-            &mut sources,
-            &subs,
-            &[],
-            None,
-            item_id,
-            "test-key",
-            &std::collections::HashMap::new(),
-        );
+        append_external_subtitles(&mut sources, &subs, &[], None, item_id, "test-key");
 
         assert_eq!(
             sources[0]
@@ -1316,7 +1279,6 @@ mod tests {
             Some(&embed_profile),
             item_id,
             "test-key",
-            &std::collections::HashMap::new(),
         );
         assert_eq!(
             sources[0]
@@ -1334,7 +1296,6 @@ mod tests {
                 profile,
                 item_id,
                 "test-key",
-                &std::collections::HashMap::new(),
             );
             assert_eq!(
                 sources[0]
@@ -1354,7 +1315,6 @@ mod tests {
             Some(&embed_profile),
             item_id,
             "test-key",
-            &std::collections::HashMap::new(),
         );
         assert_eq!(
             sources[0]
@@ -1374,7 +1334,6 @@ mod tests {
             Some(&embed_profile),
             item_id,
             "test-key",
-            &std::collections::HashMap::new(),
         );
         assert_eq!(
             sources[0]
@@ -1427,63 +1386,12 @@ mod tests {
             Some(&profile),
             Uuid::new_v4(),
             "test-key",
-            &std::collections::HashMap::new(),
         );
         assert_eq!(
             sources[0]
                 .media_streams
                 .len(),
             1
-        );
-    }
-
-    /// Items detail never injects sidecar subtitles into `media_streams` (no
-    /// torrent manager lookup there), so a caller that knows a sidecar route
-    /// is already cached for this source must reserve its index explicitly —
-    /// otherwise a later PlaybackInfo call assigning that same index to a
-    /// sidecar would make a subtitle request for it resolve to the sidecar
-    /// instead of the addon subtitle advertised here.
-    #[test]
-    fn reserved_next_index_skips_a_cached_sidecar_slot() {
-        let source_id = Uuid::new_v4();
-        let source = api::MediaSourceInfo {
-            id: source_id,
-            media_streams: vec![api::MediaStream {
-                index: 2,
-                type_: Some(api::MediaStreamType::Video),
-                ..Default::default()
-            }],
-            remux: Some(api::MediaSourceRemuxInfo {
-                source: Some(api::ProbeOrigin::Ffprobe),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let external = crate::addons::SubtitleInfo {
-            id: "eng".into(),
-            url: None,
-            lang: Some("eng".into()),
-            is_forced: false,
-            is_hi: false,
-            filename: None,
-            from_trusted: None,
-            ai_translated: None,
-        };
-
-        let mut sources = vec![source];
-        let reserved = std::collections::HashMap::from([(source_id, 5)]);
-        append_external_subtitles(
-            &mut sources,
-            &[external],
-            &[],
-            None,
-            Uuid::new_v4(),
-            "test-key",
-            &reserved,
-        );
-        assert_eq!(
-            sources[0].media_streams[1].index, 5,
-            "addon subtitle must start after the reserved sidecar slot, not embedded_max + 1"
         );
     }
 }

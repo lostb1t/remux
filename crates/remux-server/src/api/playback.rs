@@ -610,7 +610,6 @@ async fn items_playbackinfo_inner(
             .device
             .access_token
             .expose(),
-        &std::collections::HashMap::new(),
     );
 
     // Re-resolve defaults after external subtitles were injected so language
