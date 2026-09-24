@@ -595,25 +595,28 @@ impl SubtitleAddon for StremioAddon {
                 lang: s.lang,
                 is_forced: crate::subtitle_selection::has_subtitle_marker(
                     s.subtitle_file_name
-                        .as_deref()
-                        .or(s
-                            .title
-                            .as_deref()),
+                        .as_deref(),
+                    "forced",
+                ) || crate::subtitle_selection::has_subtitle_marker(
+                    s.title
+                        .as_deref(),
                     "forced",
                 ),
                 is_hi: crate::subtitle_selection::has_subtitle_marker(
                     s.subtitle_file_name
-                        .as_deref()
-                        .or(s
-                            .title
-                            .as_deref()),
+                        .as_deref(),
+                    "sdh",
+                ) || crate::subtitle_selection::has_subtitle_marker(
+                    s.title
+                        .as_deref(),
                     "sdh",
                 ) || crate::subtitle_selection::has_subtitle_marker(
                     s.subtitle_file_name
-                        .as_deref()
-                        .or(s
-                            .title
-                            .as_deref()),
+                        .as_deref(),
+                    "hi",
+                ) || crate::subtitle_selection::has_subtitle_marker(
+                    s.title
+                        .as_deref(),
                     "hi",
                 ),
                 filename: s
