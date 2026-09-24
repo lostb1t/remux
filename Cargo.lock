@@ -6940,6 +6940,7 @@ dependencies = [
  "md5",
  "merge",
  "nutype",
+ "percent-encoding",
  "regex",
  "remux-macros",
  "remux-utils",

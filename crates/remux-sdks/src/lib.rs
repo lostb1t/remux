@@ -1,6 +1,7 @@
 #![allow(warnings)]
 
 pub mod deezer;
+pub mod eclipse;
 pub mod introdb;
 pub mod kitsu;
 pub mod remux;
