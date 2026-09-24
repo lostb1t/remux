@@ -640,6 +640,8 @@ impl StreamService {
                 debug!(id = %effective_stream.id, "remuxdb: skipping (disabled)");
             } else if !is_remuxdb_kind {
                 debug!(id = %effective_stream.id, kind = ?item.as_ref().map(|it| &it.kind), "remuxdb: skipping (not movie/episode)");
+            } else if source.is_filename_guess() {
+                debug!(id = %effective_stream.id, "remuxdb: skipping (filename guess, not a real probe)");
             } else if let Some(url) = self
                 .ctx
                 .config
