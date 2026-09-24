@@ -499,17 +499,42 @@ async fn subtitles_stream_inner(
                         ),
                     )
                     .await;
-                let scored = crate::subtitle_selection::select_external_subtitles(
-                    &subs,
-                    &sub_langs,
-                    source
-                        .stream_info
-                        .as_ref()
-                        .and_then(|info| {
-                            info.filename
-                                .as_deref()
-                        }),
-                );
+                // Match append_external_subtitles' filtering exactly, or the
+                // index a client requests (from the menu it was shown) won't
+                // line up with this reconstructed list.
+                let device_profile =
+                    crate::jellyfin_client::merge_device_profile_subtitles(
+                        &session.device,
+                        session
+                            .device
+                            .parsed_device_profile(),
+                    );
+                let scored: Vec<_> =
+                    crate::subtitle_selection::select_external_subtitles(
+                        &subs,
+                        &sub_langs,
+                        source
+                            .stream_info
+                            .as_ref()
+                            .and_then(|info| {
+                                info.filename
+                                    .as_deref()
+                            }),
+                    )
+                    .into_iter()
+                    .filter(|sub| {
+                        source
+                            .probe_data
+                            .as_ref()
+                            .map_or(true, |probe| {
+                                !has_supported_embedded_subtitle(
+                                    probe,
+                                    sub,
+                                    device_profile.as_ref(),
+                                )
+                            })
+                    })
+                    .collect();
                 if let Some(sub) = scored.get(i as usize) {
                     if let Some(ref descriptor) = sub.url {
                         let output_format = format.to_ascii_lowercase();
