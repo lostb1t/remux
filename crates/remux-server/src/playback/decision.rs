@@ -4,8 +4,110 @@ use crate::{
         DeviceProfileExt, SubtitleCodec, VideoCodec, subtitle_codec_matches_profile,
     },
 };
-use remux_sdks::remux::{EmbeddedSubtitleHandling, EncodingOptions};
+use remux_sdks::remux::{EmbeddedSubtitleHandling, EncodingOptions, PlayMethod};
 use uuid::Uuid;
+
+/// Effective playback-processing permissions for a request.
+///
+/// Server-wide encoding settings and per-user policy are deliberately combined
+/// here so playback negotiation and the endpoints that actually start FFmpeg
+/// cannot disagree about what is allowed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlaybackPermissions {
+    pub remuxing: bool,
+    pub video_transcoding: bool,
+    pub audio_transcoding: bool,
+}
+
+impl PlaybackPermissions {
+    pub(crate) fn for_session(
+        encoding: &EncodingOptions,
+        session: &db::auth::AuthSession,
+    ) -> Self {
+        let policy = session
+            .user
+            .policy
+            .as_ref();
+        Self {
+            remuxing: encoding
+                .enable_remuxing
+                .unwrap_or(true)
+                && policy
+                    .map(|p| p.enable_playback_remuxing)
+                    .unwrap_or(true),
+            video_transcoding: encoding
+                .enable_video_transcoding
+                .unwrap_or(true)
+                && policy
+                    .map(|p| p.enable_video_playback_transcoding)
+                    .unwrap_or(true),
+            audio_transcoding: encoding
+                .enable_audio_transcoding
+                .unwrap_or(true)
+                && policy
+                    .map(|p| p.enable_audio_playback_transcoding)
+                    .unwrap_or(true),
+        }
+    }
+
+    /// Resolve client-requested codecs through the server/user permissions.
+    /// Disabled encoders become stream-copy requests. If that leaves a pure
+    /// remux while remuxing is disabled, the caller must serve the source via
+    /// direct play instead of starting FFmpeg.
+    pub(crate) fn resolve_codecs(
+        self,
+        requested_video: &str,
+        requested_audio: &str,
+    ) -> ResolvedPlaybackCodecs {
+        let video = if codec_is_copy(requested_video) || !self.video_transcoding {
+            "copy".to_string()
+        } else {
+            requested_video.to_string()
+        };
+        let audio = if codec_is_copy(requested_audio) || !self.audio_transcoding {
+            "copy".to_string()
+        } else {
+            requested_audio.to_string()
+        };
+        let direct_play_only =
+            codec_is_copy(&video) && codec_is_copy(&audio) && !self.remuxing;
+
+        ResolvedPlaybackCodecs {
+            video,
+            audio,
+            direct_play_only,
+        }
+    }
+
+    pub(crate) fn processing_available(self) -> bool {
+        self.remuxing || self.video_transcoding || self.audio_transcoding
+    }
+
+    /// Constrain a client-reported method to one the server is allowed to use.
+    /// The stream endpoint records the exact effective method when it runs;
+    /// this is the fallback for clients that report playback before requesting
+    /// the media URL.
+    pub(crate) fn constrain_reported_method(self, method: PlayMethod) -> PlayMethod {
+        match method {
+            PlayMethod::DirectStream if !self.remuxing => PlayMethod::DirectPlay,
+            PlayMethod::Transcode if !self.processing_available() => {
+                PlayMethod::DirectPlay
+            }
+            method => method,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedPlaybackCodecs {
+    pub video: String,
+    pub audio: String,
+    pub direct_play_only: bool,
+}
+
+fn codec_is_copy(codec: &str) -> bool {
+    codec.eq_ignore_ascii_case("copy")
+}
 
 /// Per-request config shared across all streams in the playback loop.
 pub(crate) struct PlaybackConfig {
@@ -65,19 +167,7 @@ pub(crate) fn build_transcode_decision(
         return TranscodeDecision::DirectPlay;
     }
 
-    let remuxing_allowed = cfg
-        .encoding_cfg
-        .enable_remuxing
-        .unwrap_or(true)
-        && session
-            .user
-            .policy
-            .as_ref()
-            .map(|p| p.enable_playback_remuxing)
-            .unwrap_or(true);
-    if !remuxing_allowed {
-        return TranscodeDecision::DirectPlay;
-    }
+    let permissions = PlaybackPermissions::for_session(&cfg.encoding_cfg, session);
 
     // Only take the audio path when the source explicitly has audio streams
     // but NO video stream. An empty media_streams (unprobed skip-probe
@@ -90,11 +180,38 @@ pub(crate) fn build_transcode_decision(
         .video_stream()
         .is_some();
     if has_audio && !has_video {
+        let requested_audio_codec = cfg
+            .device_profile
+            .as_ref()
+            .and_then(|p| p.audio_transcoding_profile())
+            .and_then(|p| {
+                p.audio_codec
+                    .as_ref()
+            })
+            .and_then(|c| c.first())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "aac".to_string());
+        let codecs = permissions.resolve_codecs("copy", &requested_audio_codec);
+        if codecs.direct_play_only {
+            return TranscodeDecision::DirectPlay;
+        }
         return TranscodeDecision::Transcode(build_audio_transcode(
-            source, q, session, cfg,
+            source,
+            q,
+            session,
+            cfg,
+            &codecs.audio,
         ));
     }
-    build_video_transcode(source, reasons, effective_sub_idx, q, session, cfg)
+    build_video_transcode(
+        source,
+        reasons,
+        effective_sub_idx,
+        q,
+        session,
+        cfg,
+        permissions,
+    )
 }
 
 fn build_audio_transcode(
@@ -102,6 +219,7 @@ fn build_audio_transcode(
     q: &api::PlaybackInfoQuery,
     session: &db::auth::AuthSession,
     cfg: &PlaybackConfig,
+    audio_codec: &str,
 ) -> TranscodeOutcome {
     let trans_profile = cfg
         .device_profile
@@ -114,28 +232,6 @@ fn build_audio_transcode(
                 .map(|c| c.to_string())
         })
         .unwrap_or_else(|| "mp3".to_string());
-    let audio_transcode_allowed = cfg
-        .encoding_cfg
-        .enable_audio_transcoding
-        .unwrap_or(true)
-        && session
-            .user
-            .policy
-            .as_ref()
-            .map(|p| p.enable_audio_playback_transcoding)
-            .unwrap_or(true);
-    let audio_codec = if audio_transcode_allowed {
-        trans_profile
-            .and_then(|p| {
-                p.audio_codec
-                    .as_ref()
-            })
-            .and_then(|c| c.first())
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| "aac".to_string())
-    } else {
-        "copy".to_string()
-    };
     let start_time = q
         .start_time_ticks
         .map(|t| format!("&StartTimeTicks={t}"))
@@ -166,6 +262,7 @@ fn build_video_transcode(
     q: &api::PlaybackInfoQuery,
     session: &db::auth::AuthSession,
     cfg: &PlaybackConfig,
+    permissions: PlaybackPermissions,
 ) -> TranscodeDecision {
     let trans_profile = cfg
         .device_profile
@@ -195,18 +292,7 @@ fn build_video_transcode(
     // When video re-encoding is not allowed (server setting or user policy),
     // fall through with video=copy — remux the container and transcode audio
     // as needed rather than dropping the source entirely.
-    let video_transcode_allowed = cfg
-        .encoding_cfg
-        .enable_video_transcoding
-        .unwrap_or(true)
-        && session
-            .user
-            .policy
-            .as_ref()
-            .map(|p| p.enable_video_playback_transcoding)
-            .unwrap_or(true);
-
-    let mut video_codec = if needs_video_transcode && video_transcode_allowed {
+    let mut video_codec = if needs_video_transcode && permissions.video_transcoding {
         "h264"
     } else {
         "copy"
@@ -216,17 +302,7 @@ fn build_video_transcode(
         .0
         .iter()
         .any(api::TranscodeReason::is_audio);
-    let audio_transcode_allowed = cfg
-        .encoding_cfg
-        .enable_audio_transcoding
-        .unwrap_or(true)
-        && session
-            .user
-            .policy
-            .as_ref()
-            .map(|p| p.enable_audio_playback_transcoding)
-            .unwrap_or(true);
-    let audio_codec = if needs_audio_transcode && audio_transcode_allowed {
+    let audio_codec = if needs_audio_transcode && permissions.audio_transcoding {
         "aac"
     } else {
         "copy"
@@ -241,7 +317,7 @@ fn build_video_transcode(
             &cfg.device_profile,
         );
         if method == Some(api::SubtitleDeliveryMethod::Encode) {
-            if video_transcode_allowed {
+            if permissions.video_transcoding {
                 video_codec = "h264".to_string();
                 method
             } else {
@@ -275,6 +351,13 @@ fn build_video_transcode(
         if src == container.to_lowercase() {
             return TranscodeDecision::DirectPlay;
         }
+    }
+
+    if permissions
+        .resolve_codecs(&video_codec, &audio_codec)
+        .direct_play_only
+    {
+        return TranscodeDecision::DirectPlay;
     }
 
     let bitrate = cfg
@@ -658,10 +741,10 @@ mod tests {
         let mut policy = remux_sdks::remux::UserPolicy::default();
         policy.enable_playback_remuxing = false;
         let session = make_session_with_policy(policy);
-        let source = make_video_source(VideoContainer::Ts);
+        let source = make_video_source(VideoContainer::Mkv);
         let mut reasons = api::TranscodeReasons::default();
-        reasons.insert(api::TranscodeReason::VideoCodecNotSupported(
-            "hevc".to_string(),
+        reasons.insert(api::TranscodeReason::ContainerNotSupported(
+            "mkv".to_string(),
         ));
         let decision = build_transcode_decision(
             &source,
@@ -673,7 +756,7 @@ mod tests {
         );
         assert!(
             matches!(decision, TranscodeDecision::DirectPlay),
-            "remuxing disabled should force direct play"
+            "a forbidden pure remux should fall back to direct play"
         );
     }
 
@@ -688,10 +771,10 @@ mod tests {
             },
             user: db::User::default(),
         };
-        let source = make_video_source(VideoContainer::Ts);
+        let source = make_video_source(VideoContainer::Mkv);
         let mut reasons = api::TranscodeReasons::default();
-        reasons.insert(api::TranscodeReason::VideoCodecNotSupported(
-            "hevc".to_string(),
+        reasons.insert(api::TranscodeReason::ContainerNotSupported(
+            "mkv".to_string(),
         ));
         let mut enc = EncodingOptions::default();
         enc.enable_remuxing = Some(false);
@@ -705,7 +788,73 @@ mod tests {
         );
         assert!(
             matches!(decision, TranscodeDecision::DirectPlay),
-            "global remuxing disabled should force direct play"
+            "a globally forbidden pure remux should fall back to direct play"
+        );
+    }
+
+    #[test]
+    fn remuxing_disabled_does_not_block_a_real_video_transcode() {
+        let mut policy = remux_sdks::remux::UserPolicy::default();
+        policy.enable_playback_remuxing = false;
+        let session = make_session_with_policy(policy);
+        let source = make_video_source(VideoContainer::Mkv);
+        let mut reasons = api::TranscodeReasons::default();
+        reasons.insert(api::TranscodeReason::VideoCodecNotSupported(
+            "hevc".to_string(),
+        ));
+
+        let TranscodeDecision::Transcode(outcome) = build_transcode_decision(
+            &source,
+            &reasons,
+            None,
+            &force_transcode_query(),
+            &session,
+            &base_cfg(EncodingOptions::default()),
+        ) else {
+            panic!("video transcoding remains allowed when only remuxing is disabled");
+        };
+        assert!(
+            outcome
+                .url
+                .contains("VideoCodec=h264"),
+            "{}",
+            outcome.url
+        );
+    }
+
+    #[test]
+    fn all_processing_disabled_resolves_client_transcode_to_direct_play() {
+        let mut policy = remux_sdks::remux::UserPolicy::default();
+        policy.enable_playback_remuxing = false;
+        policy.enable_video_playback_transcoding = false;
+        policy.enable_audio_playback_transcoding = false;
+        let session = make_session_with_policy(policy);
+        let permissions =
+            PlaybackPermissions::for_session(&EncodingOptions::default(), &session);
+
+        let codecs = permissions.resolve_codecs("h264", "aac");
+
+        assert_eq!(codecs.video, "copy");
+        assert_eq!(codecs.audio, "copy");
+        assert!(codecs.direct_play_only);
+        assert!(!permissions.processing_available());
+    }
+
+    #[test]
+    fn client_direct_stream_report_is_constrained_when_remuxing_is_disabled() {
+        let permissions = PlaybackPermissions {
+            remuxing: false,
+            video_transcoding: true,
+            audio_transcoding: true,
+        };
+
+        assert_eq!(
+            permissions.constrain_reported_method(PlayMethod::DirectStream),
+            PlayMethod::DirectPlay
+        );
+        assert_eq!(
+            permissions.constrain_reported_method(PlayMethod::Transcode),
+            PlayMethod::Transcode
         );
     }
 

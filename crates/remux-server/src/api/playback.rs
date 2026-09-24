@@ -16,7 +16,7 @@ use futures_util::{StreamExt, TryStreamExt};
 use headers;
 use http::{Response, StatusCode};
 use remux_macros::{delete, get, post, query};
-use remux_sdks::remux::VideoContainer;
+use remux_sdks::remux::{PlayMethod, VideoContainer};
 use remux_utils::Store;
 use serde::Deserialize;
 use serde_json::json;
@@ -45,8 +45,8 @@ use crate::{
     },
     playback::{
         decision::{
-            PlaybackConfig, TranscodeDecision, apply_subtitle_delivery,
-            build_transcode_decision,
+            PlaybackConfig, PlaybackPermissions, TranscodeDecision,
+            apply_subtitle_delivery, build_transcode_decision,
         },
         session::{TranscodeSession, TranscodeState},
     },
@@ -300,6 +300,8 @@ async fn items_playbackinfo_inner(
         item_id: id,
         subtitle_mode,
     };
+    let playback_permissions =
+        PlaybackPermissions::for_session(&cfg.encoding_cfg, &session);
 
     let port = state
         .ctx
@@ -469,9 +471,18 @@ async fn items_playbackinfo_inner(
         ) {
             TranscodeDecision::DirectPlay => {
                 // Keep transcoding available so clients can re-request with a subtitle
-                // index (e.g. PGS burn-in) even when direct-play is otherwise fine.
-                source.supports_transcoding = true;
+                // index (e.g. PGS burn-in) only when some permitted processing path
+                // remains. With all processing disabled, advertise direct play alone.
+                source.supports_transcoding = playback_permissions
+                    .processing_available()
+                    && q.enable_transcoding
+                        .unwrap_or(true);
                 source.supports_direct_play = true;
+                source.supports_direct_stream = playback_permissions.remuxing
+                    && q.enable_direct_stream
+                        .unwrap_or(true);
+                source.transcoding_url = None;
+                source.transcoding_container = None;
             }
             TranscodeDecision::Transcode(outcome) => outcome.apply_to(&mut source),
         }
@@ -783,19 +794,9 @@ pub async fn items_file(
     let safe = filename
         .replace('"', "")
         .replace('\\', "");
-    let mut response = videos_stream_inner(
-        headers,
-        state,
-        Some(
-            session
-                .user
-                .id,
-        ),
-        id,
-        q,
-    )
-    .await?
-    .into_response();
+    let mut response = videos_stream_inner(headers, state, session, id, q)
+        .await?
+        .into_response();
     if let Ok(val) =
         http::HeaderValue::from_str(&format!("attachment; filename=\"{}\"", safe))
     {
@@ -814,16 +815,18 @@ pub async fn items_file(
 pub async fn audio_stream(
     headers: headers::HeaderMap,
     State(state): State<AppState>,
+    session: auth::AuthSession,
     Path(id): Path<Uuid>,
     Query(q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
-    videos_stream_inner(headers, state, None, id, q).await
+    videos_stream_inner(headers, state, session, id, q).await
 }
 
 #[get("/audio/{id}/stream.{container}")]
 pub async fn audio_stream_by_container(
     headers: headers::HeaderMap,
     State(state): State<AppState>,
+    session: auth::AuthSession,
     Path((id, container)): Path<(Uuid, String)>,
     Query(mut q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
@@ -832,23 +835,25 @@ pub async fn audio_stream_by_container(
     {
         q.container = Some(container);
     }
-    videos_stream_inner(headers, state, None, id, q).await
+    videos_stream_inner(headers, state, session, id, q).await
 }
 
 #[get("/videos/{id}/stream")]
 pub async fn videos_stream(
     headers: headers::HeaderMap,
     State(state): State<AppState>,
+    session: auth::AuthSession,
     Path(id): Path<Uuid>,
     Query(q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
-    videos_stream_inner(headers, state, None, id, q).await
+    videos_stream_inner(headers, state, session, id, q).await
 }
 
 #[get("/videos/{id}/stream.{container}")]
 pub async fn videos_stream_by_container(
     headers: headers::HeaderMap,
     State(state): State<AppState>,
+    session: auth::AuthSession,
     Path((id, container)): Path<(Uuid, String)>,
     Query(mut q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
@@ -857,7 +862,7 @@ pub async fn videos_stream_by_container(
     {
         q.container = Some(container);
     }
-    videos_stream_inner(headers, state, None, id, q).await
+    videos_stream_inner(headers, state, session, id, q).await
 }
 
 fn ext_from_descriptor(descriptor: &crate::stream::StreamDescriptor) -> String {
@@ -924,7 +929,7 @@ fn can_serve_mkv_source_directly(
 async fn videos_stream_inner(
     headers: headers::HeaderMap,
     state: AppState,
-    user_id: Option<Uuid>,
+    session: auth::AuthSession,
     id: Uuid,
     q: api::VideoStreamQuery,
 ) -> Result<impl IntoResponse> {
@@ -952,7 +957,11 @@ async fn videos_stream_inner(
         requested_id,
         q.device_id
             .as_deref(),
-        user_id,
+        Some(
+            session
+                .user
+                .id,
+        ),
     )
     .await;
 
@@ -981,6 +990,27 @@ async fn videos_stream_inner(
         return Ok(no_streams_response().into_response());
     };
     let descriptor = si.descriptor;
+    let encoding_opts = crate::db::Settings::get_encoding_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await
+    .unwrap_or_default();
+    let permissions = PlaybackPermissions::for_session(&encoding_opts, &session);
+    let requested_video_codec = q
+        .video_codec
+        .as_deref()
+        .unwrap_or("copy");
+    let requested_audio_codec = q
+        .audio_codec
+        .clone();
+    let resolved_codecs = permissions.resolve_codecs(
+        requested_video_codec,
+        requested_audio_codec
+            .as_deref()
+            .unwrap_or("aac"),
+    );
     let playback_id = q
         .play_session_id
         .clone()
@@ -1018,7 +1048,14 @@ async fn videos_stream_inner(
     // our own HTTP proxy — TorrentSource resolves and streams inline.
     if q.static_
         .unwrap_or(false)
+        || resolved_codecs.direct_play_only
     {
+        if let Some(playback_id) = playback_id.as_deref() {
+            state
+                .ctx
+                .sessions
+                .record_effective_play_method(playback_id, PlayMethod::DirectPlay);
+        }
         // If the producing addon has http_redirect_stream enabled, issue a 302
         // directly to the stream URL instead of proxying bytes through remux —
         // unless the URL's host is only reachable from remux's own network, in
@@ -1092,32 +1129,24 @@ async fn videos_stream_inner(
         .as_deref()
         .unwrap_or("mp4")
         .to_string();
-    let video_codec = q
-        .video_codec
-        .as_deref()
-        .unwrap_or("copy");
-    let encoding_opts = crate::db::Settings::get_encoding_config(
-        &state
-            .ctx
-            .db,
-    )
-    .await
-    .unwrap_or_default();
-    let video_transcode_enabled = encoding_opts
-        .enable_video_transcoding
-        .unwrap_or(true);
-    let video_codec = if video_codec == "copy" || !video_transcode_enabled {
+    let video_codec = if resolved_codecs.video == "copy" {
         "copy"
     } else {
         "h264"
     }
     .to_string();
-    let requested_audio_codec = q
-        .audio_codec
-        .clone();
-    let audio_codec = q
-        .audio_codec
-        .unwrap_or_else(|| "aac".to_string());
+    let audio_codec = resolved_codecs.audio;
+    if let Some(playback_id) = playback_id.as_deref() {
+        let effective_method = if video_codec == "copy" && audio_codec == "copy" {
+            PlayMethod::DirectStream
+        } else {
+            PlayMethod::Transcode
+        };
+        state
+            .ctx
+            .sessions
+            .record_effective_play_method(playback_id, effective_method);
+    }
     // Keep a copy before the video_codec is moved into params (needed for Content-Type logic)
     let is_copy_video = video_codec == "copy";
 
@@ -1508,6 +1537,138 @@ mod tests {
         response.assert_status(StatusCode::PARTIAL_CONTENT);
         assert_eq!(response.header("content-range"), "bytes 4-7/16");
         assert_eq!(response.header("accept-ranges"), "bytes");
+
+        // Client codec parameters must not override disabled playback processing.
+        // The progressive endpoint should serve the original bytes, and HLS should
+        // redirect to that same direct-play route instead of starting FFmpeg.
+        let mut encoding = crate::api::EncodingOptions::default();
+        encoding.enable_remuxing = Some(false);
+        encoding.enable_video_transcoding = Some(false);
+        encoding.enable_audio_transcoding = Some(false);
+        crate::db::Settings::set_encoding_config(
+            &guard
+                .0
+                .db,
+            &encoding,
+        )
+        .await
+        .unwrap();
+
+        let playback_info = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "EnableDirectPlay": false,
+                "EnableDirectStream": true,
+                "EnableTranscoding": true
+            }))
+            .await;
+        playback_info.assert_status_ok();
+        playback_info.assert_json_contains(&json!({
+            "MediaSources": [{
+                "SupportsDirectPlay": true,
+                "SupportsDirectStream": false,
+                "SupportsTranscoding": false
+            }]
+        }));
+        let playback_body: serde_json::Value = playback_info.json();
+        assert!(
+            playback_body["MediaSources"][0]
+                .get("TranscodingUrl")
+                .map_or(true, serde_json::Value::is_null),
+            "direct-play-only response must not advertise a transcode URL"
+        );
+
+        let forced_transcode = server
+            .get(&format!(
+                "/videos/{}/stream.mkv?VideoCodec=h264&AudioCodec=aac",
+                media.id
+            ))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_header(http::header::RANGE, HeaderValue::from_static("bytes=8-11"))
+            .await;
+        forced_transcode.assert_status(StatusCode::PARTIAL_CONTENT);
+        assert_eq!(forced_transcode.header("content-range"), "bytes 8-11/16");
+
+        let forced_play_session_id = "forced-direct-play";
+        let forced_hls = server
+            .get(&format!(
+                "/videos/{}/master.m3u8?PlaySessionId={forced_play_session_id}&MediaSourceId={}&VideoCodec=h264&AudioCodec=aac",
+                media.id, media.id,
+            ))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .expect_failure()
+            .await;
+        forced_hls.assert_status(StatusCode::TEMPORARY_REDIRECT);
+        let location = forced_hls
+            .header("location")
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(location.contains("Static=true"), "{location}");
+        assert!(
+            location.contains(&format!("PlaySessionId={forced_play_session_id}")),
+            "{location}"
+        );
+        assert!(location.contains(&format!("MediaSourceId={}", media.id)));
+
+        // The server-selected method is authoritative even if the client keeps
+        // reporting the DirectStream method it chose before following the
+        // fallback redirect.
+        server
+            .post("/sessions/playing")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": media.id,
+                "MediaSourceId": media.id,
+                "PlaySessionId": forced_play_session_id,
+                "PlayMethod": "DirectStream"
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        assert_eq!(
+            guard
+                .0
+                .sessions
+                .get(forced_play_session_id)
+                .and_then(|session| session.play_method),
+            Some("DirectPlay".to_string())
+        );
+
+        server
+            .post("/sessions/playing/progress")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": media.id,
+                "PlaySessionId": forced_play_session_id,
+                "PlayMethod": "DirectStream",
+                "PositionTicks": 10_000_000
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        assert_eq!(
+            guard
+                .0
+                .sessions
+                .get(forced_play_session_id)
+                .and_then(|session| session.play_method),
+            Some("DirectPlay".to_string())
+        );
 
         tokio::fs::remove_file(fixture)
             .await

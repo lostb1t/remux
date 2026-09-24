@@ -13,7 +13,7 @@ use tokio_util::io::ReaderStream;
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
-use remux_sdks::remux::HardwareAccelerationType;
+use remux_sdks::remux::{HardwareAccelerationType, PlayMethod};
 
 use crate::{
     AppState, IntoApiError, OptionExt, ResultExt, api, common,
@@ -21,6 +21,7 @@ use crate::{
     db,
     db::auth,
     playback::{
+        decision::PlaybackPermissions,
         hw_accel,
         session::{TranscodeSession, TranscodeState},
     },
@@ -32,6 +33,11 @@ use crate::{
 static TRANSCODE_CREATE_LOCKS: crate::keyed_lock::KeyedLock<String> =
     crate::keyed_lock::KeyedLock::new();
 
+enum HlsSessionResult {
+    Transcode(Arc<tokio::sync::RwLock<TranscodeSession>>, String),
+    DirectPlay(String),
+}
+
 /// Shared session setup: look up or create the transcode session for an HLS
 /// request. Returns the session handle and the resolved play_session_id.
 async fn create_hls_session(
@@ -39,7 +45,7 @@ async fn create_hls_session(
     auth: &auth::AuthSession,
     id: Uuid,
     q: &api::HlsVideoQuery,
-) -> Result<(Arc<tokio::sync::RwLock<TranscodeSession>>, String)> {
+) -> Result<HlsSessionResult> {
     let play_session_id = q
         .play_session_id
         .clone()
@@ -58,30 +64,57 @@ async fn create_hls_session(
     )
     .await
     .unwrap_or_default();
-    let video_transcode_enabled_hls = encoding_opts_hls
-        .enable_video_transcoding
-        .unwrap_or(true);
+    let permissions = PlaybackPermissions::for_session(&encoding_opts_hls, auth);
     let video_codec_raw = q
         .video_codec
         .as_deref()
         .unwrap_or("copy");
-    let video_codec = if video_codec_raw == "copy" || !video_transcode_enabled_hls {
-        "copy".to_string()
-    } else {
-        "h264".to_string()
-    };
-    let audio_transcode_enabled_hls = encoding_opts_hls
-        .enable_audio_transcoding
-        .unwrap_or(true);
     let audio_codec_raw = q
         .audio_codec
         .clone()
         .unwrap_or_else(|| "aac".to_string());
-    let audio_codec = if !audio_transcode_enabled_hls {
+    let resolved_codecs = permissions.resolve_codecs(video_codec_raw, &audio_codec_raw);
+
+    if resolved_codecs.direct_play_only {
+        if q.play_session_id
+            .is_some()
+        {
+            state
+                .ctx
+                .sessions
+                .stop_transcode(&play_session_id)
+                .await;
+        }
+        state
+            .ctx
+            .sessions
+            .record_effective_play_method(&play_session_id, PlayMethod::DirectPlay);
+        let media_source_id = q
+            .media_source_id
+            .unwrap_or(id);
+
+        return Ok(HlsSessionResult::DirectPlay(format!(
+            "/videos/{id}/stream?Static=true&PlaySessionId={play_session_id}&MediaSourceId={media_source_id}&ApiKey={}",
+            auth.device
+                .access_token
+                .expose(),
+        )));
+    }
+    let video_codec = if resolved_codecs.video == "copy" {
         "copy".to_string()
     } else {
-        audio_codec_raw
+        "h264".to_string()
     };
+    let audio_codec = resolved_codecs.audio;
+    let effective_method = if video_codec == "copy" && audio_codec == "copy" {
+        PlayMethod::DirectStream
+    } else {
+        PlayMethod::Transcode
+    };
+    state
+        .ctx
+        .sessions
+        .record_effective_play_method(&play_session_id, effective_method);
     let segment_length = q
         .segment_length
         .unwrap_or(6) as u32;
@@ -294,18 +327,22 @@ async fn create_hls_session(
         // live channels, regardless of what the client negotiated. The
         // existing audio_channels logic (None for copy, Some(2) for transcode)
         // then kicks in automatically and produces the correct stereo downmix.
-        let audio_codec = resolve_hls_audio_codec(
-            is_live,
-            resolved_media
-                .probe_data
-                .as_ref()
-                .and_then(|probe| {
-                    probe
-                        .container
-                        .as_ref()
-                }),
-            &audio_codec,
-        );
+        let audio_codec = if permissions.audio_transcoding {
+            resolve_hls_audio_codec(
+                is_live,
+                resolved_media
+                    .probe_data
+                    .as_ref()
+                    .and_then(|probe| {
+                        probe
+                            .container
+                            .as_ref()
+                    }),
+                &audio_codec,
+            )
+        } else {
+            audio_codec
+        };
 
         // Live streams have no fixed duration — skip all runtime lookups.
         let runtime_ticks = if is_live {
@@ -621,7 +658,7 @@ async fn create_hls_session(
         session
     };
 
-    Ok((session, play_session_id))
+    Ok(HlsSessionResult::Transcode(session, play_session_id))
 }
 
 #[get("/videos/{id}/master.m3u8")]
@@ -632,8 +669,11 @@ pub async fn master_hls_video(
     Query(q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     debug!("master_hls_video: item_id={}, q={:?}", id, q);
-    let (session, _) = match create_hls_session(&state, &auth, id, &q).await {
-        Ok(s) => s,
+    let session = match create_hls_session(&state, &auth, id, &q).await {
+        Ok(HlsSessionResult::Transcode(session, _)) => session,
+        Ok(HlsSessionResult::DirectPlay(url)) => {
+            return Ok(axum::response::Redirect::temporary(&url).into_response());
+        }
         Err(_) => {
             return Ok(axum::response::Redirect::temporary("/videos/no-streams")
                 .into_response());
@@ -663,9 +703,16 @@ pub async fn live_hls_video(
     Query(mut q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     debug!("live_hls_video: item_id={}, q={:?}", id, q);
-    let (_, play_session_id) = create_hls_session(&state, &auth, id, &q).await?;
+    let play_session_id = match create_hls_session(&state, &auth, id, &q).await? {
+        HlsSessionResult::Transcode(_, play_session_id) => play_session_id,
+        HlsSessionResult::DirectPlay(url) => {
+            return Ok(axum::response::Redirect::temporary(&url).into_response());
+        }
+    };
     q.play_session_id = Some(play_session_id);
-    variant_hls_video_inner(state, q).await
+    Ok(variant_hls_video_inner(state, q)
+        .await?
+        .into_response())
 }
 
 /// Variant HLS playlist - alternate URL used by some clients.

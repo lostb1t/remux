@@ -5,6 +5,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use crate::playback::decision::PlaybackPermissions;
 use crate::{common, db, db::auth, playback::session::TranscodeSession};
 use remux_sdks::remux::{PlayMethod, PlaybackInfo, QueueItem};
 
@@ -43,6 +44,13 @@ pub struct PlaybackSession {
 #[derive(Clone)]
 pub struct PlaybackSessionManager {
     sessions: Arc<DashMap<String, PlaybackSession>>,
+    /// Server-authoritative playback method selected by the stream endpoint.
+    /// Requests can arrive before or after the client's playback-start report,
+    /// so this is kept separately and reconciled in both directions.
+    effective_play_methods: Arc<DashMap<String, (DateTime<Utc>, PlayMethod)>>,
+    // Makes the effective-method handoff atomic when the stream request and
+    // playback-start report race each other.
+    play_method_handoff: Arc<std::sync::Mutex<()>>,
     // Requests can arrive before the client's playback-start report. Hold
     // their leases briefly, then move them into the PlaybackSession on start.
     pending_torrents:
@@ -59,6 +67,8 @@ impl PlaybackSessionManager {
         let _ = std::fs::create_dir_all(&base_dir);
         Self {
             sessions: Arc::new(DashMap::new()),
+            effective_play_methods: Arc::new(DashMap::new()),
+            play_method_handoff: Arc::new(std::sync::Mutex::new(())),
             pending_torrents: Arc::new(DashMap::new()),
             torrent_handoff: Arc::new(std::sync::Mutex::new(())),
             base_dir,
@@ -85,6 +95,23 @@ impl PlaybackSessionManager {
                     .as_simple()
                     .to_string()
             });
+
+        let reported_play_method =
+            if let Some(method) = self.effective_play_method(&play_session_id) {
+                Some(method)
+            } else if let Some(method) = data
+                .play_method
+                .clone()
+            {
+                let encoding = db::Settings::get_encoding_config(db)
+                    .await
+                    .unwrap_or_default();
+                let method = PlaybackPermissions::for_session(&encoding, auth_session)
+                    .constrain_reported_method(method);
+                Some(method)
+            } else {
+                None
+            };
 
         // Enforce per-user concurrent-stream limit.
         let max_sessions = auth_session
@@ -194,8 +221,7 @@ impl PlaybackSessionManager {
             volume_level: data.volume_level,
             audio_stream_index: data.audio_stream_index,
             subtitle_stream_index: data.subtitle_stream_index,
-            play_method: data
-                .play_method
+            play_method: reported_play_method
                 .as_ref()
                 .map(|m| m.to_string()),
             now_playing_queue: data
@@ -215,9 +241,21 @@ impl PlaybackSessionManager {
         self.insert(ps)
             .await;
 
+        let effective_play_method = self
+            .get(&play_session_id)
+            .and_then(|session| {
+                session
+                    .play_method
+                    .and_then(|method| {
+                        method
+                            .parse()
+                            .ok()
+                    })
+            });
+
         // For transcode sessions, master_hls_video fires the info log once it
         // has full codec/bitrate/reasons info. For direct play/stream, log here.
-        let is_transcode = matches!(data.play_method, Some(PlayMethod::Transcode));
+        let is_transcode = matches!(effective_play_method, Some(PlayMethod::Transcode));
         if !is_transcode {
             // Best-effort: fetch media title and source path for the log line.
             let media_title = db::Media::get_by_id(db, &item_id)
@@ -267,7 +305,7 @@ impl PlaybackSessionManager {
                 path = ?source_path,
                 user = %auth_session.user.username,
                 client = %auth_session.device.app_name,
-                play_method = ?data.play_method,
+                play_method = ?effective_play_method,
                 audio_stream = ?data.audio_stream_index,
                 subtitle_stream = ?data.subtitle_stream_index,
                 position_secs,
@@ -319,6 +357,21 @@ impl PlaybackSessionManager {
         } else {
             ps.item_id
         };
+        let reported_play_method = self
+            .effective_play_method(psid)
+            .or_else(|| {
+                ps.play_method
+                    .as_deref()
+                    .and_then(|method| {
+                        method
+                            .parse()
+                            .ok()
+                    })
+            })
+            .or_else(|| {
+                data.play_method
+                    .clone()
+            });
 
         // Detect encode-parameter changes and log them once.
         // We ignore pause/unpause — those are not encode changes.
@@ -330,11 +383,8 @@ impl PlaybackSessionManager {
             .subtitle_stream_index
             .is_some()
             && data.subtitle_stream_index != ps.subtitle_stream_index;
-        let method_changed = data
-            .play_method
-            .is_some()
-            && data
-                .play_method
+        let method_changed = reported_play_method.is_some()
+            && reported_play_method
                 .as_ref()
                 .map(|m| m.to_string())
                 != ps.play_method;
@@ -354,7 +404,7 @@ impl PlaybackSessionManager {
                     format!("{:?}", ps.subtitle_stream_index)
                 },
                 play_method = if method_changed {
-                    format!("{:?} → {:?}", ps.play_method, data.play_method)
+                    format!("{:?} → {:?}", ps.play_method, reported_play_method)
                 } else {
                     format!("{:?}", ps.play_method)
                 },
@@ -388,9 +438,6 @@ impl PlaybackSessionManager {
             ps.subtitle_stream_index = data
                 .subtitle_stream_index
                 .or(ps.subtitle_stream_index);
-            if let Some(ref m) = data.play_method {
-                ps.play_method = Some(m.to_string());
-            }
             ps.last_activity = Utc::now();
         });
 
@@ -627,6 +674,13 @@ impl PlaybackSessionManager {
                     .clone(),
             );
         }
+        let _method_handoff = self
+            .play_method_handoff
+            .lock()
+            .expect("play method handoff lock is poisoned");
+        if let Some(method) = self.effective_play_method(&session.play_session_id) {
+            session.play_method = Some(method.to_string());
+        }
         self.sessions
             .insert(
                 session
@@ -712,6 +766,32 @@ impl PlaybackSessionManager {
         {
             f(entry.value_mut());
         }
+    }
+
+    /// Record the playback method actually selected by a stream endpoint.
+    /// If the client's playback-start report already created the session,
+    /// update it immediately; otherwise `start` will consume this value later.
+    pub fn record_effective_play_method(&self, id: &str, method: PlayMethod) {
+        let _handoff = self
+            .play_method_handoff
+            .lock()
+            .expect("play method handoff lock is poisoned");
+        self.effective_play_methods
+            .insert(id.to_string(), (Utc::now(), method.clone()));
+        self.update(id, |session| {
+            session.play_method = Some(method.to_string());
+        });
+    }
+
+    fn effective_play_method(&self, id: &str) -> Option<PlayMethod> {
+        self.effective_play_methods
+            .get(id)
+            .map(|entry| {
+                entry
+                    .value()
+                    .1
+                    .clone()
+            })
     }
 
     /// Update `last_activity` on the session.
@@ -824,6 +904,8 @@ impl PlaybackSessionManager {
             .lock()
             .expect("torrent handoff lock is not poisoned");
         self.pending_torrents
+            .remove(id);
+        self.effective_play_methods
             .remove(id);
         let (_, session) = self
             .sessions
@@ -957,6 +1039,12 @@ impl PlaybackSessionManager {
                     .expect("torrent handoff lock is not poisoned");
                 self.pending_torrents
                     .retain(|_, (seen, _)| *seen >= cutoff);
+                self.effective_play_methods
+                    .retain(|id, (seen, _)| {
+                        self.sessions
+                            .contains_key(id)
+                            || *seen >= cutoff
+                    });
             }
         })
     }

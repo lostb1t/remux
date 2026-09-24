@@ -69,19 +69,18 @@ impl PlaybackContext {
                             .clone()
                     })
                 }),
-            play_method: data
-                .play_method
-                .clone()
+            play_method: playback
+                .and_then(|p| {
+                    p.play_method
+                        .as_deref()
+                })
+                .and_then(|m| {
+                    m.parse()
+                        .ok()
+                })
                 .or_else(|| {
-                    playback
-                        .and_then(|p| {
-                            p.play_method
-                                .as_deref()
-                        })
-                        .and_then(|m| {
-                            m.parse()
-                                .ok()
-                        })
+                    data.play_method
+                        .clone()
                 }),
             audio_stream_index: data
                 .audio_stream_index
