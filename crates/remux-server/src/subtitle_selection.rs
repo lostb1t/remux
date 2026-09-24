@@ -23,11 +23,36 @@ fn filename_stem(name: &str) -> &str {
         .map_or(basename, |(stem, _)| stem)
 }
 
-pub(crate) fn has_subtitle_marker(name: Option<&str>, marker: &str) -> bool {
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, strum_macros::Display, strum_macros::EnumString,
+)]
+#[strum(serialize_all = "PascalCase", ascii_case_insensitive)]
+pub(crate) enum SubtitleMarker {
+    Forced,
+    Sdh,
+    Hi,
+}
+
+pub(crate) fn has_subtitle_marker(name: Option<&str>, marker: SubtitleMarker) -> bool {
     name.is_some_and(|name| {
         name.split(|c: char| !c.is_alphanumeric())
-            .any(|token| token.eq_ignore_ascii_case(marker))
+            .any(|token| {
+                token
+                    .parse::<SubtitleMarker>()
+                    .is_ok_and(|found| found == marker)
+            })
     })
+}
+
+/// A subtitle's hearing-impaired flag from raw addon metadata (filename/title).
+/// The bare token "hi" is ambiguous with the ISO 639-1 Hindi language code, so
+/// it's only honored as a hearing-impaired marker when the subtitle itself
+/// isn't tagged Hindi — otherwise a plain Hindi translation named
+/// `Movie.hi.srt` gets mislabeled as hearing-impaired.
+pub(crate) fn has_hi_marker(name: Option<&str>, lang: Option<&str>) -> bool {
+    has_subtitle_marker(name, SubtitleMarker::Sdh)
+        || (normalized_language(lang) != "hi"
+            && has_subtitle_marker(name, SubtitleMarker::Hi))
 }
 
 fn subtitle_hint(sub: &SubtitleInfo) -> &str {
@@ -75,8 +100,13 @@ fn is_release_match(sub: &SubtitleInfo, source_filename: Option<&str>) -> bool {
         })
 }
 
-/// Returns one stable, release-aware subtitle choice per language.
-pub(crate) fn select_external_subtitles<'a>(
+/// Ranks candidates release-aware and by language preference, without
+/// deduping to one-per-language. Callers that need to skip a higher-ranked
+/// candidate for some other reason (e.g. it collides with an already-embedded
+/// subtitle) without losing the language entirely should walk this list
+/// themselves instead of calling `select_external_subtitles`, which commits
+/// to exactly one candidate per language up front.
+pub(crate) fn ranked_external_subtitles<'a>(
     subs: &'a [SubtitleInfo],
     preferred_languages: &[String],
     source_filename: Option<&str>,
@@ -141,13 +171,22 @@ pub(crate) fn select_external_subtitles<'a>(
         },
     );
 
-    let mut seen = HashSet::new();
     candidates
         .into_iter()
-        .filter_map(|(sub, lang, _, _)| {
-            seen.insert(lang)
-                .then_some(sub)
-        })
+        .map(|(sub, ..)| sub)
+        .collect()
+}
+
+/// Returns one stable, release-aware subtitle choice per language.
+pub(crate) fn select_external_subtitles<'a>(
+    subs: &'a [SubtitleInfo],
+    preferred_languages: &[String],
+    source_filename: Option<&str>,
+) -> Vec<&'a SubtitleInfo> {
+    let mut seen = HashSet::new();
+    ranked_external_subtitles(subs, preferred_languages, source_filename)
+        .into_iter()
+        .filter(|sub| seen.insert(language(sub)))
         .collect()
 }
 
