@@ -559,9 +559,12 @@ pub struct RemuxBrandingExtensions {
 #[dto]
 pub struct BrandingOptions {
     pub login_disclaimer: Option<String>,
-    #[default(Some(
-        "@import url(\"https://cdn.jsdelivr.net/gh/lscambo13/ElegantFin@main/Theme/ElegantFin-jellyfin-theme-build-latest-minified.css\");".to_string()
-    ))]
+    #[default(Some(concat!(
+        "/* Main ElegantFin CSS */\n",
+        "@import url(\"https://cdn.jsdelivr.net/gh/lscambo13/ElegantFin@main/Theme/ElegantFin-jellyfin-theme-build-latest-minified.css\");\n",
+        "/* ElegantFin 12 Companion CSS */\n",
+        "@import url(\"https://cdn.jsdelivr.net/gh/mihaif7/elegantfin-jf12@main/Theme/ElegantFin-jf12-modern-latest.css\");"
+    ).to_string()))]
     pub custom_css: Option<String>,
     pub splashscreen_enabled: Option<bool>,
     #[serde(rename = "remux")]
@@ -7263,6 +7266,15 @@ impl Endpoint for RegenerateCollectionImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn branding_defaults_to_elegantfin_stylesheets() {
+        let css = BrandingOptions::default()
+            .custom_css
+            .expect("default branding should include CSS");
+        assert!(css.contains("ElegantFin-jellyfin-theme-build-latest-minified.css"));
+        assert!(css.contains("ElegantFin-jf12-modern-latest.css"));
+    }
 
     #[test]
     fn webhook_destination_round_trips_as_tagged_config() {
