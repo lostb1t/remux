@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790093526710,
+  "lastUpdate": 1790233025648,
   "repoUrl": "https://github.com/lostb1t/remux",
   "entries": {
     "Benchmark": [
@@ -6119,6 +6119,142 @@ window.BENCHMARK_DATA = {
             "name": "nextup_date_cutoff/30days",
             "value": 68167469,
             "range": "± 5925841",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "lostbit",
+            "username": "lostb1t",
+            "email": "coding-mosses0z@icloud.com"
+          },
+          "committer": {
+            "name": "lostbit",
+            "username": "lostb1t",
+            "email": "coding-mosses0z@icloud.com"
+          },
+          "id": "351344a2318fc4cdef38257b76ac6ac5a5347046",
+          "message": "fix: never submit filename-guessed probe data to remuxdb\n\nSkip the remuxdb submission when the probe result is a filename guess\n(no real ffprobe/RemuxDB match) instead of forwarding estimated\ncodec/resolution/bitrate values as if they were a genuine probe.\n\nAlso updates the RemuxDB settings page copy to better describe what\nthe integration does.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_015DmuGp6vR4VxjxxFKoP3tH",
+          "timestamp": "2026-09-24T06:34:49Z",
+          "url": "https://github.com/lostb1t/remux/commit/351344a2318fc4cdef38257b76ac6ac5a5347046"
+        },
+        "date": 1790233023585,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "items_latest/limit=20&recursive=false",
+            "value": 230995998,
+            "range": "± 24957778",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&recursive=false",
+            "value": 235178863,
+            "range": "± 27736973",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=500&recursive=false",
+            "value": 283924827,
+            "range": "± 38448586",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&include_item_types=Movie&recursive=false",
+            "value": 114684400,
+            "range": "± 13081076",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&include_item_types=Series&recursive=false",
+            "value": 52843641,
+            "range": "± 5978840",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=20&recursive=false",
+            "value": 135531560,
+            "range": "± 17853324",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&recursive=false",
+            "value": 134322050,
+            "range": "± 9280857",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=500&recursive=false",
+            "value": 152665335,
+            "range": "± 11981267",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&include_item_types=Movie&recursive=false",
+            "value": 109215077,
+            "range": "± 10912262",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&include_item_types=Series&recursive=false",
+            "value": 142307086,
+            "range": "± 9480407",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&filters=IsPlayed&recursive=false",
+            "value": 86703887,
+            "range": "± 16157129",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&sort_by=DateCreated&recursive=false",
+            "value": 263695660,
+            "range": "± 25767186",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=50&recursive=false",
+            "value": 294450738,
+            "range": "± 35917763",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=200&recursive=false",
+            "value": 291751115,
+            "range": "± 29020849",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=500&recursive=false",
+            "value": 281535103,
+            "range": "± 27339265",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/limit=500&enable_resumable=true&recursive=false",
+            "value": 263394004,
+            "range": "± 30524536",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/limit=500&enable_resumable=false&recursive=false",
+            "value": 258627798,
+            "range": "± 30469179",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/epoch",
+            "value": 281796681,
+            "range": "± 35985409",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/30days",
+            "value": 65896667,
+            "range": "± 6029867",
             "unit": "ns/iter"
           }
         ]
