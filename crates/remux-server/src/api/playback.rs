@@ -470,17 +470,13 @@ async fn items_playbackinfo_inner(
             &cfg,
         ) {
             TranscodeDecision::DirectPlay => {
-                // Keep transcoding available so clients can re-request with a subtitle
-                // index (e.g. PGS burn-in) only when some permitted processing path
-                // remains. With all processing disabled, advertise direct play alone.
-                source.supports_transcoding = playback_permissions
-                    .processing_available()
-                    && q.enable_transcoding
-                        .unwrap_or(true);
+                // These are server capabilities, not the mode selected for this
+                // request. Keep permitted processing available so the client can
+                // re-request it later (for example, for subtitle burn-in).
+                source.supports_transcoding =
+                    playback_permissions.processing_available();
                 source.supports_direct_play = true;
-                source.supports_direct_stream = playback_permissions.remuxing
-                    && q.enable_direct_stream
-                        .unwrap_or(true);
+                source.supports_direct_stream = playback_permissions.remuxing;
                 source.transcoding_url = None;
                 source.transcoding_container = None;
             }
