@@ -619,7 +619,7 @@ impl StreamService {
                 .as_ref()
                 .and_then(|r| r.source);
             source.remux = Some(api::MediaSourceRemuxInfo {
-                provider_info: stream
+                provider_info: effective_stream
                     .stream_info
                     .as_ref()
                     .and_then(|si| serde_json::to_value(si).ok()),
@@ -640,6 +640,8 @@ impl StreamService {
                 debug!(id = %effective_stream.id, "remuxdb: skipping (disabled)");
             } else if !is_remuxdb_kind {
                 debug!(id = %effective_stream.id, kind = ?item.as_ref().map(|it| &it.kind), "remuxdb: skipping (not movie/episode)");
+            } else if source.is_filename_guess() {
+                debug!(id = %effective_stream.id, "remuxdb: skipping (filename guess, not a real probe)");
             } else if let Some(url) = self
                 .ctx
                 .config

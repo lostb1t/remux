@@ -741,6 +741,7 @@ impl StreamAddon for OpendalAddon {
                         f.name
                             .clone(),
                     ),
+                    service_cached: Some(true),
                     ..Default::default()
                 }
             })
@@ -993,6 +994,7 @@ impl TreeAddon for OpendalAddon {
                                     f.name
                                         .clone(),
                                 ),
+                                service_cached: Some(true),
                                 ..Default::default()
                             }),
                             ..Default::default()

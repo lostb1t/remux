@@ -7161,6 +7161,7 @@ impl From<sdks::stremio::Stream> for Media {
             torrent_info_hash: None,
             torrent_file_idx: None,
             service_id: None,
+            service_cached: source.cached_status(),
         });
 
         // Merge name + description: AIOStreams puts the provider/addon name in `name`
@@ -8496,6 +8497,53 @@ pub(crate) fn build_genre_relations_from_names(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stremio_stream_conversion_preserves_cache_status() {
+        for (service, expected) in [
+            (
+                serde_json::json!({"id": "torbox", "cached": true}),
+                Some(true),
+            ),
+            (
+                serde_json::json!({"id": "torbox", "cached": false}),
+                Some(false),
+            ),
+            (serde_json::json!({"id": "torbox"}), None),
+        ] {
+            let source: sdks::stremio::Stream =
+                serde_json::from_value(serde_json::json!({
+                    "url": "https://example.com/movie.mp4",
+                    "streamData": {"service": service}
+                }))
+                .unwrap();
+            let media = Media::from(source);
+            assert_eq!(
+                media
+                    .stream_info
+                    .unwrap()
+                    .service_cached,
+                expected
+            );
+        }
+
+        for (cached, expected) in [(true, Some(true)), (false, Some(false))] {
+            let source: sdks::stremio::Stream =
+                serde_json::from_value(serde_json::json!({
+                    "url": "https://example.com/movie.mp4",
+                    "behaviorHints": {"cached": cached}
+                }))
+                .unwrap();
+            let media = Media::from(source);
+            assert_eq!(
+                media
+                    .stream_info
+                    .unwrap()
+                    .service_cached,
+                expected
+            );
+        }
+    }
 
     #[test]
     fn movie_and_series_accept_known_external_ids() {

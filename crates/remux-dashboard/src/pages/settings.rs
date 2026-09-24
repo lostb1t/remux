@@ -1890,7 +1890,13 @@ pub fn RemuxdbSettingsCard(app_state: AppState) -> Element {
             } else {
                 form { onsubmit: on_submit, style: "display:flex;flex-direction:column;gap:14px",
                     p { style: "font-size:.8rem;color:var(--text-secondary);line-height:1.5;margin:0",
-                        "RemuxDB is a comprehensive media metadata database for torrents. Instead of relying on file names, it probes the actual files to build accurate stream information."
+                        "Remux DB is an attempt to build a comprehensive media information database for torrents and NZBs by probing the actual media files rather than relying solely on filenames."
+                    }
+                    p { style: "font-size:.8rem;color:var(--text-secondary);line-height:1.5;margin:0",
+                        "This means detailed media information is available before a stream is selected or downloaded. Jellyfin clients can, for example, display available audio and subtitle tracks ahead of time."
+                    }
+                    p { style: "font-size:.8rem;color:var(--text-secondary);line-height:1.5;margin:0",
+                        "Having this information upfront also enables smarter stream selection. Because the characteristics of each release, such as codecs, resolution, audio tracks, languages, and subtitles are already known, Remux can automatically select streams that best match a user\u{2019}s preferences."
                     }
                     p { style: "font-size:.8rem;color:var(--text-secondary);line-height:1.5;margin:0",
                         "Want to help populate the DB faster? You can run a worker! Join Discord for more info."

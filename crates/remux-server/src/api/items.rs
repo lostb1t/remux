@@ -1637,7 +1637,7 @@ fn rank_item_sources(
             None,
             None,
         );
-        std::cmp::Reverse(ranking.key(&info))
+        std::cmp::Reverse(ranking.sort_key(&info))
     });
 }
 
