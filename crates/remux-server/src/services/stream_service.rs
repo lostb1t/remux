@@ -649,15 +649,15 @@ impl StreamService {
                 .clone()
             {
                 match media_info_from_probe(&source, &effective_stream, item.as_ref()) {
-                    Some(mi) => {
+                    Ok(mi) => {
                         debug!(id = %effective_stream.id, url, "remuxdb: submitting mediainfo");
                         let token = probe_cfg
                             .remuxdb_token
                             .clone();
                         tokio::spawn(mi.submit(url, token));
                     }
-                    None => {
-                        warn!(id = %effective_stream.id, "remuxdb: skipping (no stream_info or missing required fields)");
+                    Err(reason) => {
+                        warn!(id = %effective_stream.id, reason, "remuxdb: skipping submission");
                     }
                 }
             }
@@ -849,7 +849,7 @@ fn media_info_from_probe(
     probe: &api::MediaSourceInfo,
     stream: &db::Media,
     item: Option<&db::Media>,
-) -> Option<remuxdb::MediaInfoPayload> {
+) -> Result<remuxdb::MediaInfoPayload, &'static str> {
     let (info_hash, file_idx, nzb, filename) = match stream
         .stream_info
         .as_ref()
@@ -897,7 +897,16 @@ fn media_info_from_probe(
     };
 
     if info_hash.is_none() && nzb.is_none() {
-        return None;
+        return Err(
+            if stream
+                .stream_info
+                .is_none()
+            {
+                "stream has no stream_info at all"
+            } else {
+                "stream_info has neither a torrent hash nor a usenet nzb identity"
+            },
+        );
     }
 
     let (kind, external_ids, season, episode) = if let Some(item) = item {
@@ -963,13 +972,24 @@ fn media_info_from_probe(
         ("movie".to_string(), None, None, None)
     };
 
-    let tracks = probe
+    let size = probe
+        .size
+        .or_else(|| {
+            stream
+                .stream_info
+                .as_ref()
+                .and_then(|si| si.size)
+        })
+        .filter(|&s| s > 0)
+        .ok_or("no positive size on probe or stream_info")?;
+
+    let tracks: Vec<remuxdb::TrackPayload> = probe
         .media_streams
         .iter()
         .filter_map(|ms| remuxdb::TrackPayload::try_from(ms).ok())
         .collect();
 
-    Some(remuxdb::MediaInfoPayload {
+    Ok(remuxdb::MediaInfoPayload {
         client_id: Some(crate::common::server_id()),
         kind,
         filename,
@@ -981,15 +1001,7 @@ fn media_info_from_probe(
             .as_ref()
             .map(|c| c.to_string())
             .unwrap_or_default(),
-        size: probe
-            .size
-            .or_else(|| {
-                stream
-                    .stream_info
-                    .as_ref()
-                    .and_then(|si| si.size)
-            })
-            .filter(|&s| s > 0)?,
+        size,
         duration: crate::common::ticks_to_seconds(
             probe
                 .run_time_ticks
@@ -1257,7 +1269,7 @@ mod tests {
             descriptor: StreamDescriptor::http("https://cdn.example/file.mkv"),
             ..Default::default()
         });
-        assert!(media_info_from_probe(&probe_with_size(1), &stream, None).is_none());
+        assert!(media_info_from_probe(&probe_with_size(1), &stream, None).is_err());
     }
 
     /// A probe fallback must reach the stream request that follows PlaybackInfo.
