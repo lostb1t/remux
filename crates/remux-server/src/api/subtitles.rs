@@ -347,6 +347,24 @@ pub(crate) fn save_sidecar_subtitle_routes(
         );
 }
 
+/// The highest index a cached sidecar route already claims for this
+/// device/item/source, if any. Callers that assign new subtitle indexes for
+/// the same source (e.g. `append_external_subtitles`) must start after this,
+/// or a later request for that index resolves to the cached sidecar instead
+/// of whatever the caller is about to advertise.
+pub(crate) fn cached_sidecar_next_index(
+    ctx: &crate::AppContext,
+    device_id: &str,
+    item_id: Uuid,
+    media_source_id: Uuid,
+) -> Option<i64> {
+    load_sidecar_subtitle_routes(ctx, device_id, item_id, media_source_id)?
+        .iter()
+        .map(|route| route.index)
+        .max()
+        .map(|max| max + 1)
+}
+
 fn load_sidecar_subtitle_routes(
     ctx: &crate::AppContext,
     device_id: &str,
@@ -501,7 +519,13 @@ async fn subtitles_stream_inner(
                     .await;
                 // Match append_external_subtitles' filtering exactly, or the
                 // index a client requests (from the menu it was shown) won't
-                // line up with this reconstructed list.
+                // line up with this reconstructed list. That means resolving
+                // delivery_method the same way PlaybackInfo did first: raw
+                // probe data leaves text subtitles' delivery_method unset
+                // (None), which would bypass has_supported_embedded_subtitle's
+                // Embed-only guard and let a stale/best-effort profile
+                // reach its codec fallback instead of agreeing with what was
+                // actually advertised.
                 let device_profile =
                     crate::jellyfin_client::merge_device_profile_subtitles(
                         &session.device,
@@ -509,6 +533,40 @@ async fn subtitles_stream_inner(
                             .device
                             .parsed_device_profile(),
                     );
+                let subtitle_mode = db::Settings::get_encoding_config(
+                    &state
+                        .ctx
+                        .db,
+                )
+                .await
+                .unwrap_or_default()
+                .subtitle_mode
+                .unwrap_or_default();
+                let resolved_probe = source
+                    .probe_data
+                    .clone()
+                    .map(|mut probe| {
+                        for stream in &mut probe.media_streams {
+                            if matches!(
+                                stream.type_,
+                                Some(api::MediaStreamType::Subtitle)
+                            ) {
+                                stream.is_text_subtitle_stream =
+                                    stream.is_text_subtitle_stream();
+                            }
+                        }
+                        crate::playback::decision::apply_subtitle_delivery(
+                            &mut probe,
+                            item_id,
+                            session
+                                .device
+                                .access_token
+                                .expose(),
+                            &device_profile,
+                            subtitle_mode,
+                        );
+                        probe
+                    });
                 let mut seen_langs = std::collections::HashSet::new();
                 let scored: Vec<_> =
                     crate::subtitle_selection::ranked_external_subtitles(
@@ -531,8 +589,7 @@ async fn subtitles_stream_inner(
                         if seen_langs.contains(&lang) {
                             return false;
                         }
-                        let collides = source
-                            .probe_data
+                        let collides = resolved_probe
                             .as_ref()
                             .is_some_and(|probe| {
                                 has_supported_embedded_subtitle(
@@ -796,6 +853,13 @@ pub(crate) fn descriptor_to_subtitle_url(sub: &crate::addons::SubtitleInfo) -> S
 
 /// Add prefetched subtitles to real-probed sources. Item details and
 /// PlaybackInfo share this path so their selection and indexes stay aligned.
+///
+/// `reserved_next_index` lets a caller that doesn't itself inject sidecar
+/// subtitles into `media_streams` (Items detail, unlike PlaybackInfo, never
+/// loads the torrent manager to discover them) still avoid handing out an
+/// index a cached sidecar route already claims for that source. Pass an
+/// empty map when the source's `media_streams` already accounts for
+/// everything that needs reserving (as PlaybackInfo's does).
 pub(crate) fn append_external_subtitles(
     media_sources: &mut [api::MediaSourceInfo],
     subs: &[crate::addons::SubtitleInfo],
@@ -803,6 +867,7 @@ pub(crate) fn append_external_subtitles(
     device_profile: Option<&api::DeviceProfile>,
     item_id: Uuid,
     api_key: &str,
+    reserved_next_index: &std::collections::HashMap<Uuid, i64>,
 ) {
     for source in media_sources.iter_mut() {
         if !has_real_probe_data(source) {
@@ -813,7 +878,13 @@ pub(crate) fn append_external_subtitles(
             .iter()
             .map(|s| s.index)
             .max()
-            .map_or(0, |m| m + 1);
+            .map_or(0, |m| m + 1)
+            .max(
+                reserved_next_index
+                    .get(&source.id)
+                    .copied()
+                    .unwrap_or(0),
+            );
 
         let source_filename = source
             .remux
@@ -1159,7 +1230,15 @@ mod tests {
             ai_translated: None,
         }];
 
-        append_external_subtitles(&mut sources, &subs, &[], None, item_id, "test-key");
+        append_external_subtitles(
+            &mut sources,
+            &subs,
+            &[],
+            None,
+            item_id,
+            "test-key",
+            &std::collections::HashMap::new(),
+        );
 
         assert_eq!(
             sources[0]
@@ -1239,6 +1318,7 @@ mod tests {
             Some(&embed_profile),
             item_id,
             "test-key",
+            &std::collections::HashMap::new(),
         );
         assert_eq!(
             sources[0]
@@ -1256,6 +1336,7 @@ mod tests {
                 profile,
                 item_id,
                 "test-key",
+                &std::collections::HashMap::new(),
             );
             assert_eq!(
                 sources[0]
@@ -1275,6 +1356,7 @@ mod tests {
             Some(&embed_profile),
             item_id,
             "test-key",
+            &std::collections::HashMap::new(),
         );
         assert_eq!(
             sources[0]
@@ -1294,6 +1376,7 @@ mod tests {
             Some(&embed_profile),
             item_id,
             "test-key",
+            &std::collections::HashMap::new(),
         );
         assert_eq!(
             sources[0]
@@ -1346,12 +1429,63 @@ mod tests {
             Some(&profile),
             Uuid::new_v4(),
             "test-key",
+            &std::collections::HashMap::new(),
         );
         assert_eq!(
             sources[0]
                 .media_streams
                 .len(),
             1
+        );
+    }
+
+    /// Items detail never injects sidecar subtitles into `media_streams` (no
+    /// torrent manager lookup there), so a caller that knows a sidecar route
+    /// is already cached for this source must reserve its index explicitly —
+    /// otherwise a later PlaybackInfo call assigning that same index to a
+    /// sidecar would make a subtitle request for it resolve to the sidecar
+    /// instead of the addon subtitle advertised here.
+    #[test]
+    fn reserved_next_index_skips_a_cached_sidecar_slot() {
+        let source_id = Uuid::new_v4();
+        let source = api::MediaSourceInfo {
+            id: source_id,
+            media_streams: vec![api::MediaStream {
+                index: 2,
+                type_: Some(api::MediaStreamType::Video),
+                ..Default::default()
+            }],
+            remux: Some(api::MediaSourceRemuxInfo {
+                source: Some(api::ProbeOrigin::Ffprobe),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let external = crate::addons::SubtitleInfo {
+            id: "eng".into(),
+            url: None,
+            lang: Some("eng".into()),
+            is_forced: false,
+            is_hi: false,
+            filename: None,
+            from_trusted: None,
+            ai_translated: None,
+        };
+
+        let mut sources = vec![source];
+        let reserved = std::collections::HashMap::from([(source_id, 5)]);
+        append_external_subtitles(
+            &mut sources,
+            &[external],
+            &[],
+            None,
+            Uuid::new_v4(),
+            "test-key",
+            &reserved,
+        );
+        assert_eq!(
+            sources[0].media_streams[1].index, 5,
+            "addon subtitle must start after the reserved sidecar slot, not embedded_max + 1"
         );
     }
 }
