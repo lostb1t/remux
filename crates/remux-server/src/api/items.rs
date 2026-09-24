@@ -1778,9 +1778,7 @@ async fn item_for_user(
                     .addons
                     .fetch_subtitles(
                         &mut subtitle_media,
-                        &state
-                            .ctx
-                            .db,
+                        &state.ctx,
                         false,
                         Some(
                             session
@@ -3646,7 +3644,7 @@ fn warm_providers_cache(ctx: &crate::AppContext, media: &db::Media) {
     tokio::spawn(async move {
         let _ = ctx
             .addons
-            .fetch_subtitles(&mut media, &ctx.db, true, None)
+            .fetch_subtitles(&mut media, &ctx, true, None)
             .await;
         let _ = media
             .grandparent(&ctx.db)

@@ -506,9 +506,7 @@ async fn subtitles_stream_inner(
                     .addons
                     .fetch_subtitles(
                         &mut item_media,
-                        &state
-                            .ctx
-                            .db,
+                        &state.ctx,
                         true,
                         Some(
                             session

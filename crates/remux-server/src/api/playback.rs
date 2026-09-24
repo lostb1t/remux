@@ -336,9 +336,7 @@ async fn items_playbackinfo_inner(
                     .addons
                     .fetch_subtitles(
                         sub_media,
-                        &state
-                            .ctx
-                            .db,
+                        &state.ctx,
                         false,
                         Some(
                             session
