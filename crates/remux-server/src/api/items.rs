@@ -2045,6 +2045,27 @@ async fn item_for_user(
         && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode)
     {
         if let Some(ref mut sources) = base_item.media_sources {
+            // Items never loads the torrent manager to discover sidecar
+            // subtitles the way PlaybackInfo does, so it can't reserve their
+            // indexes by including them in media_streams. Reserve by cached
+            // route instead, or an addon subtitle index assigned here can
+            // later collide with a sidecar a PlaybackInfo call reserves for
+            // the same device/item/source.
+            let reserved_next_index: std::collections::HashMap<uuid::Uuid, i64> =
+                sources
+                    .iter()
+                    .filter_map(|source| {
+                        crate::api::subtitles::cached_sidecar_next_index(
+                            &state.ctx,
+                            &session
+                                .device
+                                .id,
+                            resolved_id,
+                            source.id,
+                        )
+                        .map(|next| (source.id, next))
+                    })
+                    .collect();
             crate::api::subtitles::append_external_subtitles(
                 sources,
                 &external_subtitles,
@@ -2058,6 +2079,7 @@ async fn item_for_user(
                     .device
                     .access_token
                     .expose(),
+                &reserved_next_index,
             );
         }
     }
