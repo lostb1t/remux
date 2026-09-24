@@ -2636,6 +2636,18 @@ pub fn lang_to_two_letter(lang: &str) -> Option<String> {
     if lang.len() == 2 {
         return Some(lang);
     }
+    if let Some(language) = rust_iso639::from_code_2b(&lang) {
+        if !language
+            .code
+            .is_empty()
+        {
+            return Some(
+                language
+                    .code
+                    .to_string(),
+            );
+        }
+    }
     isolang::Language::from_639_3(&lang)
         .or_else(|| isolang::Language::from_str(&lang).ok())
         .or_else(|| isolang::Language::from_name_lowercase(&lang))
@@ -7316,6 +7328,10 @@ mod tests {
         assert_eq!(lang_to_two_letter("en").as_deref(), Some("en"));
         assert_eq!(lang_to_two_letter("eng").as_deref(), Some("en"));
         assert_eq!(lang_to_two_letter("English").as_deref(), Some("en"));
+        assert_eq!(lang_to_two_letter("nld").as_deref(), Some("nl"));
+        assert_eq!(lang_to_two_letter("DUT").as_deref(), Some("nl"));
+        assert_eq!(lang_to_two_letter("ger").as_deref(), Some("de"));
+        assert_eq!(lang_to_two_letter("fre").as_deref(), Some("fr"));
     }
 
     #[test]

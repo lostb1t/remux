@@ -593,8 +593,35 @@ impl SubtitleAddon for StremioAddon {
                 id: s.id,
                 url: Some(crate::stream::StreamDescriptor::http(s.url)),
                 lang: s.lang,
-                is_forced: false,
-                is_hi: false,
+                is_forced: crate::subtitle_selection::has_subtitle_marker(
+                    s.subtitle_file_name
+                        .as_deref()
+                        .or(s
+                            .title
+                            .as_deref()),
+                    "forced",
+                ),
+                is_hi: crate::subtitle_selection::has_subtitle_marker(
+                    s.subtitle_file_name
+                        .as_deref()
+                        .or(s
+                            .title
+                            .as_deref()),
+                    "sdh",
+                ) || crate::subtitle_selection::has_subtitle_marker(
+                    s.subtitle_file_name
+                        .as_deref()
+                        .or(s
+                            .title
+                            .as_deref()),
+                    "hi",
+                ),
+                filename: s
+                    .subtitle_file_name
+                    .or(s.title)
+                    .or(s.movie_release_name),
+                from_trusted: s.from_trusted,
+                ai_translated: s.ai_translated,
             })
             .collect())
     }

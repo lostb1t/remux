@@ -815,6 +815,10 @@ pub struct SubtitleInfo {
     pub lang: Option<String>,
     pub is_forced: bool,
     pub is_hi: bool,
+    /// Release name supplied by the subtitle provider, if any.
+    pub filename: Option<String>,
+    pub from_trusted: Option<bool>,
+    pub ai_translated: Option<bool>,
 }
 
 #[async_trait]

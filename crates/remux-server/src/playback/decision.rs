@@ -424,6 +424,9 @@ fn subtitle_burn_method(
 }
 
 /// Assigns delivery URLs and methods to all subtitle streams in `source`.
+// TODO: Embed is chosen from the profile alone. For a transcoded/HLS source,
+// verify that the selected output actually carries the embedded track before
+// advertising Embed. This is a generic delivery issue, not client-specific.
 pub(crate) fn apply_subtitle_delivery(
     source: &mut api::MediaSourceInfo,
     item_id: Uuid,

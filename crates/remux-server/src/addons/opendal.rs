@@ -621,6 +621,9 @@ impl SubtitleAddon for OpendalAddon {
                     lang,
                     is_forced,
                     is_hi,
+                    filename: Some(f.name),
+                    from_trusted: None,
+                    ai_translated: None,
                 }
             })
             .collect())

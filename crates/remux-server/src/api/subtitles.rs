@@ -242,6 +242,12 @@ async fn fetch_external_subtitle_bytes(
             .await
             .map_err(|e| anyhow!("upstream serve failed: {e:?}"))?,
     };
+    if !resp
+        .status()
+        .is_success()
+    {
+        return Err(anyhow!("upstream subtitle status {}", resp.status()));
+    }
     axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .map_err(|e| anyhow!("read subtitle bytes: {e}"))
@@ -493,12 +499,16 @@ async fn subtitles_stream_inner(
                         ),
                     )
                     .await;
-                let source_info = api::MediaSourceInfo::from(source.clone());
-                let scored = scored_external_subtitles(
+                let scored = crate::subtitle_selection::select_external_subtitles(
                     &subs,
                     &sub_langs,
-                    &source_info.name,
-                    &source_info.path,
+                    source
+                        .stream_info
+                        .as_ref()
+                        .and_then(|info| {
+                            info.filename
+                                .as_deref()
+                        }),
                 );
                 if let Some(sub) = scored.get(i as usize) {
                     if let Some(ref descriptor) = sub.url {
@@ -731,7 +741,7 @@ pub(crate) use remux_sdks::remux::lang_to_two_letter;
 pub(crate) fn subtitle_path_hint(sub: &crate::addons::SubtitleInfo) -> &str {
     match &sub.url {
         Some(crate::stream::StreamDescriptor::Http { url, .. }) => url.as_str(),
-        Some(crate::stream::StreamDescriptor::Local(p)) => p
+        Some(crate::stream::StreamDescriptor::Local(path)) => path
             .to_str()
             .unwrap_or(""),
         Some(crate::stream::StreamDescriptor::Opendal { path, .. }) => path.as_str(),
@@ -746,128 +756,20 @@ pub(crate) fn descriptor_to_subtitle_url(sub: &crate::addons::SubtitleInfo) -> S
     }
 }
 
-fn score_sub_url(
-    sub: &crate::addons::SubtitleInfo,
-    source_name: &Option<String>,
-    source_path: &Option<String>,
-) -> i32 {
-    fn tokens(s: &str) -> std::collections::HashSet<String> {
-        s.split(|c: char| !c.is_alphanumeric())
-            .filter(|t| t.len() > 2)
-            .map(|t| t.to_lowercase())
-            .collect()
-    }
-    let hint = subtitle_path_hint(sub);
-    let sub_file = hint
-        .rsplit('/')
-        .next()
-        .unwrap_or(hint);
-    let sub_tok = tokens(sub_file);
-    let mut src_tok = tokens(
-        source_name
-            .as_deref()
-            .unwrap_or(""),
-    );
-    src_tok.extend(tokens(
-        source_path
-            .as_deref()
-            .unwrap_or(""),
-    ));
-    sub_tok
-        .intersection(&src_tok)
-        .count() as i32
-}
-
-/// Filter, score, sort, and deduplicate external subtitles for a single source.
-/// Returns the ordered list of subtitles that will be assigned stream indices.
-pub(crate) fn scored_external_subtitles<'a>(
-    subs: &'a [crate::addons::SubtitleInfo],
+/// Add prefetched subtitles to real-probed sources. Item details and
+/// PlaybackInfo share this path so their selection and indexes stay aligned.
+pub(crate) fn append_external_subtitles(
+    media_sources: &mut [api::MediaSourceInfo],
+    subs: &[crate::addons::SubtitleInfo],
     sub_langs: &[String],
-    source_name: &Option<String>,
-    source_path: &Option<String>,
-) -> Vec<&'a crate::addons::SubtitleInfo> {
-    let filtered: Vec<&crate::addons::SubtitleInfo> = if sub_langs.is_empty() {
-        subs.iter()
-            .collect()
-    } else {
-        subs.iter()
-            .filter(|s| {
-                let two = s
-                    .lang
-                    .as_deref()
-                    .and_then(lang_to_two_letter);
-                two.map_or(false, |two| {
-                    sub_langs
-                        .iter()
-                        .any(|p| two.eq_ignore_ascii_case(p.trim()))
-                })
-            })
-            .collect()
-    };
-
-    let mut scored: Vec<_> = filtered
-        .into_iter()
-        .map(|s| (score_sub_url(s, source_name, source_path), s))
-        .collect();
-    scored.sort_by(|(sa, a), (sb, b)| {
-        let rank = |s: &&crate::addons::SubtitleInfo| {
-            let two = s
-                .lang
-                .as_deref()
-                .and_then(lang_to_two_letter);
-            sub_langs
-                .iter()
-                .position(|p| {
-                    two.as_deref()
-                        .map_or(false, |t| t.eq_ignore_ascii_case(p.trim()))
-                })
-                .unwrap_or(usize::MAX)
-        };
-        rank(a)
-            .cmp(&rank(b))
-            .then(sb.cmp(sa))
-    });
-
-    let mut lang_counts: std::collections::HashMap<String, usize> = Default::default();
-    scored
-        .into_iter()
-        .filter_map(|(_, s)| {
-            let key = s
-                .lang
-                .clone()
-                .unwrap_or_else(|| "und".to_string());
-            let count = lang_counts
-                .entry(key)
-                .or_insert(0);
-            if *count < 10 {
-                *count += 1;
-                Some(s)
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-/// Inject external subtitles into a list of `MediaSourceInfo` entries.
-pub(crate) async fn inject_external_subtitles(
-    ctx: &crate::AppContext,
-    subtitle_media: &mut crate::db::Media,
-    media_sources: &mut Vec<api::MediaSourceInfo>,
+    device_profile: Option<&api::DeviceProfile>,
     item_id: Uuid,
     api_key: &str,
-    sub_langs: Vec<String>,
-    user_id: Option<uuid::Uuid>,
 ) {
-    let subs = ctx
-        .addons
-        .fetch_subtitles(subtitle_media, &ctx.db, false, user_id)
-        .await;
-    if subs.is_empty() {
-        return;
-    }
-
     for source in media_sources.iter_mut() {
+        if !has_real_probe_data(source) {
+            continue;
+        }
         let next_idx = source
             .media_streams
             .iter()
@@ -875,9 +777,24 @@ pub(crate) async fn inject_external_subtitles(
             .max()
             .map_or(0, |m| m + 1);
 
-        let scored =
-            scored_external_subtitles(&subs, &sub_langs, &source.name, &source.path);
-
+        let source_filename = source
+            .remux
+            .as_ref()
+            .and_then(|remux| {
+                remux
+                    .provider_info
+                    .as_ref()
+            })
+            .and_then(|info| info.get("filename"))
+            .and_then(serde_json::Value::as_str);
+        let scored: Vec<_> = crate::subtitle_selection::select_external_subtitles(
+            &subs,
+            sub_langs,
+            source_filename,
+        )
+        .into_iter()
+        .filter(|sub| !has_supported_embedded_subtitle(source, sub, device_profile))
+        .collect();
         let wants_default = !sub_langs.is_empty()
             && source
                 .default_subtitle_stream_index
@@ -902,6 +819,78 @@ pub(crate) async fn inject_external_subtitles(
                 .push(stream);
         }
     }
+}
+
+fn has_real_probe_data(source: &api::MediaSourceInfo) -> bool {
+    matches!(
+        source
+            .remux
+            .as_ref()
+            .and_then(|remux| remux.source),
+        Some(api::ProbeOrigin::Ffprobe | api::ProbeOrigin::RemuxDb)
+    ) && !source
+        .media_streams
+        .is_empty()
+}
+
+fn has_supported_embedded_subtitle(
+    source: &api::MediaSourceInfo,
+    external: &crate::addons::SubtitleInfo,
+    device_profile: Option<&api::DeviceProfile>,
+) -> bool {
+    let Some(profile) = device_profile else {
+        return false;
+    };
+    let external_language = crate::subtitle_selection::normalized_language(
+        external
+            .lang
+            .as_deref(),
+    );
+    if external_language == "und" || external_language.is_empty() {
+        return false;
+    }
+
+    source
+        .media_streams
+        .iter()
+        .any(|stream| {
+            if stream.type_ != Some(api::MediaStreamType::Subtitle)
+                || stream.is_external
+                || stream
+                    .delivery_method
+                    .as_ref()
+                    .is_some_and(|method| method != &api::SubtitleDeliveryMethod::Embed)
+                || stream.is_forced != external.is_forced
+                || stream.is_hearing_impaired != external.is_hi
+                || crate::subtitle_selection::normalized_language(
+                    stream
+                        .language
+                        .as_deref(),
+                ) != external_language
+            {
+                return false;
+            }
+            let Some(codec) = stream
+                .codec
+                .as_deref()
+            else {
+                return false;
+            };
+            profile
+                .subtitle_profiles
+                .iter()
+                .any(|supported| {
+                    supported.method == Some(api::SubtitleDeliveryMethod::Embed)
+                        && supported
+                            .format
+                            .as_deref()
+                            .is_some_and(|format| {
+                                crate::device_profile::subtitle_codec_matches_profile(
+                                    codec, format,
+                                )
+                            })
+                })
+        })
 }
 
 #[cfg(test)]
@@ -1018,6 +1007,9 @@ mod tests {
             lang: Some("en".to_string()),
             is_forced: false,
             is_hi: false,
+            filename: None,
+            from_trusted: None,
+            ai_translated: None,
         }];
 
         let routes = inject_sidecar_subtitles(&mut source, subtitles);
@@ -1036,5 +1028,261 @@ mod tests {
     #[test]
     fn external_subtitles_follow_sidecars() {
         assert_eq!(next_external_subtitle_index([0, 1], [2]), 3);
+    }
+
+    #[test]
+    fn external_subtitles_only_follow_real_probe_streams() {
+        let item_id = Uuid::new_v4();
+        let existing = vec![
+            api::MediaStream {
+                index: 0,
+                type_: Some(api::MediaStreamType::Video),
+                ..Default::default()
+            },
+            api::MediaStream {
+                index: 2,
+                type_: Some(api::MediaStreamType::Subtitle),
+                codec: Some("subrip".into()),
+                ..Default::default()
+            },
+        ];
+        let mut sources = vec![
+            api::MediaSourceInfo {
+                id: Uuid::new_v4(),
+                media_streams: existing.clone(),
+                remux: Some(api::MediaSourceRemuxInfo {
+                    source: Some(api::ProbeOrigin::Ffprobe),
+                    provider_info: Some(
+                        serde_json::json!({"filename": "Movie.2026.mkv"}),
+                    ),
+                }),
+                ..Default::default()
+            },
+            api::MediaSourceInfo {
+                id: Uuid::new_v4(),
+                media_streams: existing.clone(),
+                remux: Some(api::MediaSourceRemuxInfo {
+                    source: Some(api::ProbeOrigin::FilenameGuess),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            api::MediaSourceInfo {
+                id: Uuid::new_v4(),
+                ..Default::default()
+            },
+            api::MediaSourceInfo {
+                id: Uuid::new_v4(),
+                media_streams: existing,
+                ..Default::default()
+            },
+        ];
+        let subs = vec![crate::addons::SubtitleInfo {
+            id: "external".into(),
+            url: Some(crate::stream::StreamDescriptor::http(
+                "https://example.com/Movie.2026.srt",
+            )),
+            lang: Some("eng".into()),
+            is_forced: false,
+            is_hi: false,
+            filename: Some("Movie.2026.srt".into()),
+            from_trusted: None,
+            ai_translated: None,
+        }];
+
+        append_external_subtitles(&mut sources, &subs, &[], None, item_id, "test-key");
+
+        assert_eq!(
+            sources[0]
+                .media_streams
+                .len(),
+            3
+        );
+        assert_eq!(sources[0].media_streams[2].index, 3);
+        assert_eq!(sources[0].media_streams[2].is_external, true);
+        assert_eq!(
+            sources[1]
+                .media_streams
+                .len(),
+            2
+        );
+        assert!(
+            sources[2]
+                .media_streams
+                .is_empty()
+        );
+        assert_eq!(
+            sources[3]
+                .media_streams
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn supported_embedded_subtitle_replaces_only_the_matching_external_variant() {
+        let item_id = Uuid::new_v4();
+        let source = api::MediaSourceInfo {
+            id: Uuid::new_v4(),
+            media_streams: vec![api::MediaStream {
+                index: 2,
+                type_: Some(api::MediaStreamType::Subtitle),
+                codec: Some("pgssub".into()),
+                language: Some("eng".into()),
+                ..Default::default()
+            }],
+            remux: Some(api::MediaSourceRemuxInfo {
+                source: Some(api::ProbeOrigin::Ffprobe),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let external = crate::addons::SubtitleInfo {
+            id: "regular".into(),
+            url: None,
+            lang: Some("en".into()),
+            is_forced: false,
+            is_hi: false,
+            filename: None,
+            from_trusted: None,
+            ai_translated: None,
+        };
+        let embed_profile = api::DeviceProfile {
+            subtitle_profiles: vec![api::SubtitleProfile {
+                format: Some("pgs".into()),
+                method: Some(api::SubtitleDeliveryMethod::Embed),
+            }],
+            ..Default::default()
+        };
+        let external_profile = api::DeviceProfile {
+            subtitle_profiles: vec![api::SubtitleProfile {
+                format: Some("pgs".into()),
+                method: Some(api::SubtitleDeliveryMethod::External),
+            }],
+            ..Default::default()
+        };
+
+        let mut sources = vec![source.clone()];
+        append_external_subtitles(
+            &mut sources,
+            &[external.clone()],
+            &[],
+            Some(&embed_profile),
+            item_id,
+            "test-key",
+        );
+        assert_eq!(
+            sources[0]
+                .media_streams
+                .len(),
+            1
+        );
+
+        for profile in [None, Some(&external_profile)] {
+            let mut sources = vec![source.clone()];
+            append_external_subtitles(
+                &mut sources,
+                &[external.clone()],
+                &[],
+                profile,
+                item_id,
+                "test-key",
+            );
+            assert_eq!(
+                sources[0]
+                    .media_streams
+                    .len(),
+                2
+            );
+        }
+
+        let mut forced = external.clone();
+        forced.is_forced = true;
+        let mut sources = vec![source.clone()];
+        append_external_subtitles(
+            &mut sources,
+            &[forced],
+            &[],
+            Some(&embed_profile),
+            item_id,
+            "test-key",
+        );
+        assert_eq!(
+            sources[0]
+                .media_streams
+                .len(),
+            2
+        );
+
+        let mut external_source = source;
+        external_source.media_streams[0].delivery_method =
+            Some(api::SubtitleDeliveryMethod::External);
+        let mut sources = vec![external_source];
+        append_external_subtitles(
+            &mut sources,
+            &[external],
+            &[],
+            Some(&embed_profile),
+            item_id,
+            "test-key",
+        );
+        assert_eq!(
+            sources[0]
+                .media_streams
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn dutch_bibliographic_code_does_not_duplicate_embedded_subtitle() {
+        let source = api::MediaSourceInfo {
+            id: Uuid::new_v4(),
+            media_streams: vec![api::MediaStream {
+                index: 2,
+                type_: Some(api::MediaStreamType::Subtitle),
+                codec: Some("PGSSUB".into()),
+                language: Some("nld".into()),
+                ..Default::default()
+            }],
+            remux: Some(api::MediaSourceRemuxInfo {
+                source: Some(api::ProbeOrigin::RemuxDb),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let external = crate::addons::SubtitleInfo {
+            id: "dutch".into(),
+            url: None,
+            lang: Some("dut".into()),
+            is_forced: false,
+            is_hi: false,
+            filename: None,
+            from_trusted: None,
+            ai_translated: None,
+        };
+        let profile = api::DeviceProfile {
+            subtitle_profiles: vec![api::SubtitleProfile {
+                format: Some("pgs".into()),
+                method: Some(api::SubtitleDeliveryMethod::Embed),
+            }],
+            ..Default::default()
+        };
+
+        let mut sources = vec![source];
+        append_external_subtitles(
+            &mut sources,
+            &[external],
+            &[],
+            Some(&profile),
+            Uuid::new_v4(),
+            "test-key",
+        );
+        assert_eq!(
+            sources[0]
+                .media_streams
+                .len(),
+            1
+        );
     }
 }

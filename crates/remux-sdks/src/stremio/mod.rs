@@ -309,7 +309,6 @@ pub struct MetaResponse {
     pub meta: Meta,
 }
 
-/// TODO: Add filename for better matching
 #[derive(Debug, Clone)]
 pub struct SubtitlesEndpoint {
     pub media_type: MediaType,
@@ -345,6 +344,13 @@ pub struct Subtitle {
     pub url: String,
     pub sub_encoding: Option<String>,
     pub lang: Option<String>,
+    pub subtitle_file_name: Option<String>,
+    pub movie_release_name: Option<String>,
+    pub title: Option<String>,
+    #[serde(rename = "from_trusted")]
+    pub from_trusted: Option<bool>,
+    #[serde(rename = "ai_translated")]
+    pub ai_translated: Option<bool>,
 }
 
 #[skip_serializing_none]

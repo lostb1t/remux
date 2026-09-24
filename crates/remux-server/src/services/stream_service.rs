@@ -7,7 +7,7 @@ use remux_sdks::{
     remux::{MediaStreamType, StreamFilter, VideoRangeType},
     remuxdb,
 };
-use tracing::debug;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 /// Result of probing a single stream candidate.
@@ -657,7 +657,7 @@ impl StreamService {
                         tokio::spawn(mi.submit(url, token));
                     }
                     None => {
-                        debug!(id = %effective_stream.id, "remuxdb: skipping (no stream_info or missing required fields)");
+                        warn!(id = %effective_stream.id, "remuxdb: skipping (no stream_info or missing required fields)");
                     }
                 }
             }
@@ -675,26 +675,17 @@ impl StreamService {
         })
     }
 
-    /// Remember that the probe fell over from the client-facing first source
-    /// to `effective_stream` for this play session.
-    ///
-    /// PlaybackInfo stamps `MediaSources[0].Id` with the item id, so a client
-    /// that auto-plays comes back to `/videos/{id}/stream` naming the item,
-    /// not a stream. `dispatch_lookup` treats that as "first source" — the
-    /// very stream that just failed to probe — and the fallback PlaybackInfo
-    /// chose is lost: the stream request hangs on the dead source until the
-    /// upstream timeout and fails, while the second source, picked by hand,
-    /// plays at once. Keying on the play session id (minted by PlaybackInfo
-    /// and echoed by every Jellyfin client on the stream URL) ties the two
-    /// requests together without needing a device id, which not every client
-    /// sends on stream URLs. A stream-group request answers with the group id
-    /// the same way, so the record is keyed by the id the client echoes back:
-    /// the item id, or the group id. No-op when nothing fell over or the
-    /// client named a specific stream.
+    /// Remember which stream PlaybackInfo actually probed when it fell back.
+    /// Clients may request the item ID, a stream-group ID, or the originally
+    /// selected stream ID even after PlaybackInfo returned the fallback ID.
+    /// Keying by the play session and that requested ID makes direct playback
+    /// use the same stream whose media info was returned to the client.
     pub fn save_probe_fallback(&self, play_session_id: &str, probed: &ProbedStreams) {
         let source_id = match &self.group {
             Some((gid, _, _)) => *gid,
-            None if probed.specific_requested => return,
+            None if probed.specific_requested => self
+                .requested_id
+                .unwrap_or(self.item_id),
             None => self.item_id,
         };
         let Some(first) = probed
@@ -703,6 +694,14 @@ impl StreamService {
         else {
             return;
         };
+        // Infuse's direct stream URL has MediaSourceId but no PlaySessionId or
+        // DeviceId. Keep a brief item-scoped mapping for that request too.
+        let recent_ids = [
+            source_id,
+            first
+                .stream
+                .id,
+        ];
         if first
             .effective_stream
             .id
@@ -710,7 +709,23 @@ impl StreamService {
                 .stream
                 .id
         {
+            for recent_id in recent_ids {
+                self.ctx
+                    .store
+                    .delete(Self::recent_probe_fallback_key(self.item_id, recent_id));
+            }
             return;
+        }
+        for recent_id in recent_ids {
+            self.ctx
+                .store
+                .save(
+                    Self::recent_probe_fallback_key(self.item_id, recent_id),
+                    first
+                        .effective_stream
+                        .id,
+                    std::time::Duration::from_secs(5 * 60),
+                );
         }
         self.ctx
             .store
@@ -724,7 +739,7 @@ impl StreamService {
     }
 
     /// The stream PlaybackInfo's probe fell over to when it answered
-    /// `play_session_id` with `source_id` (the item id or a group id), if any.
+    /// `play_session_id` with `source_id` (item, group, or stream ID), if any.
     pub fn probe_fallback_for(
         ctx: &AppContext,
         play_session_id: &str,
@@ -733,6 +748,21 @@ impl StreamService {
         ctx.store
             .get::<Uuid>(Self::probe_fallback_key(play_session_id, source_id))
             .map(|id| *id)
+    }
+
+    /// Fallback for clients that omit PlaySessionId from the stream URL.
+    pub fn recent_probe_fallback_for(
+        ctx: &AppContext,
+        item_id: Uuid,
+        source_id: Uuid,
+    ) -> Option<Uuid> {
+        ctx.store
+            .get::<Uuid>(Self::recent_probe_fallback_key(item_id, source_id))
+            .map(|id| *id)
+    }
+
+    fn recent_probe_fallback_key(item_id: Uuid, source_id: Uuid) -> String {
+        format!("pstream:recent:{item_id}:{source_id}")
     }
 
     fn probe_fallback_key(play_session_id: &str, source_id: Uuid) -> String {
@@ -1274,11 +1304,42 @@ mod tests {
             StreamService::probe_fallback_for(ctx, "psid-clean", owner.id),
             None
         );
-        // Client named a specific stream: its choice stands, nothing remembered.
-        service.save_probe_fallback("psid-specific", &probed(&alive, true));
+        // A client can keep requesting the original stream ID for direct play
+        // even though PlaybackInfo returned the fallback stream ID.
+        let mut specific_service = StreamService::new(StreamServiceConfig {
+            ctx: ctx.clone(),
+            item_id: owner.id,
+            requested_id: Some(dead.id),
+            show_ungrouped: true,
+            stream_filter: None,
+            user_id: None,
+        });
+        specific_service.streams = vec![dead.clone(), alive.clone()];
+        assert!(
+            specific_service
+                .select_streams()
+                .specific_requested
+        );
+        specific_service.save_probe_fallback("psid-specific", &probed(&alive, true));
         assert_eq!(
-            StreamService::probe_fallback_for(ctx, "psid-specific", owner.id),
-            None
+            StreamService::probe_fallback_for(ctx, "psid-specific", dead.id),
+            Some(alive.id)
+        );
+        assert_eq!(
+            StreamService::recent_probe_fallback_for(ctx, owner.id, dead.id),
+            Some(alive.id),
+            "Infuse's sessionless direct request must resolve to the probed stream"
+        );
+        assert_eq!(
+            StreamService::recent_probe_fallback_for(ctx, alive.id, dead.id),
+            None,
+            "recent fallback must not leak to another item"
+        );
+        specific_service.save_probe_fallback("psid-recovered", &probed(&dead, true));
+        assert_eq!(
+            StreamService::recent_probe_fallback_for(ctx, owner.id, dead.id),
+            None,
+            "a successful probe must clear a stale fallback"
         );
         // Unknown session: nothing.
         assert_eq!(

@@ -1747,28 +1747,66 @@ async fn item_for_user(
             c.0.clone()
         })
         .unwrap_or_default();
-    let persisted_device_profile = session
-        .device
-        .parsed_device_profile();
+    let persisted_device_profile =
+        crate::jellyfin_client::merge_device_profile_subtitles(
+            &session.device,
+            session
+                .device
+                .parsed_device_profile(),
+        );
 
+    let mut external_subtitles = Vec::new();
     if needs_streams {
-        if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
+        if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
             warm_providers_cache(&state.ctx, &media);
+            let mut subtitle_media = media.clone();
+            let (refresh_result, subtitles) = tokio::join!(
+                state
+                    .ctx
+                    .addons
+                    .refresh_streams(
+                        &mut media,
+                        &state.ctx,
+                        Some(
+                            session
+                                .user
+                                .id
+                        ),
+                    ),
+                state
+                    .ctx
+                    .addons
+                    .fetch_subtitles(
+                        &mut subtitle_media,
+                        &state
+                            .ctx
+                            .db,
+                        false,
+                        Some(
+                            session
+                                .user
+                                .id
+                        ),
+                    ),
+            );
+            refresh_result.log_err("failed to refresh sources");
+            external_subtitles = subtitles;
+        } else {
+            state
+                .ctx
+                .addons
+                .refresh_streams(
+                    &mut media,
+                    &state.ctx,
+                    Some(
+                        session
+                            .user
+                            .id,
+                    ),
+                )
+                .await
+                .log_err("failed to refresh sources");
         }
-        state
-            .ctx
-            .addons
-            .refresh_streams(
-                &mut media,
-                &state.ctx,
-                Some(
-                    session
-                        .user
-                        .id,
-                ),
-            )
-            .await
-            .log_err("failed to refresh sources");
     }
 
     let user_stream_filter = session
@@ -2001,6 +2039,27 @@ async fn item_for_user(
             media_streams,
             ..Default::default()
         }]);
+    }
+
+    if want_streams
+        && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode)
+    {
+        if let Some(ref mut sources) = base_item.media_sources {
+            crate::api::subtitles::append_external_subtitles(
+                sources,
+                &external_subtitles,
+                &server_config
+                    .subtitle_languages
+                    .clone()
+                    .unwrap_or_default(),
+                persisted_device_profile.as_ref(),
+                resolved_id,
+                session
+                    .device
+                    .access_token
+                    .expose(),
+            );
+        }
     }
 
     if want_streams {

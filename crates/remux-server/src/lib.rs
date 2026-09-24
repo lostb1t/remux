@@ -66,6 +66,7 @@ pub mod playback_session;
 pub mod services;
 pub mod signals;
 pub mod stream;
+mod subtitle_selection;
 pub mod tasks;
 mod torrent;
 mod web_client;

@@ -2,8 +2,7 @@ use anyhow::anyhow;
 use axum::Json;
 
 use super::subtitles::{
-    inject_external_subtitles, inject_sidecar_subtitles, save_sidecar_subtitle_routes,
-    scored_external_subtitles,
+    append_external_subtitles, inject_sidecar_subtitles, save_sidecar_subtitle_routes,
 };
 use axum::{
     body::Body,
@@ -153,11 +152,11 @@ async fn items_playbackinfo_inner(
 
     trace!(?id, ?q, "items_playbackinfo");
 
-    let device_profile = q
+    let reported_device_profile = q
         .device_profile
         .clone();
 
-    if let Some(profile) = device_profile.clone() {
+    if let Some(profile) = reported_device_profile.clone() {
         let db = state
             .ctx
             .db
@@ -178,6 +177,10 @@ async fn items_playbackinfo_inner(
             }
         });
     }
+    let device_profile = crate::jellyfin_client::merge_device_profile_subtitles(
+        &session.device,
+        reported_device_profile,
+    );
     // Fall back to the last DeviceProfile this device sent for MediaSources
     // sorting only — transcode decisions above still use only what this
     // specific request sent, so a stale cached profile can't misroute a
@@ -185,9 +188,12 @@ async fn items_playbackinfo_inner(
     let sort_device_profile = device_profile
         .clone()
         .or_else(|| {
-            session
-                .device
-                .parsed_device_profile()
+            crate::jellyfin_client::merge_device_profile_subtitles(
+                &session.device,
+                session
+                    .device
+                    .parsed_device_profile(),
+            )
         });
 
     let probe_cfg = db::Settings::get_config_or_default(
@@ -248,32 +254,6 @@ async fn items_playbackinfo_inner(
     let selected_source_language = media
         .original_language
         .clone();
-    service
-        .load(media)
-        .await?;
-    // Load the top-level Movie/Episode for subtitle lookup.
-    // `id` is always the movie/episode UUID; `media_source_id` may point to a
-    // child Source, so we always resolve via `id` to get the IMDB fields.
-    let mut subtitle_media = db::Media::get_by_id(
-        &state
-            .ctx
-            .db,
-        &id,
-    )
-    .await
-    .ok()
-    .flatten();
-    let item_runtime_seconds = subtitle_media
-        .as_ref()
-        .and_then(|item| item.runtime);
-    let original_language =
-        playback_original_language(subtitle_media.as_ref(), selected_source_language);
-
-    let is_track = is_track_item
-        || subtitle_media
-            .as_ref()
-            .map_or(false, |m| m.is_track());
-    let has_lyrics = is_track;
 
     let max_bitrate: Option<i64> = match (
         q.max_streaming_bitrate,
@@ -305,9 +285,62 @@ async fn items_playbackinfo_inner(
         .ctx
         .config
         .port;
-    let probed = service
-        .probe_candidates()
-        .await?;
+    let (probed, (subtitle_media, external_subtitles)) = tokio::join!(
+        async {
+            service
+                .load(media)
+                .await?;
+            service
+                .probe_candidates()
+                .await
+        },
+        async {
+            // `id` is the top-level Movie/Episode UUID even when the request
+            // targets a child source. Fetch subtitle addons while stream addons
+            // load and their candidates are probed.
+            let mut subtitle_media = db::Media::get_by_id(
+                &state
+                    .ctx
+                    .db,
+                &id,
+            )
+            .await
+            .ok()
+            .flatten();
+            let external_subtitles = if let Some(ref mut sub_media) = subtitle_media {
+                state
+                    .ctx
+                    .addons
+                    .fetch_subtitles(
+                        sub_media,
+                        &state
+                            .ctx
+                            .db,
+                        false,
+                        Some(
+                            session
+                                .user
+                                .id,
+                        ),
+                    )
+                    .await
+            } else {
+                Vec::new()
+            };
+            (subtitle_media, external_subtitles)
+        }
+    );
+    let probed = probed?;
+    let item_runtime_seconds = subtitle_media
+        .as_ref()
+        .and_then(|item| item.runtime);
+    let original_language =
+        playback_original_language(subtitle_media.as_ref(), selected_source_language);
+    let is_track = is_track_item
+        || subtitle_media
+            .as_ref()
+            .is_some_and(|item| item.is_track());
+    let has_lyrics = is_track;
     service.save_probe_fallback(&play_session_id, &probed);
     let specific_stream_requested = probed.specific_requested;
     let mut media_sources = Vec::with_capacity(
@@ -541,30 +574,22 @@ async fn items_playbackinfo_inner(
         media_sources.push(source);
     }
 
-    // Inject external subtitles from AIO (cache-backed)
-    if let Some(ref mut sub_media) = subtitle_media {
-        let sub_langs = probe_cfg
+    // Probe and subtitle lookup ran concurrently. Append only after the real
+    // stream indexes are known.
+    append_external_subtitles(
+        &mut media_sources,
+        &external_subtitles,
+        &probe_cfg
             .subtitle_languages
             .clone()
-            .unwrap_or_default();
-        inject_external_subtitles(
-            &state.ctx,
-            sub_media,
-            &mut media_sources,
-            id,
-            session
-                .device
-                .access_token
-                .expose(),
-            sub_langs,
-            Some(
-                session
-                    .user
-                    .id,
-            ),
-        )
-        .await;
-    }
+            .unwrap_or_default(),
+        sort_device_profile.as_ref(),
+        id,
+        session
+            .device
+            .access_token
+            .expose(),
+    );
 
     // Re-resolve defaults after external subtitles were injected so language
     // matching can also pick addon subtitles (same request context as the
@@ -928,12 +953,9 @@ async fn videos_stream_inner(
     id: Uuid,
     q: api::VideoStreamQuery,
 ) -> Result<impl IntoResponse> {
-    // Auto-play and stream-group requests name an id the client echoes back
-    // (the item id, or the group id), not a stream. If PlaybackInfo's probe
-    // fell over to another stream for that id in this play session, follow
-    // it; the lookup below would otherwise land on the first candidate — the
-    // one that just failed to probe. A specific stream named by the client
-    // has no such record and stands.
+    // Follow the stream that PlaybackInfo actually probed. A client may echo
+    // the item ID, group ID, or original stream ID even after probe fallback;
+    // resolving that ID directly would serve the rejected stream instead.
     let probe_fallback = q
         .play_session_id
         .as_deref()
@@ -941,6 +963,14 @@ async fn videos_stream_inner(
             StreamService::probe_fallback_for(
                 &state.ctx,
                 psid,
+                q.media_source_id
+                    .unwrap_or(id),
+            )
+        })
+        .or_else(|| {
+            StreamService::recent_probe_fallback_for(
+                &state.ctx,
+                id,
                 q.media_source_id
                     .unwrap_or(id),
             )
@@ -1512,6 +1542,89 @@ mod tests {
         tokio::fs::remove_file(fixture)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn direct_stream_without_play_session_uses_probe_fallback() {
+        use crate::{
+            integration_test::seed_movie,
+            services::stream_service::{
+                ProbeResult, ProbedStreams, StreamService, StreamServiceConfig,
+            },
+            stream::StreamDescriptor,
+        };
+
+        let (server, guard, token) = authenticated_server().await;
+        let ctx = &guard.0;
+        let owner = seed_movie(ctx).await;
+        let temp = tempfile::tempdir().unwrap();
+        let rejected_path = temp
+            .path()
+            .join("rejected.mkv");
+        let fallback_path = temp
+            .path()
+            .join("fallback.mkv");
+        tokio::fs::write(&rejected_path, b"wrong stream")
+            .await
+            .unwrap();
+        tokio::fs::write(&fallback_path, b"fallback stream")
+            .await
+            .unwrap();
+
+        let mut rejected = insert_test_source(ctx).await;
+        rejected
+            .stream_info
+            .as_mut()
+            .unwrap()
+            .descriptor = StreamDescriptor::Local(rejected_path);
+        rejected
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        let mut fallback = insert_test_source(ctx).await;
+        fallback
+            .stream_info
+            .as_mut()
+            .unwrap()
+            .descriptor = StreamDescriptor::Local(fallback_path);
+        fallback
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let service = StreamService::new(StreamServiceConfig {
+            ctx: ctx.clone(),
+            item_id: owner.id,
+            requested_id: Some(rejected.id),
+            show_ungrouped: true,
+            stream_filter: None,
+            user_id: None,
+        });
+        service.save_probe_fallback(
+            "playbackinfo-session",
+            &ProbedStreams {
+                results: vec![ProbeResult {
+                    source: super::api::MediaSourceInfo::from(rejected.clone()),
+                    stream: rejected.clone(),
+                    effective_stream: fallback.clone(),
+                }],
+                specific_requested: true,
+            },
+        );
+
+        // Infuse omits PlaySessionId and DeviceId, and sends the rejected ID.
+        let response = server
+            .get(&format!(
+                "/videos/{}/stream?MediaSourceId={}&Static=true",
+                owner.id, rejected.id
+            ))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+            .await;
+        response.assert_status_ok();
+        assert_eq!(response.text(), "fallback stream");
     }
 
     #[test]
