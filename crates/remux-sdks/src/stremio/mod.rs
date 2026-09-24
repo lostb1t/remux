@@ -920,6 +920,8 @@ pub struct Stream {
 pub struct BehaviorHints {
     pub filename: Option<String>,
     pub binge_group: Option<String>,
+    /// Optional cache availability hint for non-AIOStreams addons.
+    pub cached: Option<bool>,
     pub not_web_ready: Option<bool>,
     pub video_size: Option<i64>,
     pub media_info: Option<crate::remuxdb::MediaInfo>,
@@ -962,6 +964,22 @@ pub struct StreamData {
 }
 
 impl Stream {
+    /// Prefer the service-specific AIOStreams status when both hints exist.
+    pub fn cached_status(&self) -> Option<bool> {
+        self.stream_data
+            .as_ref()
+            .and_then(|data| {
+                data.service
+                    .as_ref()
+            })
+            .and_then(|service| service.cached)
+            .or_else(|| {
+                self.behavior_hints
+                    .as_ref()
+                    .and_then(|hints| hints.cached)
+            })
+    }
+
     pub fn info_hash(&self) -> Option<&str> {
         self.info_hash
             .as_deref()
@@ -1068,8 +1086,33 @@ pub fn client(base: &str) -> Result<RestClient, url::ParseError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MediaType, Meta, ReleaseInfo, parse_duration_lossy};
+    use super::{MediaType, Meta, ReleaseInfo, Stream, parse_duration_lossy};
     use std::time::Duration;
+
+    #[test]
+    fn cached_status_uses_behavior_hint_when_service_status_is_missing() {
+        for (payload, expected) in [
+            (
+                serde_json::json!({"behaviorHints": {"cached": true}}),
+                Some(true),
+            ),
+            (
+                serde_json::json!({"behaviorHints": {"cached": false}}),
+                Some(false),
+            ),
+            (
+                serde_json::json!({
+                    "behaviorHints": {"cached": true},
+                    "streamData": {"service": {"cached": false}}
+                }),
+                Some(false),
+            ),
+            (serde_json::json!({}), None),
+        ] {
+            let stream: Stream = serde_json::from_value(payload).unwrap();
+            assert_eq!(stream.cached_status(), expected);
+        }
+    }
 
     #[test]
     fn parses_standard_duration_strings() {

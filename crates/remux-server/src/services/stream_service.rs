@@ -619,7 +619,7 @@ impl StreamService {
                 .as_ref()
                 .and_then(|r| r.source);
             source.remux = Some(api::MediaSourceRemuxInfo {
-                provider_info: stream
+                provider_info: effective_stream
                     .stream_info
                     .as_ref()
                     .and_then(|si| serde_json::to_value(si).ok()),

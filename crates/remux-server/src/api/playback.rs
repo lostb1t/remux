@@ -604,7 +604,9 @@ async fn items_playbackinfo_inner(
             .drain(..)
             .zip(sidecar_subtitle_routes.drain(..))
             .collect();
-        paired.sort_by_cached_key(|(source, _)| std::cmp::Reverse(ranking.key(source)));
+        paired.sort_by_cached_key(|(source, _)| {
+            std::cmp::Reverse(ranking.sort_key(source))
+        });
         for (source, route) in paired {
             media_sources.push(source);
             sidecar_subtitle_routes.push(route);
