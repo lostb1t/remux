@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790233025648,
+  "lastUpdate": 1790235864363,
   "repoUrl": "https://github.com/lostb1t/remux",
   "entries": {
     "Benchmark": [
@@ -6255,6 +6255,142 @@ window.BENCHMARK_DATA = {
             "name": "nextup_date_cutoff/30days",
             "value": 65896667,
             "range": "± 6029867",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "semantic-release-bot",
+            "username": "semantic-release-bot",
+            "email": "semantic-release-bot@martynus.net"
+          },
+          "committer": {
+            "name": "semantic-release-bot",
+            "username": "semantic-release-bot",
+            "email": "semantic-release-bot@martynus.net"
+          },
+          "id": "02c73c79e22798843dfbd4cc2c8a7bde630e66a3",
+          "message": "chore(release): 0.34.0 [skip ci]\n\n# [0.34.0](https://github.com/lostb1t/remux/compare/v0.33.0...v0.34.0) (2026-09-24)\n\n### Bug Fixes\n\n* correct local search ordering and pagination ([c6db3b5](https://github.com/lostb1t/remux/commit/c6db3b567de3b5c1ac74730ec13e4c63e239baed))\n* create collections via Jellyfin API ([#519](https://github.com/lostb1t/remux/issues/519)) ([5c907e8](https://github.com/lostb1t/remux/commit/5c907e8c3edacae188fa114563d75f060f000321))\n* **dashboard:** clarify direct play proxy bypass ([8983020](https://github.com/lostb1t/remux/commit/89830204707178a8b19a434f3baacbca988b8078))\n* exclude episodes from search (fixes [#517](https://github.com/lostb1t/remux/issues/517)) ([d4bd171](https://github.com/lostb1t/remux/commit/d4bd171584d72da8fa4f04e3deae61ad271f3e11))\n* **ffmpeg:** avoid reconnecting at EOF ([a19af1b](https://github.com/lostb1t/remux/commit/a19af1b9ac7743c87db1bece361b966988b13c10))\n* honor device profile conditions (fixes [#521](https://github.com/lostb1t/remux/issues/521)) ([#524](https://github.com/lostb1t/remux/issues/524)) ([ab396ec](https://github.com/lostb1t/remux/commit/ab396ec12215d6b1ce821fdb22910a907a471f50))\n* keep HDR transcodes GPU-resident when burning in image subtitles on QSV ([#522](https://github.com/lostb1t/remux/issues/522)) ([a917aca](https://github.com/lostb1t/remux/commit/a917aca2cd1509c505168b620b9396c27f4b3723))\n* name season 0 Specials and respect a locked season name on refresh (fixes [#499](https://github.com/lostb1t/remux/issues/499)) ([0e6f212](https://github.com/lostb1t/remux/commit/0e6f2120f8d157c13ac9077f6ba41fd361464acf))\n* never submit filename-guessed probe data to remuxdb ([351344a](https://github.com/lostb1t/remux/commit/351344a2318fc4cdef38257b76ac6ac5a5347046))\n* preserve movie titles with spelled-out parts ([5f89c55](https://github.com/lostb1t/remux/commit/5f89c55e8d12c9247996bcb03eca3476ed9d445b))\n* preserve playback position after session eviction ([#532](https://github.com/lostb1t/remux/issues/532)) ([da012b7](https://github.com/lostb1t/remux/commit/da012b7c9285117f13493a0cfb8c0b2bc344993e))\n* **shows:** speed up upcoming episode queries ([eb1790a](https://github.com/lostb1t/remux/commit/eb1790a460c1ad4052da4ffa2d76bea84ac0d1b2))\n* stop stamping /shows/upcoming test fixtures at midnight ([63416d7](https://github.com/lostb1t/remux/commit/63416d7a758a9ed1477d7da215627266a1a038a3))\n* stop the default startup library refresh from racing the items benchmark's fixture seeding ([c31516e](https://github.com/lostb1t/remux/commit/c31516ed7d26dfbbbd68c3b4b428b7c49d65261d))\n\n### Features\n\n* **collections:** add provider background colors ([#527](https://github.com/lostb1t/remux/issues/527)) ([4c53a85](https://github.com/lostb1t/remux/commit/4c53a8579a5e0c02a5905b93454b84022a22d14c))\n* **dashboard:** add stremio addon configure links ([df8e753](https://github.com/lostb1t/remux/commit/df8e753cb4779dec3bfae75b9ec4d62b2204e43f))\n* **dashboard:** unify streaming settings save ([c49d508](https://github.com/lostb1t/remux/commit/c49d5089dad96ee4a89de150db0d7e394a2fedc8))\n* **dashboard:** use icon for addon configuration ([193e1a0](https://github.com/lostb1t/remux/commit/193e1a08578263a747f51634ea997323fea8898b))\n* **images:** refine collection artwork layouts ([b06be42](https://github.com/lostb1t/remux/commit/b06be42d422fa4ba1b1c5e02d7f55179cd6a42d7))\n* improve media source sorting across quality, HDR, bitrate, and cache status ([#544](https://github.com/lostb1t/remux/issues/544)) ([1e56cf2](https://github.com/lostb1t/remux/commit/1e56cf253a1a4c94274b5016645e758458c1f171))\n* make IPTV channels and EPG programs searchable, always locally (fixes [#474](https://github.com/lostb1t/remux/issues/474)) ([838234f](https://github.com/lostb1t/remux/commit/838234f6fa57e5fe1e3a92b7d4b9567696b7b546))\n* sort stream versions by device capability, quality, and release source ([#515](https://github.com/lostb1t/remux/issues/515)) ([6f56d92](https://github.com/lostb1t/remux/commit/6f56d9221d90bec5ac93b58b4e996b1b016e6c3b))",
+          "timestamp": "2026-09-24T07:20:45Z",
+          "url": "https://github.com/lostb1t/remux/commit/02c73c79e22798843dfbd4cc2c8a7bde630e66a3"
+        },
+        "date": 1790235861681,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "items_latest/limit=20&recursive=false",
+            "value": 249212880,
+            "range": "± 27407502",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&recursive=false",
+            "value": 260632016,
+            "range": "± 21620655",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=500&recursive=false",
+            "value": 267003198,
+            "range": "± 24674884",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&include_item_types=Movie&recursive=false",
+            "value": 117294358,
+            "range": "± 12381837",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&include_item_types=Series&recursive=false",
+            "value": 55955356,
+            "range": "± 4891762",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=20&recursive=false",
+            "value": 127349941,
+            "range": "± 11548437",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&recursive=false",
+            "value": 132575545,
+            "range": "± 6579157",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=500&recursive=false",
+            "value": 157814952,
+            "range": "± 14810313",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&include_item_types=Movie&recursive=false",
+            "value": 127143768,
+            "range": "± 20980898",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&include_item_types=Series&recursive=false",
+            "value": 154805742,
+            "range": "± 10915454",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&filters=IsPlayed&recursive=false",
+            "value": 85169180,
+            "range": "± 7395882",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&sort_by=DateCreated&recursive=false",
+            "value": 290467185,
+            "range": "± 21644055",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=50&recursive=false",
+            "value": 300240904,
+            "range": "± 53746149",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=200&recursive=false",
+            "value": 295807677,
+            "range": "± 16199355",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=500&recursive=false",
+            "value": 302697457,
+            "range": "± 25266842",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/limit=500&enable_resumable=true&recursive=false",
+            "value": 285332066,
+            "range": "± 15673473",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/limit=500&enable_resumable=false&recursive=false",
+            "value": 299515523,
+            "range": "± 31791676",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/epoch",
+            "value": 285780335,
+            "range": "± 15880568",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/30days",
+            "value": 68900009,
+            "range": "± 5715024",
             "unit": "ns/iter"
           }
         ]
