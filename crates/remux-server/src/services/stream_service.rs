@@ -696,12 +696,16 @@ impl StreamService {
         };
         // Infuse's direct stream URL has MediaSourceId but no PlaySessionId or
         // DeviceId. Keep a brief item-scoped mapping for that request too.
-        let recent_ids = [
+        // Deduped: for a specific-stream request, source_id and the probed
+        // candidate's own id are frequently identical.
+        let recent_ids: std::collections::HashSet<Uuid> = [
             source_id,
             first
                 .stream
                 .id,
-        ];
+        ]
+        .into_iter()
+        .collect();
         if first
             .effective_stream
             .id
@@ -712,7 +716,11 @@ impl StreamService {
             for recent_id in recent_ids {
                 self.ctx
                     .store
-                    .delete(Self::recent_probe_fallback_key(self.item_id, recent_id));
+                    .delete(Self::recent_probe_fallback_key(
+                        self.user_id,
+                        self.item_id,
+                        recent_id,
+                    ));
             }
             return;
         }
@@ -720,7 +728,11 @@ impl StreamService {
             self.ctx
                 .store
                 .save(
-                    Self::recent_probe_fallback_key(self.item_id, recent_id),
+                    Self::recent_probe_fallback_key(
+                        self.user_id,
+                        self.item_id,
+                        recent_id,
+                    ),
                     first
                         .effective_stream
                         .id,
@@ -751,18 +763,29 @@ impl StreamService {
     }
 
     /// Fallback for clients that omit PlaySessionId from the stream URL.
+    /// Scoped by user: the probe outcome it remembers depends on that user's
+    /// own stream_filter policy, so it must never answer another user's
+    /// session-less request for the same item/source.
     pub fn recent_probe_fallback_for(
         ctx: &AppContext,
+        user_id: Option<Uuid>,
         item_id: Uuid,
         source_id: Uuid,
     ) -> Option<Uuid> {
         ctx.store
-            .get::<Uuid>(Self::recent_probe_fallback_key(item_id, source_id))
+            .get::<Uuid>(Self::recent_probe_fallback_key(user_id, item_id, source_id))
             .map(|id| *id)
     }
 
-    fn recent_probe_fallback_key(item_id: Uuid, source_id: Uuid) -> String {
-        format!("pstream:recent:{item_id}:{source_id}")
+    fn recent_probe_fallback_key(
+        user_id: Option<Uuid>,
+        item_id: Uuid,
+        source_id: Uuid,
+    ) -> String {
+        let user_id = user_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "anon".to_string());
+        format!("pstream:recent:{user_id}:{item_id}:{source_id}")
     }
 
     fn probe_fallback_key(play_session_id: &str, source_id: Uuid) -> String {
@@ -1318,13 +1341,15 @@ mod tests {
         );
         // A client can keep requesting the original stream ID for direct play
         // even though PlaybackInfo returned the fallback stream ID.
+        let user_a = Uuid::new_v4();
+        let user_b = Uuid::new_v4();
         let mut specific_service = StreamService::new(StreamServiceConfig {
             ctx: ctx.clone(),
             item_id: owner.id,
             requested_id: Some(dead.id),
             show_ungrouped: true,
             stream_filter: None,
-            user_id: None,
+            user_id: Some(user_a),
         });
         specific_service.streams = vec![dead.clone(), alive.clone()];
         assert!(
@@ -1338,18 +1363,43 @@ mod tests {
             Some(alive.id)
         );
         assert_eq!(
-            StreamService::recent_probe_fallback_for(ctx, owner.id, dead.id),
+            StreamService::recent_probe_fallback_for(
+                ctx,
+                Some(user_a),
+                owner.id,
+                dead.id
+            ),
             Some(alive.id),
             "Infuse's sessionless direct request must resolve to the probed stream"
         );
         assert_eq!(
-            StreamService::recent_probe_fallback_for(ctx, alive.id, dead.id),
+            StreamService::recent_probe_fallback_for(
+                ctx,
+                Some(user_a),
+                alive.id,
+                dead.id
+            ),
             None,
             "recent fallback must not leak to another item"
         );
+        assert_eq!(
+            StreamService::recent_probe_fallback_for(
+                ctx,
+                Some(user_b),
+                owner.id,
+                dead.id
+            ),
+            None,
+            "recent fallback must not leak to another user's session-less request"
+        );
         specific_service.save_probe_fallback("psid-recovered", &probed(&dead, true));
         assert_eq!(
-            StreamService::recent_probe_fallback_for(ctx, owner.id, dead.id),
+            StreamService::recent_probe_fallback_for(
+                ctx,
+                Some(user_a),
+                owner.id,
+                dead.id
+            ),
             None,
             "a successful probe must clear a stale fallback"
         );
