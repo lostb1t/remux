@@ -612,6 +612,7 @@ async fn items_playbackinfo_inner(
             .device
             .access_token
             .expose(),
+        &std::collections::HashMap::new(),
     );
 
     // Re-resolve defaults after external subtitles were injected so language
@@ -854,6 +855,28 @@ pub async fn items_file(
     Ok(response)
 }
 
+/// These routes have no session extractor — clients like Infuse hit them
+/// without a `PlaySessionId`/`DeviceId`, and must still work with no token at
+/// all. Resolve the caller's user_id best-effort from whatever `ApiKey`/
+/// `Token` is present (never rejecting the request) so per-user cache
+/// scoping (e.g. `recent_probe_fallback`) still works when a valid token
+/// happens to be there.
+async fn best_effort_user_id(
+    state: &AppState,
+    jfauth: &auth::JellyfinAuthHeader,
+) -> Option<Uuid> {
+    let token = jfauth
+        .token
+        .as_deref()?;
+    auth::resolve_user_id_from_token(
+        &state
+            .ctx
+            .db,
+        token,
+    )
+    .await
+}
+
 /// # Static
 ///
 /// If the `static_` query parameter is set to `true`, the response will be a static
@@ -862,16 +885,19 @@ pub async fn items_file(
 pub async fn audio_stream(
     headers: headers::HeaderMap,
     State(state): State<AppState>,
+    jfauth: auth::JellyfinAuthHeader,
     Path(id): Path<Uuid>,
     Query(q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
-    videos_stream_inner(headers, state, None, id, q).await
+    let user_id = best_effort_user_id(&state, &jfauth).await;
+    videos_stream_inner(headers, state, user_id, id, q).await
 }
 
 #[get("/audio/{id}/stream.{container}")]
 pub async fn audio_stream_by_container(
     headers: headers::HeaderMap,
     State(state): State<AppState>,
+    jfauth: auth::JellyfinAuthHeader,
     Path((id, container)): Path<(Uuid, String)>,
     Query(mut q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
@@ -880,23 +906,27 @@ pub async fn audio_stream_by_container(
     {
         q.container = Some(container);
     }
-    videos_stream_inner(headers, state, None, id, q).await
+    let user_id = best_effort_user_id(&state, &jfauth).await;
+    videos_stream_inner(headers, state, user_id, id, q).await
 }
 
 #[get("/videos/{id}/stream")]
 pub async fn videos_stream(
     headers: headers::HeaderMap,
     State(state): State<AppState>,
+    jfauth: auth::JellyfinAuthHeader,
     Path(id): Path<Uuid>,
     Query(q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
-    videos_stream_inner(headers, state, None, id, q).await
+    let user_id = best_effort_user_id(&state, &jfauth).await;
+    videos_stream_inner(headers, state, user_id, id, q).await
 }
 
 #[get("/videos/{id}/stream.{container}")]
 pub async fn videos_stream_by_container(
     headers: headers::HeaderMap,
     State(state): State<AppState>,
+    jfauth: auth::JellyfinAuthHeader,
     Path((id, container)): Path<(Uuid, String)>,
     Query(mut q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
@@ -905,7 +935,8 @@ pub async fn videos_stream_by_container(
     {
         q.container = Some(container);
     }
-    videos_stream_inner(headers, state, None, id, q).await
+    let user_id = best_effort_user_id(&state, &jfauth).await;
+    videos_stream_inner(headers, state, user_id, id, q).await
 }
 
 fn ext_from_descriptor(descriptor: &crate::stream::StreamDescriptor) -> String {
@@ -1616,13 +1647,22 @@ mod tests {
             .await
             .unwrap();
 
+        // The recent-fallback cache is scoped by user; save it under the same
+        // user the request below authenticates as, exactly like PlaybackInfo
+        // (which always has a real session) would.
+        let requester_id =
+            crate::db::auth::Device::get_by_access_token(&ctx.db, &token)
+                .await
+                .unwrap()
+                .unwrap()
+                .user_id;
         let service = StreamService::new(StreamServiceConfig {
             ctx: ctx.clone(),
             item_id: owner.id,
             requested_id: Some(rejected.id),
             show_ungrouped: true,
             stream_filter: None,
-            user_id: None,
+            user_id: Some(requester_id),
         });
         service.save_probe_fallback(
             "playbackinfo-session",
