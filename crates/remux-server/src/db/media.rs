@@ -3,6 +3,12 @@ use super::{FilterResult, ImageKind, MediaImage, MediaImages, QueryBuilderExt};
 pub const CHUNK_SIZE: usize = 250;
 const SQLITE_VAR_LIMIT: usize = 999;
 
+/// ORDER BY expression for `ItemSortBy::DateCreated`. Served by the
+/// `idx_media_created_at_sort` expression index (migration
+/// 202609240001); the two must stay textually identical or SQLite falls back
+/// to scanning and sorting the whole media table.
+pub(crate) const DATE_CREATED_ORDER_EXPR: &str = "datetime(created_at)";
+
 static DB_WRITE_SEMAPHORE: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(1));
 use crate::{
@@ -4751,7 +4757,7 @@ impl Media {
                             format!("title COLLATE NOCASE {}", dir)
                         }
                         api::ItemSortBy::DateCreated => {
-                            format!("datetime(created_at) {}", dir)
+                            format!("{DATE_CREATED_ORDER_EXPR} {}", dir)
                         }
                         api::ItemSortBy::PremiereDate => {
                             // Upcoming queries filter on released_at and have no
@@ -9979,6 +9985,104 @@ mod tests {
             external_ids: ext,
             ..Default::default()
         }
+    }
+
+    /// `/items/latest` with no ParentId/IncludeItemTypes sorts the whole media
+    /// table by DateCreated. Without an index on the exact ORDER BY expression
+    /// SQLite scans and sorts every row (all kinds) to return LIMIT rows, which
+    /// makes the endpoint scale with library size (~0.5 s at 1.7M rows).
+    /// The plan must walk `idx_media_created_at_sort` and skip the temp sort.
+    #[tokio::test]
+    async fn date_created_sort_uses_index_not_full_sort() {
+        let db = crate::db::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        crate::db::migrate(&db)
+            .await
+            .unwrap();
+        let sql = format!(
+            "EXPLAIN QUERY PLAN SELECT * FROM media WHERE 1=1 \
+             ORDER BY {DATE_CREATED_ORDER_EXPR} DESC LIMIT 16"
+        );
+        let plan = sqlx::query(&sql)
+            .fetch_all(&db)
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.get::<String, _>(3))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            plan.contains("idx_media_created_at_sort"),
+            "DateCreated sort must use idx_media_created_at_sort; plan: {plan}"
+        );
+        assert!(
+            !plan.contains("TEMP B-TREE"),
+            "DateCreated sort must not sort the whole media table; plan: {plan}"
+        );
+    }
+
+    /// DateCreated DESC through get_by_filter returns newest first across kinds,
+    /// honours LIMIT, and treats mixed fractional-second precision correctly.
+    /// Dates are in the future so they sort above the seeded default rows.
+    #[tokio::test]
+    async fn sort_by_date_created_desc_across_kinds() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let rows = [
+            (
+                MediaKind::Movie,
+                "Old Movie",
+                "tt2001",
+                "2099-01-01 10:00:00",
+            ),
+            (
+                MediaKind::Series,
+                "Mid Series",
+                "tt2002",
+                "2099-02-01 10:00:00.123",
+            ),
+            (
+                MediaKind::Movie,
+                "New Movie",
+                "tt2003",
+                "2099-03-01 10:00:00.000001",
+            ),
+        ];
+        for (kind, title, imdb, created) in rows {
+            let mut m = media_row(kind, title, imdb);
+            m.save(db)
+                .await
+                .unwrap();
+            sqlx::query("UPDATE media SET created_at = ? WHERE id = ?")
+                .bind(created)
+                .bind(m.id)
+                .execute(db)
+                .await
+                .unwrap();
+        }
+        let result = Media::get_by_filter(
+            db,
+            &MediaFilter {
+                kind: Some(vec![]),
+                sort_by: vec![api::ItemSortBy::DateCreated],
+                sort_order: vec![api::SortOrder::Descending],
+                limit: Some(2),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let titles: Vec<String> = result
+            .records
+            .into_iter()
+            .map(|m| m.title)
+            .collect();
+        assert_eq!(titles, vec!["New Movie", "Mid Series"]);
     }
 
     /// CriticRating sorts by rating_critic (descending).
