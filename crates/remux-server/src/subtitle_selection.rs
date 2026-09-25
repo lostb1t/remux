@@ -101,12 +101,10 @@ fn is_release_match(sub: &SubtitleInfo, source_filename: Option<&str>) -> bool {
 }
 
 /// Ranks candidates release-aware and by language preference, without
-/// deduping to one-per-language. Callers that need to skip a higher-ranked
-/// candidate for some other reason (e.g. it collides with an already-embedded
-/// subtitle) without losing the language entirely should walk this list
-/// themselves instead of calling `select_external_subtitles`, which commits
-/// to exactly one candidate per language up front.
-pub(crate) fn ranked_external_subtitles<'a>(
+/// deduping to one-per-language. `select_external_subtitles` reduces this to
+/// its public one-per-language contract; kept separate so tests can inspect
+/// full ranking order.
+fn ranked_external_subtitles<'a>(
     subs: &'a [SubtitleInfo],
     preferred_languages: &[String],
     source_filename: Option<&str>,

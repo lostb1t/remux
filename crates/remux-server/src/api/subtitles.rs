@@ -547,9 +547,8 @@ async fn subtitles_stream_inner(
                         );
                         probe
                     });
-                let mut seen_langs = std::collections::HashSet::new();
                 let scored: Vec<_> =
-                    crate::subtitle_selection::ranked_external_subtitles(
+                    crate::subtitle_selection::select_external_subtitles(
                         &subs,
                         &sub_langs,
                         source
@@ -562,14 +561,7 @@ async fn subtitles_stream_inner(
                     )
                     .into_iter()
                     .filter(|sub| {
-                        let lang = crate::subtitle_selection::normalized_language(
-                            sub.lang
-                                .as_deref(),
-                        );
-                        if seen_langs.contains(&lang) {
-                            return false;
-                        }
-                        let collides = resolved_probe
+                        !resolved_probe
                             .as_ref()
                             .is_some_and(|probe| {
                                 has_supported_embedded_subtitle(
@@ -577,12 +569,7 @@ async fn subtitles_stream_inner(
                                     sub,
                                     device_profile.as_ref(),
                                 )
-                            });
-                        if collides {
-                            return false;
-                        }
-                        seen_langs.insert(lang);
-                        true
+                            })
                     })
                     .collect();
                 if let Some(sub) = scored.get(i as usize) {
@@ -865,33 +852,18 @@ pub(crate) fn append_external_subtitles(
             })
             .and_then(|info| info.get("filename"))
             .and_then(serde_json::Value::as_str);
-        // Walk the full ranked (non-deduped) candidate list instead of
-        // select_external_subtitles: if the top-ranked candidate for a
-        // language collides with an already-embedded subtitle, try the next
-        // candidate for that language rather than losing the language
-        // entirely (select_external_subtitles commits to one candidate per
-        // language before collisions are known).
-        let mut seen_langs = std::collections::HashSet::new();
-        let scored: Vec<_> = crate::subtitle_selection::ranked_external_subtitles(
+        // A language already covered by a supported embedded track is
+        // dropped entirely, not replaced with a different (e.g. forced/HI)
+        // external variant of the same language — offering a second track
+        // for a language the device can already play embedded is exactly
+        // the redundant duplicate this filter exists to avoid.
+        let scored: Vec<_> = crate::subtitle_selection::select_external_subtitles(
             &subs,
             sub_langs,
             source_filename,
         )
         .into_iter()
-        .filter(|sub| {
-            let lang = crate::subtitle_selection::normalized_language(
-                sub.lang
-                    .as_deref(),
-            );
-            if seen_langs.contains(&lang) {
-                return false;
-            }
-            if has_supported_embedded_subtitle(source, sub, device_profile) {
-                return false;
-            }
-            seen_langs.insert(lang);
-            true
-        })
+        .filter(|sub| !has_supported_embedded_subtitle(source, sub, device_profile))
         .collect();
         let wants_default = !sub_langs.is_empty()
             && source
@@ -968,19 +940,9 @@ fn has_supported_embedded_subtitle(
             {
                 return false;
             }
-            // Strict-parse only, no raw-string fallback: this must agree with
-            // playback/decision.rs's `profile_embeds`, the actual delivery-method
-            // resolver, or a codec that fails to parse could get judged
-            // "already embedded" here while decision.rs delivers it External —
-            // silently dropping the subtitle for the client.
-            let Some(parsed_codec) = stream
+            let Some(codec) = stream
                 .codec
                 .as_deref()
-                .and_then(|codec| {
-                    codec
-                        .parse::<api::SubtitleCodec>()
-                        .ok()
-                })
             else {
                 return false;
             };
@@ -992,12 +954,11 @@ fn has_supported_embedded_subtitle(
                         && supported
                             .format
                             .as_deref()
-                            .and_then(|format| {
-                                format
-                                    .parse::<api::SubtitleCodec>()
-                                    .ok()
+                            .is_some_and(|format| {
+                                crate::device_profile::subtitle_codec_matches_profile(
+                                    codec, format,
+                                )
                             })
-                            .is_some_and(|format| format == parsed_codec)
                 })
         })
 }
