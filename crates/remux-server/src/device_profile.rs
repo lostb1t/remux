@@ -1244,36 +1244,49 @@ fn confident_4k_capable(profile: &DeviceProfile) -> bool {
         }
         let is_hevc = codec_list_contains(&cp.codec, &["hevc", "h265"]);
         let is_av1 = codec_list_contains(&cp.codec, &["av1"]);
-        for cond in &cp.conditions {
-            let Some(property) = cond
-                .property
-                .as_ref()
-            else {
-                continue;
-            };
-            let Some(value) = cond
-                .value
-                .as_deref()
-                .and_then(|v| {
-                    v.parse::<i64>()
-                        .ok()
-                })
-            else {
-                continue;
-            };
-            let confident = match property {
-                ProfileConditionProperty::Width => value >= 3840,
-                ProfileConditionProperty::Height => value >= 2160,
-                ProfileConditionProperty::VideoLevel
-                | ProfileConditionProperty::Level => {
-                    (is_hevc && value >= HEVC_4K_LEVEL)
-                        || (is_av1 && value >= AV1_4K_LEVEL)
+        if !is_hevc && !is_av1 {
+            continue;
+        }
+        // A resolution/level *ceiling* is a hard requirement here (matches
+        // check_direct_play's own reading of these conditions) — only a cap
+        // this low is real evidence against 4K.
+        let has_low_ceiling = cp
+            .conditions
+            .iter()
+            .any(|cond| {
+                let Some(property) = cond
+                    .property
+                    .as_ref()
+                else {
+                    return false;
+                };
+                let Some(value) = cond
+                    .value
+                    .as_deref()
+                    .and_then(|v| {
+                        v.parse::<i64>()
+                            .ok()
+                    })
+                else {
+                    return false;
+                };
+                match property {
+                    ProfileConditionProperty::Width => value < 3840,
+                    ProfileConditionProperty::Height => value < 2160,
+                    ProfileConditionProperty::VideoLevel
+                    | ProfileConditionProperty::Level => {
+                        (is_hevc && value < HEVC_4K_LEVEL)
+                            || (is_av1 && value < AV1_4K_LEVEL)
+                    }
+                    _ => false,
                 }
-                _ => false,
-            };
-            if confident {
-                return true;
-            }
+            });
+        // The codec is accepted at all, and nothing in its profile caps
+        // resolution/level below 4K — whether that cap is explicitly high
+        // (declared support) or simply absent (no restriction stated), both
+        // mean this device isn't known to reject a 4K stream.
+        if !has_low_ceiling {
+            return true;
         }
     }
     false
@@ -1503,9 +1516,9 @@ impl MediaSourceCapabilityExt for MediaSourceInfo {
 mod tests {
     use super::{
         CodecProfileExt, DeviceProfileExt, MediaSourceCapabilityExt, MediaSourceRank,
-        MediaSourceSortKey, SourceRankingContext, failed_condition_reason,
-        playback_decision_label, primary_video_stream, subtitle_burn_reason,
-        transcode_cost_tier,
+        MediaSourceSortKey, SourceRankingContext, confident_4k_capable,
+        failed_condition_reason, playback_decision_label, primary_video_stream,
+        subtitle_burn_reason, transcode_cost_tier,
     };
     use remux_sdks::remux::{
         AudioCodec, CodecProfile, CodecProfileType, DeviceProfile, DirectPlayProfile,
@@ -1530,6 +1543,85 @@ mod tests {
             profile.subtitle_delivery_method("hdmv_pgs_subtitle"),
             Some(SubtitleDeliveryMethod::External)
         );
+    }
+
+    /// A real client (e.g. Jellyfin Web's generated profile) commonly accepts
+    /// HEVC/AV1 without stating any Level/Width/Height ceiling at all — no
+    /// hardware limit to declare, not a reason to assume it can't do 4K.
+    #[test]
+    fn confident_4k_capable_true_when_hevc_has_no_resolution_ceiling() {
+        let profile = DeviceProfile {
+            codec_profiles: vec![CodecProfile {
+                type_: Some(CodecProfileType::Video),
+                codec: Some(vec!["hevc".to_string()]),
+                conditions: vec![ProfileCondition {
+                    condition: Some(ProfileConditionType::EqualsAny),
+                    property: Some(ProfileConditionProperty::VideoProfile),
+                    value: Some("main|main 10".to_string()),
+                    is_required: Some(false),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(confident_4k_capable(&profile));
+    }
+
+    #[test]
+    fn confident_4k_capable_true_when_hevc_level_meets_threshold() {
+        let profile = DeviceProfile {
+            codec_profiles: vec![CodecProfile {
+                type_: Some(CodecProfileType::Video),
+                codec: Some(vec!["hevc".to_string()]),
+                conditions: vec![ProfileCondition {
+                    condition: Some(ProfileConditionType::LessThanEqual),
+                    property: Some(ProfileConditionProperty::VideoLevel),
+                    value: Some("153".to_string()),
+                    is_required: Some(true),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(confident_4k_capable(&profile));
+    }
+
+    #[test]
+    fn confident_4k_capable_false_when_hevc_level_below_threshold() {
+        let profile = DeviceProfile {
+            codec_profiles: vec![CodecProfile {
+                type_: Some(CodecProfileType::Video),
+                codec: Some(vec!["hevc".to_string()]),
+                conditions: vec![ProfileCondition {
+                    condition: Some(ProfileConditionType::LessThanEqual),
+                    property: Some(ProfileConditionProperty::VideoLevel),
+                    value: Some("93".to_string()), // HEVC Level 3.1 — well below 4K
+                    is_required: Some(true),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(!confident_4k_capable(&profile));
+    }
+
+    #[test]
+    fn confident_4k_capable_false_with_no_hevc_or_av1_codec_profile() {
+        let profile = DeviceProfile {
+            codec_profiles: vec![CodecProfile {
+                type_: Some(CodecProfileType::Video),
+                codec: Some(vec!["h264".to_string()]),
+                conditions: vec![ProfileCondition {
+                    condition: Some(ProfileConditionType::LessThanEqual),
+                    property: Some(ProfileConditionProperty::VideoLevel),
+                    value: Some("999".to_string()),
+                    is_required: Some(false),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(!confident_4k_capable(&profile));
     }
 
     #[test]
