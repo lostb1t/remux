@@ -373,7 +373,7 @@ impl From<db::Media> for api::MediaSourceInfo {
             provider_info: source
                 .stream_info
                 .as_ref()
-                .and_then(|si| serde_json::to_value(si).ok()),
+                .and_then(|si| si.to_public_json()),
             source: probe_source,
         });
 

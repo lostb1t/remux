@@ -336,6 +336,11 @@ impl StreamDescriptor {
 /// fields they have; the rest are `None` / empty.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct StreamInfo {
+    /// `#[serde(default)]` so deserializing a redacted `remux.provider_info`
+    /// (see `to_public_json`, which strips this key before it reaches the
+    /// API) doesn't fail — `device_profile.rs`'s `source_stream_info` round-trips
+    /// that JSON back into a `StreamInfo` just to read `filename`.
+    #[serde(default)]
     pub descriptor: StreamDescriptor,
     /// Filename from the provider (e.g. "Movie.2021.1080p.BluRay.mkv").
     /// Used for resolution matching during probe fallback.
@@ -400,6 +405,21 @@ pub struct StreamInfo {
 impl StreamInfo {
     pub fn is_p2p(&self) -> bool {
         matches!(self.descriptor, StreamDescriptor::Torrent { .. })
+    }
+
+    /// Redacted view for `remux.provider_info` in API responses. `descriptor`
+    /// carries provider credentials (debrid keys in the URL, IPTV
+    /// username/password, upstream request headers) that must never reach a
+    /// non-admin client — no client reads it, the only consumer is
+    /// `device_profile.rs` reading `filename` back out, which stays. Internal
+    /// persistence (`db::Media.stream_info`) uses `StreamInfo`'s own
+    /// `Serialize` impl directly and keeps `descriptor` intact.
+    pub fn to_public_json(&self) -> Option<serde_json::Value> {
+        let mut value = serde_json::to_value(self).ok()?;
+        if let Some(obj) = value.as_object_mut() {
+            obj.remove("descriptor");
+        }
+        Some(value)
     }
 
     /// Torrent identity used for RemuxDB lookup and submission.
