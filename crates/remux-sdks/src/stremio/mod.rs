@@ -309,7 +309,13 @@ pub struct MetaResponse {
     pub meta: Meta,
 }
 
-/// TODO: Add filename for better matching
+// TODO: The Stremio subtitles protocol accepts a `filename` extra prop for
+// better addon-side matching, but this is still unimplemented — subtitle
+// fetches happen once per item (`stremio_subtitles(media: &db::Media)`), and
+// a single item can have multiple sources with different filenames, so there
+// isn't yet a single filename to send here. Client-side is_release_match
+// filtering (subtitle_selection.rs) works around this by ranking whatever
+// the addon returns, not by asking it for release-specific results.
 #[derive(Debug, Clone)]
 pub struct SubtitlesEndpoint {
     pub media_type: MediaType,
@@ -345,6 +351,13 @@ pub struct Subtitle {
     pub url: String,
     pub sub_encoding: Option<String>,
     pub lang: Option<String>,
+    pub subtitle_file_name: Option<String>,
+    pub movie_release_name: Option<String>,
+    pub title: Option<String>,
+    #[serde(rename = "from_trusted")]
+    pub from_trusted: Option<bool>,
+    #[serde(rename = "ai_translated")]
+    pub ai_translated: Option<bool>,
 }
 
 #[skip_serializing_none]

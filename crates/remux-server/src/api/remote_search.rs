@@ -268,9 +268,7 @@ pub async fn search_remote_subtitles(
         .addons
         .fetch_subtitles(
             &mut media,
-            &state
-                .ctx
-                .db,
+            &state.ctx,
             false,
             Some(
                 session

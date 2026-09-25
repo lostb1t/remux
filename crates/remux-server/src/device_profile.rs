@@ -40,6 +40,35 @@ pub(crate) fn subtitle_codec_matches_profile(
     }
 }
 
+/// Whether `device_profile` embeds `codec` (an `Embed` entry for this exact
+/// codec, strict `SubtitleCodec` parse on both sides — no raw-string
+/// fallback). This is `apply_subtitle_delivery`'s actual embed decision,
+/// pulled out so other code that needs to predict it (e.g. deciding whether
+/// an unsupported-embedded subtitle can be dropped in favor of a matching
+/// external one) can't drift from what playback will really do.
+pub(crate) fn profile_embeds_subtitle_codec(
+    device_profile: Option<&DeviceProfile>,
+    codec: &SubtitleCodec,
+) -> bool {
+    device_profile
+        .map(|dp| {
+            dp.subtitle_profiles
+                .iter()
+                .any(|p| {
+                    p.method == Some(SubtitleDeliveryMethod::Embed)
+                        && p.format
+                            .as_deref()
+                            .and_then(|f| {
+                                f.parse::<SubtitleCodec>()
+                                    .ok()
+                            })
+                            .as_ref()
+                            == Some(codec)
+                })
+        })
+        .unwrap_or(false)
+}
+
 impl DeviceProfileExt for DeviceProfile {
     fn video_transcoding_profile(&self) -> Option<&TranscodingProfile> {
         let is_video =
@@ -871,15 +900,19 @@ pub struct MediaSourceSortKey {
     hdr_variant: u8,
 }
 
-/// All request-independent inputs used to rank sources. Bitrate limits are
-/// intentionally absent: they are live playback policy, not a durable device
-/// capability and therefore must never affect source ordering.
+/// All inputs used to rank sources for this request. `max_bitrate` is the
+/// same effective cap (request `MaxStreamingBitrate` combined with the
+/// device profile's own) the real transcode decision uses — a source that
+/// cap forces into a re-encode needs to rank the same as any other
+/// transcode-needing source, or the sort order disagrees with what playback
+/// is actually about to do.
 #[derive(Debug, Clone, Copy)]
 pub struct SourceRankingContext<'a> {
     pub mode: SortMediaSourcesMode,
     pub device_profile: Option<&'a DeviceProfile>,
     pub subtitle_mode: EmbeddedSubtitleHandling,
     pub explicit_subtitle_index: Option<i64>,
+    pub max_bitrate: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -916,7 +949,7 @@ impl SourceRankingContext<'_> {
             self.device_profile,
             self.subtitle_mode,
             self.explicit_subtitle_index,
-            None,
+            self.max_bitrate,
         );
         let rank = source.capability_rank(self.device_profile, &reasons);
         SourceAssessment { reasons, rank }
@@ -1215,36 +1248,49 @@ fn confident_4k_capable(profile: &DeviceProfile) -> bool {
         }
         let is_hevc = codec_list_contains(&cp.codec, &["hevc", "h265"]);
         let is_av1 = codec_list_contains(&cp.codec, &["av1"]);
-        for cond in &cp.conditions {
-            let Some(property) = cond
-                .property
-                .as_ref()
-            else {
-                continue;
-            };
-            let Some(value) = cond
-                .value
-                .as_deref()
-                .and_then(|v| {
-                    v.parse::<i64>()
-                        .ok()
-                })
-            else {
-                continue;
-            };
-            let confident = match property {
-                ProfileConditionProperty::Width => value >= 3840,
-                ProfileConditionProperty::Height => value >= 2160,
-                ProfileConditionProperty::VideoLevel
-                | ProfileConditionProperty::Level => {
-                    (is_hevc && value >= HEVC_4K_LEVEL)
-                        || (is_av1 && value >= AV1_4K_LEVEL)
+        if !is_hevc && !is_av1 {
+            continue;
+        }
+        // A resolution/level *ceiling* is a hard requirement here (matches
+        // check_direct_play's own reading of these conditions) — only a cap
+        // this low is real evidence against 4K.
+        let has_low_ceiling = cp
+            .conditions
+            .iter()
+            .any(|cond| {
+                let Some(property) = cond
+                    .property
+                    .as_ref()
+                else {
+                    return false;
+                };
+                let Some(value) = cond
+                    .value
+                    .as_deref()
+                    .and_then(|v| {
+                        v.parse::<i64>()
+                            .ok()
+                    })
+                else {
+                    return false;
+                };
+                match property {
+                    ProfileConditionProperty::Width => value < 3840,
+                    ProfileConditionProperty::Height => value < 2160,
+                    ProfileConditionProperty::VideoLevel
+                    | ProfileConditionProperty::Level => {
+                        (is_hevc && value < HEVC_4K_LEVEL)
+                            || (is_av1 && value < AV1_4K_LEVEL)
+                    }
+                    _ => false,
                 }
-                _ => false,
-            };
-            if confident {
-                return true;
-            }
+            });
+        // The codec is accepted at all, and nothing in its profile caps
+        // resolution/level below 4K — whether that cap is explicitly high
+        // (declared support) or simply absent (no restriction stated), both
+        // mean this device isn't known to reject a 4K stream.
+        if !has_low_ceiling {
+            return true;
         }
     }
     false
@@ -1474,9 +1520,9 @@ impl MediaSourceCapabilityExt for MediaSourceInfo {
 mod tests {
     use super::{
         CodecProfileExt, DeviceProfileExt, MediaSourceCapabilityExt, MediaSourceRank,
-        MediaSourceSortKey, SourceRankingContext, failed_condition_reason,
-        playback_decision_label, primary_video_stream, subtitle_burn_reason,
-        transcode_cost_tier,
+        MediaSourceSortKey, SourceRankingContext, confident_4k_capable,
+        failed_condition_reason, playback_decision_label, primary_video_stream,
+        subtitle_burn_reason, transcode_cost_tier,
     };
     use remux_sdks::remux::{
         AudioCodec, CodecProfile, CodecProfileType, DeviceProfile, DirectPlayProfile,
@@ -1501,6 +1547,85 @@ mod tests {
             profile.subtitle_delivery_method("hdmv_pgs_subtitle"),
             Some(SubtitleDeliveryMethod::External)
         );
+    }
+
+    /// A real client (e.g. Jellyfin Web's generated profile) commonly accepts
+    /// HEVC/AV1 without stating any Level/Width/Height ceiling at all — no
+    /// hardware limit to declare, not a reason to assume it can't do 4K.
+    #[test]
+    fn confident_4k_capable_true_when_hevc_has_no_resolution_ceiling() {
+        let profile = DeviceProfile {
+            codec_profiles: vec![CodecProfile {
+                type_: Some(CodecProfileType::Video),
+                codec: Some(vec!["hevc".to_string()]),
+                conditions: vec![ProfileCondition {
+                    condition: Some(ProfileConditionType::EqualsAny),
+                    property: Some(ProfileConditionProperty::VideoProfile),
+                    value: Some("main|main 10".to_string()),
+                    is_required: Some(false),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(confident_4k_capable(&profile));
+    }
+
+    #[test]
+    fn confident_4k_capable_true_when_hevc_level_meets_threshold() {
+        let profile = DeviceProfile {
+            codec_profiles: vec![CodecProfile {
+                type_: Some(CodecProfileType::Video),
+                codec: Some(vec!["hevc".to_string()]),
+                conditions: vec![ProfileCondition {
+                    condition: Some(ProfileConditionType::LessThanEqual),
+                    property: Some(ProfileConditionProperty::VideoLevel),
+                    value: Some("153".to_string()),
+                    is_required: Some(true),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(confident_4k_capable(&profile));
+    }
+
+    #[test]
+    fn confident_4k_capable_false_when_hevc_level_below_threshold() {
+        let profile = DeviceProfile {
+            codec_profiles: vec![CodecProfile {
+                type_: Some(CodecProfileType::Video),
+                codec: Some(vec!["hevc".to_string()]),
+                conditions: vec![ProfileCondition {
+                    condition: Some(ProfileConditionType::LessThanEqual),
+                    property: Some(ProfileConditionProperty::VideoLevel),
+                    value: Some("93".to_string()), // HEVC Level 3.1 — well below 4K
+                    is_required: Some(true),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(!confident_4k_capable(&profile));
+    }
+
+    #[test]
+    fn confident_4k_capable_false_with_no_hevc_or_av1_codec_profile() {
+        let profile = DeviceProfile {
+            codec_profiles: vec![CodecProfile {
+                type_: Some(CodecProfileType::Video),
+                codec: Some(vec!["h264".to_string()]),
+                conditions: vec![ProfileCondition {
+                    condition: Some(ProfileConditionType::LessThanEqual),
+                    property: Some(ProfileConditionProperty::VideoLevel),
+                    value: Some("999".to_string()),
+                    is_required: Some(false),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(!confident_4k_capable(&profile));
     }
 
     #[test]
@@ -2784,8 +2909,14 @@ mod tests {
         );
     }
 
+    /// A source the effective bitrate cap forces into a re-encode must rank
+    /// (and label) the same as any other transcode-needing source — the sort
+    /// order has to agree with what playback is actually about to do.
+    /// `SourceRankingContext.max_bitrate` is the caller's job to combine
+    /// (request cap + profile cap, same as the real transcode decision);
+    /// this test passes the profile's own limit directly, as a caller would.
     #[test]
-    fn ranking_context_ignores_profile_bitrate_limits() {
+    fn ranking_context_honors_the_bitrate_cap_it_is_given() {
         let profile = DeviceProfile {
             max_streaming_bitrate: Some(1),
             direct_play_profiles: vec![DirectPlayProfile {
@@ -2808,6 +2939,46 @@ mod tests {
             device_profile: Some(&profile),
             subtitle_mode: EmbeddedSubtitleHandling::default(),
             explicit_subtitle_index: None,
+            max_bitrate: profile.max_streaming_bitrate,
+        }
+        .assess(&source);
+
+        assert!(
+            assessment
+                .reasons
+                .contains(&TranscodeReason::ContainerBitrateExceedsLimit),
+            "a source far over the effective bitrate cap must be flagged during ranking, \
+             not just when the real transcode decision runs"
+        );
+        assert_eq!(assessment.playback_label(), "Transcode");
+    }
+
+    /// Without an explicit cap for this ranking pass, a huge bitrate alone
+    /// is not a transcode reason — nothing to compare it against.
+    #[test]
+    fn ranking_context_without_a_bitrate_cap_does_not_flag_high_bitrate() {
+        let profile = DeviceProfile {
+            direct_play_profiles: vec![DirectPlayProfile {
+                container: None,
+                video_codec: None,
+                audio_codec: None,
+                type_: Some(DlnaProfileType::Video),
+            }],
+            ..Default::default()
+        };
+        let mut source = source_with(
+            video_stream(1920, Some(VideoRangeType::Sdr)),
+            audio_stream("aac", 2),
+            true,
+        );
+        source.bitrate = Some(50_000_000);
+
+        let assessment = super::SourceRankingContext {
+            mode: SortMediaSourcesMode::Best,
+            device_profile: Some(&profile),
+            subtitle_mode: EmbeddedSubtitleHandling::default(),
+            explicit_subtitle_index: None,
+            max_bitrate: None,
         }
         .assess(&source);
 
@@ -3229,6 +3400,7 @@ mod tests {
             device_profile: Some(&profile),
             subtitle_mode: EmbeddedSubtitleHandling::default(),
             explicit_subtitle_index: None,
+            max_bitrate: None,
         };
         let mut ranked: Vec<_> = fixtures
             .into_iter()
