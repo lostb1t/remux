@@ -5004,6 +5004,15 @@ impl Media {
                                     .to_string()
                             }
                         }
+                        api::ItemSortBy::Default => {
+                            // Manual collections keep their curated order in
+                            // media_relations.weight (`mr` is joined for them).
+                            if is_manual_collection {
+                                format!("mr.weight {}", dir)
+                            } else {
+                                format!("title COLLATE NOCASE {}", dir)
+                            }
+                        }
                         // Default fallback
                         _ => format!("title COLLATE NOCASE {}", dir),
                     };
@@ -10404,6 +10413,74 @@ mod tests {
         )
         .await;
         assert_eq!(titles, vec!["New Series", "Old Series"]);
+    }
+
+    /// `ItemSortBy::Default` on a manual collection follows the curated order
+    /// (media_relations.weight) instead of falling back to title order.
+    #[tokio::test]
+    async fn sort_by_default_follows_manual_collection_weight() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+
+        let mut collection = Media {
+            id: uuid::Uuid::new_v4(),
+            title: "Curated".to_string(),
+            kind: MediaKind::Collection,
+            collection_kind: Some(CollectionKind::Manual),
+            ..Default::default()
+        };
+        collection
+            .save(db)
+            .await
+            .unwrap();
+
+        let mut zebra = media_row(MediaKind::Movie, "Zebra", "tt7001");
+        zebra
+            .save(db)
+            .await
+            .unwrap();
+        let mut apple = media_row(MediaKind::Movie, "Apple", "tt7002");
+        apple
+            .save(db)
+            .await
+            .unwrap();
+        let mut mango = media_row(MediaKind::Movie, "Mango", "tt7003");
+        mango
+            .save(db)
+            .await
+            .unwrap();
+
+        // Curated order is deliberately not alphabetical: Zebra, Apple, Mango.
+        MediaRelation::add_collection_items(
+            db,
+            &collection.id,
+            &[zebra.id, apple.id, mango.id],
+        )
+        .await
+        .unwrap();
+
+        let result = Media::get_by_filter(
+            db,
+            &MediaFilter {
+                parent_id: Some(collection.id),
+                parent: Some(collection.clone()),
+                sort_by: vec![api::ItemSortBy::Default],
+                sort_order: vec![api::SortOrder::Ascending],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let titles: Vec<String> = result
+            .records
+            .into_iter()
+            .map(|m| m.title)
+            .collect();
+        assert_eq!(titles, vec!["Zebra", "Apple", "Mango"]);
     }
 
     /// The Albums view excludes Deezer singles/EPs but keeps albums (including
