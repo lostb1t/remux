@@ -3226,14 +3226,7 @@ pub async fn update_item(
     }
 
     if let Some(people) = &payload.people {
-        db::MediaRelation::delete_by_right_kinds(
-            &state
-                .ctx
-                .db,
-            id,
-            &[db::MediaKind::Person],
-        )
-        .await?;
+        let mut person_rels: Vec<db::MediaRelation> = Vec::new();
         if !people.is_empty() {
             // Resolve person IDs: prefer the Id supplied by the client (which the
             // client echoes back from our own response), then fall back to a name
@@ -3280,7 +3273,6 @@ pub async fn update_item(
                 };
 
             let mut person_medias: Vec<db::Media> = Vec::new();
-            let mut person_rels: Vec<db::MediaRelation> = Vec::new();
             for (i, p) in people
                 .iter()
                 .enumerate()
@@ -3350,16 +3342,19 @@ pub async fn update_item(
                 .inspect_err(|e| warn!(error = %e, "failed to upsert person media"))
                 .ok();
             }
-            db::MediaRelation::upsert(
-                &state
-                    .ctx
-                    .db,
-                &person_rels,
-            )
-            .await
-            .inspect_err(|e| warn!(error = %e, "failed to upsert person relations"))
-            .ok();
         }
+        // Delete + insert in one transaction: dropping this request (client
+        // disconnect/timeout) or a failed insert keeps the old People.
+        db::MediaRelation::replace_by_right_kinds(
+            &state
+                .ctx
+                .db,
+            id,
+            &[db::MediaKind::Person],
+            &person_rels,
+        )
+        .await
+        .context_bad_request("Failed to update people")?;
     }
 
     Ok(StatusCode::NO_CONTENT)
@@ -6472,5 +6467,227 @@ mod tests {
                 .map(|items| items.is_empty())
                 .unwrap_or(false)
         );
+    }
+
+    /// Dropping POST /items/{id} part-way (the client disconnects or times
+    /// out, so the handler future is dropped) must leave the old People or
+    /// the new ones, never none. The delete and the insert used to be
+    /// separate writes with other awaits in between.
+    #[tokio::test]
+    async fn update_item_people_survive_a_dropped_request() {
+        use std::future::IntoFuture;
+
+        // A real file-backed DB (WAL, pooled), like production: sqlx discards
+        // a connection whose query future was dropped, and an in-memory DB
+        // would vanish with it.
+        let dir = tempfile::tempdir().unwrap();
+        let (server, guard) =
+            crate::integration_test::new_test_server_with_config(crate::Config {
+                database_url: Some(format!(
+                    "sqlite://{}?mode=rwc",
+                    dir.path()
+                        .join("remux.db")
+                        .display()
+                )),
+                torrent_http_port: None,
+                torrent_peer_port: None,
+                disable_dht: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let token = server
+            .post("/users/authenticatebyname")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_static(crate::integration_test::AUTH_HEADER),
+            )
+            .json(&serde_json::json!({ "Username": "test", "Pw": "test" }))
+            .await
+            .json::<serde_json::Value>()["AccessToken"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let series = insert_media(
+            db,
+            "Dropped Update Series",
+            db::MediaKind::Series,
+            "tt1000901",
+        )
+        .await;
+
+        let now = Utc::now().naive_utc();
+        let mut people = Vec::new();
+        for i in 0..4 {
+            let mut p = db::Media {
+                id: Uuid::new_v4(),
+                title: format!("Person {i}"),
+                kind: db::MediaKind::Person,
+                created_at: now,
+                updated_at: now,
+                ..Default::default()
+            };
+            p.save(db)
+                .await
+                .unwrap();
+            people.push(p);
+        }
+
+        async fn person_count(db: &sqlx::SqlitePool, id: Uuid) -> i64 {
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM media_relations r JOIN media m ON m.id = r.right_media_id \
+                 WHERE r.left_media_id = ? AND m.kind = 'person'",
+            )
+            .bind(id)
+            .fetch_one(db)
+            .await
+            .unwrap()
+        }
+
+        // Old list: the first three people. New list: all four.
+        let body = serde_json::json!({
+            "People": people
+                .iter()
+                .map(|p| serde_json::json!({
+                    "Id": p.id, "Name": p.title, "Type": "Actor", "Role": "Self"
+                }))
+                .collect::<Vec<_>>(),
+        });
+
+        for polls in 1..=400 {
+            db::MediaRelation::delete_by_right_kinds(
+                db,
+                series.id,
+                &[db::MediaKind::Person],
+            )
+            .await
+            .unwrap();
+            let old: Vec<db::MediaRelation> = people[..3]
+                .iter()
+                .enumerate()
+                .map(|(i, p)| db::MediaRelation {
+                    left_media_id: series.id,
+                    right_media_id: p.id,
+                    weight: Some(i as i64),
+                    role: Some(db::RelationRole::Actor),
+                    character: Some("Self".into()),
+                    ..Default::default()
+                })
+                .collect();
+            db::MediaRelation::upsert(db, &old)
+                .await
+                .unwrap();
+            assert_eq!(person_count(db, series.id).await, 3);
+
+            let req = server
+                .post(&format!("/items/{}", series.id))
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth).unwrap(),
+                )
+                .json(&body);
+            let mut fut = Box::pin(req.into_future());
+            let mut finished = false;
+            for _ in 0..polls {
+                if futures::poll!(fut.as_mut()).is_ready() {
+                    finished = true;
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
+            drop(fut);
+            // let anything the dropped request already handed to SQLite land
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+            let n = person_count(db, series.id).await;
+            assert!(
+                n == 3 || n == 4,
+                "dropping POST /items/{{id}} after {polls} polls left {n} People \
+                 (expected the old 3 or the new 4)"
+            );
+            if finished {
+                assert_eq!(n, 4);
+                return;
+            }
+        }
+        panic!("POST /items/{{id}} never completed within 400 polls");
+    }
+
+    /// A People list whose insert fails (here an `Id` with no media row, so the
+    /// relation's foreign key rejects it) must not leave the item with no
+    /// People while the request reports success.
+    #[tokio::test]
+    async fn update_item_people_insert_failure_keeps_old_people() {
+        use futures::FutureExt;
+        use std::future::IntoFuture;
+
+        let (server, guard, token) = authenticated_server().await;
+        let db = &guard
+            .0
+            .db;
+        let auth = auth_header_with_token(&token);
+        let series = insert_media(
+            db,
+            "Failed Update Series",
+            db::MediaKind::Series,
+            "tt1000902",
+        )
+        .await;
+        let now = Utc::now().naive_utc();
+        let mut person = db::Media {
+            id: Uuid::new_v4(),
+            title: "Old Person".to_string(),
+            kind: db::MediaKind::Person,
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        person
+            .save(db)
+            .await
+            .unwrap();
+        db::MediaRelation::upsert(
+            db,
+            &[db::MediaRelation {
+                left_media_id: series.id,
+                right_media_id: person.id,
+                weight: Some(0),
+                role: Some(db::RelationRole::Actor),
+                ..Default::default()
+            }],
+        )
+        .await
+        .unwrap();
+
+        // Checked after the People assertion, so both halves of the bug show.
+        let resp = std::panic::AssertUnwindSafe(
+            server
+                .post(&format!("/items/{}", series.id))
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth).unwrap(),
+                )
+                .json(&serde_json::json!({
+                    "People": [{ "Id": Uuid::new_v4(), "Name": "Unknown", "Type": "Actor" }],
+                }))
+                .expect_failure()
+                .into_future(),
+        )
+        .catch_unwind()
+        .await;
+
+        let people: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT right_media_id FROM media_relations WHERE left_media_id = ?",
+        )
+        .bind(series.id)
+        .fetch_all(db)
+        .await
+        .unwrap();
+        assert_eq!(people, vec![person.id], "the old People must survive");
+        assert!(resp.is_ok(), "a failed People write must not return 2xx");
     }
 }

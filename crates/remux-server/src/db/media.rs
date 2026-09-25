@@ -677,6 +677,60 @@ impl MediaRelation {
         Ok(())
     }
 
+    /// Replace every relation from `left_id` to media of `right_kinds` with
+    /// `items`, in ONE transaction: a reader never sees the item without
+    /// them, and a caller dropped mid-way (client disconnect) rolls back to
+    /// the old set instead of leaving none.
+    pub async fn replace_by_right_kinds(
+        db: &SqlitePool,
+        left_id: Uuid,
+        right_kinds: &[MediaKind],
+        items: &[Self],
+    ) -> Result<()> {
+        let _permit = DB_WRITE_SEMAPHORE
+            .acquire()
+            .await
+            .unwrap();
+        let mut tx = db
+            .begin()
+            .await?;
+        if !right_kinds.is_empty() {
+            let mut qb = sqlx::QueryBuilder::new(
+                "DELETE FROM media_relations WHERE left_media_id = ",
+            );
+            qb.push_bind(left_id);
+            qb.push(" AND right_media_id IN (SELECT id FROM media WHERE kind IN (");
+            let mut sep = qb.separated(", ");
+            for k in right_kinds {
+                sep.push_bind(k.to_string());
+            }
+            qb.push("))");
+            qb.build()
+                .execute(&mut *tx)
+                .await?;
+        }
+        for chunk in items.chunks(CHUNK_SIZE) {
+            let mut qb = sqlx::QueryBuilder::new(
+                "INSERT INTO media_relations (relation_id, left_media_id, right_media_id, weight, role, character) ",
+            );
+            qb.push_values(chunk.iter(), |mut b, item| {
+                b.push_bind(&item.relation_id)
+                    .push_bind(&item.left_media_id)
+                    .push_bind(&item.right_media_id)
+                    .push_bind(&item.weight)
+                    .push_bind(&item.role)
+                    .push_bind(&item.character);
+            });
+            qb.push(" ON CONFLICT (left_media_id, right_media_id, COALESCE(role, '')) DO UPDATE SET weight = excluded.weight, character = excluded.character");
+            qb.build()
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit()
+            .await?;
+        Ok(())
+    }
+
     pub async fn delete_by_right_kinds(
         db: &SqlitePool,
         left_id: Uuid,
