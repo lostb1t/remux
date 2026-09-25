@@ -475,14 +475,17 @@ async fn subtitles_stream_inner(
             let i = stream_index - next_idx;
             // Only attempt external resolution if the index is not an embedded stream.
             if i >= 0 && !embedded_indices.contains(&stream_index) {
-                let sub_langs = db::Settings::get_config_or_default(
+                let server_cfg = db::Settings::get_config_or_default(
                     &state
                         .ctx
                         .db,
                 )
-                .await
-                .subtitle_languages
-                .unwrap_or_default();
+                .await;
+                let sub_langs = server_cfg
+                    .subtitle_languages
+                    .clone()
+                    .unwrap_or_default();
+                let dedup = SubtitleDedupSettings::from_config(&server_cfg);
                 let subs = state
                     .ctx
                     .addons
@@ -558,18 +561,20 @@ async fn subtitles_stream_inner(
                                 info.filename
                                     .as_deref()
                             }),
+                        dedup.max_external_per_language(),
                     )
                     .into_iter()
                     .filter(|sub| {
-                        !resolved_probe
-                            .as_ref()
-                            .is_some_and(|probe| {
-                                has_supported_embedded_subtitle(
-                                    probe,
-                                    sub,
-                                    device_profile.as_ref(),
-                                )
-                            })
+                        !dedup.enabled
+                            || !resolved_probe
+                                .as_ref()
+                                .is_some_and(|probe| {
+                                    has_supported_embedded_subtitle(
+                                        probe,
+                                        sub,
+                                        device_profile.as_ref(),
+                                    )
+                                })
                     })
                     .collect();
                 if let Some(sub) = scored.get(i as usize) {
@@ -818,6 +823,42 @@ pub(crate) fn descriptor_to_subtitle_url(sub: &crate::addons::SubtitleInfo) -> S
     }
 }
 
+/// `ServerConfiguration.deduplicate_subtitle_tracks` /
+/// `max_external_subtitles_per_language`, resolved once per request so
+/// `append_external_subtitles` and the download endpoint's index
+/// reconstruction always agree on what was advertised.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SubtitleDedupSettings {
+    /// When true: at most one subtitle per language, and a language already
+    /// covered by a supported embedded track gets no external entry at all.
+    /// When false: up to `max_external_per_language_when_disabled` external
+    /// candidates per language, regardless of embedded coverage.
+    pub enabled: bool,
+    pub max_external_per_language_when_disabled: i64,
+}
+
+impl SubtitleDedupSettings {
+    pub(crate) fn from_config(cfg: &api::ServerConfiguration) -> Self {
+        Self {
+            enabled: cfg
+                .deduplicate_subtitle_tracks
+                .unwrap_or(true),
+            max_external_per_language_when_disabled: cfg
+                .max_external_subtitles_per_language
+                .unwrap_or(1),
+        }
+    }
+
+    fn max_external_per_language(&self) -> usize {
+        if self.enabled {
+            1
+        } else {
+            self.max_external_per_language_when_disabled
+                .max(0) as usize
+        }
+    }
+}
+
 /// Add prefetched subtitles to real-probed sources. Only called from
 /// PlaybackInfo — Items detail deliberately never shows subtitle tracks (see
 /// the stripping step in `items.rs`), so index alignment only has to hold
@@ -830,6 +871,7 @@ pub(crate) fn append_external_subtitles(
     device_profile: Option<&api::DeviceProfile>,
     item_id: Uuid,
     api_key: &str,
+    dedup: SubtitleDedupSettings,
 ) {
     for source in media_sources.iter_mut() {
         if !has_real_probe_data(source) {
@@ -852,18 +894,25 @@ pub(crate) fn append_external_subtitles(
             })
             .and_then(|info| info.get("filename"))
             .and_then(serde_json::Value::as_str);
-        // A language already covered by a supported embedded track is
-        // dropped entirely, not replaced with a different (e.g. forced/HI)
-        // external variant of the same language — offering a second track
-        // for a language the device can already play embedded is exactly
-        // the redundant duplicate this filter exists to avoid.
+        // With dedup on, a language already covered by a supported embedded
+        // track is dropped entirely, not replaced with a different (e.g.
+        // forced/HI) external variant of the same language — offering a
+        // second track for a language the device can already play embedded
+        // is exactly the redundant duplicate this filter exists to avoid.
+        // With dedup off, every external candidate up to the configured cap
+        // is kept regardless of embedded coverage — the user asked to see
+        // everything.
         let scored: Vec<_> = crate::subtitle_selection::select_external_subtitles(
             &subs,
             sub_langs,
             source_filename,
+            dedup.max_external_per_language(),
         )
         .into_iter()
-        .filter(|sub| !has_supported_embedded_subtitle(source, sub, device_profile))
+        .filter(|sub| {
+            !dedup.enabled
+                || !has_supported_embedded_subtitle(source, sub, device_profile)
+        })
         .collect();
         let wants_default = !sub_langs.is_empty()
             && source
@@ -1035,6 +1084,11 @@ mod tests {
     use http::header::HeaderValue;
 
     use crate::integration_test::{auth_header_with_token, authenticated_server};
+
+    const DEDUP_ON: SubtitleDedupSettings = SubtitleDedupSettings {
+        enabled: true,
+        max_external_per_language_when_disabled: 1,
+    };
 
     /// Jellyfin's tickless subtitle route (`.../Subtitles/{index}/Stream.{format}`,
     /// no start-position-ticks segment) must dispatch to the same handler as the
@@ -1226,7 +1280,15 @@ mod tests {
             ai_translated: None,
         }];
 
-        append_external_subtitles(&mut sources, &subs, &[], None, item_id, "test-key");
+        append_external_subtitles(
+            &mut sources,
+            &subs,
+            &[],
+            None,
+            item_id,
+            "test-key",
+            DEDUP_ON,
+        );
 
         assert_eq!(
             sources[0]
@@ -1306,6 +1368,7 @@ mod tests {
             Some(&embed_profile),
             item_id,
             "test-key",
+            DEDUP_ON,
         );
         assert_eq!(
             sources[0]
@@ -1323,6 +1386,7 @@ mod tests {
                 profile,
                 item_id,
                 "test-key",
+                DEDUP_ON,
             );
             assert_eq!(
                 sources[0]
@@ -1342,6 +1406,7 @@ mod tests {
             Some(&embed_profile),
             item_id,
             "test-key",
+            DEDUP_ON,
         );
         assert_eq!(
             sources[0]
@@ -1361,6 +1426,7 @@ mod tests {
             Some(&embed_profile),
             item_id,
             "test-key",
+            DEDUP_ON,
         );
         assert_eq!(
             sources[0]
@@ -1413,12 +1479,96 @@ mod tests {
             Some(&profile),
             Uuid::new_v4(),
             "test-key",
+            DEDUP_ON,
         );
         assert_eq!(
             sources[0]
                 .media_streams
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn dedup_disabled_keeps_multiple_external_candidates_up_to_the_cap() {
+        let source = api::MediaSourceInfo {
+            id: Uuid::new_v4(),
+            media_streams: vec![api::MediaStream {
+                index: 2,
+                type_: Some(api::MediaStreamType::Subtitle),
+                codec: Some("pgssub".into()),
+                language: Some("eng".into()),
+                ..Default::default()
+            }],
+            remux: Some(api::MediaSourceRemuxInfo {
+                source: Some(api::ProbeOrigin::Ffprobe),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let embed_profile = api::DeviceProfile {
+            subtitle_profiles: vec![api::SubtitleProfile {
+                format: Some("pgs".into()),
+                method: Some(api::SubtitleDeliveryMethod::Embed),
+            }],
+            ..Default::default()
+        };
+        let regular = crate::addons::SubtitleInfo {
+            id: "regular".into(),
+            url: None,
+            lang: Some("en".into()),
+            is_forced: false,
+            is_hi: false,
+            filename: None,
+            from_trusted: None,
+            ai_translated: None,
+        };
+        let mut forced = regular.clone();
+        forced.id = "forced".into();
+        forced.is_forced = true;
+
+        // Dedup on: the embedded English track (Embed-supported) suppresses
+        // both external candidates for English.
+        let mut sources = vec![source.clone()];
+        append_external_subtitles(
+            &mut sources,
+            &[regular.clone(), forced.clone()],
+            &[],
+            Some(&embed_profile),
+            Uuid::new_v4(),
+            "test-key",
+            DEDUP_ON,
+        );
+        assert_eq!(
+            sources[0]
+                .media_streams
+                .len(),
+            1,
+            "dedup on: embedded already covers English, no external added"
+        );
+
+        // Dedup off with a cap of 2: both externals show up alongside the
+        // embedded track, even though the embedded one would otherwise
+        // suppress a same-flavor external.
+        let mut sources = vec![source];
+        append_external_subtitles(
+            &mut sources,
+            &[regular, forced],
+            &[],
+            Some(&embed_profile),
+            Uuid::new_v4(),
+            "test-key",
+            SubtitleDedupSettings {
+                enabled: false,
+                max_external_per_language_when_disabled: 2,
+            },
+        );
+        assert_eq!(
+            sources[0]
+                .media_streams
+                .len(),
+            3,
+            "dedup off: embedded track plus both external candidates, up to the cap"
         );
     }
 

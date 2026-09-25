@@ -2,8 +2,9 @@ use anyhow::anyhow;
 use axum::Json;
 
 use super::subtitles::{
-    append_external_subtitles, drop_unsupported_embedded_subtitles_with_external_match,
-    inject_sidecar_subtitles, save_sidecar_subtitle_routes,
+    SubtitleDedupSettings, append_external_subtitles,
+    drop_unsupported_embedded_subtitles_with_external_match, inject_sidecar_subtitles,
+    save_sidecar_subtitle_routes,
 };
 use axum::{
     body::Body,
@@ -217,6 +218,7 @@ async fn items_playbackinfo_inner(
             .db,
     )
     .await;
+    let subtitle_dedup = SubtitleDedupSettings::from_config(&probe_cfg);
     let show_ungrouped = probe_cfg
         .stream_groups_show_ungrouped
         .unwrap_or(true);
@@ -460,11 +462,15 @@ async fn items_playbackinfo_inner(
         // gets dropped when a confidently-matching addon external already
         // covers it — no reason to offer the slow path when a fast one
         // exists. Must also run before resolve_default_streams below.
-        drop_unsupported_embedded_subtitles_with_external_match(
-            &mut source,
-            &external_subtitles,
-            device_profile.as_ref(),
-        );
+        // Gated on the dedup setting: with it off, the user asked to see
+        // every subtitle option, embedded ones included.
+        if subtitle_dedup.enabled {
+            drop_unsupported_embedded_subtitles_with_external_match(
+                &mut source,
+                &external_subtitles,
+                device_profile.as_ref(),
+            );
+        }
 
         // Pre-extract all embedded text subtitle streams in the background, in one
         // FFmpeg pass. By the time the client requests a subtitle URL, the cache file
@@ -622,6 +628,7 @@ async fn items_playbackinfo_inner(
             .device
             .access_token
             .expose(),
+        subtitle_dedup,
     );
 
     // Re-resolve defaults after external subtitles were injected so language

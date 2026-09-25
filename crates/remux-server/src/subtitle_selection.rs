@@ -2,8 +2,6 @@
 //! of API responses so playback, subtitle downloads, and future item responses
 //! use the same ordering and stream indexes.
 
-use std::collections::HashSet;
-
 use crate::addons::SubtitleInfo;
 
 fn filename_stem(name: &str) -> &str {
@@ -178,16 +176,30 @@ fn ranked_external_subtitles<'a>(
         .collect()
 }
 
-/// Returns one stable, release-aware subtitle choice per language.
+/// Returns the top `max_per_language` release-aware subtitle choices for each
+/// language (in rank order). Pass `1` for the pre-existing "one stable choice
+/// per language" behavior.
 pub(crate) fn select_external_subtitles<'a>(
     subs: &'a [SubtitleInfo],
     preferred_languages: &[String],
     source_filename: Option<&str>,
+    max_per_language: usize,
 ) -> Vec<&'a SubtitleInfo> {
-    let mut seen = HashSet::new();
+    let mut counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     ranked_external_subtitles(subs, preferred_languages, source_filename)
         .into_iter()
-        .filter(|sub| seen.insert(language(sub)))
+        .filter(|sub| {
+            let count = counts
+                .entry(language(sub))
+                .or_insert(0);
+            if *count < max_per_language {
+                *count += 1;
+                true
+            } else {
+                false
+            }
+        })
         .collect()
 }
 
@@ -220,6 +232,7 @@ mod tests {
             &subs,
             &["en".into()],
             Some("Movie.2026.1080p.WEB-DL.mkv"),
+            1,
         );
         assert_eq!(
             selected
@@ -240,7 +253,7 @@ mod tests {
             sub("c", "Movie.2026.TELESYNC.srt", "eng"),
         ];
         let selected =
-            select_external_subtitles(&subs, &[], Some("Movie.2026.BluRay.mkv"));
+            select_external_subtitles(&subs, &[], Some("Movie.2026.BluRay.mkv"), 1);
         assert_eq!(
             selected
                 .iter()
@@ -260,10 +273,40 @@ mod tests {
         let mut sdh = sub("sdh", "Movie.2026.1080p.WEB-DL (SDH).srt", "eng");
         sdh.is_hi = true;
         let subs = [regular, forced, sdh];
-        let selected =
-            select_external_subtitles(&subs, &[], Some("Movie.2026.1080p.WEB-DL.mkv"));
+        let selected = select_external_subtitles(
+            &subs,
+            &[],
+            Some("Movie.2026.1080p.WEB-DL.mkv"),
+            1,
+        );
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].id, "regular");
+    }
+
+    #[test]
+    fn max_per_language_above_one_returns_multiple_ranked_candidates() {
+        let regular = sub("regular", "Movie.2026.1080p.WEB-DL.srt", "eng");
+        let mut forced = sub("forced", "Movie.2026.1080p.WEB-DL.en.forced.srt", "eng");
+        forced.is_forced = true;
+        let dutch = sub("dutch", "Movie.2026.1080p.WEB-DL.srt", "dut");
+        let subs = [regular, forced, dutch];
+        let selected = select_external_subtitles(
+            &subs,
+            &[],
+            Some("Movie.2026.1080p.WEB-DL.mkv"),
+            2,
+        );
+        // Two English candidates (regular ranks first) plus the one Dutch —
+        // Dutch never had a second candidate to add, so it's still just one.
+        assert_eq!(
+            selected
+                .iter()
+                .map(|s| s
+                    .id
+                    .as_str())
+                .collect::<Vec<_>>(),
+            vec!["regular", "forced", "dutch"]
+        );
     }
 
     #[test]
