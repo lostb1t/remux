@@ -964,15 +964,15 @@ fn has_supported_embedded_subtitle(
 }
 
 /// Drops embedded subtitle streams the device can't play embedded when a
-/// confidently-matching addon external subtitle already covers them.
+/// matching addon external subtitle already covers them (same language,
+/// forced flag, and hearing-impaired flag — the same "is this actually the
+/// same track" bar `has_supported_embedded_subtitle` already uses in the
+/// opposite direction).
 ///
 /// Extracting an unsupported embedded subtitle on demand is a slow HTTP
 /// round trip against the source file (the download endpoint has to seek
 /// into it with ffmpeg) — there's no reason to offer that when a fast,
-/// already-fetched external copy of the exact same release exists. "Exact
-/// same release" is the bar (`is_release_match`, not just matching
-/// language): a same-language external from a different release is not
-/// confident enough to hide a track the user might actually want.
+/// already-fetched external copy exists.
 ///
 /// Must run before `resolve_default_streams`/`compute_transcode_reasons` in
 /// playback.rs's per-source loop — those, not `apply_subtitle_delivery`, are
@@ -985,17 +985,6 @@ pub(crate) fn drop_unsupported_embedded_subtitles_with_external_match(
     external_subtitles: &[crate::addons::SubtitleInfo],
     device_profile: Option<&api::DeviceProfile>,
 ) {
-    let source_filename = source
-        .remux
-        .as_ref()
-        .and_then(|remux| {
-            remux
-                .provider_info
-                .as_ref()
-        })
-        .and_then(|info| info.get("filename"))
-        .and_then(serde_json::Value::as_str);
-
     source
         .media_streams
         .retain(|stream| {
@@ -1026,7 +1015,7 @@ pub(crate) fn drop_unsupported_embedded_subtitles_with_external_match(
                     .language
                     .as_deref(),
             );
-            let has_confident_replacement = external_subtitles
+            let has_replacement = external_subtitles
                 .iter()
                 .any(|ext| {
                     ext.is_forced == stream.is_forced
@@ -1035,12 +1024,8 @@ pub(crate) fn drop_unsupported_embedded_subtitles_with_external_match(
                             ext.lang
                                 .as_deref(),
                         ) == stream_language
-                        && crate::subtitle_selection::is_release_match(
-                            ext,
-                            source_filename,
-                        )
                 });
-            !has_confident_replacement
+            !has_replacement
         });
 }
 
@@ -1437,7 +1422,7 @@ mod tests {
         );
     }
 
-    fn dutch_pgs_source(source_filename: Option<&str>) -> api::MediaSourceInfo {
+    fn dutch_pgs_source() -> api::MediaSourceInfo {
         api::MediaSourceInfo {
             id: Uuid::new_v4(),
             media_streams: vec![api::MediaStream {
@@ -1447,10 +1432,6 @@ mod tests {
                 language: Some("dut".into()),
                 ..Default::default()
             }],
-            remux: source_filename.map(|filename| api::MediaSourceRemuxInfo {
-                provider_info: Some(serde_json::json!({ "filename": filename })),
-                ..Default::default()
-            }),
             ..Default::default()
         }
     }
@@ -1462,15 +1443,15 @@ mod tests {
     }
 
     #[test]
-    fn drops_unsupported_embedded_subtitle_with_a_release_matched_external() {
-        let mut source = dutch_pgs_source(Some("Movie.2026.1080p.WEB-DL.mkv"));
+    fn drops_unsupported_embedded_subtitle_with_a_matching_external() {
+        let mut source = dutch_pgs_source();
         let external = crate::addons::SubtitleInfo {
             id: "dutch".into(),
             url: None,
             lang: Some("dut".into()),
             is_forced: false,
             is_hi: false,
-            filename: Some("Movie.2026.1080p.WEB-DL.srt".into()),
+            filename: None,
             from_trusted: None,
             ai_translated: None,
         };
@@ -1483,21 +1464,21 @@ mod tests {
             source
                 .media_streams
                 .is_empty(),
-            "unsupported embedded subtitle with a confident external match must be dropped"
+            "unsupported embedded subtitle with a matching external must be dropped"
         );
     }
 
     #[test]
-    fn keeps_unsupported_embedded_subtitle_without_a_release_matched_external() {
-        let mut source = dutch_pgs_source(Some("Movie.2026.1080p.WEB-DL.mkv"));
-        // Same language, but a different release — not confident enough.
+    fn keeps_unsupported_embedded_subtitle_without_a_language_match() {
+        let mut source = dutch_pgs_source();
+        // Different language — not a replacement for the Dutch track.
         let external = crate::addons::SubtitleInfo {
-            id: "dutch-other-release".into(),
+            id: "english".into(),
             url: None,
-            lang: Some("dut".into()),
+            lang: Some("eng".into()),
             is_forced: false,
             is_hi: false,
-            filename: Some("Movie.2026.BluRay.srt".into()),
+            filename: None,
             from_trusted: None,
             ai_translated: None,
         };
@@ -1511,20 +1492,20 @@ mod tests {
                 .media_streams
                 .len(),
             1,
-            "a same-language external from a different release must not hide the embedded track"
+            "a different-language external must not hide the embedded track"
         );
     }
 
     #[test]
     fn keeps_embed_supported_subtitle_even_with_a_matching_external() {
-        let mut source = dutch_pgs_source(Some("Movie.2026.1080p.WEB-DL.mkv"));
+        let mut source = dutch_pgs_source();
         let external = crate::addons::SubtitleInfo {
             id: "dutch".into(),
             url: None,
             lang: Some("dut".into()),
             is_forced: false,
             is_hi: false,
-            filename: Some("Movie.2026.1080p.WEB-DL.srt".into()),
+            filename: None,
             from_trusted: None,
             ai_translated: None,
         };
