@@ -65,17 +65,57 @@ pub async fn items_playbackinfo(
     Query(query): Query<api::PlaybackInfoQuery>,
     Json(payload): Json<api::PlaybackInfoQuery>,
 ) -> Result<impl IntoResponse> {
-    // Jellyfin web sends MediaSourceId as query param even for POST; merge query and body
+    // Some clients (e.g. Streamyfin for live TV) send these as query-string
+    // params instead of body fields on this POST endpoint. Jellyfin's own
+    // GetPostedPlaybackInfo merges the same way — query takes precedence,
+    // body is the fallback — so we mirror that here rather than only
+    // covering the handful of fields we happened to notice.
     let mut q = payload;
-    q.media_source_id = q
-        .media_source_id
-        .or(query.media_source_id);
-    q.user_id = q
+    q.user_id = query
         .user_id
-        .or(query.user_id);
-    q.device_profile = q
+        .or(q.user_id);
+    q.max_streaming_bitrate = query
+        .max_streaming_bitrate
+        .or(q.max_streaming_bitrate);
+    q.start_time_ticks = query
+        .start_time_ticks
+        .or(q.start_time_ticks);
+    q.audio_stream_index = query
+        .audio_stream_index
+        .or(q.audio_stream_index);
+    q.subtitle_stream_index = query
+        .subtitle_stream_index
+        .or(q.subtitle_stream_index);
+    q.max_audio_channels = query
+        .max_audio_channels
+        .or(q.max_audio_channels);
+    q.media_source_id = query
+        .media_source_id
+        .or(q.media_source_id);
+    q.live_stream_id = query
+        .live_stream_id
+        .or(q.live_stream_id);
+    q.auto_open_live_stream = query
+        .auto_open_live_stream
+        .or(q.auto_open_live_stream);
+    q.enable_direct_play = query
+        .enable_direct_play
+        .or(q.enable_direct_play);
+    q.enable_direct_stream = query
+        .enable_direct_stream
+        .or(q.enable_direct_stream);
+    q.enable_transcoding = query
+        .enable_transcoding
+        .or(q.enable_transcoding);
+    q.allow_video_stream_copy = query
+        .allow_video_stream_copy
+        .or(q.allow_video_stream_copy);
+    q.allow_audio_stream_copy = query
+        .allow_audio_stream_copy
+        .or(q.allow_audio_stream_copy);
+    q.device_profile = query
         .device_profile
-        .or(query.device_profile);
+        .or(q.device_profile);
     items_playbackinfo_inner(state, session, id, q).await
 }
 
@@ -2754,6 +2794,48 @@ mod tests {
         assert!(
             url.contains("MaxStreamingBitrate=4000000"),
             "effective bitrate should be 4 Mbps (minimum): {}",
+            url
+        );
+    }
+
+    /// Streamyfin's live TV playback sends `maxStreamingBitrate` (and other
+    /// fields) as query-string params on the POST, with only `deviceProfile`
+    /// in the body — the same split Jellyfin's own obsolete `[FromQuery]`
+    /// params support on this endpoint. The device profile alone declares an
+    /// effectively unbounded bitrate (Streamyfin's real profile does this),
+    /// so the query param must not be silently dropped.
+    #[tokio::test]
+    async fn test_playbackinfo_query_param_bitrate_applies_for_live_tv() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media =
+            insert_test_source_of_kind(&guard.0, crate::db::MediaKind::TvChannel).await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params([("maxStreamingBitrate", "2000000")])
+            .json(&json!({
+                "DeviceProfile": {
+                    "MaxStreamingBitrate": 999_999_999i64,
+                    "DirectPlayProfiles": [],
+                    "TranscodingProfiles": [],
+                    "CodecProfiles": []
+                }
+            }))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let url = body["MediaSources"][0]["TranscodingUrl"]
+            .as_str()
+            .expect("TranscodingUrl should be present");
+        assert!(
+            url.contains("MaxStreamingBitrate=2000000"),
+            "query-param bitrate must not be dropped in favour of the profile's: {}",
             url
         );
     }
