@@ -2,7 +2,8 @@ use anyhow::anyhow;
 use axum::Json;
 
 use super::subtitles::{
-    append_external_subtitles, inject_sidecar_subtitles, save_sidecar_subtitle_routes,
+    append_external_subtitles, drop_unsupported_embedded_subtitles_with_external_match,
+    inject_sidecar_subtitles, save_sidecar_subtitle_routes,
 };
 use axum::{
     body::Body,
@@ -453,6 +454,17 @@ async fn items_playbackinfo_inner(
                             .unwrap_or(true)
                 });
         }
+
+        // Independent of subtitle_mode: an embedded subtitle that won't be
+        // Embed delivery anyway (slow on-demand HTTP extraction to serve it)
+        // gets dropped when a confidently-matching addon external already
+        // covers it — no reason to offer the slow path when a fast one
+        // exists. Must also run before resolve_default_streams below.
+        drop_unsupported_embedded_subtitles_with_external_match(
+            &mut source,
+            &external_subtitles,
+            device_profile.as_ref(),
+        );
 
         // Pre-extract all embedded text subtitle streams in the background, in one
         // FFmpeg pass. By the time the client requests a subtitle URL, the cache file

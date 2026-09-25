@@ -963,6 +963,87 @@ fn has_supported_embedded_subtitle(
         })
 }
 
+/// Drops embedded subtitle streams the device can't play embedded when a
+/// confidently-matching addon external subtitle already covers them.
+///
+/// Extracting an unsupported embedded subtitle on demand is a slow HTTP
+/// round trip against the source file (the download endpoint has to seek
+/// into it with ffmpeg) — there's no reason to offer that when a fast,
+/// already-fetched external copy of the exact same release exists. "Exact
+/// same release" is the bar (`is_release_match`, not just matching
+/// language): a same-language external from a different release is not
+/// confident enough to hide a track the user might actually want.
+///
+/// Must run before `resolve_default_streams`/`compute_transcode_reasons` in
+/// playback.rs's per-source loop — those, not `apply_subtitle_delivery`, are
+/// what actually pick the default subtitle and decide whether a burn-in
+/// transcode is needed. Removing the stream from `media_streams` here is
+/// what keeps them from ever considering it; this function doesn't (and
+/// shouldn't need to) touch their logic.
+pub(crate) fn drop_unsupported_embedded_subtitles_with_external_match(
+    source: &mut api::MediaSourceInfo,
+    external_subtitles: &[crate::addons::SubtitleInfo],
+    device_profile: Option<&api::DeviceProfile>,
+) {
+    let source_filename = source
+        .remux
+        .as_ref()
+        .and_then(|remux| {
+            remux
+                .provider_info
+                .as_ref()
+        })
+        .and_then(|info| info.get("filename"))
+        .and_then(serde_json::Value::as_str);
+
+    source
+        .media_streams
+        .retain(|stream| {
+            if stream.type_ != Some(api::MediaStreamType::Subtitle)
+                || stream.is_external
+            {
+                return true;
+            }
+            let Some(codec) = stream
+                .codec
+                .as_deref()
+                .and_then(|c| {
+                    c.parse::<crate::device_profile::SubtitleCodec>()
+                        .ok()
+                })
+            else {
+                return true;
+            };
+            if crate::device_profile::profile_embeds_subtitle_codec(
+                device_profile,
+                &codec,
+            ) {
+                // Would be Embed delivery anyway — free, keep it.
+                return true;
+            }
+            let stream_language = crate::subtitle_selection::normalized_language(
+                stream
+                    .language
+                    .as_deref(),
+            );
+            let has_confident_replacement = external_subtitles
+                .iter()
+                .any(|ext| {
+                    ext.is_forced == stream.is_forced
+                        && ext.is_hi == stream.is_hearing_impaired
+                        && crate::subtitle_selection::normalized_language(
+                            ext.lang
+                                .as_deref(),
+                        ) == stream_language
+                        && crate::subtitle_selection::is_release_match(
+                            ext,
+                            source_filename,
+                        )
+                });
+            !has_confident_replacement
+        });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1353,6 +1434,118 @@ mod tests {
                 .media_streams
                 .len(),
             1
+        );
+    }
+
+    fn dutch_pgs_source(source_filename: Option<&str>) -> api::MediaSourceInfo {
+        api::MediaSourceInfo {
+            id: Uuid::new_v4(),
+            media_streams: vec![api::MediaStream {
+                index: 2,
+                type_: Some(api::MediaStreamType::Subtitle),
+                codec: Some("pgssub".into()),
+                language: Some("dut".into()),
+                ..Default::default()
+            }],
+            remux: source_filename.map(|filename| api::MediaSourceRemuxInfo {
+                provider_info: Some(serde_json::json!({ "filename": filename })),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn no_embed_profile() -> api::DeviceProfile {
+        // Supports the codec for some non-Embed method (or not at all) —
+        // either way, profile_embeds_subtitle_codec must say no.
+        api::DeviceProfile::default()
+    }
+
+    #[test]
+    fn drops_unsupported_embedded_subtitle_with_a_release_matched_external() {
+        let mut source = dutch_pgs_source(Some("Movie.2026.1080p.WEB-DL.mkv"));
+        let external = crate::addons::SubtitleInfo {
+            id: "dutch".into(),
+            url: None,
+            lang: Some("dut".into()),
+            is_forced: false,
+            is_hi: false,
+            filename: Some("Movie.2026.1080p.WEB-DL.srt".into()),
+            from_trusted: None,
+            ai_translated: None,
+        };
+        drop_unsupported_embedded_subtitles_with_external_match(
+            &mut source,
+            &[external],
+            Some(&no_embed_profile()),
+        );
+        assert!(
+            source
+                .media_streams
+                .is_empty(),
+            "unsupported embedded subtitle with a confident external match must be dropped"
+        );
+    }
+
+    #[test]
+    fn keeps_unsupported_embedded_subtitle_without_a_release_matched_external() {
+        let mut source = dutch_pgs_source(Some("Movie.2026.1080p.WEB-DL.mkv"));
+        // Same language, but a different release — not confident enough.
+        let external = crate::addons::SubtitleInfo {
+            id: "dutch-other-release".into(),
+            url: None,
+            lang: Some("dut".into()),
+            is_forced: false,
+            is_hi: false,
+            filename: Some("Movie.2026.BluRay.srt".into()),
+            from_trusted: None,
+            ai_translated: None,
+        };
+        drop_unsupported_embedded_subtitles_with_external_match(
+            &mut source,
+            &[external],
+            Some(&no_embed_profile()),
+        );
+        assert_eq!(
+            source
+                .media_streams
+                .len(),
+            1,
+            "a same-language external from a different release must not hide the embedded track"
+        );
+    }
+
+    #[test]
+    fn keeps_embed_supported_subtitle_even_with_a_matching_external() {
+        let mut source = dutch_pgs_source(Some("Movie.2026.1080p.WEB-DL.mkv"));
+        let external = crate::addons::SubtitleInfo {
+            id: "dutch".into(),
+            url: None,
+            lang: Some("dut".into()),
+            is_forced: false,
+            is_hi: false,
+            filename: Some("Movie.2026.1080p.WEB-DL.srt".into()),
+            from_trusted: None,
+            ai_translated: None,
+        };
+        let profile = api::DeviceProfile {
+            subtitle_profiles: vec![api::SubtitleProfile {
+                format: Some("pgs".into()),
+                method: Some(api::SubtitleDeliveryMethod::Embed),
+            }],
+            ..Default::default()
+        };
+        drop_unsupported_embedded_subtitles_with_external_match(
+            &mut source,
+            &[external],
+            Some(&profile),
+        );
+        assert_eq!(
+            source
+                .media_streams
+                .len(),
+            1,
+            "an embed-supported subtitle is free to deliver — never drop it in favor of external"
         );
     }
 }

@@ -90,7 +90,10 @@ fn language(sub: &SubtitleInfo) -> String {
 
 /// Only an actual subtitle filename matching the selected video filename
 /// counts. Do not infer a release match from title words or a similar name.
-fn is_release_match(sub: &SubtitleInfo, source_filename: Option<&str>) -> bool {
+pub(crate) fn is_release_match(
+    sub: &SubtitleInfo,
+    source_filename: Option<&str>,
+) -> bool {
     sub.filename
         .as_deref()
         .zip(source_filename)

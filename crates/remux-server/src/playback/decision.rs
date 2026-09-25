@@ -466,24 +466,10 @@ pub(crate) fn apply_subtitle_delivery(
                 .unwrap_or(false)
         };
         let profile_embeds = |c: SubtitleCodec| -> bool {
-            device_profile
-                .as_ref()
-                .map(|dp| {
-                    dp.subtitle_profiles
-                        .iter()
-                        .any(|p| {
-                            p.method == Some(api::SubtitleDeliveryMethod::Embed)
-                                && p.format
-                                    .as_deref()
-                                    .and_then(|f| {
-                                        f.parse::<SubtitleCodec>()
-                                            .ok()
-                                    })
-                                    .as_ref()
-                                    == Some(&c)
-                        })
-                })
-                .unwrap_or(false)
+            crate::device_profile::profile_embeds_subtitle_codec(
+                device_profile.as_ref(),
+                &c,
+            )
         };
         let parsed_codec = codec
             .parse::<SubtitleCodec>()

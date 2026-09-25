@@ -40,6 +40,35 @@ pub(crate) fn subtitle_codec_matches_profile(
     }
 }
 
+/// Whether `device_profile` embeds `codec` (an `Embed` entry for this exact
+/// codec, strict `SubtitleCodec` parse on both sides — no raw-string
+/// fallback). This is `apply_subtitle_delivery`'s actual embed decision,
+/// pulled out so other code that needs to predict it (e.g. deciding whether
+/// an unsupported-embedded subtitle can be dropped in favor of a matching
+/// external one) can't drift from what playback will really do.
+pub(crate) fn profile_embeds_subtitle_codec(
+    device_profile: Option<&DeviceProfile>,
+    codec: &SubtitleCodec,
+) -> bool {
+    device_profile
+        .map(|dp| {
+            dp.subtitle_profiles
+                .iter()
+                .any(|p| {
+                    p.method == Some(SubtitleDeliveryMethod::Embed)
+                        && p.format
+                            .as_deref()
+                            .and_then(|f| {
+                                f.parse::<SubtitleCodec>()
+                                    .ok()
+                            })
+                            .as_ref()
+                            == Some(codec)
+                })
+        })
+        .unwrap_or(false)
+}
+
 impl DeviceProfileExt for DeviceProfile {
     fn video_transcoding_profile(&self) -> Option<&TranscodingProfile> {
         let is_video =
