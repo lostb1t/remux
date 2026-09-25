@@ -263,15 +263,25 @@ impl StreamDescriptor {
         }
     }
 
-    /// Returns `false` only for HTTP streams whose HEAD request yields a 4xx/5xx
+    /// Returns `false` only for HTTP streams whose ranged GET yields a 4xx/5xx
     /// status or a network/timeout error. Non-HTTP variants (local, torrent,
     /// opendal) return `true` immediately.
     pub async fn is_alive(&self) -> bool {
-        let Some(url) = self.as_http_url() else {
+        let Self::Http {
+            url,
+            request_headers,
+            ..
+        } = self
+        else {
             return true;
         };
-        match HEAD_CLIENT
-            .head(url)
+        let mut request = AVAILABILITY_CLIENT.get(url);
+        for (key, value) in request_headers {
+            request = request.header(key.as_str(), value.as_str());
+        }
+        request = request.header(http::header::RANGE, "bytes=0-0");
+
+        match request
             .send()
             .await
         {
@@ -436,13 +446,13 @@ pub trait StreamSource: Send + Sync {
     async fn serve(&self, state: &AppState, headers: &HeaderMap) -> Result<Response>;
 }
 
-static HEAD_CLIENT: std::sync::LazyLock<reqwest::Client> =
+static AVAILABILITY_CLIENT: std::sync::LazyLock<reqwest::Client> =
     std::sync::LazyLock::new(|| {
         reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(3))
             .timeout(std::time::Duration::from_secs(5))
             .build()
-            .expect("failed to build HEAD client")
+            .expect("failed to build availability client")
     });
 
 static STREAM_PROXY_CLIENT: std::sync::LazyLock<reqwest::Client> =

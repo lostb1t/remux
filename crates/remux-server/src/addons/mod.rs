@@ -815,6 +815,10 @@ pub struct SubtitleInfo {
     pub lang: Option<String>,
     pub is_forced: bool,
     pub is_hi: bool,
+    /// Release name supplied by the subtitle provider, if any.
+    pub filename: Option<String>,
+    pub from_trusted: Option<bool>,
+    pub ai_translated: Option<bool>,
 }
 
 #[async_trait]
@@ -2713,22 +2717,57 @@ impl AddonService {
         Ok(out)
     }
 
+    /// Subtitle addon calls are slow network round-trips with no coalescing
+    /// of their own (unlike `refresh_streams`' TTL + `STREAM_LOCKS`), so an
+    /// Items detail fetch racing a PlaybackInfo call for the same item used
+    /// to each pay the full addon fetch independently and concurrently.
+    /// Cache the result briefly and serialize concurrent callers the same way.
     #[tracing::instrument(skip_all, fields(title = %media.title, kind = %media.kind))]
     pub async fn fetch_subtitles(
         &self,
         media: &mut db::Media,
-        db: &SqlitePool,
+        ctx: &AppContext,
         background: bool,
         user_id: Option<Uuid>,
     ) -> Vec<SubtitleInfo> {
+        const SUBTITLES_TTL: Duration = Duration::from_secs(5 * 60);
+        static SUBTITLE_LOCKS: KeyedLock<String> = KeyedLock::new();
+
         if media.kind == db::MediaKind::Episode {
             media
-                .grandparent(db)
+                .grandparent(&ctx.db)
                 .await
                 .ok();
         }
+
+        let cache_key = format!(
+            "addon-subtitles:{}:{}",
+            media.id,
+            user_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "anon".to_string())
+        );
+        if let Some(cached) = ctx
+            .store
+            .get::<Vec<SubtitleInfo>>(&cache_key)
+        {
+            return (*cached).clone();
+        }
+
+        let _guard = SUBTITLE_LOCKS
+            .lock(cache_key.clone())
+            .await;
+        // Re-check after acquiring the lock — another task may have just
+        // populated the cache while this one was waiting.
+        if let Some(cached) = ctx
+            .store
+            .get::<Vec<SubtitleInfo>>(&cache_key)
+        {
+            return (*cached).clone();
+        }
+
         let addons = self
-            .addons_for::<dyn SubtitleAddon>(media, db, user_id)
+            .addons_for::<dyn SubtitleAddon>(media, &ctx.db, user_id)
             .await;
 
         debug!(count = addons.len(), "subtitle addons matched");
@@ -2740,7 +2779,7 @@ impl AddonService {
                 .subtitle
                 .as_ref()
                 .unwrap()
-                .subtitle_fetch(media, db)
+                .subtitle_fetch(media, &ctx.db)
                 .await
             {
                 Ok(s) => {
@@ -2757,6 +2796,8 @@ impl AddonService {
         } else {
             info!(subs = subs.len(), addons = addons.len(), elapsed = ?instant.elapsed(), "subtitles fetched");
         }
+        ctx.store
+            .save(cache_key, subs.clone(), SUBTITLES_TTL);
         subs
     }
 
@@ -4099,6 +4140,108 @@ mod tests {
             !called.load(std::sync::atomic::Ordering::SeqCst),
             "stream-only addon's get_children should never be called"
         );
+    }
+
+    struct CountingSubtitleAddon {
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl SubtitleAddon for CountingSubtitleAddon {
+        fn supports(&self, _media: &db::Media) -> bool {
+            true
+        }
+
+        async fn subtitle_fetch(
+            &self,
+            _media: &db::Media,
+            _db: &SqlitePool,
+        ) -> Result<Vec<SubtitleInfo>> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // Give a concurrent second caller a chance to reach the cache
+            // check while this one is still "in flight".
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            Ok(vec![SubtitleInfo {
+                id: "sub".into(),
+                url: None,
+                lang: Some("eng".into()),
+                is_forced: false,
+                is_hi: false,
+                filename: None,
+                from_trusted: None,
+                ai_translated: None,
+            }])
+        }
+    }
+
+    /// Two near-simultaneous callers for the same item/user (e.g. an Items
+    /// detail fetch racing a PlaybackInfo call) must not each pay the full
+    /// addon round-trip — that's real duplicated latency and addon load, not
+    /// just a log artifact.
+    #[tokio::test]
+    async fn fetch_subtitles_coalesces_concurrent_calls_for_the_same_item() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let now = chrono::Utc::now().naive_utc();
+        let runtime = AddonRuntime {
+            row: addon::Addon {
+                id: uuid::Uuid::new_v4(),
+                name: "counting-subtitle".into(),
+                preset: AddonPresetRef {
+                    kind: "scripted".into(),
+                    config: serde_json::Value::Null.into(),
+                },
+                resources: vec![ResourceType::Subtitles],
+                types: vec![],
+                enabled: true,
+                priority: 0,
+                created_at: now,
+                updated_at: now,
+                system: true,
+                is_default: false,
+                http_redirect_stream: false,
+                service_filter: vec![],
+            },
+            caps: AddonCapabilities {
+                subtitle: Some(std::sync::Arc::new(CountingSubtitleAddon {
+                    calls: calls.clone(),
+                })),
+                ..Default::default()
+            },
+        };
+
+        let service = AddonService {
+            inner: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(vec![runtime])),
+        };
+
+        let (_, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = guard
+            .0
+            .clone();
+
+        let mut media_a = db::Media {
+            id: uuid::Uuid::new_v4(),
+            kind: db::MediaKind::Movie,
+            title: "Concurrent Fetch Test".into(),
+            ..Default::default()
+        };
+        let mut media_b = media_a.clone();
+        let user_id = uuid::Uuid::new_v4();
+
+        let (subs_a, subs_b) = tokio::join!(
+            service.fetch_subtitles(&mut media_a, &ctx, false, Some(user_id)),
+            service.fetch_subtitles(&mut media_b, &ctx, false, Some(user_id)),
+        );
+
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "concurrent fetches for the same item/user must coalesce into a single addon call"
+        );
+        assert_eq!(subs_a.len(), 1);
+        assert_eq!(subs_b.len(), 1);
     }
 
     /// Remote search mints a fresh id (and fresh, possibly-drifted data) per

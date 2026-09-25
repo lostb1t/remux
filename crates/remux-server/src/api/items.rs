@@ -1049,7 +1049,7 @@ pub async fn refresh_item(
             .ok();
 
         if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
-            warm_providers_cache(&state.ctx, &media);
+            warm_providers_cache(&state.ctx, &media, None);
         }
     } else if q.metadata_refresh_mode == api::MetadataRefreshMode::FullRefresh {
         let force_refresh = q.replace_all_metadata;
@@ -1747,13 +1747,29 @@ async fn item_for_user(
             c.0.clone()
         })
         .unwrap_or_default();
-    let persisted_device_profile = session
-        .device
-        .parsed_device_profile();
+    let persisted_device_profile =
+        crate::jellyfin_client::merge_device_profile_subtitles(
+            &session.device,
+            session
+                .device
+                .parsed_device_profile(),
+        );
 
+    // Items detail itself never shows subtitles (embedded or addon external —
+    // see the media_streams-stripping block below), but it still warms the
+    // subtitle addon cache in the background so the PlaybackInfo call that
+    // follows a few seconds later doesn't pay the cold-fetch cost.
     if needs_streams {
-        if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
-            warm_providers_cache(&state.ctx, &media);
+        if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
+            warm_providers_cache(
+                &state.ctx,
+                &media,
+                Some(
+                    session
+                        .user
+                        .id,
+                ),
+            );
         }
         state
             .ctx
@@ -1856,6 +1872,9 @@ async fn item_for_user(
                         device_profile: persisted_device_profile.as_ref(),
                         subtitle_mode,
                         explicit_subtitle_index: None,
+                        max_bitrate: persisted_device_profile
+                            .as_ref()
+                            .and_then(|p| p.max_streaming_bitrate),
                     },
                     &user_cfg,
                     server_config
@@ -1927,6 +1946,9 @@ async fn item_for_user(
                         device_profile: persisted_device_profile.as_ref(),
                         subtitle_mode,
                         explicit_subtitle_index: None,
+                        max_bitrate: persisted_device_profile
+                            .as_ref()
+                            .and_then(|p| p.max_streaming_bitrate),
                     },
                     &user_cfg,
                     server_config
@@ -2003,6 +2025,28 @@ async fn item_for_user(
         }]);
     }
 
+    // Items detail never advertises subtitle tracks — neither embedded (from
+    // probe data) nor addon-external. Addon subtitle fetches are the slow
+    // part of building this response (multi-second network round trips per
+    // addon), most clients never surface subtitles on a details page anyway,
+    // and every real client calls PlaybackInfo before it actually starts
+    // playback — that's the one place subtitles (embedded + external) get
+    // advertised, with indexes that stay consistent with the download
+    // endpoint. Strip rather than just not-append, so a stale/cached embedded
+    // subtitle entry from probe data doesn't leak through either.
+    if want_streams
+        && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode)
+    {
+        if let Some(ref mut sources) = base_item.media_sources {
+            for source in sources.iter_mut() {
+                source
+                    .media_streams
+                    .retain(|s| s.type_ != Some(api::MediaStreamType::Subtitle));
+                source.default_subtitle_stream_index = None;
+            }
+        }
+    }
+
     if want_streams {
         if let Some(ref mut sources) = base_item.media_sources {
             // Default audio/subtitle stream indexes are per-request API values
@@ -2047,6 +2091,7 @@ async fn item_for_user(
                 device_profile: Some(device_profile),
                 subtitle_mode,
                 explicit_subtitle_index: None,
+                max_bitrate: device_profile.max_streaming_bitrate,
             };
             if let Some(sources) = base_item
                 .media_sources
@@ -3559,13 +3604,23 @@ pub async fn patch_item(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn warm_providers_cache(ctx: &crate::AppContext, media: &db::Media) {
+/// Background-warms the addon caches PlaybackInfo will hit right after this
+/// item is opened. `user_id` must be the real requester's — addon selection
+/// is user-scoped (`addons_for`), so warming under the wrong user (or `None`)
+/// populates a cache entry a real PlaybackInfo call will never read, making
+/// this a no-op in practice.
+fn warm_providers_cache(
+    ctx: &crate::AppContext,
+    media: &db::Media,
+    user_id: Option<Uuid>,
+) {
     let mut media = media.clone();
     let ctx = ctx.clone();
     tokio::spawn(async move {
+        let mut subtitle_media = media.clone();
         let _ = ctx
             .addons
-            .fetch_subtitles(&mut media, &ctx.db, true, None)
+            .fetch_subtitles(&mut subtitle_media, &ctx, true, user_id)
             .await;
         let _ = media
             .grandparent(&ctx.db)
@@ -5175,11 +5230,14 @@ mod tests {
         media
     }
 
-    /// The Items endpoint (detail page) must apply the server's global
-    /// preferred_metadata_language as a subtitle fallback when the user has no
-    /// subtitle language preference.
+    /// Items detail deliberately never shows subtitle tracks — addon subtitle
+    /// fetches are slow network round trips and most clients never surface
+    /// subtitles on a details page anyway. Only PlaybackInfo (called when a
+    /// client actually starts playback) advertises them. This must hold even
+    /// when embedded subtitle streams are present in probe data and a server
+    /// metadata-language fallback would otherwise pick one as default.
     #[tokio::test]
-    async fn test_items_detail_applies_server_metadata_language_subtitle_fallback() {
+    async fn test_items_detail_never_shows_subtitle_tracks() {
         use crate::{api::ServerConfiguration, db::Settings};
 
         let (server, guard, token) = authenticated_server().await;
@@ -5208,10 +5266,20 @@ mod tests {
 
         resp.assert_status_ok();
         let body: serde_json::Value = resp.json();
+        let streams = body["MediaSources"][0]["MediaStreams"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            streams
+                .iter()
+                .all(|s| s["Type"] != "Subtitle"),
+            "Items detail must never include subtitle streams, even embedded ones from probe data"
+        );
         assert_eq!(
-            body["MediaSources"][0]["DefaultSubtitleStreamIndex"].as_i64(),
-            Some(2),
-            "detail page should fall back to server preferred_metadata_language 'fr' (French subtitle, index 2) when the user has no subtitle language preference"
+            body["MediaSources"][0]["DefaultSubtitleStreamIndex"],
+            serde_json::Value::Null,
+            "Items detail must never set a default subtitle stream index"
         );
     }
 

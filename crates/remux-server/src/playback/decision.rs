@@ -20,14 +20,16 @@ pub(crate) struct PlaybackPermissions {
 }
 
 impl PlaybackPermissions {
-    pub(crate) fn for_session(
+    pub(crate) fn for_user(
         encoding: &EncodingOptions,
-        session: &db::auth::AuthSession,
+        user: Option<&db::User>,
     ) -> Self {
-        let policy = session
-            .user
-            .policy
-            .as_ref();
+        let policy = user
+            .and_then(|user| {
+                user.policy
+                    .as_ref()
+            });
+
         Self {
             remuxing: encoding
                 .enable_remuxing
@@ -167,7 +169,8 @@ pub(crate) fn build_transcode_decision(
         return TranscodeDecision::DirectPlay;
     }
 
-    let permissions = PlaybackPermissions::for_session(&cfg.encoding_cfg, session);
+    let permissions =
+        PlaybackPermissions::for_user(&cfg.encoding_cfg, Some(&session.user));
 
     // Only take the audio path when the source explicitly has audio streams
     // but NO video stream. An empty media_streams (unprobed skip-probe
@@ -507,6 +510,9 @@ fn subtitle_burn_method(
 }
 
 /// Assigns delivery URLs and methods to all subtitle streams in `source`.
+// TODO: Embed is chosen from the profile alone. For a transcoded/HLS source,
+// verify that the selected output actually carries the embedded track before
+// advertising Embed. This is a generic delivery issue, not client-specific.
 pub(crate) fn apply_subtitle_delivery(
     source: &mut api::MediaSourceInfo,
     item_id: Uuid,
@@ -546,24 +552,10 @@ pub(crate) fn apply_subtitle_delivery(
                 .unwrap_or(false)
         };
         let profile_embeds = |c: SubtitleCodec| -> bool {
-            device_profile
-                .as_ref()
-                .map(|dp| {
-                    dp.subtitle_profiles
-                        .iter()
-                        .any(|p| {
-                            p.method == Some(api::SubtitleDeliveryMethod::Embed)
-                                && p.format
-                                    .as_deref()
-                                    .and_then(|f| {
-                                        f.parse::<SubtitleCodec>()
-                                            .ok()
-                                    })
-                                    .as_ref()
-                                    == Some(&c)
-                        })
-                })
-                .unwrap_or(false)
+            crate::device_profile::profile_embeds_subtitle_codec(
+                device_profile.as_ref(),
+                &c,
+            )
         };
         let parsed_codec = codec
             .parse::<SubtitleCodec>()
@@ -829,8 +821,10 @@ mod tests {
         policy.enable_video_playback_transcoding = false;
         policy.enable_audio_playback_transcoding = false;
         let session = make_session_with_policy(policy);
-        let permissions =
-            PlaybackPermissions::for_session(&EncodingOptions::default(), &session);
+        let permissions = PlaybackPermissions::for_user(
+            &EncodingOptions::default(),
+            Some(&session.user),
+        );
 
         let codecs = permissions.resolve_codecs("h264", "aac");
 

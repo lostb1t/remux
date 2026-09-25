@@ -64,7 +64,8 @@ async fn create_hls_session(
     )
     .await
     .unwrap_or_default();
-    let permissions = PlaybackPermissions::for_session(&encoding_opts_hls, auth);
+    let permissions =
+        PlaybackPermissions::for_user(&encoding_opts_hls, Some(&auth.user));
     let video_codec_raw = q
         .video_codec
         .as_deref()

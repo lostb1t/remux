@@ -106,8 +106,9 @@ impl PlaybackSessionManager {
                 let encoding = db::Settings::get_encoding_config(db)
                     .await
                     .unwrap_or_default();
-                let method = PlaybackPermissions::for_session(&encoding, auth_session)
-                    .constrain_reported_method(method);
+                let method =
+                    PlaybackPermissions::for_user(&encoding, Some(&auth_session.user))
+                        .constrain_reported_method(method);
                 Some(method)
             } else {
                 None

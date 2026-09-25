@@ -558,6 +558,32 @@ impl FromRequestParts<AppState> for AuthSession {
     }
 }
 
+/// Best-effort user resolution from a device/API-key token, for endpoints
+/// that must stay reachable without a session (e.g. Infuse's direct stream
+/// URL, which carries `ApiKey` but no cookie or `PlaySessionId`) but still
+/// want the caller's identity — for per-user cache scoping — when a valid
+/// token is present. Unlike `AuthSession::from_request_parts`, an invalid or
+/// missing token yields `None` instead of rejecting the request.
+pub async fn resolve_user_id_from_token(db: &SqlitePool, token: &str) -> Option<Uuid> {
+    if let Some(device) = Device::get_by_access_token(db, token)
+        .await
+        .ok()
+        .flatten()
+    {
+        return Some(device.user_id);
+    }
+    db::ApiKey::get_by_token(db, token)
+        .await
+        .ok()
+        .flatten()?;
+    sqlx::query_as::<_, db::User>("SELECT * FROM users WHERE is_admin = 1 LIMIT 1")
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.id)
+}
+
 /// Extractor that resolves a target `db::User` from the `user_id` path param
 /// or `userId`/`UserId` query param. Falls back to the session user when absent.
 /// Non-admins may only target themselves.

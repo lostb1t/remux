@@ -242,6 +242,12 @@ async fn fetch_external_subtitle_bytes(
             .await
             .map_err(|e| anyhow!("upstream serve failed: {e:?}"))?,
     };
+    if !resp
+        .status()
+        .is_success()
+    {
+        return Err(anyhow!("upstream subtitle status {}", resp.status()));
+    }
     axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .map_err(|e| anyhow!("read subtitle bytes: {e}"))
@@ -469,22 +475,23 @@ async fn subtitles_stream_inner(
             let i = stream_index - next_idx;
             // Only attempt external resolution if the index is not an embedded stream.
             if i >= 0 && !embedded_indices.contains(&stream_index) {
-                let sub_langs = db::Settings::get_config_or_default(
+                let server_cfg = db::Settings::get_config_or_default(
                     &state
                         .ctx
                         .db,
                 )
-                .await
-                .subtitle_languages
-                .unwrap_or_default();
+                .await;
+                let sub_langs = server_cfg
+                    .subtitle_languages
+                    .clone()
+                    .unwrap_or_default();
+                let dedup = SubtitleDedupSettings::from_config(&server_cfg);
                 let subs = state
                     .ctx
                     .addons
                     .fetch_subtitles(
                         &mut item_media,
-                        &state
-                            .ctx
-                            .db,
+                        &state.ctx,
                         true,
                         Some(
                             session
@@ -493,13 +500,83 @@ async fn subtitles_stream_inner(
                         ),
                     )
                     .await;
-                let source_info = api::MediaSourceInfo::from(source.clone());
-                let scored = scored_external_subtitles(
-                    &subs,
-                    &sub_langs,
-                    &source_info.name,
-                    &source_info.path,
-                );
+                // Match append_external_subtitles' filtering exactly, or the
+                // index a client requests (from the menu it was shown) won't
+                // line up with this reconstructed list. That means resolving
+                // delivery_method the same way PlaybackInfo did first: raw
+                // probe data leaves text subtitles' delivery_method unset
+                // (None), which would bypass has_supported_embedded_subtitle's
+                // Embed-only guard and let a stale/best-effort profile
+                // reach its codec fallback instead of agreeing with what was
+                // actually advertised.
+                let device_profile =
+                    crate::jellyfin_client::merge_device_profile_subtitles(
+                        &session.device,
+                        session
+                            .device
+                            .parsed_device_profile(),
+                    );
+                let subtitle_mode = db::Settings::get_encoding_config(
+                    &state
+                        .ctx
+                        .db,
+                )
+                .await
+                .unwrap_or_default()
+                .subtitle_mode
+                .unwrap_or_default();
+                let resolved_probe = source
+                    .probe_data
+                    .clone()
+                    .map(|mut probe| {
+                        for stream in &mut probe.media_streams {
+                            if matches!(
+                                stream.type_,
+                                Some(api::MediaStreamType::Subtitle)
+                            ) {
+                                stream.is_text_subtitle_stream =
+                                    stream.is_text_subtitle_stream();
+                            }
+                        }
+                        crate::playback::decision::apply_subtitle_delivery(
+                            &mut probe,
+                            item_id,
+                            session
+                                .device
+                                .access_token
+                                .expose(),
+                            &device_profile,
+                            subtitle_mode,
+                        );
+                        probe
+                    });
+                let scored: Vec<_> =
+                    crate::subtitle_selection::select_external_subtitles(
+                        &subs,
+                        &sub_langs,
+                        source
+                            .stream_info
+                            .as_ref()
+                            .and_then(|info| {
+                                info.filename
+                                    .as_deref()
+                            }),
+                        dedup.max_external_per_language(),
+                    )
+                    .into_iter()
+                    .filter(|sub| {
+                        !dedup.enabled
+                            || !resolved_probe
+                                .as_ref()
+                                .is_some_and(|probe| {
+                                    has_supported_embedded_subtitle(
+                                        probe,
+                                        sub,
+                                        device_profile.as_ref(),
+                                    )
+                                })
+                    })
+                    .collect();
                 if let Some(sub) = scored.get(i as usize) {
                     if let Some(ref descriptor) = sub.url {
                         let output_format = format.to_ascii_lowercase();
@@ -731,7 +808,7 @@ pub(crate) use remux_sdks::remux::lang_to_two_letter;
 pub(crate) fn subtitle_path_hint(sub: &crate::addons::SubtitleInfo) -> &str {
     match &sub.url {
         Some(crate::stream::StreamDescriptor::Http { url, .. }) => url.as_str(),
-        Some(crate::stream::StreamDescriptor::Local(p)) => p
+        Some(crate::stream::StreamDescriptor::Local(path)) => path
             .to_str()
             .unwrap_or(""),
         Some(crate::stream::StreamDescriptor::Opendal { path, .. }) => path.as_str(),
@@ -746,128 +823,60 @@ pub(crate) fn descriptor_to_subtitle_url(sub: &crate::addons::SubtitleInfo) -> S
     }
 }
 
-fn score_sub_url(
-    sub: &crate::addons::SubtitleInfo,
-    source_name: &Option<String>,
-    source_path: &Option<String>,
-) -> i32 {
-    fn tokens(s: &str) -> std::collections::HashSet<String> {
-        s.split(|c: char| !c.is_alphanumeric())
-            .filter(|t| t.len() > 2)
-            .map(|t| t.to_lowercase())
-            .collect()
+/// `ServerConfiguration.deduplicate_subtitle_tracks` /
+/// `max_external_subtitles_per_language`, resolved once per request so
+/// `append_external_subtitles` and the download endpoint's index
+/// reconstruction always agree on what was advertised.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SubtitleDedupSettings {
+    /// When true: at most one subtitle per language, and a language already
+    /// covered by a supported embedded track gets no external entry at all.
+    /// When false: up to `max_external_per_language_when_disabled` external
+    /// candidates per language, regardless of embedded coverage.
+    pub enabled: bool,
+    pub max_external_per_language_when_disabled: i64,
+}
+
+impl SubtitleDedupSettings {
+    pub(crate) fn from_config(cfg: &api::ServerConfiguration) -> Self {
+        Self {
+            enabled: cfg
+                .deduplicate_subtitle_tracks
+                .unwrap_or(true),
+            max_external_per_language_when_disabled: cfg
+                .max_external_subtitles_per_language
+                .unwrap_or(1),
+        }
     }
-    let hint = subtitle_path_hint(sub);
-    let sub_file = hint
-        .rsplit('/')
-        .next()
-        .unwrap_or(hint);
-    let sub_tok = tokens(sub_file);
-    let mut src_tok = tokens(
-        source_name
-            .as_deref()
-            .unwrap_or(""),
-    );
-    src_tok.extend(tokens(
-        source_path
-            .as_deref()
-            .unwrap_or(""),
-    ));
-    sub_tok
-        .intersection(&src_tok)
-        .count() as i32
+
+    fn max_external_per_language(&self) -> usize {
+        if self.enabled {
+            1
+        } else {
+            self.max_external_per_language_when_disabled
+                .max(0) as usize
+        }
+    }
 }
 
-/// Filter, score, sort, and deduplicate external subtitles for a single source.
-/// Returns the ordered list of subtitles that will be assigned stream indices.
-pub(crate) fn scored_external_subtitles<'a>(
-    subs: &'a [crate::addons::SubtitleInfo],
+/// Add prefetched subtitles to real-probed sources. Only called from
+/// PlaybackInfo — Items detail deliberately never shows subtitle tracks (see
+/// the stripping step in `items.rs`), so index alignment only has to hold
+/// within a single PlaybackInfo response and the download endpoint that
+/// follows it.
+pub(crate) fn append_external_subtitles(
+    media_sources: &mut [api::MediaSourceInfo],
+    subs: &[crate::addons::SubtitleInfo],
     sub_langs: &[String],
-    source_name: &Option<String>,
-    source_path: &Option<String>,
-) -> Vec<&'a crate::addons::SubtitleInfo> {
-    let filtered: Vec<&crate::addons::SubtitleInfo> = if sub_langs.is_empty() {
-        subs.iter()
-            .collect()
-    } else {
-        subs.iter()
-            .filter(|s| {
-                let two = s
-                    .lang
-                    .as_deref()
-                    .and_then(lang_to_two_letter);
-                two.map_or(false, |two| {
-                    sub_langs
-                        .iter()
-                        .any(|p| two.eq_ignore_ascii_case(p.trim()))
-                })
-            })
-            .collect()
-    };
-
-    let mut scored: Vec<_> = filtered
-        .into_iter()
-        .map(|s| (score_sub_url(s, source_name, source_path), s))
-        .collect();
-    scored.sort_by(|(sa, a), (sb, b)| {
-        let rank = |s: &&crate::addons::SubtitleInfo| {
-            let two = s
-                .lang
-                .as_deref()
-                .and_then(lang_to_two_letter);
-            sub_langs
-                .iter()
-                .position(|p| {
-                    two.as_deref()
-                        .map_or(false, |t| t.eq_ignore_ascii_case(p.trim()))
-                })
-                .unwrap_or(usize::MAX)
-        };
-        rank(a)
-            .cmp(&rank(b))
-            .then(sb.cmp(sa))
-    });
-
-    let mut lang_counts: std::collections::HashMap<String, usize> = Default::default();
-    scored
-        .into_iter()
-        .filter_map(|(_, s)| {
-            let key = s
-                .lang
-                .clone()
-                .unwrap_or_else(|| "und".to_string());
-            let count = lang_counts
-                .entry(key)
-                .or_insert(0);
-            if *count < 10 {
-                *count += 1;
-                Some(s)
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-/// Inject external subtitles into a list of `MediaSourceInfo` entries.
-pub(crate) async fn inject_external_subtitles(
-    ctx: &crate::AppContext,
-    subtitle_media: &mut crate::db::Media,
-    media_sources: &mut Vec<api::MediaSourceInfo>,
+    device_profile: Option<&api::DeviceProfile>,
     item_id: Uuid,
     api_key: &str,
-    sub_langs: Vec<String>,
-    user_id: Option<uuid::Uuid>,
+    dedup: SubtitleDedupSettings,
 ) {
-    let subs = ctx
-        .addons
-        .fetch_subtitles(subtitle_media, &ctx.db, false, user_id)
-        .await;
-    if subs.is_empty() {
-        return;
-    }
-
     for source in media_sources.iter_mut() {
+        if !has_real_probe_data(source) {
+            continue;
+        }
         let next_idx = source
             .media_streams
             .iter()
@@ -875,9 +884,36 @@ pub(crate) async fn inject_external_subtitles(
             .max()
             .map_or(0, |m| m + 1);
 
-        let scored =
-            scored_external_subtitles(&subs, &sub_langs, &source.name, &source.path);
-
+        let source_filename = source
+            .remux
+            .as_ref()
+            .and_then(|remux| {
+                remux
+                    .provider_info
+                    .as_ref()
+            })
+            .and_then(|info| info.get("filename"))
+            .and_then(serde_json::Value::as_str);
+        // With dedup on, a language already covered by a supported embedded
+        // track is dropped entirely, not replaced with a different (e.g.
+        // forced/HI) external variant of the same language — offering a
+        // second track for a language the device can already play embedded
+        // is exactly the redundant duplicate this filter exists to avoid.
+        // With dedup off, every external candidate up to the configured cap
+        // is kept regardless of embedded coverage — the user asked to see
+        // everything.
+        let scored: Vec<_> = crate::subtitle_selection::select_external_subtitles(
+            &subs,
+            sub_langs,
+            source_filename,
+            dedup.max_external_per_language(),
+        )
+        .into_iter()
+        .filter(|sub| {
+            !dedup.enabled
+                || !has_supported_embedded_subtitle(source, sub, device_profile)
+        })
+        .collect();
         let wants_default = !sub_langs.is_empty()
             && source
                 .default_subtitle_stream_index
@@ -904,12 +940,155 @@ pub(crate) async fn inject_external_subtitles(
     }
 }
 
+fn has_real_probe_data(source: &api::MediaSourceInfo) -> bool {
+    matches!(
+        source
+            .remux
+            .as_ref()
+            .and_then(|remux| remux.source),
+        Some(api::ProbeOrigin::Ffprobe | api::ProbeOrigin::RemuxDb)
+    ) && !source
+        .media_streams
+        .is_empty()
+}
+
+fn has_supported_embedded_subtitle(
+    source: &api::MediaSourceInfo,
+    external: &crate::addons::SubtitleInfo,
+    device_profile: Option<&api::DeviceProfile>,
+) -> bool {
+    let Some(profile) = device_profile else {
+        return false;
+    };
+    let external_language = crate::subtitle_selection::normalized_language(
+        external
+            .lang
+            .as_deref(),
+    );
+    if external_language == "und" || external_language.is_empty() {
+        return false;
+    }
+
+    source
+        .media_streams
+        .iter()
+        .any(|stream| {
+            if stream.type_ != Some(api::MediaStreamType::Subtitle)
+                || stream.is_external
+                || stream
+                    .delivery_method
+                    .as_ref()
+                    .is_some_and(|method| method != &api::SubtitleDeliveryMethod::Embed)
+                || stream.is_forced != external.is_forced
+                || stream.is_hearing_impaired != external.is_hi
+                || crate::subtitle_selection::normalized_language(
+                    stream
+                        .language
+                        .as_deref(),
+                ) != external_language
+            {
+                return false;
+            }
+            let Some(codec) = stream
+                .codec
+                .as_deref()
+            else {
+                return false;
+            };
+            profile
+                .subtitle_profiles
+                .iter()
+                .any(|supported| {
+                    supported.method == Some(api::SubtitleDeliveryMethod::Embed)
+                        && supported
+                            .format
+                            .as_deref()
+                            .is_some_and(|format| {
+                                crate::device_profile::subtitle_codec_matches_profile(
+                                    codec, format,
+                                )
+                            })
+                })
+        })
+}
+
+/// Drops embedded subtitle streams the device can't play embedded when a
+/// matching addon external subtitle already covers them (same language,
+/// forced flag, and hearing-impaired flag — the same "is this actually the
+/// same track" bar `has_supported_embedded_subtitle` already uses in the
+/// opposite direction).
+///
+/// Extracting an unsupported embedded subtitle on demand is a slow HTTP
+/// round trip against the source file (the download endpoint has to seek
+/// into it with ffmpeg) — there's no reason to offer that when a fast,
+/// already-fetched external copy exists.
+///
+/// Must run before `resolve_default_streams`/`compute_transcode_reasons` in
+/// playback.rs's per-source loop — those, not `apply_subtitle_delivery`, are
+/// what actually pick the default subtitle and decide whether a burn-in
+/// transcode is needed. Removing the stream from `media_streams` here is
+/// what keeps them from ever considering it; this function doesn't (and
+/// shouldn't need to) touch their logic.
+pub(crate) fn drop_unsupported_embedded_subtitles_with_external_match(
+    source: &mut api::MediaSourceInfo,
+    external_subtitles: &[crate::addons::SubtitleInfo],
+    device_profile: Option<&api::DeviceProfile>,
+) {
+    source
+        .media_streams
+        .retain(|stream| {
+            if stream.type_ != Some(api::MediaStreamType::Subtitle)
+                || stream.is_external
+            {
+                return true;
+            }
+            let Some(codec) = stream
+                .codec
+                .as_deref()
+                .and_then(|c| {
+                    c.parse::<crate::device_profile::SubtitleCodec>()
+                        .ok()
+                })
+            else {
+                return true;
+            };
+            if crate::device_profile::profile_embeds_subtitle_codec(
+                device_profile,
+                &codec,
+            ) {
+                // Would be Embed delivery anyway — free, keep it.
+                return true;
+            }
+            let stream_language = crate::subtitle_selection::normalized_language(
+                stream
+                    .language
+                    .as_deref(),
+            );
+            let has_replacement = external_subtitles
+                .iter()
+                .any(|ext| {
+                    ext.is_forced == stream.is_forced
+                        && ext.is_hi == stream.is_hearing_impaired
+                        && crate::subtitle_selection::normalized_language(
+                            ext.lang
+                                .as_deref(),
+                        ) == stream_language
+                });
+            !has_replacement
+        });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use http::header::HeaderValue;
 
     use crate::integration_test::{auth_header_with_token, authenticated_server};
+
+    const DEDUP_ON: SubtitleDedupSettings = SubtitleDedupSettings {
+        enabled: true,
+        max_external_per_language_when_disabled: 1,
+    };
 
     /// Jellyfin's tickless subtitle route (`.../Subtitles/{index}/Stream.{format}`,
     /// no start-position-ticks segment) must dispatch to the same handler as the
@@ -1018,6 +1197,9 @@ mod tests {
             lang: Some("en".to_string()),
             is_forced: false,
             is_hi: false,
+            filename: None,
+            from_trusted: None,
+            ai_translated: None,
         }];
 
         let routes = inject_sidecar_subtitles(&mut source, subtitles);
@@ -1036,5 +1218,465 @@ mod tests {
     #[test]
     fn external_subtitles_follow_sidecars() {
         assert_eq!(next_external_subtitle_index([0, 1], [2]), 3);
+    }
+
+    #[test]
+    fn external_subtitles_only_follow_real_probe_streams() {
+        let item_id = Uuid::new_v4();
+        let existing = vec![
+            api::MediaStream {
+                index: 0,
+                type_: Some(api::MediaStreamType::Video),
+                ..Default::default()
+            },
+            api::MediaStream {
+                index: 2,
+                type_: Some(api::MediaStreamType::Subtitle),
+                codec: Some("subrip".into()),
+                ..Default::default()
+            },
+        ];
+        let mut sources = vec![
+            api::MediaSourceInfo {
+                id: Uuid::new_v4(),
+                media_streams: existing.clone(),
+                remux: Some(api::MediaSourceRemuxInfo {
+                    source: Some(api::ProbeOrigin::Ffprobe),
+                    provider_info: Some(
+                        serde_json::json!({"filename": "Movie.2026.mkv"}),
+                    ),
+                }),
+                ..Default::default()
+            },
+            api::MediaSourceInfo {
+                id: Uuid::new_v4(),
+                media_streams: existing.clone(),
+                remux: Some(api::MediaSourceRemuxInfo {
+                    source: Some(api::ProbeOrigin::FilenameGuess),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            api::MediaSourceInfo {
+                id: Uuid::new_v4(),
+                ..Default::default()
+            },
+            api::MediaSourceInfo {
+                id: Uuid::new_v4(),
+                media_streams: existing,
+                ..Default::default()
+            },
+        ];
+        let subs = vec![crate::addons::SubtitleInfo {
+            id: "external".into(),
+            url: Some(crate::stream::StreamDescriptor::http(
+                "https://example.com/Movie.2026.srt",
+            )),
+            lang: Some("eng".into()),
+            is_forced: false,
+            is_hi: false,
+            filename: Some("Movie.2026.srt".into()),
+            from_trusted: None,
+            ai_translated: None,
+        }];
+
+        append_external_subtitles(
+            &mut sources,
+            &subs,
+            &[],
+            None,
+            item_id,
+            "test-key",
+            DEDUP_ON,
+        );
+
+        assert_eq!(
+            sources[0]
+                .media_streams
+                .len(),
+            3
+        );
+        assert_eq!(sources[0].media_streams[2].index, 3);
+        assert_eq!(sources[0].media_streams[2].is_external, true);
+        assert_eq!(
+            sources[1]
+                .media_streams
+                .len(),
+            2
+        );
+        assert!(
+            sources[2]
+                .media_streams
+                .is_empty()
+        );
+        assert_eq!(
+            sources[3]
+                .media_streams
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn supported_embedded_subtitle_replaces_only_the_matching_external_variant() {
+        let item_id = Uuid::new_v4();
+        let source = api::MediaSourceInfo {
+            id: Uuid::new_v4(),
+            media_streams: vec![api::MediaStream {
+                index: 2,
+                type_: Some(api::MediaStreamType::Subtitle),
+                codec: Some("pgssub".into()),
+                language: Some("eng".into()),
+                ..Default::default()
+            }],
+            remux: Some(api::MediaSourceRemuxInfo {
+                source: Some(api::ProbeOrigin::Ffprobe),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let external = crate::addons::SubtitleInfo {
+            id: "regular".into(),
+            url: None,
+            lang: Some("en".into()),
+            is_forced: false,
+            is_hi: false,
+            filename: None,
+            from_trusted: None,
+            ai_translated: None,
+        };
+        let embed_profile = api::DeviceProfile {
+            subtitle_profiles: vec![api::SubtitleProfile {
+                format: Some("pgs".into()),
+                method: Some(api::SubtitleDeliveryMethod::Embed),
+            }],
+            ..Default::default()
+        };
+        let external_profile = api::DeviceProfile {
+            subtitle_profiles: vec![api::SubtitleProfile {
+                format: Some("pgs".into()),
+                method: Some(api::SubtitleDeliveryMethod::External),
+            }],
+            ..Default::default()
+        };
+
+        let mut sources = vec![source.clone()];
+        append_external_subtitles(
+            &mut sources,
+            &[external.clone()],
+            &[],
+            Some(&embed_profile),
+            item_id,
+            "test-key",
+            DEDUP_ON,
+        );
+        assert_eq!(
+            sources[0]
+                .media_streams
+                .len(),
+            1
+        );
+
+        for profile in [None, Some(&external_profile)] {
+            let mut sources = vec![source.clone()];
+            append_external_subtitles(
+                &mut sources,
+                &[external.clone()],
+                &[],
+                profile,
+                item_id,
+                "test-key",
+                DEDUP_ON,
+            );
+            assert_eq!(
+                sources[0]
+                    .media_streams
+                    .len(),
+                2
+            );
+        }
+
+        let mut forced = external.clone();
+        forced.is_forced = true;
+        let mut sources = vec![source.clone()];
+        append_external_subtitles(
+            &mut sources,
+            &[forced],
+            &[],
+            Some(&embed_profile),
+            item_id,
+            "test-key",
+            DEDUP_ON,
+        );
+        assert_eq!(
+            sources[0]
+                .media_streams
+                .len(),
+            2
+        );
+
+        let mut external_source = source;
+        external_source.media_streams[0].delivery_method =
+            Some(api::SubtitleDeliveryMethod::External);
+        let mut sources = vec![external_source];
+        append_external_subtitles(
+            &mut sources,
+            &[external],
+            &[],
+            Some(&embed_profile),
+            item_id,
+            "test-key",
+            DEDUP_ON,
+        );
+        assert_eq!(
+            sources[0]
+                .media_streams
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn dutch_bibliographic_code_does_not_duplicate_embedded_subtitle() {
+        let source = api::MediaSourceInfo {
+            id: Uuid::new_v4(),
+            media_streams: vec![api::MediaStream {
+                index: 2,
+                type_: Some(api::MediaStreamType::Subtitle),
+                codec: Some("PGSSUB".into()),
+                language: Some("nld".into()),
+                ..Default::default()
+            }],
+            remux: Some(api::MediaSourceRemuxInfo {
+                source: Some(api::ProbeOrigin::RemuxDb),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let external = crate::addons::SubtitleInfo {
+            id: "dutch".into(),
+            url: None,
+            lang: Some("dut".into()),
+            is_forced: false,
+            is_hi: false,
+            filename: None,
+            from_trusted: None,
+            ai_translated: None,
+        };
+        let profile = api::DeviceProfile {
+            subtitle_profiles: vec![api::SubtitleProfile {
+                format: Some("pgs".into()),
+                method: Some(api::SubtitleDeliveryMethod::Embed),
+            }],
+            ..Default::default()
+        };
+
+        let mut sources = vec![source];
+        append_external_subtitles(
+            &mut sources,
+            &[external],
+            &[],
+            Some(&profile),
+            Uuid::new_v4(),
+            "test-key",
+            DEDUP_ON,
+        );
+        assert_eq!(
+            sources[0]
+                .media_streams
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn dedup_disabled_keeps_multiple_external_candidates_up_to_the_cap() {
+        let source = api::MediaSourceInfo {
+            id: Uuid::new_v4(),
+            media_streams: vec![api::MediaStream {
+                index: 2,
+                type_: Some(api::MediaStreamType::Subtitle),
+                codec: Some("pgssub".into()),
+                language: Some("eng".into()),
+                ..Default::default()
+            }],
+            remux: Some(api::MediaSourceRemuxInfo {
+                source: Some(api::ProbeOrigin::Ffprobe),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let embed_profile = api::DeviceProfile {
+            subtitle_profiles: vec![api::SubtitleProfile {
+                format: Some("pgs".into()),
+                method: Some(api::SubtitleDeliveryMethod::Embed),
+            }],
+            ..Default::default()
+        };
+        let regular = crate::addons::SubtitleInfo {
+            id: "regular".into(),
+            url: None,
+            lang: Some("en".into()),
+            is_forced: false,
+            is_hi: false,
+            filename: None,
+            from_trusted: None,
+            ai_translated: None,
+        };
+        let mut forced = regular.clone();
+        forced.id = "forced".into();
+        forced.is_forced = true;
+
+        // Dedup on: the embedded English track (Embed-supported) suppresses
+        // both external candidates for English.
+        let mut sources = vec![source.clone()];
+        append_external_subtitles(
+            &mut sources,
+            &[regular.clone(), forced.clone()],
+            &[],
+            Some(&embed_profile),
+            Uuid::new_v4(),
+            "test-key",
+            DEDUP_ON,
+        );
+        assert_eq!(
+            sources[0]
+                .media_streams
+                .len(),
+            1,
+            "dedup on: embedded already covers English, no external added"
+        );
+
+        // Dedup off with a cap of 2: both externals show up alongside the
+        // embedded track, even though the embedded one would otherwise
+        // suppress a same-flavor external.
+        let mut sources = vec![source];
+        append_external_subtitles(
+            &mut sources,
+            &[regular, forced],
+            &[],
+            Some(&embed_profile),
+            Uuid::new_v4(),
+            "test-key",
+            SubtitleDedupSettings {
+                enabled: false,
+                max_external_per_language_when_disabled: 2,
+            },
+        );
+        assert_eq!(
+            sources[0]
+                .media_streams
+                .len(),
+            3,
+            "dedup off: embedded track plus both external candidates, up to the cap"
+        );
+    }
+
+    fn dutch_pgs_source() -> api::MediaSourceInfo {
+        api::MediaSourceInfo {
+            id: Uuid::new_v4(),
+            media_streams: vec![api::MediaStream {
+                index: 2,
+                type_: Some(api::MediaStreamType::Subtitle),
+                codec: Some("pgssub".into()),
+                language: Some("dut".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn no_embed_profile() -> api::DeviceProfile {
+        // Supports the codec for some non-Embed method (or not at all) —
+        // either way, profile_embeds_subtitle_codec must say no.
+        api::DeviceProfile::default()
+    }
+
+    #[test]
+    fn drops_unsupported_embedded_subtitle_with_a_matching_external() {
+        let mut source = dutch_pgs_source();
+        let external = crate::addons::SubtitleInfo {
+            id: "dutch".into(),
+            url: None,
+            lang: Some("dut".into()),
+            is_forced: false,
+            is_hi: false,
+            filename: None,
+            from_trusted: None,
+            ai_translated: None,
+        };
+        drop_unsupported_embedded_subtitles_with_external_match(
+            &mut source,
+            &[external],
+            Some(&no_embed_profile()),
+        );
+        assert!(
+            source
+                .media_streams
+                .is_empty(),
+            "unsupported embedded subtitle with a matching external must be dropped"
+        );
+    }
+
+    #[test]
+    fn keeps_unsupported_embedded_subtitle_without_a_language_match() {
+        let mut source = dutch_pgs_source();
+        // Different language — not a replacement for the Dutch track.
+        let external = crate::addons::SubtitleInfo {
+            id: "english".into(),
+            url: None,
+            lang: Some("eng".into()),
+            is_forced: false,
+            is_hi: false,
+            filename: None,
+            from_trusted: None,
+            ai_translated: None,
+        };
+        drop_unsupported_embedded_subtitles_with_external_match(
+            &mut source,
+            &[external],
+            Some(&no_embed_profile()),
+        );
+        assert_eq!(
+            source
+                .media_streams
+                .len(),
+            1,
+            "a different-language external must not hide the embedded track"
+        );
+    }
+
+    #[test]
+    fn keeps_embed_supported_subtitle_even_with_a_matching_external() {
+        let mut source = dutch_pgs_source();
+        let external = crate::addons::SubtitleInfo {
+            id: "dutch".into(),
+            url: None,
+            lang: Some("dut".into()),
+            is_forced: false,
+            is_hi: false,
+            filename: None,
+            from_trusted: None,
+            ai_translated: None,
+        };
+        let profile = api::DeviceProfile {
+            subtitle_profiles: vec![api::SubtitleProfile {
+                format: Some("pgs".into()),
+                method: Some(api::SubtitleDeliveryMethod::Embed),
+            }],
+            ..Default::default()
+        };
+        drop_unsupported_embedded_subtitles_with_external_match(
+            &mut source,
+            &[external],
+            Some(&profile),
+        );
+        assert_eq!(
+            source
+                .media_streams
+                .len(),
+            1,
+            "an embed-supported subtitle is free to deliver — never drop it in favor of external"
+        );
     }
 }

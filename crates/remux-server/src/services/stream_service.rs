@@ -7,7 +7,7 @@ use remux_sdks::{
     remux::{MediaStreamType, StreamFilter, VideoRangeType},
     remuxdb,
 };
-use tracing::debug;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 /// Result of probing a single stream candidate.
@@ -426,18 +426,22 @@ impl StreamService {
                     .collect(),
                 None,
             )
-        } else if requested_id.is_some() {
-            // media_source_id == item_id (Android TV auto-play) or stream not found:
-            // return only the first stream; specific_requested stays false so
-            // source[0].id is overridden to item_id below (required for Android TV routing).
-            let mut v = all_streams;
-            v.truncate(1);
-            (v, None)
         } else {
-            // No stream ID: return all versions for the selection UI,
-            // but independently probe the strongest filename-derived candidate
-            // first. This keeps addon order intact for Disabled mode while still
-            // giving capability ranking the best available real probe. The
+            // No specific stream requested — either no ID at all, or
+            // media_source_id == item_id (Android TV auto-play sends this
+            // instead of omitting the field; specific_requested is already
+            // false for it, so source[0].id still gets overridden to item_id
+            // by the caller). Both cases mean the same thing: let capability
+            // ranking pick the best version, not just whichever happened to
+            // be first in DB order — that used to be special-cased to
+            // truncate to `all_streams[0]` unranked, which raced ahead of
+            // playback.rs's post-probe SourceRankingContext sort by leaving
+            // it nothing else to rank.
+            //
+            // Return all versions for the selection UI, but independently
+            // probe the strongest filename-derived candidate first. This
+            // keeps addon order intact for Disabled mode while still giving
+            // capability ranking the best available real probe. The
             // quality-ordered pool also preserves the previous fallback order.
             probe_pool = quality_ordered_probe_pool(&all_streams);
             let preferred = probe_pool
@@ -649,15 +653,15 @@ impl StreamService {
                 .clone()
             {
                 match media_info_from_probe(&source, &effective_stream, item.as_ref()) {
-                    Some(mi) => {
+                    Ok(mi) => {
                         debug!(id = %effective_stream.id, url, "remuxdb: submitting mediainfo");
                         let token = probe_cfg
                             .remuxdb_token
                             .clone();
                         tokio::spawn(mi.submit(url, token));
                     }
-                    None => {
-                        debug!(id = %effective_stream.id, "remuxdb: skipping (no stream_info or missing required fields)");
+                    Err(reason) => {
+                        warn!(id = %effective_stream.id, reason, "remuxdb: skipping submission");
                     }
                 }
             }
@@ -675,26 +679,17 @@ impl StreamService {
         })
     }
 
-    /// Remember that the probe fell over from the client-facing first source
-    /// to `effective_stream` for this play session.
-    ///
-    /// PlaybackInfo stamps `MediaSources[0].Id` with the item id, so a client
-    /// that auto-plays comes back to `/videos/{id}/stream` naming the item,
-    /// not a stream. `dispatch_lookup` treats that as "first source" — the
-    /// very stream that just failed to probe — and the fallback PlaybackInfo
-    /// chose is lost: the stream request hangs on the dead source until the
-    /// upstream timeout and fails, while the second source, picked by hand,
-    /// plays at once. Keying on the play session id (minted by PlaybackInfo
-    /// and echoed by every Jellyfin client on the stream URL) ties the two
-    /// requests together without needing a device id, which not every client
-    /// sends on stream URLs. A stream-group request answers with the group id
-    /// the same way, so the record is keyed by the id the client echoes back:
-    /// the item id, or the group id. No-op when nothing fell over or the
-    /// client named a specific stream.
+    /// Remember which stream PlaybackInfo actually probed when it fell back.
+    /// Clients may request the item ID, a stream-group ID, or the originally
+    /// selected stream ID even after PlaybackInfo returned the fallback ID.
+    /// Keying by the play session and that requested ID makes direct playback
+    /// use the same stream whose media info was returned to the client.
     pub fn save_probe_fallback(&self, play_session_id: &str, probed: &ProbedStreams) {
         let source_id = match &self.group {
             Some((gid, _, _)) => *gid,
-            None if probed.specific_requested => return,
+            None if probed.specific_requested => self
+                .requested_id
+                .unwrap_or(self.item_id),
             None => self.item_id,
         };
         let Some(first) = probed
@@ -703,6 +698,18 @@ impl StreamService {
         else {
             return;
         };
+        // Infuse's direct stream URL has MediaSourceId but no PlaySessionId or
+        // DeviceId. Keep a brief item-scoped mapping for that request too.
+        // Deduped: for a specific-stream request, source_id and the probed
+        // candidate's own id are frequently identical.
+        let recent_ids: std::collections::HashSet<Uuid> = [
+            source_id,
+            first
+                .stream
+                .id,
+        ]
+        .into_iter()
+        .collect();
         if first
             .effective_stream
             .id
@@ -710,7 +717,31 @@ impl StreamService {
                 .stream
                 .id
         {
+            for recent_id in recent_ids {
+                self.ctx
+                    .store
+                    .delete(Self::recent_probe_fallback_key(
+                        self.user_id,
+                        self.item_id,
+                        recent_id,
+                    ));
+            }
             return;
+        }
+        for recent_id in recent_ids {
+            self.ctx
+                .store
+                .save(
+                    Self::recent_probe_fallback_key(
+                        self.user_id,
+                        self.item_id,
+                        recent_id,
+                    ),
+                    first
+                        .effective_stream
+                        .id,
+                    std::time::Duration::from_secs(5 * 60),
+                );
         }
         self.ctx
             .store
@@ -724,7 +755,7 @@ impl StreamService {
     }
 
     /// The stream PlaybackInfo's probe fell over to when it answered
-    /// `play_session_id` with `source_id` (the item id or a group id), if any.
+    /// `play_session_id` with `source_id` (item, group, or stream ID), if any.
     pub fn probe_fallback_for(
         ctx: &AppContext,
         play_session_id: &str,
@@ -733,6 +764,32 @@ impl StreamService {
         ctx.store
             .get::<Uuid>(Self::probe_fallback_key(play_session_id, source_id))
             .map(|id| *id)
+    }
+
+    /// Fallback for clients that omit PlaySessionId from the stream URL.
+    /// Scoped by user: the probe outcome it remembers depends on that user's
+    /// own stream_filter policy, so it must never answer another user's
+    /// session-less request for the same item/source.
+    pub fn recent_probe_fallback_for(
+        ctx: &AppContext,
+        user_id: Option<Uuid>,
+        item_id: Uuid,
+        source_id: Uuid,
+    ) -> Option<Uuid> {
+        ctx.store
+            .get::<Uuid>(Self::recent_probe_fallback_key(user_id, item_id, source_id))
+            .map(|id| *id)
+    }
+
+    fn recent_probe_fallback_key(
+        user_id: Option<Uuid>,
+        item_id: Uuid,
+        source_id: Uuid,
+    ) -> String {
+        let user_id = user_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "anon".to_string());
+        format!("pstream:recent:{user_id}:{item_id}:{source_id}")
     }
 
     fn probe_fallback_key(play_session_id: &str, source_id: Uuid) -> String {
@@ -819,7 +876,7 @@ fn media_info_from_probe(
     probe: &api::MediaSourceInfo,
     stream: &db::Media,
     item: Option<&db::Media>,
-) -> Option<remuxdb::MediaInfoPayload> {
+) -> Result<remuxdb::MediaInfoPayload, &'static str> {
     let (info_hash, file_idx, nzb, filename) = match stream
         .stream_info
         .as_ref()
@@ -867,7 +924,16 @@ fn media_info_from_probe(
     };
 
     if info_hash.is_none() && nzb.is_none() {
-        return None;
+        return Err(
+            if stream
+                .stream_info
+                .is_none()
+            {
+                "stream has no stream_info at all"
+            } else {
+                "stream_info has neither a torrent hash nor a usenet nzb identity"
+            },
+        );
     }
 
     let (kind, external_ids, season, episode) = if let Some(item) = item {
@@ -933,13 +999,24 @@ fn media_info_from_probe(
         ("movie".to_string(), None, None, None)
     };
 
-    let tracks = probe
+    let size = probe
+        .size
+        .or_else(|| {
+            stream
+                .stream_info
+                .as_ref()
+                .and_then(|si| si.size)
+        })
+        .filter(|&s| s > 0)
+        .ok_or("no positive size on probe or stream_info")?;
+
+    let tracks: Vec<remuxdb::TrackPayload> = probe
         .media_streams
         .iter()
         .filter_map(|ms| remuxdb::TrackPayload::try_from(ms).ok())
         .collect();
 
-    Some(remuxdb::MediaInfoPayload {
+    Ok(remuxdb::MediaInfoPayload {
         client_id: Some(crate::common::server_id()),
         kind,
         filename,
@@ -951,15 +1028,7 @@ fn media_info_from_probe(
             .as_ref()
             .map(|c| c.to_string())
             .unwrap_or_default(),
-        size: probe
-            .size
-            .or_else(|| {
-                stream
-                    .stream_info
-                    .as_ref()
-                    .and_then(|si| si.size)
-            })
-            .filter(|&s| s > 0)?,
+        size,
         duration: crate::common::ticks_to_seconds(
             probe
                 .run_time_ticks
@@ -1227,7 +1296,7 @@ mod tests {
             descriptor: StreamDescriptor::http("https://cdn.example/file.mkv"),
             ..Default::default()
         });
-        assert!(media_info_from_probe(&probe_with_size(1), &stream, None).is_none());
+        assert!(media_info_from_probe(&probe_with_size(1), &stream, None).is_err());
     }
 
     /// A probe fallback must reach the stream request that follows PlaybackInfo.
@@ -1274,16 +1343,132 @@ mod tests {
             StreamService::probe_fallback_for(ctx, "psid-clean", owner.id),
             None
         );
-        // Client named a specific stream: its choice stands, nothing remembered.
-        service.save_probe_fallback("psid-specific", &probed(&alive, true));
+        // A client can keep requesting the original stream ID for direct play
+        // even though PlaybackInfo returned the fallback stream ID.
+        let user_a = Uuid::new_v4();
+        let user_b = Uuid::new_v4();
+        let mut specific_service = StreamService::new(StreamServiceConfig {
+            ctx: ctx.clone(),
+            item_id: owner.id,
+            requested_id: Some(dead.id),
+            show_ungrouped: true,
+            stream_filter: None,
+            user_id: Some(user_a),
+        });
+        specific_service.streams = vec![dead.clone(), alive.clone()];
+        assert!(
+            specific_service
+                .select_streams()
+                .specific_requested
+        );
+        specific_service.save_probe_fallback("psid-specific", &probed(&alive, true));
         assert_eq!(
-            StreamService::probe_fallback_for(ctx, "psid-specific", owner.id),
-            None
+            StreamService::probe_fallback_for(ctx, "psid-specific", dead.id),
+            Some(alive.id)
+        );
+        assert_eq!(
+            StreamService::recent_probe_fallback_for(
+                ctx,
+                Some(user_a),
+                owner.id,
+                dead.id
+            ),
+            Some(alive.id),
+            "Infuse's sessionless direct request must resolve to the probed stream"
+        );
+        assert_eq!(
+            StreamService::recent_probe_fallback_for(
+                ctx,
+                Some(user_a),
+                alive.id,
+                dead.id
+            ),
+            None,
+            "recent fallback must not leak to another item"
+        );
+        assert_eq!(
+            StreamService::recent_probe_fallback_for(
+                ctx,
+                Some(user_b),
+                owner.id,
+                dead.id
+            ),
+            None,
+            "recent fallback must not leak to another user's session-less request"
+        );
+        specific_service.save_probe_fallback("psid-recovered", &probed(&dead, true));
+        assert_eq!(
+            StreamService::recent_probe_fallback_for(
+                ctx,
+                Some(user_a),
+                owner.id,
+                dead.id
+            ),
+            None,
+            "a successful probe must clear a stale fallback"
         );
         // Unknown session: nothing.
         assert_eq!(
             StreamService::probe_fallback_for(ctx, "psid-unknown", owner.id),
             None
+        );
+    }
+
+    /// A client sending `MediaSourceId == item_id` (Android TV auto-play, or
+    /// any client that doesn't omit the field) must get the same
+    /// capability-ranked candidate an omitted MediaSourceId would — not just
+    /// whichever stream happened to be first in DB order. Regression test for
+    /// a bug where this case truncated to `all_streams[0]` before probing,
+    /// leaving playback.rs's later ranking sort nothing else to rank.
+    #[tokio::test]
+    async fn auto_play_with_item_id_ranks_candidates_like_no_id_at_all() {
+        use crate::integration_test::{authenticated_server, insert_test_source};
+
+        let (_server, guard, _token) = authenticated_server().await;
+        let ctx = &guard.0;
+
+        let mut low_quality = insert_test_source(ctx).await;
+        low_quality
+            .stream_info
+            .as_mut()
+            .unwrap()
+            .filename = Some("Movie.2026.CAM.x264-GROUP.mkv".to_string());
+        let mut high_quality = insert_test_source(ctx).await;
+        high_quality
+            .stream_info
+            .as_mut()
+            .unwrap()
+            .filename = Some("Movie.2026.2160p.BluRay.x265-GROUP.mkv".to_string());
+
+        let item_id = uuid::Uuid::new_v4();
+        let mut service = StreamService::new(StreamServiceConfig {
+            ctx: ctx.clone(),
+            item_id,
+            requested_id: Some(item_id),
+            show_ungrouped: false,
+            stream_filter: None,
+            user_id: None,
+        });
+        // Low quality deliberately listed first — this is exactly what used
+        // to get returned verbatim as "the" candidate.
+        service.streams = vec![low_quality.clone(), high_quality.clone()];
+
+        let selection = service.select_streams();
+        assert!(
+            !selection.specific_requested,
+            "item_id as MediaSourceId must still be treated as auto-play"
+        );
+        assert_eq!(
+            selection
+                .candidates
+                .len(),
+            2,
+            "all candidates must remain available for probing and the later ranking sort"
+        );
+        assert_eq!(
+            selection.preferred_probe_id,
+            Some(high_quality.id),
+            "the higher-quality candidate must be preferred for probing, not just the first in DB order"
         );
     }
 
