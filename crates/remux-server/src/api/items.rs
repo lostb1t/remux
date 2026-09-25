@@ -1049,7 +1049,7 @@ pub async fn refresh_item(
             .ok();
 
         if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
-            warm_providers_cache(&state.ctx, &media);
+            warm_providers_cache(&state.ctx, &media, None);
         }
     } else if q.metadata_refresh_mode == api::MetadataRefreshMode::FullRefresh {
         let force_refresh = q.replace_all_metadata;
@@ -1755,11 +1755,21 @@ async fn item_for_user(
                 .parsed_device_profile(),
         );
 
-    // Items detail intentionally never fetches subtitles (embedded or addon
-    // external) — see the media_streams-stripping block below for why.
+    // Items detail itself never shows subtitles (embedded or addon external —
+    // see the media_streams-stripping block below), but it still warms the
+    // subtitle addon cache in the background so the PlaybackInfo call that
+    // follows a few seconds later doesn't pay the cold-fetch cost.
     if needs_streams {
         if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
-            warm_providers_cache(&state.ctx, &media);
+            warm_providers_cache(
+                &state.ctx,
+                &media,
+                Some(
+                    session
+                        .user
+                        .id,
+                ),
+            );
         }
         state
             .ctx
@@ -3587,10 +3597,24 @@ pub async fn patch_item(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn warm_providers_cache(ctx: &crate::AppContext, media: &db::Media) {
+/// Background-warms the addon caches PlaybackInfo will hit right after this
+/// item is opened. `user_id` must be the real requester's — addon selection
+/// is user-scoped (`addons_for`), so warming under the wrong user (or `None`)
+/// populates a cache entry a real PlaybackInfo call will never read, making
+/// this a no-op in practice.
+fn warm_providers_cache(
+    ctx: &crate::AppContext,
+    media: &db::Media,
+    user_id: Option<Uuid>,
+) {
     let mut media = media.clone();
     let ctx = ctx.clone();
     tokio::spawn(async move {
+        let mut subtitle_media = media.clone();
+        let _ = ctx
+            .addons
+            .fetch_subtitles(&mut subtitle_media, &ctx, true, user_id)
+            .await;
         let _ = media
             .grandparent(&ctx.db)
             .await;
