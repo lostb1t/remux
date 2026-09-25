@@ -389,18 +389,53 @@ pub async fn import_catalog(
     {
         items.push(item);
     }
+    // Catalog items are stubs (an opendal title comes from the filename) and
+    // their id can differ from the stored row for the same external id.
+    // Upserting such a stub doesn't insert it: the target-less `ON CONFLICT
+    // DO UPDATE` lands on the stored row and overwrites its title. Adopt
+    // stored rows first, like `import_catalog_items`, and only write new ones.
+    db::Media::adopt_existing_rows(
+        &state
+            .ctx
+            .db,
+        &mut items,
+    )
+    .await;
     let media_ids: Vec<Uuid> = items
         .iter()
         .map(|m| m.id)
         .collect();
+    let mut stored_ids: std::collections::HashSet<Uuid> =
+        std::collections::HashSet::new();
+    for chunk in media_ids.chunks(500) {
+        let mut qb = sqlx::QueryBuilder::new("SELECT id FROM media WHERE id IN (");
+        let mut sep = qb.separated(", ");
+        for id in chunk {
+            sep.push_bind(id);
+        }
+        qb.push(")");
+        let rows: Vec<Uuid> = qb
+            .build_query_scalar()
+            .fetch_all(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await?;
+        stored_ids.extend(rows);
+    }
+    let new_items: Vec<db::Media> = items
+        .into_iter()
+        .filter(|m| !stored_ids.contains(&m.id))
+        .collect();
 
-    // Upsert the items so they exist in the DB.
-    if !items.is_empty() {
+    // Upsert only the new items so they exist in the DB.
+    if !new_items.is_empty() {
         db::Media::upsert(
             &state
                 .ctx
                 .db,
-            &items,
+            &new_items,
         )
         .await?;
     }
@@ -763,5 +798,131 @@ mod tests {
         assert_eq!(relations.len(), 2);
         assert_eq!(relations[0].right_media_id, first.id);
         assert_eq!(relations[1].right_media_id, second.id);
+    }
+
+    /// `importcatalog` must not rewrite an existing item from the catalog's
+    /// stub. Here the catalog lists a movie under a stub title (as a
+    /// filename-parsed opendal item would) with a stub id that differs from
+    /// the stored row's id but the same IMDb id. Before the fix, the stub was
+    /// upserted as-is: SQLite's target-less `ON CONFLICT DO UPDATE` redirected
+    /// it onto the stored row (unique external-id index), overwrote the
+    /// stored title, and the request then failed with 400 because the stub
+    /// id never became a row.
+    #[tokio::test]
+    async fn import_catalog_does_not_overwrite_existing_item_from_stub() {
+        use futures::FutureExt;
+
+        let (server, guard, token) = authenticated_server().await;
+        let ctx = &guard.0;
+        let auth = auth_header_with_token(&token);
+
+        let mock = httpmock::MockServer::start();
+        mock.mock(|when, then| {
+            when.path("/manifest.json");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "id": "stub-catalog",
+                    "name": "Stub catalog",
+                    "version": "1.0.0",
+                    "resources": ["catalog"],
+                    "types": ["movie"],
+                    "catalogs": [{"type": "movie", "id": "files", "name": "files"}]
+                }));
+        });
+        mock.mock(|when, then| {
+            when.path("/catalog/movie/files.json");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "metas": [{"id": "tt0088763", "type": "movie", "name": "Back To The Future"}]
+                }));
+        });
+
+        let now = Utc::now().naive_utc();
+        let addon_id = uuid::Uuid::new_v4();
+        crate::addons::Addon {
+            id: addon_id,
+            name: "stub-catalog".to_string(),
+            preset: crate::addons::AddonPresetRef {
+                kind: "stremio".to_string(),
+                config: serde_json::json!({
+                    "manifest_url": format!("{}/manifest.json", mock.base_url())
+                })
+                .into(),
+            },
+            resources: vec![crate::addons::ResourceType::Catalog],
+            types: vec![],
+            enabled: true,
+            priority: 0,
+            system: false,
+            is_default: true,
+            http_redirect_stream: false,
+            service_filter: vec![],
+            created_at: now,
+            updated_at: now,
+        }
+        .insert(&ctx.db)
+        .await
+        .unwrap();
+        ctx.addons
+            .reload(&ctx.db, &ctx.config)
+            .await
+            .unwrap();
+
+        // The stored row, as a TMDB-sourced import would have created it.
+        // Its id derives from the TMDB id, not the IMDb id the catalog stub's
+        // id derives from -- two ids, one IMDb id.
+        let mut stored = db::Media {
+            id: crate::common::stable_media_uuid(&db::MediaKind::Movie, "tmdb:105"),
+            title: "Back to the Future".to_string(),
+            kind: db::MediaKind::Movie,
+            external_ids: ExternalIds {
+                imdb: Some(NonEmptyString::try_new("tt0088763".to_string()).unwrap()),
+                tmdb: Some(105),
+                ..Default::default()
+            },
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        stored
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        let collection = insert_manual_collection(&ctx.db, "Imported").await;
+
+        let resp = std::panic::AssertUnwindSafe(
+            server
+                .post(&format!("/remux/collections/{}/importcatalog", collection.id))
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth).unwrap(),
+                )
+                .json(&serde_json::json!({"addon_id": addon_id, "catalog_id": "movie:files"}))
+                .into_future(),
+        )
+        .catch_unwind()
+        .await;
+
+        let after = db::Media::get_by_id(&ctx.db, &stored.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after.title, "Back to the Future",
+            "importing a catalog must not overwrite an existing item's title with the stub's"
+        );
+        assert!(resp.is_ok(), "importcatalog must succeed (2xx)");
+        let members: Vec<uuid::Uuid> = sqlx::query_scalar(
+            "SELECT right_media_id FROM media_relations WHERE left_media_id = ? AND role = 'collection'",
+        )
+        .bind(collection.id)
+        .fetch_all(&ctx.db)
+        .await
+        .unwrap();
+        assert_eq!(
+            members,
+            vec![stored.id],
+            "the collection must point at the stored row"
+        );
     }
 }
