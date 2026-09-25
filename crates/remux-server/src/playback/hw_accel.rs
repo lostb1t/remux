@@ -1,4 +1,40 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use remux_sdks::remux::{EncodingOptions, HardwareAccelerationType};
+
+/// Whether ffmpeg can derive an OpenCL device from the VAAPI device and has
+/// `tonemap_opencl`. A runtime property of the host, probed once at startup
+/// and kept out of the persisted encoding settings so a dashboard save cannot
+/// clear it.
+static OPENCL_TONEMAP_AVAILABLE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_opencl_tonemap_available(available: bool) {
+    OPENCL_TONEMAP_AVAILABLE.store(available, Ordering::Relaxed);
+}
+
+fn opencl_tonemap_available() -> bool {
+    OPENCL_TONEMAP_AVAILABLE.load(Ordering::Relaxed)
+}
+
+/// User tone-mapping settings that GPU tone mappers take as filter options.
+#[derive(Debug, Clone, Copy)]
+pub struct TonemapOptions<'a> {
+    pub algorithm: &'a str,
+    pub desat: f32,
+    pub peak: f32,
+}
+
+impl TonemapOptions<'_> {
+    /// `tonemap_opencl` has no `bt2446a`; BT.2390 is the closest curve and
+    /// Jellyfin's default.
+    fn opencl_algorithm(&self) -> &str {
+        match self.algorithm {
+            "none" | "linear" | "gamma" | "clip" | "reinhard" | "hable" | "mobius"
+            | "bt2390" => self.algorithm,
+            _ => "bt2390",
+        }
+    }
+}
 
 /// How the colour range of the source is handled on the way to an SDR output.
 ///
@@ -14,6 +50,10 @@ pub enum HdrTreatment {
     Clamp,
     /// Hardware tone mapping (`tonemap_vaapi`) on GPU-resident frames.
     VppTonemap,
+    /// Tone mapping on the GPU through OpenCL (`tonemap_opencl`), with frames
+    /// mapped VAAPI → OpenCL → VAAPI without leaving video memory. Takes the
+    /// software tone-mapping settings (algorithm, peak, desat).
+    OclTonemap,
     /// Software tone mapping (`tonemapx`) on CPU frames. Forces software
     /// decode on accelerators whose filter chain would otherwise stay on GPU.
     SwTonemap,
@@ -47,6 +87,11 @@ impl HdrTreatment {
         {
             Self::VppTonemap
         } else if enable_tonemapping
+            && accel.supports_ocl_tonemap()
+            && !vpp_blocked_by_overlay
+        {
+            Self::OclTonemap
+        } else if enable_tonemapping
             || accel.prefers_sw_tonemap()
             // A CPU overlay blocking VPP still means the user asked for *some*
             // tone mapping — fall back to software rather than silently
@@ -72,6 +117,12 @@ pub trait Accelerator: Send {
 
     /// True for VAAPI and QSV — they support hardware VPP tone mapping.
     fn supports_vpp_tonemap(&self) -> bool {
+        false
+    }
+
+    /// True when the accelerator can run `tonemap_opencl` on its decoded
+    /// surfaces through VAAPI–OpenCL interop.
+    fn supports_ocl_tonemap(&self) -> bool {
         false
     }
 
@@ -166,7 +217,11 @@ pub trait Accelerator: Send {
     /// The default is just `filter_suffix()`.  QSV overrides to swap in the
     /// VPP tonemap chain, the BT.709 relabel, or a bare `format=nv12`
     /// depending on where frames live.
-    fn hw_filter_suffix(&self, _treatment: HdrTreatment) -> Option<String> {
+    fn hw_filter_suffix(
+        &self,
+        _treatment: HdrTreatment,
+        _tonemap: &TonemapOptions,
+    ) -> Option<String> {
         self.filter_suffix()
     }
 
@@ -182,6 +237,8 @@ pub struct Vaapi {
 pub struct Qsv {
     pub vaapi_device: String,
     pub vaapi_driver: String,
+    /// OpenCL tone mapping is usable on this host.
+    pub opencl: bool,
 }
 pub struct VideoToolbox {
     pub av1_hw_decode: bool,
@@ -261,6 +318,13 @@ impl Qsv {
     // Device-init args without the hwaccel decode flags — used when HDR source
     // needs software decode but the QSV encoder still requires the device chain.
     fn init_only_args(&self) -> Vec<String> {
+        self.device_args(false)
+    }
+
+    // With `opencl`, an OpenCL device is derived from the VAAPI one (which
+    // enables media sharing for zero-copy `hwmap`) and becomes the filter
+    // device, as in Jellyfin's QSV + OpenCL pipeline.
+    fn device_args(&self, opencl: bool) -> Vec<String> {
         let driver = if self
             .vaapi_driver
             .is_empty()
@@ -275,14 +339,34 @@ impl Qsv {
         } else {
             format!(",driver={driver}")
         };
-        vec![
+        let mut args = vec![
             "-init_hw_device".into(),
             format!("vaapi=va:{}{}", self.vaapi_device, driver_opt),
             "-init_hw_device".into(),
             "qsv=qs@va".into(),
-            "-filter_hw_device".into(),
-            "qs".into(),
-        ]
+        ];
+        if opencl {
+            args.extend([
+                "-init_hw_device".into(),
+                "opencl=ocl@va".into(),
+                "-filter_hw_device".into(),
+                "ocl".into(),
+            ]);
+        } else {
+            args.extend(["-filter_hw_device".into(), "qs".into()]);
+        }
+        args
+    }
+
+    fn hw_decode_args(&self, opencl: bool) -> Vec<String> {
+        let mut args = self.device_args(opencl);
+        args.extend([
+            "-hwaccel".into(),
+            "vaapi".into(),
+            "-hwaccel_output_format".into(),
+            "vaapi".into(),
+        ]);
+        args
     }
 }
 
@@ -296,14 +380,7 @@ impl Accelerator for Qsv {
     }
 
     fn input_args(&self) -> Vec<String> {
-        let mut args = self.init_only_args();
-        args.extend([
-            "-hwaccel".into(),
-            "vaapi".into(),
-            "-hwaccel_output_format".into(),
-            "vaapi".into(),
-        ]);
-        args
+        self.hw_decode_args(false)
     }
 
     fn filter_suffix(&self) -> Option<String> {
@@ -322,6 +399,10 @@ impl Accelerator for Qsv {
         true
     }
 
+    fn supports_ocl_tonemap(&self) -> bool {
+        self.opencl
+    }
+
     fn decode_input_args(
         &self,
         _source_codec: Option<&str>,
@@ -331,18 +412,42 @@ impl Accelerator for Qsv {
             // tonemapx needs CPU frames; device chain still needed for the
             // QSV encoder.
             HdrTreatment::SwTonemap => self.init_only_args(),
+            HdrTreatment::OclTonemap => self.hw_decode_args(true),
             _ => self.input_args(),
         }
     }
 
-    fn hw_filter_suffix(&self, treatment: HdrTreatment) -> Option<String> {
+    fn hw_filter_suffix(
+        &self,
+        treatment: HdrTreatment,
+        tonemap: &TonemapOptions,
+    ) -> Option<String> {
         match treatment {
             HdrTreatment::Sdr => self.filter_suffix(),
+            // The VPP curve maps the whole mastering range into SDR and leaves
+            // midtones dark; Jellyfin lifts them with its default
+            // `VppTonemappingBrightness` of 16 ahead of the tone map.
             HdrTreatment::VppTonemap => Some(
-                "tonemap_vaapi=format=nv12:p=bt709:t=bt709:m=bt709:extra_hw_frames=32,\
+                "procamp_vaapi=b=16,\
+                 tonemap_vaapi=format=nv12:p=bt709:t=bt709:m=bt709:extra_hw_frames=32,\
                  hwmap=derive_device=qsv,format=qsv"
                     .to_string(),
             ),
+            // P010 VAAPI surface → OpenCL (read) → tone map → back into QSV
+            // memory in one reverse map, as Jellyfin's QSV+OpenCL pipeline
+            // does. `extra_hw_frames=16` on the reverse map — not the tone
+            // map itself, which has no such option — follows Jellyfin's own
+            // comment: without it hevc_qsv can fail to allocate memory.
+            HdrTreatment::OclTonemap => Some(format!(
+                "hwmap=derive_device=opencl:mode=read,\
+                 tonemap_opencl=format=nv12:p=bt709:t=bt709:m=bt709:\
+                 tonemap={algo}:peak={peak}:desat={desat},\
+                 hwmap=derive_device=qsv:mode=write:reverse=1:extra_hw_frames=16,\
+                 format=qsv",
+                algo = tonemap.opencl_algorithm(),
+                peak = tonemap.peak,
+                desat = tonemap.desat,
+            )),
             // Frames are already NV12 after scale_vaapi; setparams is
             // metadata-only and passes QSV surfaces through untouched.
             HdrTreatment::Clamp => Some(
@@ -470,6 +575,7 @@ pub fn from_encoding_opts(opts: &EncodingOptions) -> Box<dyn Accelerator> {
         HardwareAccelerationType::Qsv => Box::new(Qsv {
             vaapi_device: device,
             vaapi_driver: driver,
+            opencl: opencl_tonemap_available(),
         }),
         HardwareAccelerationType::VideoToolbox => Box::new(VideoToolbox {
             av1_hw_decode: videotoolbox_av1_hw_decode_supported(),
@@ -488,6 +594,7 @@ mod tests {
         Qsv {
             vaapi_device: "/dev/dri/renderD128".into(),
             vaapi_driver: "iHD".into(),
+            opencl: false,
         }
     }
 
@@ -622,24 +729,113 @@ mod tests {
         );
     }
 
+    fn qsv_opencl() -> Qsv {
+        Qsv {
+            opencl: true,
+            ..qsv()
+        }
+    }
+
+    #[test]
+    fn qsv_tone_mapping_runs_on_opencl_when_available() {
+        assert_eq!(
+            HdrTreatment::for_source(true, &qsv_opencl(), true, false, false),
+            HdrTreatment::OclTonemap
+        );
+        // overlay_qsv composites after the tone map, so burn-in keeps OpenCL.
+        assert_eq!(
+            HdrTreatment::for_source(true, &qsv_opencl(), true, false, true),
+            HdrTreatment::OclTonemap
+        );
+        assert_eq!(
+            HdrTreatment::for_source(true, &qsv(), true, false, false),
+            HdrTreatment::SwTonemap,
+            "no OpenCL runtime: fall back to tonemapx"
+        );
+        assert_eq!(
+            HdrTreatment::for_source(true, &qsv_opencl(), true, true, false),
+            HdrTreatment::VppTonemap,
+            "VPP wins when both are enabled, as in Jellyfin"
+        );
+    }
+
+    #[test]
+    fn qsv_opencl_decodes_on_gpu_with_opencl_filter_device() {
+        let args = qsv_opencl().decode_input_args(None, HdrTreatment::OclTonemap);
+        let pair = |k: &str, v: &str| {
+            args.windows(2)
+                .any(|w| w[0] == k && w[1] == v)
+        };
+        assert!(pair("-init_hw_device", "opencl=ocl@va"), "{args:?}");
+        assert!(pair("-filter_hw_device", "ocl"), "{args:?}");
+        assert!(pair("-hwaccel_output_format", "vaapi"), "{args:?}");
+        assert!(!pair("-filter_hw_device", "qs"), "{args:?}");
+    }
+
+    #[test]
+    fn qsv_opencl_suffix_maps_through_opencl_and_back() {
+        let bt2390 = TonemapOptions {
+            algorithm: "bt2390",
+            desat: 0.0,
+            peak: 100.0,
+        };
+        let s = qsv_opencl()
+            .hw_filter_suffix(HdrTreatment::OclTonemap, &bt2390)
+            .unwrap();
+        assert!(
+            s.starts_with("hwmap=derive_device=opencl:mode=read,"),
+            "{s}"
+        );
+        assert!(
+            s.contains("tonemap_opencl=format=nv12:p=bt709:t=bt709:m=bt709:tonemap=bt2390:peak=100:desat=0"),
+            "{s}"
+        );
+        assert!(
+            s.ends_with(
+                "hwmap=derive_device=qsv:mode=write:reverse=1:extra_hw_frames=16,format=qsv"
+            ),
+            "{s}"
+        );
+        let unsupported = TonemapOptions {
+            algorithm: "bt2446a",
+            ..bt2390
+        };
+        let s = qsv_opencl()
+            .hw_filter_suffix(HdrTreatment::OclTonemap, &unsupported)
+            .unwrap();
+        assert!(
+            s.contains("tonemap=bt2390"),
+            "bt2446a has no OpenCL kernel: {s}"
+        );
+    }
+
+    const HABLE: TonemapOptions<'static> = TonemapOptions {
+        algorithm: "hable",
+        desat: 0.0,
+        peak: 0.0,
+    };
+
     #[test]
     fn qsv_suffix_per_treatment() {
         let q = qsv();
         assert_eq!(
-            q.hw_filter_suffix(HdrTreatment::Sdr)
+            q.hw_filter_suffix(HdrTreatment::Sdr, &HABLE)
                 .unwrap(),
             "hwmap=derive_device=qsv,format=qsv"
         );
         let clamp = q
-            .hw_filter_suffix(HdrTreatment::Clamp)
+            .hw_filter_suffix(HdrTreatment::Clamp, &HABLE)
             .unwrap();
         assert!(clamp.starts_with("hwmap=derive_device=qsv,format=qsv,setparams="));
         let vpp = q
-            .hw_filter_suffix(HdrTreatment::VppTonemap)
+            .hw_filter_suffix(HdrTreatment::VppTonemap, &HABLE)
             .unwrap();
-        assert!(vpp.starts_with("tonemap_vaapi=") && vpp.ends_with("format=qsv"));
+        assert!(
+            vpp.starts_with("procamp_vaapi=b=16,tonemap_vaapi=")
+                && vpp.ends_with("format=qsv")
+        );
         assert_eq!(
-            q.hw_filter_suffix(HdrTreatment::SwTonemap)
+            q.hw_filter_suffix(HdrTreatment::SwTonemap, &HABLE)
                 .unwrap(),
             "format=nv12"
         );

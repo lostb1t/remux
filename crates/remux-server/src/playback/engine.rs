@@ -15,7 +15,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
     common::{HideConsole, TickUnit, ToRunTimeTicks},
     device_profile::{AudioCodec, VideoCodec},
-    playback::hw_accel::{Accelerator, HdrTreatment, NoAccel},
+    playback::hw_accel::{Accelerator, HdrTreatment, NoAccel, TonemapOptions},
 };
 use remux_sdks::remux::{EncodingPreset, HardwareAccelerationType, VideoRangeType};
 
@@ -67,6 +67,73 @@ pub async fn detect_vaapi_driver(vaapi_device: &str) -> String {
         "i965".to_string()
     } else {
         String::new()
+    }
+}
+
+/// Probe whether ffmpeg can derive an OpenCL device from the VAAPI device and
+/// has `tonemap_opencl`. Mirrors Jellyfin's `IsOpenclFullSupported`: without
+/// an OpenCL runtime (e.g. no intel-compute-runtime) the derive fails.
+pub async fn detect_opencl_tonemap(vaapi_device: &str, vaapi_driver: &str) -> bool {
+    let device = if vaapi_device.is_empty() {
+        "/dev/dri/renderD128"
+    } else {
+        vaapi_device
+    };
+    let driver_opt = if vaapi_driver.is_empty() {
+        String::new()
+    } else {
+        format!(",driver={vaapi_driver}")
+    };
+
+    let filters = match tokio::process::Command::new(ffmpeg_bin())
+        .args(["-hide_banner", "-filters"])
+        .hide_console()
+        .output()
+        .await
+    {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Err(e) => {
+            warn!("Could not list ffmpeg filters for OpenCL detection: {e}");
+            return false;
+        }
+    };
+    if !filters
+        .split_whitespace()
+        .any(|w| w == "tonemap_opencl")
+    {
+        return false;
+    }
+
+    match tokio::process::Command::new(ffmpeg_bin())
+        .args([
+            "-v",
+            "error",
+            "-hide_banner",
+            "-init_hw_device",
+            &format!("vaapi=va:{device}{driver_opt}"),
+            "-init_hw_device",
+            "opencl=ocl@va",
+            "-f",
+            "lavfi",
+            "-i",
+            "nullsrc=s=64x64",
+            "-frames:v",
+            "1",
+            "-f",
+            "null",
+            "-",
+        ])
+        .hide_console()
+        .output()
+        .await
+    {
+        Ok(o) => o
+            .status
+            .success(),
+        Err(e) => {
+            warn!("Could not probe OpenCL device: {e}");
+            false
+        }
     }
 }
 
@@ -400,18 +467,31 @@ fn build_scale_filter(params: &TranscodeParams) -> Option<String> {
 /// Always returns `Some` — at minimum a format-conversion pass is needed so the
 /// `hwmap=derive_device=qsv` suffix can map frames into QSV memory.
 /// `extra_hw_frames=24` follows Jellyfin's recommendation for VAAPI VPP pools.
-fn build_qsv_scale_filter(max_width: Option<u32>, max_height: Option<u32>) -> String {
+///
+/// GPU tone mappers need the 10-bit P010 surface: fed NV12, `tonemap_vaapi`
+/// reads the truncated 8-bit PQ samples as full-range HDR and outputs a solid
+/// cyan frame. Scale to P010 on those paths and let the tone map emit NV12,
+/// as Jellyfin does.
+fn build_qsv_scale_filter(
+    treatment: HdrTreatment,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+) -> String {
+    let fmt = match treatment {
+        HdrTreatment::VppTonemap | HdrTreatment::OclTonemap => "p010",
+        _ => "nv12",
+    };
     match (max_width, max_height) {
         (Some(w), Some(h)) => format!(
-            "scale_vaapi=w='min({w},iw)':h='min({h},ih)':format=nv12:extra_hw_frames=24:force_original_aspect_ratio=decrease"
+            "scale_vaapi=w='min({w},iw)':h='min({h},ih)':format={fmt}:extra_hw_frames=24:force_original_aspect_ratio=decrease"
         ),
         (Some(w), None) => {
-            format!("scale_vaapi=w='min({w},iw)':h=-2:format=nv12:extra_hw_frames=24")
+            format!("scale_vaapi=w='min({w},iw)':h=-2:format={fmt}:extra_hw_frames=24")
         }
         (None, Some(h)) => {
-            format!("scale_vaapi=w=-2:h='min({h},ih)':format=nv12:extra_hw_frames=24")
+            format!("scale_vaapi=w=-2:h='min({h},ih)':format={fmt}:extra_hw_frames=24")
         }
-        _ => "scale_vaapi=format=nv12:extra_hw_frames=24".to_string(),
+        _ => format!("scale_vaapi=format={fmt}:extra_hw_frames=24"),
     }
 }
 
@@ -422,11 +502,12 @@ fn build_qsv_scale_filter(max_width: Option<u32>, max_height: Option<u32>) -> St
 fn build_qsv_main_video(
     accel: &dyn Accelerator,
     treatment: HdrTreatment,
+    tonemap: &TonemapOptions,
     max_width: Option<u32>,
     max_height: Option<u32>,
 ) -> String {
-    let scale = build_qsv_scale_filter(max_width, max_height);
-    match accel.hw_filter_suffix(treatment) {
+    let scale = build_qsv_scale_filter(treatment, max_width, max_height);
+    match accel.hw_filter_suffix(treatment, tonemap) {
         Some(suffix) => format!("{scale},{suffix}"),
         None => scale,
     }
@@ -734,7 +815,12 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         "2048".into(),
     ]);
 
-    let hw_suffix = accel.hw_filter_suffix(treatment);
+    let tonemap = TonemapOptions {
+        algorithm: &params.tonemapping_algorithm,
+        desat: params.tonemapping_desat,
+        peak: params.tonemapping_peak,
+    };
+    let hw_suffix = accel.hw_filter_suffix(treatment, &tonemap);
 
     // Stream mapping
     if params.burn_subtitle {
@@ -776,6 +862,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
                 let main_video = build_qsv_main_video(
                     accel,
                     treatment,
+                    &tonemap,
                     params.max_width,
                     params.max_height,
                 );
@@ -813,7 +900,11 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         // SW tonemap path decodes to CPU memory and needs the CPU scale filter.
         let scale_filter = if ffmpeg_video_codec != "copy" {
             if qsv_gpu_resident(accel, treatment) {
-                Some(build_qsv_scale_filter(params.max_width, params.max_height))
+                Some(build_qsv_scale_filter(
+                    treatment,
+                    params.max_width,
+                    params.max_height,
+                ))
             } else {
                 build_scale_filter(params)
             }
@@ -1510,12 +1601,21 @@ pub(crate) fn build_progressive_args(
             .clone(),
     ]);
 
-    let hw_suffix = accel.hw_filter_suffix(treatment);
+    let tonemap = TonemapOptions {
+        algorithm: &params.tonemapping_algorithm,
+        desat: params.tonemapping_desat,
+        peak: params.tonemapping_peak,
+    };
+    let hw_suffix = accel.hw_filter_suffix(treatment, &tonemap);
 
     // Stream mapping
     let scale_filter = if ffmpeg_video_codec != "copy" {
         if qsv_gpu_resident(accel, treatment) {
-            Some(build_qsv_scale_filter(params.max_width, params.max_height))
+            Some(build_qsv_scale_filter(
+                treatment,
+                params.max_width,
+                params.max_height,
+            ))
         } else {
             let tp = TranscodeParams {
                 max_width: params.max_width,
@@ -1555,7 +1655,8 @@ pub(crate) fn build_progressive_args(
                 };
                 let overlay_qsv =
                     format!("overlay_qsv=eof_action=pass:repeatlast=0{overlay_size}");
-                let main_video = build_qsv_main_video(accel, treatment, out_w, out_h);
+                let main_video =
+                    build_qsv_main_video(accel, treatment, &tonemap, out_w, out_h);
                 format!(
                     "[0:{sub_idx}]{sub_preproc},{sub_upload}[sub];\
                      [0:v:0]{main_video}[vmain];\
@@ -2987,6 +3088,7 @@ mod tests {
             accelerator: Box::new(hw_accel::Qsv {
                 vaapi_device: "/dev/dri/renderD128".into(),
                 vaapi_driver: "iHD".into(),
+                opencl: false,
             }),
             ..default_hls(dir)
         });
@@ -3041,6 +3143,7 @@ mod tests {
         hw_accel::Qsv {
             vaapi_device: "/dev/dri/renderD128".into(),
             vaapi_driver: "iHD".into(),
+            opencl: false,
         }
     }
 
@@ -3063,6 +3166,7 @@ mod tests {
             vf.contains("tonemap_vaapi"),
             "expected tonemap_vaapi in vf: {vf}"
         );
+        assert_p010_into_tonemap(vf);
         assert!(
             !vf.contains("tonemapx"),
             "should not use SW tonemapx when VPP available: {vf}"
@@ -3077,6 +3181,30 @@ mod tests {
     fn has_pair(args: &[String], k: &str, v: &str) -> bool {
         args.windows(2)
             .any(|w| w[0] == k && w[1] == v)
+    }
+
+    /// `tonemap_vaapi` must be fed the 10-bit surface; an NV12 scale in front
+    /// of it produces a solid cyan picture.
+    fn assert_p010_into_tonemap(chain: &str) {
+        let tm = chain
+            .find("tonemap_vaapi")
+            .expect("tonemap_vaapi missing");
+        let scale = chain[..tm]
+            .rfind("scale_vaapi=")
+            .expect("scale_vaapi must precede tonemap_vaapi");
+        let scale_args = &chain[scale..tm];
+        assert!(
+            scale_args.contains("format=p010"),
+            "scale_vaapi before tonemap_vaapi must output p010: {chain}"
+        );
+        assert!(
+            !scale_args.contains("format=nv12"),
+            "8-bit NV12 must not reach tonemap_vaapi: {chain}"
+        );
+        assert!(
+            chain[tm..].contains("tonemap_vaapi=format=nv12"),
+            "tone map must still emit NV12 for the encoder: {chain}"
+        );
     }
 
     fn assert_qsv_hw_decode(args: &[String]) {
@@ -3111,7 +3239,7 @@ mod tests {
             "main branch must scale on GPU: {fc}"
         );
         assert!(
-            fc.contains("hwmap=derive_device=qsv,format=qsv"),
+            fc.contains("derive_device=qsv") && fc.contains(",format=qsv"),
             "main branch must map into QSV memory: {fc}"
         );
         assert!(
@@ -3162,6 +3290,7 @@ mod tests {
         let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
         assert_qsv_gpu_overlay(fc);
         assert!(fc.contains("tonemap_vaapi"), "expected VPP tone map: {fc}");
+        assert_p010_into_tonemap(fc);
         assert!(
             fc.find("tonemap_vaapi")
                 .unwrap()
@@ -3286,6 +3415,182 @@ mod tests {
         let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
         assert_qsv_gpu_overlay(fc);
         assert!(fc.contains("tonemap_vaapi"), "expected VPP tone map: {fc}");
+        assert_p010_into_tonemap(fc);
+    }
+
+    #[test]
+    fn hls_qsv_vpp_tonemap_with_resolution_cap_scales_to_p010() {
+        let dir = PathBuf::from("/tmp/test_qsv_vpp_cap");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(qsv()),
+            source_video_range_type: Some(VideoRangeType::DoviWithHdr10),
+            enable_vpp_tonemapping: true,
+            tonemapping_algorithm: "hable".into(),
+            max_width: Some(1920),
+            max_height: Some(1080),
+            ..default_hls(dir)
+        });
+
+        let vf = arg_after(&args, "-vf").expect("-vf missing");
+        assert!(vf.contains("min(1920,iw)"), "cap must be applied: {vf}");
+        assert_p010_into_tonemap(vf);
+    }
+
+    #[test]
+    fn progressive_qsv_vpp_tonemap_without_subtitle_scales_to_p010() {
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(qsv()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_vpp_tonemapping: true,
+            tonemapping_algorithm: "hable".into(),
+            ..default_progressive()
+        });
+
+        let vf = arg_after(&args, "-vf").expect("-vf missing");
+        assert_p010_into_tonemap(vf);
+    }
+
+    fn qsv_opencl() -> hw_accel::Qsv {
+        hw_accel::Qsv {
+            opencl: true,
+            ..qsv()
+        }
+    }
+
+    /// OpenCL tone map on GPU-resident frames: P010 scale, map into OpenCL,
+    /// tone map, map back through VAAPI into QSV.
+    fn assert_ocl_chain(chain: &str) {
+        let map_in = chain
+            .find("hwmap=derive_device=opencl:mode=read")
+            .expect("must map into OpenCL");
+        let scale = chain[..map_in]
+            .rfind("scale_vaapi=")
+            .expect("scale_vaapi must precede the OpenCL map");
+        assert!(
+            chain[scale..map_in].contains("format=p010"),
+            "OpenCL tone map needs the 10-bit surface: {chain}"
+        );
+        let tm = chain
+            .find("tonemap_opencl=")
+            .expect("tonemap_opencl missing");
+        assert!(map_in < tm, "{chain}");
+        assert!(
+            chain[tm..].contains(
+                "hwmap=derive_device=qsv:mode=write:reverse=1:extra_hw_frames=16,format=qsv"
+            ),
+            "must return to QSV memory for the encoder: {chain}"
+        );
+        assert!(
+            !chain.contains("tonemapx") && !chain.contains("tonemap_vaapi"),
+            "{chain}"
+        );
+    }
+
+    #[test]
+    fn hls_qsv_tonemapping_uses_opencl_on_gpu() {
+        let dir = PathBuf::from("/tmp/test_qsv_ocl");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(qsv_opencl()),
+            source_video_range_type: Some(VideoRangeType::DoviWithHdr10),
+            enable_tonemapping: true,
+            tonemapping_algorithm: "bt2390".into(),
+            tonemapping_peak: 100.0,
+            ..default_hls(dir)
+        });
+
+        assert_qsv_hw_decode(&args);
+        assert!(
+            has_pair(&args, "-init_hw_device", "opencl=ocl@va"),
+            "{args:?}"
+        );
+        assert!(has_pair(&args, "-filter_hw_device", "ocl"), "{args:?}");
+        let vf = arg_after(&args, "-vf").expect("-vf missing");
+        assert_ocl_chain(vf);
+        assert!(vf.contains("tonemap=bt2390:peak=100"), "{vf}");
+        assert_eq!(arg_after(&args, "-c:v"), Some("h264_qsv"));
+    }
+
+    #[test]
+    fn hls_qsv_opencl_tonemap_with_subtitle_stays_on_gpu() {
+        let dir = PathBuf::from("/tmp/test_qsv_ocl_sub");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(qsv_opencl()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_tonemapping: true,
+            tonemapping_algorithm: "bt2390".into(),
+            burn_subtitle: true,
+            subtitle_stream_index: Some(2),
+            ..default_hls(dir)
+        });
+
+        assert_qsv_hw_decode(&args);
+        let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
+        assert_qsv_gpu_overlay(fc);
+        assert_ocl_chain(fc);
+        assert!(
+            fc.find("tonemap_opencl")
+                .unwrap()
+                < fc.find("overlay_qsv")
+                    .unwrap(),
+            "tone map must run before the overlay: {fc}"
+        );
+    }
+
+    #[test]
+    fn progressive_qsv_tonemapping_uses_opencl_on_gpu() {
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(qsv_opencl()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_tonemapping: true,
+            tonemapping_algorithm: "bt2390".into(),
+            ..default_progressive()
+        });
+
+        assert_qsv_hw_decode(&args);
+        let vf = arg_after(&args, "-vf").expect("-vf missing");
+        assert_ocl_chain(vf);
+    }
+
+    #[test]
+    fn hls_qsv_tonemapping_without_opencl_falls_back_to_tonemapx() {
+        let dir = PathBuf::from("/tmp/test_qsv_no_ocl");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(qsv()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_tonemapping: true,
+            tonemapping_algorithm: "bt2390".into(),
+            ..default_hls(dir)
+        });
+
+        assert_qsv_sw_decode(&args);
+        let vf = arg_after(&args, "-vf").expect("-vf missing");
+        assert!(vf.contains("tonemapx"), "{vf}");
+        assert!(!vf.contains("tonemap_opencl"), "{vf}");
+    }
+
+    #[test]
+    fn hls_qsv_hdr_clamp_keeps_nv12_scale() {
+        // No tone map: the relabel path truncates to 8-bit on purpose.
+        let dir = PathBuf::from("/tmp/test_qsv_clamp_nv12");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(qsv()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            ..default_hls(dir)
+        });
+
+        let vf = arg_after(&args, "-vf").expect("-vf missing");
+        assert!(
+            vf.contains("scale_vaapi=format=nv12"),
+            "clamp stays NV12: {vf}"
+        );
+        assert!(!vf.contains("tonemap_vaapi"), "clamp has no tone map: {vf}");
     }
 
     #[test]
@@ -3605,6 +3910,7 @@ mod tests {
             Box::new(hw_accel::Qsv {
                 vaapi_device: vaapi_device.clone(),
                 vaapi_driver: vaapi_driver.clone(),
+                opencl: false,
             }) as Box<dyn Accelerator>
         };
 
