@@ -1045,17 +1045,16 @@ async fn videos_stream_inner(
     id: Uuid,
     q: api::VideoStreamQuery,
 ) -> Result<impl IntoResponse> {
-    let user = match user_id {
-        Some(user_id) => {
-            db::User::get_by_id(
-                &state
-                    .ctx
-                    .db,
-                &user_id,
-            )
-            .await?
-        }
-        None => None,
+    let user = if let Some(user_id) = user_id {
+        db::User::get_by_id(
+            &state
+                .ctx
+                .db,
+            &user_id,
+        )
+        .await?
+    } else {
+        None
     };
 
     // Follow the stream that PlaybackInfo actually probed. A client may echo
