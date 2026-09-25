@@ -24,11 +24,10 @@ impl PlaybackPermissions {
         encoding: &EncodingOptions,
         user: Option<&db::User>,
     ) -> Self {
-        let policy = user
-            .and_then(|user| {
-                user.policy
-                    .as_ref()
-            });
+        let policy = user.and_then(|user| {
+            user.policy
+                .as_ref()
+        });
 
         Self {
             remuxing: encoding
