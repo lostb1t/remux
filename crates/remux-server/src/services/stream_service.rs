@@ -426,18 +426,22 @@ impl StreamService {
                     .collect(),
                 None,
             )
-        } else if requested_id.is_some() {
-            // media_source_id == item_id (Android TV auto-play) or stream not found:
-            // return only the first stream; specific_requested stays false so
-            // source[0].id is overridden to item_id below (required for Android TV routing).
-            let mut v = all_streams;
-            v.truncate(1);
-            (v, None)
         } else {
-            // No stream ID: return all versions for the selection UI,
-            // but independently probe the strongest filename-derived candidate
-            // first. This keeps addon order intact for Disabled mode while still
-            // giving capability ranking the best available real probe. The
+            // No specific stream requested — either no ID at all, or
+            // media_source_id == item_id (Android TV auto-play sends this
+            // instead of omitting the field; specific_requested is already
+            // false for it, so source[0].id still gets overridden to item_id
+            // by the caller). Both cases mean the same thing: let capability
+            // ranking pick the best version, not just whichever happened to
+            // be first in DB order — that used to be special-cased to
+            // truncate to `all_streams[0]` unranked, which raced ahead of
+            // playback.rs's post-probe SourceRankingContext sort by leaving
+            // it nothing else to rank.
+            //
+            // Return all versions for the selection UI, but independently
+            // probe the strongest filename-derived candidate first. This
+            // keeps addon order intact for Disabled mode while still giving
+            // capability ranking the best available real probe. The
             // quality-ordered pool also preserves the previous fallback order.
             probe_pool = quality_ordered_probe_pool(&all_streams);
             let preferred = probe_pool
@@ -1407,6 +1411,64 @@ mod tests {
         assert_eq!(
             StreamService::probe_fallback_for(ctx, "psid-unknown", owner.id),
             None
+        );
+    }
+
+    /// A client sending `MediaSourceId == item_id` (Android TV auto-play, or
+    /// any client that doesn't omit the field) must get the same
+    /// capability-ranked candidate an omitted MediaSourceId would — not just
+    /// whichever stream happened to be first in DB order. Regression test for
+    /// a bug where this case truncated to `all_streams[0]` before probing,
+    /// leaving playback.rs's later ranking sort nothing else to rank.
+    #[tokio::test]
+    async fn auto_play_with_item_id_ranks_candidates_like_no_id_at_all() {
+        use crate::integration_test::{authenticated_server, insert_test_source};
+
+        let (_server, guard, _token) = authenticated_server().await;
+        let ctx = &guard.0;
+
+        let mut low_quality = insert_test_source(ctx).await;
+        low_quality
+            .stream_info
+            .as_mut()
+            .unwrap()
+            .filename = Some("Movie.2026.CAM.x264-GROUP.mkv".to_string());
+        let mut high_quality = insert_test_source(ctx).await;
+        high_quality
+            .stream_info
+            .as_mut()
+            .unwrap()
+            .filename = Some("Movie.2026.2160p.BluRay.x265-GROUP.mkv".to_string());
+
+        let item_id = uuid::Uuid::new_v4();
+        let mut service = StreamService::new(StreamServiceConfig {
+            ctx: ctx.clone(),
+            item_id,
+            requested_id: Some(item_id),
+            show_ungrouped: false,
+            stream_filter: None,
+            user_id: None,
+        });
+        // Low quality deliberately listed first — this is exactly what used
+        // to get returned verbatim as "the" candidate.
+        service.streams = vec![low_quality.clone(), high_quality.clone()];
+
+        let selection = service.select_streams();
+        assert!(
+            !selection.specific_requested,
+            "item_id as MediaSourceId must still be treated as auto-play"
+        );
+        assert_eq!(
+            selection
+                .candidates
+                .len(),
+            2,
+            "all candidates must remain available for probing and the later ranking sort"
+        );
+        assert_eq!(
+            selection.preferred_probe_id,
+            Some(high_quality.id),
+            "the higher-quality candidate must be preferred for probing, not just the first in DB order"
         );
     }
 
