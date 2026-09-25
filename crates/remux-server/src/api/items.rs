@@ -1872,6 +1872,9 @@ async fn item_for_user(
                         device_profile: persisted_device_profile.as_ref(),
                         subtitle_mode,
                         explicit_subtitle_index: None,
+                        max_bitrate: persisted_device_profile
+                            .as_ref()
+                            .and_then(|p| p.max_streaming_bitrate),
                     },
                     &user_cfg,
                     server_config
@@ -1943,6 +1946,9 @@ async fn item_for_user(
                         device_profile: persisted_device_profile.as_ref(),
                         subtitle_mode,
                         explicit_subtitle_index: None,
+                        max_bitrate: persisted_device_profile
+                            .as_ref()
+                            .and_then(|p| p.max_streaming_bitrate),
                     },
                     &user_cfg,
                     server_config
@@ -2085,6 +2091,7 @@ async fn item_for_user(
                 device_profile: Some(device_profile),
                 subtitle_mode,
                 explicit_subtitle_index: None,
+                max_bitrate: device_profile.max_streaming_bitrate,
             };
             if let Some(sources) = base_item
                 .media_sources

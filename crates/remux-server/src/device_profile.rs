@@ -900,15 +900,19 @@ pub struct MediaSourceSortKey {
     hdr_variant: u8,
 }
 
-/// All request-independent inputs used to rank sources. Bitrate limits are
-/// intentionally absent: they are live playback policy, not a durable device
-/// capability and therefore must never affect source ordering.
+/// All inputs used to rank sources for this request. `max_bitrate` is the
+/// same effective cap (request `MaxStreamingBitrate` combined with the
+/// device profile's own) the real transcode decision uses — a source that
+/// cap forces into a re-encode needs to rank the same as any other
+/// transcode-needing source, or the sort order disagrees with what playback
+/// is actually about to do.
 #[derive(Debug, Clone, Copy)]
 pub struct SourceRankingContext<'a> {
     pub mode: SortMediaSourcesMode,
     pub device_profile: Option<&'a DeviceProfile>,
     pub subtitle_mode: EmbeddedSubtitleHandling,
     pub explicit_subtitle_index: Option<i64>,
+    pub max_bitrate: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -945,7 +949,7 @@ impl SourceRankingContext<'_> {
             self.device_profile,
             self.subtitle_mode,
             self.explicit_subtitle_index,
-            None,
+            self.max_bitrate,
         );
         let rank = source.capability_rank(self.device_profile, &reasons);
         SourceAssessment { reasons, rank }
@@ -2905,8 +2909,14 @@ mod tests {
         );
     }
 
+    /// A source the effective bitrate cap forces into a re-encode must rank
+    /// (and label) the same as any other transcode-needing source — the sort
+    /// order has to agree with what playback is actually about to do.
+    /// `SourceRankingContext.max_bitrate` is the caller's job to combine
+    /// (request cap + profile cap, same as the real transcode decision);
+    /// this test passes the profile's own limit directly, as a caller would.
     #[test]
-    fn ranking_context_ignores_profile_bitrate_limits() {
+    fn ranking_context_honors_the_bitrate_cap_it_is_given() {
         let profile = DeviceProfile {
             max_streaming_bitrate: Some(1),
             direct_play_profiles: vec![DirectPlayProfile {
@@ -2929,6 +2939,46 @@ mod tests {
             device_profile: Some(&profile),
             subtitle_mode: EmbeddedSubtitleHandling::default(),
             explicit_subtitle_index: None,
+            max_bitrate: profile.max_streaming_bitrate,
+        }
+        .assess(&source);
+
+        assert!(
+            assessment
+                .reasons
+                .contains(&TranscodeReason::ContainerBitrateExceedsLimit),
+            "a source far over the effective bitrate cap must be flagged during ranking, \
+             not just when the real transcode decision runs"
+        );
+        assert_eq!(assessment.playback_label(), "Transcode");
+    }
+
+    /// Without an explicit cap for this ranking pass, a huge bitrate alone
+    /// is not a transcode reason — nothing to compare it against.
+    #[test]
+    fn ranking_context_without_a_bitrate_cap_does_not_flag_high_bitrate() {
+        let profile = DeviceProfile {
+            direct_play_profiles: vec![DirectPlayProfile {
+                container: None,
+                video_codec: None,
+                audio_codec: None,
+                type_: Some(DlnaProfileType::Video),
+            }],
+            ..Default::default()
+        };
+        let mut source = source_with(
+            video_stream(1920, Some(VideoRangeType::Sdr)),
+            audio_stream("aac", 2),
+            true,
+        );
+        source.bitrate = Some(50_000_000);
+
+        let assessment = super::SourceRankingContext {
+            mode: SortMediaSourcesMode::Best,
+            device_profile: Some(&profile),
+            subtitle_mode: EmbeddedSubtitleHandling::default(),
+            explicit_subtitle_index: None,
+            max_bitrate: None,
         }
         .assess(&source);
 
@@ -3350,6 +3400,7 @@ mod tests {
             device_profile: Some(&profile),
             subtitle_mode: EmbeddedSubtitleHandling::default(),
             explicit_subtitle_index: None,
+            max_bitrate: None,
         };
         let mut ranked: Vec<_> = fixtures
             .into_iter()

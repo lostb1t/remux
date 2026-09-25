@@ -659,11 +659,25 @@ async fn items_playbackinfo_inner(
             .iter()
             .all(|g| g.is_none())
     {
+        // Same combination as `max_bitrate` above, but derived from
+        // `sort_device_profile` (fresh-with-persisted-fallback) so this
+        // ranking pass's own bitrate cap is consistent with the resolution/
+        // codec judgments it's already making from that same profile.
+        let sort_max_bitrate: Option<i64> = match (
+            q.max_streaming_bitrate,
+            sort_device_profile
+                .as_ref()
+                .and_then(|p| p.max_streaming_bitrate),
+        ) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         let ranking = SourceRankingContext {
             mode: sort_mode,
             device_profile: sort_device_profile.as_ref(),
             subtitle_mode,
             explicit_subtitle_index: q.subtitle_stream_index,
+            max_bitrate: sort_max_bitrate,
         };
         let mut paired: Vec<_> = media_sources
             .drain(..)
