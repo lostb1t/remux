@@ -670,6 +670,36 @@ impl std::ops::Deref for AdminSession {
     }
 }
 
+/// Extractor for Jellyfin's `EnableLiveTvManagement` policy, which admins
+/// pass unconditionally. Derefs to AuthSession.
+pub struct LiveTvManagementSession(pub AuthSession);
+
+impl FromRequestParts<AppState> for LiveTvManagementSession {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let session = AuthSession::from_request_parts(parts, state).await?;
+        if !session
+            .user
+            .can_manage_live_tv()
+        {
+            return Err(anyhow::anyhow!("live tv management denied")
+                .context_forbidden("forbidden"));
+        }
+        Ok(LiveTvManagementSession(session))
+    }
+}
+
+impl std::ops::Deref for LiveTvManagementSession {
+    type Target = AuthSession;
+    fn deref(&self) -> &AuthSession {
+        &self.0
+    }
+}
+
 // todo theres also an old emby airh header. Should we support this?
 #[derive(Debug, Clone, Default)]
 pub struct JellyfinAuthHeader {
