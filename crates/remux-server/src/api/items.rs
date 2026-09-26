@@ -2734,6 +2734,18 @@ pub async fn genres(
         .as_ref()
         .and_then(|p| p.parse_smart_filter())
         .cloned();
+    // Jellyfin only computes ItemCounts when asked — matches its own cost
+    // tradeoff (four extra aggregate queries) and keeps the default response
+    // shape unchanged for clients that don't request it.
+    let want_item_counts = q
+        .fields
+        .as_deref()
+        .map(|f| f.contains(&api::ItemFields::ItemCounts))
+        .unwrap_or(false);
+    let policy = session
+        .user
+        .policy
+        .as_ref();
 
     let result = db::Media::get_by_filter(
         &state
@@ -2744,11 +2756,17 @@ pub async fn genres(
             limit: q.limit,
             offset: q.start_index,
             total_count: true,
-            include_child_count: true,
+            include_child_count: want_item_counts,
             genre_related_kinds,
             parent_id: q.parent_id,
             parent,
             filter_rules: smart_filter,
+            policy_filter: policy
+                .and_then(|p| {
+                    p.filter_rules
+                        .as_ref()
+                })
+                .cloned(),
             user_id: Some(
                 session
                     .user
@@ -2783,7 +2801,7 @@ pub async fn genres(
 #[get("/musicgenres")]
 pub async fn music_genres(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
     let genre_related_kinds = if q
@@ -2798,6 +2816,15 @@ pub async fn music_genres(
     } else {
         None
     };
+    let want_item_counts = q
+        .fields
+        .as_deref()
+        .map(|f| f.contains(&api::ItemFields::ItemCounts))
+        .unwrap_or(false);
+    let policy = session
+        .user
+        .policy
+        .as_ref();
 
     let result = db::Media::get_by_filter(
         &state
@@ -2808,8 +2835,19 @@ pub async fn music_genres(
             limit: q.limit,
             offset: q.start_index,
             total_count: true,
-            include_child_count: true,
+            include_child_count: want_item_counts,
             genre_related_kinds,
+            policy_filter: policy
+                .and_then(|p| {
+                    p.filter_rules
+                        .as_ref()
+                })
+                .cloned(),
+            user_id: Some(
+                session
+                    .user
+                    .id,
+            ),
             sort_by: q
                 .sort_by
                 .unwrap_or_default(),
@@ -4183,6 +4221,150 @@ mod tests {
         assert_eq!(action["ChildCount"], 3);
         assert_eq!(action["MovieCount"], 2);
         assert_eq!(action["SeriesCount"], 1);
+    }
+
+    #[tokio::test]
+    async fn genres_item_counts_default_to_zero_not_null() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        // Movie-only genre: SeriesCount must come back as 0, not null —
+        // there's simply no relation row for the aggregate query to return.
+        let genre_name = format!("ItemCountsMovieOnly-{}", Uuid::new_v4());
+        let movie_a =
+            insert_media(db, "Movie A", db::MediaKind::Movie, "tt2100001").await;
+        add_genre(db, movie_a.id, &genre_name).await;
+
+        let response: serde_json::Value = server
+            .get("/genres")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_param("Fields", "ItemCounts")
+            .await
+            .json();
+        let genre = response["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["Name"] == genre_name)
+            .expect("genre missing from response");
+
+        assert_eq!(genre["MovieCount"], 1);
+        assert_eq!(
+            genre["SeriesCount"], 0,
+            "a genre with no series should report 0, not null: {genre}"
+        );
+        assert_eq!(genre["ChildCount"], 1);
+    }
+
+    #[tokio::test]
+    async fn genres_omit_item_counts_without_fields_param() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let genre_name = format!("ItemCountsUnrequested-{}", Uuid::new_v4());
+        let movie_a =
+            insert_media(db, "Movie A", db::MediaKind::Movie, "tt2100002").await;
+        add_genre(db, movie_a.id, &genre_name).await;
+
+        // No Fields=ItemCounts this time.
+        let response: serde_json::Value = server
+            .get("/genres")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let genre = response["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["Name"] == genre_name)
+            .expect("genre missing from response");
+
+        assert!(
+            genre["ChildCount"].is_null(),
+            "counts should stay null when the client didn't ask for them: {genre}"
+        );
+        assert!(genre["MovieCount"].is_null());
+    }
+
+    #[tokio::test]
+    async fn genres_scoped_to_smart_collection_only_count_matching_items() {
+        // Mirrors genres_for_smart_collection_only_include_matching_items'
+        // setup (catalog-filtered smart collection), but checks the *count*
+        // rather than just which genres are returned: a genre shared by an
+        // item inside and an item outside the collection's filter must only
+        // count the one inside it, not both.
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let catalog_id = Uuid::new_v4();
+
+        let genre_name = format!("ItemCountsScoped-{}", Uuid::new_v4());
+        let collection = insert_smart_collection_with_filter(
+            db,
+            "Scoped Movies",
+            db::CollectionMediaKind::Movie,
+            Some(catalog_filter(catalog_id)),
+        )
+        .await;
+        let in_scope =
+            insert_media(db, "In Scope", db::MediaKind::Movie, "tt2100003").await;
+        let out_of_scope =
+            insert_media(db, "Out Of Scope", db::MediaKind::Movie, "tt2100004").await;
+        db::MediaRelation::upsert(
+            db,
+            &[db::MediaRelation {
+                left_media_id: catalog_id,
+                right_media_id: in_scope.id,
+                role: Some(db::RelationRole::Catalog),
+                ..Default::default()
+            }],
+        )
+        .await
+        .unwrap();
+        add_genre(db, in_scope.id, &genre_name).await;
+        add_genre(db, out_of_scope.id, &genre_name).await;
+
+        let response: serde_json::Value = server
+            .get("/genres")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_param(
+                "ParentId",
+                collection
+                    .id
+                    .to_string(),
+            )
+            .add_query_param("Fields", "ItemCounts")
+            .await
+            .json();
+        let genre = response["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["Name"] == genre_name)
+            .expect("genre missing from response");
+
+        assert_eq!(
+            genre["MovieCount"], 1,
+            "count must be scoped to the collection's filter, not global: {genre}"
+        );
+        assert_eq!(genre["ChildCount"], 1);
     }
 
     /// Tracks/albums validate on `deezer_track`/`deezer_album` (or
