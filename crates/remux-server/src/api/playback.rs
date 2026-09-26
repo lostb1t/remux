@@ -1709,8 +1709,8 @@ mod tests {
         assert_eq!(response.header("accept-ranges"), "bytes");
 
         // Client codec parameters must not override disabled playback processing.
-        // The progressive endpoint should serve the original bytes, and HLS should
-        // redirect to that same direct-play route instead of starting FFmpeg.
+        // The progressive endpoint may serve the original bytes, but an HLS request
+        // must fail because redirecting it to raw media changes the requested protocol.
         let mut encoding = crate::api::EncodingOptions::default();
         encoding.enable_remuxing = Some(false);
         encoding.enable_video_transcoding = Some(false);
@@ -1752,10 +1752,11 @@ mod tests {
             "direct-play-only response must not advertise a transcode URL"
         );
 
-        let forced_transcode = server
+        let forced_play_session_id = "forced-direct-play";
+        let transcode_attempt = server
             .get(&format!(
-                "/videos/{}/stream.mkv?VideoCodec=h264&AudioCodec=aac",
-                media.id
+                "/videos/{}/stream.mkv?PlaySessionId={forced_play_session_id}&VideoCodec=h264&AudioCodec=aac",
+                media.id,
             ))
             .add_header(
                 http::header::AUTHORIZATION,
@@ -1763,10 +1764,9 @@ mod tests {
             )
             .add_header(http::header::RANGE, HeaderValue::from_static("bytes=8-11"))
             .await;
-        forced_transcode.assert_status(StatusCode::PARTIAL_CONTENT);
-        assert_eq!(forced_transcode.header("content-range"), "bytes 8-11/16");
+        transcode_attempt.assert_status(StatusCode::PARTIAL_CONTENT);
+        assert_eq!(transcode_attempt.header("content-range"), "bytes 8-11/16");
 
-        let forced_play_session_id = "forced-direct-play";
         let forced_hls = server
             .get(&format!(
                 "/videos/{}/master.m3u8?PlaySessionId={forced_play_session_id}&MediaSourceId={}&VideoCodec=h264&AudioCodec=aac",
@@ -1778,22 +1778,11 @@ mod tests {
             )
             .expect_failure()
             .await;
-        forced_hls.assert_status(StatusCode::TEMPORARY_REDIRECT);
-        let location = forced_hls
-            .header("location")
-            .to_str()
-            .unwrap()
-            .to_string();
-        assert!(location.contains("Static=true"), "{location}");
-        assert!(
-            location.contains(&format!("PlaySessionId={forced_play_session_id}")),
-            "{location}"
-        );
-        assert!(location.contains(&format!("MediaSourceId={}", media.id)));
+        forced_hls.assert_status(StatusCode::FORBIDDEN);
 
         // The server-selected method is authoritative even if the client keeps
-        // reporting the DirectStream method it chose before following the
-        // fallback redirect.
+        // reporting the DirectStream method it chose before the progressive
+        // endpoint resolved the request to direct play.
         server
             .post("/sessions/playing")
             .add_header(
