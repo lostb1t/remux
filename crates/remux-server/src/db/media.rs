@@ -5611,103 +5611,37 @@ impl Media {
                 .map(|m| m.id)
                 .collect();
             if !genre_ids.is_empty() {
-                // movie_count
-                let mut movie_qb = sqlx::QueryBuilder::new("");
-                push_genre_count_recursive_prefix(&mut movie_qb, filter, use_recursive);
-                movie_qb.push(
-                    "SELECT mr.right_media_id, COUNT(DISTINCT mr.left_media_id) \
-                     FROM media_relations mr \
-                     JOIN media m ON m.id = mr.left_media_id AND m.kind = 'movie' \
-                     WHERE mr.right_media_id IN (",
-                );
-                let mut sep = movie_qb.separated(", ");
-                for id in &genre_ids {
-                    sep.push_bind(id);
-                }
-                movie_qb.push(")");
-                push_genre_count_scope(
-                    &mut movie_qb,
+                let movie_counts = count_related_items_by_kind(
+                    db,
                     filter,
                     is_manual_collection,
                     use_recursive,
-                );
-                movie_qb.push(" GROUP BY mr.right_media_id");
-                if let Ok(rows) = movie_qb
-                    .build()
-                    .fetch_all(db)
-                    .await
-                {
-                    let mut map: HashMap<Uuid, i64> = HashMap::new();
-                    for row in rows {
-                        map.insert(row.get(0), row.get(1));
-                    }
-                    for media in &mut records {
-                        if media.kind == MediaKind::Genre {
-                            media.movie_count = Some(
-                                map.get(&media.id)
-                                    .copied()
-                                    .unwrap_or(0),
-                            );
-                        }
-                    }
-                }
-
-                // series_count
-                let mut series_qb = sqlx::QueryBuilder::new("");
-                push_genre_count_recursive_prefix(
-                    &mut series_qb,
-                    filter,
-                    use_recursive,
-                );
-                series_qb.push(
-                    "SELECT mr.right_media_id, COUNT(DISTINCT mr.left_media_id) \
-                     FROM media_relations mr \
-                     JOIN media m ON m.id = mr.left_media_id AND m.kind = 'series' \
-                     WHERE mr.right_media_id IN (",
-                );
-                let mut sep = series_qb.separated(", ");
-                for id in &genre_ids {
-                    sep.push_bind(id);
-                }
-                series_qb.push(")");
-                push_genre_count_scope(
-                    &mut series_qb,
+                    "movie",
+                    &genre_ids,
+                )
+                .await;
+                let series_counts = count_related_items_by_kind(
+                    db,
                     filter,
                     is_manual_collection,
                     use_recursive,
-                );
-                series_qb.push(" GROUP BY mr.right_media_id");
-                if let Ok(rows) = series_qb
-                    .build()
-                    .fetch_all(db)
-                    .await
-                {
-                    let mut map: HashMap<Uuid, i64> = HashMap::new();
-                    for row in rows {
-                        map.insert(row.get(0), row.get(1));
-                    }
-                    for media in &mut records {
-                        if media.kind == MediaKind::Genre {
-                            media.series_count = Some(
-                                map.get(&media.id)
-                                    .copied()
-                                    .unwrap_or(0),
-                            );
-                        }
-                    }
-                }
-
-                // child_count = movie_count + series_count
+                    "series",
+                    &genre_ids,
+                )
+                .await;
                 for media in &mut records {
                     if media.kind == MediaKind::Genre {
-                        media.child_count = Some(
-                            media
-                                .movie_count
-                                .unwrap_or(0)
-                                + media
-                                    .series_count
-                                    .unwrap_or(0),
-                        );
+                        let movies = movie_counts
+                            .get(&media.id)
+                            .copied()
+                            .unwrap_or(0);
+                        let series = series_counts
+                            .get(&media.id)
+                            .copied()
+                            .unwrap_or(0);
+                        media.movie_count = Some(movies);
+                        media.series_count = Some(series);
+                        media.child_count = Some(movies + series);
                     }
                 }
             }
@@ -5719,99 +5653,37 @@ impl Media {
                 .map(|m| m.id)
                 .collect();
             if !music_genre_ids.is_empty() {
-                // song_count
-                let mut song_qb = sqlx::QueryBuilder::new("");
-                push_genre_count_recursive_prefix(&mut song_qb, filter, use_recursive);
-                song_qb.push(
-                    "SELECT mr.right_media_id, COUNT(DISTINCT mr.left_media_id) \
-                     FROM media_relations mr \
-                     JOIN media m ON m.id = mr.left_media_id AND m.kind = 'track' \
-                     WHERE mr.right_media_id IN (",
-                );
-                let mut sep = song_qb.separated(", ");
-                for id in &music_genre_ids {
-                    sep.push_bind(id);
-                }
-                song_qb.push(")");
-                push_genre_count_scope(
-                    &mut song_qb,
+                let song_counts = count_related_items_by_kind(
+                    db,
                     filter,
                     is_manual_collection,
                     use_recursive,
-                );
-                song_qb.push(" GROUP BY mr.right_media_id");
-                if let Ok(rows) = song_qb
-                    .build()
-                    .fetch_all(db)
-                    .await
-                {
-                    let mut map: HashMap<Uuid, i64> = HashMap::new();
-                    for row in rows {
-                        map.insert(row.get(0), row.get(1));
-                    }
-                    for media in &mut records {
-                        if media.kind == MediaKind::MusicGenre {
-                            media.song_count = Some(
-                                map.get(&media.id)
-                                    .copied()
-                                    .unwrap_or(0),
-                            );
-                        }
-                    }
-                }
-
-                // album_count
-                let mut album_qb = sqlx::QueryBuilder::new("");
-                push_genre_count_recursive_prefix(&mut album_qb, filter, use_recursive);
-                album_qb.push(
-                    "SELECT mr.right_media_id, COUNT(DISTINCT mr.left_media_id) \
-                     FROM media_relations mr \
-                     JOIN media m ON m.id = mr.left_media_id AND m.kind = 'album' \
-                     WHERE mr.right_media_id IN (",
-                );
-                let mut sep = album_qb.separated(", ");
-                for id in &music_genre_ids {
-                    sep.push_bind(id);
-                }
-                album_qb.push(")");
-                push_genre_count_scope(
-                    &mut album_qb,
+                    "track",
+                    &music_genre_ids,
+                )
+                .await;
+                let album_counts = count_related_items_by_kind(
+                    db,
                     filter,
                     is_manual_collection,
                     use_recursive,
-                );
-                album_qb.push(" GROUP BY mr.right_media_id");
-                if let Ok(rows) = album_qb
-                    .build()
-                    .fetch_all(db)
-                    .await
-                {
-                    let mut map: HashMap<Uuid, i64> = HashMap::new();
-                    for row in rows {
-                        map.insert(row.get(0), row.get(1));
-                    }
-                    for media in &mut records {
-                        if media.kind == MediaKind::MusicGenre {
-                            media.album_count = Some(
-                                map.get(&media.id)
-                                    .copied()
-                                    .unwrap_or(0),
-                            );
-                        }
-                    }
-                }
-
-                // child_count = song_count + album_count
+                    "album",
+                    &music_genre_ids,
+                )
+                .await;
                 for media in &mut records {
                     if media.kind == MediaKind::MusicGenre {
-                        media.child_count = Some(
-                            media
-                                .song_count
-                                .unwrap_or(0)
-                                + media
-                                    .album_count
-                                    .unwrap_or(0),
-                        );
+                        let songs = song_counts
+                            .get(&media.id)
+                            .copied()
+                            .unwrap_or(0);
+                        let albums = album_counts
+                            .get(&media.id)
+                            .copied()
+                            .unwrap_or(0);
+                        media.song_count = Some(songs);
+                        media.album_count = Some(albums);
+                        media.child_count = Some(songs + albums);
                     }
                 }
             }
@@ -8189,6 +8061,50 @@ fn push_genre_count_scope<'a>(
         );
         qb.push(")");
     }
+}
+
+/// Counts distinct `item_kind` content items related (via `media_relations`)
+/// to each id in `ids`, applying the same scope as `push_genre_count_scope`.
+/// Used to fill in `movie_count`/`series_count` (Genre) and
+/// `song_count`/`album_count` (MusicGenre) in `get_by_filter_inner`. An id
+/// with no matching relation simply isn't in the returned map — callers
+/// default that to 0.
+async fn count_related_items_by_kind(
+    db: &SqlitePool,
+    filter: &MediaFilter,
+    is_manual_collection: bool,
+    use_recursive: bool,
+    item_kind: &str,
+    ids: &[Uuid],
+) -> HashMap<Uuid, i64> {
+    let mut qb = sqlx::QueryBuilder::new("");
+    push_genre_count_recursive_prefix(&mut qb, filter, use_recursive);
+    qb.push(
+        "SELECT mr.right_media_id, COUNT(DISTINCT mr.left_media_id) \
+         FROM media_relations mr \
+         JOIN media m ON m.id = mr.left_media_id AND m.kind = ",
+    );
+    qb.push_bind(item_kind);
+    qb.push(" WHERE mr.right_media_id IN (");
+    let mut sep = qb.separated(", ");
+    for id in ids {
+        sep.push_bind(id);
+    }
+    qb.push(")");
+    push_genre_count_scope(&mut qb, filter, is_manual_collection, use_recursive);
+    qb.push(" GROUP BY mr.right_media_id");
+
+    let mut map = HashMap::new();
+    if let Ok(rows) = qb
+        .build()
+        .fetch_all(db)
+        .await
+    {
+        for row in rows {
+            map.insert(row.get(0), row.get(1));
+        }
+    }
+    map
 }
 
 /// Append WHERE clauses for a set of `FilterRule`s onto a query builder.
