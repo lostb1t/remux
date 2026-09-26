@@ -222,9 +222,17 @@ fn send_signal(_pid: u32, _sig: i32) {}
 
 /// Spawn the buffer-throttle task. It pauses/resumes ffmpeg so it never
 /// encodes more than MAX_BUFFER_SECS ahead of what the client has requested.
+///
+/// `start_index` is this run's `-start_number` (see `segment_start_index`):
+/// segment file names are numbered from the seek position, not from 0, so
+/// it must be subtracted from whatever index ffmpeg has reached before
+/// converting to a duration — otherwise a seek into the middle of a long
+/// file reads as already having buffered the seek offset itself and pauses
+/// ffmpeg almost immediately.
 fn spawn_buffer_monitor(
     output_dir: PathBuf,
     segment_length: u32,
+    start_index: u32,
     playback_offset_secs: Arc<AtomicU32>,
     ffmpeg_pid: Arc<AtomicU32>,
     mut stop_rx: tokio::sync::oneshot::Receiver<()>,
@@ -241,8 +249,11 @@ fn spawn_buffer_monitor(
             ticks += 1;
 
             let pid = ffmpeg_pid.load(Ordering::Relaxed);
-            let buffered_secs = highest_segment_index(&output_dir)
-                .map_or(0, |idx| (idx + 1) * segment_length);
+            let buffered_secs = buffered_secs_from_segments(
+                highest_segment_index(&output_dir),
+                start_index,
+                segment_length,
+            );
             // playback_offset_secs is how far the client has actually played
             // relative to the start of this transcode session (from progress reports).
             let playback_secs = playback_offset_secs.load(Ordering::Relaxed);
@@ -331,6 +342,31 @@ fn highest_segment_index(dir: &PathBuf) -> Option<u32> {
             )
         })
         .max()
+}
+
+/// The HLS segment index a seek offset lands on — this session's
+/// `-start_number` / `#EXT-X-MEDIA-SEQUENCE` base. Segment files are named
+/// from this index, not from 0, so anything comparing segment indexes across
+/// a seek (the buffer monitor, the playlist) must account for it.
+fn segment_start_index(start_time_ticks: Option<i64>, segment_length: u32) -> u32 {
+    start_time_ticks
+        .map(|t| (t as f64 / 10_000_000.0 / segment_length as f64).floor() as u32)
+        .unwrap_or(0)
+}
+
+/// Seconds of ffmpeg output currently buffered, given the highest segment
+/// index found on disk. `start_index` (see `segment_start_index`) must be
+/// subtracted first: segment numbering is absolute (offset by the seek
+/// position), while the buffer-ahead comparison against `playback_secs`
+/// needs a duration relative to where this run started.
+fn buffered_secs_from_segments(
+    highest_index: Option<u32>,
+    start_index: u32,
+    segment_length: u32,
+) -> u32 {
+    highest_index.map_or(0, |idx| {
+        (idx.saturating_sub(start_index) + 1) * segment_length
+    })
 }
 
 /// Parameters for starting a new HLS transcode job.
@@ -1119,12 +1155,8 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         .output_dir
         .join(format!("segment_%05d.{}", seg_ext));
 
-    let start_number = params
-        .start_time_ticks
-        .map(|t| {
-            (t as f64 / 10_000_000.0 / params.segment_length as f64).floor() as u32
-        })
-        .unwrap_or(0);
+    let start_number =
+        segment_start_index(params.start_time_ticks, params.segment_length);
 
     args.extend([
         "-f".into(),
@@ -1305,6 +1337,7 @@ pub async fn start_transcode(
                     s.output_dir
                         .clone(),
                     s.segment_length,
+                    segment_start_index(params.start_time_ticks, s.segment_length),
                     s.playback_offset_secs
                         .clone(),
                     ffmpeg_pid.clone(),
@@ -2318,6 +2351,31 @@ mod tests {
             highest_segment_index(&PathBuf::from("/nonexistent/remux-test-dir")),
             None
         );
+    }
+
+    #[test]
+    fn segment_start_index_matches_the_seek_offset() {
+        // 1255s seek, 6s segments: floor(1255/6) = 209 — same formula
+        // build_hls_args uses for -start_number.
+        assert_eq!(segment_start_index(Some(1255 * 10_000_000), 6), 209);
+        assert_eq!(segment_start_index(None, 6), 0);
+        assert_eq!(segment_start_index(Some(0), 6), 0);
+    }
+
+    #[test]
+    fn buffered_secs_from_segments_is_relative_to_the_seek_start_index() {
+        // Regression test: a seek to 1255s starts ffmpeg at segment index
+        // ~209 (segment names are absolute, offset by the seek position —
+        // see segment_start_index), not 0. Only one segment has actually
+        // been produced since the seek, so this must read as one
+        // segment_length of buffered output, not 210 segments' worth.
+        assert_eq!(buffered_secs_from_segments(Some(209), 209, 6), 6);
+        assert_eq!(buffered_secs_from_segments(Some(212), 209, 6), 24);
+        // No seek: start_index is 0, matches the old file-count behavior.
+        assert_eq!(buffered_secs_from_segments(Some(3), 0, 6), 24);
+        assert_eq!(buffered_secs_from_segments(None, 0, 6), 0);
+        // Defensive: an index somehow below start_index never underflows.
+        assert_eq!(buffered_secs_from_segments(Some(100), 209, 6), 6);
     }
 
     #[test]
