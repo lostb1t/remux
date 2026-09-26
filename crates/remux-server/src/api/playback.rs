@@ -626,7 +626,7 @@ async fn items_playbackinfo_inner(
             .read()
             .await
             .clone();
-        let sidecars = effective_stream
+        let mut sidecars = effective_stream
             .stream_info
             .as_ref()
             .and_then(|stream| {
@@ -635,6 +635,34 @@ async fn items_playbackinfo_inner(
                     .map(|mgr| stream.subtitle_sidecars(mgr))
             })
             .unwrap_or_default();
+        // Subtitles the addon attached directly to this release (Stremio's
+        // Stream.subtitles[], per-source — unlike the shared item-level
+        // provider-addon list below). Folded into the same sidecar
+        // mechanism as torrent-bundled subtitle files: both are subtitles
+        // attached to this specific release rather than the item-level
+        // provider-addon list, and the subtitle-download endpoint only
+        // knows how to resolve a stream_index back to one of these via the
+        // persisted sidecar route below — not via index arithmetic
+        // reconstructed from a re-fetched addon list, which is what the
+        // item-level `append_external_subtitles` call further down relies
+        // on and which has no way to account for subtitles inserted here.
+        // Surfacing these means a debrid/torrent release that already
+        // bundles subs never needs on-demand embedded extraction at all.
+        if let Some(stream_subs) = effective_stream
+            .stream_info
+            .as_ref()
+            .filter(|si| {
+                !si.subtitles
+                    .is_empty()
+            })
+        {
+            sidecars.extend(
+                stream_subs
+                    .subtitles
+                    .iter()
+                    .map(crate::conversions::stremio_subtitle_to_subtitle_info),
+            );
+        }
         let routes = inject_sidecar_subtitles(&mut source, sidecars);
         let subtitle_source_id = source.id;
 
@@ -679,41 +707,6 @@ async fn items_playbackinfo_inner(
             if matches!(s.type_, Some(api::MediaStreamType::Subtitle)) {
                 s.is_text_subtitle_stream = s.is_text_subtitle_stream();
             }
-        }
-
-        // Subtitles the addon attached directly to this release (Stremio's
-        // Stream.subtitles[], per-source — unlike the shared item-level
-        // provider-addon list below). Surfacing these means a debrid/torrent
-        // release that already bundles subs never needs on-demand embedded
-        // extraction at all.
-        if let Some(stream_subs) = stream
-            .stream_info
-            .as_ref()
-            .filter(|si| {
-                !si.subtitles
-                    .is_empty()
-            })
-        {
-            let converted: Vec<crate::addons::SubtitleInfo> = stream_subs
-                .subtitles
-                .iter()
-                .map(crate::conversions::stremio_subtitle_to_subtitle_info)
-                .collect();
-            append_external_subtitles(
-                std::slice::from_mut(&mut source),
-                &converted,
-                &probe_cfg
-                    .subtitle_languages
-                    .clone()
-                    .unwrap_or_default(),
-                sort_device_profile.as_ref(),
-                id,
-                session
-                    .device
-                    .access_token
-                    .expose(),
-                subtitle_dedup,
-            );
         }
 
         sidecar_subtitle_routes.push((subtitle_source_id, routes));

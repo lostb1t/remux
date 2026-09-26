@@ -67,11 +67,12 @@ fn subtitle_cache_path(
         ))
 }
 
-/// Extract an embedded text subtitle stream to the requested cache format.
-/// The cache key is `{data_dir}/subtitle-cache/{item_id}_{stream_index}.{format}`.
-/// Returns immediately if the cache already exists and is non-empty.
-/// One subtitle stream to pull out of a batch extraction — everything
+/// One subtitle output to pull out of a batch extraction — everything
 /// `extract_subtitles_to_cache` needs to place it at its own cache path.
+/// A single stream can produce more than one of these (see
+/// `extractable_subtitles`: a native-ASS stream gets both an ASS and an SRT
+/// output), so `stream_index`/`map_spec` are not unique across the list.
+#[derive(Debug)]
 struct ExtractableSubtitle {
     stream_index: i64,
     map_spec: String,
@@ -106,19 +107,30 @@ async fn subtitle_extraction_lock(
         .clone()
 }
 
-/// Builds the list of every extractable (embedded, non-external) subtitle
-/// stream on `probe`, in container order, with the ffmpeg `-map` spec and
-/// cache codec each one needs. Mirrors Jellyfin's own rule: a native
-/// ASS/SSA stream stays ASS (stream-copied); everything else is converted
-/// to SRT — decided per stream from its *own* codec, not whatever format a
-/// client happens to be asking for right now, since this batch also caches
-/// every other subtitle track on the source for later requests.
+/// Builds the list of every extractable (embedded, non-external, text)
+/// subtitle stream on `probe`, in container order, with the ffmpeg `-map`
+/// spec and cache codec(s) each one needs. Image/bitmap subtitles (PGS,
+/// DVD/DVB sub) are never included — ffmpeg can't convert them to a text
+/// codec, and one such stream in the same batch as text streams would fail
+/// the whole ffmpeg invocation (they're served on-the-fly instead, see the
+/// `is_binary` branch in `subtitles_stream_inner`).
+///
+/// Mirrors Jellyfin's own rule: a native ASS/SSA stream stays ASS
+/// (stream-copied) — decided per stream from its *own* codec, not whatever
+/// format a client happens to be asking for right now, since this batch also
+/// caches every other subtitle track on the source for later requests. A
+/// native-ASS stream additionally gets a plain SRT cache alongside its ASS
+/// one: VTT/SRT/JSON requests are always served from the SRT cache (see
+/// `subtitle_cache_codec`), and without it those requests would 404 against
+/// a stream that only ever produced a `.ass` file.
 fn extractable_subtitles(probe: &api::MediaSourceInfo) -> Vec<ExtractableSubtitle> {
     let mut indexes: Vec<i64> = probe
         .media_streams
         .iter()
         .filter(|s| {
-            matches!(s.type_, Some(api::MediaStreamType::Subtitle)) && !s.is_external
+            matches!(s.type_, Some(api::MediaStreamType::Subtitle))
+                && !s.is_external
+                && s.is_text_subtitle_stream()
         })
         .map(|s| s.index)
         .collect();
@@ -131,39 +143,62 @@ fn extractable_subtitles(probe: &api::MediaSourceInfo) -> Vec<ExtractableSubtitl
                 .media_streams
                 .iter()
                 .find(|s| s.index == stream_index)?;
-            let cache_codec = subtitle_cache_codec(
-                stream
-                    .codec
-                    .as_deref()
-                    .unwrap_or(""),
-            );
-            let ffmpeg_codec = subtitle_cache_ffmpeg_codec(
-                &cache_codec,
-                stream
-                    .codec
-                    .as_deref(),
-            );
-            Some(ExtractableSubtitle {
+            let source_codec = stream
+                .codec
+                .as_deref();
+            let map_spec = format!("0:s:{ordinal}");
+            let cache_codec = subtitle_cache_codec(source_codec.unwrap_or(""));
+            let ffmpeg_codec = subtitle_cache_ffmpeg_codec(&cache_codec, source_codec);
+            let mut outputs = vec![ExtractableSubtitle {
                 stream_index,
-                map_spec: format!("0:s:{ordinal}"),
-                cache_codec,
+                map_spec: map_spec.clone(),
+                cache_codec: cache_codec.clone(),
                 ffmpeg_codec,
-            })
+            }];
+            if cache_codec == api::SubtitleCodec::Ass {
+                outputs.push(ExtractableSubtitle {
+                    stream_index,
+                    map_spec,
+                    cache_codec: api::SubtitleCodec::Srt,
+                    ffmpeg_codec: subtitle_cache_ffmpeg_codec(
+                        &api::SubtitleCodec::Srt,
+                        source_codec,
+                    ),
+                });
+            }
+            Some(outputs)
         })
+        .flatten()
         .collect()
 }
 
+/// The path ffmpeg actually writes to for a given final cache path — never
+/// the final path itself. `extract_subtitles_to_cache` only renames a temp
+/// file into place after ffmpeg has fully closed it, so a reader can never
+/// observe a partially-written file at the path it checks for a cache hit
+/// (see `ensure_subtitle_cached`'s pre-lock fast path).
+fn subtitle_cache_tmp_path(final_path: &std::path::Path) -> std::path::PathBuf {
+    let mut name = final_path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    name.push(".tmp");
+    final_path.with_file_name(name)
+}
+
 /// Builds the ffmpeg argument list (minus the binary name) for extracting
-/// every stream in `streams` from `input_url` in one pass, plus the cache
-/// path each one is written to. Pure and side-effect free so it's
-/// unit-testable without actually running ffmpeg — mirrors how
-/// `build_hls_args` in `playback::engine` is tested.
+/// every stream in `streams` from `input_url` in one pass, plus the
+/// (tmp_path, final_path) pair each one is written to. ffmpeg writes to
+/// `tmp_path`; the caller renames to `final_path` only once extraction has
+/// fully succeeded. Pure and side-effect free so it's unit-testable without
+/// actually running ffmpeg — mirrors how `build_hls_args` in
+/// `playback::engine` is tested.
 fn build_subtitle_extraction_args(
     data_dir: &std::path::Path,
     input_url: &str,
     item_id: Uuid,
     streams: &[ExtractableSubtitle],
-) -> anyhow::Result<(Vec<String>, Vec<std::path::PathBuf>)> {
+) -> anyhow::Result<(Vec<String>, Vec<(std::path::PathBuf, std::path::PathBuf)>)> {
     let mut args = vec![
         "-y".to_string(),
         "-nostdin".to_string(),
@@ -178,8 +213,9 @@ fn build_subtitle_extraction_args(
     args.push(input_url.to_string());
     let mut cache_paths = Vec::with_capacity(streams.len());
     for s in streams {
-        let cache_path =
+        let final_path =
             subtitle_cache_path(data_dir, item_id, s.stream_index, &s.cache_codec);
+        let tmp_path = subtitle_cache_tmp_path(&final_path);
         args.extend([
             "-map".to_string(),
             s.map_spec
@@ -194,12 +230,12 @@ fn build_subtitle_extraction_args(
                 .to_string(),
         ]);
         args.push(
-            cache_path
+            tmp_path
                 .to_str()
                 .ok_or_else(|| anyhow!("invalid cache path"))?
                 .to_string(),
         );
-        cache_paths.push(cache_path);
+        cache_paths.push((tmp_path, final_path));
     }
     Ok((args, cache_paths))
 }
@@ -210,6 +246,12 @@ fn build_subtitle_extraction_args(
 /// not once per requested track. On timeout or failure every output in this
 /// batch is deleted, matching Jellyfin's own behavior (confirmed against
 /// its `SubtitleEncoder.cs`: it doesn't keep partial output either).
+///
+/// ffmpeg writes to a `.tmp` path and each output is only renamed into its
+/// real cache path after the whole batch succeeds — a concurrent reader
+/// checking the real path (outside the extraction lock, see
+/// `ensure_subtitle_cached`) can therefore never observe a partially-written
+/// file.
 async fn extract_subtitles_to_cache(
     data_dir: &std::path::Path,
     input_url: &str,
@@ -235,10 +277,10 @@ async fn extract_subtitles_to_cache(
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::piped());
 
-    let delete_outputs = |paths: Vec<std::path::PathBuf>| {
+    let delete_tmp_outputs = |paths: Vec<(std::path::PathBuf, std::path::PathBuf)>| {
         tokio::spawn(async move {
-            for p in paths {
-                let _ = tokio::fs::remove_file(p).await;
+            for (tmp, _final) in paths {
+                let _ = tokio::fs::remove_file(tmp).await;
             }
         });
     };
@@ -251,7 +293,7 @@ async fn extract_subtitles_to_cache(
     .await
     {
         Err(_) => {
-            delete_outputs(cache_paths);
+            delete_tmp_outputs(cache_paths);
             anyhow::bail!("subtitle extraction timed out");
         }
         Ok(Err(e)) => anyhow::bail!("failed to run ffmpeg: {e}"),
@@ -263,15 +305,16 @@ async fn extract_subtitles_to_cache(
         .success()
     {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        delete_outputs(cache_paths);
+        delete_tmp_outputs(cache_paths);
         anyhow::bail!("ffmpeg subtitle extraction failed: {stderr}");
     }
 
     // A stream ffmpeg couldn't actually produce (e.g. an empty track) leaves
-    // an empty or missing file — drop just that one rather than failing the
-    // whole batch, so the other tracks it successfully extracted still cache.
-    for path in &cache_paths {
-        let empty = tokio::fs::read(path)
+    // an empty or missing tmp file — drop just that one rather than failing
+    // the whole batch, so the other tracks it successfully extracted still
+    // cache. Everything else is only now moved into its real cache path.
+    for (tmp, final_path) in &cache_paths {
+        let empty = tokio::fs::read(tmp)
             .await
             .map(|b| {
                 b.iter()
@@ -279,7 +322,10 @@ async fn extract_subtitles_to_cache(
             })
             .unwrap_or(true);
         if empty {
-            let _ = tokio::fs::remove_file(path).await;
+            let _ = tokio::fs::remove_file(tmp).await;
+        } else if let Err(e) = tokio::fs::rename(tmp, final_path).await {
+            warn!(error = %e, tmp = %tmp.display(), "failed to move extracted subtitle into cache");
+            let _ = tokio::fs::remove_file(tmp).await;
         }
     }
 
@@ -1918,7 +1964,7 @@ mod tests {
     }
 
     #[test]
-    fn extractable_subtitles_skips_external_streams_and_orders_by_index() {
+    fn extractable_subtitles_skips_external_and_image_streams_and_orders_by_index() {
         let source = source_with_subtitles(vec![
             api::MediaStream {
                 index: 5,
@@ -1930,7 +1976,7 @@ mod tests {
             api::MediaStream {
                 index: 1,
                 type_: Some(api::MediaStreamType::Subtitle),
-                codec: Some("ass".into()),
+                codec: Some("mov_text".into()),
                 is_external: false,
                 ..Default::default()
             },
@@ -1939,6 +1985,13 @@ mod tests {
                 type_: Some(api::MediaStreamType::Subtitle),
                 codec: Some("subrip".into()),
                 is_external: true,
+                ..Default::default()
+            },
+            api::MediaStream {
+                index: 2,
+                type_: Some(api::MediaStreamType::Subtitle),
+                codec: Some("hdmv_pgs_subtitle".into()),
+                is_external: false,
                 ..Default::default()
             },
             api::MediaStream {
@@ -1957,21 +2010,72 @@ mod tests {
         assert_eq!(
             indexes,
             vec![1, 5],
-            "external and non-subtitle streams must be excluded, remaining ones sorted by index"
+            "external, non-subtitle, and image/bitmap subtitle streams must be \
+             excluded (ffmpeg can't convert PGS/VobSub to a text codec — one in \
+             the batch would fail the whole ffmpeg invocation), remaining ones \
+             sorted by index"
         );
-        // map_spec is the ordinal among *extracted* streams, not the raw index.
+        // map_spec is the ordinal among *extracted text* streams, not the raw index.
         assert_eq!(extractable[0].map_spec, "0:s:0");
         assert_eq!(extractable[1].map_spec, "0:s:1");
-        // native ASS stays ASS (stream-copied); everything else becomes SRT.
-        assert_eq!(extractable[0].cache_codec, api::SubtitleCodec::Ass);
-        assert_eq!(extractable[0].ffmpeg_codec, "copy");
+        assert_eq!(extractable[0].cache_codec, api::SubtitleCodec::Srt);
         assert_eq!(extractable[1].cache_codec, api::SubtitleCodec::Srt);
     }
 
     #[test]
-    fn build_subtitle_extraction_args_has_one_input_and_one_map_pair_per_stream() {
+    fn extractable_subtitles_gives_native_ass_a_second_srt_output() {
+        // A VTT/SRT/JSON request is always served from the SRT cache. Without
+        // this second output, a stream whose native codec is ASS would only
+        // ever get a .ass file, and such a request would 404 forever.
+        let source = source_with_subtitles(vec![api::MediaStream {
+            index: 0,
+            type_: Some(api::MediaStreamType::Subtitle),
+            codec: Some("ass".into()),
+            ..Default::default()
+        }]);
+
+        let extractable = extractable_subtitles(&source);
+        assert_eq!(
+            extractable.len(),
+            2,
+            "a native ASS stream must produce both an .ass and an .srt output"
+        );
+        assert!(
+            extractable
+                .iter()
+                .all(|s| s.stream_index == 0 && s.map_spec == "0:s:0"),
+            "both outputs come from the same mapped input stream: {extractable:?}"
+        );
+        assert!(
+            extractable
+                .iter()
+                .any(|s| s.cache_codec == api::SubtitleCodec::Ass)
+                && extractable
+                    .iter()
+                    .any(|s| s.cache_codec == api::SubtitleCodec::Srt),
+            "expected one native-ASS (copy) output and one SRT-converted output: {extractable:?}"
+        );
+        let ass_output = extractable
+            .iter()
+            .find(|s| s.cache_codec == api::SubtitleCodec::Ass)
+            .unwrap();
+        assert_eq!(
+            ass_output.ffmpeg_codec, "copy",
+            "native ASS should be stream-copied, not re-encoded"
+        );
+        let srt_output = extractable
+            .iter()
+            .find(|s| s.cache_codec == api::SubtitleCodec::Srt)
+            .unwrap();
+        assert_eq!(srt_output.ffmpeg_codec, "srt");
+    }
+
+    #[test]
+    fn build_subtitle_extraction_args_has_one_input_and_one_map_pair_per_output() {
         let data_dir = std::path::Path::new("/tmp/remux-subtitle-test");
         let item_id = Uuid::new_v4();
+        // subrip -> 1 SRT output. ass -> 2 outputs (ass copy + srt convert),
+        // both mapped from the same input stream. PGS is excluded entirely.
         let source = source_with_subtitles(vec![
             api::MediaStream {
                 index: 0,
@@ -1993,7 +2097,7 @@ mod tests {
             },
         ]);
         let streams = extractable_subtitles(&source);
-        assert_eq!(streams.len(), 3);
+        assert_eq!(streams.len(), 3, "1 (subrip) + 2 (ass) + 0 (pgs, excluded)");
 
         let (args, cache_paths) = build_subtitle_extraction_args(
             data_dir,
@@ -2033,7 +2137,7 @@ mod tests {
             "http input should carry reconnect args: {args:?}"
         );
 
-        // One -map/-c:s pair per extractable stream, and one cache path per stream.
+        // One -map/-c:s pair per output, and one (tmp, final) path pair per output.
         let map_count = args
             .iter()
             .filter(|a| a.as_str() == "-map")
@@ -2042,17 +2146,48 @@ mod tests {
             .iter()
             .filter(|a| a.as_str() == "-c:s")
             .count();
-        assert_eq!(map_count, 3, "expected one -map per stream: {args:?}");
-        assert_eq!(codec_count, 3, "expected one -c:s per stream: {args:?}");
+        assert_eq!(map_count, 3, "expected one -map per output: {args:?}");
+        assert_eq!(codec_count, 3, "expected one -c:s per output: {args:?}");
         assert_eq!(cache_paths.len(), 3);
 
-        // Each -map targets the right ordinal within the subtitle-only index space.
+        // subrip (ordinal 0) maps once; ass (ordinal 1) maps twice — once for
+        // each of its two outputs — from the same input stream.
         let map_specs: Vec<&String> = args
             .windows(2)
             .filter(|w| w[0] == "-map")
             .map(|w| &w[1])
             .collect();
-        assert_eq!(map_specs, vec!["0:s:0", "0:s:1", "0:s:2"]);
+        assert_eq!(map_specs, vec!["0:s:0", "0:s:1", "0:s:1"]);
+
+        // ffmpeg is only ever pointed at .tmp output paths — the final cache
+        // path is populated by an atomic rename after success, never written
+        // to directly, so a concurrent reader can never see a partial file.
+        for (tmp, final_path) in &cache_paths {
+            assert!(
+                tmp.to_str()
+                    .unwrap()
+                    .ends_with(".tmp"),
+                "ffmpeg output path should be a .tmp path: {tmp:?}"
+            );
+            assert_ne!(tmp, final_path);
+            assert!(
+                args.contains(
+                    &tmp.to_str()
+                        .unwrap()
+                        .to_string()
+                ),
+                "the .tmp path must be what's actually passed to ffmpeg: {args:?}"
+            );
+            assert!(
+                !args.contains(
+                    &final_path
+                        .to_str()
+                        .unwrap()
+                        .to_string()
+                ),
+                "the final cache path must never be passed to ffmpeg directly: {args:?}"
+            );
+        }
     }
 
     #[test]
