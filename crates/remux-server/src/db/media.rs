@@ -5604,6 +5604,170 @@ impl Media {
                 }
             }
 
+            // For genres: count movies and series tagged with them
+            let genre_ids: Vec<Uuid> = records
+                .iter()
+                .filter(|m| m.kind == MediaKind::Genre)
+                .map(|m| m.id)
+                .collect();
+            if !genre_ids.is_empty() {
+                // movie_count
+                let mut movie_qb = sqlx::QueryBuilder::new(
+                    "SELECT mr.right_media_id, COUNT(DISTINCT mr.left_media_id) \
+                     FROM media_relations mr \
+                     JOIN media m ON m.id = mr.left_media_id AND m.kind = 'movie' \
+                     WHERE mr.right_media_id IN (",
+                );
+                let mut sep = movie_qb.separated(", ");
+                for id in &genre_ids {
+                    sep.push_bind(id);
+                }
+                movie_qb.push(") GROUP BY mr.right_media_id");
+                if let Ok(rows) = movie_qb
+                    .build()
+                    .fetch_all(db)
+                    .await
+                {
+                    let mut map: HashMap<Uuid, i64> = HashMap::new();
+                    for row in rows {
+                        map.insert(row.get(0), row.get(1));
+                    }
+                    for media in &mut records {
+                        if media.kind == MediaKind::Genre {
+                            media.movie_count = map
+                                .get(&media.id)
+                                .copied();
+                        }
+                    }
+                }
+
+                // series_count
+                let mut series_qb = sqlx::QueryBuilder::new(
+                    "SELECT mr.right_media_id, COUNT(DISTINCT mr.left_media_id) \
+                     FROM media_relations mr \
+                     JOIN media m ON m.id = mr.left_media_id AND m.kind = 'series' \
+                     WHERE mr.right_media_id IN (",
+                );
+                let mut sep = series_qb.separated(", ");
+                for id in &genre_ids {
+                    sep.push_bind(id);
+                }
+                series_qb.push(") GROUP BY mr.right_media_id");
+                if let Ok(rows) = series_qb
+                    .build()
+                    .fetch_all(db)
+                    .await
+                {
+                    let mut map: HashMap<Uuid, i64> = HashMap::new();
+                    for row in rows {
+                        map.insert(row.get(0), row.get(1));
+                    }
+                    for media in &mut records {
+                        if media.kind == MediaKind::Genre {
+                            media.series_count = map
+                                .get(&media.id)
+                                .copied();
+                        }
+                    }
+                }
+
+                // child_count = movie_count + series_count
+                for media in &mut records {
+                    if media.kind == MediaKind::Genre {
+                        media.child_count = Some(
+                            media
+                                .movie_count
+                                .unwrap_or(0)
+                                + media
+                                    .series_count
+                                    .unwrap_or(0),
+                        );
+                    }
+                }
+            }
+
+            // For music genres: count tracks and albums tagged with them
+            let music_genre_ids: Vec<Uuid> = records
+                .iter()
+                .filter(|m| m.kind == MediaKind::MusicGenre)
+                .map(|m| m.id)
+                .collect();
+            if !music_genre_ids.is_empty() {
+                // song_count
+                let mut song_qb = sqlx::QueryBuilder::new(
+                    "SELECT mr.right_media_id, COUNT(DISTINCT mr.left_media_id) \
+                     FROM media_relations mr \
+                     JOIN media m ON m.id = mr.left_media_id AND m.kind = 'track' \
+                     WHERE mr.right_media_id IN (",
+                );
+                let mut sep = song_qb.separated(", ");
+                for id in &music_genre_ids {
+                    sep.push_bind(id);
+                }
+                song_qb.push(") GROUP BY mr.right_media_id");
+                if let Ok(rows) = song_qb
+                    .build()
+                    .fetch_all(db)
+                    .await
+                {
+                    let mut map: HashMap<Uuid, i64> = HashMap::new();
+                    for row in rows {
+                        map.insert(row.get(0), row.get(1));
+                    }
+                    for media in &mut records {
+                        if media.kind == MediaKind::MusicGenre {
+                            media.song_count = map
+                                .get(&media.id)
+                                .copied();
+                        }
+                    }
+                }
+
+                // album_count
+                let mut album_qb = sqlx::QueryBuilder::new(
+                    "SELECT mr.right_media_id, COUNT(DISTINCT mr.left_media_id) \
+                     FROM media_relations mr \
+                     JOIN media m ON m.id = mr.left_media_id AND m.kind = 'album' \
+                     WHERE mr.right_media_id IN (",
+                );
+                let mut sep = album_qb.separated(", ");
+                for id in &music_genre_ids {
+                    sep.push_bind(id);
+                }
+                album_qb.push(") GROUP BY mr.right_media_id");
+                if let Ok(rows) = album_qb
+                    .build()
+                    .fetch_all(db)
+                    .await
+                {
+                    let mut map: HashMap<Uuid, i64> = HashMap::new();
+                    for row in rows {
+                        map.insert(row.get(0), row.get(1));
+                    }
+                    for media in &mut records {
+                        if media.kind == MediaKind::MusicGenre {
+                            media.album_count = map
+                                .get(&media.id)
+                                .copied();
+                        }
+                    }
+                }
+
+                // child_count = song_count + album_count
+                for media in &mut records {
+                    if media.kind == MediaKind::MusicGenre {
+                        media.child_count = Some(
+                            media
+                                .song_count
+                                .unwrap_or(0)
+                                + media
+                                    .album_count
+                                    .unwrap_or(0),
+                        );
+                    }
+                }
+            }
+
             // For artists: populate album_count and song_count
             let artist_ids: Vec<Uuid> = records
                 .iter()
