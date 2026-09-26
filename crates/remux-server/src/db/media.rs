@@ -187,6 +187,9 @@ pub enum MediaKind {
     StreamGroup,
     Subtitle,
     Intro,
+    /// A DVR recording, finished or still being written. Its synced `Stream`
+    /// child carries the `stream_info`.
+    Recording,
 }
 
 impl MediaKind {
@@ -208,7 +211,11 @@ impl MediaKind {
     pub fn is_playable_leaf(&self) -> bool {
         matches!(
             self,
-            Self::Movie | Self::Episode | Self::Track | Self::TvChannel
+            Self::Movie
+                | Self::Episode
+                | Self::Track
+                | Self::TvChannel
+                | Self::Recording
         )
     }
 }
@@ -298,6 +305,7 @@ impl Into<sdks::remux::MediaKind> for MediaKind {
             MediaKind::StreamGroup => sdks::remux::MediaKind::Stream,
             MediaKind::Subtitle => sdks::remux::MediaKind::Stream,
             MediaKind::Intro => sdks::remux::MediaKind::Stream,
+            MediaKind::Recording => sdks::remux::MediaKind::Stream,
         }
     }
 }
@@ -353,6 +361,7 @@ impl TryFrom<api::MediaType> for MediaKind {
             api::MediaType::MusicAlbum => Ok(MediaKind::Album),
             api::MediaType::MusicArtist => Ok(MediaKind::Artist),
             api::MediaType::Playlist => Ok(MediaKind::Playlist),
+            api::MediaType::Recording => Ok(MediaKind::Recording),
             _ => Err(()),
         }
     }
@@ -940,6 +949,10 @@ pub struct ExternalIds {
     pub youtube_id: Option<String>,
     pub iptv_source_id: Option<String>,
     pub iptv_group: Option<String>,
+    /// Dispatcharr's id of a synced recording.
+    pub dispatcharr_recording_id: Option<i64>,
+    /// Dispatcharr's id of a guide programme (`dispatcharr::program_key`).
+    pub dispatcharr_program_id: Option<String>,
     /// Raw addon-specific ID for content that has no IMDB/TMDB/TVDB equivalent.
     /// Derived from the Stremio `meta.id` when no known provider prefix matches.
     pub custom_stremio_id: Option<String>,
@@ -6587,6 +6600,68 @@ impl Media {
             .to_vec())
     }
 
+    /// `streams()` for many parents in one query, grouped back by
+    /// `parent_id`, instead of one query each.
+    pub async fn attach_streams(
+        db: &sqlx::SqlitePool,
+        parents: &mut [Media],
+    ) -> Result<()> {
+        let parent_ids: Vec<Uuid> = parents
+            .iter()
+            .filter(|m| {
+                m.sources
+                    .is_none()
+            })
+            .map(|m| m.id)
+            .collect();
+        if parent_ids.is_empty() {
+            return Ok(());
+        }
+
+        let mut sources = Self::get_by_filter(
+            db,
+            &MediaFilter {
+                kind: Some(vec![MediaKind::Stream]),
+                parent_ids: Some(parent_ids),
+                ..Default::default()
+            },
+        )
+        .await?
+        .records;
+        sources.sort_by(|a, b| {
+            a.idx
+                .cmp(&b.idx)
+        });
+
+        let mut by_parent: HashMap<Uuid, Vec<Media>> = HashMap::new();
+        for source in sources {
+            if let Some(parent_id) = source.parent_id {
+                by_parent
+                    .entry(parent_id)
+                    .or_default()
+                    .push(source);
+            }
+        }
+
+        for parent in parents.iter_mut() {
+            if parent
+                .sources
+                .is_some()
+            {
+                continue;
+            }
+            let mut own = by_parent
+                .remove(&parent.id)
+                .unwrap_or_default();
+            // Same freshness rule as `streams()`.
+            if let Some(refreshed) = parent.streams_refreshed_at {
+                own.retain(|s| s.updated_at >= refreshed);
+            }
+            parent.sources = Some(own);
+        }
+        Ok(())
+    }
+
     pub async fn seasons(&mut self, db: &sqlx::SqlitePool) -> Result<Vec<Media>> {
         if self.kind != MediaKind::Series {
             return Ok(vec![]);
@@ -11359,5 +11434,211 @@ mod dedup_tests {
 
         let found = Media::find_by_external_ids(&ctx.db, &MediaKind::Album, &ext).await;
         assert_eq!(found, Some(album.id));
+    }
+}
+
+#[cfg(test)]
+mod attach_streams_tests {
+    use super::*;
+
+    async fn test_db() -> sqlx::SqlitePool {
+        let db = crate::db::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        crate::db::migrate(&db)
+            .await
+            .unwrap();
+        db
+    }
+
+    fn at(hour: u32, min: u32) -> NaiveDateTime {
+        chrono::NaiveDate::from_ymd_opt(2026, 9, 15)
+            .unwrap()
+            .and_hms_opt(hour, min, 0)
+            .unwrap()
+    }
+
+    fn channel(n: u128) -> Media {
+        Media {
+            id: Uuid::from_u128(n),
+            title: format!("Channel {n}"),
+            kind: MediaKind::TvChannel,
+            ..Default::default()
+        }
+    }
+
+    fn version(
+        parent: &Media,
+        stream_id: i64,
+        idx: i64,
+        updated: NaiveDateTime,
+    ) -> Media {
+        Media {
+            id: Uuid::new_v5(&parent.id, format!("stream:{stream_id}").as_bytes()),
+            title: format!("v{stream_id}"),
+            kind: MediaKind::Stream,
+            parent_id: Some(parent.id),
+            idx: Some(idx),
+            updated_at: updated,
+            ..Default::default()
+        }
+    }
+
+    fn titles(m: &Media) -> Vec<&str> {
+        m.sources
+            .as_deref()
+            .unwrap()
+            .iter()
+            .map(|s| {
+                s.title
+                    .as_str()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn attach_streams_groups_children_by_parent_in_idx_order() {
+        let db = test_db().await;
+        let (a, b) = (channel(1), channel(2));
+        Media::upsert(&db, &vec![a.clone(), b.clone()])
+            .await
+            .unwrap();
+        // Inserted out of order on purpose.
+        Media::upsert(
+            &db,
+            &vec![
+                version(&a, 12, 2, at(12, 0)),
+                version(&b, 21, 0, at(12, 0)),
+                version(&a, 10, 0, at(12, 0)),
+                version(&a, 11, 1, at(12, 0)),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let mut parents = vec![a, b];
+        Media::attach_streams(&db, &mut parents)
+            .await
+            .unwrap();
+        assert_eq!(titles(&parents[0]), ["v10", "v11", "v12"]);
+        assert_eq!(titles(&parents[1]), ["v21"]);
+    }
+
+    #[tokio::test]
+    async fn attach_streams_drops_children_older_than_the_last_refresh() {
+        let db = test_db().await;
+        let a = channel(1);
+        Media::upsert(&db, &vec![a.clone()])
+            .await
+            .unwrap();
+        let (fresh, stale) =
+            (version(&a, 10, 0, at(12, 0)), version(&a, 11, 1, at(12, 0)));
+        Media::upsert(&db, &vec![fresh, stale.clone()])
+            .await
+            .unwrap();
+        // `upsert` stamps `updated_at` itself, so age the stale row directly.
+        sqlx::query("UPDATE media SET updated_at = ? WHERE id = ?")
+            .bind(at(9, 0))
+            .bind(stale.id)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let mut parents = vec![Media {
+            streams_refreshed_at: Some(at(12, 0)),
+            ..a
+        }];
+        Media::attach_streams(&db, &mut parents)
+            .await
+            .unwrap();
+        assert_eq!(titles(&parents[0]), ["v10"]);
+    }
+
+    #[tokio::test]
+    async fn attach_streams_leaves_loaded_parents_and_fills_empty_ones() {
+        let db = test_db().await;
+        let (loaded, empty) = (channel(1), channel(2));
+        Media::upsert(&db, &vec![loaded.clone(), empty.clone()])
+            .await
+            .unwrap();
+        Media::upsert(&db, &vec![version(&loaded, 10, 0, at(12, 0))])
+            .await
+            .unwrap();
+
+        let preset = Media {
+            sources: Some(vec![]),
+            ..loaded
+        };
+        let mut parents = vec![preset, empty];
+        Media::attach_streams(&db, &mut parents)
+            .await
+            .unwrap();
+        assert_eq!(
+            parents[0]
+                .sources
+                .as_deref()
+                .map(<[_]>::len),
+            Some(0),
+            "already-loaded parent is untouched"
+        );
+        assert_eq!(
+            parents[1]
+                .sources
+                .as_deref()
+                .map(<[_]>::len),
+            Some(0),
+            "no children gives an empty list, not None"
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_streams_with_nothing_to_load_is_a_no_op() {
+        let db = test_db().await;
+        let mut none: Vec<Media> = vec![];
+        Media::attach_streams(&db, &mut none)
+            .await
+            .unwrap();
+        let mut loaded = vec![Media {
+            sources: Some(vec![]),
+            ..channel(1)
+        }];
+        Media::attach_streams(&db, &mut loaded)
+            .await
+            .unwrap();
+        assert!(
+            loaded[0]
+                .sources
+                .is_some()
+        );
+    }
+}
+
+#[cfg(test)]
+mod recording_kind_tests {
+    use super::*;
+
+    #[test]
+    fn recording_kind_uses_the_string_the_raw_sql_expects() {
+        assert_eq!(MediaKind::Recording.to_string(), "recording");
+        assert_eq!(
+            "recording"
+                .parse::<MediaKind>()
+                .unwrap(),
+            MediaKind::Recording
+        );
+    }
+
+    #[test]
+    fn recording_is_a_playable_leaf_and_not_a_folder() {
+        assert!(MediaKind::Recording.is_playable_leaf());
+        assert!(!MediaKind::Recording.is_folder());
+    }
+
+    #[test]
+    fn include_item_types_recording_maps_to_media_kind_recording() {
+        assert_eq!(
+            MediaKind::try_from(api::MediaType::Recording),
+            Ok(MediaKind::Recording)
+        );
     }
 }

@@ -222,14 +222,20 @@ impl StreamDescriptor {
 
     /// Input URL/path for ffprobe and ffmpeg (server-side tools).
     /// `Local` → raw filesystem path. `Http` → URL as-is.
-    /// `Torrent`/`Opendal` → our stream proxy, which resolves them on demand.
+    /// `Torrent`/`Opendal`, and `Http` with `request_headers` → our stream
+    /// proxy, which resolves them on demand and attaches the headers.
     pub fn server_input(&self, media_id: Uuid, port: u16) -> String {
         match self {
-            Self::Http { url, .. } | Self::Rtsp { url } => url.clone(),
+            Self::Http {
+                url,
+                request_headers,
+                ..
+            } if request_headers.is_empty() => url.clone(),
+            Self::Rtsp { url } => url.clone(),
             Self::Local(path) => path
                 .to_string_lossy()
                 .into_owned(),
-            Self::Torrent { .. } | Self::Opendal { .. } => {
+            Self::Http { .. } | Self::Torrent { .. } | Self::Opendal { .. } => {
                 format!("http://127.0.0.1:{}/stream/{}", port, media_id)
             }
         }
@@ -928,6 +934,33 @@ mod tests {
         };
         assert_eq!(trackers.len(), 1);
         assert_eq!(trackers[0].as_ref(), "udp://opentor.net:6969");
+    }
+
+    #[test]
+    fn server_input_uses_plain_http_urls_directly() {
+        let d = StreamDescriptor::Http {
+            url: "http://host/live.ts".into(),
+            request_headers: Default::default(),
+            response_headers: Default::default(),
+        };
+        assert_eq!(
+            d.server_input(uuid::Uuid::nil(), 3000),
+            "http://host/live.ts"
+        );
+    }
+
+    #[test]
+    fn server_input_routes_header_dependent_http_through_the_proxy() {
+        let id = uuid::Uuid::from_u128(0xabc);
+        let d = StreamDescriptor::Http {
+            url: "http://host/live.ts".into(),
+            request_headers: [("X-API-Key".to_string(), "k".to_string())].into(),
+            response_headers: Default::default(),
+        };
+        assert_eq!(
+            d.server_input(id, 3000),
+            format!("http://127.0.0.1:3000/stream/{id}")
+        );
     }
 
     #[test]

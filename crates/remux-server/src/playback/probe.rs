@@ -1062,6 +1062,18 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
     ))
 }
 
+/// Kind of the item `stream` is a version of.
+async fn parent_kind(
+    stream: &db::Media,
+    db: &sqlx::SqlitePool,
+) -> Option<db::MediaKind> {
+    db::Media::get_by_id(db, &stream.parent_id?)
+        .await
+        .ok()
+        .flatten()
+        .map(|p| p.kind)
+}
+
 /// Returns the top-level Movie/Episode/Track to use for stream enumeration.
 ///
 /// When `media_source_id` points to a Stream child record, `resolver.stream`
@@ -1186,11 +1198,18 @@ pub(crate) async fn probe_stream(
         .is_some_and(can_fallback_to_stale_probe_cache);
     if let Some(cached) = &stream.probe_data {
         if is_reusable_probe_cache(cached) {
+            // Live channel versions skip the liveness check.
             let alive = match stream
                 .stream_info
                 .as_ref()
                 .map(|si| &si.descriptor)
             {
+                Some(_)
+                    if parent_kind(&stream, db).await
+                        == Some(db::MediaKind::TvChannel) =>
+                {
+                    true
+                }
                 Some(d) => {
                     d.is_alive()
                         .await
@@ -1394,7 +1413,14 @@ where
                             .to_ticks(TickUnit::Minutes)
                             .unwrap_or(0),
                     };
-                    if probed_ticks < threshold_ticks {
+                    // A recording stopped early is legitimately short, and a
+                    // channel has no fixed length.
+                    if probed_ticks < threshold_ticks
+                        && !matches!(
+                            parent_kind(&stream, db).await,
+                            Some(db::MediaKind::Recording | db::MediaKind::TvChannel)
+                        )
+                    {
                         warn!(
                             id = %stream.id,
                             url = %url,
@@ -2002,6 +2028,104 @@ mod probe_tests {
             effective.id, fallback_id,
             "short primary skipped — effective stream must be the fallback"
         );
+    }
+
+    #[tokio::test]
+    async fn a_cached_channel_version_is_reused_without_touching_the_stream() {
+        let db = test_db().await;
+        let channel = db::Media {
+            id: Uuid::new_v4(),
+            kind: db::MediaKind::TvChannel,
+            ..Default::default()
+        };
+        db::Media::upsert(&db, &[channel.clone()])
+            .await
+            .unwrap();
+        let upstream = httpmock::MockServer::start();
+        let touched = upstream.mock(|when, then| {
+            when.any_request();
+            then.status(405);
+        });
+        let mut version = http_media(&upstream.base_url());
+        version.parent_id = Some(channel.id);
+        version.probe_data = Some(api::MediaSourceInfo {
+            media_streams: vec![MediaStream {
+                type_: Some(MediaStreamType::Video),
+                codec: Some("hevc".into()),
+                ..Default::default()
+            }],
+            remux: Some(api::MediaSourceRemuxInfo {
+                source: Some(api::ProbeOrigin::Ffprobe),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        let (info, _) = probe_stream(
+            &version,
+            Some(upstream.base_url()),
+            false,
+            10,
+            false,
+            0,
+            &[],
+            false,
+            3000,
+            &db,
+        )
+        .await
+        .unwrap();
+        assert!(
+            info.video_stream()
+                .is_some()
+        );
+        touched.assert_hits(0);
+    }
+
+    #[tokio::test]
+    async fn a_short_recording_is_not_mistaken_for_a_placeholder() {
+        let db = test_db().await;
+        let recording = db::Media {
+            id: Uuid::new_v4(),
+            kind: db::MediaKind::Recording,
+            ..Default::default()
+        };
+        db::Media::upsert(&db, &[recording.clone()])
+            .await
+            .unwrap();
+        let mut primary = http_media("http://a.example.com");
+        primary.parent_id = Some(recording.id);
+        db::Media::upsert(&db, &[primary.clone()])
+            .await
+            .unwrap();
+        // 1 minute: far below the 3-minute placeholder threshold.
+        let short_probe = Ok((
+            api::MediaSourceInfo {
+                run_time_ticks: Some(60_i64 * 10_000_000),
+                media_streams: vec![MediaStream {
+                    type_: Some(MediaStreamType::Video),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            MediaSegments::default(),
+        ));
+        let all = vec![primary.clone()];
+        let (_, effective) = probe_with_fallback(
+            primary.clone(),
+            Some("http://a.example.com".to_string()),
+            10,
+            true,
+            5,
+            &all,
+            false,
+            3000,
+            &db,
+            queued_probe(vec![short_probe]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(effective.id, primary.id);
     }
 
     #[tokio::test]
