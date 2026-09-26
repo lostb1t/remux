@@ -348,7 +348,7 @@ pub static JS: &str = r#"
 
       return self.getJSON(fastUrl).then(function (item) {
         var type = item && item.Type;
-        var isMovieOrEpisode = (type === 'Movie' || type === 'Episode');
+        var isMovieOrEpisode = (type === 'Movie' || type === 'Episode' || type === 'TvChannel');
         // Skip everything for related-item fetches — only process the item whose
         // ID is reflected in the current page URL.
         if (!isCurrentPage()) return item;

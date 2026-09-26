@@ -315,6 +315,17 @@ impl User {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Jellyfin's `EnableLiveTvManagement`: whether this user may schedule,
+    /// edit, cancel or delete recordings. Off for a user with no stored
+    /// policy, as it is for a new user in Jellyfin.
+    pub fn can_manage_live_tv(&self) -> bool {
+        self.is_admin
+            || self
+                .policy
+                .as_deref()
+                .map_or(false, |p| p.enable_live_tv_management)
+    }
+
     pub fn can_remote_control_others(&self) -> bool {
         self.is_admin
             || self
@@ -2258,5 +2269,30 @@ mod identity_reattach_tests {
             "the orphaned legacy row should have been found via the backfilled identity"
         );
         assert_eq!(reattached.play_count, 9);
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    #[test]
+    fn live_tv_management_is_off_without_a_policy_and_admins_always_pass() {
+        let mut user = User::default();
+        assert!(!user.can_manage_live_tv());
+
+        user.policy = Some(sqlx::types::Json(crate::api::UserPolicy {
+            enable_live_tv_management: true,
+            ..Default::default()
+        }));
+        assert!(user.can_manage_live_tv());
+
+        user.policy = Some(sqlx::types::Json(crate::api::UserPolicy {
+            enable_live_tv_management: false,
+            ..Default::default()
+        }));
+        assert!(!user.can_manage_live_tv());
+        user.is_admin = true;
+        assert!(user.can_manage_live_tv());
     }
 }

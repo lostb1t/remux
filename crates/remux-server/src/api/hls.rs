@@ -161,7 +161,10 @@ async fn create_hls_session(
         }
         if matches!(
             resolved_media.kind,
-            db::MediaKind::Movie | db::MediaKind::Episode
+            db::MediaKind::Movie
+                | db::MediaKind::Episode
+                | db::MediaKind::TvChannel
+                | db::MediaKind::Recording
         ) {
             let sources = resolved_media
                 .streams(
@@ -182,6 +185,11 @@ async fn create_hls_session(
                 sources
                     .into_iter()
                     .next()
+            })
+            // An iptv-m3u channel has no `Stream` children and plays from its own row.
+            .or_else(|| {
+                (resolved_media.kind == db::MediaKind::TvChannel)
+                    .then(|| resolved_media.clone())
             })
             .context_not_found("no playable source found")?;
         } else if resolved_media.kind == db::MediaKind::Track {
@@ -260,8 +268,7 @@ async fn create_hls_session(
         } else {
             false
         };
-        let is_live =
-            resolved_media.kind == db::MediaKind::TvChannel || parent_is_tv_channel;
+        let is_live = media.kind == db::MediaKind::TvChannel || parent_is_tv_channel;
 
         // --- Why we force audio transcoding for live channels ---
         //

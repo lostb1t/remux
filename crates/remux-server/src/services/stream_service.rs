@@ -222,6 +222,34 @@ impl StreamService {
         media: db::Media,
     ) -> anyhow::Result<db::Media> {
         match media.kind {
+            db::MediaKind::Recording | db::MediaKind::TvChannel => {
+                // Versions are the synced `Stream` children. The item's own id
+                // means the first, as PlaybackInfo stamps it on `MediaSources[0]`.
+                let mut media = media;
+                let media_id = media.id;
+                let sources = media
+                    .streams(&ctx.db)
+                    .await?;
+                if sources.is_empty() {
+                    // An iptv-m3u channel has no `Stream` children and plays
+                    // from its own row.
+                    return if media.kind == db::MediaKind::TvChannel {
+                        Ok(media)
+                    } else {
+                        Err(anyhow::anyhow!("no playable sources for {}", item_id))
+                    };
+                }
+                match requested_id.filter(|&sid| sid != item_id && sid != media_id) {
+                    Some(sid) => sources
+                        .into_iter()
+                        .find(|s| s.id == sid)
+                        .ok_or_else(|| anyhow::anyhow!("stream not found: {}", sid)),
+                    None => Ok(sources
+                        .into_iter()
+                        .next()
+                        .expect("sources checked non-empty")),
+                }
+            }
             db::MediaKind::StreamGroup => {
                 let gid = media.id;
                 let mut candidates =
@@ -1046,6 +1074,121 @@ fn media_info_from_probe(
 mod tests {
     use super::*;
     use crate::stream::{StreamDescriptor, StreamInfo};
+
+    /// Seeds a `kind` row (a channel, or a recording under one) with `n`
+    /// synced `Stream` children in idx order.
+    async fn seed_versions(
+        ctx: &crate::AppContext,
+        kind: db::MediaKind,
+        n: i64,
+    ) -> (db::Media, Vec<db::Media>) {
+        let channel = db::Media {
+            id: Uuid::from_u128(1),
+            kind: db::MediaKind::TvChannel,
+            ..Default::default()
+        };
+        db::Media::upsert(&ctx.db, &vec![channel.clone()])
+            .await
+            .unwrap();
+        let parent = if kind == db::MediaKind::Recording {
+            let recording = db::Media {
+                id: Uuid::from_u128(2),
+                kind,
+                parent_id: Some(channel.id),
+                ..Default::default()
+            };
+            db::Media::upsert(&ctx.db, &vec![recording.clone()])
+                .await
+                .unwrap();
+            recording
+        } else {
+            channel
+        };
+        let children: Vec<db::Media> = (0..n)
+            .map(|i| db::Media {
+                id: Uuid::new_v5(&parent.id, format!("child:{i}").as_bytes()),
+                kind: db::MediaKind::Stream,
+                parent_id: Some(parent.id),
+                idx: Some(i),
+                stream_info: Some(StreamInfo {
+                    descriptor: StreamDescriptor::http(format!("http://d/{i}.ts")),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .collect();
+        db::Media::upsert(&ctx.db, &children)
+            .await
+            .unwrap();
+        (parent, children)
+    }
+
+    #[tokio::test]
+    async fn channel_and_recording_lookup_resolve_their_synced_streams() {
+        use crate::integration_test::new_test_server;
+
+        for kind in [db::MediaKind::TvChannel, db::MediaKind::Recording] {
+            let (_server, guard) = new_test_server()
+                .await
+                .unwrap();
+            let ctx = &guard.0;
+            let (parent, children) = seed_versions(ctx, kind, 2).await;
+
+            let plain = StreamService::lookup(ctx, parent.id, None, None, None)
+                .await
+                .unwrap();
+            assert_eq!(plain.id, children[0].id);
+            // PlaybackInfo stamps source[0].Id with the item's own id.
+            let auto =
+                StreamService::lookup(ctx, parent.id, Some(parent.id), None, None)
+                    .await
+                    .unwrap();
+            assert_eq!(auto.id, children[0].id);
+            let picked =
+                StreamService::lookup(ctx, parent.id, Some(children[1].id), None, None)
+                    .await
+                    .unwrap();
+            assert_eq!(picked.id, children[1].id);
+            let err = StreamService::lookup(
+                ctx,
+                parent.id,
+                Some(Uuid::from_u128(0xdead)),
+                None,
+                None,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("not found"), "{err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn lookup_without_synced_streams_plays_a_channel_row_but_not_a_recording() {
+        use crate::integration_test::new_test_server;
+
+        let (_server, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let (channel, _) = seed_versions(ctx, db::MediaKind::TvChannel, 0).await;
+        let media =
+            StreamService::lookup(ctx, channel.id, Some(channel.id), None, None)
+                .await
+                .unwrap();
+        assert_eq!(media.id, channel.id);
+
+        let (_server, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let (recording, _) = seed_versions(ctx, db::MediaKind::Recording, 0).await;
+        let err = StreamService::lookup(ctx, recording.id, None, None, None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no playable sources"), "{err}");
+    }
 
     /// A `MediaSourceId` that is an item id (auto-play, or the PlaybackInfo
     /// rewrite of `source[0].Id` — the sibling's UUID when duplicate items share
