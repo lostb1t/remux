@@ -1309,17 +1309,6 @@ async fn videos_stream_inner(
     }
     .to_string();
     let audio_codec = resolved_codecs.audio;
-    if let Some(playback_id) = playback_id.as_deref() {
-        let effective_method = if video_codec == "copy" && audio_codec == "copy" {
-            PlayMethod::DirectStream
-        } else {
-            PlayMethod::Transcode
-        };
-        state
-            .ctx
-            .sessions
-            .record_effective_play_method(playback_id, effective_method);
-    }
     // Keep a copy before the video_codec is moved into params (needed for Content-Type logic)
     let is_copy_video = video_codec == "copy";
 
@@ -1390,6 +1379,12 @@ async fn videos_stream_inner(
             .unwrap_or(0)
             == 0
     {
+        if let Some(playback_id) = playback_id.as_deref() {
+            state
+                .ctx
+                .sessions
+                .record_effective_play_method(playback_id, PlayMethod::DirectPlay);
+        }
         let resp = if let Some(addon_id) = descriptor.addon_id() {
             let addon = state
                 .ctx
@@ -1410,6 +1405,18 @@ async fn videos_stream_inner(
                 .await?
         };
         return Ok(resp.into_response());
+    }
+
+    if let Some(playback_id) = playback_id.as_deref() {
+        let effective_method = if video_codec == "copy" && audio_codec == "copy" {
+            PlayMethod::DirectStream
+        } else {
+            PlayMethod::Transcode
+        };
+        state
+            .ctx
+            .sessions
+            .record_effective_play_method(playback_id, effective_method);
     }
 
     let params = crate::playback::engine::ProgressiveTranscodeParams {
@@ -1780,9 +1787,10 @@ mod tests {
             .await;
         forced_hls.assert_status(StatusCode::FORBIDDEN);
 
-        // The server-selected method is authoritative even if the client keeps
-        // reporting the DirectStream method it chose before the progressive
-        // endpoint resolved the request to direct play.
+        // The progressive endpoint ultimately served the original file, so it
+        // must correct the client's initial direct-stream decision.
+        // A later client report is persisted so it can correct stale session
+        // state if the playback method changes after playback starts.
         server
             .post("/sessions/playing")
             .add_header(
@@ -1815,7 +1823,7 @@ mod tests {
             .json(&json!({
                 "ItemId": media.id,
                 "PlaySessionId": forced_play_session_id,
-                "PlayMethod": "DirectStream",
+                "PlayMethod": "Transcode",
                 "PositionTicks": 10_000_000
             }))
             .await
@@ -1826,7 +1834,7 @@ mod tests {
                 .sessions
                 .get(forced_play_session_id)
                 .and_then(|session| session.play_method),
-            Some("DirectPlay".to_string())
+            Some("Transcode".to_string())
         );
 
         tokio::fs::remove_file(fixture)

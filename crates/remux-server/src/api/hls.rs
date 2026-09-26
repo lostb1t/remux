@@ -39,6 +39,14 @@ enum HlsSessionResult {
     AudioTranscodeForbidden,
 }
 
+fn play_method_for_codecs(video_codec: &str, audio_codec: &str) -> PlayMethod {
+    if video_codec == "copy" && audio_codec == "copy" {
+        PlayMethod::DirectStream
+    } else {
+        PlayMethod::Transcode
+    }
+}
+
 /// Shared session setup: look up or create the transcode session for an HLS
 /// request. Returns the session handle and the resolved play_session_id.
 async fn create_hls_session(
@@ -102,15 +110,6 @@ async fn create_hls_session(
     };
     let audio_codec = resolved_codecs.audio;
     let burn_subtitle = resolved_codecs.burn_subtitle;
-    let effective_method = if video_codec == "copy" && audio_codec == "copy" {
-        PlayMethod::DirectStream
-    } else {
-        PlayMethod::Transcode
-    };
-    state
-        .ctx
-        .sessions
-        .record_effective_play_method(&play_session_id, effective_method);
     let segment_length = q
         .segment_length
         .unwrap_or(6) as u32;
@@ -654,6 +653,17 @@ async fn create_hls_session(
 
         session
     };
+
+    let effective_method = {
+        let session = session
+            .read()
+            .await;
+        play_method_for_codecs(&session.video_codec, &session.audio_codec)
+    };
+    state
+        .ctx
+        .sessions
+        .record_effective_play_method(&play_session_id, effective_method);
 
     Ok(HlsSessionResult::Transcode(session, play_session_id))
 }
@@ -1399,7 +1409,19 @@ async fn hls_segment_inner(
 
 #[cfg(test)]
 mod tests {
-    use remux_sdks::remux::VideoContainer;
+    use remux_sdks::remux::{PlayMethod, VideoContainer};
+
+    #[test]
+    fn hls_audio_conversion_is_reported_as_transcode() {
+        assert_eq!(
+            super::play_method_for_codecs("copy", "copy"),
+            PlayMethod::DirectStream
+        );
+        assert_eq!(
+            super::play_method_for_codecs("copy", "aac"),
+            PlayMethod::Transcode
+        );
+    }
 
     #[test]
     fn vod_hls_source_reencodes_copied_audio_to_aac() {
