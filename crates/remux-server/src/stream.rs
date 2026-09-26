@@ -208,6 +208,16 @@ impl Default for StreamDescriptor {
 }
 
 impl StreamDescriptor {
+    /// True only for a genuine on-disk file — reading it costs nothing beyond
+    /// local disk I/O. Every other variant (`Http`/`Rtsp`/`Torrent`/`Opendal`)
+    /// means network I/O of some form, even when proxied through our own
+    /// stream endpoint. Used to gate operations that are cheap for local files
+    /// but expensive (a full remote read) for anything else — e.g. on-demand
+    /// subtitle extraction.
+    pub fn is_local(&self) -> bool {
+        matches!(self, Self::Local(_))
+    }
+
     pub fn http(url: impl Into<String>) -> Self {
         Self::Http {
             url: url.into(),

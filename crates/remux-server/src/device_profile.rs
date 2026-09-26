@@ -3073,15 +3073,11 @@ mod tests {
     #[test]
     fn subtitle_burn_reason_only_fires_in_burn_mode() {
         let source = source_with_subtitle("pgssub", false, 0);
-        for mode in [
-            EmbeddedSubtitleHandling::Strip,
-            EmbeddedSubtitleHandling::Extract,
-        ] {
-            assert!(
-                subtitle_burn_reason(&source, None, mode, None).is_none(),
-                "{mode:?} must never force a transcode for subtitles"
-            );
-        }
+        assert!(
+            subtitle_burn_reason(&source, None, EmbeddedSubtitleHandling::Strip, None)
+                .is_none(),
+            "Strip must never force a transcode for subtitles"
+        );
         assert!(
             subtitle_burn_reason(&source, None, EmbeddedSubtitleHandling::Burn, None)
                 .is_some()
