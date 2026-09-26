@@ -70,92 +70,286 @@ fn subtitle_cache_path(
 /// Extract an embedded text subtitle stream to the requested cache format.
 /// The cache key is `{data_dir}/subtitle-cache/{item_id}_{stream_index}.{format}`.
 /// Returns immediately if the cache already exists and is non-empty.
-async fn extract_subtitle_to_cache(
+/// One subtitle stream to pull out of a batch extraction — everything
+/// `extract_subtitles_to_cache` needs to place it at its own cache path.
+struct ExtractableSubtitle {
+    stream_index: i64,
+    map_spec: String,
+    cache_codec: api::SubtitleCodec,
+    ffmpeg_codec: String,
+}
+
+/// Process-wide single-flight lock, keyed by (item_id, media_source_id).
+/// A source is only ever read once concurrently — every subtitle stream on
+/// it is extracted together in one ffmpeg pass (see
+/// `extract_subtitles_to_cache`), so the lock only needs to be per-source,
+/// not per-stream. Entries are never evicted: one small `(Uuid, Uuid)` key
+/// plus an empty mutex per source ever requested is negligible over a
+/// process lifetime.
+static SUBTITLE_EXTRACTION_LOCKS: std::sync::LazyLock<
+    tokio::sync::Mutex<
+        std::collections::HashMap<(Uuid, Uuid), std::sync::Arc<tokio::sync::Mutex<()>>>,
+    >,
+> = std::sync::LazyLock::new(|| {
+    tokio::sync::Mutex::new(std::collections::HashMap::new())
+});
+
+async fn subtitle_extraction_lock(
+    item_id: Uuid,
+    media_source_id: Uuid,
+) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    SUBTITLE_EXTRACTION_LOCKS
+        .lock()
+        .await
+        .entry((item_id, media_source_id))
+        .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
+
+/// Builds the list of every extractable (embedded, non-external) subtitle
+/// stream on `probe`, in container order, with the ffmpeg `-map` spec and
+/// cache codec each one needs. Mirrors Jellyfin's own rule: a native
+/// ASS/SSA stream stays ASS (stream-copied); everything else is converted
+/// to SRT — decided per stream from its *own* codec, not whatever format a
+/// client happens to be asking for right now, since this batch also caches
+/// every other subtitle track on the source for later requests.
+fn extractable_subtitles(probe: &api::MediaSourceInfo) -> Vec<ExtractableSubtitle> {
+    let mut indexes: Vec<i64> = probe
+        .media_streams
+        .iter()
+        .filter(|s| {
+            matches!(s.type_, Some(api::MediaStreamType::Subtitle)) && !s.is_external
+        })
+        .map(|s| s.index)
+        .collect();
+    indexes.sort_unstable();
+    indexes
+        .iter()
+        .enumerate()
+        .filter_map(|(ordinal, &stream_index)| {
+            let stream = probe
+                .media_streams
+                .iter()
+                .find(|s| s.index == stream_index)?;
+            let cache_codec = subtitle_cache_codec(
+                stream
+                    .codec
+                    .as_deref()
+                    .unwrap_or(""),
+            );
+            let ffmpeg_codec = subtitle_cache_ffmpeg_codec(
+                &cache_codec,
+                stream
+                    .codec
+                    .as_deref(),
+            );
+            Some(ExtractableSubtitle {
+                stream_index,
+                map_spec: format!("0:s:{ordinal}"),
+                cache_codec,
+                ffmpeg_codec,
+            })
+        })
+        .collect()
+}
+
+/// Builds the ffmpeg argument list (minus the binary name) for extracting
+/// every stream in `streams` from `input_url` in one pass, plus the cache
+/// path each one is written to. Pure and side-effect free so it's
+/// unit-testable without actually running ffmpeg — mirrors how
+/// `build_hls_args` in `playback::engine` is tested.
+fn build_subtitle_extraction_args(
     data_dir: &std::path::Path,
     input_url: &str,
-    map_spec: &str,
-    item_id: uuid::Uuid,
-    stream_index: i64,
-    cache_codec: api::SubtitleCodec,
-    source_codec: Option<&str>,
-) -> anyhow::Result<std::path::PathBuf> {
+    item_id: Uuid,
+    streams: &[ExtractableSubtitle],
+) -> anyhow::Result<(Vec<String>, Vec<std::path::PathBuf>)> {
+    let mut args = vec![
+        "-y".to_string(),
+        "-nostdin".to_string(),
+        "-copyts".to_string(),
+    ];
+    args.extend(
+        ffmpeg_reconnect_args(input_url)
+            .iter()
+            .map(|s| s.to_string()),
+    );
+    args.push("-i".to_string());
+    args.push(input_url.to_string());
+    let mut cache_paths = Vec::with_capacity(streams.len());
+    for s in streams {
+        let cache_path =
+            subtitle_cache_path(data_dir, item_id, s.stream_index, &s.cache_codec);
+        args.extend([
+            "-map".to_string(),
+            s.map_spec
+                .clone(),
+            "-an".to_string(),
+            "-vn".to_string(),
+            "-c:s".to_string(),
+            s.ffmpeg_codec
+                .clone(),
+            "-f".to_string(),
+            s.cache_codec
+                .to_string(),
+        ]);
+        args.push(
+            cache_path
+                .to_str()
+                .ok_or_else(|| anyhow!("invalid cache path"))?
+                .to_string(),
+        );
+        cache_paths.push(cache_path);
+    }
+    Ok((args, cache_paths))
+}
+
+/// Extracts every subtitle in `streams` from `input_url` in a single ffmpeg
+/// pass — one `-i`, one `-map`/`-c:s` output per stream — so a remote
+/// source is read once for its subtitles no matter how many tracks it has,
+/// not once per requested track. On timeout or failure every output in this
+/// batch is deleted, matching Jellyfin's own behavior (confirmed against
+/// its `SubtitleEncoder.cs`: it doesn't keep partial output either).
+async fn extract_subtitles_to_cache(
+    data_dir: &std::path::Path,
+    input_url: &str,
+    item_id: Uuid,
+    streams: &[ExtractableSubtitle],
+    timeout_seconds: i64,
+) -> anyhow::Result<()> {
+    if streams.is_empty() {
+        return Ok(());
+    }
     let cache_dir = data_dir.join("subtitle-cache");
     tokio::fs::create_dir_all(&cache_dir)
         .await
         .map_err(|e| anyhow!("failed to create subtitle cache dir: {e}"))?;
-    let cache_path = subtitle_cache_path(data_dir, item_id, stream_index, &cache_codec);
 
-    // Return cached copy if it exists and is non-empty.
-    if cache_path.exists() {
-        let bytes = tokio::fs::read(&cache_path)
-            .await
-            .unwrap_or_default();
-        let content = String::from_utf8_lossy(&bytes);
-        if !content
-            .trim()
-            .is_empty()
-        {
-            return Ok(cache_path);
-        }
-    }
-
-    let ffmpeg_codec = subtitle_cache_ffmpeg_codec(&cache_codec, source_codec);
-    let ffmpeg_format = cache_codec.to_string();
+    let (args, cache_paths) =
+        build_subtitle_extraction_args(data_dir, input_url, item_id, streams)?;
     let mut cmd = tokio::process::Command::new(ffmpeg_bin());
     cmd.hide_console();
     cmd.kill_on_drop(true);
-    cmd.args(["-y", "-nostdin", "-copyts"]);
-    cmd.args(ffmpeg_reconnect_args(input_url));
-    cmd.args(["-i", input_url]);
-    cmd.args([
-        "-map",
-        map_spec,
-        "-an",
-        "-vn",
-        "-c:s",
-        &ffmpeg_codec,
-        "-f",
-        &ffmpeg_format,
-        cache_path
-            .to_str()
-            .ok_or_else(|| anyhow!("invalid cache path"))?,
-    ]);
+    cmd.args(&args);
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::piped());
 
-    let output =
-        tokio::time::timeout(std::time::Duration::from_secs(120), cmd.output())
-            .await
-            .map_err(|_| {
-                let p = cache_path.clone();
-                tokio::spawn(async move {
-                    let _ = tokio::fs::remove_file(p).await;
-                });
-                anyhow!("subtitle extraction timed out")
-            })?
-            .map_err(|e| anyhow!("failed to run ffmpeg: {e}"))?;
+    let delete_outputs = |paths: Vec<std::path::PathBuf>| {
+        tokio::spawn(async move {
+            for p in paths {
+                let _ = tokio::fs::remove_file(p).await;
+            }
+        });
+    };
+
+    let timeout_secs = timeout_seconds.max(1) as u64;
+    let output = match tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        cmd.output(),
+    )
+    .await
+    {
+        Err(_) => {
+            delete_outputs(cache_paths);
+            anyhow::bail!("subtitle extraction timed out");
+        }
+        Ok(Err(e)) => anyhow::bail!("failed to run ffmpeg: {e}"),
+        Ok(Ok(output)) => output,
+    };
 
     if !output
         .status
         .success()
     {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        delete_outputs(cache_paths);
         anyhow::bail!("ffmpeg subtitle extraction failed: {stderr}");
     }
 
-    let bytes = tokio::fs::read(&cache_path)
-        .await
-        .map_err(|e| anyhow!("failed to read cached subtitle: {e}"))?;
-    if bytes
-        .iter()
-        .all(|b| b.is_ascii_whitespace())
-    {
-        let _ = tokio::fs::remove_file(&cache_path).await;
-        anyhow::bail!("subtitle extraction produced empty output");
+    // A stream ffmpeg couldn't actually produce (e.g. an empty track) leaves
+    // an empty or missing file — drop just that one rather than failing the
+    // whole batch, so the other tracks it successfully extracted still cache.
+    for path in &cache_paths {
+        let empty = tokio::fs::read(path)
+            .await
+            .map(|b| {
+                b.iter()
+                    .all(|b| b.is_ascii_whitespace())
+            })
+            .unwrap_or(true);
+        if empty {
+            let _ = tokio::fs::remove_file(path).await;
+        }
     }
 
-    Ok(cache_path)
+    Ok(())
+}
+
+/// Ensures `stream_index`'s subtitle is cached, batch-extracting every
+/// not-yet-cached extractable stream on the source in one pass if needed
+/// (see `extract_subtitles_to_cache`). Single-flight per source: concurrent
+/// or player-retried requests for different tracks on the same source wait
+/// on the one running extraction instead of each starting their own full
+/// read of a possibly-remote file.
+async fn ensure_subtitle_cached(
+    data_dir: &std::path::Path,
+    input_url: &str,
+    probe: &api::MediaSourceInfo,
+    item_id: Uuid,
+    media_source_id: Uuid,
+    stream_index: i64,
+    requested_cache_codec: api::SubtitleCodec,
+    timeout_seconds: i64,
+) -> anyhow::Result<std::path::PathBuf> {
+    let is_cached = |path: &std::path::Path| -> bool {
+        path.exists()
+            && std::fs::read(path)
+                .ok()
+                .map(|b| {
+                    !String::from_utf8_lossy(&b)
+                        .trim()
+                        .is_empty()
+                })
+                .unwrap_or(false)
+    };
+    let requested_path =
+        subtitle_cache_path(data_dir, item_id, stream_index, &requested_cache_codec);
+    if is_cached(&requested_path) {
+        return Ok(requested_path);
+    }
+
+    let lock = subtitle_extraction_lock(item_id, media_source_id).await;
+    let _guard = lock
+        .lock()
+        .await;
+
+    // Re-check now that we hold the lock: a concurrent request for a
+    // different track on this source may have just extracted this one too.
+    if is_cached(&requested_path) {
+        return Ok(requested_path);
+    }
+
+    let missing: Vec<ExtractableSubtitle> = extractable_subtitles(probe)
+        .into_iter()
+        .filter(|s| {
+            !is_cached(&subtitle_cache_path(
+                data_dir,
+                item_id,
+                s.stream_index,
+                &s.cache_codec,
+            ))
+        })
+        .collect();
+    extract_subtitles_to_cache(data_dir, input_url, item_id, &missing, timeout_seconds)
+        .await?;
+
+    if !is_cached(&requested_path) {
+        anyhow::bail!(
+            "subtitle extraction produced no output for stream {stream_index}"
+        );
+    }
+    Ok(requested_path)
 }
 
 /// Subtitle extraction endpoint - extracts a subtitle stream from a media source
@@ -516,15 +710,26 @@ async fn subtitles_stream_inner(
                             .device
                             .parsed_device_profile(),
                     );
-                let subtitle_mode = db::Settings::get_encoding_config(
+                let encoding_cfg = db::Settings::get_encoding_config(
                     &state
                         .ctx
                         .db,
                 )
                 .await
-                .unwrap_or_default()
-                .subtitle_mode
                 .unwrap_or_default();
+                let subtitle_mode = encoding_cfg
+                    .subtitle_mode
+                    .unwrap_or_default();
+                let allow_subtitle_extraction = source
+                    .stream_info
+                    .as_ref()
+                    .is_some_and(|si| {
+                        si.descriptor
+                            .is_local()
+                    })
+                    || encoding_cfg
+                        .allow_remote_subtitle_extraction
+                        .unwrap_or(false);
                 let resolved_probe = source
                     .probe_data
                     .clone()
@@ -547,6 +752,7 @@ async fn subtitles_stream_inner(
                                 .expose(),
                             &device_profile,
                             subtitle_mode,
+                            allow_subtitle_extraction,
                         );
                         probe
                     });
@@ -634,6 +840,37 @@ async fn subtitles_stream_inner(
         })
         .context_not_found("media source has no URL")?;
 
+    // Defense in depth: a client can hit this endpoint directly with any
+    // stream_index, regardless of what delivery_method PlaybackInfo actually
+    // advertised (`apply_subtitle_delivery`'s upstream feasibility check).
+    // Never start an extraction — reading the whole remote file once — for a
+    // remote source unless the admin opted in; local files are unaffected.
+    let is_local = media
+        .stream_info
+        .as_ref()
+        .is_some_and(|si| {
+            si.descriptor
+                .is_local()
+        });
+    let encoding_cfg = db::Settings::get_encoding_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await
+    .unwrap_or_default();
+    let allow_subtitle_extraction = is_local
+        || encoding_cfg
+            .allow_remote_subtitle_extraction
+            .unwrap_or(false);
+    if !allow_subtitle_extraction {
+        return Ok((
+            StatusCode::NOT_FOUND,
+            "subtitle extraction is disabled for remote sources",
+        )
+            .into_response());
+    }
+
     let output_format = format.to_ascii_lowercase();
     let is_json = matches!(output_format.as_str(), "js" | "json");
     let (ffmpeg_format, content_type) = match output_format.as_str() {
@@ -663,24 +900,6 @@ async fn subtitles_stream_inner(
         })
         .context_not_found("subtitle stream not found")?;
 
-    let source_codec = media
-        .probe_data
-        .as_ref()
-        .and_then(|probe| {
-            probe
-                .media_streams
-                .iter()
-                .find(|stream| {
-                    stream.index == stream_index
-                        && matches!(stream.type_, Some(api::MediaStreamType::Subtitle))
-                })
-        })
-        .and_then(|stream| {
-            stream
-                .codec
-                .as_deref()
-        });
-
     let is_binary = matches!(output_format.as_str(), "sup" | "pgssub");
 
     // Binary formats (PGS/SUP): extract on-the-fly as raw bytes.
@@ -704,11 +923,17 @@ async fn subtitles_stream_inner(
         ]);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
-        let output =
-            tokio::time::timeout(std::time::Duration::from_secs(120), cmd.output())
-                .await
-                .map_err(|_| anyhow!("subtitle extraction timed out"))?
-                .map_err(|e| anyhow!("failed to run ffmpeg: {e}"))?;
+        let timeout_secs = encoding_cfg
+            .subtitle_extraction_timeout_seconds
+            .unwrap_or(1800)
+            .max(1) as u64;
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs),
+            cmd.output(),
+        )
+        .await
+        .map_err(|_| anyhow!("subtitle extraction timed out"))?
+        .map_err(|e| anyhow!("failed to run ffmpeg: {e}"))?;
         if !output
             .status
             .success()
@@ -738,34 +963,38 @@ async fn subtitles_stream_inner(
         stream_index,
         &cache_codec,
     );
-    let is_cached = |path: &std::path::Path| -> bool {
-        path.exists()
-            && std::fs::read(path)
-                .ok()
-                .map(|b| {
-                    !String::from_utf8_lossy(&b)
-                        .trim()
-                        .is_empty()
-                })
-                .unwrap_or(false)
-    };
-
-    if is_cached(&cache_file) {
+    if cache_file.exists()
+        && std::fs::read(&cache_file)
+            .ok()
+            .map(|b| {
+                !String::from_utf8_lossy(&b)
+                    .trim()
+                    .is_empty()
+            })
+            .unwrap_or(false)
+    {
         debug!(%item_id, stream_index, "subtitle cache hit");
     } else {
         info!(%item_id, stream_index, %map_spec, "subtitle cache miss — extracting on-demand");
     }
-    let cache_path = match extract_subtitle_to_cache(
+    let probe = media
+        .probe_data
+        .clone()
+        .unwrap_or_default();
+    let cache_path = match ensure_subtitle_cached(
         &state
             .ctx
             .config
             .data_dir,
         &url,
-        &map_spec,
+        &probe,
         item_id,
+        media_source_id,
         stream_index,
         cache_codec,
-        source_codec,
+        encoding_cfg
+            .subtitle_extraction_timeout_seconds
+            .unwrap_or(1800),
     )
     .await
     {
@@ -1677,6 +1906,177 @@ mod tests {
                 .len(),
             1,
             "an embed-supported subtitle is free to deliver — never drop it in favor of external"
+        );
+    }
+
+    fn source_with_subtitles(streams: Vec<api::MediaStream>) -> api::MediaSourceInfo {
+        api::MediaSourceInfo {
+            id: Uuid::new_v4(),
+            media_streams: streams,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn extractable_subtitles_skips_external_streams_and_orders_by_index() {
+        let source = source_with_subtitles(vec![
+            api::MediaStream {
+                index: 5,
+                type_: Some(api::MediaStreamType::Subtitle),
+                codec: Some("subrip".into()),
+                is_external: false,
+                ..Default::default()
+            },
+            api::MediaStream {
+                index: 1,
+                type_: Some(api::MediaStreamType::Subtitle),
+                codec: Some("ass".into()),
+                is_external: false,
+                ..Default::default()
+            },
+            api::MediaStream {
+                index: 3,
+                type_: Some(api::MediaStreamType::Subtitle),
+                codec: Some("subrip".into()),
+                is_external: true,
+                ..Default::default()
+            },
+            api::MediaStream {
+                index: 0,
+                type_: Some(api::MediaStreamType::Audio),
+                codec: Some("aac".into()),
+                ..Default::default()
+            },
+        ]);
+
+        let extractable = extractable_subtitles(&source);
+        let indexes: Vec<i64> = extractable
+            .iter()
+            .map(|s| s.stream_index)
+            .collect();
+        assert_eq!(
+            indexes,
+            vec![1, 5],
+            "external and non-subtitle streams must be excluded, remaining ones sorted by index"
+        );
+        // map_spec is the ordinal among *extracted* streams, not the raw index.
+        assert_eq!(extractable[0].map_spec, "0:s:0");
+        assert_eq!(extractable[1].map_spec, "0:s:1");
+        // native ASS stays ASS (stream-copied); everything else becomes SRT.
+        assert_eq!(extractable[0].cache_codec, api::SubtitleCodec::Ass);
+        assert_eq!(extractable[0].ffmpeg_codec, "copy");
+        assert_eq!(extractable[1].cache_codec, api::SubtitleCodec::Srt);
+    }
+
+    #[test]
+    fn build_subtitle_extraction_args_has_one_input_and_one_map_pair_per_stream() {
+        let data_dir = std::path::Path::new("/tmp/remux-subtitle-test");
+        let item_id = Uuid::new_v4();
+        let source = source_with_subtitles(vec![
+            api::MediaStream {
+                index: 0,
+                type_: Some(api::MediaStreamType::Subtitle),
+                codec: Some("subrip".into()),
+                ..Default::default()
+            },
+            api::MediaStream {
+                index: 1,
+                type_: Some(api::MediaStreamType::Subtitle),
+                codec: Some("ass".into()),
+                ..Default::default()
+            },
+            api::MediaStream {
+                index: 2,
+                type_: Some(api::MediaStreamType::Subtitle),
+                codec: Some("hdmv_pgs_subtitle".into()),
+                ..Default::default()
+            },
+        ]);
+        let streams = extractable_subtitles(&source);
+        assert_eq!(streams.len(), 3);
+
+        let (args, cache_paths) = build_subtitle_extraction_args(
+            data_dir,
+            "http://example.com/stream.mkv",
+            item_id,
+            &streams,
+        )
+        .expect("arg construction should not fail for a valid path");
+
+        // Exactly one -i (single ffmpeg process reads the file once), and it
+        // comes before every -map (single input feeding every output).
+        let input_positions: Vec<usize> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.as_str() == "-i")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            input_positions.len(),
+            1,
+            "expected exactly one -i: {args:?}"
+        );
+        let input_pos = input_positions[0];
+        assert_eq!(args[input_pos + 1], "http://example.com/stream.mkv");
+        let first_map_pos = args
+            .iter()
+            .position(|a| a == "-map")
+            .expect("expected at least one -map");
+        assert!(
+            input_pos < first_map_pos,
+            "-i must precede every -map: {args:?}"
+        );
+
+        // http source should get reconnect args.
+        assert!(
+            args.contains(&"-reconnect".to_string()),
+            "http input should carry reconnect args: {args:?}"
+        );
+
+        // One -map/-c:s pair per extractable stream, and one cache path per stream.
+        let map_count = args
+            .iter()
+            .filter(|a| a.as_str() == "-map")
+            .count();
+        let codec_count = args
+            .iter()
+            .filter(|a| a.as_str() == "-c:s")
+            .count();
+        assert_eq!(map_count, 3, "expected one -map per stream: {args:?}");
+        assert_eq!(codec_count, 3, "expected one -c:s per stream: {args:?}");
+        assert_eq!(cache_paths.len(), 3);
+
+        // Each -map targets the right ordinal within the subtitle-only index space.
+        let map_specs: Vec<&String> = args
+            .windows(2)
+            .filter(|w| w[0] == "-map")
+            .map(|w| &w[1])
+            .collect();
+        assert_eq!(map_specs, vec!["0:s:0", "0:s:1", "0:s:2"]);
+    }
+
+    #[test]
+    fn build_subtitle_extraction_args_skips_reconnect_for_local_files() {
+        let data_dir = std::path::Path::new("/tmp/remux-subtitle-test");
+        let source = source_with_subtitles(vec![api::MediaStream {
+            index: 0,
+            type_: Some(api::MediaStreamType::Subtitle),
+            codec: Some("subrip".into()),
+            ..Default::default()
+        }]);
+        let streams = extractable_subtitles(&source);
+
+        let (args, _) = build_subtitle_extraction_args(
+            data_dir,
+            "/mnt/media/movie.mkv",
+            Uuid::new_v4(),
+            &streams,
+        )
+        .expect("arg construction should not fail for a valid path");
+
+        assert!(
+            !args.contains(&"-reconnect".to_string()),
+            "a local path should not get http reconnect args: {args:?}"
         );
     }
 }
