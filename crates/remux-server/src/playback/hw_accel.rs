@@ -196,13 +196,25 @@ pub trait Accelerator: Send {
     /// Hardware-decode args that account for codec/HDR context.  Callers pass
     /// this instead of `input_args()` directly.
     ///
-    /// The default skips `input_args()` when `requires_software_decode` is set.
-    /// QSV overrides to emit device-init-only args when software tone mapping
-    /// needs CPU frames but the QSV encoder still needs the device chain.
+    /// `needs_cpu_overlay` is true when a subtitle burn-in will run through
+    /// the CPU `overlay` filter (i.e. `!supports_gpu_resident_overlay()`).
+    /// That filter reads `0:v:0` directly with no `hwdownload`, so an
+    /// accelerator whose `input_args()` requests GPU-resident frames (QSV,
+    /// VAAPI) must fall back to a software decode whenever this is true,
+    /// regardless of `treatment` — `HdrTreatment::for_source` only routes
+    /// *tone-mapping* treatments away from GPU residency for this case
+    /// (`SwTonemap`), not `Sdr`/`Clamp`, which have nothing to do with tone
+    /// mapping but still end up on the same CPU overlay path.
+    ///
+    /// The default skips `input_args()` when `requires_software_decode` is
+    /// set. QSV/VAAPI override to also emit device-init-only args when
+    /// software tone mapping (or this CPU-overlay case) needs CPU frames but
+    /// the encoder still requires the device chain.
     fn decode_input_args(
         &self,
         source_codec: Option<&str>,
         treatment: HdrTreatment,
+        _needs_cpu_overlay: bool,
     ) -> Vec<String> {
         if self.requires_software_decode(source_codec, treatment.is_hdr()) {
             vec![]
@@ -350,7 +362,17 @@ impl Accelerator for Vaapi {
         &self,
         _source_codec: Option<&str>,
         treatment: HdrTreatment,
+        needs_cpu_overlay: bool,
     ) -> Vec<String> {
+        // The CPU `overlay` filter reads `0:v:0` directly with no
+        // `hwdownload`, so an accelerator without a GPU-resident overlay
+        // (VAAPI has none — see `supports_gpu_resident_overlay`) must fall
+        // back to software decode whenever a burn-in needs it, regardless of
+        // treatment: `Sdr`/`Clamp` would otherwise still request
+        // VAAPI-resident frames here.
+        if needs_cpu_overlay && !self.supports_gpu_resident_overlay() {
+            return self.init_only_args();
+        }
         match treatment {
             // tonemapx needs CPU frames; device chain still needed for the
             // VAAPI encoder.
@@ -497,7 +519,15 @@ impl Accelerator for Qsv {
         &self,
         _source_codec: Option<&str>,
         treatment: HdrTreatment,
+        needs_cpu_overlay: bool,
     ) -> Vec<String> {
+        // QSV has `overlay_qsv`, a GPU-resident overlay, so a burn-in never
+        // forces software decode here the way it does for plain VAAPI — kept
+        // for symmetry with `Vaapi::decode_input_args` and so a future
+        // accelerator without a GPU-resident overlay gets this for free.
+        if needs_cpu_overlay && !self.supports_gpu_resident_overlay() {
+            return self.init_only_args();
+        }
         match treatment {
             // tonemapx needs CPU frames; device chain still needed for the
             // QSV encoder.
@@ -803,14 +833,14 @@ mod tests {
             HdrTreatment::Clamp,
             HdrTreatment::VppTonemap,
         ] {
-            let args = q.decode_input_args(None, t);
+            let args = q.decode_input_args(None, t, false);
             assert!(
                 args.iter()
                     .any(|a| a == "-hwaccel_output_format"),
                 "{t:?} should hw-decode: {args:?}"
             );
         }
-        let args = q.decode_input_args(None, HdrTreatment::SwTonemap);
+        let args = q.decode_input_args(None, HdrTreatment::SwTonemap, false);
         assert!(
             !args
                 .iter()
@@ -856,7 +886,8 @@ mod tests {
 
     #[test]
     fn qsv_opencl_decodes_on_gpu_with_opencl_filter_device() {
-        let args = qsv_opencl().decode_input_args(None, HdrTreatment::OclTonemap);
+        let args =
+            qsv_opencl().decode_input_args(None, HdrTreatment::OclTonemap, false);
         let pair = |k: &str, v: &str| {
             args.windows(2)
                 .any(|w| w[0] == k && w[1] == v)
@@ -977,7 +1008,8 @@ mod tests {
 
     #[test]
     fn vaapi_opencl_decodes_on_gpu_with_opencl_filter_device() {
-        let args = vaapi_opencl().decode_input_args(None, HdrTreatment::OclTonemap);
+        let args =
+            vaapi_opencl().decode_input_args(None, HdrTreatment::OclTonemap, false);
         let pair = |k: &str, v: &str| {
             args.windows(2)
                 .any(|w| w[0] == k && w[1] == v)

@@ -778,6 +778,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
                 .source_video_codec
                 .as_deref(),
             treatment,
+            burn_subtitle_filter,
         ),
     );
 
@@ -1588,6 +1589,7 @@ pub(crate) fn build_progressive_args(
                 .source_video_codec
                 .as_deref(),
             treatment,
+            burn_subtitle_filter,
         ),
     );
 
@@ -3042,6 +3044,56 @@ mod tests {
         assert!(
             fc.contains("overlay"),
             "must still burn the subtitle in: {fc}"
+        );
+    }
+
+    /// `HdrTreatment::for_source` only routes *tone-mapping* treatments away
+    /// from GPU residency for a CPU-overlay burn-in (`SwTonemap`) — an SDR
+    /// source burning a subtitle in gets plain `Sdr` treatment, which has
+    /// nothing to do with tone mapping. Regression test: `Vaapi::input_args`
+    /// requesting real hardware decode must not leak into this path, since
+    /// the CPU `overlay` filter that composites the subtitle reads `0:v:0`
+    /// directly with no `hwdownload` and cannot consume VAAPI-resident frames.
+    #[test]
+    fn hls_vaapi_sdr_subtitle_burn_stays_on_cpu() {
+        let dir = PathBuf::from("/tmp/test_vaapi_sdr_sub");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(vaapi()),
+            source_video_range_type: Some(VideoRangeType::Sdr),
+            burn_subtitle: true,
+            subtitle_stream_index: Some(2),
+            ..default_hls(dir)
+        });
+
+        assert_vaapi_sw_decode(&args);
+        let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
+        assert!(
+            fc.contains("]overlay="),
+            "CPU overlay compositing the subtitle: {fc}"
+        );
+    }
+
+    /// Same bug, HDR variant: no tone-mapping toggle enabled means `Clamp`
+    /// treatment, which — like `Sdr` — is not `SwTonemap` and so was still
+    /// requesting VAAPI-resident hardware decode feeding the CPU overlay.
+    #[test]
+    fn hls_vaapi_hdr_clamp_subtitle_burn_stays_on_cpu() {
+        let dir = PathBuf::from("/tmp/test_vaapi_clamp_sub");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(vaapi()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            burn_subtitle: true,
+            subtitle_stream_index: Some(2),
+            ..default_hls(dir)
+        });
+
+        assert_vaapi_sw_decode(&args);
+        let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
+        assert!(
+            fc.contains("]overlay="),
+            "CPU overlay compositing the subtitle: {fc}"
         );
     }
 

@@ -867,8 +867,9 @@ pub struct EncodingOptions {
     /// detected type to hardware_acceleration_type automatically.
     #[default(Some(true))]
     pub auto_detect_hardware_acceleration: Option<bool>,
-    /// HDR→SDR tone mapping. Runs `tonemap_opencl` on the GPU with QSV when
-    /// an OpenCL runtime is present, otherwise the tonemapx filter (CPU).
+    /// HDR→SDR tone mapping. Runs `tonemap_opencl` on the GPU with QSV or
+    /// VAAPI when an OpenCL runtime is present, otherwise the tonemapx
+    /// filter (CPU).
     #[default(Some(false))]
     pub enable_tonemapping: Option<bool>,
     /// Hardware HDR→SDR tone mapping via tonemap_vaapi (Intel VAAPI/QSV only).
