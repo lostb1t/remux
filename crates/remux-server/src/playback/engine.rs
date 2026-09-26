@@ -268,6 +268,9 @@ pub struct TranscodeParams {
     pub output_dir: PathBuf,
     pub video_codec: String, // "copy", "libx264", "libx265"
     pub audio_codec: String, // "aac", "copy"
+    /// Effective server + user permission. Compatibility fallbacks must never
+    /// enable audio encoding unless this is true.
+    pub audio_transcoding_allowed: bool,
     pub segment_length: u32, // seconds (default 6)
     pub start_time_ticks: Option<i64>,
     pub max_width: Option<u32>,
@@ -328,6 +331,7 @@ impl Default for TranscodeParams {
             output_dir: PathBuf::new(),
             video_codec: "copy".to_string(),
             audio_codec: "aac".to_string(),
+            audio_transcoding_allowed: false,
             segment_length: 6,
             start_time_ticks: None,
             max_width: None,
@@ -581,10 +585,14 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             .as_ref(),
     );
 
+    // The API layer must explicitly select a video encoder after checking
+    // server and user permissions. Never turn a constrained copy request back
+    // into a transcode here merely because SubtitleMethod=Encode was supplied.
     let burn_subtitle_filter = params.burn_subtitle
         && params
             .subtitle_stream_index
-            .is_some();
+            .is_some_and(|index| index >= 0)
+        && params.video_codec != "copy";
 
     // Tone-map decision (only applies to HDR + transcode, never to copy). On
     // QSV the subtitle overlay runs on the GPU after tone mapping, so
@@ -609,17 +617,6 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             "copy" => "copy",
             _ => "libx264",
         };
-        // Subtitle burn-in requires re-encoding; can't copy video.
-        let base = if params.burn_subtitle
-            && params
-                .subtitle_stream_index
-                .is_some()
-            && base == "copy"
-        {
-            "libx264"
-        } else {
-            base
-        };
         if base != "copy" && is_hw {
             accel.encoder_name(base)
         } else {
@@ -630,33 +627,29 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         .audio_codec
         .as_str()
     {
-        "copy" => {
-            // IMPORTANT: do not remove this override.
-            //
-            // TrueHD, FLAC, and PCM are not valid MPEG-TS payloads. The TS
-            // spec simply has no stream type for them. FFmpeg either errors out
-            // or silently drops the audio track when you try to mux them.
-            // Clients (iOS Safari, ExoPlayer) then see a broken/silent stream.
-            //
-            // The client asked for "copy" because it trusts the server to only
-            // honour that when the codec can actually be carried in the
-            // container. We must downgrade to AAC here; do not "fix" this by
-            // removing the override thinking the client knows best.
+        "copy" if params.audio_transcoding_allowed => {
+            // TrueHD, FLAC, and PCM are not valid MPEG-TS payloads. Keep this
+            // last-resort compatibility fallback, but only when the API layer
+            // explicitly carried an effective permission to transcode audio.
+            // When permission is absent, the API must reject the HLS request
+            // before reaching the engine rather than silently enabling AAC.
             let source = params
                 .source_audio_codec
                 .as_deref()
                 .and_then(|s| {
-                    s.parse::<remux_sdks::remux::AudioCodec>()
+                    s.parse::<AudioCodec>()
                         .ok()
                 });
-            let ts_incompatible = matches!(
+            if matches!(
                 source,
-                Some(remux_sdks::remux::AudioCodec::TrueHd)
-                    | Some(remux_sdks::remux::AudioCodec::Flac)
-                    | Some(remux_sdks::remux::AudioCodec::Pcm)
-            );
-            if ts_incompatible { "aac" } else { "copy" }
+                Some(AudioCodec::TrueHd | AudioCodec::Flac | AudioCodec::Pcm)
+            ) {
+                "aac"
+            } else {
+                "copy"
+            }
         }
+        "copy" => "copy",
         _ => "aac",
     };
 
@@ -737,7 +730,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     let hw_suffix = accel.hw_filter_suffix(treatment);
 
     // Stream mapping
-    if params.burn_subtitle {
+    if burn_subtitle_filter {
         if let Some(sub_idx) = params.subtitle_stream_index {
             // Image subtitle (PGS/DVD): bitmap overlay via filter_complex.
             // Scale subtitle bitmap to output dimensions (matching Jellyfin's approach).
@@ -1406,10 +1399,14 @@ pub(crate) fn build_progressive_args(
             .as_ref(),
     );
 
+    // The API layer must explicitly select a video encoder after checking
+    // server and user permissions. Never turn a constrained copy request back
+    // into a transcode here merely because SubtitleMethod=Encode was supplied.
     let burn_subtitle_filter = params.burn_subtitle
         && params
             .subtitle_stream_index
-            .is_some();
+            .is_some_and(|index| index >= 0)
+        && params.video_codec != "copy";
 
     let treatment = HdrTreatment::for_source(
         hdr,
@@ -1428,16 +1425,6 @@ pub(crate) fn build_progressive_args(
         {
             "copy" => "copy",
             _ => "libx264",
-        };
-        let base = if params.burn_subtitle
-            && params
-                .subtitle_stream_index
-                .is_some()
-            && base == "copy"
-        {
-            "libx264"
-        } else {
-            base
         };
         if base != "copy" && is_hw {
             accel.encoder_name(base)
@@ -1528,7 +1515,7 @@ pub(crate) fn build_progressive_args(
         None
     };
 
-    if params.burn_subtitle {
+    if burn_subtitle_filter {
         if let Some(sub_idx) = params.subtitle_stream_index {
             // Image subtitle (PGS/DVD): bitmap overlay via filter_complex.
             let (out_w, out_h) = (params.max_width, params.max_height);
@@ -2462,6 +2449,31 @@ mod tests {
     }
 
     #[test]
+    fn hls_audio_copy_does_not_implicitly_enable_transcoding_without_permission() {
+        for codec in ["truehd", "flac", "pcm_s16le"] {
+            let args = build_hls_args(&TranscodeParams {
+                audio_codec: "copy".into(),
+                source_audio_codec: Some(codec.into()),
+                ..default_hls(PathBuf::from(format!("/tmp/test_{codec}_copy")))
+            });
+            assert_eq!(arg_after(&args, "-c:a"), Some("copy"));
+        }
+    }
+
+    #[test]
+    fn hls_incompatible_audio_copy_falls_back_to_aac_when_permitted() {
+        for codec in ["truehd", "flac", "pcm_s16le"] {
+            let args = build_hls_args(&TranscodeParams {
+                audio_codec: "copy".into(),
+                audio_transcoding_allowed: true,
+                source_audio_codec: Some(codec.into()),
+                ..default_hls(PathBuf::from(format!("/tmp/test_{codec}_fallback")))
+            });
+            assert_eq!(arg_after(&args, "-c:a"), Some("aac"));
+        }
+    }
+
+    #[test]
     fn hls_hevc_copy_hvc1_tag_alias() {
         // "hvc1" codec string should also trigger fMP4 path
         let dir = PathBuf::from("/tmp/test_hvc1");
@@ -2551,6 +2563,7 @@ mod tests {
             created_at: std::time::Instant::now(),
             video_codec: video_codec.into(),
             audio_codec: "aac".into(),
+            audio_transcoding_allowed: true,
             audio_stream_index: None,
             subtitle_stream_index: None,
             burn_subtitle: false,
@@ -2662,6 +2675,7 @@ mod tests {
             created_at: std::time::Instant::now(),
             video_codec: "copy".into(),
             audio_codec: "aac".into(),
+            audio_transcoding_allowed: true,
             audio_stream_index: None,
             subtitle_stream_index: None,
             burn_subtitle: false,
@@ -2760,16 +2774,15 @@ mod tests {
     }
 
     #[test]
-    fn hls_subtitle_burn_forces_reencode_and_filter_complex() {
+    fn hls_subtitle_burn_uses_selected_encoder_and_filter_complex() {
         let dir = PathBuf::from("/tmp/test_sub");
         let args = build_hls_args(&TranscodeParams {
-            video_codec: "copy".into(),
+            video_codec: "libx264".into(),
             burn_subtitle: true,
             subtitle_stream_index: Some(2),
             ..default_hls(dir)
         });
 
-        // copy → libx264 forced by subtitle burn
         assert_eq!(arg_after(&args, "-c:v"), Some("libx264"));
         // filter_complex with overlay
         let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
@@ -2783,6 +2796,19 @@ mod tests {
             args.windows(2)
                 .any(|w| w[0] == "-map" && w[1] == "[v]")
         );
+    }
+
+    #[test]
+    fn hls_subtitle_burn_cannot_override_video_copy() {
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "copy".into(),
+            burn_subtitle: true,
+            subtitle_stream_index: Some(2),
+            ..default_hls(PathBuf::from("/tmp/test_sub_copy"))
+        });
+
+        assert_eq!(arg_after(&args, "-c:v"), Some("copy"));
+        assert!(!args_contains(&args, "-filter_complex"));
     }
 
     #[test]
@@ -3422,15 +3448,27 @@ mod tests {
     #[test]
     fn progressive_subtitle_burn_filter_complex() {
         let args = build_progressive_args(&ProgressiveTranscodeParams {
+            video_codec: "libx264".into(),
+            burn_subtitle: true,
+            subtitle_stream_index: Some(1),
+            ..default_progressive()
+        });
+        assert_eq!(arg_after(&args, "-c:v"), Some("libx264"));
+        let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
+        assert!(fc.contains("overlay"), "fc: {fc}");
+    }
+
+    #[test]
+    fn progressive_subtitle_burn_cannot_override_video_copy() {
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
             video_codec: "copy".into(),
             burn_subtitle: true,
             subtitle_stream_index: Some(1),
             ..default_progressive()
         });
-        // copy → libx264 forced
-        assert_eq!(arg_after(&args, "-c:v"), Some("libx264"));
-        let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
-        assert!(fc.contains("overlay"), "fc: {fc}");
+
+        assert_eq!(arg_after(&args, "-c:v"), Some("copy"));
+        assert!(!args_contains(&args, "-filter_complex"));
     }
 
     #[test]

@@ -5,6 +5,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use crate::playback::decision::PlaybackPermissions;
 use crate::{common, db, db::auth, playback::session::TranscodeSession};
 use remux_sdks::remux::{PlayMethod, PlaybackInfo, QueueItem};
 
@@ -43,6 +44,12 @@ pub struct PlaybackSession {
 #[derive(Clone)]
 pub struct PlaybackSessionManager {
     sessions: Arc<DashMap<String, PlaybackSession>>,
+    /// Playback methods selected before the client's playback-start report.
+    /// Each entry is consumed when its session is inserted.
+    pending_play_methods: Arc<DashMap<String, (DateTime<Utc>, PlayMethod)>>,
+    // Makes the effective-method handoff atomic when the stream request and
+    // playback-start report race each other.
+    play_method_handoff: Arc<std::sync::Mutex<()>>,
     // Requests can arrive before the client's playback-start report. Hold
     // their leases briefly, then move them into the PlaybackSession on start.
     pending_torrents:
@@ -59,6 +66,8 @@ impl PlaybackSessionManager {
         let _ = std::fs::create_dir_all(&base_dir);
         Self {
             sessions: Arc::new(DashMap::new()),
+            pending_play_methods: Arc::new(DashMap::new()),
+            play_method_handoff: Arc::new(std::sync::Mutex::new(())),
             pending_torrents: Arc::new(DashMap::new()),
             torrent_handoff: Arc::new(std::sync::Mutex::new(())),
             base_dir,
@@ -85,6 +94,24 @@ impl PlaybackSessionManager {
                     .as_simple()
                     .to_string()
             });
+
+        let reported_play_method =
+            if let Some(method) = self.pending_play_method(&play_session_id) {
+                Some(method)
+            } else if let Some(method) = data
+                .play_method
+                .clone()
+            {
+                let encoding = db::Settings::get_encoding_config(db)
+                    .await
+                    .unwrap_or_default();
+                let method =
+                    PlaybackPermissions::for_user(&encoding, Some(&auth_session.user))
+                        .constrain_reported_method(method);
+                Some(method)
+            } else {
+                None
+            };
 
         // Enforce per-user concurrent-stream limit.
         let max_sessions = auth_session
@@ -194,8 +221,7 @@ impl PlaybackSessionManager {
             volume_level: data.volume_level,
             audio_stream_index: data.audio_stream_index,
             subtitle_stream_index: data.subtitle_stream_index,
-            play_method: data
-                .play_method
+            play_method: reported_play_method
                 .as_ref()
                 .map(|m| m.to_string()),
             now_playing_queue: data
@@ -215,9 +241,21 @@ impl PlaybackSessionManager {
         self.insert(ps)
             .await;
 
+        let effective_play_method = self
+            .get(&play_session_id)
+            .and_then(|session| {
+                session
+                    .play_method
+                    .and_then(|method| {
+                        method
+                            .parse()
+                            .ok()
+                    })
+            });
+
         // For transcode sessions, master_hls_video fires the info log once it
         // has full codec/bitrate/reasons info. For direct play/stream, log here.
-        let is_transcode = matches!(data.play_method, Some(PlayMethod::Transcode));
+        let is_transcode = matches!(effective_play_method, Some(PlayMethod::Transcode));
         if !is_transcode {
             // Best-effort: fetch media title and source path for the log line.
             let media_title = db::Media::get_by_id(db, &item_id)
@@ -267,7 +305,7 @@ impl PlaybackSessionManager {
                 path = ?source_path,
                 user = %auth_session.user.username,
                 client = %auth_session.device.app_name,
-                play_method = ?data.play_method,
+                play_method = ?effective_play_method,
                 audio_stream = ?data.audio_stream_index,
                 subtitle_stream = ?data.subtitle_stream_index,
                 position_secs,
@@ -319,6 +357,9 @@ impl PlaybackSessionManager {
         } else {
             ps.item_id
         };
+        let reported_play_method = data
+            .play_method
+            .clone();
 
         // Detect encode-parameter changes and log them once.
         // We ignore pause/unpause — those are not encode changes.
@@ -330,11 +371,8 @@ impl PlaybackSessionManager {
             .subtitle_stream_index
             .is_some()
             && data.subtitle_stream_index != ps.subtitle_stream_index;
-        let method_changed = data
-            .play_method
-            .is_some()
-            && data
-                .play_method
+        let method_changed = reported_play_method.is_some()
+            && reported_play_method
                 .as_ref()
                 .map(|m| m.to_string())
                 != ps.play_method;
@@ -354,7 +392,7 @@ impl PlaybackSessionManager {
                     format!("{:?}", ps.subtitle_stream_index)
                 },
                 play_method = if method_changed {
-                    format!("{:?} → {:?}", ps.play_method, data.play_method)
+                    format!("{:?} → {:?}", ps.play_method, reported_play_method)
                 } else {
                     format!("{:?}", ps.play_method)
                 },
@@ -388,8 +426,8 @@ impl PlaybackSessionManager {
             ps.subtitle_stream_index = data
                 .subtitle_stream_index
                 .or(ps.subtitle_stream_index);
-            if let Some(ref m) = data.play_method {
-                ps.play_method = Some(m.to_string());
+            if let Some(ref method) = reported_play_method {
+                ps.play_method = Some(method.to_string());
             }
             ps.last_activity = Utc::now();
         });
@@ -627,6 +665,16 @@ impl PlaybackSessionManager {
                     .clone(),
             );
         }
+        let _method_handoff = self
+            .play_method_handoff
+            .lock()
+            .expect("play method handoff lock is poisoned");
+        if let Some((_, (_, method))) = self
+            .pending_play_methods
+            .remove(&session.play_session_id)
+        {
+            session.play_method = Some(method.to_string());
+        }
         self.sessions
             .insert(
                 session
@@ -712,6 +760,52 @@ impl PlaybackSessionManager {
         {
             f(entry.value_mut());
         }
+    }
+
+    /// Record the playback method selected by a server stream endpoint.
+    /// Update a claimed client session immediately; if no session exists or
+    /// only an unclaimed HLS stub exists, keep the method pending for `start`.
+    pub fn record_server_play_method(&self, id: &str, method: PlayMethod) {
+        let _handoff = self
+            .play_method_handoff
+            .lock()
+            .expect("play method handoff lock is poisoned");
+        if let Some(mut session) = self
+            .sessions
+            .get_mut(id)
+        {
+            session.play_method = Some(method.to_string());
+            if session
+                .user_id
+                .is_nil()
+                && session
+                    .item_id
+                    .is_nil()
+            {
+                // HLS may attach an unclaimed transcode stub before the
+                // playback-start report. Keep the method pending so the real
+                // session insertion inherits it when it replaces the stub.
+                self.pending_play_methods
+                    .insert(id.to_string(), (Utc::now(), method));
+            } else {
+                self.pending_play_methods
+                    .remove(id);
+            }
+        } else {
+            self.pending_play_methods
+                .insert(id.to_string(), (Utc::now(), method));
+        }
+    }
+
+    fn pending_play_method(&self, id: &str) -> Option<PlayMethod> {
+        self.pending_play_methods
+            .get(id)
+            .map(|entry| {
+                entry
+                    .value()
+                    .1
+                    .clone()
+            })
     }
 
     /// Update `last_activity` on the session.
@@ -825,9 +919,16 @@ impl PlaybackSessionManager {
             .expect("torrent handoff lock is not poisoned");
         self.pending_torrents
             .remove(id);
+        let _method_handoff = self
+            .play_method_handoff
+            .lock()
+            .expect("play method handoff lock is poisoned");
+        self.pending_play_methods
+            .remove(id);
         let (_, session) = self
             .sessions
             .remove(id)?;
+        drop(_method_handoff);
         drop(_handoff);
         if let Some(ts) = session
             .transcode
@@ -957,6 +1058,12 @@ impl PlaybackSessionManager {
                     .expect("torrent handoff lock is not poisoned");
                 self.pending_torrents
                     .retain(|_, (seen, _)| *seen >= cutoff);
+                let _method_handoff = self
+                    .play_method_handoff
+                    .lock()
+                    .expect("play method handoff lock is poisoned");
+                self.pending_play_methods
+                    .retain(|_, (seen, _)| *seen >= cutoff);
             }
         })
     }
@@ -1004,4 +1111,118 @@ async fn kill_transcode(ts: Arc<tokio::sync::RwLock<TranscodeSession>>) {
         notification.await;
     }
     let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn playback_session(id: &str, method: PlayMethod) -> PlaybackSession {
+        PlaybackSession {
+            play_session_id: id.to_string(),
+            user_id: Uuid::nil(),
+            item_id: Uuid::new_v4(),
+            media_source_id: None,
+            device_id: String::new(),
+            client_name: String::new(),
+            position_ticks: 0,
+            can_seek: true,
+            is_paused: false,
+            last_paused_at: None,
+            is_muted: false,
+            volume_level: None,
+            audio_stream_index: None,
+            subtitle_stream_index: None,
+            play_method: Some(method.to_string()),
+            now_playing_queue: None,
+            playlist_item_id: None,
+            started_at: Utc::now(),
+            last_activity: Utc::now(),
+            transcode: None,
+            group_id: None,
+            item_kind: None,
+            torrents: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn play_method_handoff_works_when_server_records_first() {
+        let temp = tempfile::tempdir().unwrap();
+        let sessions = PlaybackSessionManager::new(temp.path());
+        let id = "server-first";
+
+        sessions.record_server_play_method(id, PlayMethod::Transcode);
+        sessions
+            .insert(playback_session(id, PlayMethod::DirectPlay))
+            .await;
+
+        assert_eq!(
+            sessions
+                .get(id)
+                .and_then(|session| session.play_method),
+            Some(PlayMethod::Transcode.to_string())
+        );
+        assert_eq!(sessions.pending_play_method(id), None);
+
+        sessions
+            .insert(playback_session(id, PlayMethod::DirectStream))
+            .await;
+        assert_eq!(
+            sessions
+                .get(id)
+                .and_then(|session| session.play_method),
+            Some(PlayMethod::DirectStream.to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn play_method_handoff_works_when_client_records_first() {
+        let temp = tempfile::tempdir().unwrap();
+        let sessions = PlaybackSessionManager::new(temp.path());
+        let id = "client-first";
+
+        sessions
+            .insert(playback_session(id, PlayMethod::DirectPlay))
+            .await;
+        sessions.record_server_play_method(id, PlayMethod::DirectStream);
+        sessions.record_server_play_method(id, PlayMethod::Transcode);
+
+        assert_eq!(
+            sessions
+                .get(id)
+                .and_then(|session| session.play_method),
+            Some(PlayMethod::Transcode.to_string())
+        );
+        assert_eq!(sessions.pending_play_method(id), None);
+    }
+
+    #[tokio::test]
+    async fn play_method_handoff_survives_an_unclaimed_transcode_stub() {
+        let temp = tempfile::tempdir().unwrap();
+        let sessions = PlaybackSessionManager::new(temp.path());
+        let id = "transcode-stub-first";
+        let mut stub = playback_session(id, PlayMethod::DirectStream);
+        stub.user_id = Uuid::nil();
+        stub.item_id = Uuid::nil();
+
+        sessions
+            .insert(stub)
+            .await;
+        sessions.record_server_play_method(id, PlayMethod::Transcode);
+        assert_eq!(
+            sessions.pending_play_method(id),
+            Some(PlayMethod::Transcode)
+        );
+
+        sessions
+            .insert(playback_session(id, PlayMethod::DirectPlay))
+            .await;
+        assert_eq!(
+            sessions
+                .get(id)
+                .and_then(|session| session.play_method),
+            Some(PlayMethod::Transcode.to_string())
+        );
+        assert_eq!(sessions.pending_play_method(id), None);
+    }
 }

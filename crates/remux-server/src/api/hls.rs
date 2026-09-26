@@ -13,7 +13,7 @@ use tokio_util::io::ReaderStream;
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
-use remux_sdks::remux::HardwareAccelerationType;
+use remux_sdks::remux::{AudioCodec, HardwareAccelerationType, PlayMethod};
 
 use crate::{
     AppState, IntoApiError, OptionExt, ResultExt, api, common,
@@ -21,6 +21,7 @@ use crate::{
     db,
     db::auth,
     playback::{
+        decision::PlaybackPermissions,
         hw_accel,
         session::{TranscodeSession, TranscodeState},
     },
@@ -32,6 +33,20 @@ use crate::{
 static TRANSCODE_CREATE_LOCKS: crate::keyed_lock::KeyedLock<String> =
     crate::keyed_lock::KeyedLock::new();
 
+enum HlsSessionResult {
+    Transcode(Arc<tokio::sync::RwLock<TranscodeSession>>, String),
+    RemuxForbidden,
+    AudioTranscodeForbidden,
+}
+
+fn play_method_for_codecs(video_codec: &str, audio_codec: &str) -> PlayMethod {
+    if video_codec == "copy" && audio_codec == "copy" {
+        PlayMethod::DirectStream
+    } else {
+        PlayMethod::Transcode
+    }
+}
+
 /// Shared session setup: look up or create the transcode session for an HLS
 /// request. Returns the session handle and the resolved play_session_id.
 async fn create_hls_session(
@@ -39,7 +54,7 @@ async fn create_hls_session(
     auth: &auth::AuthSession,
     id: Uuid,
     q: &api::HlsVideoQuery,
-) -> Result<(Arc<tokio::sync::RwLock<TranscodeSession>>, String)> {
+) -> Result<HlsSessionResult> {
     let play_session_id = q
         .play_session_id
         .clone()
@@ -58,30 +73,43 @@ async fn create_hls_session(
     )
     .await
     .unwrap_or_default();
-    let video_transcode_enabled_hls = encoding_opts_hls
-        .enable_video_transcoding
-        .unwrap_or(true);
+    let permissions =
+        PlaybackPermissions::for_user(&encoding_opts_hls, Some(&auth.user));
     let video_codec_raw = q
         .video_codec
         .as_deref()
         .unwrap_or("copy");
-    let video_codec = if video_codec_raw == "copy" || !video_transcode_enabled_hls {
-        "copy".to_string()
-    } else {
-        "h264".to_string()
-    };
-    let audio_transcode_enabled_hls = encoding_opts_hls
-        .enable_audio_transcoding
-        .unwrap_or(true);
     let audio_codec_raw = q
         .audio_codec
         .clone()
         .unwrap_or_else(|| "aac".to_string());
-    let audio_codec = if !audio_transcode_enabled_hls {
+    let resolved_codecs = permissions.resolve_codecs(
+        video_codec_raw,
+        &audio_codec_raw,
+        q.subtitle_method == Some(api::SubtitleDeliveryMethod::Encode)
+            && q.subtitle_stream_index
+                .is_some_and(|index| index >= 0),
+    );
+
+    if resolved_codecs.direct_play_only {
+        if q.play_session_id
+            .is_some()
+        {
+            state
+                .ctx
+                .sessions
+                .stop_transcode(&play_session_id)
+                .await;
+        }
+        return Ok(HlsSessionResult::RemuxForbidden);
+    }
+    let video_codec = if resolved_codecs.video == "copy" {
         "copy".to_string()
     } else {
-        audio_codec_raw
+        "h264".to_string()
     };
+    let audio_codec = resolved_codecs.audio;
+    let burn_subtitle = resolved_codecs.burn_subtitle;
     let segment_length = q
         .segment_length
         .unwrap_or(6) as u32;
@@ -262,6 +290,14 @@ async fn create_hls_session(
         };
         let is_live =
             resolved_media.kind == db::MediaKind::TvChannel || parent_is_tv_channel;
+        let source_audio_codec = resolved_media
+            .probe_data
+            .as_ref()
+            .and_then(|p| p.audio_stream())
+            .and_then(|s| {
+                s.codec
+                    .clone()
+            });
 
         // --- Why we force audio transcoding for live channels ---
         //
@@ -294,7 +330,7 @@ async fn create_hls_session(
         // live channels, regardless of what the client negotiated. The
         // existing audio_channels logic (None for copy, Some(2) for transcode)
         // then kicks in automatically and produces the correct stereo downmix.
-        let audio_codec = resolve_hls_audio_codec(
+        let resolved_audio_codec = resolve_hls_audio_codec(
             is_live,
             resolved_media
                 .probe_data
@@ -304,8 +340,13 @@ async fn create_hls_session(
                         .container
                         .as_ref()
                 }),
+            source_audio_codec.as_deref(),
             &audio_codec,
         );
+        if resolved_audio_codec != audio_codec && !permissions.audio_transcoding {
+            return Ok(HlsSessionResult::AudioTranscodeForbidden);
+        }
+        let audio_codec = resolved_audio_codec;
 
         // Live streams have no fixed duration — skip all runtime lookups.
         let runtime_ticks = if is_live {
@@ -386,16 +427,6 @@ async fn create_hls_session(
             source_frame_rate,
             "source video codec for HLS session"
         );
-        let source_audio_stream = resolved_media
-            .probe_data
-            .as_ref()
-            .and_then(|p| p.audio_stream());
-        let source_audio_codec = source_audio_stream.and_then(|s| {
-            s.codec
-                .clone()
-        });
-        let burn_subtitle =
-            q.subtitle_method == Some(api::SubtitleDeliveryMethod::Encode);
         let session_video_bitrate = if video_codec == "copy" {
             None
         } else {
@@ -431,6 +462,7 @@ async fn create_hls_session(
             output_dir,
             video_codec.clone(),
             audio_codec.clone(),
+            permissions.audio_transcoding,
             q.audio_stream_index
                 .map(|v| v as i32)
                 .filter(|&v| v >= 0),
@@ -476,6 +508,7 @@ async fn create_hls_session(
                 .clone(),
             video_codec: video_codec.clone(),
             audio_codec: audio_codec.clone(),
+            audio_transcoding_allowed: permissions.audio_transcoding,
             segment_length,
             start_time_ticks: q.start_time_ticks,
             max_width: q
@@ -621,7 +654,18 @@ async fn create_hls_session(
         session
     };
 
-    Ok((session, play_session_id))
+    let effective_method = {
+        let session = session
+            .read()
+            .await;
+        play_method_for_codecs(&session.video_codec, &session.audio_codec)
+    };
+    state
+        .ctx
+        .sessions
+        .record_server_play_method(&play_session_id, effective_method);
+
+    Ok(HlsSessionResult::Transcode(session, play_session_id))
 }
 
 #[get("/videos/{id}/master.m3u8")]
@@ -632,8 +676,16 @@ pub async fn master_hls_video(
     Query(q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     debug!("master_hls_video: item_id={}, q={:?}", id, q);
-    let (session, _) = match create_hls_session(&state, &auth, id, &q).await {
-        Ok(s) => s,
+    let session = match create_hls_session(&state, &auth, id, &q).await {
+        Ok(HlsSessionResult::Transcode(session, _)) => session,
+        Ok(HlsSessionResult::RemuxForbidden) => {
+            return Err(anyhow::anyhow!("HLS remuxing is disabled")
+                .context_forbidden("HLS playback requires remuxing"));
+        }
+        Ok(HlsSessionResult::AudioTranscodeForbidden) => {
+            return Err(anyhow::anyhow!("HLS audio transcoding is disabled")
+                .context_forbidden("HLS playback requires audio transcoding"));
+        }
         Err(_) => {
             return Ok(axum::response::Redirect::temporary("/videos/no-streams")
                 .into_response());
@@ -663,9 +715,21 @@ pub async fn live_hls_video(
     Query(mut q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     debug!("live_hls_video: item_id={}, q={:?}", id, q);
-    let (_, play_session_id) = create_hls_session(&state, &auth, id, &q).await?;
+    let play_session_id = match create_hls_session(&state, &auth, id, &q).await? {
+        HlsSessionResult::Transcode(_, play_session_id) => play_session_id,
+        HlsSessionResult::RemuxForbidden => {
+            return Err(anyhow::anyhow!("HLS remuxing is disabled")
+                .context_forbidden("HLS playback requires remuxing"));
+        }
+        HlsSessionResult::AudioTranscodeForbidden => {
+            return Err(anyhow::anyhow!("HLS audio transcoding is disabled")
+                .context_forbidden("HLS playback requires audio transcoding"));
+        }
+    };
     q.play_session_id = Some(play_session_id);
-    variant_hls_video_inner(state, q).await
+    Ok(variant_hls_video_inner(state, q)
+        .await?
+        .into_response())
 }
 
 /// Variant HLS playlist - alternate URL used by some clients.
@@ -692,16 +756,30 @@ pub async fn variant_hls_video(
 ///
 /// Live IPTV sources often carry LATM-encoded AAC (see the large comment block
 /// inside `create_hls_session`). HLS VOD sources use the same transport and
-/// can carry that framing as well. When either path would copy audio, encode it
-/// as AAC so ffmpeg emits browser-compatible ADTS audio in the output segments.
-/// Other source containers and explicit client codec choices are unchanged.
+/// can carry that framing as well. TrueHD, FLAC, and PCM cannot be copied into
+/// MPEG-TS segments. When any of those paths would copy audio, encode it as AAC
+/// so ffmpeg emits compatible audio in the output segments. The caller rejects
+/// that conversion when audio transcoding is forbidden.
 fn resolve_hls_audio_codec(
     is_live: bool,
     input_container: Option<&remux_sdks::remux::VideoContainer>,
+    source_audio_codec: Option<&str>,
     requested: &str,
 ) -> String {
     let input_is_hls = input_container.is_some_and(|c| c.is_hls_input());
-    if requested == "copy" && (is_live || input_is_hls) {
+    let source_is_ts_incompatible = source_audio_codec
+        .and_then(|codec| {
+            codec
+                .parse::<AudioCodec>()
+                .ok()
+        })
+        .is_some_and(|codec| {
+            matches!(
+                codec,
+                AudioCodec::TrueHd | AudioCodec::Flac | AudioCodec::Pcm
+            )
+        });
+    if requested == "copy" && (is_live || input_is_hls || source_is_ts_incompatible) {
         "aac".to_string()
     } else {
         requested.to_string()
@@ -1123,6 +1201,7 @@ async fn hls_segment_inner(
                     let audio_codec = s
                         .audio_codec
                         .clone();
+                    let audio_transcoding_allowed = s.audio_transcoding_allowed;
                     let audio_stream_index = s.audio_stream_index;
                     let subtitle_stream_index = s.subtitle_stream_index;
                     let burn_subtitle = s.burn_subtitle;
@@ -1174,6 +1253,7 @@ async fn hls_segment_inner(
                         output_dir: output_dir.clone(),
                         video_codec,
                         audio_codec: audio_codec.clone(),
+                        audio_transcoding_allowed,
                         segment_length,
                         start_time_ticks: Some(start_time_ticks),
                         max_width: q
@@ -1329,18 +1409,35 @@ async fn hls_segment_inner(
 
 #[cfg(test)]
 mod tests {
-    use remux_sdks::remux::VideoContainer;
+    use remux_sdks::remux::{PlayMethod, VideoContainer};
+
+    #[test]
+    fn hls_audio_conversion_is_reported_as_transcode() {
+        assert_eq!(
+            super::play_method_for_codecs("copy", "copy"),
+            PlayMethod::DirectStream
+        );
+        assert_eq!(
+            super::play_method_for_codecs("copy", "aac"),
+            PlayMethod::Transcode
+        );
+    }
 
     #[test]
     fn vod_hls_source_reencodes_copied_audio_to_aac() {
         let hls = VideoContainer::Other("hls".to_string());
         assert_eq!(
-            super::resolve_hls_audio_codec(false, Some(&hls), "copy"),
+            super::resolve_hls_audio_codec(false, Some(&hls), Some("aac"), "copy"),
             "aac"
         );
         let hls_upper = VideoContainer::Other("HLS".to_string());
         assert_eq!(
-            super::resolve_hls_audio_codec(false, Some(&hls_upper), "copy"),
+            super::resolve_hls_audio_codec(
+                false,
+                Some(&hls_upper),
+                Some("aac"),
+                "copy"
+            ),
             "aac"
         );
     }
@@ -1348,22 +1445,49 @@ mod tests {
     #[test]
     fn hls_audio_normalization_preserves_compatible_copy_paths() {
         assert_eq!(
-            super::resolve_hls_audio_codec(false, Some(&VideoContainer::Mp4), "copy"),
+            super::resolve_hls_audio_codec(
+                false,
+                Some(&VideoContainer::Mp4),
+                Some("aac"),
+                "copy"
+            ),
             "copy"
         );
-        assert_eq!(super::resolve_hls_audio_codec(false, None, "copy"), "copy");
+        assert_eq!(
+            super::resolve_hls_audio_codec(false, None, Some("ac3"), "copy"),
+            "copy"
+        );
         let hls = VideoContainer::Other("hls".to_string());
         assert_eq!(
-            super::resolve_hls_audio_codec(false, Some(&hls), "ac3"),
+            super::resolve_hls_audio_codec(false, Some(&hls), Some("aac"), "ac3"),
             "ac3"
         );
     }
 
     #[test]
+    fn ts_incompatible_audio_copy_resolves_to_aac() {
+        for codec in ["truehd", "flac", "pcm_s16le"] {
+            assert_eq!(
+                super::resolve_hls_audio_codec(false, None, Some(codec), "copy"),
+                "aac"
+            );
+        }
+    }
+
+    #[test]
     fn live_channel_forces_aac_over_copy() {
-        assert_eq!(super::resolve_hls_audio_codec(true, None, "copy"), "aac");
-        assert_eq!(super::resolve_hls_audio_codec(true, None, "aac"), "aac");
-        assert_eq!(super::resolve_hls_audio_codec(true, None, "ac3"), "ac3");
+        assert_eq!(
+            super::resolve_hls_audio_codec(true, None, Some("aac"), "copy"),
+            "aac"
+        );
+        assert_eq!(
+            super::resolve_hls_audio_codec(true, None, Some("aac"), "aac"),
+            "aac"
+        );
+        assert_eq!(
+            super::resolve_hls_audio_codec(true, None, Some("aac"), "ac3"),
+            "ac3"
+        );
     }
 
     #[test]
