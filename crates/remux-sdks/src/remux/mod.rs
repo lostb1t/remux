@@ -867,13 +867,16 @@ pub struct EncodingOptions {
     /// detected type to hardware_acceleration_type automatically.
     #[default(Some(true))]
     pub auto_detect_hardware_acceleration: Option<bool>,
-    /// Software HDR→SDR tone mapping via the tonemapx filter (CPU).
+    /// HDR→SDR tone mapping. Runs `tonemap_opencl` on the GPU with QSV or
+    /// VAAPI when an OpenCL runtime is present, otherwise the tonemapx
+    /// filter (CPU).
     #[default(Some(false))]
     pub enable_tonemapping: Option<bool>,
     /// Hardware HDR→SDR tone mapping via tonemap_vaapi (Intel VAAPI/QSV only).
     #[default(Some(false))]
     pub enable_vpp_tonemapping: Option<bool>,
-    /// Algorithm used by tonemapx: hable, reinhard, mobius, bt2390, bt2446a, none.
+    /// Tone-mapping algorithm: hable, reinhard, mobius, bt2390, bt2446a, none.
+    /// OpenCL has no bt2446a and uses bt2390 instead.
     #[default(Some("hable".to_string()))]
     pub tonemapping_algorithm: Option<String>,
     /// Desaturation coefficient for tonemapx (0.0 = disabled).

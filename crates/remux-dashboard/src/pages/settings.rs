@@ -795,7 +795,7 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                             label { class: "field-label", "HDR Tone Mapping" }
                             div { class: "field-hint", "Convert HDR content to SDR using tone mapping. Without tone mapping, colour metadata is rewritten so clients treat the stream as SDR (may look washed out on some content)." }
                             ToggleRow {
-                                label: "Software tone mapping (tonemapx, CPU)",
+                                label: "Tone mapping (OpenCL on the GPU with Intel QSV or VAAPI when available, otherwise tonemapx on the CPU)",
                                 checked: *enable_tonemapping.read(),
                                 on_change: move |v| enable_tonemapping.set(v),
                             }

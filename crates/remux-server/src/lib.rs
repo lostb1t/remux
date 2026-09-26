@@ -317,6 +317,10 @@ pub async fn init_app(
             .as_deref()
             .unwrap_or("/dev/dri/renderD128");
         let driver = crate::playback::engine::detect_vaapi_driver(device).await;
+        let opencl =
+            crate::playback::engine::detect_opencl_tonemap(device, &driver).await;
+        tracing::info!(opencl_tonemap = opencl, "OpenCL tone mapping probed");
+        crate::playback::hw_accel::set_opencl_tonemap_available(opencl);
         enc_opts.vaapi_driver = Some(driver);
         db::Settings::set_encoding_config(&conn, &enc_opts).await?;
     }
