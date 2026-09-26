@@ -1792,7 +1792,16 @@ fn bool_true() -> bool {
     true
 }
 
-fn deserialize_option_bool_from_anything<'de, D>(d: D) -> Result<Option<bool>, D::Error>
+pub fn deserialize_query_bool_from_anything<'de, D>(d: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bool_from_anything(d)
+}
+
+pub fn deserialize_option_bool_from_anything<'de, D>(
+    d: D,
+) -> Result<Option<bool>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -2253,7 +2262,7 @@ pub struct ProfileCondition {
     pub is_required: Option<bool>,
 }
 
-#[serde_alias(CamelCase, PascalCase)]
+#[query]
 #[derive(Default, Debug, Deserialize, Clone)]
 #[serde(default)]
 #[serde_as]
@@ -7423,6 +7432,39 @@ mod tests {
                 Some("Naruto")
             );
         }
+    }
+
+    #[test]
+    fn query_macro_parses_case_insensitive_boolean_values() {
+        let stream: VideoStreamQuery = serde_urlencoded::from_str(
+            "static=True&copyTimestamps=fAlSe&requireAvc=TRUE",
+        )
+        .unwrap();
+        assert_eq!(stream.static_, Some(true));
+        assert_eq!(stream.copy_timestamps, Some(false));
+        assert_eq!(stream.require_avc, Some(true));
+
+        let refresh: RefreshItemQuery = serde_urlencoded::from_str(
+            "replaceAllMetadata=TrUe&replaceAllImages=FALSE&recursive=TRUE&regenerateTrickplay=false",
+        )
+        .unwrap();
+        assert!(refresh.replace_all_metadata);
+        assert!(!refresh.replace_all_images);
+        assert!(refresh.recursive);
+        assert!(!refresh.regenerate_trickplay);
+    }
+
+    #[test]
+    fn playback_info_query_parses_case_insensitive_boolean_values() {
+        let query: PlaybackInfoQuery = serde_urlencoded::from_str(
+            "EnableDirectPlay=TRUE&enableDirectStream=fAlSe&AllowAudioStreamCopy=True",
+        )
+        .unwrap();
+
+        assert_eq!(query.enable_direct_play, Some(true));
+        assert_eq!(query.enable_direct_stream, Some(false));
+        assert_eq!(query.allow_audio_stream_copy, Some(true));
+        assert_eq!(query.enable_transcoding, None);
     }
 
     #[test]

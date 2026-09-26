@@ -1,7 +1,10 @@
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::{format_ident, quote, ToTokens};
-use syn::{parse_macro_input, Fields, ItemFn, ItemStruct, LitStr};
+use syn::{
+    parse_macro_input, Fields, GenericArgument, ItemFn, ItemStruct, LitStr,
+    PathArguments, Type,
+};
 
 struct MultiPath(Vec<LitStr>);
 
@@ -210,6 +213,8 @@ impl syn::parse::Parse for RouteArgs {
 ///
 /// Adds `#[serde(alias = "...")]` attributes for the camelCase, PascalCase,
 /// lowercase, and SCREAMING_SNAKE_CASE variants of every field name.
+/// Boolean and optional-boolean fields also accept case-insensitive string
+/// values such as `True` and `FALSE`.
 /// Also strips any struct-level `#[serde(rename_all = "...")]` and
 /// injects `#[derive(serde::Deserialize)]` if not already present.
 ///
@@ -254,6 +259,41 @@ pub fn query(_args: TokenStream, input: TokenStream) -> TokenStream {
     if let Fields::Named(ref mut fields) = item.fields {
         for field in &mut fields.named {
             let Some(ident) = &field.ident else { continue };
+
+            let bool_kind = query_bool_kind(&field.ty);
+            let has_custom_deserializer =
+                has_serde_field_meta(field, "deserialize_with");
+
+            if !has_custom_deserializer {
+                match bool_kind {
+                    Some(QueryBoolKind::Optional) => {
+                        let has_default = has_serde_field_meta(field, "default");
+                        if has_default {
+                            field.attrs.push(syn::parse_quote!(
+                                #[serde(
+                                    deserialize_with = "::remux_sdks::remux::deserialize_option_bool_from_anything"
+                                )]
+                            ));
+                        } else {
+                            field.attrs.push(syn::parse_quote!(
+                                #[serde(
+                                    default,
+                                    deserialize_with = "::remux_sdks::remux::deserialize_option_bool_from_anything"
+                                )]
+                            ));
+                        }
+                    }
+                    Some(QueryBoolKind::Required) => {
+                        field.attrs.push(syn::parse_quote!(
+                            #[serde(
+                                deserialize_with = "::remux_sdks::remux::deserialize_query_bool_from_anything"
+                            )]
+                        ));
+                    }
+                    None => {}
+                }
+            }
+
             for variant in query_field_aliases(&ident.to_string()) {
                 let lit = LitStr::new(&variant, Span::call_site());
                 field
@@ -274,6 +314,81 @@ pub fn query(_args: TokenStream, input: TokenStream) -> TokenStream {
         #item
     }
     .into()
+}
+
+fn has_serde_field_meta(field: &syn::Field, name: &str) -> bool {
+    field
+        .attrs
+        .iter()
+        .filter(|attr| {
+            attr.path()
+                .is_ident("serde")
+        })
+        .any(|attr| {
+            let mut found = false;
+            let _ = attr.parse_nested_meta(|meta| {
+                if meta
+                    .path
+                    .is_ident(name)
+                {
+                    found = true;
+                }
+                if meta
+                    .input
+                    .peek(syn::Token![=])
+                {
+                    let _: syn::Expr = meta
+                        .value()?
+                        .parse()?;
+                }
+                Ok(())
+            });
+            found
+        })
+}
+
+#[derive(Clone, Copy)]
+enum QueryBoolKind {
+    Required,
+    Optional,
+}
+
+fn query_bool_kind(ty: &Type) -> Option<QueryBoolKind> {
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
+    let Some(segment) = type_path
+        .path
+        .segments
+        .last()
+    else {
+        return None;
+    };
+
+    if segment.ident == "bool" {
+        return Some(QueryBoolKind::Required);
+    }
+
+    if segment.ident != "Option" {
+        return None;
+    }
+
+    let PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    let Some(GenericArgument::Type(Type::Path(inner))) = args
+        .args
+        .first()
+    else {
+        return None;
+    };
+
+    inner
+        .path
+        .segments
+        .last()
+        .filter(|inner| inner.ident == "bool")
+        .map(|_| QueryBoolKind::Optional)
 }
 
 /// Returns the case variants of a snake_case field name that differ from the
