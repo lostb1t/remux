@@ -1227,7 +1227,7 @@ async fn videos_stream_inner(
             state
                 .ctx
                 .sessions
-                .record_effective_play_method(playback_id, PlayMethod::DirectPlay);
+                .record_server_play_method(playback_id, PlayMethod::DirectPlay);
         }
         // If the producing addon has http_redirect_stream enabled, issue a 302
         // directly to the stream URL instead of proxying bytes through remux —
@@ -1383,7 +1383,7 @@ async fn videos_stream_inner(
             state
                 .ctx
                 .sessions
-                .record_effective_play_method(playback_id, PlayMethod::DirectPlay);
+                .record_server_play_method(playback_id, PlayMethod::DirectPlay);
         }
         let resp = if let Some(addon_id) = descriptor.addon_id() {
             let addon = state
@@ -1416,7 +1416,7 @@ async fn videos_stream_inner(
         state
             .ctx
             .sessions
-            .record_effective_play_method(playback_id, effective_method);
+            .record_server_play_method(playback_id, effective_method);
     }
 
     let params = crate::playback::engine::ProgressiveTranscodeParams {

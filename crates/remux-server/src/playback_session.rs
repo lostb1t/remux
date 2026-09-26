@@ -762,10 +762,10 @@ impl PlaybackSessionManager {
         }
     }
 
-    /// Record the playback method actually selected by a stream endpoint.
-    /// If the client's playback-start report already created the session,
-    /// update it immediately; otherwise `start` will consume this value later.
-    pub fn record_effective_play_method(&self, id: &str, method: PlayMethod) {
+    /// Record the playback method selected by a server stream endpoint.
+    /// Update a claimed client session immediately; if no session exists or
+    /// only an unclaimed HLS stub exists, keep the method pending for `start`.
+    pub fn record_server_play_method(&self, id: &str, method: PlayMethod) {
         let _handoff = self
             .play_method_handoff
             .lock()
@@ -1151,7 +1151,7 @@ mod tests {
         let sessions = PlaybackSessionManager::new(temp.path());
         let id = "server-first";
 
-        sessions.record_effective_play_method(id, PlayMethod::Transcode);
+        sessions.record_server_play_method(id, PlayMethod::Transcode);
         sessions
             .insert(playback_session(id, PlayMethod::DirectPlay))
             .await;
@@ -1184,8 +1184,8 @@ mod tests {
         sessions
             .insert(playback_session(id, PlayMethod::DirectPlay))
             .await;
-        sessions.record_effective_play_method(id, PlayMethod::DirectStream);
-        sessions.record_effective_play_method(id, PlayMethod::Transcode);
+        sessions.record_server_play_method(id, PlayMethod::DirectStream);
+        sessions.record_server_play_method(id, PlayMethod::Transcode);
 
         assert_eq!(
             sessions
@@ -1208,7 +1208,7 @@ mod tests {
         sessions
             .insert(stub)
             .await;
-        sessions.record_effective_play_method(id, PlayMethod::Transcode);
+        sessions.record_server_play_method(id, PlayMethod::Transcode);
         assert_eq!(
             sessions.pending_play_method(id),
             Some(PlayMethod::Transcode)

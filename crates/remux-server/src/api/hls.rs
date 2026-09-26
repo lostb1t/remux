@@ -663,7 +663,7 @@ async fn create_hls_session(
     state
         .ctx
         .sessions
-        .record_effective_play_method(&play_session_id, effective_method);
+        .record_server_play_method(&play_session_id, effective_method);
 
     Ok(HlsSessionResult::Transcode(session, play_session_id))
 }
