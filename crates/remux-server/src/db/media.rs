@@ -1,7 +1,7 @@
 use super::{FilterResult, ImageKind, MediaImage, MediaImages, QueryBuilderExt};
 
 pub const CHUNK_SIZE: usize = 250;
-const SQLITE_VAR_LIMIT: usize = 999;
+pub(crate) const SQLITE_VAR_LIMIT: usize = 999;
 
 /// ORDER BY expression for `ItemSortBy::DateCreated`. Served by the
 /// `idx_media_created_at_sort` expression index (migration
@@ -5173,18 +5173,23 @@ impl Media {
                 .iter()
                 .map(|m| m.id)
                 .collect();
-            let mut tags_qb = sqlx::QueryBuilder::new(
-                "SELECT media_id, tag FROM media_tags WHERE media_id IN (",
-            );
-            let mut sep = tags_qb.separated(", ");
-            for id in &ids {
-                sep.push_bind(id);
+            let mut tag_rows = Vec::new();
+            for chunk in ids.chunks(SQLITE_VAR_LIMIT) {
+                let mut tags_qb = sqlx::QueryBuilder::new(
+                    "SELECT media_id, tag FROM media_tags WHERE media_id IN (",
+                );
+                let mut sep = tags_qb.separated(", ");
+                for id in chunk {
+                    sep.push_bind(id);
+                }
+                tags_qb.push(") ORDER BY tag");
+                tag_rows.extend(
+                    tags_qb
+                        .build()
+                        .fetch_all(db)
+                        .await?,
+                );
             }
-            tags_qb.push(") ORDER BY tag");
-            let tag_rows = tags_qb
-                .build()
-                .fetch_all(db)
-                .await?;
             let mut tags_map: HashMap<Uuid, Vec<String>> = HashMap::new();
             for row in tag_rows {
                 let media_id: Uuid = row.get(0);
@@ -5228,27 +5233,35 @@ impl Media {
             vec![]
         };
         if !rel_ids.is_empty() {
-            let mut g_qb = sqlx::QueryBuilder::new(
-                // Drive from media_relations using the left_media_id index.
-                // Filtering g.kind in SQL caused the planner to drive from the
-                // media table (scanning all persons/genres) instead — very slow.
-                // We filter by kind in Rust after the fetch.
-                "SELECT mr.left_media_id, mr.relation_id, mr.right_media_id, mr.weight, \
-                 mr.role, mr.character, g.id, g.title, g.kind \
-                 FROM media_relations mr \
-                 JOIN media g ON g.id = mr.right_media_id \
-                 WHERE mr.left_media_id IN (",
-            );
-            let mut sep = g_qb.separated(", ");
-            for id in &rel_ids {
-                sep.push_bind(id);
+            let rel_rows: std::result::Result<Vec<_>, sqlx::Error> = async {
+                let mut rows = Vec::new();
+                for chunk in rel_ids.chunks(SQLITE_VAR_LIMIT) {
+                    let mut g_qb = sqlx::QueryBuilder::new(
+                        // Drive from media_relations using the left_media_id index.
+                        // Filtering g.kind in SQL caused the planner to drive from the
+                        // media table (scanning all persons/genres) instead — very slow.
+                        // We filter by kind in Rust after the fetch.
+                        "SELECT mr.left_media_id, mr.relation_id, mr.right_media_id, mr.weight, \
+                         mr.role, mr.character, g.id, g.title, g.kind \
+                         FROM media_relations mr \
+                         JOIN media g ON g.id = mr.right_media_id \
+                         WHERE mr.left_media_id IN (",
+                    );
+                    let mut sep = g_qb.separated(", ");
+                    for id in chunk {
+                        sep.push_bind(id);
+                    }
+                    g_qb.push(") ORDER BY mr.left_media_id, mr.weight");
+                    rows.extend(
+                        g_qb.build()
+                            .fetch_all(db)
+                            .await?,
+                    );
+                }
+                Ok(rows)
             }
-            g_qb.push(") ORDER BY mr.left_media_id, mr.weight");
-            match g_qb
-                .build()
-                .fetch_all(db)
-                .await
-            {
+            .await;
+            match rel_rows {
                 Ok(rows) => {
                     let mut rels_map: HashMap<Uuid, Vec<(MediaRelation, Media)>> =
                         HashMap::new();
@@ -5836,16 +5849,21 @@ impl Media {
                     .map(|m| m.id)
                     .collect();
 
-                let states = super::UserMediaState::get_by_filter(
-                    db,
-                    &super::UserMediaStateFilter {
-                        user_id: Some(user_id),
-                        media_id: Some(media_ids),
-                        ..Default::default()
-                    },
-                )
-                .await?
-                .records;
+                let mut states = Vec::with_capacity(media_ids.len());
+                for chunk in media_ids.chunks(SQLITE_VAR_LIMIT) {
+                    states.extend(
+                        super::UserMediaState::get_by_filter(
+                            db,
+                            &super::UserMediaStateFilter {
+                                user_id: Some(user_id),
+                                media_id: Some(chunk.to_vec()),
+                                ..Default::default()
+                            },
+                        )
+                        .await?
+                        .records,
+                    );
+                }
 
                 let states_map: HashMap<Uuid, super::UserMediaState> = states
                     .into_iter()
@@ -12093,6 +12111,49 @@ mod genre_ids_filter_tests {
         assert!(
             !names.contains("Track In Untagged Album"),
             "track in an unrelated album should not match: {names:?}"
+        );
+    }
+
+    /// A filter without a limit can match more rows than SQLite allows bound
+    /// variables in one statement (32766). The per-record follow-up lookups
+    /// (tags, images, relations, user state) must still work for such a result.
+    #[tokio::test]
+    async fn get_by_filter_handles_more_records_than_sqlite_variable_limit() {
+        let db = crate::db::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        crate::db::migrate(&db)
+            .await
+            .unwrap();
+
+        const N: i64 = 33_000;
+        sqlx::query(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1) \
+             INSERT INTO media (id, title, kind, external_ids, locked_fields, created_at, updated_at) \
+             SELECT randomblob(16), 'movie ' || i, 'movie', '{}', '[]', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP FROM n",
+        )
+        .bind(N)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let result = Media::get_by_filter(
+            &db,
+            &MediaFilter {
+                kind: Some(vec![MediaKind::Movie]),
+                include_relations: true,
+                include_user_state: true,
+                user_id: Some(Uuid::new_v4()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("get_by_filter must not fail on a large result");
+        assert_eq!(
+            result
+                .records
+                .len() as i64,
+            N
         );
     }
 }
