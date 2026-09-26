@@ -466,36 +466,68 @@ async fn items_playbackinfo_inner(
             api::inject_lyric_stream(&mut source);
         }
 
-        // Strip mode: remove embedded subtitle streams not supported by the client so
-        // they don't trigger a transcode. External/addon subs are never touched.
-        // Must run before resolve_default_streams below, so a stripped-out stream
+        // Drop an embedded subtitle stream that can't be delivered any way we
+        // support. Extraction (External delivery) is attempted automatically
+        // whenever it's feasible — always for a local source, for a remote
+        // one only when allow_remote_subtitle_extraction is on, since it
+        // means ffmpeg reading the entire remote file once (no way to seek to
+        // just the subtitle packets). When infeasible, an image (PGS/VobSub)
+        // subtitle can still be burned in (subtitle_mode == Burn) — text
+        // subtitles have no burn-in path in the transcode pipeline at all, so
+        // for those, and for Strip mode, fall back to the same conservative
+        // check Strip mode always used: keep it only if the client's own
+        // profile explicitly claims some support for the format, since
+        // there's otherwise truly nothing we can do with it.
+        // Must run before resolve_default_streams below, so a dropped stream
         // can never end up as the resolved default (a dangling index).
-        if subtitle_mode == remux_sdks::remux::EmbeddedSubtitleHandling::Strip {
-            source
-                .media_streams
-                .retain(|s| {
-                    !matches!(s.type_, Some(api::MediaStreamType::Subtitle))
-                        || s.is_external
-                        || device_profile
-                            .as_ref()
-                            .map(|dp| {
-                                dp.subtitle_profiles
-                                    .iter()
-                                    .filter_map(|p| {
-                                        p.format
-                                            .as_deref()
-                                    })
-                                    .any(|f| {
-                                        s.codec
-                                            .as_deref()
-                                            .map_or(false, |c| {
-                                                subtitle_codec_matches_profile(c, f)
-                                            })
+        let is_local = effective_stream
+            .stream_info
+            .as_ref()
+            .is_some_and(|si| {
+                si.descriptor
+                    .is_local()
+            });
+        let allow_subtitle_extraction = is_local
+            || cfg
+                .encoding_cfg
+                .allow_remote_subtitle_extraction
+                .unwrap_or(false);
+        source
+            .media_streams
+            .retain(|s| {
+                if !matches!(s.type_, Some(api::MediaStreamType::Subtitle))
+                    || s.is_external
+                {
+                    return true;
+                }
+                if allow_subtitle_extraction {
+                    return true;
+                }
+                if !s.is_text_subtitle_stream
+                    && subtitle_mode
+                        == remux_sdks::remux::EmbeddedSubtitleHandling::Burn
+                {
+                    return true;
+                }
+                device_profile
+                    .as_ref()
+                    .map(|dp| {
+                        dp.subtitle_profiles
+                            .iter()
+                            .filter_map(|p| {
+                                p.format
+                                    .as_deref()
+                            })
+                            .any(|f| {
+                                s.codec
+                                    .as_deref()
+                                    .map_or(false, |c| {
+                                        subtitle_codec_matches_profile(c, f)
                                     })
                             })
-                            .unwrap_or(true)
-                });
-        }
+                    })
+                    .unwrap_or(true)
+            });
 
         // Independent of subtitle_mode: an embedded subtitle that won't be
         // Embed delivery anyway (slow on-demand HTTP extraction to serve it)
@@ -594,7 +626,7 @@ async fn items_playbackinfo_inner(
             .read()
             .await
             .clone();
-        let sidecars = effective_stream
+        let mut sidecars = effective_stream
             .stream_info
             .as_ref()
             .and_then(|stream| {
@@ -603,6 +635,34 @@ async fn items_playbackinfo_inner(
                     .map(|mgr| stream.subtitle_sidecars(mgr))
             })
             .unwrap_or_default();
+        // Subtitles the addon attached directly to this release (Stremio's
+        // Stream.subtitles[], per-source — unlike the shared item-level
+        // provider-addon list below). Folded into the same sidecar
+        // mechanism as torrent-bundled subtitle files: both are subtitles
+        // attached to this specific release rather than the item-level
+        // provider-addon list, and the subtitle-download endpoint only
+        // knows how to resolve a stream_index back to one of these via the
+        // persisted sidecar route below — not via index arithmetic
+        // reconstructed from a re-fetched addon list, which is what the
+        // item-level `append_external_subtitles` call further down relies
+        // on and which has no way to account for subtitles inserted here.
+        // Surfacing these means a debrid/torrent release that already
+        // bundles subs never needs on-demand embedded extraction at all.
+        if let Some(stream_subs) = effective_stream
+            .stream_info
+            .as_ref()
+            .filter(|si| {
+                !si.subtitles
+                    .is_empty()
+            })
+        {
+            sidecars.extend(
+                stream_subs
+                    .subtitles
+                    .iter()
+                    .map(crate::conversions::stremio_subtitle_to_subtitle_info),
+            );
+        }
         let routes = inject_sidecar_subtitles(&mut source, sidecars);
         let subtitle_source_id = source.id;
 
@@ -615,6 +675,7 @@ async fn items_playbackinfo_inner(
                 .expose(),
             &cfg.device_profile,
             cfg.subtitle_mode,
+            allow_subtitle_extraction,
         );
 
         source.transcoding_reasons = transcode_reasons;
