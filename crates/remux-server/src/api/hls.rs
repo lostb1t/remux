@@ -74,7 +74,13 @@ async fn create_hls_session(
         .audio_codec
         .clone()
         .unwrap_or_else(|| "aac".to_string());
-    let resolved_codecs = permissions.resolve_codecs(video_codec_raw, &audio_codec_raw);
+    let resolved_codecs = permissions.resolve_codecs(
+        video_codec_raw,
+        &audio_codec_raw,
+        q.subtitle_method == Some(api::SubtitleDeliveryMethod::Encode)
+            && q.subtitle_stream_index
+                .is_some_and(|index| index >= 0),
+    );
 
     if resolved_codecs.direct_play_only {
         if q.play_session_id
@@ -107,6 +113,7 @@ async fn create_hls_session(
         "h264".to_string()
     };
     let audio_codec = resolved_codecs.audio;
+    let burn_subtitle = resolved_codecs.burn_subtitle;
     let effective_method = if video_codec == "copy" && audio_codec == "copy" {
         PlayMethod::DirectStream
     } else {
@@ -432,8 +439,6 @@ async fn create_hls_session(
             s.codec
                 .clone()
         });
-        let burn_subtitle =
-            q.subtitle_method == Some(api::SubtitleDeliveryMethod::Encode);
         let session_video_bitrate = if video_codec == "copy" {
             None
         } else {

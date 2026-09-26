@@ -51,15 +51,22 @@ impl PlaybackPermissions {
         }
     }
 
-    /// Resolve client-requested codecs through the server/user permissions.
-    /// Disabled encoders become stream-copy requests. If that leaves a pure
-    /// remux while remuxing is disabled, the caller must serve the source via
-    /// direct play instead of starting FFmpeg.
+    /// Resolve client-requested codecs and subtitle burn-in through the
+    /// server/user permissions. Disabled encoders become stream-copy requests.
+    /// If that leaves a pure remux while remuxing is disabled, the caller must
+    /// serve the source via direct play instead of starting FFmpeg.
     pub(crate) fn resolve_codecs(
         self,
         requested_video: &str,
         requested_audio: &str,
+        subtitle_burn_requested: bool,
     ) -> ResolvedPlaybackCodecs {
+        let burn_subtitle = subtitle_burn_requested && self.video_transcoding;
+        let requested_video = if burn_subtitle {
+            "h264"
+        } else {
+            requested_video
+        };
         let video = if codec_is_copy(requested_video) || !self.video_transcoding {
             "copy".to_string()
         } else {
@@ -77,6 +84,7 @@ impl PlaybackPermissions {
             video,
             audio,
             direct_play_only,
+            burn_subtitle,
         }
     }
 
@@ -104,6 +112,7 @@ pub(crate) struct ResolvedPlaybackCodecs {
     pub video: String,
     pub audio: String,
     pub direct_play_only: bool,
+    pub burn_subtitle: bool,
 }
 
 fn codec_is_copy(codec: &str) -> bool {
@@ -193,7 +202,7 @@ pub(crate) fn build_transcode_decision(
             .and_then(|c| c.first())
             .map(ToString::to_string)
             .unwrap_or_else(|| "aac".to_string());
-        let codecs = permissions.resolve_codecs("copy", &requested_audio_codec);
+        let codecs = permissions.resolve_codecs("copy", &requested_audio_codec, false);
         if codecs.direct_play_only {
             return TranscodeDecision::DirectPlay;
         }
@@ -356,7 +365,7 @@ fn build_video_transcode(
     }
 
     if permissions
-        .resolve_codecs(&video_codec, &audio_codec)
+        .resolve_codecs(&video_codec, &audio_codec, false)
         .direct_play_only
     {
         return TranscodeDecision::DirectPlay;
@@ -825,12 +834,38 @@ mod tests {
             Some(&session.user),
         );
 
-        let codecs = permissions.resolve_codecs("h264", "aac");
+        let codecs = permissions.resolve_codecs("h264", "aac", false);
 
         assert_eq!(codecs.video, "copy");
         assert_eq!(codecs.audio, "copy");
         assert!(codecs.direct_play_only);
         assert!(!permissions.processing_available());
+    }
+
+    #[test]
+    fn subtitle_burn_respects_global_and_user_video_transcoding_permissions() {
+        let mut encoding = EncodingOptions::default();
+        encoding.enable_video_transcoding = Some(false);
+        let globally_disabled = PlaybackPermissions::for_user(&encoding, None);
+
+        let mut policy = remux_sdks::remux::UserPolicy::default();
+        policy.enable_video_playback_transcoding = false;
+        let session = make_session_with_policy(policy);
+        let user_disabled = PlaybackPermissions::for_user(
+            &EncodingOptions::default(),
+            Some(&session.user),
+        );
+
+        for permissions in [globally_disabled, user_disabled] {
+            let codecs = permissions.resolve_codecs("copy", "copy", true);
+            assert_eq!(codecs.video, "copy");
+            assert!(!codecs.burn_subtitle);
+        }
+
+        let allowed = PlaybackPermissions::for_user(&EncodingOptions::default(), None)
+            .resolve_codecs("copy", "copy", true);
+        assert_eq!(allowed.video, "h264");
+        assert!(allowed.burn_subtitle);
     }
 
     #[test]

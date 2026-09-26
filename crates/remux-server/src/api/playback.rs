@@ -1171,11 +1171,18 @@ async fn videos_stream_inner(
     let requested_audio_codec = q
         .audio_codec
         .clone();
+    let burn_subtitle_requested = q
+        .subtitle_method
+        .as_deref()
+        == Some("Encode")
+        && q.subtitle_stream_index
+            .is_some_and(|index| index >= 0);
     let resolved_codecs = permissions.resolve_codecs(
         requested_video_codec,
         requested_audio_codec
             .as_deref()
             .unwrap_or("aac"),
+        burn_subtitle_requested,
     );
     let playback_id = q
         .play_session_id
@@ -1349,10 +1356,7 @@ async fn videos_stream_inner(
             s.codec
                 .clone()
         });
-    let burn_subtitle_prog = q
-        .subtitle_method
-        .as_deref()
-        == Some("Encode");
+    let burn_subtitle_prog = resolved_codecs.burn_subtitle;
 
     // Fast path: a Matroska source requested as Matroska is already the exact
     // output the client wants. Copy/copy MP4 requests are also promoted to
