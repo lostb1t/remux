@@ -241,8 +241,8 @@ fn spawn_buffer_monitor(
             ticks += 1;
 
             let pid = ffmpeg_pid.load(Ordering::Relaxed);
-            let produced = count_segments(&output_dir);
-            let buffered_secs = produced * segment_length;
+            let buffered_secs = highest_segment_index(&output_dir)
+                .map_or(0, |idx| (idx + 1) * segment_length);
             // playback_offset_secs is how far the client has actually played
             // relative to the start of this transcode session (from progress reports).
             let playback_secs = playback_offset_secs.load(Ordering::Relaxed);
@@ -286,6 +286,19 @@ fn spawn_buffer_monitor(
     });
 }
 
+/// Parses the numeric index out of a segment filename — `segment_00042.ts`,
+/// `segment_00042.m4s`, etc. Extension-agnostic on purpose: HEVC-copy
+/// sessions write fMP4 `.m4s` segments instead of `.ts`, and every caller
+/// here only cares about the index, not the container.
+fn segment_index(name: &str) -> Option<u32> {
+    name.rsplit('_')
+        .next()?
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
+}
+
 /// Delete segment files whose index is less than `cutoff_idx`.
 fn delete_old_segments(dir: &PathBuf, cutoff_idx: u32) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -293,19 +306,7 @@ fn delete_old_segments(dir: &PathBuf, cutoff_idx: u32) {
     };
     for entry in entries.flatten() {
         let name = entry.file_name();
-        let name = name.to_string_lossy();
-        // segment_00042.ts / segment_00042.m4s / etc. — strip everything after the last '_'
-        let Some(idx_str) = name
-            .rsplit('_')
-            .next()
-            .and_then(|s| {
-                s.split('.')
-                    .next()
-            })
-        else {
-            continue;
-        };
-        let Ok(idx) = idx_str.parse::<u32>() else {
+        let Some(idx) = segment_index(&name.to_string_lossy()) else {
             continue;
         };
         if idx < cutoff_idx {
@@ -314,19 +315,22 @@ fn delete_old_segments(dir: &PathBuf, cutoff_idx: u32) {
     }
 }
 
-fn count_segments(dir: &PathBuf) -> u32 {
+/// Highest segment index currently on disk, or `None` if there are no
+/// segments yet. Used instead of a file count so the buffer-ahead
+/// calculation in `spawn_buffer_monitor` stays correct after
+/// `delete_old_segments` starts pruning old segments (file count would
+/// then undercount how far ffmpeg has actually gotten).
+fn highest_segment_index(dir: &PathBuf) -> Option<u32> {
     std::fs::read_dir(dir)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .ends_with(".ts")
-                })
-                .count() as u32
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            segment_index(
+                &e.file_name()
+                    .to_string_lossy(),
+            )
         })
-        .unwrap_or(0)
+        .max()
 }
 
 /// Parameters for starting a new HLS transcode job.
@@ -2243,6 +2247,115 @@ mod tests {
     }
     fn all_devices(_: &str) -> bool {
         true
+    }
+
+    #[test]
+    fn segment_index_parses_ts_and_m4s_and_rejects_non_segment_files() {
+        assert_eq!(segment_index("segment_00042.ts"), Some(42));
+        assert_eq!(segment_index("segment_00042.m4s"), Some(42));
+        assert_eq!(segment_index("segment_00000.m4s"), Some(0));
+        assert_eq!(segment_index("init.mp4"), None);
+        assert_eq!(segment_index("playlist.m3u8"), None);
+    }
+
+    #[test]
+    fn highest_segment_index_finds_the_max_across_m4s_segments() {
+        // Regression test for #560: HEVC-copy sessions write .m4s segments,
+        // and the buffer monitor must see them the same as .ts ones.
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "segment_00000.m4s",
+            "segment_00003.m4s",
+            "segment_00001.m4s",
+        ] {
+            std::fs::write(
+                dir.path()
+                    .join(name),
+                b"",
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            highest_segment_index(
+                &dir.path()
+                    .to_path_buf()
+            ),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn highest_segment_index_finds_the_max_across_ts_segments() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["segment_00000.ts", "segment_00007.ts", "segment_00002.ts"] {
+            std::fs::write(
+                dir.path()
+                    .join(name),
+                b"",
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            highest_segment_index(
+                &dir.path()
+                    .to_path_buf()
+            ),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn highest_segment_index_is_none_for_an_empty_or_missing_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            highest_segment_index(
+                &dir.path()
+                    .to_path_buf()
+            ),
+            None
+        );
+        assert_eq!(
+            highest_segment_index(&PathBuf::from("/nonexistent/remux-test-dir")),
+            None
+        );
+    }
+
+    #[test]
+    fn delete_old_segments_prunes_m4s_segments_below_cutoff() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "segment_00000.m4s",
+            "segment_00001.m4s",
+            "segment_00002.m4s",
+        ] {
+            std::fs::write(
+                dir.path()
+                    .join(name),
+                b"",
+            )
+            .unwrap();
+        }
+        delete_old_segments(
+            &dir.path()
+                .to_path_buf(),
+            2,
+        );
+        let remaining: std::collections::HashSet<String> =
+            std::fs::read_dir(dir.path())
+                .unwrap()
+                .flatten()
+                .map(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect();
+        assert_eq!(
+            remaining,
+            ["segment_00002.m4s".to_string()]
+                .into_iter()
+                .collect()
+        );
     }
 
     #[test]
