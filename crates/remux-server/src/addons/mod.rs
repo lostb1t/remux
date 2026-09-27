@@ -207,41 +207,47 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
         .unwrap_or_default();
 
     // `apply_meta` deliberately omits provider genre relations when Genres is
-    // locked. If another relation type (for example Cast) is still pending,
-    // the replacement logic below must not interpret those omitted genres as
-    // deletions. Resolve the existing right-hand media kinds once and retain
-    // genre links for every item whose Genres field is locked.
+    // locked, and provider Person (cast/crew) relations when Cast is locked.
+    // If another relation type is still pending, the replacement logic below
+    // must not interpret those omitted genres/people as deletions. Resolve
+    // the existing right-hand media kinds once and retain genre links for
+    // every item whose Genres field is locked, and person links for every
+    // item whose Cast field is locked.
     let genre_locked_ids: std::collections::HashSet<Uuid> = items_with_rels
         .iter()
         .filter(|item| item.is_field_locked(&db::MetadataField::Genres))
         .map(|item| item.id)
         .collect();
+    let cast_locked_ids: std::collections::HashSet<Uuid> = items_with_rels
+        .iter()
+        .filter(|item| item.is_field_locked(&db::MetadataField::Cast))
+        .map(|item| item.id)
+        .collect();
     let locked_relation_right_ids: Vec<Uuid> = existing
         .iter()
-        .filter(|relation| genre_locked_ids.contains(&relation.left_media_id))
+        .filter(|relation| {
+            genre_locked_ids.contains(&relation.left_media_id)
+                || cast_locked_ids.contains(&relation.left_media_id)
+        })
         .map(|relation| relation.right_media_id)
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
         .collect();
-    let locked_genre_right_ids: Option<std::collections::HashSet<Uuid>> =
+    // `None` means "failed to resolve; preserve everything for locked items"
+    // (fail safe, since resolving genre/person kinds requires a DB round-trip).
+    let locked_right_kinds: Option<std::collections::HashMap<Uuid, db::MediaKind>> =
         if locked_relation_right_ids.is_empty() {
-            Some(std::collections::HashSet::new())
+            Some(std::collections::HashMap::new())
         } else {
             match db::Media::get_by_ids(&ctx.db, &locked_relation_right_ids).await {
                 Ok(media) => Some(
                     media
                         .into_iter()
-                        .filter(|right| {
-                            matches!(
-                                right.kind,
-                                db::MediaKind::Genre | db::MediaKind::MusicGenre
-                            )
-                        })
-                        .map(|right| right.id)
+                        .map(|right| (right.id, right.kind))
                         .collect(),
                 ),
                 Err(e) => {
-                    warn!(error = %e, "failed to resolve locked genre relations; preserving all locked-item relations");
+                    warn!(error = %e, "failed to resolve locked relation kinds; preserving all locked-item relations");
                     None
                 }
             }
@@ -265,11 +271,19 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
             if desired_keys.contains(&(r.left_media_id, r.right_media_id, r.role)) {
                 return false;
             }
-            if !genre_locked_ids.contains(&r.left_media_id) {
+            let is_genre_locked = genre_locked_ids.contains(&r.left_media_id);
+            let is_cast_locked = cast_locked_ids.contains(&r.left_media_id);
+            if !is_genre_locked && !is_cast_locked {
                 return true;
             }
-            match &locked_genre_right_ids {
-                Some(genre_ids) => !genre_ids.contains(&r.right_media_id),
+            match &locked_right_kinds {
+                Some(kinds) => match kinds.get(&r.right_media_id) {
+                    Some(db::MediaKind::Genre | db::MediaKind::MusicGenre) => {
+                        !is_genre_locked
+                    }
+                    Some(db::MediaKind::Person) => !is_cast_locked,
+                    _ => true,
+                },
                 None => false,
             }
         })
@@ -815,6 +829,10 @@ pub struct SubtitleInfo {
     pub lang: Option<String>,
     pub is_forced: bool,
     pub is_hi: bool,
+    /// Release name supplied by the subtitle provider, if any.
+    pub filename: Option<String>,
+    pub from_trusted: Option<bool>,
+    pub ai_translated: Option<bool>,
 }
 
 #[async_trait]
@@ -2713,22 +2731,57 @@ impl AddonService {
         Ok(out)
     }
 
+    /// Subtitle addon calls are slow network round-trips with no coalescing
+    /// of their own (unlike `refresh_streams`' TTL + `STREAM_LOCKS`), so an
+    /// Items detail fetch racing a PlaybackInfo call for the same item used
+    /// to each pay the full addon fetch independently and concurrently.
+    /// Cache the result briefly and serialize concurrent callers the same way.
     #[tracing::instrument(skip_all, fields(title = %media.title, kind = %media.kind))]
     pub async fn fetch_subtitles(
         &self,
         media: &mut db::Media,
-        db: &SqlitePool,
+        ctx: &AppContext,
         background: bool,
         user_id: Option<Uuid>,
     ) -> Vec<SubtitleInfo> {
+        const SUBTITLES_TTL: Duration = Duration::from_secs(5 * 60);
+        static SUBTITLE_LOCKS: KeyedLock<String> = KeyedLock::new();
+
         if media.kind == db::MediaKind::Episode {
             media
-                .grandparent(db)
+                .grandparent(&ctx.db)
                 .await
                 .ok();
         }
+
+        let cache_key = format!(
+            "addon-subtitles:{}:{}",
+            media.id,
+            user_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "anon".to_string())
+        );
+        if let Some(cached) = ctx
+            .store
+            .get::<Vec<SubtitleInfo>>(&cache_key)
+        {
+            return (*cached).clone();
+        }
+
+        let _guard = SUBTITLE_LOCKS
+            .lock(cache_key.clone())
+            .await;
+        // Re-check after acquiring the lock — another task may have just
+        // populated the cache while this one was waiting.
+        if let Some(cached) = ctx
+            .store
+            .get::<Vec<SubtitleInfo>>(&cache_key)
+        {
+            return (*cached).clone();
+        }
+
         let addons = self
-            .addons_for::<dyn SubtitleAddon>(media, db, user_id)
+            .addons_for::<dyn SubtitleAddon>(media, &ctx.db, user_id)
             .await;
 
         debug!(count = addons.len(), "subtitle addons matched");
@@ -2740,7 +2793,7 @@ impl AddonService {
                 .subtitle
                 .as_ref()
                 .unwrap()
-                .subtitle_fetch(media, db)
+                .subtitle_fetch(media, &ctx.db)
                 .await
             {
                 Ok(s) => {
@@ -2757,6 +2810,8 @@ impl AddonService {
         } else {
             info!(subs = subs.len(), addons = addons.len(), elapsed = ?instant.elapsed(), "subtitles fetched");
         }
+        ctx.store
+            .save(cache_key, subs.clone(), SUBTITLES_TTL);
         subs
     }
 
@@ -3990,6 +4045,116 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn save_pending_relations_preserves_locked_cast() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let item = db::Media {
+            id: Uuid::new_v4(),
+            title: "Locked Cast Series".to_string(),
+            kind: db::MediaKind::Series,
+            locked_fields: vec![db::MetadataField::Cast],
+            ..Default::default()
+        };
+        let actor_tmdb_id = 42i64;
+        let director_tmdb_id = 43i64;
+        let actor = db::Media {
+            id: crate::common::stable_media_uuid(
+                &db::MediaKind::Person,
+                &actor_tmdb_id.to_string(),
+            ),
+            title: "Actor".to_string(),
+            kind: db::MediaKind::Person,
+            external_ids: db::ExternalIds {
+                tmdb: Some(actor_tmdb_id),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let director = db::Media {
+            id: crate::common::stable_media_uuid(
+                &db::MediaKind::Person,
+                &director_tmdb_id.to_string(),
+            ),
+            title: "Director".to_string(),
+            kind: db::MediaKind::Person,
+            external_ids: db::ExternalIds {
+                tmdb: Some(director_tmdb_id),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let genre = db::Media {
+            id: Uuid::new_v4(),
+            title: "Drama".to_string(),
+            kind: db::MediaKind::Genre,
+            ..Default::default()
+        };
+        let item_id = item.id;
+        let actor_id = actor.id;
+        let director_id = director.id;
+        db::Media::upsert(
+            &ctx.db,
+            &[item.clone(), actor.clone(), director.clone(), genre.clone()],
+        )
+        .await
+        .unwrap();
+        db::MediaRelation::upsert(
+            &ctx.db,
+            &[
+                db::MediaRelation {
+                    left_media_id: item.id,
+                    right_media_id: actor.id,
+                    role: Some(db::RelationRole::Actor),
+                    ..Default::default()
+                },
+                db::MediaRelation {
+                    left_media_id: item.id,
+                    right_media_id: director.id,
+                    role: Some(db::RelationRole::Director),
+                    ..Default::default()
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        // Simulate a RefreshLibrary patch that only carries genre relations —
+        // `apply_meta` deliberately omits Person relations when Cast is locked
+        // (see the merge-time filter above), so the refreshed item's pending
+        // relations never include the existing actor/director.
+        let refreshed = db::Media {
+            relations: Some(vec![(
+                db::MediaRelation {
+                    left_media_id: item.id,
+                    right_media_id: genre.id,
+                    ..Default::default()
+                },
+                genre,
+            )]),
+            ..item
+        };
+        save_pending_relations(ctx, &[refreshed]).await;
+
+        let relations = db::MediaRelation::get_by_left_ids(&ctx.db, &[item_id])
+            .await
+            .unwrap();
+        assert!(
+            relations
+                .iter()
+                .any(|relation| relation.right_media_id == actor_id),
+            "Cast-locked actor relation must survive a refresh that omits it"
+        );
+        assert!(
+            relations
+                .iter()
+                .any(|relation| relation.right_media_id == director_id),
+            "Cast-locked crew (director) relation must survive a refresh that omits it"
+        );
+    }
+
     #[test]
     fn recognized_manifest_media_kind_drops_unrecognized_custom_type() {
         assert_eq!(
@@ -4099,6 +4264,108 @@ mod tests {
             !called.load(std::sync::atomic::Ordering::SeqCst),
             "stream-only addon's get_children should never be called"
         );
+    }
+
+    struct CountingSubtitleAddon {
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl SubtitleAddon for CountingSubtitleAddon {
+        fn supports(&self, _media: &db::Media) -> bool {
+            true
+        }
+
+        async fn subtitle_fetch(
+            &self,
+            _media: &db::Media,
+            _db: &SqlitePool,
+        ) -> Result<Vec<SubtitleInfo>> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // Give a concurrent second caller a chance to reach the cache
+            // check while this one is still "in flight".
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            Ok(vec![SubtitleInfo {
+                id: "sub".into(),
+                url: None,
+                lang: Some("eng".into()),
+                is_forced: false,
+                is_hi: false,
+                filename: None,
+                from_trusted: None,
+                ai_translated: None,
+            }])
+        }
+    }
+
+    /// Two near-simultaneous callers for the same item/user (e.g. an Items
+    /// detail fetch racing a PlaybackInfo call) must not each pay the full
+    /// addon round-trip — that's real duplicated latency and addon load, not
+    /// just a log artifact.
+    #[tokio::test]
+    async fn fetch_subtitles_coalesces_concurrent_calls_for_the_same_item() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let now = chrono::Utc::now().naive_utc();
+        let runtime = AddonRuntime {
+            row: addon::Addon {
+                id: uuid::Uuid::new_v4(),
+                name: "counting-subtitle".into(),
+                preset: AddonPresetRef {
+                    kind: "scripted".into(),
+                    config: serde_json::Value::Null.into(),
+                },
+                resources: vec![ResourceType::Subtitles],
+                types: vec![],
+                enabled: true,
+                priority: 0,
+                created_at: now,
+                updated_at: now,
+                system: true,
+                is_default: false,
+                http_redirect_stream: false,
+                service_filter: vec![],
+            },
+            caps: AddonCapabilities {
+                subtitle: Some(std::sync::Arc::new(CountingSubtitleAddon {
+                    calls: calls.clone(),
+                })),
+                ..Default::default()
+            },
+        };
+
+        let service = AddonService {
+            inner: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(vec![runtime])),
+        };
+
+        let (_, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = guard
+            .0
+            .clone();
+
+        let mut media_a = db::Media {
+            id: uuid::Uuid::new_v4(),
+            kind: db::MediaKind::Movie,
+            title: "Concurrent Fetch Test".into(),
+            ..Default::default()
+        };
+        let mut media_b = media_a.clone();
+        let user_id = uuid::Uuid::new_v4();
+
+        let (subs_a, subs_b) = tokio::join!(
+            service.fetch_subtitles(&mut media_a, &ctx, false, Some(user_id)),
+            service.fetch_subtitles(&mut media_b, &ctx, false, Some(user_id)),
+        );
+
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "concurrent fetches for the same item/user must coalesce into a single addon call"
+        );
+        assert_eq!(subs_a.len(), 1);
+        assert_eq!(subs_b.len(), 1);
     }
 
     /// Remote search mints a fresh id (and fresh, possibly-drifted data) per

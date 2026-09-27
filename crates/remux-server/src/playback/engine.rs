@@ -15,7 +15,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
     common::{HideConsole, TickUnit, ToRunTimeTicks},
     device_profile::{AudioCodec, VideoCodec},
-    playback::hw_accel::{Accelerator, HdrTreatment, NoAccel},
+    playback::hw_accel::{Accelerator, HdrTreatment, NoAccel, TonemapOptions},
 };
 use remux_sdks::remux::{EncodingPreset, HardwareAccelerationType, VideoRangeType};
 
@@ -67,6 +67,73 @@ pub async fn detect_vaapi_driver(vaapi_device: &str) -> String {
         "i965".to_string()
     } else {
         String::new()
+    }
+}
+
+/// Probe whether ffmpeg can derive an OpenCL device from the VAAPI device and
+/// has `tonemap_opencl`. Mirrors Jellyfin's `IsOpenclFullSupported`: without
+/// an OpenCL runtime (e.g. no intel-compute-runtime) the derive fails.
+pub async fn detect_opencl_tonemap(vaapi_device: &str, vaapi_driver: &str) -> bool {
+    let device = if vaapi_device.is_empty() {
+        "/dev/dri/renderD128"
+    } else {
+        vaapi_device
+    };
+    let driver_opt = if vaapi_driver.is_empty() {
+        String::new()
+    } else {
+        format!(",driver={vaapi_driver}")
+    };
+
+    let filters = match tokio::process::Command::new(ffmpeg_bin())
+        .args(["-hide_banner", "-filters"])
+        .hide_console()
+        .output()
+        .await
+    {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Err(e) => {
+            warn!("Could not list ffmpeg filters for OpenCL detection: {e}");
+            return false;
+        }
+    };
+    if !filters
+        .split_whitespace()
+        .any(|w| w == "tonemap_opencl")
+    {
+        return false;
+    }
+
+    match tokio::process::Command::new(ffmpeg_bin())
+        .args([
+            "-v",
+            "error",
+            "-hide_banner",
+            "-init_hw_device",
+            &format!("vaapi=va:{device}{driver_opt}"),
+            "-init_hw_device",
+            "opencl=ocl@va",
+            "-f",
+            "lavfi",
+            "-i",
+            "nullsrc=s=64x64",
+            "-frames:v",
+            "1",
+            "-f",
+            "null",
+            "-",
+        ])
+        .hide_console()
+        .output()
+        .await
+    {
+        Ok(o) => o
+            .status
+            .success(),
+        Err(e) => {
+            warn!("Could not probe OpenCL device: {e}");
+            false
+        }
     }
 }
 
@@ -155,9 +222,17 @@ fn send_signal(_pid: u32, _sig: i32) {}
 
 /// Spawn the buffer-throttle task. It pauses/resumes ffmpeg so it never
 /// encodes more than MAX_BUFFER_SECS ahead of what the client has requested.
+///
+/// `start_index` is this run's `-start_number` (see `segment_start_index`):
+/// segment file names are numbered from the seek position, not from 0, so
+/// it must be subtracted from whatever index ffmpeg has reached before
+/// converting to a duration — otherwise a seek into the middle of a long
+/// file reads as already having buffered the seek offset itself and pauses
+/// ffmpeg almost immediately.
 fn spawn_buffer_monitor(
     output_dir: PathBuf,
     segment_length: u32,
+    start_index: u32,
     playback_offset_secs: Arc<AtomicU32>,
     ffmpeg_pid: Arc<AtomicU32>,
     mut stop_rx: tokio::sync::oneshot::Receiver<()>,
@@ -174,8 +249,11 @@ fn spawn_buffer_monitor(
             ticks += 1;
 
             let pid = ffmpeg_pid.load(Ordering::Relaxed);
-            let produced = count_segments(&output_dir);
-            let buffered_secs = produced * segment_length;
+            let buffered_secs = buffered_secs_from_segments(
+                highest_segment_index(&output_dir),
+                start_index,
+                segment_length,
+            );
             // playback_offset_secs is how far the client has actually played
             // relative to the start of this transcode session (from progress reports).
             let playback_secs = playback_offset_secs.load(Ordering::Relaxed);
@@ -219,6 +297,19 @@ fn spawn_buffer_monitor(
     });
 }
 
+/// Parses the numeric index out of a segment filename — `segment_00042.ts`,
+/// `segment_00042.m4s`, etc. Extension-agnostic on purpose: HEVC-copy
+/// sessions write fMP4 `.m4s` segments instead of `.ts`, and every caller
+/// here only cares about the index, not the container.
+fn segment_index(name: &str) -> Option<u32> {
+    name.rsplit('_')
+        .next()?
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
+}
+
 /// Delete segment files whose index is less than `cutoff_idx`.
 fn delete_old_segments(dir: &PathBuf, cutoff_idx: u32) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -226,19 +317,7 @@ fn delete_old_segments(dir: &PathBuf, cutoff_idx: u32) {
     };
     for entry in entries.flatten() {
         let name = entry.file_name();
-        let name = name.to_string_lossy();
-        // segment_00042.ts / segment_00042.m4s / etc. — strip everything after the last '_'
-        let Some(idx_str) = name
-            .rsplit('_')
-            .next()
-            .and_then(|s| {
-                s.split('.')
-                    .next()
-            })
-        else {
-            continue;
-        };
-        let Ok(idx) = idx_str.parse::<u32>() else {
+        let Some(idx) = segment_index(&name.to_string_lossy()) else {
             continue;
         };
         if idx < cutoff_idx {
@@ -247,19 +326,47 @@ fn delete_old_segments(dir: &PathBuf, cutoff_idx: u32) {
     }
 }
 
-fn count_segments(dir: &PathBuf) -> u32 {
+/// Highest segment index currently on disk, or `None` if there are no
+/// segments yet. Used instead of a file count so the buffer-ahead
+/// calculation in `spawn_buffer_monitor` stays correct after
+/// `delete_old_segments` starts pruning old segments (file count would
+/// then undercount how far ffmpeg has actually gotten).
+fn highest_segment_index(dir: &PathBuf) -> Option<u32> {
     std::fs::read_dir(dir)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .ends_with(".ts")
-                })
-                .count() as u32
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            segment_index(
+                &e.file_name()
+                    .to_string_lossy(),
+            )
         })
+        .max()
+}
+
+/// The HLS segment index a seek offset lands on — this session's
+/// `-start_number` / `#EXT-X-MEDIA-SEQUENCE` base. Segment files are named
+/// from this index, not from 0, so anything comparing segment indexes across
+/// a seek (the buffer monitor, the playlist) must account for it.
+fn segment_start_index(start_time_ticks: Option<i64>, segment_length: u32) -> u32 {
+    start_time_ticks
+        .map(|t| (t as f64 / 10_000_000.0 / segment_length as f64).floor() as u32)
         .unwrap_or(0)
+}
+
+/// Seconds of ffmpeg output currently buffered, given the highest segment
+/// index found on disk. `start_index` (see `segment_start_index`) must be
+/// subtracted first: segment numbering is absolute (offset by the seek
+/// position), while the buffer-ahead comparison against `playback_secs`
+/// needs a duration relative to where this run started.
+fn buffered_secs_from_segments(
+    highest_index: Option<u32>,
+    start_index: u32,
+    segment_length: u32,
+) -> u32 {
+    highest_index.map_or(0, |idx| {
+        (idx.saturating_sub(start_index) + 1) * segment_length
+    })
 }
 
 /// Parameters for starting a new HLS transcode job.
@@ -393,51 +500,74 @@ fn build_scale_filter(params: &TranscodeParams) -> Option<String> {
     }
 }
 
-/// Build a VAAPI hardware scale filter for QSV transcoding.
+/// Build a VAAPI hardware scale filter for QSV/VAAPI transcoding.
 ///
-/// When using QSV (VAAPI-decode → QSV-encode pipeline) frames live in VAAPI
-/// GPU memory, so we must use `scale_vaapi` instead of the CPU `scale` filter.
-/// Always returns `Some` — at minimum a format-conversion pass is needed so the
-/// `hwmap=derive_device=qsv` suffix can map frames into QSV memory.
+/// Both QSV and plain VAAPI decode via `-hwaccel vaapi`, so frames live in
+/// VAAPI GPU memory either way — we must use `scale_vaapi` instead of the CPU
+/// `scale` filter. Always returns `Some` — at minimum a format-conversion
+/// pass keeps the pool sized/formatted consistently for whatever the
+/// accelerator's `hw_filter_suffix` does next (a further hop into QSV memory,
+/// or nothing at all for a native VAAPI encoder).
 /// `extra_hw_frames=24` follows Jellyfin's recommendation for VAAPI VPP pools.
-fn build_qsv_scale_filter(max_width: Option<u32>, max_height: Option<u32>) -> String {
+///
+/// GPU tone mappers need the 10-bit P010 surface: fed NV12, `tonemap_vaapi`
+/// reads the truncated 8-bit PQ samples as full-range HDR and outputs a solid
+/// cyan frame. Scale to P010 on those paths and let the tone map emit NV12,
+/// as Jellyfin does.
+fn build_vaapi_scale_filter(
+    treatment: HdrTreatment,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+) -> String {
+    let fmt = match treatment {
+        HdrTreatment::VppTonemap | HdrTreatment::OclTonemap => "p010",
+        _ => "nv12",
+    };
     match (max_width, max_height) {
         (Some(w), Some(h)) => format!(
-            "scale_vaapi=w='min({w},iw)':h='min({h},ih)':format=nv12:extra_hw_frames=24:force_original_aspect_ratio=decrease"
+            "scale_vaapi=w='min({w},iw)':h='min({h},ih)':format={fmt}:extra_hw_frames=24:force_original_aspect_ratio=decrease"
         ),
         (Some(w), None) => {
-            format!("scale_vaapi=w='min({w},iw)':h=-2:format=nv12:extra_hw_frames=24")
+            format!("scale_vaapi=w='min({w},iw)':h=-2:format={fmt}:extra_hw_frames=24")
         }
         (None, Some(h)) => {
-            format!("scale_vaapi=w=-2:h='min({h},ih)':format=nv12:extra_hw_frames=24")
+            format!("scale_vaapi=w=-2:h='min({h},ih)':format={fmt}:extra_hw_frames=24")
         }
-        _ => "scale_vaapi=format=nv12:extra_hw_frames=24".to_string(),
+        _ => format!("scale_vaapi=format={fmt}:extra_hw_frames=24"),
     }
 }
 
 /// Main-video chain for QSV when frames stay on the GPU from decode to encode:
 /// `scale_vaapi` on the VAAPI-decoded surface, then the accelerator's suffix
 /// (VPP tone map, BT.709 relabel, or plain `hwmap` into QSV memory). Used for
-/// both the `-vf` path and the `overlay_qsv` main branch.
-fn build_qsv_main_video(
+/// both the `-vf` path and the `overlay_qsv` main branch — QSV-only, since
+/// `overlay_qsv` has no VAAPI equivalent (see `supports_gpu_resident_overlay`).
+fn build_vaapi_main_video(
     accel: &dyn Accelerator,
     treatment: HdrTreatment,
+    tonemap: &TonemapOptions,
     max_width: Option<u32>,
     max_height: Option<u32>,
 ) -> String {
-    let scale = build_qsv_scale_filter(max_width, max_height);
-    match accel.hw_filter_suffix(treatment) {
+    let scale = build_vaapi_scale_filter(treatment, max_width, max_height);
+    match accel.hw_filter_suffix(treatment, tonemap) {
         Some(suffix) => format!("{scale},{suffix}"),
         None => scale,
     }
 }
 
-/// True when the QSV pipeline keeps frames in GPU memory end to end. Only an
-/// explicit software tone map pulls frames onto the CPU; every other HDR
-/// treatment (including subtitle burn-in via `overlay_qsv`) stays resident.
-fn qsv_gpu_resident(accel: &dyn Accelerator, treatment: HdrTreatment) -> bool {
-    accel.as_type() == HardwareAccelerationType::Qsv
-        && treatment != HdrTreatment::SwTonemap
+/// True when the pipeline keeps frames in GPU memory end to end on QSV or
+/// plain VAAPI — both decode via `-hwaccel vaapi`. Only an explicit software
+/// tone map pulls frames onto the CPU; every other HDR treatment stays
+/// resident for scale/tone-map purposes. This is *not* the right check for
+/// subtitle burn-in GPU residency — `overlay_qsv` has no VAAPI equivalent, so
+/// that decision uses `Accelerator::supports_gpu_resident_overlay` instead,
+/// which stays QSV-only.
+fn hw_gpu_resident(accel: &dyn Accelerator, treatment: HdrTreatment) -> bool {
+    matches!(
+        accel.as_type(),
+        HardwareAccelerationType::Qsv | HardwareAccelerationType::Vaapi
+    ) && treatment != HdrTreatment::SwTonemap
 }
 
 /// Build the main video processing chain for a CPU-based subtitle overlay.
@@ -598,7 +728,6 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         params.enable_vpp_tonemapping,
         burn_subtitle_filter,
     );
-    let do_vpp_tonemap = treatment == HdrTreatment::VppTonemap;
     let do_sw_tonemap = treatment == HdrTreatment::SwTonemap;
 
     let ffmpeg_video_codec = {
@@ -689,6 +818,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
                 .source_video_codec
                 .as_deref(),
             treatment,
+            burn_subtitle_filter,
         ),
     );
 
@@ -734,7 +864,12 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         "2048".into(),
     ]);
 
-    let hw_suffix = accel.hw_filter_suffix(treatment);
+    let tonemap = TonemapOptions {
+        algorithm: &params.tonemapping_algorithm,
+        desat: params.tonemapping_desat,
+        peak: params.tonemapping_peak,
+    };
+    let hw_suffix = accel.hw_filter_suffix(treatment, &tonemap);
 
     // Stream mapping
     if params.burn_subtitle {
@@ -758,13 +893,20 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
                 format!("scale,{sub_scale}")
             };
 
-            let filter = if is_hw && qsv_gpu_resident(accel, treatment) {
+            let filter = if is_hw
+                && accel.supports_gpu_resident_overlay()
+                && treatment != HdrTreatment::SwTonemap
+            {
                 // QSV path: keep VAAPI hw decode throughout. Sub is prepared on CPU
                 // (format=bgra) then uploaded to the QSV device. overlay_qsv composites
                 // both surfaces on-GPU — no CPU round-trip for video frames. Any tone
                 // map or BT.709 relabel happens on the main branch before the overlay,
                 // so tonemap_vaapi never sees CPU overlay output.
                 // Mirrors Jellyfin's GetIntelQsvVaapiVidFiltersPrefered graphical-sub path.
+                // QSV-only: `overlay_qsv` has no VAAPI equivalent (see
+                // `supports_gpu_resident_overlay`), so plain VAAPI never
+                // reaches this branch — `HdrTreatment::for_source` already
+                // forces `SwTonemap` for it whenever a subtitle is burned in.
                 let sub_upload =
                     "format=bgra,hwupload=derive_device=qsv:extra_hw_frames=64";
                 let overlay_size = match (out_w, out_h) {
@@ -773,9 +915,10 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
                 };
                 let overlay_qsv =
                     format!("overlay_qsv=eof_action=pass:repeatlast=0{overlay_size}");
-                let main_video = build_qsv_main_video(
+                let main_video = build_vaapi_main_video(
                     accel,
                     treatment,
+                    &tonemap,
                     params.max_width,
                     params.max_height,
                 );
@@ -809,11 +952,15 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             }
         }
     } else {
-        // QSV scales on the GPU whenever frames are VAAPI-resident; only the
-        // SW tonemap path decodes to CPU memory and needs the CPU scale filter.
+        // QSV/VAAPI scale on the GPU whenever frames are VAAPI-resident; only
+        // the SW tonemap path decodes to CPU memory and needs the CPU scale filter.
         let scale_filter = if ffmpeg_video_codec != "copy" {
-            if qsv_gpu_resident(accel, treatment) {
-                Some(build_qsv_scale_filter(params.max_width, params.max_height))
+            if hw_gpu_resident(accel, treatment) {
+                Some(build_vaapi_scale_filter(
+                    treatment,
+                    params.max_width,
+                    params.max_height,
+                ))
             } else {
                 build_scale_filter(params)
             }
@@ -827,19 +974,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             _ => None,
         };
         let vf = if hdr && ffmpeg_video_codec != "copy" {
-            if do_vpp_tonemap && accel.as_type() == HardwareAccelerationType::Vaapi {
-                // VAAPI VPP: frames are in VAAPI memory after hwupload; append tonemap_vaapi.
-                let vpp = "tonemap_vaapi=format=nv12:p=bt709:t=bt709:m=bt709:extra_hw_frames=32";
-                let base = vf.unwrap_or_default();
-                Some(if base.is_empty() {
-                    format!("format=nv12,hwupload,{vpp}")
-                } else {
-                    format!("{base},{vpp}")
-                })
-            } else if do_vpp_tonemap {
-                // QSV VPP: tonemap_vaapi already embedded in hw_suffix above.
-                vf
-            } else if do_sw_tonemap {
+            if do_sw_tonemap {
                 // Software tonemapx: CPU filter, output SDR. Rebuild filter chain
                 // from scale + tonemapx (bypassing hw_suffix which carries hwupload
                 // or format conversions that conflict with tonemapx).
@@ -865,8 +1000,9 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
                     Some(s) => format!("{s},{tonemapx}{upload}"),
                     None => format!("{tonemapx}{upload}"),
                 })
-            } else if qsv_gpu_resident(accel, treatment) {
-                // QSV clamp: setparams already trails hwmap in hw_suffix.
+            } else if hw_gpu_resident(accel, treatment) {
+                // GPU-resident tone map/relabel (VPP, OpenCL, or BT.709
+                // clamp) is already fully embedded in hw_suffix above.
                 vf
             } else {
                 // No tone mapping: rewrite colour metadata so clients treat output as SDR.
@@ -1019,12 +1155,8 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         .output_dir
         .join(format!("segment_%05d.{}", seg_ext));
 
-    let start_number = params
-        .start_time_ticks
-        .map(|t| {
-            (t as f64 / 10_000_000.0 / params.segment_length as f64).floor() as u32
-        })
-        .unwrap_or(0);
+    let start_number =
+        segment_start_index(params.start_time_ticks, params.segment_length);
 
     args.extend([
         "-f".into(),
@@ -1205,6 +1337,7 @@ pub async fn start_transcode(
                     s.output_dir
                         .clone(),
                     s.segment_length,
+                    segment_start_index(params.start_time_ticks, s.segment_length),
                     s.playback_offset_secs
                         .clone(),
                     ffmpeg_pid.clone(),
@@ -1418,7 +1551,6 @@ pub(crate) fn build_progressive_args(
         params.enable_vpp_tonemapping,
         burn_subtitle_filter,
     );
-    let do_vpp_tonemap = treatment == HdrTreatment::VppTonemap;
     let do_sw_tonemap = treatment == HdrTreatment::SwTonemap;
 
     let ffmpeg_video_codec = {
@@ -1494,6 +1626,7 @@ pub(crate) fn build_progressive_args(
                 .source_video_codec
                 .as_deref(),
             treatment,
+            burn_subtitle_filter,
         ),
     );
 
@@ -1510,12 +1643,21 @@ pub(crate) fn build_progressive_args(
             .clone(),
     ]);
 
-    let hw_suffix = accel.hw_filter_suffix(treatment);
+    let tonemap = TonemapOptions {
+        algorithm: &params.tonemapping_algorithm,
+        desat: params.tonemapping_desat,
+        peak: params.tonemapping_peak,
+    };
+    let hw_suffix = accel.hw_filter_suffix(treatment, &tonemap);
 
     // Stream mapping
     let scale_filter = if ffmpeg_video_codec != "copy" {
-        if qsv_gpu_resident(accel, treatment) {
-            Some(build_qsv_scale_filter(params.max_width, params.max_height))
+        if hw_gpu_resident(accel, treatment) {
+            Some(build_vaapi_scale_filter(
+                treatment,
+                params.max_width,
+                params.max_height,
+            ))
         } else {
             let tp = TranscodeParams {
                 max_width: params.max_width,
@@ -1544,9 +1686,13 @@ pub(crate) fn build_progressive_args(
                 format!("scale,{sub_scale}")
             };
 
-            let filter = if is_hw && qsv_gpu_resident(accel, treatment) {
+            let filter = if is_hw
+                && accel.supports_gpu_resident_overlay()
+                && treatment != HdrTreatment::SwTonemap
+            {
                 // QSV path: overlay_qsv keeps video in GPU memory throughout;
                 // tone map / relabel runs on the main branch before the overlay.
+                // QSV-only: see the equivalent comment in build_hls_args.
                 let sub_upload =
                     "format=bgra,hwupload=derive_device=qsv:extra_hw_frames=64";
                 let overlay_size = match (out_w, out_h) {
@@ -1555,7 +1701,8 @@ pub(crate) fn build_progressive_args(
                 };
                 let overlay_qsv =
                     format!("overlay_qsv=eof_action=pass:repeatlast=0{overlay_size}");
-                let main_video = build_qsv_main_video(accel, treatment, out_w, out_h);
+                let main_video =
+                    build_vaapi_main_video(accel, treatment, &tonemap, out_w, out_h);
                 format!(
                     "[0:{sub_idx}]{sub_preproc},{sub_upload}[sub];\
                      [0:v:0]{main_video}[vmain];\
@@ -1593,17 +1740,7 @@ pub(crate) fn build_progressive_args(
             _ => None,
         };
         let vf = if hdr && ffmpeg_video_codec != "copy" {
-            if do_vpp_tonemap && accel.as_type() == HardwareAccelerationType::Vaapi {
-                let vpp = "tonemap_vaapi=format=nv12:p=bt709:t=bt709:m=bt709:extra_hw_frames=32";
-                let base = vf.unwrap_or_default();
-                Some(if base.is_empty() {
-                    format!("format=nv12,hwupload,{vpp}")
-                } else {
-                    format!("{base},{vpp}")
-                })
-            } else if do_vpp_tonemap {
-                vf
-            } else if do_sw_tonemap {
+            if do_sw_tonemap {
                 let algo = &params.tonemapping_algorithm;
                 let desat = params.tonemapping_desat;
                 let peak = params.tonemapping_peak;
@@ -1626,7 +1763,7 @@ pub(crate) fn build_progressive_args(
                     Some(s) => format!("{s},{tonemapx}{upload}"),
                     None => format!("{tonemapx}{upload}"),
                 })
-            } else if qsv_gpu_resident(accel, treatment) {
+            } else if hw_gpu_resident(accel, treatment) {
                 vf
             } else {
                 let setparams =
@@ -2143,6 +2280,140 @@ mod tests {
     }
     fn all_devices(_: &str) -> bool {
         true
+    }
+
+    #[test]
+    fn segment_index_parses_ts_and_m4s_and_rejects_non_segment_files() {
+        assert_eq!(segment_index("segment_00042.ts"), Some(42));
+        assert_eq!(segment_index("segment_00042.m4s"), Some(42));
+        assert_eq!(segment_index("segment_00000.m4s"), Some(0));
+        assert_eq!(segment_index("init.mp4"), None);
+        assert_eq!(segment_index("playlist.m3u8"), None);
+    }
+
+    #[test]
+    fn highest_segment_index_finds_the_max_across_m4s_segments() {
+        // Regression test for #560: HEVC-copy sessions write .m4s segments,
+        // and the buffer monitor must see them the same as .ts ones.
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "segment_00000.m4s",
+            "segment_00003.m4s",
+            "segment_00001.m4s",
+        ] {
+            std::fs::write(
+                dir.path()
+                    .join(name),
+                b"",
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            highest_segment_index(
+                &dir.path()
+                    .to_path_buf()
+            ),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn highest_segment_index_finds_the_max_across_ts_segments() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["segment_00000.ts", "segment_00007.ts", "segment_00002.ts"] {
+            std::fs::write(
+                dir.path()
+                    .join(name),
+                b"",
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            highest_segment_index(
+                &dir.path()
+                    .to_path_buf()
+            ),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn highest_segment_index_is_none_for_an_empty_or_missing_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            highest_segment_index(
+                &dir.path()
+                    .to_path_buf()
+            ),
+            None
+        );
+        assert_eq!(
+            highest_segment_index(&PathBuf::from("/nonexistent/remux-test-dir")),
+            None
+        );
+    }
+
+    #[test]
+    fn segment_start_index_matches_the_seek_offset() {
+        // 1255s seek, 6s segments: floor(1255/6) = 209 — same formula
+        // build_hls_args uses for -start_number.
+        assert_eq!(segment_start_index(Some(1255 * 10_000_000), 6), 209);
+        assert_eq!(segment_start_index(None, 6), 0);
+        assert_eq!(segment_start_index(Some(0), 6), 0);
+    }
+
+    #[test]
+    fn buffered_secs_from_segments_is_relative_to_the_seek_start_index() {
+        // Regression test: a seek to 1255s starts ffmpeg at segment index
+        // ~209 (segment names are absolute, offset by the seek position —
+        // see segment_start_index), not 0. Only one segment has actually
+        // been produced since the seek, so this must read as one
+        // segment_length of buffered output, not 210 segments' worth.
+        assert_eq!(buffered_secs_from_segments(Some(209), 209, 6), 6);
+        assert_eq!(buffered_secs_from_segments(Some(212), 209, 6), 24);
+        // No seek: start_index is 0, matches the old file-count behavior.
+        assert_eq!(buffered_secs_from_segments(Some(3), 0, 6), 24);
+        assert_eq!(buffered_secs_from_segments(None, 0, 6), 0);
+        // Defensive: an index somehow below start_index never underflows.
+        assert_eq!(buffered_secs_from_segments(Some(100), 209, 6), 6);
+    }
+
+    #[test]
+    fn delete_old_segments_prunes_m4s_segments_below_cutoff() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "segment_00000.m4s",
+            "segment_00001.m4s",
+            "segment_00002.m4s",
+        ] {
+            std::fs::write(
+                dir.path()
+                    .join(name),
+                b"",
+            )
+            .unwrap();
+        }
+        delete_old_segments(
+            &dir.path()
+                .to_path_buf(),
+            2,
+        );
+        let remaining: std::collections::HashSet<String> =
+            std::fs::read_dir(dir.path())
+                .unwrap()
+                .flatten()
+                .map(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect();
+        assert_eq!(
+            remaining,
+            ["segment_00002.m4s".to_string()]
+                .into_iter()
+                .collect()
+        );
     }
 
     #[test]
@@ -2879,6 +3150,7 @@ mod tests {
             accelerator: Box::new(hw_accel::Vaapi {
                 device: "/dev/dri/renderD128".into(),
                 driver: "iHD".into(),
+                opencl: false,
             }),
             ..default_hls(dir)
         });
@@ -2921,6 +3193,7 @@ mod tests {
             accelerator: Box::new(hw_accel::Vaapi {
                 device: "/dev/dri/renderD128".into(),
                 driver: "iHD".into(),
+                opencl: false,
             }),
             source_video_range_type: Some(VideoRangeType::Hdr10),
             enable_vpp_tonemapping: true,
@@ -2945,6 +3218,56 @@ mod tests {
         );
     }
 
+    /// `HdrTreatment::for_source` only routes *tone-mapping* treatments away
+    /// from GPU residency for a CPU-overlay burn-in (`SwTonemap`) — an SDR
+    /// source burning a subtitle in gets plain `Sdr` treatment, which has
+    /// nothing to do with tone mapping. Regression test: `Vaapi::input_args`
+    /// requesting real hardware decode must not leak into this path, since
+    /// the CPU `overlay` filter that composites the subtitle reads `0:v:0`
+    /// directly with no `hwdownload` and cannot consume VAAPI-resident frames.
+    #[test]
+    fn hls_vaapi_sdr_subtitle_burn_stays_on_cpu() {
+        let dir = PathBuf::from("/tmp/test_vaapi_sdr_sub");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(vaapi()),
+            source_video_range_type: Some(VideoRangeType::Sdr),
+            burn_subtitle: true,
+            subtitle_stream_index: Some(2),
+            ..default_hls(dir)
+        });
+
+        assert_vaapi_sw_decode(&args);
+        let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
+        assert!(
+            fc.contains("]overlay="),
+            "CPU overlay compositing the subtitle: {fc}"
+        );
+    }
+
+    /// Same bug, HDR variant: no tone-mapping toggle enabled means `Clamp`
+    /// treatment, which — like `Sdr` — is not `SwTonemap` and so was still
+    /// requesting VAAPI-resident hardware decode feeding the CPU overlay.
+    #[test]
+    fn hls_vaapi_hdr_clamp_subtitle_burn_stays_on_cpu() {
+        let dir = PathBuf::from("/tmp/test_vaapi_clamp_sub");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(vaapi()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            burn_subtitle: true,
+            subtitle_stream_index: Some(2),
+            ..default_hls(dir)
+        });
+
+        assert_vaapi_sw_decode(&args);
+        let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
+        assert!(
+            fc.contains("]overlay="),
+            "CPU overlay compositing the subtitle: {fc}"
+        );
+    }
+
     #[test]
     fn hls_codec_list_defaults_to_h264() {
         let dir = PathBuf::from("/tmp/test_codec_list");
@@ -2963,6 +3286,7 @@ mod tests {
             accelerator: Box::new(hw_accel::Vaapi {
                 device: "/dev/dri/renderD128".into(),
                 driver: String::new(), // AMD / unknown: no driver=
+                opencl: false,
             }),
             ..default_hls(dir)
         });
@@ -2987,6 +3311,7 @@ mod tests {
             accelerator: Box::new(hw_accel::Qsv {
                 vaapi_device: "/dev/dri/renderD128".into(),
                 vaapi_driver: "iHD".into(),
+                opencl: false,
             }),
             ..default_hls(dir)
         });
@@ -3041,6 +3366,15 @@ mod tests {
         hw_accel::Qsv {
             vaapi_device: "/dev/dri/renderD128".into(),
             vaapi_driver: "iHD".into(),
+            opencl: false,
+        }
+    }
+
+    fn vaapi() -> hw_accel::Vaapi {
+        hw_accel::Vaapi {
+            device: "/dev/dri/renderD128".into(),
+            driver: "iHD".into(),
+            opencl: false,
         }
     }
 
@@ -3063,6 +3397,7 @@ mod tests {
             vf.contains("tonemap_vaapi"),
             "expected tonemap_vaapi in vf: {vf}"
         );
+        assert_p010_into_tonemap(vf);
         assert!(
             !vf.contains("tonemapx"),
             "should not use SW tonemapx when VPP available: {vf}"
@@ -3077,6 +3412,30 @@ mod tests {
     fn has_pair(args: &[String], k: &str, v: &str) -> bool {
         args.windows(2)
             .any(|w| w[0] == k && w[1] == v)
+    }
+
+    /// `tonemap_vaapi` must be fed the 10-bit surface; an NV12 scale in front
+    /// of it produces a solid cyan picture.
+    fn assert_p010_into_tonemap(chain: &str) {
+        let tm = chain
+            .find("tonemap_vaapi")
+            .expect("tonemap_vaapi missing");
+        let scale = chain[..tm]
+            .rfind("scale_vaapi=")
+            .expect("scale_vaapi must precede tonemap_vaapi");
+        let scale_args = &chain[scale..tm];
+        assert!(
+            scale_args.contains("format=p010"),
+            "scale_vaapi before tonemap_vaapi must output p010: {chain}"
+        );
+        assert!(
+            !scale_args.contains("format=nv12"),
+            "8-bit NV12 must not reach tonemap_vaapi: {chain}"
+        );
+        assert!(
+            chain[tm..].contains("tonemap_vaapi=format=nv12"),
+            "tone map must still emit NV12 for the encoder: {chain}"
+        );
     }
 
     fn assert_qsv_hw_decode(args: &[String]) {
@@ -3111,7 +3470,7 @@ mod tests {
             "main branch must scale on GPU: {fc}"
         );
         assert!(
-            fc.contains("hwmap=derive_device=qsv,format=qsv"),
+            fc.contains("derive_device=qsv") && fc.contains(",format=qsv"),
             "main branch must map into QSV memory: {fc}"
         );
         assert!(
@@ -3162,6 +3521,7 @@ mod tests {
         let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
         assert_qsv_gpu_overlay(fc);
         assert!(fc.contains("tonemap_vaapi"), "expected VPP tone map: {fc}");
+        assert_p010_into_tonemap(fc);
         assert!(
             fc.find("tonemap_vaapi")
                 .unwrap()
@@ -3286,6 +3646,357 @@ mod tests {
         let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
         assert_qsv_gpu_overlay(fc);
         assert!(fc.contains("tonemap_vaapi"), "expected VPP tone map: {fc}");
+        assert_p010_into_tonemap(fc);
+    }
+
+    #[test]
+    fn hls_qsv_vpp_tonemap_with_resolution_cap_scales_to_p010() {
+        let dir = PathBuf::from("/tmp/test_qsv_vpp_cap");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(qsv()),
+            source_video_range_type: Some(VideoRangeType::DoviWithHdr10),
+            enable_vpp_tonemapping: true,
+            tonemapping_algorithm: "hable".into(),
+            max_width: Some(1920),
+            max_height: Some(1080),
+            ..default_hls(dir)
+        });
+
+        let vf = arg_after(&args, "-vf").expect("-vf missing");
+        assert!(vf.contains("min(1920,iw)"), "cap must be applied: {vf}");
+        assert_p010_into_tonemap(vf);
+    }
+
+    #[test]
+    fn progressive_qsv_vpp_tonemap_without_subtitle_scales_to_p010() {
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(qsv()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_vpp_tonemapping: true,
+            tonemapping_algorithm: "hable".into(),
+            ..default_progressive()
+        });
+
+        let vf = arg_after(&args, "-vf").expect("-vf missing");
+        assert_p010_into_tonemap(vf);
+    }
+
+    fn qsv_opencl() -> hw_accel::Qsv {
+        hw_accel::Qsv {
+            opencl: true,
+            ..qsv()
+        }
+    }
+
+    /// OpenCL tone map on GPU-resident frames: P010 scale, map into OpenCL,
+    /// tone map, map back through VAAPI into QSV.
+    fn assert_ocl_chain(chain: &str) {
+        let map_in = chain
+            .find("hwmap=derive_device=opencl:mode=read")
+            .expect("must map into OpenCL");
+        let scale = chain[..map_in]
+            .rfind("scale_vaapi=")
+            .expect("scale_vaapi must precede the OpenCL map");
+        assert!(
+            chain[scale..map_in].contains("format=p010"),
+            "OpenCL tone map needs the 10-bit surface: {chain}"
+        );
+        let tm = chain
+            .find("tonemap_opencl=")
+            .expect("tonemap_opencl missing");
+        assert!(map_in < tm, "{chain}");
+        assert!(
+            chain[tm..].contains(
+                "hwmap=derive_device=qsv:mode=write:reverse=1:extra_hw_frames=16,format=qsv"
+            ),
+            "must return to QSV memory for the encoder: {chain}"
+        );
+        assert!(
+            !chain.contains("tonemapx") && !chain.contains("tonemap_vaapi"),
+            "{chain}"
+        );
+    }
+
+    #[test]
+    fn hls_qsv_tonemapping_uses_opencl_on_gpu() {
+        let dir = PathBuf::from("/tmp/test_qsv_ocl");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(qsv_opencl()),
+            source_video_range_type: Some(VideoRangeType::DoviWithHdr10),
+            enable_tonemapping: true,
+            tonemapping_algorithm: "bt2390".into(),
+            tonemapping_peak: 100.0,
+            ..default_hls(dir)
+        });
+
+        assert_qsv_hw_decode(&args);
+        assert!(
+            has_pair(&args, "-init_hw_device", "opencl=ocl@va"),
+            "{args:?}"
+        );
+        assert!(has_pair(&args, "-filter_hw_device", "ocl"), "{args:?}");
+        let vf = arg_after(&args, "-vf").expect("-vf missing");
+        assert_ocl_chain(vf);
+        assert!(vf.contains("tonemap=bt2390:peak=100"), "{vf}");
+        assert_eq!(arg_after(&args, "-c:v"), Some("h264_qsv"));
+    }
+
+    #[test]
+    fn hls_qsv_opencl_tonemap_with_subtitle_stays_on_gpu() {
+        let dir = PathBuf::from("/tmp/test_qsv_ocl_sub");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(qsv_opencl()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_tonemapping: true,
+            tonemapping_algorithm: "bt2390".into(),
+            burn_subtitle: true,
+            subtitle_stream_index: Some(2),
+            ..default_hls(dir)
+        });
+
+        assert_qsv_hw_decode(&args);
+        let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
+        assert_qsv_gpu_overlay(fc);
+        assert_ocl_chain(fc);
+        assert!(
+            fc.find("tonemap_opencl")
+                .unwrap()
+                < fc.find("overlay_qsv")
+                    .unwrap(),
+            "tone map must run before the overlay: {fc}"
+        );
+    }
+
+    #[test]
+    fn progressive_qsv_tonemapping_uses_opencl_on_gpu() {
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(qsv_opencl()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_tonemapping: true,
+            tonemapping_algorithm: "bt2390".into(),
+            ..default_progressive()
+        });
+
+        assert_qsv_hw_decode(&args);
+        let vf = arg_after(&args, "-vf").expect("-vf missing");
+        assert_ocl_chain(vf);
+    }
+
+    #[test]
+    fn hls_qsv_tonemapping_without_opencl_falls_back_to_tonemapx() {
+        let dir = PathBuf::from("/tmp/test_qsv_no_ocl");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(qsv()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_tonemapping: true,
+            tonemapping_algorithm: "bt2390".into(),
+            ..default_hls(dir)
+        });
+
+        assert_qsv_sw_decode(&args);
+        let vf = arg_after(&args, "-vf").expect("-vf missing");
+        assert!(vf.contains("tonemapx"), "{vf}");
+        assert!(!vf.contains("tonemap_opencl"), "{vf}");
+    }
+
+    fn assert_vaapi_hw_decode(args: &[String]) {
+        assert!(
+            has_pair(args, "-hwaccel", "vaapi")
+                && has_pair(args, "-hwaccel_output_format", "vaapi"),
+            "VAAPI must hardware-decode when the graph stays on the GPU: {args:?}"
+        );
+    }
+
+    fn assert_vaapi_sw_decode(args: &[String]) {
+        assert!(
+            !has_pair(args, "-hwaccel_output_format", "vaapi"),
+            "VAAPI must software-decode when the graph runs CPU filters: {args:?}"
+        );
+        assert!(
+            has_pair(args, "-filter_hw_device", "va"),
+            "VAAPI encoder still needs the device chain: {args:?}"
+        );
+    }
+
+    fn vaapi_opencl() -> hw_accel::Vaapi {
+        hw_accel::Vaapi {
+            opencl: true,
+            ..vaapi()
+        }
+    }
+
+    /// Like `assert_ocl_chain`, but for plain VAAPI: the reverse map lands
+    /// directly back in VAAPI memory (no QSV re-hop — the encoder is already
+    /// native VAAPI).
+    fn assert_vaapi_ocl_chain(chain: &str) {
+        let map_in = chain
+            .find("hwmap=derive_device=opencl:mode=read")
+            .expect("must map into OpenCL");
+        let scale = chain[..map_in]
+            .rfind("scale_vaapi=")
+            .expect("scale_vaapi must precede the OpenCL map");
+        assert!(
+            chain[scale..map_in].contains("format=p010"),
+            "OpenCL tone map needs the 10-bit surface: {chain}"
+        );
+        let tm = chain
+            .find("tonemap_opencl=")
+            .expect("tonemap_opencl missing");
+        assert!(map_in < tm, "{chain}");
+        assert!(
+            chain[tm..].contains(
+                "hwmap=derive_device=vaapi:mode=write:reverse=1,format=vaapi"
+            ),
+            "must return to VAAPI memory for the encoder: {chain}"
+        );
+        assert!(
+            !chain.contains("tonemapx") && !chain.contains("tonemap_vaapi"),
+            "{chain}"
+        );
+    }
+
+    #[test]
+    fn hls_vaapi_vpp_tonemap_without_subtitle_scales_to_p010() {
+        let dir = PathBuf::from("/tmp/test_vaapi_vpp_nosub");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(vaapi()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_vpp_tonemapping: true,
+            tonemapping_algorithm: "hable".into(),
+            ..default_hls(dir)
+        });
+
+        assert_vaapi_hw_decode(&args);
+        let vf = arg_after(&args, "-vf").expect("-vf missing");
+        assert!(vf.contains("tonemap_vaapi"), "expected VPP tone map: {vf}");
+        assert_p010_into_tonemap(vf);
+        assert_eq!(arg_after(&args, "-c:v"), Some("h264_vaapi"));
+    }
+
+    #[test]
+    fn hls_vaapi_tonemapping_uses_opencl_on_gpu() {
+        let dir = PathBuf::from("/tmp/test_vaapi_ocl");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(vaapi_opencl()),
+            source_video_range_type: Some(VideoRangeType::DoviWithHdr10),
+            enable_tonemapping: true,
+            tonemapping_algorithm: "bt2390".into(),
+            tonemapping_peak: 100.0,
+            ..default_hls(dir)
+        });
+
+        assert_vaapi_hw_decode(&args);
+        assert!(
+            has_pair(&args, "-init_hw_device", "opencl=ocl@va"),
+            "{args:?}"
+        );
+        assert!(has_pair(&args, "-filter_hw_device", "ocl"), "{args:?}");
+        let vf = arg_after(&args, "-vf").expect("-vf missing");
+        assert_vaapi_ocl_chain(vf);
+        assert!(vf.contains("tonemap=bt2390:peak=100"), "{vf}");
+        assert_eq!(arg_after(&args, "-c:v"), Some("h264_vaapi"));
+    }
+
+    #[test]
+    fn hls_vaapi_opencl_tonemap_with_subtitle_falls_back_to_sw_tonemap() {
+        // VAAPI has no GPU-resident overlay, so unlike QSV a burn-in still
+        // blocks OpenCL tone mapping (see `vaapi_tone_mapping_runs_on_opencl_when_available`
+        // in hw_accel.rs) and falls back to software tone mapping + CPU overlay.
+        let dir = PathBuf::from("/tmp/test_vaapi_ocl_sub");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(vaapi_opencl()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_tonemapping: true,
+            tonemapping_algorithm: "bt2390".into(),
+            burn_subtitle: true,
+            subtitle_stream_index: Some(2),
+            ..default_hls(dir)
+        });
+
+        let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
+        assert!(fc.contains("tonemapx"), "{fc}");
+        assert!(!fc.contains("tonemap_opencl"), "{fc}");
+        assert!(fc.contains("]overlay="), "CPU overlay: {fc}");
+    }
+
+    #[test]
+    fn progressive_vaapi_tonemapping_uses_opencl_on_gpu() {
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(vaapi_opencl()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_tonemapping: true,
+            tonemapping_algorithm: "bt2390".into(),
+            ..default_progressive()
+        });
+
+        assert_vaapi_hw_decode(&args);
+        let vf = arg_after(&args, "-vf").expect("-vf missing");
+        assert_vaapi_ocl_chain(vf);
+    }
+
+    #[test]
+    fn hls_vaapi_tonemapping_without_opencl_falls_back_to_tonemapx() {
+        let dir = PathBuf::from("/tmp/test_vaapi_no_ocl");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(vaapi()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_tonemapping: true,
+            tonemapping_algorithm: "bt2390".into(),
+            ..default_hls(dir)
+        });
+
+        assert_vaapi_sw_decode(&args);
+        let vf = arg_after(&args, "-vf").expect("-vf missing");
+        assert!(vf.contains("tonemapx"), "{vf}");
+        assert!(!vf.contains("tonemap_opencl"), "{vf}");
+    }
+
+    #[test]
+    fn hls_vaapi_sdr_uses_hw_decode_with_no_extra_hop() {
+        // Plain SDR VAAPI transcode: real GPU decode + scale, no VPP/OpenCL/
+        // clamp suffix needed since a native h264_vaapi encoder consumes
+        // VAAPI-format frames directly (unlike QSV, which always needs a
+        // final hwmap into QSV memory).
+        let dir = PathBuf::from("/tmp/test_vaapi_sdr");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(vaapi()),
+            ..default_hls(dir)
+        });
+
+        assert_vaapi_hw_decode(&args);
+        let vf = arg_after(&args, "-vf").expect("-vf missing");
+        assert_eq!(vf, "scale_vaapi=format=nv12:extra_hw_frames=24");
+    }
+
+    #[test]
+    fn hls_qsv_hdr_clamp_keeps_nv12_scale() {
+        // No tone map: the relabel path truncates to 8-bit on purpose.
+        let dir = PathBuf::from("/tmp/test_qsv_clamp_nv12");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(qsv()),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            ..default_hls(dir)
+        });
+
+        let vf = arg_after(&args, "-vf").expect("-vf missing");
+        assert!(
+            vf.contains("scale_vaapi=format=nv12"),
+            "clamp stays NV12: {vf}"
+        );
+        assert!(!vf.contains("tonemap_vaapi"), "clamp has no tone map: {vf}");
     }
 
     #[test]
@@ -3605,6 +4316,7 @@ mod tests {
             Box::new(hw_accel::Qsv {
                 vaapi_device: vaapi_device.clone(),
                 vaapi_driver: vaapi_driver.clone(),
+                opencl: false,
             }) as Box<dyn Accelerator>
         };
 

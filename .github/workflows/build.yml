@@ -49,20 +49,20 @@ jobs:
         uses: actions/cache@v4
         with:
           path: jellyfin-web/
-          key: jellyfin-web-v10.11.11
+          key: jellyfin-web-v12.1
 
       - name: Checkout jellyfin-web
         if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
           repository: jellyfin/jellyfin-web
-          ref: v10.11.11
+          ref: v12.1
 
       - name: Setup Node
         if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
 
       - name: Install dependencies
@@ -551,4 +551,3 @@ jobs:
         run: |
           docker buildx imagetools create ${{ inputs.docker_tags }} \
             $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
-
