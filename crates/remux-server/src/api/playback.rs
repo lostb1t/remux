@@ -687,7 +687,7 @@ async fn items_playbackinfo_inner(
     }
 
     // Rank sources by how well they match the device's capabilities (transcode
-    // cost, confident 4K, HDR tier, bit depth, audio quality, embedded subs)
+    // cost, observed or explicitly supported 4K, HDR tier, bit depth, audio quality, embedded subs)
     // so the auto-play source below is the best version, not just the first
     // one probed. Keep `sidecar_subtitle_routes` aligned by permuting it in
     // lockstep — the later zip below pairs them back up by index.
@@ -715,6 +715,10 @@ async fn items_playbackinfo_inner(
         let ranking = SourceRankingContext {
             mode: sort_mode,
             device_profile: sort_device_profile.as_ref(),
+            is_4k_capable: session
+                .device
+                .is_4k_capable
+                == Some(true),
             subtitle_mode,
             explicit_subtitle_index: q.subtitle_stream_index,
             max_bitrate: sort_max_bitrate,

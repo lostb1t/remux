@@ -1870,6 +1870,10 @@ async fn item_for_user(
                             .sort_media_sources
                             .unwrap_or_default(),
                         device_profile: persisted_device_profile.as_ref(),
+                        is_4k_capable: session
+                            .device
+                            .is_4k_capable
+                            == Some(true),
                         subtitle_mode,
                         explicit_subtitle_index: None,
                         max_bitrate: persisted_device_profile
@@ -1944,6 +1948,10 @@ async fn item_for_user(
                             .sort_media_sources
                             .unwrap_or_default(),
                         device_profile: persisted_device_profile.as_ref(),
+                        is_4k_capable: session
+                            .device
+                            .is_4k_capable
+                            == Some(true),
                         subtitle_mode,
                         explicit_subtitle_index: None,
                         max_bitrate: persisted_device_profile
@@ -2089,6 +2097,10 @@ async fn item_for_user(
                     .sort_media_sources
                     .unwrap_or_default(),
                 device_profile: Some(device_profile),
+                is_4k_capable: session
+                    .device
+                    .is_4k_capable
+                    == Some(true),
                 subtitle_mode,
                 explicit_subtitle_index: None,
                 max_bitrate: device_profile.max_streaming_bitrate,
