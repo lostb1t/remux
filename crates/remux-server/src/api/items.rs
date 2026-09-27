@@ -3325,6 +3325,41 @@ pub async fn update_item(
     if let Some(people) = &payload.people {
         let mut person_rels: Vec<db::MediaRelation> = Vec::new();
         if !people.is_empty() {
+            // A supplied Id must point at an existing person; otherwise the
+            // replace below would drop the old People for a bogus relation.
+            let supplied_ids: Vec<Uuid> = people
+                .iter()
+                .filter_map(|p| p.id)
+                .collect();
+            let mut known_ids = std::collections::HashSet::new();
+            for chunk in supplied_ids.chunks(50) {
+                let mut qb = sqlx::QueryBuilder::new(
+                    "SELECT id FROM media WHERE kind = 'person' AND id IN (",
+                );
+                let mut sep = qb.separated(", ");
+                for pid in chunk {
+                    sep.push_bind(*pid);
+                }
+                qb.push(")");
+                let rows: Vec<Uuid> = qb
+                    .build_query_scalar()
+                    .fetch_all(
+                        &state
+                            .ctx
+                            .db,
+                    )
+                    .await
+                    .context_internal("Failed to look up people")?;
+                known_ids.extend(rows);
+            }
+            if let Some(bad) = supplied_ids
+                .iter()
+                .find(|pid| !known_ids.contains(*pid))
+            {
+                return Err(anyhow::anyhow!("{bad} is not a person"))
+                    .context_bad_request("People contains an Id that is not a person");
+            }
+
             // Resolve person IDs: prefer the Id supplied by the client (which the
             // client echoes back from our own response), then fall back to a name
             // lookup so we don't create a duplicate record and lose images.
@@ -3361,7 +3396,7 @@ pub async fn update_item(
                                     .db,
                             )
                             .await
-                            .unwrap_or_default();
+                            .context_internal("Failed to look up people")?;
                         for (pid, title) in rows {
                             map.insert(title.to_lowercase(), pid);
                         }
@@ -3436,8 +3471,7 @@ pub async fn update_item(
                     &person_medias,
                 )
                 .await
-                .inspect_err(|e| warn!(error = %e, "failed to upsert person media"))
-                .ok();
+                .context_internal("Failed to save people")?;
             }
         }
         // Delete + insert in one transaction: dropping this request (client
@@ -3451,7 +3485,7 @@ pub async fn update_item(
             &person_rels,
         )
         .await
-        .context_bad_request("Failed to update people")?;
+        .context_internal("Failed to update people")?;
     }
 
     Ok(StatusCode::NO_CONTENT)
@@ -7100,5 +7134,74 @@ mod tests {
         .unwrap();
         assert_eq!(people, vec![person.id], "the old People must survive");
         assert!(resp.is_ok(), "a failed People write must not return 2xx");
+    }
+
+    /// A People Id that belongs to a movie or a genre is not a person: the
+    /// request must fail with 400 and keep the old People.
+    #[tokio::test]
+    async fn update_item_people_rejects_non_person_ids() {
+        let (server, guard, token) = authenticated_server().await;
+        let db = &guard
+            .0
+            .db;
+        let auth = auth_header_with_token(&token);
+        let series =
+            insert_media(db, "Non Person Series", db::MediaKind::Series, "tt1000903")
+                .await;
+        let movie =
+            insert_media(db, "Some Movie", db::MediaKind::Movie, "tt1000904").await;
+        let genre = insert_media(db, "Drama", db::MediaKind::Genre, "tt1000905").await;
+        let now = Utc::now().naive_utc();
+        let mut person = db::Media {
+            id: Uuid::new_v4(),
+            title: "Old Person".to_string(),
+            kind: db::MediaKind::Person,
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        person
+            .save(db)
+            .await
+            .unwrap();
+        db::MediaRelation::upsert(
+            db,
+            &[db::MediaRelation {
+                left_media_id: series.id,
+                right_media_id: person.id,
+                weight: Some(0),
+                role: Some(db::RelationRole::Actor),
+                ..Default::default()
+            }],
+        )
+        .await
+        .unwrap();
+
+        for bad in [movie.id, genre.id] {
+            let resp = server
+                .post(&format!("/items/{}", series.id))
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth).unwrap(),
+                )
+                .json(&serde_json::json!({
+                    "People": [
+                        { "Id": person.id, "Name": "Old Person", "Type": "Actor" },
+                        { "Id": bad, "Name": "Not A Person", "Type": "Actor" },
+                    ],
+                }))
+                .expect_failure()
+                .await;
+            assert_eq!(resp.status_code(), http::StatusCode::BAD_REQUEST);
+
+            let people: Vec<Uuid> = sqlx::query_scalar(
+                "SELECT right_media_id FROM media_relations WHERE left_media_id = ?",
+            )
+            .bind(series.id)
+            .fetch_all(db)
+            .await
+            .unwrap();
+            assert_eq!(people, vec![person.id], "the old People must survive");
+        }
     }
 }
