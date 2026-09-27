@@ -50,6 +50,8 @@ pub struct Device {
     pub last_activity_at: Option<DateTime<Utc>>,
     pub capabilities: Option<sqlx::types::Json<crate::api::ClientCapabilitiesDto>>,
     pub device_profile: Option<sqlx::types::Json<remux_sdks::remux::DeviceProfile>>,
+    #[serde(skip)]
+    pub is_4k_capable: Option<bool>,
     pub remote_ip: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
 }
@@ -394,6 +396,25 @@ impl Device {
             })
     }
 
+    /// Record a confirmed 4K playback for this user's device. The flag is
+    /// monotonic; ordinary lower-resolution playback never clears it.
+    pub async fn mark_4k_capable(
+        db: &SqlitePool,
+        user_id: Uuid,
+        device_id: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE devices SET is_4k_capable = 1 \
+             WHERE user_id = ? AND lower(id) = lower(?) \
+             AND COALESCE(is_4k_capable, 0) = 0",
+        )
+        .bind(user_id)
+        .bind(device_id)
+        .execute(db)
+        .await?;
+        Ok(())
+    }
+
     /// Load the user this device belongs to.
     pub async fn user(&self, db: &SqlitePool) -> Result<Option<db::User>> {
         db::User::get_by_id(db, &self.user_id).await
@@ -542,6 +563,7 @@ impl FromRequestParts<AppState> for AuthSession {
             last_activity_at: None,
             capabilities: None,
             device_profile: None,
+            is_4k_capable: None,
             remote_ip: None,
             created_at: None,
         };
@@ -556,6 +578,32 @@ impl FromRequestParts<AppState> for AuthSession {
             user,
         })
     }
+}
+
+/// Best-effort user resolution from a device/API-key token, for endpoints
+/// that must stay reachable without a session (e.g. Infuse's direct stream
+/// URL, which carries `ApiKey` but no cookie or `PlaySessionId`) but still
+/// want the caller's identity — for per-user cache scoping — when a valid
+/// token is present. Unlike `AuthSession::from_request_parts`, an invalid or
+/// missing token yields `None` instead of rejecting the request.
+pub async fn resolve_user_id_from_token(db: &SqlitePool, token: &str) -> Option<Uuid> {
+    if let Some(device) = Device::get_by_access_token(db, token)
+        .await
+        .ok()
+        .flatten()
+    {
+        return Some(device.user_id);
+    }
+    db::ApiKey::get_by_token(db, token)
+        .await
+        .ok()
+        .flatten()?;
+    sqlx::query_as::<_, db::User>("SELECT * FROM users WHERE is_admin = 1 LIMIT 1")
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.id)
 }
 
 /// Extractor that resolves a target `db::User` from the `user_id` path param

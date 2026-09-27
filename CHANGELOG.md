@@ -1,3 +1,35 @@
+# [0.34.0](https://github.com/lostb1t/remux/compare/v0.33.0...v0.34.0) (2026-09-24)
+
+
+### Bug Fixes
+
+* correct local search ordering and pagination ([c6db3b5](https://github.com/lostb1t/remux/commit/c6db3b567de3b5c1ac74730ec13e4c63e239baed))
+* create collections via Jellyfin API ([#519](https://github.com/lostb1t/remux/issues/519)) ([5c907e8](https://github.com/lostb1t/remux/commit/5c907e8c3edacae188fa114563d75f060f000321))
+* **dashboard:** clarify direct play proxy bypass ([8983020](https://github.com/lostb1t/remux/commit/89830204707178a8b19a434f3baacbca988b8078))
+* exclude episodes from search (fixes [#517](https://github.com/lostb1t/remux/issues/517)) ([d4bd171](https://github.com/lostb1t/remux/commit/d4bd171584d72da8fa4f04e3deae61ad271f3e11))
+* **ffmpeg:** avoid reconnecting at EOF ([a19af1b](https://github.com/lostb1t/remux/commit/a19af1b9ac7743c87db1bece361b966988b13c10))
+* honor device profile conditions (fixes [#521](https://github.com/lostb1t/remux/issues/521)) ([#524](https://github.com/lostb1t/remux/issues/524)) ([ab396ec](https://github.com/lostb1t/remux/commit/ab396ec12215d6b1ce821fdb22910a907a471f50))
+* keep HDR transcodes GPU-resident when burning in image subtitles on QSV ([#522](https://github.com/lostb1t/remux/issues/522)) ([a917aca](https://github.com/lostb1t/remux/commit/a917aca2cd1509c505168b620b9396c27f4b3723))
+* name season 0 Specials and respect a locked season name on refresh (fixes [#499](https://github.com/lostb1t/remux/issues/499)) ([0e6f212](https://github.com/lostb1t/remux/commit/0e6f2120f8d157c13ac9077f6ba41fd361464acf))
+* never submit filename-guessed probe data to remuxdb ([351344a](https://github.com/lostb1t/remux/commit/351344a2318fc4cdef38257b76ac6ac5a5347046))
+* preserve movie titles with spelled-out parts ([5f89c55](https://github.com/lostb1t/remux/commit/5f89c55e8d12c9247996bcb03eca3476ed9d445b))
+* preserve playback position after session eviction ([#532](https://github.com/lostb1t/remux/issues/532)) ([da012b7](https://github.com/lostb1t/remux/commit/da012b7c9285117f13493a0cfb8c0b2bc344993e))
+* **shows:** speed up upcoming episode queries ([eb1790a](https://github.com/lostb1t/remux/commit/eb1790a460c1ad4052da4ffa2d76bea84ac0d1b2))
+* stop stamping /shows/upcoming test fixtures at midnight ([63416d7](https://github.com/lostb1t/remux/commit/63416d7a758a9ed1477d7da215627266a1a038a3))
+* stop the default startup library refresh from racing the items benchmark's fixture seeding ([c31516e](https://github.com/lostb1t/remux/commit/c31516ed7d26dfbbbd68c3b4b428b7c49d65261d))
+
+
+### Features
+
+* **collections:** add provider background colors ([#527](https://github.com/lostb1t/remux/issues/527)) ([4c53a85](https://github.com/lostb1t/remux/commit/4c53a8579a5e0c02a5905b93454b84022a22d14c))
+* **dashboard:** add stremio addon configure links ([df8e753](https://github.com/lostb1t/remux/commit/df8e753cb4779dec3bfae75b9ec4d62b2204e43f))
+* **dashboard:** unify streaming settings save ([c49d508](https://github.com/lostb1t/remux/commit/c49d5089dad96ee4a89de150db0d7e394a2fedc8))
+* **dashboard:** use icon for addon configuration ([193e1a0](https://github.com/lostb1t/remux/commit/193e1a08578263a747f51634ea997323fea8898b))
+* **images:** refine collection artwork layouts ([b06be42](https://github.com/lostb1t/remux/commit/b06be42d422fa4ba1b1c5e02d7f55179cd6a42d7))
+* improve media source sorting across quality, HDR, bitrate, and cache status ([#544](https://github.com/lostb1t/remux/issues/544)) ([1e56cf2](https://github.com/lostb1t/remux/commit/1e56cf253a1a4c94274b5016645e758458c1f171))
+* make IPTV channels and EPG programs searchable, always locally (fixes [#474](https://github.com/lostb1t/remux/issues/474)) ([838234f](https://github.com/lostb1t/remux/commit/838234f6fa57e5fe1e3a92b7d4b9567696b7b546))
+* sort stream versions by device capability, quality, and release source ([#515](https://github.com/lostb1t/remux/issues/515)) ([6f56d92](https://github.com/lostb1t/remux/commit/6f56d9221d90bec5ac93b58b4e996b1b016e6c3b))
+
 # [0.33.0](https://github.com/lostb1t/remux/compare/v0.32.0...v0.33.0) (2026-09-19)
 
 

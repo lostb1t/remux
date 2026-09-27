@@ -589,12 +589,47 @@ impl SubtitleAddon for StremioAddon {
         let subs = stremio_subtitles(&svc, media).await?;
         Ok(subs
             .into_iter()
-            .map(|s| SubtitleInfo {
-                id: s.id,
-                url: Some(crate::stream::StreamDescriptor::http(s.url)),
-                lang: s.lang,
-                is_forced: false,
-                is_hi: false,
+            .map(|s| {
+                use crate::subtitle_selection::{
+                    SubtitleMarker, has_hi_marker, has_subtitle_marker,
+                };
+                let is_forced = has_subtitle_marker(
+                    s.subtitle_file_name
+                        .as_deref(),
+                    SubtitleMarker::Forced,
+                ) || has_subtitle_marker(
+                    s.title
+                        .as_deref(),
+                    SubtitleMarker::Forced,
+                );
+                let is_hi = has_hi_marker(
+                    s.subtitle_file_name
+                        .as_deref(),
+                    s.lang
+                        .as_deref(),
+                ) || has_hi_marker(
+                    s.title
+                        .as_deref(),
+                    s.lang
+                        .as_deref(),
+                );
+                SubtitleInfo {
+                    id: s.id,
+                    url: Some(crate::stream::StreamDescriptor::http(s.url)),
+                    lang: s.lang,
+                    is_forced,
+                    is_hi,
+                    // Prefer the actual release filename over the addon's
+                    // display title: filename is what release-match logic
+                    // compares against the video's own filename, and a title
+                    // like "English" would otherwise defeat that match.
+                    filename: s
+                        .subtitle_file_name
+                        .or(s.movie_release_name)
+                        .or(s.title),
+                    from_trusted: s.from_trusted,
+                    ai_translated: s.ai_translated,
+                }
             })
             .collect())
     }
@@ -1746,6 +1781,7 @@ async fn stremio_streams(
                         s.id.as_deref()
                     })
                     .map(|s| s.to_lowercase()),
+                service_cached: s.cached_status(),
                 probe_data: s
                     .behavior_hints
                     .as_ref()
@@ -2001,7 +2037,10 @@ mod tests {
         let captured = server.mock(|when, then| {
             when.path("/stream/anime/fk-ep-1.json");
             then.status(200)
-                .json_body(serde_json::json!({"streams": [{"url": "https://example.com/1.mp4"}]}));
+                .json_body(serde_json::json!({"streams": [{
+                    "url": "https://example.com/1.mp4",
+                    "streamData": {"service": {"id": "torbox", "cached": true}}
+                }]}));
         });
 
         let svc =
@@ -2028,6 +2067,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(streams.len(), 1);
+        assert_eq!(
+            streams[0]
+                .service_id
+                .as_deref(),
+            Some("torbox")
+        );
+        assert_eq!(streams[0].service_cached, Some(true));
         captured.assert();
         reconstructed.assert_hits(0);
     }

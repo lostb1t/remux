@@ -559,9 +559,12 @@ pub struct RemuxBrandingExtensions {
 #[dto]
 pub struct BrandingOptions {
     pub login_disclaimer: Option<String>,
-    #[default(Some(
-        "@import url(\"https://cdn.jsdelivr.net/gh/lscambo13/ElegantFin@main/Theme/ElegantFin-jellyfin-theme-build-latest-minified.css\");".to_string()
-    ))]
+    #[default(Some(concat!(
+        "/* Main ElegantFin CSS */\n",
+        "@import url(\"https://cdn.jsdelivr.net/gh/lscambo13/ElegantFin@main/Theme/ElegantFin-jellyfin-theme-build-latest-minified.css\");\n",
+        "/* ElegantFin 12 Companion CSS */\n",
+        "@import url(\"https://cdn.jsdelivr.net/gh/mihaif7/elegantfin-jf12@main/Theme/ElegantFin-jf12-modern-latest.css\");"
+    ).to_string()))]
     pub custom_css: Option<String>,
     pub splashscreen_enabled: Option<bool>,
     #[serde(rename = "remux")]
@@ -771,6 +774,17 @@ pub struct ServerConfiguration {
     /// is available to judge it against. Default: true.
     #[default(Some(true))]
     pub show_playback_decision_in_title: Option<bool>,
+    /// When two subtitle options exist for the same language (one embedded,
+    /// one addon-external), show only the one that actually plays without a
+    /// slow re-encode/extraction, instead of listing both. Default: true.
+    #[default(Some(true))]
+    pub deduplicate_subtitle_tracks: Option<bool>,
+    /// Only used when `deduplicate_subtitle_tracks` is false: caps how many
+    /// addon-external subtitle candidates are added per language. Embedded
+    /// tracks are never capped by this (a source has at most one per
+    /// language anyway). Default: 1.
+    #[default(Some(1_i64))]
+    pub max_external_subtitles_per_language: Option<i64>,
 }
 
 #[derive(
@@ -853,13 +867,16 @@ pub struct EncodingOptions {
     /// detected type to hardware_acceleration_type automatically.
     #[default(Some(true))]
     pub auto_detect_hardware_acceleration: Option<bool>,
-    /// Software HDR→SDR tone mapping via the tonemapx filter (CPU).
+    /// HDR→SDR tone mapping. Runs `tonemap_opencl` on the GPU with QSV or
+    /// VAAPI when an OpenCL runtime is present, otherwise the tonemapx
+    /// filter (CPU).
     #[default(Some(false))]
     pub enable_tonemapping: Option<bool>,
     /// Hardware HDR→SDR tone mapping via tonemap_vaapi (Intel VAAPI/QSV only).
     #[default(Some(false))]
     pub enable_vpp_tonemapping: Option<bool>,
-    /// Algorithm used by tonemapx: hable, reinhard, mobius, bt2390, bt2446a, none.
+    /// Tone-mapping algorithm: hable, reinhard, mobius, bt2390, bt2446a, none.
+    /// OpenCL has no bt2446a and uses bt2390 instead.
     #[default(Some("hable".to_string()))]
     pub tonemapping_algorithm: Option<String>,
     /// Desaturation coefficient for tonemapx (0.0 = disabled).
@@ -1775,7 +1792,16 @@ fn bool_true() -> bool {
     true
 }
 
-fn deserialize_option_bool_from_anything<'de, D>(d: D) -> Result<Option<bool>, D::Error>
+pub fn deserialize_query_bool_from_anything<'de, D>(d: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bool_from_anything(d)
+}
+
+pub fn deserialize_option_bool_from_anything<'de, D>(
+    d: D,
+) -> Result<Option<bool>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -2236,7 +2262,7 @@ pub struct ProfileCondition {
     pub is_required: Option<bool>,
 }
 
-#[serde_alias(CamelCase, PascalCase)]
+#[query]
 #[derive(Default, Debug, Deserialize, Clone)]
 #[serde(default)]
 #[serde_as]
@@ -2635,6 +2661,18 @@ pub fn lang_to_two_letter(lang: &str) -> Option<String> {
     }
     if lang.len() == 2 {
         return Some(lang);
+    }
+    if let Some(language) = rust_iso639::from_code_2b(&lang) {
+        if !language
+            .code
+            .is_empty()
+        {
+            return Some(
+                language
+                    .code
+                    .to_string(),
+            );
+        }
     }
     isolang::Language::from_639_3(&lang)
         .or_else(|| isolang::Language::from_str(&lang).ok())
@@ -7265,6 +7303,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn branding_defaults_to_elegantfin_stylesheets() {
+        let css = BrandingOptions::default()
+            .custom_css
+            .expect("default branding should include CSS");
+        assert!(css.contains("ElegantFin-jellyfin-theme-build-latest-minified.css"));
+        assert!(css.contains("ElegantFin-jf12-modern-latest.css"));
+    }
+
+    #[test]
     fn webhook_destination_round_trips_as_tagged_config() {
         let destination = WebhookDestination::Http(HttpWebhookConfig {
             url: "https://example.com/hook".to_string(),
@@ -7316,6 +7363,10 @@ mod tests {
         assert_eq!(lang_to_two_letter("en").as_deref(), Some("en"));
         assert_eq!(lang_to_two_letter("eng").as_deref(), Some("en"));
         assert_eq!(lang_to_two_letter("English").as_deref(), Some("en"));
+        assert_eq!(lang_to_two_letter("nld").as_deref(), Some("nl"));
+        assert_eq!(lang_to_two_letter("DUT").as_deref(), Some("nl"));
+        assert_eq!(lang_to_two_letter("ger").as_deref(), Some("de"));
+        assert_eq!(lang_to_two_letter("fre").as_deref(), Some("fr"));
     }
 
     #[test]
@@ -7381,6 +7432,39 @@ mod tests {
                 Some("Naruto")
             );
         }
+    }
+
+    #[test]
+    fn query_macro_parses_case_insensitive_boolean_values() {
+        let stream: VideoStreamQuery = serde_urlencoded::from_str(
+            "static=True&copyTimestamps=fAlSe&requireAvc=TRUE",
+        )
+        .unwrap();
+        assert_eq!(stream.static_, Some(true));
+        assert_eq!(stream.copy_timestamps, Some(false));
+        assert_eq!(stream.require_avc, Some(true));
+
+        let refresh: RefreshItemQuery = serde_urlencoded::from_str(
+            "replaceAllMetadata=TrUe&replaceAllImages=FALSE&recursive=TRUE&regenerateTrickplay=false",
+        )
+        .unwrap();
+        assert!(refresh.replace_all_metadata);
+        assert!(!refresh.replace_all_images);
+        assert!(refresh.recursive);
+        assert!(!refresh.regenerate_trickplay);
+    }
+
+    #[test]
+    fn playback_info_query_parses_case_insensitive_boolean_values() {
+        let query: PlaybackInfoQuery = serde_urlencoded::from_str(
+            "EnableDirectPlay=TRUE&enableDirectStream=fAlSe&AllowAudioStreamCopy=True",
+        )
+        .unwrap();
+
+        assert_eq!(query.enable_direct_play, Some(true));
+        assert_eq!(query.enable_direct_stream, Some(false));
+        assert_eq!(query.allow_audio_stream_copy, Some(true));
+        assert_eq!(query.enable_transcoding, None);
     }
 
     #[test]

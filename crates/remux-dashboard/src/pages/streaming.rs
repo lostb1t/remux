@@ -1,3 +1,4 @@
+use super::{stream_sorting_description, DEVICE_SORTING_HINT};
 use crate::{
     components::{Card, ErrorAlert, LoadingText, SuccessAlert, ToggleRow},
     state::AppState,
@@ -249,20 +250,11 @@ pub fn StreamingGeneralSettingsPage(app_state: AppState) -> Element {
 #[component]
 fn StreamingSortPanel() -> Element {
     let mut state = use_context::<StreamingSettingsState>();
-    let description = match *state.sort_mode.read() {
-        SortMediaSourcesMode::Disabled => {
-            "MediaSources stay in probe/addon order — no capability-based sorting."
-        }
-        SortMediaSourcesMode::Best => {
-            "Direct Play and Direct Stream count equally, so quality picks the winner between them. A version that needs a re-encode still ranks below both. Recommended for most setups."
-        }
-        SortMediaSourcesMode::Compatibility => {
-            "Never prefer a version that needs any transcode over a direct play, and never prefer a remux over a true direct play."
-        }
-        SortMediaSourcesMode::Quality => {
-            "Best quality (resolution, HDR, bit depth, audio) always wins, even if it means transcoding."
-        }
-    };
+    let description = stream_sorting_description(
+        *state
+            .sort_mode
+            .read(),
+    );
 
     rsx! {
         Card { title: "Stream selection",
@@ -270,6 +262,9 @@ fn StreamingSortPanel() -> Element {
                 div { class: "field",
                     label { class: "field-label", r#for: "sort-media-sources", "Sort streams by device capability" }
                     div { class: "field-hint", "{description}" }
+                    if matches!(*state.sort_mode.read(), SortMediaSourcesMode::Best | SortMediaSourcesMode::Compatibility) {
+                        div { class: "field-hint", "{DEVICE_SORTING_HINT}" }
+                    }
                     select {
                         id: "sort-media-sources",
                         class: "select-input",

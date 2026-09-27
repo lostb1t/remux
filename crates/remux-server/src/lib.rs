@@ -66,6 +66,7 @@ pub mod playback_session;
 pub mod services;
 pub mod signals;
 pub mod stream;
+mod subtitle_selection;
 pub mod tasks;
 mod torrent;
 mod web_client;
@@ -316,6 +317,10 @@ pub async fn init_app(
             .as_deref()
             .unwrap_or("/dev/dri/renderD128");
         let driver = crate::playback::engine::detect_vaapi_driver(device).await;
+        let opencl =
+            crate::playback::engine::detect_opencl_tonemap(device, &driver).await;
+        tracing::info!(opencl_tonemap = opencl, "OpenCL tone mapping probed");
+        crate::playback::hw_accel::set_opencl_tonemap_available(opencl);
         enc_opts.vaapi_driver = Some(driver);
         db::Settings::set_encoding_config(&conn, &enc_opts).await?;
     }
@@ -371,6 +376,10 @@ pub async fn init_app(
         .register(services::media_tracker::MediaTrackerSubscriber { ctx: ctx.clone() });
     ctx.signals
         .register(api::webhooks::WebhookSubscriber { ctx: ctx.clone() });
+    ctx.signals
+        .register(services::four_k_capability::FourKCapabilitySubscriber::new(
+            ctx.clone(),
+        ));
 
     // Sync intro items at startup (best-effort; errors are logged not fatal).
     if let Err(e) = intro::sync_intros(&ctx).await {

@@ -1,5 +1,7 @@
 #![allow(warnings)]
 
+extern crate self as remux_sdks;
+
 pub mod deezer;
 pub mod introdb;
 pub mod kitsu;

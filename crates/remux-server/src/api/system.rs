@@ -1191,13 +1191,11 @@ mod test {
 
         resp.assert_status_ok();
         let body: serde_json::Value = resp.json();
-        assert!(
-            body["CustomCss"]
-                .as_str()
-                .map(|s| !s.is_empty())
-                .unwrap_or(false),
-            "default branding should include CSS"
-        );
+        let css = body["CustomCss"]
+            .as_str()
+            .expect("default branding should include CSS");
+        assert!(css.contains("ElegantFin-jellyfin-theme-build-latest-minified.css"));
+        assert!(css.contains("ElegantFin-jf12-modern-latest.css"));
     }
 
     // --- POST /branding/configuration ---
