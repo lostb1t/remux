@@ -36,6 +36,7 @@ isolang = { version = "2.4.0", features = ["list_languages", "lowercase_names"] 
 rust_iso639 = "0.1.0"
 nutype = { version = "0.6", features = ["serde", "regex"] }
 regex = "1"
+percent-encoding = "2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1", features = ["time"] }

@@ -1,3 +1,4 @@
+pub mod eclipse;
 pub mod image;
 pub mod media_tracker;
 pub(crate) mod resolve;

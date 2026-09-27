@@ -3,6 +3,7 @@
 extern crate self as remux_sdks;
 
 pub mod deezer;
+pub mod eclipse;
 pub mod introdb;
 pub mod kitsu;
 pub mod remux;
