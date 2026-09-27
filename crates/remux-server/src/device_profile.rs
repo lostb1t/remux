@@ -2896,20 +2896,20 @@ mod tests {
             "Movie.2024.2160p.WEB-DL.mkv",
             798_266,
         );
-        let mut healthy_1080p_video = video_stream(1920, Some(VideoRangeType::Sdr));
-        healthy_1080p_video.height = Some(1080);
-        let healthy_1080p = with_release(
+        let mut healthy_4k_video = video_stream(3840, Some(VideoRangeType::Sdr));
+        healthy_4k_video.height = Some(2160);
+        let healthy_4k = with_release(
             source_with_reasons(
-                healthy_1080p_video,
+                healthy_4k_video,
                 audio_stream("aac", 2),
                 &[TranscodeReason::VideoCodecNotSupported("test".to_string())],
             ),
-            "Movie.2024.1080p.WEB-DL.mkv",
+            "Movie.2024.2160p.WEB-DL.mkv",
             3_000_000,
         );
         let tiny_rank = tiny_4k.capability_rank(None, &tiny_4k.transcoding_reasons);
         let healthy_rank =
-            healthy_1080p.capability_rank(None, &healthy_1080p.transcoding_reasons);
+            healthy_4k.capability_rank(None, &healthy_4k.transcoding_reasons);
 
         assert_eq!(tiny_rank.bitrate_plausibility_tier, 0);
         assert_eq!(healthy_rank.bitrate_plausibility_tier, 1);
