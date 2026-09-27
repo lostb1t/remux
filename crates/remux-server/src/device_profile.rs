@@ -868,6 +868,7 @@ impl ProfileConditionExt for ProfileCondition {
 /// Every field is "higher is better".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MediaSourceRank {
+    resolution_fit_tier: u8,
     cached: bool,
     bitrate_plausibility_tier: u8,
     transcode_cost_tier: u8,
@@ -881,11 +882,11 @@ pub struct MediaSourceRank {
     bitrate: i64,
 }
 
-/// Compared lexicographically. Confirmed cache availability precedes quality
-/// and playback cost. Plausibility precedes cost in Best/Quality mode, but
-/// follows it in Compatibility mode.
+/// Compared lexicographically. Best/Compatibility put resolution fit ahead
+/// of cache availability and playback cost. Quality ignores resolution fit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MediaSourceSortKey {
+    resolution_fit: u8,
     cached: bool,
     plausibility_before_cost: u8,
     cost: u8,
@@ -910,6 +911,7 @@ pub struct MediaSourceSortKey {
 pub struct SourceRankingContext<'a> {
     pub mode: SortMediaSourcesMode,
     pub device_profile: Option<&'a DeviceProfile>,
+    pub is_4k_capable: bool,
     pub subtitle_mode: EmbeddedSubtitleHandling,
     pub explicit_subtitle_index: Option<i64>,
     pub max_bitrate: Option<i64>,
@@ -951,7 +953,9 @@ impl SourceRankingContext<'_> {
             self.explicit_subtitle_index,
             self.max_bitrate,
         );
-        let rank = source.capability_rank(self.device_profile, &reasons);
+        let mut rank = source.capability_rank(self.device_profile, &reasons);
+        rank.resolution_fit_tier =
+            resolution_fit_tier(source, self.device_profile, self.is_4k_capable);
         SourceAssessment { reasons, rank }
     }
 
@@ -992,7 +996,9 @@ impl MediaSourceRank {
     /// Sort key for `mode` — a *greater* value is a *better* match. Compared
     /// lexicographically, most significant tier first.
     ///
-    /// A confirmed upstream cache hit always wins. Then `Compatibility` puts
+    /// Best/Compatibility favor a suitable resolution first. A confirmed
+    /// upstream cache hit wins among sources with the same fit tier. Then
+    /// `Compatibility` puts
     /// `transcode_cost_tier` first: a version that direct
     /// plays (or only needs a cheap remux) always outranks one that needs a
     /// real re-encode, no matter how much better it looks on paper. `Best`
@@ -1037,6 +1043,12 @@ impl MediaSourceRank {
             _ => (self.bitrate_plausibility_tier, 0),
         };
         MediaSourceSortKey {
+            resolution_fit: match mode {
+                SortMediaSourcesMode::Best | SortMediaSourcesMode::Compatibility => {
+                    self.resolution_fit_tier
+                }
+                _ => 0,
+            },
             cached: self.cached,
             plausibility_before_cost,
             cost,
@@ -1232,80 +1244,97 @@ pub fn annotate_video_display_title(
     *title = format!("{title} {bitrate_str}({label})");
 }
 
-/// True only when the profile gives an explicit, numeric signal that the
-/// device can handle 4K — an HEVC/AV1 `VideoLevel` condition at or above the
-/// 4K tier, or a `Width`/`Height` condition capping at/above 3840x2160.
-/// Absence of such a condition means "unknown", not "no" — callers must not
-/// treat that as a reason to rank a source lower, only as a reason not to
-/// let resolution drive ranking at all.
-fn confident_4k_capable(profile: &DeviceProfile) -> bool {
-    const HEVC_4K_LEVEL: i64 = 150; // HEVC Level 5.0
-    const AV1_4K_LEVEL: i64 = 13; // AV1 Level 5.0
-
-    for cp in &profile.codec_profiles {
-        if !matches!(cp.type_, None | Some(CodecProfileType::Video)) {
-            continue;
-        }
-        let is_hevc = codec_list_contains(&cp.codec, &["hevc", "h265"]);
-        let is_av1 = codec_list_contains(&cp.codec, &["av1"]);
-        if !is_hevc && !is_av1 {
-            continue;
-        }
-        // A resolution/level *ceiling* is a hard requirement here (matches
-        // check_direct_play's own reading of these conditions) — only a cap
-        // this low is real evidence against 4K.
-        let has_low_ceiling = cp
-            .conditions
-            .iter()
-            .any(|cond| {
-                let Some(property) = cond
-                    .property
-                    .as_ref()
-                else {
-                    return false;
-                };
-                let Some(value) = cond
-                    .value
+/// Explicit width/height ceilings for this source's codec take precedence
+/// over the device-wide observation. An absent ceiling or a VideoLevel alone
+/// says nothing about the device's usable display resolution.
+fn explicit_4k_resolution_support(
+    profile: &DeviceProfile,
+    source: &MediaSourceInfo,
+    video: &MediaStream,
+) -> Option<bool> {
+    let (width, height) = (video.width, video.height);
+    let mut width_cap = None::<i64>;
+    let mut height_cap = None::<i64>;
+    for codec_profile in &profile.codec_profiles {
+        if !matches!(codec_profile.type_, None | Some(CodecProfileType::Video))
+            || !codec_profile.applies_to_media(
+                source,
+                video,
+                video
+                    .codec
                     .as_deref()
-                    .and_then(|v| {
-                        v.parse::<i64>()
-                            .ok()
-                    })
-                else {
-                    return false;
-                };
-                match property {
-                    ProfileConditionProperty::Width => value < 3840,
-                    ProfileConditionProperty::Height => value < 2160,
-                    ProfileConditionProperty::VideoLevel
-                    | ProfileConditionProperty::Level => {
-                        (is_hevc && value < HEVC_4K_LEVEL)
-                            || (is_av1 && value < AV1_4K_LEVEL)
-                    }
-                    _ => false,
-                }
-            });
-        // The codec is accepted at all, and nothing in its profile caps
-        // resolution/level below 4K — whether that cap is explicitly high
-        // (declared support) or simply absent (no restriction stated), both
-        // mean this device isn't known to reject a 4K stream.
-        if !has_low_ceiling {
-            return true;
+                    .unwrap_or(""),
+            )
+        {
+            continue;
+        }
+        for condition in &codec_profile.conditions {
+            if condition.condition != Some(ProfileConditionType::LessThanEqual) {
+                continue;
+            }
+            let Some(cap) = condition
+                .value
+                .as_deref()
+                .and_then(|value| {
+                    value
+                        .parse::<i64>()
+                        .ok()
+                })
+                .filter(|value| *value > 0)
+            else {
+                continue;
+            };
+            let limit = match condition
+                .property
+                .as_ref()
+            {
+                Some(ProfileConditionProperty::Width) => &mut width_cap,
+                Some(ProfileConditionProperty::Height) => &mut height_cap,
+                _ => continue,
+            };
+            *limit = Some(limit.map_or(cap, |previous| previous.min(cap)));
         }
     }
-    false
+    if width.is_some_and(|width| width_cap.is_some_and(|cap| width > cap))
+        || height.is_some_and(|height| height_cap.is_some_and(|cap| height > cap))
+    {
+        Some(false)
+    } else if width.is_some()
+        && height.is_some()
+        && width_cap.is_some()
+        && height_cap.is_some()
+    {
+        Some(true)
+    } else {
+        None
+    }
 }
 
-fn codec_list_contains(list: &Option<Vec<String>>, wanted: &[&str]) -> bool {
-    let Some(list) = list else {
-        return false;
+fn resolution_fit_tier(
+    source: &MediaSourceInfo,
+    profile: Option<&DeviceProfile>,
+    is_4k_capable: bool,
+) -> u8 {
+    let Some(video) = primary_video_stream(source) else {
+        return 1;
     };
-    list.iter()
-        .any(|c| {
-            wanted
-                .iter()
-                .any(|w| c.eq_ignore_ascii_case(w))
-        })
+    let long_side = video
+        .width
+        .unwrap_or(0)
+        .max(
+            video
+                .height
+                .unwrap_or(0),
+        );
+    if long_side < 3200 {
+        return 1;
+    }
+    // Until 4K is supported by explicit dimensions or observed playback,
+    // prefer a known smaller source even if the 4K source is cached.
+    let capable = profile
+        .and_then(|profile| explicit_4k_resolution_support(profile, source, video))
+        .unwrap_or(is_4k_capable);
+    u8::from(capable)
 }
 
 fn primary_video_stream(source: &MediaSourceInfo) -> Option<&MediaStream> {
@@ -1456,28 +1485,20 @@ impl MediaSourceCapabilityExt for MediaSourceInfo {
         } else {
             0
         };
-        // Without an explicit 4K signal, treat 4K as tied with 1080p rather
-        // than promoting it. Lower resolution tiers remain distinct so a
-        // 720p source cannot beat 1080p merely because of a later tie-breaker.
-        let resolution_tier =
-            if raw_resolution_tier == 5 && !profile.is_some_and(confident_4k_capable) {
-                3
-            } else {
-                raw_resolution_tier
-            };
         // An absent video-range tag is not evidence of quality below SDR.
         // Treat it as the SDR baseline for ordering, without claiming the
         // source was actually probed as SDR.
         let hdr_tier = hdr_tier(video).max(1);
 
         MediaSourceRank {
+            resolution_fit_tier: resolution_fit_tier(self, profile, false),
             cached: stream_info
                 .as_ref()
                 .and_then(|info| info.service_cached)
                 == Some(true),
             bitrate_plausibility_tier: bitrate_plausibility_tier(self, video),
             transcode_cost_tier: transcode_cost_tier(reasons),
-            resolution_tier,
+            resolution_tier: raw_resolution_tier,
             // HDR vs SDR matters; Dolby Vision vs HDR10 only breaks otherwise
             // equal ranks after release quality, bitrate, bit depth and audio.
             hdr_class: if hdr_tier > 1 { 2 } else { 1 },
@@ -1520,9 +1541,9 @@ impl MediaSourceCapabilityExt for MediaSourceInfo {
 mod tests {
     use super::{
         CodecProfileExt, DeviceProfileExt, MediaSourceCapabilityExt, MediaSourceRank,
-        MediaSourceSortKey, SourceRankingContext, confident_4k_capable,
+        MediaSourceSortKey, SourceRankingContext, explicit_4k_resolution_support,
         failed_condition_reason, playback_decision_label, primary_video_stream,
-        subtitle_burn_reason, transcode_cost_tier,
+        resolution_fit_tier, subtitle_burn_reason, transcode_cost_tier,
     };
     use remux_sdks::remux::{
         AudioCodec, CodecProfile, CodecProfileType, DeviceProfile, DirectPlayProfile,
@@ -1549,11 +1570,9 @@ mod tests {
         );
     }
 
-    /// A real client (e.g. Jellyfin Web's generated profile) commonly accepts
-    /// HEVC/AV1 without stating any Level/Width/Height ceiling at all — no
-    /// hardware limit to declare, not a reason to assume it can't do 4K.
+    /// A codec profile without dimensions says nothing about 4K playback.
     #[test]
-    fn confident_4k_capable_true_when_hevc_has_no_resolution_ceiling() {
+    fn codec_profile_without_resolution_ceiling_does_not_prove_4k() {
         let profile = DeviceProfile {
             codec_profiles: vec![CodecProfile {
                 type_: Some(CodecProfileType::Video),
@@ -1568,11 +1587,15 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert!(confident_4k_capable(&profile));
+        let mut video = video_stream(3840, Some(VideoRangeType::Sdr));
+        video.height = Some(2160);
+        video.codec = Some("hevc".to_string());
+        let source = source_with(video, audio_stream("aac", 2), true);
+        assert_eq!(resolution_fit_tier(&source, Some(&profile), false), 0);
     }
 
     #[test]
-    fn confident_4k_capable_true_when_hevc_level_meets_threshold() {
+    fn codec_video_level_does_not_prove_4k() {
         let profile = DeviceProfile {
             codec_profiles: vec![CodecProfile {
                 type_: Some(CodecProfileType::Video),
@@ -1587,45 +1610,77 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert!(confident_4k_capable(&profile));
+        let mut video = video_stream(3840, Some(VideoRangeType::Sdr));
+        video.height = Some(2160);
+        video.codec = Some("hevc".to_string());
+        let source = source_with(video, audio_stream("aac", 2), true);
+        assert_eq!(resolution_fit_tier(&source, Some(&profile), false), 0);
     }
 
     #[test]
-    fn confident_4k_capable_false_when_hevc_level_below_threshold() {
+    fn explicit_resolution_ceiling_overrides_learned_4k() {
         let profile = DeviceProfile {
             codec_profiles: vec![CodecProfile {
                 type_: Some(CodecProfileType::Video),
                 codec: Some(vec!["hevc".to_string()]),
-                conditions: vec![ProfileCondition {
-                    condition: Some(ProfileConditionType::LessThanEqual),
-                    property: Some(ProfileConditionProperty::VideoLevel),
-                    value: Some("93".to_string()), // HEVC Level 3.1 — well below 4K
-                    is_required: Some(true),
-                }],
+                conditions: vec![
+                    ProfileCondition {
+                        condition: Some(ProfileConditionType::LessThanEqual),
+                        property: Some(ProfileConditionProperty::Width),
+                        value: Some("1920".to_string()),
+                        is_required: Some(true),
+                    },
+                    ProfileCondition {
+                        condition: Some(ProfileConditionType::LessThanEqual),
+                        property: Some(ProfileConditionProperty::Height),
+                        value: Some("1080".to_string()),
+                        is_required: Some(true),
+                    },
+                ],
                 ..Default::default()
             }],
             ..Default::default()
         };
-        assert!(!confident_4k_capable(&profile));
+        let mut video = video_stream(3840, Some(VideoRangeType::Sdr));
+        video.height = Some(2160);
+        video.codec = Some("hevc".to_string());
+        let source = source_with(video, audio_stream("aac", 2), true);
+        assert_eq!(resolution_fit_tier(&source, Some(&profile), true), 0);
     }
 
     #[test]
-    fn confident_4k_capable_false_with_no_hevc_or_av1_codec_profile() {
+    fn explicit_4k_resolution_ceiling_proves_4k_for_matching_codec() {
         let profile = DeviceProfile {
             codec_profiles: vec![CodecProfile {
                 type_: Some(CodecProfileType::Video),
-                codec: Some(vec!["h264".to_string()]),
-                conditions: vec![ProfileCondition {
-                    condition: Some(ProfileConditionType::LessThanEqual),
-                    property: Some(ProfileConditionProperty::VideoLevel),
-                    value: Some("999".to_string()),
-                    is_required: Some(false),
-                }],
+                codec: Some(vec!["hevc".to_string()]),
+                conditions: vec![
+                    ProfileCondition {
+                        condition: Some(ProfileConditionType::LessThanEqual),
+                        property: Some(ProfileConditionProperty::Width),
+                        value: Some("3840".to_string()),
+                        is_required: Some(true),
+                    },
+                    ProfileCondition {
+                        condition: Some(ProfileConditionType::LessThanEqual),
+                        property: Some(ProfileConditionProperty::Height),
+                        value: Some("2160".to_string()),
+                        is_required: Some(true),
+                    },
+                ],
                 ..Default::default()
             }],
             ..Default::default()
         };
-        assert!(!confident_4k_capable(&profile));
+        let mut video = video_stream(3840, Some(VideoRangeType::Sdr));
+        video.height = Some(2160);
+        video.codec = Some("hevc".to_string());
+        let source = source_with(video, audio_stream("aac", 2), true);
+        assert_eq!(resolution_fit_tier(&source, Some(&profile), false), 1);
+        assert_eq!(
+            explicit_4k_resolution_support(&profile, &source, &source.media_streams[0]),
+            Some(true)
+        );
     }
 
     #[test]
@@ -2694,7 +2749,7 @@ mod tests {
     }
 
     #[test]
-    fn confident_4k_profile_prefers_4k_when_both_direct_playable() {
+    fn learned_4k_capability_prefers_4k_when_both_direct_playable() {
         let source_1080p = source_with(
             video_stream(1920, Some(VideoRangeType::Sdr)),
             audio_stream("aac", 2),
@@ -2706,20 +2761,19 @@ mod tests {
             true,
         );
         let profile = streamyfin_mpv_profile();
-        assert!(
-            compat(
-                source_4k
-                    .capability_rank(Some(&profile), &source_4k.transcoding_reasons)
-            ) > compat(
-                source_1080p
-                    .capability_rank(Some(&profile), &source_1080p.transcoding_reasons)
-            ),
-            "profile has an HEVC Level 153 (4K-tier) condition, so 4K should outrank 1080p"
-        );
+        let ranking = SourceRankingContext {
+            mode: SortMediaSourcesMode::Compatibility,
+            device_profile: Some(&profile),
+            is_4k_capable: true,
+            subtitle_mode: EmbeddedSubtitleHandling::default(),
+            explicit_subtitle_index: None,
+            max_bitrate: None,
+        };
+        assert!(ranking.sort_key(&source_4k) > ranking.sort_key(&source_1080p));
     }
 
     #[test]
-    fn unknown_4k_capability_does_not_favor_resolution() {
+    fn unknown_4k_capability_favors_1080p() {
         // No codec profiles at all — no numeric signal to be confident about.
         let profile = DeviceProfile::default();
         let source_1080p = source_with(
@@ -2732,11 +2786,14 @@ mod tests {
             audio_stream("aac", 2),
             true,
         );
-        assert_eq!(
-            source_4k.capability_rank(Some(&profile), &source_4k.transcoding_reasons),
-            source_1080p
-                .capability_rank(Some(&profile), &source_1080p.transcoding_reasons),
-            "without a confident 4K signal, resolution must not affect ranking"
+        assert!(
+            best(
+                source_1080p
+                    .capability_rank(Some(&profile), &source_1080p.transcoding_reasons)
+            ) > best(
+                source_4k
+                    .capability_rank(Some(&profile), &source_4k.transcoding_reasons)
+            )
         );
     }
 
@@ -2839,20 +2896,20 @@ mod tests {
             "Movie.2024.2160p.WEB-DL.mkv",
             798_266,
         );
-        let mut healthy_1080p_video = video_stream(1920, Some(VideoRangeType::Sdr));
-        healthy_1080p_video.height = Some(1080);
-        let healthy_1080p = with_release(
+        let mut healthy_4k_video = video_stream(3840, Some(VideoRangeType::Sdr));
+        healthy_4k_video.height = Some(2160);
+        let healthy_4k = with_release(
             source_with_reasons(
-                healthy_1080p_video,
+                healthy_4k_video,
                 audio_stream("aac", 2),
                 &[TranscodeReason::VideoCodecNotSupported("test".to_string())],
             ),
-            "Movie.2024.1080p.WEB-DL.mkv",
+            "Movie.2024.2160p.WEB-DL.mkv",
             3_000_000,
         );
         let tiny_rank = tiny_4k.capability_rank(None, &tiny_4k.transcoding_reasons);
         let healthy_rank =
-            healthy_1080p.capability_rank(None, &healthy_1080p.transcoding_reasons);
+            healthy_4k.capability_rank(None, &healthy_4k.transcoding_reasons);
 
         assert_eq!(tiny_rank.bitrate_plausibility_tier, 0);
         assert_eq!(healthy_rank.bitrate_plausibility_tier, 1);
@@ -2937,6 +2994,7 @@ mod tests {
         let assessment = super::SourceRankingContext {
             mode: SortMediaSourcesMode::Best,
             device_profile: Some(&profile),
+            is_4k_capable: false,
             subtitle_mode: EmbeddedSubtitleHandling::default(),
             explicit_subtitle_index: None,
             max_bitrate: profile.max_streaming_bitrate,
@@ -2976,6 +3034,7 @@ mod tests {
         let assessment = super::SourceRankingContext {
             mode: SortMediaSourcesMode::Best,
             device_profile: Some(&profile),
+            is_4k_capable: false,
             subtitle_mode: EmbeddedSubtitleHandling::default(),
             explicit_subtitle_index: None,
             max_bitrate: None,
@@ -3398,6 +3457,7 @@ mod tests {
         let ranking = SourceRankingContext {
             mode: SortMediaSourcesMode::Best,
             device_profile: Some(&profile),
+            is_4k_capable: true,
             subtitle_mode: EmbeddedSubtitleHandling::default(),
             explicit_subtitle_index: None,
             max_bitrate: None,

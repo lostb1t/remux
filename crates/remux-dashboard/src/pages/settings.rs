@@ -1,3 +1,4 @@
+use super::{stream_sorting_description, DEVICE_SORTING_HINT};
 use crate::{
     components::{Card, ErrorAlert, FormActions, LoadingText, SuccessAlert, ToggleRow},
     state::AppState,
@@ -975,20 +976,7 @@ pub fn StreamSortingSettingsCard(app_state: AppState) -> Element {
         });
     });
 
-    let description = match *sort_mode.read() {
-        SortMediaSourcesMode::Disabled => {
-            "MediaSources stay in probe/addon order — no capability-based sorting."
-        }
-        SortMediaSourcesMode::Best => {
-            "Direct Play and Direct Stream count equally (Direct Stream is just a low-overhead container remux), so quality picks the winner between them — a higher-bitrate remux can outrank a lower-bitrate direct play. A version that actually needs a re-encode still ranks below both. Recommended for most setups."
-        }
-        SortMediaSourcesMode::Compatibility => {
-            "Never prefer a version that needs any transcode over a direct play, and never prefer a remux over a true direct play, even if the transcode-needing one is technically higher quality."
-        }
-        SortMediaSourcesMode::Quality => {
-            "Best quality (resolution, HDR, bit depth, audio) always wins, even if it means transcoding."
-        }
-    };
+    let description = stream_sorting_description(*sort_mode.read());
 
     rsx! {
         Card { title: "General",
@@ -999,6 +987,9 @@ pub fn StreamSortingSettingsCard(app_state: AppState) -> Element {
                     div { class: "field",
                         label { class: "field-label", r#for: "sort-media-sources", "Sort streams by device capability" }
                         div { class: "field-hint", "{description}" }
+                        if matches!(*sort_mode.read(), SortMediaSourcesMode::Best | SortMediaSourcesMode::Compatibility) {
+                            div { class: "field-hint", "{DEVICE_SORTING_HINT}" }
+                        }
                         select {
                             id: "sort-media-sources",
                             class: "select-input",
