@@ -263,15 +263,25 @@ impl StreamDescriptor {
         }
     }
 
-    /// Returns `false` only for HTTP streams whose HEAD request yields a 4xx/5xx
+    /// Returns `false` only for HTTP streams whose ranged GET yields a 4xx/5xx
     /// status or a network/timeout error. Non-HTTP variants (local, torrent,
     /// opendal) return `true` immediately.
     pub async fn is_alive(&self) -> bool {
-        let Some(url) = self.as_http_url() else {
+        let Self::Http {
+            url,
+            request_headers,
+            ..
+        } = self
+        else {
             return true;
         };
-        match HEAD_CLIENT
-            .head(url)
+        let mut request = AVAILABILITY_CLIENT.get(url);
+        for (key, value) in request_headers {
+            request = request.header(key.as_str(), value.as_str());
+        }
+        request = request.header(http::header::RANGE, "bytes=0-0");
+
+        match request
             .send()
             .await
         {
@@ -326,6 +336,11 @@ impl StreamDescriptor {
 /// fields they have; the rest are `None` / empty.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct StreamInfo {
+    /// `#[serde(default)]` so deserializing a redacted `remux.provider_info`
+    /// (see `to_public_json`, which strips this key before it reaches the
+    /// API) doesn't fail — `device_profile.rs`'s `source_stream_info` round-trips
+    /// that JSON back into a `StreamInfo` just to read `filename`.
+    #[serde(default)]
     pub descriptor: StreamDescriptor,
     /// Filename from the provider (e.g. "Movie.2021.1080p.BluRay.mkv").
     /// Used for resolution matching during probe fallback.
@@ -341,6 +356,10 @@ pub struct StreamInfo {
     /// Lowercased service identifier from `streamData.service.id` (e.g. "real-debrid").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_id: Option<String>,
+    /// Whether the upstream service confirmed this stream is cached. Missing
+    /// metadata is not a cache hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_cached: Option<bool>,
     pub seeders: Option<i64>,
     pub size: Option<i64>,
     pub duration: Option<i64>,
@@ -388,6 +407,21 @@ impl StreamInfo {
         matches!(self.descriptor, StreamDescriptor::Torrent { .. })
     }
 
+    /// Redacted view for `remux.provider_info` in API responses. `descriptor`
+    /// carries provider credentials (debrid keys in the URL, IPTV
+    /// username/password, upstream request headers) that must never reach a
+    /// non-admin client — no client reads it, the only consumer is
+    /// `device_profile.rs` reading `filename` back out, which stays. Internal
+    /// persistence (`db::Media.stream_info`) uses `StreamInfo`'s own
+    /// `Serialize` impl directly and keeps `descriptor` intact.
+    pub fn to_public_json(&self) -> Option<serde_json::Value> {
+        let mut value = serde_json::to_value(self).ok()?;
+        if let Some(obj) = value.as_object_mut() {
+            obj.remove("descriptor");
+        }
+        Some(value)
+    }
+
     /// Torrent identity used for RemuxDB lookup and submission.
     ///
     /// A `Torrent` descriptor is authoritative. Any other transport (notably a
@@ -432,13 +466,13 @@ pub trait StreamSource: Send + Sync {
     async fn serve(&self, state: &AppState, headers: &HeaderMap) -> Result<Response>;
 }
 
-static HEAD_CLIENT: std::sync::LazyLock<reqwest::Client> =
+static AVAILABILITY_CLIENT: std::sync::LazyLock<reqwest::Client> =
     std::sync::LazyLock::new(|| {
         reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(3))
             .timeout(std::time::Duration::from_secs(5))
             .build()
-            .expect("failed to build HEAD client")
+            .expect("failed to build availability client")
     });
 
 static STREAM_PROXY_CLIENT: std::sync::LazyLock<reqwest::Client> =

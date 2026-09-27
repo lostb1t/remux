@@ -446,6 +446,11 @@ impl crate::stream::StreamInfo {
             .into_iter()
             .map(|sidecar| crate::addons::SubtitleInfo {
                 id: format!("torrent:{info_hash}:{}", sidecar.file_idx),
+                filename: Some(
+                    sidecar
+                        .path
+                        .clone(),
+                ),
                 url: Some(crate::stream::StreamDescriptor::Torrent {
                     info_hash: info_hash.clone(),
                     file_hint: Some(sidecar.path),
@@ -455,6 +460,8 @@ impl crate::stream::StreamInfo {
                 lang: sidecar.language,
                 is_forced: sidecar.is_forced,
                 is_hi: sidecar.is_hearing_impaired,
+                from_trusted: None,
+                ai_translated: None,
             })
             .collect()
     }

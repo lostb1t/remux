@@ -2,8 +2,9 @@ use anyhow::anyhow;
 use axum::Json;
 
 use super::subtitles::{
-    inject_external_subtitles, inject_sidecar_subtitles, save_sidecar_subtitle_routes,
-    scored_external_subtitles,
+    SubtitleDedupSettings, append_external_subtitles,
+    drop_unsupported_embedded_subtitles_with_external_match, inject_sidecar_subtitles,
+    save_sidecar_subtitle_routes,
 };
 use axum::{
     body::Body,
@@ -64,17 +65,57 @@ pub async fn items_playbackinfo(
     Query(query): Query<api::PlaybackInfoQuery>,
     Json(payload): Json<api::PlaybackInfoQuery>,
 ) -> Result<impl IntoResponse> {
-    // Jellyfin web sends MediaSourceId as query param even for POST; merge query and body
+    // Some clients (e.g. Streamyfin for live TV) send these as query-string
+    // params instead of body fields on this POST endpoint. Jellyfin's own
+    // GetPostedPlaybackInfo merges the same way — query takes precedence,
+    // body is the fallback — so we mirror that here rather than only
+    // covering the handful of fields we happened to notice.
     let mut q = payload;
-    q.media_source_id = q
-        .media_source_id
-        .or(query.media_source_id);
-    q.user_id = q
+    q.user_id = query
         .user_id
-        .or(query.user_id);
-    q.device_profile = q
+        .or(q.user_id);
+    q.max_streaming_bitrate = query
+        .max_streaming_bitrate
+        .or(q.max_streaming_bitrate);
+    q.start_time_ticks = query
+        .start_time_ticks
+        .or(q.start_time_ticks);
+    q.audio_stream_index = query
+        .audio_stream_index
+        .or(q.audio_stream_index);
+    q.subtitle_stream_index = query
+        .subtitle_stream_index
+        .or(q.subtitle_stream_index);
+    q.max_audio_channels = query
+        .max_audio_channels
+        .or(q.max_audio_channels);
+    q.media_source_id = query
+        .media_source_id
+        .or(q.media_source_id);
+    q.live_stream_id = query
+        .live_stream_id
+        .or(q.live_stream_id);
+    q.auto_open_live_stream = query
+        .auto_open_live_stream
+        .or(q.auto_open_live_stream);
+    q.enable_direct_play = query
+        .enable_direct_play
+        .or(q.enable_direct_play);
+    q.enable_direct_stream = query
+        .enable_direct_stream
+        .or(q.enable_direct_stream);
+    q.enable_transcoding = query
+        .enable_transcoding
+        .or(q.enable_transcoding);
+    q.allow_video_stream_copy = query
+        .allow_video_stream_copy
+        .or(q.allow_video_stream_copy);
+    q.allow_audio_stream_copy = query
+        .allow_audio_stream_copy
+        .or(q.allow_audio_stream_copy);
+    q.device_profile = query
         .device_profile
-        .or(query.device_profile);
+        .or(q.device_profile);
     items_playbackinfo_inner(state, session, id, q).await
 }
 
@@ -153,31 +194,49 @@ async fn items_playbackinfo_inner(
 
     trace!(?id, ?q, "items_playbackinfo");
 
-    let device_profile = q
+    let reported_device_profile = q
         .device_profile
         .clone();
 
-    if let Some(profile) = device_profile.clone() {
-        let db = state
-            .ctx
-            .db
-            .clone();
-        let user_id = session
-            .user
-            .id;
-        let device_id = session
+    if let Some(profile) = reported_device_profile.as_ref() {
+        // Compare serialized rather than deriving PartialEq across the whole
+        // DeviceProfile tree, and await the write (not fire-and-forget): a
+        // client's very next request (e.g. an immediate subtitle fetch) reads
+        // this profile back via `parsed_device_profile`, so it must be
+        // committed before this response returns.
+        let unchanged = session
             .device
-            .id
-            .clone();
-        tokio::spawn(async move {
-            if let Err(err) =
-                auth::Device::save_device_profile(&db, user_id, &device_id, &profile)
-                    .await
+            .parsed_device_profile()
+            .and_then(|stored| serde_json::to_string(&stored).ok())
+            == serde_json::to_string(profile).ok();
+        if !unchanged {
+            if let Err(err) = auth::Device::save_device_profile(
+                &state
+                    .ctx
+                    .db,
+                session
+                    .user
+                    .id,
+                &session
+                    .device
+                    .id,
+                profile,
+            )
+            .await
             {
-                warn!("failed to persist device profile for {device_id}: {err}");
+                warn!(
+                    "failed to persist device profile for {}: {err}",
+                    session
+                        .device
+                        .id
+                );
             }
-        });
+        }
     }
+    let device_profile = crate::jellyfin_client::merge_device_profile_subtitles(
+        &session.device,
+        reported_device_profile,
+    );
     // Fall back to the last DeviceProfile this device sent for MediaSources
     // sorting only — transcode decisions above still use only what this
     // specific request sent, so a stale cached profile can't misroute a
@@ -185,9 +244,12 @@ async fn items_playbackinfo_inner(
     let sort_device_profile = device_profile
         .clone()
         .or_else(|| {
-            session
-                .device
-                .parsed_device_profile()
+            crate::jellyfin_client::merge_device_profile_subtitles(
+                &session.device,
+                session
+                    .device
+                    .parsed_device_profile(),
+            )
         });
 
     let probe_cfg = db::Settings::get_config_or_default(
@@ -196,6 +258,7 @@ async fn items_playbackinfo_inner(
             .db,
     )
     .await;
+    let subtitle_dedup = SubtitleDedupSettings::from_config(&probe_cfg);
     let show_ungrouped = probe_cfg
         .stream_groups_show_ungrouped
         .unwrap_or(true);
@@ -248,32 +311,6 @@ async fn items_playbackinfo_inner(
     let selected_source_language = media
         .original_language
         .clone();
-    service
-        .load(media)
-        .await?;
-    // Load the top-level Movie/Episode for subtitle lookup.
-    // `id` is always the movie/episode UUID; `media_source_id` may point to a
-    // child Source, so we always resolve via `id` to get the IMDB fields.
-    let mut subtitle_media = db::Media::get_by_id(
-        &state
-            .ctx
-            .db,
-        &id,
-    )
-    .await
-    .ok()
-    .flatten();
-    let item_runtime_seconds = subtitle_media
-        .as_ref()
-        .and_then(|item| item.runtime);
-    let original_language =
-        playback_original_language(subtitle_media.as_ref(), selected_source_language);
-
-    let is_track = is_track_item
-        || subtitle_media
-            .as_ref()
-            .map_or(false, |m| m.is_track());
-    let has_lyrics = is_track;
 
     let max_bitrate: Option<i64> = match (
         q.max_streaming_bitrate,
@@ -305,9 +342,69 @@ async fn items_playbackinfo_inner(
         .ctx
         .config
         .port;
-    let probed = service
-        .probe_candidates()
-        .await?;
+    // When no explicit media_source_id was requested, `media` (just resolved
+    // above) already IS the top-level item this branch would otherwise
+    // re-fetch by `id` — clone it instead of a second identical DB round-trip.
+    let subtitle_media_hint = media_source_id
+        .is_none()
+        .then(|| media.clone());
+    let (probed, (subtitle_media, external_subtitles)) = tokio::join!(
+        async {
+            service
+                .load(media)
+                .await?;
+            service
+                .probe_candidates()
+                .await
+        },
+        async {
+            // `id` is the top-level Movie/Episode UUID even when the request
+            // targets a child source. Fetch subtitle addons while stream addons
+            // load and their candidates are probed.
+            let mut subtitle_media = match subtitle_media_hint {
+                Some(hint) => Some(hint),
+                None => db::Media::get_by_id(
+                    &state
+                        .ctx
+                        .db,
+                    &id,
+                )
+                .await
+                .ok()
+                .flatten(),
+            };
+            let external_subtitles = if let Some(ref mut sub_media) = subtitle_media {
+                state
+                    .ctx
+                    .addons
+                    .fetch_subtitles(
+                        sub_media,
+                        &state.ctx,
+                        false,
+                        Some(
+                            session
+                                .user
+                                .id,
+                        ),
+                    )
+                    .await
+            } else {
+                Vec::new()
+            };
+            (subtitle_media, external_subtitles)
+        }
+    );
+    let probed = probed?;
+    let item_runtime_seconds = subtitle_media
+        .as_ref()
+        .and_then(|item| item.runtime);
+    let original_language =
+        playback_original_language(subtitle_media.as_ref(), selected_source_language);
+    let is_track = is_track_item
+        || subtitle_media
+            .as_ref()
+            .is_some_and(|item| item.is_track());
+    let has_lyrics = is_track;
     service.save_probe_fallback(&play_session_id, &probed);
     let specific_stream_requested = probed.specific_requested;
     let mut media_sources = Vec::with_capacity(
@@ -398,6 +495,21 @@ async fn items_playbackinfo_inner(
                             })
                             .unwrap_or(true)
                 });
+        }
+
+        // Independent of subtitle_mode: an embedded subtitle that won't be
+        // Embed delivery anyway (slow on-demand HTTP extraction to serve it)
+        // gets dropped when a confidently-matching addon external already
+        // covers it — no reason to offer the slow path when a fast one
+        // exists. Must also run before resolve_default_streams below.
+        // Gated on the dedup setting: with it off, the user asked to see
+        // every subtitle option, embedded ones included.
+        if subtitle_dedup.enabled {
+            drop_unsupported_embedded_subtitles_with_external_match(
+                &mut source,
+                &external_subtitles,
+                device_profile.as_ref(),
+            );
         }
 
         // Pre-extract all embedded text subtitle streams in the background, in one
@@ -541,30 +653,23 @@ async fn items_playbackinfo_inner(
         media_sources.push(source);
     }
 
-    // Inject external subtitles from AIO (cache-backed)
-    if let Some(ref mut sub_media) = subtitle_media {
-        let sub_langs = probe_cfg
+    // Probe and subtitle lookup ran concurrently. Append only after the real
+    // stream indexes are known.
+    append_external_subtitles(
+        &mut media_sources,
+        &external_subtitles,
+        &probe_cfg
             .subtitle_languages
             .clone()
-            .unwrap_or_default();
-        inject_external_subtitles(
-            &state.ctx,
-            sub_media,
-            &mut media_sources,
-            id,
-            session
-                .device
-                .access_token
-                .expose(),
-            sub_langs,
-            Some(
-                session
-                    .user
-                    .id,
-            ),
-        )
-        .await;
-    }
+            .unwrap_or_default(),
+        sort_device_profile.as_ref(),
+        id,
+        session
+            .device
+            .access_token
+            .expose(),
+        subtitle_dedup,
+    );
 
     // Re-resolve defaults after external subtitles were injected so language
     // matching can also pick addon subtitles (same request context as the
@@ -594,17 +699,33 @@ async fn items_playbackinfo_inner(
             .iter()
             .all(|g| g.is_none())
     {
+        // Same combination as `max_bitrate` above, but derived from
+        // `sort_device_profile` (fresh-with-persisted-fallback) so this
+        // ranking pass's own bitrate cap is consistent with the resolution/
+        // codec judgments it's already making from that same profile.
+        let sort_max_bitrate: Option<i64> = match (
+            q.max_streaming_bitrate,
+            sort_device_profile
+                .as_ref()
+                .and_then(|p| p.max_streaming_bitrate),
+        ) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         let ranking = SourceRankingContext {
             mode: sort_mode,
             device_profile: sort_device_profile.as_ref(),
             subtitle_mode,
             explicit_subtitle_index: q.subtitle_stream_index,
+            max_bitrate: sort_max_bitrate,
         };
         let mut paired: Vec<_> = media_sources
             .drain(..)
             .zip(sidecar_subtitle_routes.drain(..))
             .collect();
-        paired.sort_by_cached_key(|(source, _)| std::cmp::Reverse(ranking.key(source)));
+        paired.sort_by_cached_key(|(source, _)| {
+            std::cmp::Reverse(ranking.sort_key(source))
+        });
         for (source, route) in paired {
             media_sources.push(source);
             sidecar_subtitle_routes.push(route);
@@ -804,6 +925,28 @@ pub async fn items_file(
     Ok(response)
 }
 
+/// These routes have no session extractor — clients like Infuse hit them
+/// without a `PlaySessionId`/`DeviceId`, and must still work with no token at
+/// all. Resolve the caller's user_id best-effort from whatever `ApiKey`/
+/// `Token` is present (never rejecting the request) so per-user cache
+/// scoping (e.g. `recent_probe_fallback`) still works when a valid token
+/// happens to be there.
+async fn best_effort_user_id(
+    state: &AppState,
+    jfauth: &auth::JellyfinAuthHeader,
+) -> Option<Uuid> {
+    let token = jfauth
+        .token
+        .as_deref()?;
+    auth::resolve_user_id_from_token(
+        &state
+            .ctx
+            .db,
+        token,
+    )
+    .await
+}
+
 /// # Static
 ///
 /// If the `static_` query parameter is set to `true`, the response will be a static
@@ -812,16 +955,19 @@ pub async fn items_file(
 pub async fn audio_stream(
     headers: headers::HeaderMap,
     State(state): State<AppState>,
+    jfauth: auth::JellyfinAuthHeader,
     Path(id): Path<Uuid>,
     Query(q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
-    videos_stream_inner(headers, state, None, id, q).await
+    let user_id = best_effort_user_id(&state, &jfauth).await;
+    videos_stream_inner(headers, state, user_id, id, q).await
 }
 
 #[get("/audio/{id}/stream.{container}")]
 pub async fn audio_stream_by_container(
     headers: headers::HeaderMap,
     State(state): State<AppState>,
+    jfauth: auth::JellyfinAuthHeader,
     Path((id, container)): Path<(Uuid, String)>,
     Query(mut q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
@@ -830,23 +976,27 @@ pub async fn audio_stream_by_container(
     {
         q.container = Some(container);
     }
-    videos_stream_inner(headers, state, None, id, q).await
+    let user_id = best_effort_user_id(&state, &jfauth).await;
+    videos_stream_inner(headers, state, user_id, id, q).await
 }
 
 #[get("/videos/{id}/stream")]
 pub async fn videos_stream(
     headers: headers::HeaderMap,
     State(state): State<AppState>,
+    jfauth: auth::JellyfinAuthHeader,
     Path(id): Path<Uuid>,
     Query(q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
-    videos_stream_inner(headers, state, None, id, q).await
+    let user_id = best_effort_user_id(&state, &jfauth).await;
+    videos_stream_inner(headers, state, user_id, id, q).await
 }
 
 #[get("/videos/{id}/stream.{container}")]
 pub async fn videos_stream_by_container(
     headers: headers::HeaderMap,
     State(state): State<AppState>,
+    jfauth: auth::JellyfinAuthHeader,
     Path((id, container)): Path<(Uuid, String)>,
     Query(mut q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
@@ -855,7 +1005,8 @@ pub async fn videos_stream_by_container(
     {
         q.container = Some(container);
     }
-    videos_stream_inner(headers, state, None, id, q).await
+    let user_id = best_effort_user_id(&state, &jfauth).await;
+    videos_stream_inner(headers, state, user_id, id, q).await
 }
 
 fn ext_from_descriptor(descriptor: &crate::stream::StreamDescriptor) -> String {
@@ -926,12 +1077,9 @@ async fn videos_stream_inner(
     id: Uuid,
     q: api::VideoStreamQuery,
 ) -> Result<impl IntoResponse> {
-    // Auto-play and stream-group requests name an id the client echoes back
-    // (the item id, or the group id), not a stream. If PlaybackInfo's probe
-    // fell over to another stream for that id in this play session, follow
-    // it; the lookup below would otherwise land on the first candidate — the
-    // one that just failed to probe. A specific stream named by the client
-    // has no such record and stands.
+    // Follow the stream that PlaybackInfo actually probed. A client may echo
+    // the item ID, group ID, or original stream ID even after probe fallback;
+    // resolving that ID directly would serve the rejected stream instead.
     let probe_fallback = q
         .play_session_id
         .as_deref()
@@ -939,6 +1087,15 @@ async fn videos_stream_inner(
             StreamService::probe_fallback_for(
                 &state.ctx,
                 psid,
+                q.media_source_id
+                    .unwrap_or(id),
+            )
+        })
+        .or_else(|| {
+            StreamService::recent_probe_fallback_for(
+                &state.ctx,
+                user_id,
+                id,
                 q.media_source_id
                     .unwrap_or(id),
             )
@@ -1510,6 +1667,98 @@ mod tests {
         tokio::fs::remove_file(fixture)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn direct_stream_without_play_session_uses_probe_fallback() {
+        use crate::{
+            integration_test::seed_movie,
+            services::stream_service::{
+                ProbeResult, ProbedStreams, StreamService, StreamServiceConfig,
+            },
+            stream::StreamDescriptor,
+        };
+
+        let (server, guard, token) = authenticated_server().await;
+        let ctx = &guard.0;
+        let owner = seed_movie(ctx).await;
+        let temp = tempfile::tempdir().unwrap();
+        let rejected_path = temp
+            .path()
+            .join("rejected.mkv");
+        let fallback_path = temp
+            .path()
+            .join("fallback.mkv");
+        tokio::fs::write(&rejected_path, b"wrong stream")
+            .await
+            .unwrap();
+        tokio::fs::write(&fallback_path, b"fallback stream")
+            .await
+            .unwrap();
+
+        let mut rejected = insert_test_source(ctx).await;
+        rejected
+            .stream_info
+            .as_mut()
+            .unwrap()
+            .descriptor = StreamDescriptor::Local(rejected_path);
+        rejected
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        let mut fallback = insert_test_source(ctx).await;
+        fallback
+            .stream_info
+            .as_mut()
+            .unwrap()
+            .descriptor = StreamDescriptor::Local(fallback_path);
+        fallback
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        // The recent-fallback cache is scoped by user; save it under the same
+        // user the request below authenticates as, exactly like PlaybackInfo
+        // (which always has a real session) would.
+        let requester_id =
+            crate::db::auth::Device::get_by_access_token(&ctx.db, &token)
+                .await
+                .unwrap()
+                .unwrap()
+                .user_id;
+        let service = StreamService::new(StreamServiceConfig {
+            ctx: ctx.clone(),
+            item_id: owner.id,
+            requested_id: Some(rejected.id),
+            show_ungrouped: true,
+            stream_filter: None,
+            user_id: Some(requester_id),
+        });
+        service.save_probe_fallback(
+            "playbackinfo-session",
+            &ProbedStreams {
+                results: vec![ProbeResult {
+                    source: super::api::MediaSourceInfo::from(rejected.clone()),
+                    stream: rejected.clone(),
+                    effective_stream: fallback.clone(),
+                }],
+                specific_requested: true,
+            },
+        );
+
+        // Infuse omits PlaySessionId and DeviceId, and sends the rejected ID.
+        let response = server
+            .get(&format!(
+                "/videos/{}/stream?MediaSourceId={}&Static=true",
+                owner.id, rejected.id
+            ))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+            .await;
+        response.assert_status_ok();
+        assert_eq!(response.text(), "fallback stream");
     }
 
     #[test]
@@ -2545,6 +2794,48 @@ mod tests {
         assert!(
             url.contains("MaxStreamingBitrate=4000000"),
             "effective bitrate should be 4 Mbps (minimum): {}",
+            url
+        );
+    }
+
+    /// Streamyfin's live TV playback sends `maxStreamingBitrate` (and other
+    /// fields) as query-string params on the POST, with only `deviceProfile`
+    /// in the body — the same split Jellyfin's own obsolete `[FromQuery]`
+    /// params support on this endpoint. The device profile alone declares an
+    /// effectively unbounded bitrate (Streamyfin's real profile does this),
+    /// so the query param must not be silently dropped.
+    #[tokio::test]
+    async fn test_playbackinfo_query_param_bitrate_applies_for_live_tv() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media =
+            insert_test_source_of_kind(&guard.0, crate::db::MediaKind::TvChannel).await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params([("maxStreamingBitrate", "2000000")])
+            .json(&json!({
+                "DeviceProfile": {
+                    "MaxStreamingBitrate": 999_999_999i64,
+                    "DirectPlayProfiles": [],
+                    "TranscodingProfiles": [],
+                    "CodecProfiles": []
+                }
+            }))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let url = body["MediaSources"][0]["TranscodingUrl"]
+            .as_str()
+            .expect("TranscodingUrl should be present");
+        assert!(
+            url.contains("MaxStreamingBitrate=2000000"),
+            "query-param bitrate must not be dropped in favour of the profile's: {}",
             url
         );
     }

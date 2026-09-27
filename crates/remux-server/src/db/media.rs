@@ -4209,17 +4209,28 @@ impl Media {
                     // Direct relation (album/artist/movie → genre), plus a
                     // fallback for tracks: music genres are persisted at
                     // album level only, so inherit them from the parent album.
-                    qb.push(" AND (EXISTS (SELECT 1 FROM media_relations mr WHERE mr.left_media_id = media.id AND mr.right_media_id IN (");
+                    //
+                    // Driven from media_relations (seeking
+                    // idx_media_relations_right_left(right_media_id, left_media_id))
+                    // rather than a correlated EXISTS per `media` row: the EXISTS
+                    // form gives the planner nothing to seek on media itself, so
+                    // it degenerates into a full scan of every row in `media`
+                    // (every kind, not just genre-taggable content) re-running
+                    // the relation lookup for each one — confirmed via slow-query
+                    // logging against a real library (some single evaluations
+                    // took 18s+, and this filter is what Moonfin's per-genre
+                    // "shelf" requests hit, fired ~30+ at once).
+                    qb.push(" AND (media.id IN (SELECT mr.left_media_id FROM media_relations mr WHERE mr.right_media_id IN (");
                     let mut sep = qb.separated(", ");
                     for id in genre_ids {
                         sep.push_bind(id);
                     }
-                    qb.push(")) OR (media.kind = 'track' AND EXISTS (SELECT 1 FROM media_relations mr2 JOIN media p ON p.id = mr2.left_media_id WHERE mr2.right_media_id IN (");
+                    qb.push(")) OR (media.kind = 'track' AND media.parent_id IN (SELECT mr2.left_media_id FROM media_relations mr2 JOIN media p ON p.id = mr2.left_media_id WHERE mr2.right_media_id IN (");
                     let mut sep = qb.separated(", ");
                     for id in genre_ids {
                         sep.push_bind(id);
                     }
-                    qb.push(") AND p.kind = 'album' AND p.id = media.parent_id)))");
+                    qb.push(") AND p.kind = 'album')))");
                 }
             }
 
@@ -5606,6 +5617,90 @@ impl Media {
                                     .series_count
                                     .unwrap_or(0),
                         );
+                    }
+                }
+            }
+
+            // For genres: count movies and series tagged with them
+            let genre_ids: Vec<Uuid> = records
+                .iter()
+                .filter(|m| m.kind == MediaKind::Genre)
+                .map(|m| m.id)
+                .collect();
+            if !genre_ids.is_empty() {
+                let movie_counts = count_related_items_by_kind(
+                    db,
+                    filter,
+                    is_manual_collection,
+                    use_recursive,
+                    "movie",
+                    &genre_ids,
+                )
+                .await;
+                let series_counts = count_related_items_by_kind(
+                    db,
+                    filter,
+                    is_manual_collection,
+                    use_recursive,
+                    "series",
+                    &genre_ids,
+                )
+                .await;
+                for media in &mut records {
+                    if media.kind == MediaKind::Genre {
+                        let movies = movie_counts
+                            .get(&media.id)
+                            .copied()
+                            .unwrap_or(0);
+                        let series = series_counts
+                            .get(&media.id)
+                            .copied()
+                            .unwrap_or(0);
+                        media.movie_count = Some(movies);
+                        media.series_count = Some(series);
+                        media.child_count = Some(movies + series);
+                    }
+                }
+            }
+
+            // For music genres: count tracks and albums tagged with them
+            let music_genre_ids: Vec<Uuid> = records
+                .iter()
+                .filter(|m| m.kind == MediaKind::MusicGenre)
+                .map(|m| m.id)
+                .collect();
+            if !music_genre_ids.is_empty() {
+                let song_counts = count_related_items_by_kind(
+                    db,
+                    filter,
+                    is_manual_collection,
+                    use_recursive,
+                    "track",
+                    &music_genre_ids,
+                )
+                .await;
+                let album_counts = count_related_items_by_kind(
+                    db,
+                    filter,
+                    is_manual_collection,
+                    use_recursive,
+                    "album",
+                    &music_genre_ids,
+                )
+                .await;
+                for media in &mut records {
+                    if media.kind == MediaKind::MusicGenre {
+                        let songs = song_counts
+                            .get(&media.id)
+                            .copied()
+                            .unwrap_or(0);
+                        let albums = album_counts
+                            .get(&media.id)
+                            .copied()
+                            .unwrap_or(0);
+                        media.song_count = Some(songs);
+                        media.album_count = Some(albums);
+                        media.child_count = Some(songs + albums);
                     }
                 }
             }
@@ -7167,6 +7262,7 @@ impl From<sdks::stremio::Stream> for Media {
             torrent_info_hash: None,
             torrent_file_idx: None,
             service_id: None,
+            service_cached: source.cached_status(),
         });
 
         // Merge name + description: AIOStreams puts the provider/addon name in `name`
@@ -7906,6 +8002,128 @@ fn collection_visibility_filters(
     (deny, allow)
 }
 
+/// Prepends the `WITH RECURSIVE subtree` CTE `push_genre_count_scope` needs
+/// for a recursive (folder/library) parent — must run first, since a CTE has
+/// to lead the statement. No-op otherwise.
+fn push_genre_count_recursive_prefix<'a>(
+    qb: &mut sqlx::QueryBuilder<'a, sqlx::Sqlite>,
+    filter: &'a MediaFilter,
+    use_recursive: bool,
+) {
+    if use_recursive {
+        if let Some(parent_id) = &filter.parent_id {
+            qb.push(
+                "WITH RECURSIVE subtree AS (SELECT id FROM media WHERE parent_id = ",
+            );
+            qb.push_bind(parent_id);
+            qb.push(
+                " UNION ALL SELECT med.id FROM media med \
+                 INNER JOIN subtree s ON med.parent_id = s.id) ",
+            );
+        }
+    }
+}
+
+/// Restricts a genre-related-content count query's counted item (aliased
+/// `m`) to the same parent (recursive subtree or manual-collection
+/// membership), smart-collection filter, and user policy that already
+/// determine which genres are returned in the first place (see
+/// `is_genre_scope_query` in `get_by_filter_inner`) — otherwise a genre
+/// scoped to one collection/library reports counts across the whole
+/// database. Call `push_genre_count_recursive_prefix` first when
+/// `use_recursive` is set.
+fn push_genre_count_scope<'a>(
+    qb: &mut sqlx::QueryBuilder<'a, sqlx::Sqlite>,
+    filter: &'a MediaFilter,
+    is_manual_collection: bool,
+    use_recursive: bool,
+) {
+    if use_recursive
+        && filter
+            .parent_id
+            .is_some()
+    {
+        qb.push(" AND m.id IN (SELECT id FROM subtree)");
+    } else if is_manual_collection {
+        if let Some(collection_id) = &filter.parent_id {
+            qb.push(
+                " AND m.id IN (SELECT right_media_id FROM media_relations \
+                 WHERE left_media_id = ",
+            );
+            qb.push_bind(collection_id);
+            qb.push(" AND role = 'collection')");
+        }
+    }
+    if let Some(rules) = &filter.filter_rules {
+        qb.push(" AND m.id IN (SELECT media.id FROM media WHERE 1=1");
+        apply_filter_rules(
+            qb,
+            rules,
+            filter
+                .user_id
+                .as_ref(),
+            false,
+        );
+        qb.push(")");
+    }
+    if let Some(pf) = &filter.policy_filter {
+        qb.push(" AND m.id IN (SELECT media.id FROM media WHERE 1=1");
+        apply_filter_rules(
+            qb,
+            pf,
+            filter
+                .user_id
+                .as_ref(),
+            false,
+        );
+        qb.push(")");
+    }
+}
+
+/// Counts distinct `item_kind` content items related (via `media_relations`)
+/// to each id in `ids`, applying the same scope as `push_genre_count_scope`.
+/// Used to fill in `movie_count`/`series_count` (Genre) and
+/// `song_count`/`album_count` (MusicGenre) in `get_by_filter_inner`. An id
+/// with no matching relation simply isn't in the returned map — callers
+/// default that to 0.
+async fn count_related_items_by_kind(
+    db: &SqlitePool,
+    filter: &MediaFilter,
+    is_manual_collection: bool,
+    use_recursive: bool,
+    item_kind: &str,
+    ids: &[Uuid],
+) -> HashMap<Uuid, i64> {
+    let mut qb = sqlx::QueryBuilder::new("");
+    push_genre_count_recursive_prefix(&mut qb, filter, use_recursive);
+    qb.push(
+        "SELECT mr.right_media_id, COUNT(DISTINCT mr.left_media_id) \
+         FROM media_relations mr \
+         JOIN media m ON m.id = mr.left_media_id AND m.kind = ",
+    );
+    qb.push_bind(item_kind);
+    qb.push(" WHERE mr.right_media_id IN (");
+    let mut sep = qb.separated(", ");
+    for id in ids {
+        sep.push_bind(id);
+    }
+    qb.push(")");
+    push_genre_count_scope(&mut qb, filter, is_manual_collection, use_recursive);
+    qb.push(" GROUP BY mr.right_media_id");
+
+    let mut map = HashMap::new();
+    if let Ok(rows) = qb
+        .build()
+        .fetch_all(db)
+        .await
+    {
+        for row in rows {
+            map.insert(row.get(0), row.get(1));
+        }
+    }
+    map
+}
+
 /// Append WHERE clauses for a set of `FilterRule`s onto a query builder.
 ///
 /// Called once for both the count and records builders inside `get_by_filter`.
@@ -8502,6 +8720,53 @@ pub(crate) fn build_genre_relations_from_names(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stremio_stream_conversion_preserves_cache_status() {
+        for (service, expected) in [
+            (
+                serde_json::json!({"id": "torbox", "cached": true}),
+                Some(true),
+            ),
+            (
+                serde_json::json!({"id": "torbox", "cached": false}),
+                Some(false),
+            ),
+            (serde_json::json!({"id": "torbox"}), None),
+        ] {
+            let source: sdks::stremio::Stream =
+                serde_json::from_value(serde_json::json!({
+                    "url": "https://example.com/movie.mp4",
+                    "streamData": {"service": service}
+                }))
+                .unwrap();
+            let media = Media::from(source);
+            assert_eq!(
+                media
+                    .stream_info
+                    .unwrap()
+                    .service_cached,
+                expected
+            );
+        }
+
+        for (cached, expected) in [(true, Some(true)), (false, Some(false))] {
+            let source: sdks::stremio::Stream =
+                serde_json::from_value(serde_json::json!({
+                    "url": "https://example.com/movie.mp4",
+                    "behaviorHints": {"cached": cached}
+                }))
+                .unwrap();
+            let media = Media::from(source);
+            assert_eq!(
+                media
+                    .stream_info
+                    .unwrap()
+                    .service_cached,
+                expected
+            );
+        }
+    }
 
     #[test]
     fn movie_and_series_accept_known_external_ids() {
@@ -11415,5 +11680,184 @@ mod dedup_tests {
 
         let found = Media::find_by_external_ids(&ctx.db, &MediaKind::Album, &ext).await;
         assert_eq!(found, Some(album.id));
+    }
+}
+
+#[cfg(test)]
+mod genre_ids_filter_tests {
+    use super::*;
+    use crate::integration_test::new_test_server;
+
+    /// Regression test for the `genre_ids` filter rewrite: it used to be a
+    /// correlated `EXISTS` re-evaluated per row of `media` (18s+ on a real
+    /// library, since it gives the planner nothing on `media` itself to
+    /// seek — see issue investigation), now an `id IN (SELECT ... FROM
+    /// media_relations WHERE right_media_id IN (...))` semi-join that can
+    /// seek `idx_media_relations_right_left`. Must keep matching exactly
+    /// what it matched before: direct genre relations, plus tracks
+    /// inheriting their parent album's genre (music genres are only ever
+    /// persisted at album level, not per-track).
+    #[tokio::test]
+    async fn genre_ids_matches_direct_relations_and_track_album_fallback() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let genre_pairs = build_genre_relations_from_names(
+            Uuid::nil(),
+            &["Action".to_string()],
+            MediaKind::Genre,
+        );
+        let genre = genre_pairs[0]
+            .1
+            .clone();
+        Media::upsert(&ctx.db, &[genre.clone()])
+            .await
+            .unwrap();
+
+        let mut tagged_movie = Media {
+            id: Uuid::new_v4(),
+            title: "Tagged Movie".into(),
+            kind: MediaKind::Movie,
+            external_ids: ExternalIds {
+                imdb: NonEmptyString::try_new("tt3000001").ok(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        tagged_movie
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        let mut untagged_movie = Media {
+            id: Uuid::new_v4(),
+            title: "Untagged Movie".into(),
+            kind: MediaKind::Movie,
+            external_ids: ExternalIds {
+                imdb: NonEmptyString::try_new("tt3000002").ok(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        untagged_movie
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        MediaRelation::upsert(
+            &ctx.db,
+            &[MediaRelation {
+                left_media_id: tagged_movie.id,
+                right_media_id: genre.id,
+                ..Default::default()
+            }],
+        )
+        .await
+        .unwrap();
+
+        let mut tagged_album = Media {
+            id: Uuid::new_v4(),
+            title: "Tagged Album".into(),
+            kind: MediaKind::Album,
+            external_ids: ExternalIds {
+                deezer_album: Some(3000003),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        tagged_album
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        let mut untagged_album = Media {
+            id: Uuid::new_v4(),
+            title: "Untagged Album".into(),
+            kind: MediaKind::Album,
+            external_ids: ExternalIds {
+                deezer_album: Some(3000004),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        untagged_album
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        MediaRelation::upsert(
+            &ctx.db,
+            &[MediaRelation {
+                left_media_id: tagged_album.id,
+                right_media_id: genre.id,
+                ..Default::default()
+            }],
+        )
+        .await
+        .unwrap();
+
+        let mut track_in_tagged_album = Media {
+            id: Uuid::new_v4(),
+            title: "Track In Tagged Album".into(),
+            kind: MediaKind::Track,
+            parent_id: Some(tagged_album.id),
+            external_ids: ExternalIds {
+                deezer_track: Some(3000005),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        track_in_tagged_album
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        let mut track_in_untagged_album = Media {
+            id: Uuid::new_v4(),
+            title: "Track In Untagged Album".into(),
+            kind: MediaKind::Track,
+            parent_id: Some(untagged_album.id),
+            external_ids: ExternalIds {
+                deezer_track: Some(3000006),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        track_in_untagged_album
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let result = Media::get_by_filter(
+            &ctx.db,
+            &MediaFilter {
+                genre_ids: Some(vec![genre.id]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let names: std::collections::HashSet<String> = result
+            .records
+            .iter()
+            .map(|m| {
+                m.title
+                    .clone()
+            })
+            .collect();
+
+        assert!(
+            names.contains("Tagged Movie"),
+            "direct movie relation should match: {names:?}"
+        );
+        assert!(
+            !names.contains("Untagged Movie"),
+            "unrelated movie should not match: {names:?}"
+        );
+        assert!(
+            names.contains("Track In Tagged Album"),
+            "track should inherit its album's genre: {names:?}"
+        );
+        assert!(
+            !names.contains("Track In Untagged Album"),
+            "track in an unrelated album should not match: {names:?}"
+        );
     }
 }

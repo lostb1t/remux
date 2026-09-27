@@ -383,6 +383,8 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
     let mut enable_audio_transcoding = use_signal(|| true);
     let mut enable_remuxing = use_signal(|| true);
     let mut subtitle_mode = use_signal(|| "Burn".to_string());
+    let mut deduplicate_subtitle_tracks = use_signal(|| true);
+    let mut max_external_subtitles_per_language = use_signal(|| 1_i64);
     let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
     let mut min_resume_pct = use_signal(|| 5_i64);
     let mut max_resume_pct = use_signal(|| 90_i64);
@@ -411,6 +413,14 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                 min_resume_duration_seconds.set(
                     cfg.min_resume_duration_seconds
                         .unwrap_or(90),
+                );
+                deduplicate_subtitle_tracks.set(
+                    cfg.deduplicate_subtitle_tracks
+                        .unwrap_or(true),
+                );
+                max_external_subtitles_per_language.set(
+                    cfg.max_external_subtitles_per_language
+                        .unwrap_or(1),
                 );
                 base_cfg.set(Some(cfg));
             }
@@ -563,6 +573,10 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
         server_cfg.min_resume_pct = Some(min_pct);
         server_cfg.max_resume_pct = Some(max_pct);
         server_cfg.min_resume_duration_seconds = Some(min_dur);
+        server_cfg.deduplicate_subtitle_tracks =
+            Some(*deduplicate_subtitle_tracks.peek());
+        server_cfg.max_external_subtitles_per_language =
+            Some(*max_external_subtitles_per_language.peek());
 
         saving.set(true);
         error.set(None);
@@ -627,6 +641,36 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                                 option { value: "Burn", "Burn into video (default)" }
                                 option { value: "Extract", "Extract and deliver separately" }
                                 option { value: "Strip", "Strip (remove, no transcoding)" }
+                            }
+                        }
+
+                        div { class: "field",
+                            ToggleRow {
+                                label: "Deduplicate Subtitle Tracks",
+                                description: "When a language has both an embedded and an addon-external subtitle, show only the one that actually plays without a slow re-encode/extraction. Turn off to see every subtitle option, even redundant ones.",
+                                checked: *deduplicate_subtitle_tracks.read(),
+                                on_change: move |v| deduplicate_subtitle_tracks.set(v),
+                            }
+                        }
+
+                        if !*deduplicate_subtitle_tracks.read() {
+                            div { class: "field",
+                                label { class: "field-label", r#for: "pb-max-external-subs", "Max External Subtitles Per Language" }
+                                input {
+                                    id: "pb-max-external-subs",
+                                    r#type: "number",
+                                    class: "field-input",
+                                    min: "0",
+                                    value: "{max_external_subtitles_per_language}",
+                                    oninput: move |e| {
+                                        if let Ok(n) = e.value().parse::<i64>() {
+                                            max_external_subtitles_per_language.set(n);
+                                        }
+                                    },
+                                }
+                                p { class: "field-hint",
+                                    "Caps how many addon-external subtitle candidates are added per language when deduplication is off. Embedded tracks are never capped by this. Default: 1."
+                                }
                             }
                         }
 
@@ -751,7 +795,7 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                             label { class: "field-label", "HDR Tone Mapping" }
                             div { class: "field-hint", "Convert HDR content to SDR using tone mapping. Without tone mapping, colour metadata is rewritten so clients treat the stream as SDR (may look washed out on some content)." }
                             ToggleRow {
-                                label: "Software tone mapping (tonemapx, CPU)",
+                                label: "Tone mapping (OpenCL on the GPU with Intel QSV or VAAPI when available, otherwise tonemapx on the CPU)",
                                 checked: *enable_tonemapping.read(),
                                 on_change: move |v| enable_tonemapping.set(v),
                             }
@@ -1890,7 +1934,13 @@ pub fn RemuxdbSettingsCard(app_state: AppState) -> Element {
             } else {
                 form { onsubmit: on_submit, style: "display:flex;flex-direction:column;gap:14px",
                     p { style: "font-size:.8rem;color:var(--text-secondary);line-height:1.5;margin:0",
-                        "RemuxDB is a comprehensive media metadata database for torrents. Instead of relying on file names, it probes the actual files to build accurate stream information."
+                        "Remux DB is an attempt to build a comprehensive media information database for torrents and NZBs by probing the actual media files rather than relying solely on filenames."
+                    }
+                    p { style: "font-size:.8rem;color:var(--text-secondary);line-height:1.5;margin:0",
+                        "This means detailed media information is available before a stream is selected or downloaded. Jellyfin clients can, for example, display available audio and subtitle tracks ahead of time."
+                    }
+                    p { style: "font-size:.8rem;color:var(--text-secondary);line-height:1.5;margin:0",
+                        "Having this information upfront also enables smarter stream selection. Because the characteristics of each release, such as codecs, resolution, audio tracks, languages, and subtitles are already known, Remux can automatically select streams that best match a user\u{2019}s preferences."
                     }
                     p { style: "font-size:.8rem;color:var(--text-secondary);line-height:1.5;margin:0",
                         "Want to help populate the DB faster? You can run a worker! Join Discord for more info."
