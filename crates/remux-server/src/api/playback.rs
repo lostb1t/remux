@@ -743,6 +743,9 @@ async fn items_playbackinfo_inner(
     // When no specific stream was requested (initial load, or media_source_id == item_id),
     // override source[0].Id to equal the item ID — clients expect this for auto-play.
     // Group and specific-stream requests keep their own UUIDs (specific_stream_requested = true).
+    let original_first_source_id = media_sources
+        .first()
+        .map(|source| source.id);
     if !specific_stream_requested && !media_sources.is_empty() {
         media_sources[0].id = id;
         media_sources[0].e_tag = id;
@@ -841,6 +844,25 @@ async fn items_playbackinfo_inner(
     } else {
         None
     };
+
+    if session
+        .device
+        .is_4k_capable
+        != Some(true)
+    {
+        crate::services::four_k_capability::remember_sources(
+            &state.ctx,
+            session
+                .user
+                .id,
+            &session
+                .device
+                .id,
+            &play_session_id,
+            &media_sources,
+            original_first_source_id,
+        );
+    }
 
     let info = api::PlaybackInfoResponse {
         media_sources,

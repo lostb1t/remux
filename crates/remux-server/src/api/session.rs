@@ -24,7 +24,8 @@ use crate::{
     playback_session,
     services::{self, MediaResolveService},
     signals::{
-        Event, PlaybackContext, RemoteCommandInfo, RemotePlayInfo, RemotePlaystateInfo,
+        Event, PlaybackContext, PlaybackPosition, RemoteCommandInfo, RemotePlayInfo,
+        RemotePlaystateInfo,
     },
 };
 
@@ -197,11 +198,48 @@ pub async fn report_playback_progress(
             .ctx
             .signals
             .emit(Event::SessionsChanged);
-        if data.is_paused && !was_paused {
-            let playback = state
+        let playback = state
+            .ctx
+            .sessions
+            .get(psid);
+        if let Some(current_playback) = playback.as_ref()
+            && session
+                .device
+                .is_4k_capable
+                != Some(true)
+        {
+            state
                 .ctx
-                .sessions
-                .get(psid);
+                .signals
+                .emit(Event::PlaybackPosition(PlaybackPosition {
+                    context: PlaybackContext {
+                        user_id: session
+                            .user
+                            .id,
+                        media_id: current_playback.item_id,
+                        position_ticks: data
+                            .position_ticks
+                            .unwrap_or(current_playback.position_ticks),
+                        is_paused: data.is_paused,
+                        ..PlaybackContext::from_parts(
+                            &session,
+                            &data,
+                            Some(current_playback),
+                            Some(psid),
+                        )
+                    },
+                    reported_at: std::time::Instant::now(),
+                    video_is_copied: current_playback
+                        .transcode
+                        .as_ref()
+                        .is_none_or(|transcode| {
+                            transcode
+                                .try_read()
+                                .is_ok_and(|session| session.video_codec == "copy")
+                        }),
+                }));
+        }
+        if data.is_paused && !was_paused {
             state
                 .ctx
                 .signals
