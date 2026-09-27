@@ -69,6 +69,74 @@ pub(crate) fn profile_embeds_subtitle_codec(
         .unwrap_or(false)
 }
 
+/// Whether a device profile declares External support for `codec` (any
+/// subtitle_profiles entry with this exact codec and method External —
+/// mirrors `profile_embeds_subtitle_codec`'s strictness for the Embed case).
+fn profile_externally_supports_subtitle_codec(
+    device_profile: Option<&DeviceProfile>,
+    codec: &SubtitleCodec,
+) -> bool {
+    device_profile
+        .map(|dp| {
+            dp.subtitle_profiles
+                .iter()
+                .any(|p| {
+                    p.method == Some(SubtitleDeliveryMethod::External)
+                        && p.format
+                            .as_deref()
+                            .and_then(|f| {
+                                f.parse::<SubtitleCodec>()
+                                    .ok()
+                            })
+                            .as_ref()
+                            == Some(codec)
+                })
+        })
+        .unwrap_or(false)
+}
+
+/// Whether an embedded subtitle stream with `codec` can actually be
+/// delivered to `device_profile`, given whether on-demand extraction is
+/// feasible for this source right now (`allow_extraction` — always true for
+/// a local source, true for a remote one only when the admin opted in). This
+/// is the single source of truth for "is this embedded subtitle usable" —
+/// used to decide whether a burn-in transcode reason is needed
+/// (`subtitle_burn_reason`), whether Strip mode should drop the stream
+/// (`api/playback.rs`'s pre-`resolve_default_streams` filter), and mirrors
+/// what `apply_subtitle_delivery` actually offers. These three call sites
+/// drifted apart before by each reimplementing this check slightly
+/// differently — route them all through here instead.
+///
+/// - Text subtitles: deliverable via Embed, or via External whenever
+///   extraction is feasible (extraction always converts a text codec to
+///   vtt/srt/ass on demand — no profile format match required for that).
+/// - Image subtitles: only PGS has any external delivery path at all (raw
+///   passthrough into an HLS "sup" file; DVD/DVB subtitle bitstreams don't
+///   fit that container and have no conversion path either). So an image
+///   subtitle is deliverable via Embed, or via External only when it's PGS,
+///   extraction is feasible, AND the profile explicitly declares PGS
+///   support for External — there's no OCR/text fallback to rely on
+///   otherwise, so a "some subtitle_profiles entry merely mentions pgs"
+///   check (regardless of method) isn't enough.
+pub(crate) fn subtitle_codec_deliverable(
+    codec: &SubtitleCodec,
+    device_profile: Option<&DeviceProfile>,
+    allow_extraction: bool,
+) -> bool {
+    if profile_embeds_subtitle_codec(device_profile, codec) {
+        return true;
+    }
+    if !allow_extraction {
+        return false;
+    }
+    if codec.is_image() {
+        *codec == SubtitleCodec::Pgs
+            && profile_externally_supports_subtitle_codec(device_profile, codec)
+    } else {
+        true
+    }
+}
+
 impl DeviceProfileExt for DeviceProfile {
     fn video_transcoding_profile(&self) -> Option<&TranscodingProfile> {
         let is_video =
@@ -915,6 +983,15 @@ pub struct SourceRankingContext<'a> {
     pub subtitle_mode: EmbeddedSubtitleHandling,
     pub explicit_subtitle_index: Option<i64>,
     pub max_bitrate: Option<i64>,
+    /// Whether on-demand subtitle extraction is feasible for the source
+    /// being assessed (see `EncodingOptions::allow_remote_subtitle_extraction`
+    /// — always true for a local source). Affects whether an unsupported
+    /// embedded image subtitle counts as needing a burn-in transcode: it
+    /// doesn't, if extraction will be used instead. `SourceRankingContext`
+    /// is `Copy`, so a caller ranking multiple sources with different
+    /// per-source feasibility can rebuild it per source (`..ranking`)
+    /// instead of needing a separate parameter threaded through `assess`.
+    pub allow_subtitle_extraction: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -952,6 +1029,7 @@ impl SourceRankingContext<'_> {
             self.subtitle_mode,
             self.explicit_subtitle_index,
             self.max_bitrate,
+            self.allow_subtitle_extraction,
         );
         let mut rank = source.capability_rank(self.device_profile, &reasons);
         rank.resolution_fit_tier =
@@ -1127,6 +1205,7 @@ pub fn subtitle_burn_reason(
     device_profile: Option<&DeviceProfile>,
     subtitle_mode: EmbeddedSubtitleHandling,
     explicit_subtitle_index: Option<i64>,
+    allow_extraction: bool,
 ) -> Option<TranscodeReason> {
     if subtitle_mode != EmbeddedSubtitleHandling::Burn {
         return None;
@@ -1144,18 +1223,14 @@ pub fn subtitle_burn_reason(
     let codec = stream
         .codec
         .as_deref()?;
-    let supported = device_profile
-        .map(|dp| {
-            dp.subtitle_profiles
-                .iter()
-                .filter_map(|p| {
-                    p.format
-                        .as_deref()
-                })
-                .any(|f| subtitle_codec_matches_profile(codec, f))
-        })
-        .unwrap_or(false);
-    if supported {
+    // Deliverable (Embed, or External when extraction is feasible) means no
+    // burn-in transcode is actually needed — apply_subtitle_delivery prefers
+    // extraction over burning in even in Burn mode, so a burn-in reason here
+    // would be wrong whenever extraction is what will really happen.
+    let parsed = codec
+        .parse::<SubtitleCodec>()
+        .unwrap_or(SubtitleCodec::Other(codec.to_string()));
+    if subtitle_codec_deliverable(&parsed, device_profile, allow_extraction) {
         None
     } else {
         Some(TranscodeReason::SubtitleCodecNotSupported(
@@ -1182,6 +1257,7 @@ pub fn compute_transcode_reasons(
     subtitle_mode: EmbeddedSubtitleHandling,
     explicit_subtitle_index: Option<i64>,
     max_bitrate: Option<i64>,
+    allow_subtitle_extraction: bool,
 ) -> TranscodeReasons {
     let mut reasons = device_profile
         .map(|profile| profile.check_direct_play(source))
@@ -1203,6 +1279,7 @@ pub fn compute_transcode_reasons(
         device_profile,
         subtitle_mode,
         explicit_subtitle_index,
+        allow_subtitle_extraction,
     ) {
         reasons.insert(reason);
     }
@@ -2998,6 +3075,7 @@ mod tests {
             subtitle_mode: EmbeddedSubtitleHandling::default(),
             explicit_subtitle_index: None,
             max_bitrate: profile.max_streaming_bitrate,
+            allow_subtitle_extraction: false,
         }
         .assess(&source);
 
@@ -3038,6 +3116,7 @@ mod tests {
             subtitle_mode: EmbeddedSubtitleHandling::default(),
             explicit_subtitle_index: None,
             max_bitrate: None,
+            allow_subtitle_extraction: false,
         }
         .assess(&source);
 
@@ -3133,13 +3212,25 @@ mod tests {
     fn subtitle_burn_reason_only_fires_in_burn_mode() {
         let source = source_with_subtitle("pgssub", false, 0);
         assert!(
-            subtitle_burn_reason(&source, None, EmbeddedSubtitleHandling::Strip, None)
-                .is_none(),
+            subtitle_burn_reason(
+                &source,
+                None,
+                EmbeddedSubtitleHandling::Strip,
+                None,
+                false
+            )
+            .is_none(),
             "Strip must never force a transcode for subtitles"
         );
         assert!(
-            subtitle_burn_reason(&source, None, EmbeddedSubtitleHandling::Burn, None)
-                .is_some()
+            subtitle_burn_reason(
+                &source,
+                None,
+                EmbeddedSubtitleHandling::Burn,
+                None,
+                false
+            )
+            .is_some()
         );
     }
 
@@ -3147,8 +3238,14 @@ mod tests {
     fn subtitle_burn_reason_ignores_text_and_external_subtitles() {
         let text = source_with_subtitle("subrip", false, 0);
         assert!(
-            subtitle_burn_reason(&text, None, EmbeddedSubtitleHandling::Burn, None)
-                .is_none(),
+            subtitle_burn_reason(
+                &text,
+                None,
+                EmbeddedSubtitleHandling::Burn,
+                None,
+                false
+            )
+            .is_none(),
             "a text subtitle never needs burning in"
         );
 
@@ -3158,7 +3255,8 @@ mod tests {
                 &external_image,
                 None,
                 EmbeddedSubtitleHandling::Burn,
-                None
+                None,
+                false
             )
             .is_none(),
             "an external subtitle is delivered separately, never burned in"
@@ -3180,10 +3278,56 @@ mod tests {
                 &source,
                 Some(&profile),
                 EmbeddedSubtitleHandling::Burn,
-                None
+                None,
+                false
             )
             .is_none(),
-            "a profile that lists the image format at all needs no burn-in"
+            "a profile that embeds the image format needs no burn-in"
+        );
+    }
+
+    #[test]
+    fn subtitle_burn_reason_accounts_for_extraction_feasibility_not_just_format_match()
+    {
+        // Regression test: a profile declaring PGS support via External
+        // (not Embed) means apply_subtitle_delivery will actually extract
+        // it instead of burning it in -- but only when extraction is
+        // feasible. Checking "does any subtitle_profiles entry mention this
+        // format" without looking at the method or at feasibility produces
+        // the wrong answer in both directions.
+        let source = source_with_subtitle("pgssub", false, 0);
+        let profile = DeviceProfile {
+            subtitle_profiles: vec![SubtitleProfile {
+                format: Some("pgssub".to_string()),
+                method: Some(SubtitleDeliveryMethod::External),
+            }],
+            ..Default::default()
+        };
+        assert!(
+            subtitle_burn_reason(
+                &source,
+                Some(&profile),
+                EmbeddedSubtitleHandling::Burn,
+                None,
+                true
+            )
+            .is_none(),
+            "extraction is feasible and the client can consume the result \
+             externally -- no burn-in needed, it'll be extracted instead"
+        );
+        assert!(
+            subtitle_burn_reason(
+                &source,
+                Some(&profile),
+                EmbeddedSubtitleHandling::Burn,
+                None,
+                false
+            )
+            .is_some(),
+            "extraction is infeasible (e.g. remote source, setting off) -- \
+             the profile only supports External, which won't happen, so \
+             this must still burn in rather than silently direct-playing \
+             an undeliverable subtitle"
         );
     }
 
@@ -3205,7 +3349,8 @@ mod tests {
                 &source,
                 None,
                 EmbeddedSubtitleHandling::Burn,
-                Some(1)
+                Some(1),
+                false
             )
             .is_some()
         );
@@ -3457,6 +3602,7 @@ mod tests {
             subtitle_mode: EmbeddedSubtitleHandling::default(),
             explicit_subtitle_index: None,
             max_bitrate: None,
+            allow_subtitle_extraction: false,
         };
         let mut ranked: Vec<_> = fixtures
             .into_iter()

@@ -513,18 +513,37 @@ pub(crate) fn apply_subtitle_delivery(
             .unwrap_or(false)
         {
             stream.delivery_method = Some(api::SubtitleDeliveryMethod::Embed);
-        } else if allow_extraction {
+        } else if allow_extraction
+            && (!is_image_sub
+                || (parsed_codec == Some(SubtitleCodec::Pgs)
+                    && profile_supports(SubtitleCodec::Pgs)))
+        {
             // Extraction feasible (local source, or remote with the setting
             // on) — always prefer it over burning in: lossless, and doesn't
-            // force a video re-encode. Applies to text and image subs alike.
+            // force a video re-encode. Applies to text and image subs alike,
+            // but only when the client can actually consume the result: the
+            // only image format with an external delivery path at all is
+            // PGS (raw passthrough into an HLS "sup" file — DVD/DVB
+            // subtitle bitstreams don't fit that container and have no
+            // conversion path either), and only when the client's profile
+            // declares PGS support — there's no OCR/text conversion to fall
+            // back to. Checking `is_image_sub` alone (any image codec) let a
+            // local DVD/DVB subtitle through here with no profile check at
+            // all, producing a "sup"-muxer request for a codec that muxer
+            // can't hold; checking `profile_supports(Pgs)` alone (without
+            // requiring the stream's own codec to actually be Pgs) let an
+            // unsupported PGS stream through whenever the profile merely
+            // mentioned Pgs for some *other* stream. Fall through to
+            // burning in when neither condition holds.
             external_delivery(stream);
         } else if is_image_sub && subtitle_mode == EmbeddedSubtitleHandling::Burn {
-            // Extraction infeasible: an image subtitle can still be burned
-            // in. Text subtitles have no burn-in path in the transcode
-            // pipeline, so they fall through to the last branch below
-            // regardless of subtitle_mode — same as a stream that survived
-            // the upstream feasibility filter only because the client's own
-            // profile claims some support for it.
+            // Extraction infeasible (or the client can't consume PGS
+            // externally): an image subtitle can still be burned in. Text
+            // subtitles have no burn-in path in the transcode pipeline, so
+            // they fall through to the last branch below regardless of
+            // subtitle_mode — same as a stream that survived the upstream
+            // feasibility filter only because the client's own profile
+            // claims some support for it.
             stream.delivery_method = Some(api::SubtitleDeliveryMethod::Encode);
         }
         // Otherwise: nothing we can do — extraction isn't feasible and it's
@@ -1070,10 +1089,49 @@ mod tests {
     }
 
     #[test]
-    fn extraction_feasible_offers_external_delivery_for_text_and_image_subs() {
+    fn extraction_feasible_offers_external_delivery_for_text_and_pgs_capable_image_subs()
+     {
         // local source, or remote with the setting on: allow_extraction = true.
         // Both text and image subtitles should be offered as External, backed
-        // by extraction, regardless of subtitle_mode.
+        // by extraction, regardless of subtitle_mode — but only once the
+        // client's profile actually declares it can consume the image
+        // format externally (raw PGS; there's no OCR/text conversion for it).
+        let mut source = make_subtitle_source("subrip", "hdmv_pgs_subtitle");
+        let profile = api::DeviceProfile {
+            subtitle_profiles: vec![api::SubtitleProfile {
+                format: Some("pgs".to_string()),
+                method: Some(api::SubtitleDeliveryMethod::External),
+            }],
+            ..Default::default()
+        };
+        apply_subtitle_delivery(
+            &mut source,
+            Uuid::new_v4(),
+            "tok",
+            &Some(profile),
+            EmbeddedSubtitleHandling::Burn,
+            true,
+        );
+        for stream in &source.media_streams {
+            assert_eq!(
+                stream.delivery_method,
+                Some(api::SubtitleDeliveryMethod::External),
+                "stream {:?} should be delivered externally when extraction is feasible \
+                 and the client's profile can consume it",
+                stream.codec
+            );
+        }
+    }
+
+    #[test]
+    fn extraction_feasible_but_client_cant_consume_pgs_falls_back_to_burn() {
+        // Regression test: allow_extraction = true but no profile declares
+        // PGS support. The image subtitle must NOT be advertised as
+        // External — that would produce a .vtt URL the extraction endpoint
+        // can't satisfy (no OCR/text conversion for image subtitles) — it
+        // should burn in instead when the mode allows it. The text
+        // subtitle's extraction never depended on PGS support, so it's
+        // unaffected.
         let mut source = make_subtitle_source("subrip", "hdmv_pgs_subtitle");
         apply_subtitle_delivery(
             &mut source,
@@ -1083,14 +1141,19 @@ mod tests {
             EmbeddedSubtitleHandling::Burn,
             true,
         );
-        for stream in &source.media_streams {
-            assert_eq!(
-                stream.delivery_method,
-                Some(api::SubtitleDeliveryMethod::External),
-                "stream {:?} should be delivered externally when extraction is feasible",
-                stream.codec
-            );
-        }
+        let text = &source.media_streams[0];
+        let image = &source.media_streams[1];
+        assert_eq!(
+            text.delivery_method,
+            Some(api::SubtitleDeliveryMethod::External),
+            "text subtitle extraction doesn't depend on PGS support"
+        );
+        assert_eq!(
+            image.delivery_method,
+            Some(api::SubtitleDeliveryMethod::Encode),
+            "image subtitle the client can't consume externally must burn in, \
+             not get an unusable vtt URL"
+        );
     }
 
     #[test]

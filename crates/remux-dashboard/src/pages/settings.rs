@@ -385,6 +385,12 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
     let mut enable_remuxing = use_signal(|| true);
     let mut subtitle_mode = use_signal(|| "Burn".to_string());
     let mut allow_remote_subtitle_extraction = use_signal(|| false);
+    // No dashboard control for this yet — must be round-tripped as-is so a
+    // custom value set via the API isn't silently reset to the default
+    // (1800s) the next time this page is saved (set_encoding_config is a
+    // full replace, not a patch).
+    let mut subtitle_extraction_timeout_seconds: Signal<Option<i64>> =
+        use_signal(|| None);
     let mut deduplicate_subtitle_tracks = use_signal(|| true);
     let mut max_external_subtitles_per_language = use_signal(|| 1_i64);
     let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
@@ -515,6 +521,8 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                         opts.allow_remote_subtitle_extraction
                             .unwrap_or(false),
                     );
+                    subtitle_extraction_timeout_seconds
+                        .set(opts.subtitle_extraction_timeout_seconds);
                 }
                 Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
             }
@@ -571,7 +579,8 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
             allow_remote_subtitle_extraction: Some(
                 *allow_remote_subtitle_extraction.peek(),
             ),
-            subtitle_extraction_timeout_seconds: None,
+            subtitle_extraction_timeout_seconds: *subtitle_extraction_timeout_seconds
+                .peek(),
         };
         let min_pct = *min_resume_pct.peek();
         let max_pct = *max_resume_pct.peek();

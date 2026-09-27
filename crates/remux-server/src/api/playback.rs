@@ -3,7 +3,8 @@ use axum::Json;
 
 use super::subtitles::{
     SubtitleDedupSettings, append_external_subtitles,
-    drop_unsupported_embedded_subtitles_with_external_match, inject_sidecar_subtitles,
+    drop_unsupported_embedded_subtitles_with_external_match,
+    filter_external_subtitles_for_source, inject_sidecar_subtitles,
     save_sidecar_subtitle_routes,
 };
 use axum::{
@@ -40,10 +41,7 @@ use crate::{
 
 use crate::{
     IntoApiError, OptionExt, ResultExt,
-    device_profile::{
-        DeviceProfileExt, SourceRankingContext, SubtitleCodec,
-        subtitle_codec_matches_profile,
-    },
+    device_profile::{DeviceProfileExt, SourceRankingContext, SubtitleCodec},
     playback::{
         decision::{
             PlaybackConfig, TranscodeDecision, apply_subtitle_delivery,
@@ -426,6 +424,15 @@ async fn items_playbackinfo_inner(
             .results
             .len(),
     );
+    // Parallels media_sources — whether extraction is feasible varies per
+    // source (a local file vs. a remote debrid/torrent release of the same
+    // item), so the ranking pass below needs it per source too, not just
+    // the one used for the main transcode decision.
+    let mut allow_subtitle_extraction_per_source: Vec<bool> = Vec::with_capacity(
+        probed
+            .results
+            .len(),
+    );
 
     // Per-user playback preferences + remembered selections, resolved per source
     // via `MediaSourceInfo::resolve_default_streams` (see below).
@@ -467,17 +474,16 @@ async fn items_playbackinfo_inner(
         }
 
         // Drop an embedded subtitle stream that can't be delivered any way we
-        // support. Extraction (External delivery) is attempted automatically
-        // whenever it's feasible — always for a local source, for a remote
-        // one only when allow_remote_subtitle_extraction is on, since it
-        // means ffmpeg reading the entire remote file once (no way to seek to
-        // just the subtitle packets). When infeasible, an image (PGS/VobSub)
-        // subtitle can still be burned in (subtitle_mode == Burn) — text
-        // subtitles have no burn-in path in the transcode pipeline at all, so
-        // for those, and for Strip mode, fall back to the same conservative
-        // check Strip mode always used: keep it only if the client's own
-        // profile explicitly claims some support for the format, since
-        // there's otherwise truly nothing we can do with it.
+        // support (see `subtitle_codec_deliverable`: deliverable via Embed,
+        // or via External when extraction is feasible — always for a local
+        // source, for a remote one only when allow_remote_subtitle_extraction
+        // is on, since it means ffmpeg reading the entire remote file once,
+        // with no way to seek to just the subtitle packets). When not
+        // deliverable, an image (PGS) subtitle can still be burned in
+        // (subtitle_mode == Burn) — text subtitles have no burn-in path in
+        // the transcode pipeline at all, so those (and everything else in
+        // Strip mode) get dropped entirely, since there's truly nothing we
+        // can do with them.
         // Must run before resolve_default_streams below, so a dropped stream
         // can never end up as the resolved default (a dangling index).
         let is_local = effective_stream
@@ -500,33 +506,22 @@ async fn items_playbackinfo_inner(
                 {
                     return true;
                 }
-                if allow_subtitle_extraction {
+                let codec = s
+                    .codec
+                    .as_deref()
+                    .unwrap_or_default()
+                    .parse::<SubtitleCodec>()
+                    .unwrap_or(SubtitleCodec::Other(String::new()));
+                if crate::device_profile::subtitle_codec_deliverable(
+                    &codec,
+                    device_profile.as_ref(),
+                    allow_subtitle_extraction,
+                ) {
                     return true;
                 }
-                if !s.is_text_subtitle_stream
+                !s.is_text_subtitle_stream()
                     && subtitle_mode
                         == remux_sdks::remux::EmbeddedSubtitleHandling::Burn
-                {
-                    return true;
-                }
-                device_profile
-                    .as_ref()
-                    .map(|dp| {
-                        dp.subtitle_profiles
-                            .iter()
-                            .filter_map(|p| {
-                                p.format
-                                    .as_deref()
-                            })
-                            .any(|f| {
-                                s.codec
-                                    .as_deref()
-                                    .map_or(false, |c| {
-                                        subtitle_codec_matches_profile(c, f)
-                                    })
-                            })
-                    })
-                    .unwrap_or(true)
             });
 
         // Independent of subtitle_mode: an embedded subtitle that won't be
@@ -583,6 +578,7 @@ async fn items_playbackinfo_inner(
             subtitle_mode,
             q.subtitle_stream_index,
             max_bitrate,
+            allow_subtitle_extraction,
         );
         // RTSP streams can only be served via ffmpeg — never direct-playable.
         if matches!(
@@ -656,11 +652,29 @@ async fn items_playbackinfo_inner(
                     .is_empty()
             })
         {
+            let converted: Vec<crate::addons::SubtitleInfo> = stream_subs
+                .subtitles
+                .iter()
+                .map(crate::conversions::stremio_subtitle_to_subtitle_info)
+                .collect();
+            // Same language cap and embedded-overlap dedup the item-level
+            // provider-addon list gets further down — an addon can attach
+            // subtitles in dozens of languages, and without this every one
+            // of them would land in the menu.
+            let selected = filter_external_subtitles_for_source(
+                &source,
+                &converted,
+                &probe_cfg
+                    .subtitle_languages
+                    .clone()
+                    .unwrap_or_default(),
+                device_profile.as_ref(),
+                subtitle_dedup,
+            );
             sidecars.extend(
-                stream_subs
-                    .subtitles
-                    .iter()
-                    .map(crate::conversions::stremio_subtitle_to_subtitle_info),
+                selected
+                    .into_iter()
+                    .cloned(),
             );
         }
         let routes = inject_sidecar_subtitles(&mut source, sidecars);
@@ -711,6 +725,7 @@ async fn items_playbackinfo_inner(
 
         sidecar_subtitle_routes.push((subtitle_source_id, routes));
         source_group_ids.push(stream.group_id);
+        allow_subtitle_extraction_per_source.push(allow_subtitle_extraction);
         media_sources.push(source);
     }
 
@@ -783,15 +798,23 @@ async fn items_playbackinfo_inner(
             subtitle_mode,
             explicit_subtitle_index: q.subtitle_stream_index,
             max_bitrate: sort_max_bitrate,
+            // Overridden per source below — extraction feasibility depends
+            // on that source's own locality, not a single shared value.
+            allow_subtitle_extraction: false,
         };
         let mut paired: Vec<_> = media_sources
             .drain(..)
             .zip(sidecar_subtitle_routes.drain(..))
+            .zip(allow_subtitle_extraction_per_source.drain(..))
             .collect();
-        paired.sort_by_cached_key(|(source, _)| {
+        paired.sort_by_cached_key(|((source, _), allow_extraction)| {
+            let ranking = SourceRankingContext {
+                allow_subtitle_extraction: *allow_extraction,
+                ..ranking
+            };
             std::cmp::Reverse(ranking.sort_key(source))
         });
-        for (source, route) in paired {
+        for ((source, route), _) in paired {
             media_sources.push(source);
             sidecar_subtitle_routes.push(route);
         }
