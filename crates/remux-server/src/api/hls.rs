@@ -23,7 +23,7 @@ use crate::{
     playback::{
         decision::{PlaybackPermissions, play_method_for_codecs},
         hw_accel,
-        session::{TranscodeSession, TranscodeState},
+        session::{SegmentContainer, TranscodeSession, TranscodeState},
     },
 };
 
@@ -288,6 +288,18 @@ async fn create_hls_session(
                 s.codec
                     .clone()
             });
+        let source_video_stream = resolved_media
+            .probe_data
+            .as_ref()
+            .and_then(|p| p.video_stream());
+        let source_video_codec = source_video_stream
+            .as_ref()
+            .and_then(|s| {
+                s.codec
+                    .clone()
+            });
+        let segment_container =
+            SegmentContainer::for_codecs(&video_codec, source_video_codec.as_deref());
 
         // --- Why we force audio transcoding for live channels ---
         //
@@ -331,6 +343,7 @@ async fn create_hls_session(
                         .as_ref()
                 }),
             source_audio_codec.as_deref(),
+            segment_container,
             &audio_codec,
         );
         if resolved_audio_codec != audio_codec && !permissions.audio_transcoding {
@@ -378,16 +391,6 @@ async fn create_hls_session(
             }
         };
         debug!(runtime_ticks, is_live, segment_length, "transcode session");
-        let source_video_stream = resolved_media
-            .probe_data
-            .as_ref()
-            .and_then(|p| p.video_stream());
-        let source_video_codec = source_video_stream
-            .as_ref()
-            .and_then(|s| {
-                s.codec
-                    .clone()
-            });
         let source_video_profile = source_video_stream
             .as_ref()
             .and_then(|s| {
@@ -734,30 +737,24 @@ pub async fn variant_hls_video(
 ///
 /// Live IPTV sources often carry LATM-encoded AAC (see the large comment block
 /// inside `create_hls_session`). HLS VOD sources use the same transport and
-/// can carry that framing as well. TrueHD, FLAC, and PCM cannot be copied into
-/// MPEG-TS segments. When any of those paths would copy audio, encode it as AAC
-/// so ffmpeg emits compatible audio in the output segments. The caller rejects
-/// that conversion when audio transcoding is forbidden.
+/// can carry that framing as well. Some source codecs can't be copied into the
+/// segment container (see `SegmentContainer::can_copy_audio`, which
+/// `build_hls_args` applies too). When any of those paths would copy audio,
+/// encode it as AAC so ffmpeg emits compatible audio in the output segments.
+/// The caller rejects that conversion when audio transcoding is forbidden.
 fn resolve_hls_audio_codec(
     is_live: bool,
     input_container: Option<&remux_sdks::remux::VideoContainer>,
     source_audio_codec: Option<&str>,
+    segment_container: SegmentContainer,
     requested: &str,
 ) -> String {
     let input_is_hls = input_container.is_some_and(|c| c.is_hls_input());
-    let source_is_ts_incompatible = source_audio_codec
-        .and_then(|codec| {
-            codec
-                .parse::<AudioCodec>()
-                .ok()
-        })
-        .is_some_and(|codec| {
-            matches!(
-                codec,
-                AudioCodec::TrueHd | AudioCodec::Flac | AudioCodec::Pcm
-            )
-        });
-    if requested == "copy" && (is_live || input_is_hls || source_is_ts_incompatible) {
+    if requested == "copy"
+        && (is_live
+            || input_is_hls
+            || !segment_container.can_copy_audio(source_audio_codec))
+    {
         "aac".to_string()
     } else {
         requested.to_string()
@@ -1385,13 +1382,14 @@ async fn hls_segment_inner(
 
 #[cfg(test)]
 mod tests {
+    use super::SegmentContainer::{Fmp4, Ts};
     use remux_sdks::remux::VideoContainer;
 
     #[test]
     fn vod_hls_source_reencodes_copied_audio_to_aac() {
         let hls = VideoContainer::Other("hls".to_string());
         assert_eq!(
-            super::resolve_hls_audio_codec(false, Some(&hls), Some("aac"), "copy"),
+            super::resolve_hls_audio_codec(false, Some(&hls), Some("aac"), Ts, "copy"),
             "aac"
         );
         let hls_upper = VideoContainer::Other("HLS".to_string());
@@ -1400,6 +1398,7 @@ mod tests {
                 false,
                 Some(&hls_upper),
                 Some("aac"),
+                Ts,
                 "copy"
             ),
             "aac"
@@ -1413,17 +1412,18 @@ mod tests {
                 false,
                 Some(&VideoContainer::Mp4),
                 Some("aac"),
+                Ts,
                 "copy"
             ),
             "copy"
         );
         assert_eq!(
-            super::resolve_hls_audio_codec(false, None, Some("ac3"), "copy"),
+            super::resolve_hls_audio_codec(false, None, Some("ac3"), Ts, "copy"),
             "copy"
         );
         let hls = VideoContainer::Other("hls".to_string());
         assert_eq!(
-            super::resolve_hls_audio_codec(false, Some(&hls), Some("aac"), "ac3"),
+            super::resolve_hls_audio_codec(false, Some(&hls), Some("aac"), Ts, "ac3"),
             "ac3"
         );
     }
@@ -1432,7 +1432,21 @@ mod tests {
     fn ts_incompatible_audio_copy_resolves_to_aac() {
         for codec in ["truehd", "flac", "pcm_s16le"] {
             assert_eq!(
-                super::resolve_hls_audio_codec(false, None, Some(codec), "copy"),
+                super::resolve_hls_audio_codec(false, None, Some(codec), Ts, "copy"),
+                "aac"
+            );
+        }
+    }
+
+    #[test]
+    fn fmp4_segments_copy_flac_but_not_truehd_or_pcm() {
+        assert_eq!(
+            super::resolve_hls_audio_codec(false, None, Some("flac"), Fmp4, "copy"),
+            "copy"
+        );
+        for codec in ["truehd", "pcm_s16le"] {
+            assert_eq!(
+                super::resolve_hls_audio_codec(false, None, Some(codec), Fmp4, "copy"),
                 "aac"
             );
         }
@@ -1441,15 +1455,15 @@ mod tests {
     #[test]
     fn live_channel_forces_aac_over_copy() {
         assert_eq!(
-            super::resolve_hls_audio_codec(true, None, Some("aac"), "copy"),
+            super::resolve_hls_audio_codec(true, None, Some("aac"), Ts, "copy"),
             "aac"
         );
         assert_eq!(
-            super::resolve_hls_audio_codec(true, None, Some("aac"), "aac"),
+            super::resolve_hls_audio_codec(true, None, Some("aac"), Ts, "aac"),
             "aac"
         );
         assert_eq!(
-            super::resolve_hls_audio_codec(true, None, Some("aac"), "ac3"),
+            super::resolve_hls_audio_codec(true, None, Some("aac"), Ts, "ac3"),
             "ac3"
         );
     }

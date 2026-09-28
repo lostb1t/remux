@@ -19,7 +19,7 @@ use crate::{
 };
 use remux_sdks::remux::{EncodingPreset, HardwareAccelerationType, VideoRangeType};
 
-use super::session::{TranscodeSession, TranscodeState};
+use super::session::{SegmentContainer, TranscodeSession, TranscodeState};
 
 pub async fn detect_hardware_acceleration() -> HardwareAccelerationType {
     let detected = probe_hw_accel().await;
@@ -748,6 +748,17 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             base.to_string()
         }
     };
+    // fMP4 (fragmented MP4) is required for HEVC on iOS Safari per Apple's HLS
+    // authoring specification.  MPEG-TS cannot carry HEVC correctly in HLS.
+    // Shared with TranscodeSession so segment paths and playlists agree.
+    let segment_container = SegmentContainer::for_codecs(
+        &ffmpeg_video_codec,
+        params
+            .source_video_codec
+            .as_deref(),
+    );
+    let is_hevc_copy = segment_container == SegmentContainer::Fmp4;
+
     let ffmpeg_audio_codec = match params
         .audio_codec
         .as_str()
@@ -755,46 +766,29 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         "copy" => {
             // IMPORTANT: do not remove this override.
             //
-            // TrueHD, FLAC, and PCM are not valid MPEG-TS payloads. The TS
-            // spec simply has no stream type for them. FFmpeg either errors out
-            // or silently drops the audio track when you try to mux them.
+            // Some codecs can't be carried in the segment container (TrueHD,
+            // FLAC, and PCM have no MPEG-TS stream type). FFmpeg either errors
+            // out or silently drops the audio track when you try to mux them.
             // Clients (iOS Safari, ExoPlayer) then see a broken/silent stream.
             //
             // The client asked for "copy" because it trusts the server to only
             // honour that when the codec can actually be carried in the
             // container. We must downgrade to AAC here; do not "fix" this by
-            // removing the override thinking the client knows best.
-            let source = params
-                .source_audio_codec
-                .as_deref()
-                .and_then(|s| {
-                    s.parse::<remux_sdks::remux::AudioCodec>()
-                        .ok()
-                });
-            let ts_incompatible = matches!(
-                source,
-                Some(remux_sdks::remux::AudioCodec::TrueHd)
-                    | Some(remux_sdks::remux::AudioCodec::Flac)
-                    | Some(remux_sdks::remux::AudioCodec::Pcm)
-            );
-            if ts_incompatible { "aac" } else { "copy" }
+            // removing the override thinking the client knows best. The HLS
+            // handler applies the same rule first so it can enforce the audio
+            // transcoding permission.
+            if segment_container.can_copy_audio(
+                params
+                    .source_audio_codec
+                    .as_deref(),
+            ) {
+                "copy"
+            } else {
+                "aac"
+            }
         }
         _ => "aac",
     };
-
-    // fMP4 (fragmented MP4) is required for HEVC on iOS Safari per Apple's HLS
-    // authoring specification.  MPEG-TS cannot carry HEVC correctly in HLS.
-    let is_hevc_copy = ffmpeg_video_codec == "copy"
-        && params
-            .source_video_codec
-            .as_deref()
-            .and_then(|s| {
-                s.parse::<VideoCodec>()
-                    .ok()
-            })
-            .as_ref()
-            .map(VideoCodec::is_hevc)
-            .unwrap_or(false);
 
     let mut args: Vec<String> = vec![
         "-v".into(),
@@ -1519,6 +1513,69 @@ pub struct ProgressiveTranscodeParams {
 }
 
 /// Build the ffmpeg CLI args for a progressive transcode piped to stdout.
+/// Container ffmpeg writes a progressive stream in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProgressiveFormat {
+    Mpegts,
+    Webm,
+    Matroska,
+    Mp4,
+}
+
+impl ProgressiveFormat {
+    /// The requested container, except that copied video into MP4 would need
+    /// bitstream filters, so it is promoted to Matroska instead.
+    pub(crate) fn for_request(container: &str, video_codec: &str) -> Self {
+        let requested = match container {
+            "ts" | "mpegts" => Self::Mpegts,
+            "webm" => Self::Webm,
+            "mkv" | "matroska" => Self::Matroska,
+            _ => Self::Mp4,
+        };
+        if video_codec == "copy" && requested == Self::Mp4 {
+            Self::Matroska
+        } else {
+            requested
+        }
+    }
+
+    fn ffmpeg_name(self) -> &'static str {
+        match self {
+            Self::Mpegts => "mpegts",
+            Self::Webm => "webm",
+            Self::Matroska => "matroska",
+            Self::Mp4 => "mp4",
+        }
+    }
+
+    /// Whether source audio can be stream-copied into this container. MPEG-TS
+    /// and MP4 follow the HLS segment rules; WebM only carries Opus and
+    /// Vorbis. Unknown codecs are assumed copyable.
+    pub(crate) fn can_copy_audio(self, source_audio_codec: Option<&str>) -> bool {
+        match self {
+            Self::Matroska => true,
+            Self::Mp4 => SegmentContainer::Fmp4.can_copy_audio(source_audio_codec),
+            Self::Mpegts => SegmentContainer::Ts.can_copy_audio(source_audio_codec),
+            Self::Webm => match source_audio_codec.and_then(|s| {
+                s.parse::<AudioCodec>()
+                    .ok()
+            }) {
+                Some(AudioCodec::Opus | AudioCodec::Vorbis | AudioCodec::Other(_))
+                | None => true,
+                Some(_) => false,
+            },
+        }
+    }
+
+    /// Codec to encode audio to when the source can't be copied.
+    pub(crate) fn fallback_audio_codec(self) -> &'static str {
+        match self {
+            Self::Webm => "opus",
+            _ => "aac",
+        }
+    }
+}
+
 pub(crate) fn build_progressive_args(
     params: &ProgressiveTranscodeParams,
 ) -> Vec<String> {
@@ -1575,23 +1632,8 @@ pub(crate) fn build_progressive_args(
         other => other,
     };
 
-    // When stream-copying into MP4 we need bitstream filters; promote to MKV instead.
-    let format = {
-        let requested = match params
-            .container
-            .as_str()
-        {
-            "ts" | "mpegts" => "mpegts",
-            "webm" => "webm",
-            "mkv" | "matroska" => "matroska",
-            _ => "mp4",
-        };
-        if ffmpeg_video_codec == "copy" && requested == "mp4" {
-            "matroska"
-        } else {
-            requested
-        }
-    };
+    let format = ProgressiveFormat::for_request(&params.container, &ffmpeg_video_codec)
+        .ffmpeg_name();
 
     let mut args: Vec<String> = vec![
         "-v".into(),
@@ -2168,10 +2210,18 @@ pub fn generate_master_playlist(session: &TranscodeSession) -> String {
         ),
         _ => "avc1.640028".to_string(),
     };
-    let audio_codec_str = if session.audio_codec == "copy" {
+    let audio_codec_str = if session.audio_codec == "copy"
+        && session
+            .segment_container()
+            .can_copy_audio(
+                session
+                    .source_audio_codec
+                    .as_deref(),
+            ) {
         // Use the actual source codec when copying so the CODECS attribute
         // matches the bitstream. Browsers that see "mp4a.40.2" but receive
-        // eac3 will fail to initialize the audio decoder.
+        // eac3 will fail to initialize the audio decoder. Otherwise
+        // build_hls_args encodes AAC.
         match session
             .source_audio_codec
             .as_deref()
@@ -2182,6 +2232,7 @@ pub fn generate_master_playlist(session: &TranscodeSession) -> String {
             Some(AudioCodec::Eac3) => "ec-3",
             Some(AudioCodec::Ac3) => "ac-3",
             Some(AudioCodec::Dts) => "dtsh",
+            Some(AudioCodec::Flac) => "fLaC",
             _ => "mp4a.40.2",
         }
     } else {
@@ -2893,6 +2944,101 @@ mod tests {
                 "expected hvc1 CODECS for {tag:?}: {playlist}"
             );
         }
+    }
+
+    #[test]
+    fn hls_audio_copy_follows_the_segment_container() {
+        // (source video, source audio, expected -c:a, expected fMP4)
+        let cases = [
+            ("hevc", "flac", "copy", true),
+            ("HEVC", "flac", "copy", true),
+            ("H.265", "flac", "copy", true),
+            ("hevc", "truehd", "aac", true),
+            ("hevc", "pcm_s16le", "aac", true),
+            ("h264", "flac", "aac", false),
+            ("h264", "truehd", "aac", false),
+            ("h264", "ac3", "copy", false),
+        ];
+        for (video, audio, expected_audio, fmp4) in cases {
+            let args = build_hls_args(&TranscodeParams {
+                video_codec: "copy".into(),
+                audio_codec: "copy".into(),
+                source_video_codec: Some(video.into()),
+                source_audio_codec: Some(audio.into()),
+                ..default_hls(PathBuf::from("/tmp/test_audio_copy"))
+            });
+            assert_eq!(
+                arg_after(&args, "-c:a"),
+                Some(expected_audio),
+                "{video} + {audio}"
+            );
+            assert_eq!(
+                arg_after(&args, "-hls_segment_type") == Some("fmp4"),
+                fmp4,
+                "{video} + {audio}"
+            );
+
+            let mut session = hevc_session("copy", None);
+            session.source_video_codec = Some(video.into());
+            session.audio_codec = "copy".into();
+            session.source_audio_codec = Some(audio.into());
+            assert_eq!(session.use_fmp4(), fmp4, "{video} + {audio}");
+        }
+    }
+
+    #[test]
+    fn progressive_format_promotes_copied_mp4_to_matroska() {
+        assert_eq!(
+            ProgressiveFormat::for_request("mp4", "copy"),
+            ProgressiveFormat::Matroska
+        );
+        assert_eq!(
+            ProgressiveFormat::for_request("mp4", "libx264"),
+            ProgressiveFormat::Mp4
+        );
+        assert_eq!(
+            ProgressiveFormat::for_request("ts", "copy"),
+            ProgressiveFormat::Mpegts
+        );
+    }
+
+    #[test]
+    fn progressive_audio_copy_follows_the_container() {
+        use ProgressiveFormat::*;
+        // (container, source audio, can copy)
+        let cases = [
+            (Matroska, "flac", true),
+            (Matroska, "truehd", true),
+            (Mp4, "flac", true),
+            (Mp4, "truehd", false),
+            (Mpegts, "flac", false),
+            (Mpegts, "ac3", true),
+            (Webm, "opus", true),
+            (Webm, "aac", false),
+            (Webm, "flac", false),
+        ];
+        for (format, audio, expected) in cases {
+            assert_eq!(
+                format.can_copy_audio(Some(audio)),
+                expected,
+                "{format:?} + {audio}"
+            );
+        }
+        assert_eq!(Webm.fallback_audio_codec(), "opus");
+        assert_eq!(Mpegts.fallback_audio_codec(), "aac");
+    }
+
+    #[test]
+    fn master_playlist_names_copied_flac_and_transcoded_truehd() {
+        let mut session = hevc_session("copy", None);
+        session.audio_codec = "copy".into();
+        session.source_audio_codec = Some("flac".into());
+        let playlist = generate_master_playlist(&session);
+        assert!(playlist.contains(",fLaC\""), "playlist: {playlist}");
+
+        session.source_audio_codec = Some("truehd".into());
+        let playlist = generate_master_playlist(&session);
+        assert!(playlist.contains(",mp4a.40.2\""), "playlist: {playlist}");
     }
 
     #[test]

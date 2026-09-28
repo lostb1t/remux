@@ -49,6 +49,7 @@ use crate::{
             PlaybackConfig, PlaybackPermissions, TranscodeDecision,
             apply_subtitle_delivery, build_transcode_decision, play_method_for_codecs,
         },
+        engine::ProgressiveFormat,
         session::{TranscodeSession, TranscodeState},
     },
     sdks,
@@ -1372,6 +1373,22 @@ async fn videos_stream_inner(
             s.codec
                 .clone()
         });
+    // Copying audio the output container can't carry makes ffmpeg fail
+    // mid-stream. Encode it instead, or refuse if audio transcoding is off.
+    let format = ProgressiveFormat::for_request(&container, &video_codec);
+    let audio_codec = if audio_codec == "copy"
+        && !format.can_copy_audio(source_audio_codec.as_deref())
+    {
+        if !permissions.audio_transcoding {
+            return Err(anyhow!("Forbidden")
+                .context_forbidden("Progressive playback requires audio transcoding"));
+        }
+        format
+            .fallback_audio_codec()
+            .to_string()
+    } else {
+        audio_codec
+    };
     let burn_subtitle_prog = resolved_codecs.burn_subtitle;
 
     // Fast path: a Matroska source requested as Matroska is already the exact
@@ -1657,6 +1674,90 @@ mod tests {
             false
         ));
         assert!(!super::can_serve_mkv_source_directly("mp4", None, false));
+    }
+
+    #[tokio::test]
+    async fn progressive_refuses_uncopyable_audio_when_audio_transcoding_is_disabled() {
+        use crate::{
+            api::{MediaSourceInfo, MediaStream, MediaStreamType},
+            db, stream,
+        };
+
+        let (server, guard, token) = authenticated_server().await;
+        let fixture = std::env::temp_dir()
+            .join(format!("remux-flac-{}.mkv", uuid::Uuid::new_v4()));
+        tokio::fs::write(&fixture, b"0123456789abcdef")
+            .await
+            .unwrap();
+
+        let now = chrono::Utc::now().naive_utc();
+        let mut media = db::Media {
+            title: "FLAC fixture".to_string(),
+            kind: db::MediaKind::Stream,
+            stream_info: Some(stream::StreamInfo {
+                descriptor: stream::StreamDescriptor::Local(fixture.clone()),
+                ..Default::default()
+            }),
+            probe_data: Some(MediaSourceInfo {
+                container: Some(VideoContainer::Mkv),
+                media_streams: vec![
+                    MediaStream {
+                        codec: Some("h264".to_string()),
+                        type_: Some(MediaStreamType::Video),
+                        index: 0,
+                        ..Default::default()
+                    },
+                    MediaStream {
+                        codec: Some("flac".to_string()),
+                        type_: Some(MediaStreamType::Audio),
+                        index: 1,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        media
+            .save(
+                &guard
+                    .0
+                    .db,
+            )
+            .await
+            .unwrap();
+
+        // Remuxing stays allowed, so this reaches the progressive ffmpeg path
+        // with audio forced to copy.
+        let mut encoding = crate::api::EncodingOptions::default();
+        encoding.enable_audio_transcoding = Some(false);
+        crate::db::Settings::set_encoding_config(
+            &guard
+                .0
+                .db,
+            &encoding,
+        )
+        .await
+        .unwrap();
+
+        let response = server
+            .get(&format!(
+                "/videos/{}/stream.ts?VideoCodec=copy&AudioCodec=aac",
+                media.id,
+            ))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+            .expect_failure()
+            .await;
+        response.assert_status(StatusCode::FORBIDDEN);
+
+        tokio::fs::remove_file(fixture)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
