@@ -1774,9 +1774,8 @@ mod tests {
         forced_hls.assert_status(StatusCode::FORBIDDEN);
 
         // The progressive endpoint ultimately served the original file, so it
-        // must correct the client's initial direct-stream decision.
-        // A later client report is persisted so it can correct stale session
-        // state if the playback method changes after playback starts.
+        // must correct the client's initial direct-stream decision, and later
+        // client reports must not overwrite what the server recorded.
         server
             .post("/sessions/playing")
             .add_header(
@@ -1820,7 +1819,47 @@ mod tests {
                 .sessions
                 .get(forced_play_session_id)
                 .and_then(|session| session.play_method),
-            Some("Transcode".to_string())
+            Some("DirectPlay".to_string())
+        );
+
+        // Without a server-recorded method, client reports are still clamped
+        // to what the user's permissions allow, on start and on progress.
+        let client_play_session_id = "client-reported-only";
+        server
+            .post("/sessions/playing")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": media.id,
+                "MediaSourceId": media.id,
+                "PlaySessionId": client_play_session_id,
+                "PlayMethod": "DirectPlay"
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        server
+            .post("/sessions/playing/progress")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": media.id,
+                "PlaySessionId": client_play_session_id,
+                "PlayMethod": "Transcode",
+                "PositionTicks": 10_000_000
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        assert_eq!(
+            guard
+                .0
+                .sessions
+                .get(client_play_session_id)
+                .and_then(|session| session.play_method),
+            Some("DirectPlay".to_string())
         );
 
         tokio::fs::remove_file(fixture)

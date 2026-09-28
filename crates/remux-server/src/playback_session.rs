@@ -26,6 +26,9 @@ pub struct PlaybackSession {
     pub audio_stream_index: Option<i32>,
     pub subtitle_stream_index: Option<i32>,
     pub play_method: Option<String>,
+    /// `play_method` was recorded by a stream endpoint from what it actually
+    /// serves; client reports must not overwrite it.
+    play_method_from_server: bool,
     pub now_playing_queue: Option<Vec<QueueItem>>,
     pub playlist_item_id: Option<String>,
     pub started_at: DateTime<Utc>,
@@ -92,21 +95,13 @@ impl PlaybackSessionManager {
 
         // A method already recorded by a stream endpoint overrides this in
         // `insert`; until then, don't trust a method the server can't use.
-        let reported_play_method = match data
-            .play_method
-            .clone()
-        {
-            Some(method) => {
-                let encoding = db::Settings::get_encoding_config(db)
-                    .await
-                    .unwrap_or_default();
-                Some(
-                    PlaybackPermissions::for_user(&encoding, Some(&auth_session.user))
-                        .constrain_reported_method(method),
-                )
-            }
-            None => None,
-        };
+        let reported_play_method = constrain_client_play_method(
+            db,
+            &auth_session.user,
+            data.play_method
+                .clone(),
+        )
+        .await;
 
         // Enforce per-user concurrent-stream limit.
         let max_sessions = auth_session
@@ -219,6 +214,7 @@ impl PlaybackSessionManager {
             play_method: reported_play_method
                 .as_ref()
                 .map(|m| m.to_string()),
+            play_method_from_server: false,
             now_playing_queue: data
                 .now_playing_queue
                 .clone(),
@@ -352,9 +348,19 @@ impl PlaybackSessionManager {
         } else {
             ps.item_id
         };
-        let reported_play_method = data
-            .play_method
-            .clone();
+        // A method recorded by a stream endpoint reflects what is actually
+        // served; clients (jellyfin-web) re-send theirs on every report.
+        let reported_play_method = if ps.play_method_from_server {
+            None
+        } else {
+            constrain_client_play_method(
+                db,
+                user,
+                data.play_method
+                    .clone(),
+            )
+            .await
+        };
 
         // Detect encode-parameter changes and log them once.
         // We ignore pause/unpause — those are not encode changes.
@@ -421,8 +427,12 @@ impl PlaybackSessionManager {
             ps.subtitle_stream_index = data
                 .subtitle_stream_index
                 .or(ps.subtitle_stream_index);
+            // Re-check under the update: a stream endpoint may have recorded
+            // a method since the snapshot.
             if let Some(ref method) = reported_play_method {
-                ps.play_method = Some(method.to_string());
+                if !ps.play_method_from_server {
+                    ps.play_method = Some(method.to_string());
+                }
             }
             ps.last_activity = Utc::now();
         });
@@ -665,6 +675,7 @@ impl PlaybackSessionManager {
             .remove(&session.play_session_id)
         {
             session.play_method = Some(method.to_string());
+            session.play_method_from_server = true;
         }
         self.sessions
             .insert(
@@ -768,6 +779,7 @@ impl PlaybackSessionManager {
             .get_mut(id)
             .is_some_and(|mut session| {
                 session.play_method = Some(method.to_string());
+                session.play_method_from_server = true;
                 !(session
                     .user_id
                     .is_nil()
@@ -857,6 +869,7 @@ impl PlaybackSessionManager {
                         audio_stream_index: None,
                         subtitle_stream_index: None,
                         play_method: None,
+                        play_method_from_server: false,
                         now_playing_queue: None,
                         playlist_item_id: None,
                         started_at: Utc::now(),
@@ -1080,6 +1093,23 @@ async fn kill_transcode(ts: Arc<tokio::sync::RwLock<TranscodeSession>>) {
     let _ = std::fs::remove_dir_all(&output_dir);
 }
 
+/// Clamp a client-reported play method to what this user's permissions allow,
+/// so a session never records processing the server would refuse to do.
+async fn constrain_client_play_method(
+    db: &sqlx::SqlitePool,
+    user: &db::User,
+    method: Option<PlayMethod>,
+) -> Option<PlayMethod> {
+    let method = method?;
+    let encoding = db::Settings::get_encoding_config(db)
+        .await
+        .unwrap_or_default();
+    Some(
+        PlaybackPermissions::for_user(&encoding, Some(user))
+            .constrain_reported_method(method),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1101,6 +1131,7 @@ mod tests {
             audio_stream_index: None,
             subtitle_stream_index: None,
             play_method: Some(method.to_string()),
+            play_method_from_server: false,
             now_playing_queue: None,
             playlist_item_id: None,
             started_at: Utc::now(),
@@ -1128,6 +1159,11 @@ mod tests {
                 .get(id)
                 .and_then(|session| session.play_method),
             Some(PlayMethod::Transcode.to_string())
+        );
+        assert!(
+            sessions
+                .get(id)
+                .is_some_and(|session| session.play_method_from_server)
         );
         assert!(
             !sessions
@@ -1163,6 +1199,11 @@ mod tests {
                 .get(id)
                 .and_then(|session| session.play_method),
             Some(PlayMethod::Transcode.to_string())
+        );
+        assert!(
+            sessions
+                .get(id)
+                .is_some_and(|session| session.play_method_from_server)
         );
         assert!(
             !sessions
