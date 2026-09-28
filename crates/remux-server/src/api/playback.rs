@@ -501,27 +501,12 @@ async fn items_playbackinfo_inner(
         source
             .media_streams
             .retain(|s| {
-                if !matches!(s.type_, Some(api::MediaStreamType::Subtitle))
-                    || s.is_external
-                {
-                    return true;
-                }
-                let codec = s
-                    .codec
-                    .as_deref()
-                    .unwrap_or_default()
-                    .parse::<SubtitleCodec>()
-                    .unwrap_or(SubtitleCodec::Other(String::new()));
-                if crate::device_profile::subtitle_codec_deliverable(
-                    &codec,
+                crate::device_profile::keeps_embedded_subtitle(
+                    s,
                     device_profile.as_ref(),
                     allow_subtitle_extraction,
-                ) {
-                    return true;
-                }
-                !s.is_text_subtitle_stream()
-                    && subtitle_mode
-                        == remux_sdks::remux::EmbeddedSubtitleHandling::Burn
+                    subtitle_mode,
+                )
             });
 
         // Independent of subtitle_mode: an embedded subtitle that won't be

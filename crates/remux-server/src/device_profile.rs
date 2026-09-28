@@ -137,6 +137,32 @@ pub(crate) fn subtitle_codec_deliverable(
     }
 }
 
+/// Whether PlaybackInfo keeps `stream` in a source's `media_streams`. Drops
+/// an embedded subtitle that can't be delivered (see
+/// `subtitle_codec_deliverable`) unless it's an image subtitle that Burn mode
+/// can still burn in. The subtitle endpoint numbers add-on externals after
+/// the streams this keeps, so both must use this same rule.
+pub(crate) fn keeps_embedded_subtitle(
+    stream: &MediaStream,
+    device_profile: Option<&DeviceProfile>,
+    allow_extraction: bool,
+    subtitle_mode: EmbeddedSubtitleHandling,
+) -> bool {
+    if !matches!(stream.type_, Some(MediaStreamType::Subtitle)) || stream.is_external {
+        return true;
+    }
+    let codec = stream
+        .codec
+        .as_deref()
+        .unwrap_or_default()
+        .parse::<SubtitleCodec>()
+        .unwrap_or(SubtitleCodec::Other(String::new()));
+    if subtitle_codec_deliverable(&codec, device_profile, allow_extraction) {
+        return true;
+    }
+    !stream.is_text_subtitle_stream() && subtitle_mode == EmbeddedSubtitleHandling::Burn
+}
+
 impl DeviceProfileExt for DeviceProfile {
     fn video_transcoding_profile(&self) -> Option<&TranscodingProfile> {
         let is_video =
@@ -1618,9 +1644,11 @@ impl MediaSourceCapabilityExt for MediaSourceInfo {
 mod tests {
     use super::{
         CodecProfileExt, DeviceProfileExt, MediaSourceCapabilityExt, MediaSourceRank,
-        MediaSourceSortKey, SourceRankingContext, explicit_4k_resolution_support,
-        failed_condition_reason, playback_decision_label, primary_video_stream,
-        resolution_fit_tier, subtitle_burn_reason, transcode_cost_tier,
+        MediaSourceSortKey, SourceRankingContext, SubtitleCodec,
+        explicit_4k_resolution_support, failed_condition_reason,
+        keeps_embedded_subtitle, playback_decision_label, primary_video_stream,
+        resolution_fit_tier, subtitle_burn_reason, subtitle_codec_deliverable,
+        transcode_cost_tier,
     };
     use remux_sdks::remux::{
         AudioCodec, CodecProfile, CodecProfileType, DeviceProfile, DirectPlayProfile,
@@ -3261,6 +3289,64 @@ mod tests {
             .is_none(),
             "an external subtitle is delivered separately, never burned in"
         );
+    }
+
+    #[test]
+    fn keeps_embedded_subtitle_drops_text_subs_on_remote_sources_without_extraction() {
+        let srt = MediaStream {
+            index: 2,
+            type_: Some(MediaStreamType::Subtitle),
+            codec: Some("subrip".to_string()),
+            ..Default::default()
+        };
+        assert!(!keeps_embedded_subtitle(
+            &srt,
+            None,
+            false,
+            EmbeddedSubtitleHandling::Burn
+        ));
+        assert!(keeps_embedded_subtitle(
+            &srt,
+            None,
+            true,
+            EmbeddedSubtitleHandling::Burn
+        ));
+    }
+
+    #[test]
+    fn keeps_embedded_subtitle_needs_external_pgs_to_deliver_pgs() {
+        // A profile mentioning PGS with a non-External method can't take a
+        // `.sup` file: Burn keeps the track to burn it in, Strip drops it.
+        let pgs = MediaStream {
+            index: 2,
+            type_: Some(MediaStreamType::Subtitle),
+            codec: Some("pgssub".to_string()),
+            ..Default::default()
+        };
+        let profile = DeviceProfile {
+            subtitle_profiles: vec![SubtitleProfile {
+                format: Some("pgssub".to_string()),
+                method: Some(SubtitleDeliveryMethod::Hls),
+            }],
+            ..Default::default()
+        };
+        assert!(!subtitle_codec_deliverable(
+            &SubtitleCodec::Pgs,
+            Some(&profile),
+            true
+        ));
+        assert!(keeps_embedded_subtitle(
+            &pgs,
+            Some(&profile),
+            true,
+            EmbeddedSubtitleHandling::Burn
+        ));
+        assert!(!keeps_embedded_subtitle(
+            &pgs,
+            Some(&profile),
+            true,
+            EmbeddedSubtitleHandling::Strip
+        ));
     }
 
     #[test]

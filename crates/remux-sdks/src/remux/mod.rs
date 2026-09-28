@@ -970,7 +970,7 @@ pub enum EmbeddedSubtitleHandling {
     /// Accepts the removed `Extract` value as a legacy alias for existing
     /// installs — closest original intent, since both mean "don't burn in".
     #[serde(alias = "Extract")]
-    #[strum(serialize = "Strip", serialize = "Extract")]
+    #[strum(to_string = "Strip", serialize = "Extract")]
     Strip,
 }
 

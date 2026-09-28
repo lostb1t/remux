@@ -513,28 +513,22 @@ pub(crate) fn apply_subtitle_delivery(
             .unwrap_or(false)
         {
             stream.delivery_method = Some(api::SubtitleDeliveryMethod::Embed);
-        } else if allow_extraction
-            && (!is_image_sub
-                || (parsed_codec == Some(SubtitleCodec::Pgs)
-                    && profile_supports(SubtitleCodec::Pgs)))
+        } else if parsed_codec
+            .as_ref()
+            .is_some_and(|c| {
+                crate::device_profile::subtitle_codec_deliverable(
+                    c,
+                    device_profile.as_ref(),
+                    allow_extraction,
+                )
+            })
         {
             // Extraction feasible (local source, or remote with the setting
             // on) — always prefer it over burning in: lossless, and doesn't
-            // force a video re-encode. Applies to text and image subs alike,
-            // but only when the client can actually consume the result: the
-            // only image format with an external delivery path at all is
-            // PGS (raw passthrough into an HLS "sup" file — DVD/DVB
-            // subtitle bitstreams don't fit that container and have no
-            // conversion path either), and only when the client's profile
-            // declares PGS support — there's no OCR/text conversion to fall
-            // back to. Checking `is_image_sub` alone (any image codec) let a
-            // local DVD/DVB subtitle through here with no profile check at
-            // all, producing a "sup"-muxer request for a codec that muxer
-            // can't hold; checking `profile_supports(Pgs)` alone (without
-            // requiring the stream's own codec to actually be Pgs) let an
-            // unsupported PGS stream through whenever the profile merely
-            // mentioned Pgs for some *other* stream. Fall through to
-            // burning in when neither condition holds.
+            // force a video re-encode. Same rule the PlaybackInfo filter and
+            // the burn-in reason use (`subtitle_codec_deliverable`), so a PGS
+            // track is only offered as a `.sup` when the profile declares
+            // External PGS support; otherwise it falls through to burn-in.
             external_delivery(stream);
         } else if is_image_sub && subtitle_mode == EmbeddedSubtitleHandling::Burn {
             // Extraction infeasible (or the client can't consume PGS

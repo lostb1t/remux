@@ -116,7 +116,7 @@ type ExtractionOutcome = std::result::Result<(), String>;
 static SUBTITLE_EXTRACTION_INFLIGHT: std::sync::LazyLock<
     tokio::sync::Mutex<
         std::collections::HashMap<
-            (Uuid, Uuid),
+            (Uuid, Uuid, Option<i64>),
             Shared<BoxFuture<'static, ExtractionOutcome>>,
         >,
     >,
@@ -197,6 +197,18 @@ fn extractable_subtitles(probe: &api::MediaSourceInfo) -> Vec<ExtractableSubtitl
         })
         .flatten()
         .collect()
+}
+
+/// Whether embedded stream `stream_index` has a recognized text subtitle
+/// codec. `is_text_subtitle_stream` also counts unknown/missing codecs as
+/// text, which ffmpeg may not be able to convert.
+fn has_known_text_codec(probe: &api::MediaSourceInfo, stream_index: i64) -> bool {
+    probe
+        .media_streams
+        .iter()
+        .find(|s| s.index == stream_index && !s.is_external)
+        .and_then(|s| s.subtitle_codec())
+        .is_some_and(|c| c.is_text() && !matches!(c, api::SubtitleCodec::Other(_)))
 }
 
 /// The path ffmpeg actually writes to for a given final cache path — never
@@ -411,7 +423,12 @@ async fn ensure_subtitle_cached(
         return Ok(requested_path);
     }
 
-    let key = (item_id, media_source_id);
+    // A codec ffmpeg may not be able to convert (unknown or missing) aborts
+    // the whole batch, losing every good track with it. Batch only known
+    // text codecs; an unknown-codec track is extracted on its own, and only
+    // when it's the one requested.
+    let solo = (!has_known_text_codec(probe, stream_index)).then_some(stream_index);
+    let key = (item_id, media_source_id, solo);
     let shared = {
         let mut inflight = SUBTITLE_EXTRACTION_INFLIGHT
             .lock()
@@ -421,6 +438,10 @@ async fn ensure_subtitle_cached(
         } else {
             let missing: Vec<ExtractableSubtitle> = extractable_subtitles(probe)
                 .into_iter()
+                .filter(|s| match solo {
+                    Some(index) => s.stream_index == index,
+                    None => has_known_text_codec(probe, s.stream_index),
+                })
                 .filter(|s| {
                     !is_cached(&subtitle_cache_path(
                         data_dir,
@@ -710,6 +731,28 @@ async fn sidecar_subtitle_response(
     )
 }
 
+/// The item's add-on subtitles, as PlaybackInfo fetched them (same cache).
+async fn fetch_item_subtitles(
+    state: &AppState,
+    session: &auth::AuthSession,
+    item_media: &mut db::Media,
+) -> Vec<crate::addons::SubtitleInfo> {
+    state
+        .ctx
+        .addons
+        .fetch_subtitles(
+            item_media,
+            &state.ctx,
+            true,
+            Some(
+                session
+                    .user
+                    .id,
+            ),
+        )
+        .await
+}
+
 async fn subtitles_stream_inner(
     state: AppState,
     session: auth::AuthSession,
@@ -767,11 +810,76 @@ async fn subtitles_stream_inner(
         .await
         .ok();
         if let Some(ref source) = source_media {
+            let device_profile = crate::jellyfin_client::merge_device_profile_subtitles(
+                &session.device,
+                session
+                    .device
+                    .parsed_device_profile(),
+            );
+            let encoding_cfg = db::Settings::get_encoding_config(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await
+            .unwrap_or_default();
+            let subtitle_mode = encoding_cfg
+                .subtitle_mode
+                .unwrap_or_default();
+            let allow_subtitle_extraction = source
+                .stream_info
+                .as_ref()
+                .is_some_and(|si| {
+                    si.descriptor
+                        .is_local()
+                })
+                || encoding_cfg
+                    .allow_remote_subtitle_extraction
+                    .unwrap_or(false);
+            let server_cfg = db::Settings::get_config_or_default(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await;
+            let sub_langs = server_cfg
+                .subtitle_languages
+                .clone()
+                .unwrap_or_default();
+            let dedup = SubtitleDedupSettings::from_config(&server_cfg);
+            // With dedup on, PlaybackInfo's embedded set depends on the add-on
+            // list, so it's needed up front; otherwise only for an external.
+            let mut subs = if dedup.enabled {
+                Some(fetch_item_subtitles(&state, &session, &mut item_media).await)
+            } else {
+                None
+            };
+            // Only the embedded streams PlaybackInfo kept, dropped by the same
+            // two steps in the same order: add-on externals are numbered after
+            // those, not after every probed stream.
             let embedded_indices: std::collections::HashSet<i64> = source
                 .probe_data
-                .as_ref()
-                .map(|p| {
-                    p.media_streams
+                .clone()
+                .map(|mut probe| {
+                    probe
+                        .media_streams
+                        .retain(|s| {
+                            crate::device_profile::keeps_embedded_subtitle(
+                                s,
+                                device_profile.as_ref(),
+                                allow_subtitle_extraction,
+                                subtitle_mode,
+                            )
+                        });
+                    if let Some(ref subs) = subs {
+                        drop_unsupported_embedded_subtitles_with_external_match(
+                            &mut probe,
+                            subs,
+                            device_profile.as_ref(),
+                        );
+                    }
+                    probe
+                        .media_streams
                         .iter()
                         .map(|s| s.index)
                         .collect()
@@ -794,31 +902,12 @@ async fn subtitles_stream_inner(
             let i = stream_index - next_idx;
             // Only attempt external resolution if the index is not an embedded stream.
             if i >= 0 && !embedded_indices.contains(&stream_index) {
-                let server_cfg = db::Settings::get_config_or_default(
-                    &state
-                        .ctx
-                        .db,
-                )
-                .await;
-                let sub_langs = server_cfg
-                    .subtitle_languages
-                    .clone()
-                    .unwrap_or_default();
-                let dedup = SubtitleDedupSettings::from_config(&server_cfg);
-                let subs = state
-                    .ctx
-                    .addons
-                    .fetch_subtitles(
-                        &mut item_media,
-                        &state.ctx,
-                        true,
-                        Some(
-                            session
-                                .user
-                                .id,
-                        ),
-                    )
-                    .await;
+                let subs = match subs.take() {
+                    Some(subs) => subs,
+                    None => {
+                        fetch_item_subtitles(&state, &session, &mut item_media).await
+                    }
+                };
                 // Match append_external_subtitles' filtering exactly, or the
                 // index a client requests (from the menu it was shown) won't
                 // line up with this reconstructed list. That means resolving
@@ -828,33 +917,6 @@ async fn subtitles_stream_inner(
                 // Embed-only guard and let a stale/best-effort profile
                 // reach its codec fallback instead of agreeing with what was
                 // actually advertised.
-                let device_profile =
-                    crate::jellyfin_client::merge_device_profile_subtitles(
-                        &session.device,
-                        session
-                            .device
-                            .parsed_device_profile(),
-                    );
-                let encoding_cfg = db::Settings::get_encoding_config(
-                    &state
-                        .ctx
-                        .db,
-                )
-                .await
-                .unwrap_or_default();
-                let subtitle_mode = encoding_cfg
-                    .subtitle_mode
-                    .unwrap_or_default();
-                let allow_subtitle_extraction = source
-                    .stream_info
-                    .as_ref()
-                    .is_some_and(|si| {
-                        si.descriptor
-                            .is_local()
-                    })
-                    || encoding_cfg
-                        .allow_remote_subtitle_extraction
-                        .unwrap_or(false);
                 let resolved_probe = source
                     .probe_data
                     .clone()
@@ -2169,6 +2231,26 @@ mod tests {
         assert_eq!(extractable[1].map_spec, "0:s:2");
         assert_eq!(extractable[0].cache_codec, api::SubtitleCodec::Srt);
         assert_eq!(extractable[1].cache_codec, api::SubtitleCodec::Srt);
+    }
+
+    #[test]
+    fn has_known_text_codec_rejects_unknown_and_missing_codecs() {
+        let sub = |index: i64, codec: Option<&str>| api::MediaStream {
+            index,
+            type_: Some(api::MediaStreamType::Subtitle),
+            codec: codec.map(Into::into),
+            ..Default::default()
+        };
+        let source = source_with_subtitles(vec![
+            sub(0, Some("subrip")),
+            sub(1, Some("xsub")),
+            sub(2, None),
+            sub(3, Some("hdmv_pgs_subtitle")),
+        ]);
+        assert!(has_known_text_codec(&source, 0));
+        assert!(!has_known_text_codec(&source, 1));
+        assert!(!has_known_text_codec(&source, 2));
+        assert!(!has_known_text_codec(&source, 3));
     }
 
     #[test]
