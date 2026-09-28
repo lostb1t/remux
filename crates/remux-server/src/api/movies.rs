@@ -4,6 +4,7 @@ use axum::{Json, extract::State, response::IntoResponse};
 use axum_anyhow::ApiResult as Result;
 use axum_extra::extract::Query;
 use remux_macros::{get, query};
+use remux_sdks::remux::MetadataLanguage;
 use uuid::Uuid;
 
 use crate::{AppState, api, db, db::auth::AuthSession};
@@ -41,6 +42,14 @@ pub async fn movies_recommendations(
             .unwrap_or(5) as usize,
         q.item_limit
             .unwrap_or(8),
+        session
+            .metadata_language(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await
+            .as_ref(),
     )
     .await?;
     Ok(Json(categories))
@@ -53,6 +62,7 @@ pub(super) async fn build_recommendations(
     kind: db::MediaKind,
     category_limit: usize,
     item_limit: u32,
+    metadata_language: Option<&MetadataLanguage>,
 ) -> Result<Vec<api::RecommendationDto>> {
     // Recently played (up to 7), ordered by last played date.
     let recently_played = db::Media::get_by_filter(
@@ -71,6 +81,7 @@ pub(super) async fn build_recommendations(
             sort_order: vec![api::SortOrder::Descending],
             limit: Some(7),
             total_count: false,
+            metadata_language: metadata_language.cloned(),
             ..Default::default()
         },
     )
@@ -97,6 +108,7 @@ pub(super) async fn build_recommendations(
             sort_by: vec![api::ItemSortBy::Random],
             limit: Some(10),
             total_count: false,
+            metadata_language: metadata_language.cloned(),
             ..Default::default()
         },
     )
@@ -114,6 +126,7 @@ pub(super) async fn build_recommendations(
         parent_id,
         item_limit,
         api::RecommendationType::SimilarToRecentlyPlayed,
+        metadata_language,
     )
     .await?;
     let similar_liked = build_similar_categories(
@@ -123,13 +136,20 @@ pub(super) async fn build_recommendations(
         parent_id,
         item_limit,
         api::RecommendationType::SimilarToLikedItem,
+        metadata_language,
     )
     .await?;
 
     // Build HasActorFromRecentlyPlayed categories from top 6 recently played movies.
-    let actor_cats =
-        build_actor_categories(db, &recently_played, kind, parent_id, item_limit)
-            .await?;
+    let actor_cats = build_actor_categories(
+        db,
+        &recently_played,
+        kind,
+        parent_id,
+        item_limit,
+        metadata_language,
+    )
+    .await?;
 
     // Round-robin interleave: 2 from recent, 2 from liked, 1 from actor per cycle.
     let mut result = Vec::with_capacity(category_limit);
@@ -182,6 +202,7 @@ async fn build_similar_categories(
     parent_id: Option<Uuid>,
     item_limit: u32,
     rec_type: api::RecommendationType,
+    metadata_language: Option<&MetadataLanguage>,
 ) -> Result<Vec<api::RecommendationDto>> {
     let mut cats = Vec::new();
     for baseline in baselines {
@@ -211,6 +232,7 @@ async fn build_similar_categories(
                 sort_order: vec![api::SortOrder::Descending],
                 limit: Some(item_limit + 1),
                 total_count: false,
+                metadata_language: metadata_language.cloned(),
                 ..Default::default()
             },
         )
@@ -245,6 +267,7 @@ async fn build_actor_categories(
     kind: db::MediaKind,
     parent_id: Option<Uuid>,
     item_limit: u32,
+    metadata_language: Option<&MetadataLanguage>,
 ) -> Result<Vec<api::RecommendationDto>> {
     let mut cats = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -293,6 +316,7 @@ async fn build_actor_categories(
                     sort_order: vec![api::SortOrder::Descending],
                     limit: Some(item_limit + 2),
                     total_count: false,
+                    metadata_language: metadata_language.cloned(),
                     ..Default::default()
                 },
             )

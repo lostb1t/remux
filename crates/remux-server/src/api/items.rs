@@ -247,6 +247,13 @@ pub async fn get_items(
         .device
         .jellyfin_client();
     let hide_sources = client.hide_sources();
+    let metadata_language = session
+        .metadata_language(
+            &state
+                .ctx
+                .db,
+        )
+        .await;
 
     let parent = if let Some(parent_id) = q
         .parent_id
@@ -385,7 +392,15 @@ pub async fn get_items(
                 .zip(remote_results)
             {
                 match result {
-                    Ok(results) => {
+                    Ok(mut results) => {
+                        db::Media::resolve_translations(
+                            &state
+                                .ctx
+                                .db,
+                            &mut results,
+                            metadata_language.as_ref(),
+                        )
+                        .await;
                         let items: Vec<_> = results
                             .into_iter()
                             .map(|m| api::db_media_to_item(m, hide_sources))
@@ -510,14 +525,22 @@ pub async fn get_items(
                 .collect();
             let mut items = Vec::with_capacity(slice.len());
             if !item_ids.is_empty() {
-                let mut by_id: std::collections::HashMap<Uuid, db::Media> =
-                    db::Media::get_by_ids(
-                        &state
-                            .ctx
-                            .db,
-                        &item_ids,
-                    )
-                    .await?
+                let mut rows = db::Media::get_by_ids(
+                    &state
+                        .ctx
+                        .db,
+                    &item_ids,
+                )
+                .await?;
+                db::Media::resolve_translations(
+                    &state
+                        .ctx
+                        .db,
+                    &mut rows,
+                    metadata_language.as_ref(),
+                )
+                .await;
+                let mut by_id: std::collections::HashMap<Uuid, db::Media> = rows
                     .into_iter()
                     .map(|m| (m.id, m))
                     .collect();
@@ -963,16 +986,31 @@ pub async fn items_root(
 #[get("/items/{id}/ancestors")]
 pub async fn items_ancestors(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let ancestors = db::Media::get_ancestors(
+    let mut ancestors = db::Media::get_ancestors(
         &state
             .ctx
             .db,
         &id,
     )
     .await?;
+    db::Media::resolve_translations(
+        &state
+            .ctx
+            .db,
+        &mut ancestors,
+        session
+            .metadata_language(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await
+            .as_ref(),
+    )
+    .await;
     Ok(Json(
         ancestors
             .into_iter()
@@ -1986,6 +2024,21 @@ async fn item_for_user(
                 .db,
         )
         .await?;
+    let metadata_language = session
+        .metadata_language(
+            &state
+                .ctx
+                .db,
+        )
+        .await;
+    media
+        .resolve_translation(
+            &state
+                .ctx
+                .db,
+            metadata_language.as_ref(),
+        )
+        .await;
     let mut base_item = api::db_media_to_item(media.clone(), false);
 
     if needs_streams {
@@ -2791,6 +2844,13 @@ pub async fn genres(
                 .sort_order
                 .unwrap_or_default(),
             title_contains: q.search_term,
+            metadata_language: session
+                .metadata_language(
+                    &state
+                        .ctx
+                        .db,
+                )
+                .await,
             ..Default::default()
         },
     )
@@ -3115,6 +3175,13 @@ pub async fn items_similar(
                     .id,
             )),
         include_user_state: true,
+        metadata_language: session
+            .metadata_language(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await,
         ..Default::default()
     };
     let result = db::Media::get_by_filter(
@@ -4067,6 +4134,223 @@ mod tests {
         db::MediaRelation::upsert(db, &relations)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn user_metadata_language_translates_search_and_detail() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let auth = HeaderValue::from_str(&auth).unwrap();
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(
+            &server,
+            auth.to_str()
+                .unwrap(),
+        )
+        .await;
+
+        let movie =
+            insert_media(db, "Spirited Away", db::MediaKind::Movie, "tt0245429").await;
+        sqlx::query("UPDATE media SET digital_released_at = released_at WHERE id = ?")
+            .bind(movie.id)
+            .execute(db)
+            .await
+            .unwrap();
+        add_genre(db, movie.id, "Animation").await;
+        let es: remux_sdks::remux::MetadataLanguage = "es"
+            .parse()
+            .unwrap();
+        let genre_id =
+            crate::common::stable_media_uuid(&db::MediaKind::Genre, "animation");
+        db::MediaTranslation::upsert_provider(
+            db,
+            &[
+                (
+                    movie.id,
+                    db::TranslatedText {
+                        language: es.clone(),
+                        title: Some("El viaje de Chihiro".into()),
+                        description: Some("Chihiro se muda…".into()),
+                        primary_image: None,
+                    },
+                ),
+                (
+                    genre_id,
+                    db::TranslatedText {
+                        language: es.clone(),
+                        title: Some("Animación".into()),
+                        description: None,
+                        primary_image: None,
+                    },
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+
+        server
+            .post(&format!("/users/{user_id}/configuration"))
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .json(&serde_json::json!({ "remux": { "metadata_language": "es" } }))
+            .await;
+        // A Jellyfin client saving its own settings omits the remux extension.
+        server
+            .post("/users/configuration")
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .json(&serde_json::json!({ "SubtitleMode": "Always" }))
+            .await;
+        let me: serde_json::Value = server
+            .get("/users/me")
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .await
+            .json();
+        assert_eq!(me["Configuration"]["remux"]["metadata_language"], "es");
+
+        for term in ["local:chihiro", "local:spirited"] {
+            let search: serde_json::Value = server
+                .get("/items")
+                .add_header(http::header::AUTHORIZATION, auth.clone())
+                .add_query_param("searchTerm", term)
+                .add_query_param("IncludeItemTypes", "Movie")
+                .add_query_param("Recursive", "true")
+                .await
+                .json();
+            let names: Vec<&str> = search["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|i| i["Name"].as_str())
+                .collect();
+            assert_eq!(names, vec!["El viaje de Chihiro"], "{term}");
+        }
+
+        let detail: serde_json::Value = server
+            .get(&format!("/items/{}", movie.id))
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .await
+            .json();
+        assert_eq!(detail["Name"], "El viaje de Chihiro");
+        assert_eq!(detail["Overview"], "Chihiro se muda…");
+        assert_eq!(detail["Genres"], serde_json::json!(["Animación"]));
+
+        // Clearing the preference returns the server-language text.
+        server
+            .post(&format!("/users/{user_id}/configuration"))
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .json(&serde_json::json!({ "remux": { "metadata_language": "" } }))
+            .await;
+        let detail: serde_json::Value = server
+            .get(&format!("/items/{}", movie.id))
+            .add_header(http::header::AUTHORIZATION, auth)
+            .await
+            .json();
+        assert_eq!(detail["Name"], "Spirited Away");
+    }
+
+    #[tokio::test]
+    async fn translated_reader_gets_their_language_poster() {
+        let images = httpmock::MockServer::start();
+        images.mock(|when, then| {
+            when.path("/server.jpg");
+            then.status(200)
+                .header("content-type", "image/jpeg")
+                .body("server poster");
+        });
+        images.mock(|when, then| {
+            when.path("/es.jpg");
+            then.status(200)
+                .header("content-type", "image/jpeg")
+                .body("es poster");
+        });
+        let (server, guard, token) = authenticated_server().await;
+        let auth = HeaderValue::from_str(&auth_header_with_token(&token)).unwrap();
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(
+            &server,
+            auth.to_str()
+                .unwrap(),
+        )
+        .await;
+        let movie =
+            insert_media(db, "Spirited Away", db::MediaKind::Movie, "tt0245429").await;
+        let server_image_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO media_images (id, media_id, image_type, image_index, path) \
+             VALUES (?, ?, 'primary', 0, ?)",
+        )
+        .bind(server_image_id)
+        .bind(movie.id)
+        .bind(images.url("/server.jpg"))
+        .execute(db)
+        .await
+        .unwrap();
+        let es_url = images.url("/es.jpg");
+        db::MediaTranslation::upsert_provider(
+            db,
+            &[(
+                movie.id,
+                db::TranslatedText {
+                    language: "es"
+                        .parse()
+                        .unwrap(),
+                    title: None,
+                    description: None,
+                    primary_image: Some(es_url.clone()),
+                },
+            )],
+        )
+        .await
+        .unwrap();
+        async fn primary_tag(
+            server: &axum_test::TestServer,
+            auth: &HeaderValue,
+            user_id: &str,
+            item: Uuid,
+            language: &str,
+        ) -> String {
+            server
+                .post(&format!("/users/{user_id}/configuration"))
+                .add_header(http::header::AUTHORIZATION, auth.clone())
+                .json(
+                    &serde_json::json!({ "remux": { "metadata_language": language } }),
+                )
+                .await;
+            let detail: serde_json::Value = server
+                .get(&format!("/items/{item}"))
+                .add_header(http::header::AUTHORIZATION, auth.clone())
+                .await
+                .json();
+            detail["ImageTags"]["Primary"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+        async fn image(
+            server: &axum_test::TestServer,
+            item: Uuid,
+            tag: &str,
+        ) -> String {
+            server
+                .get(&format!("/items/{item}/images/primary"))
+                .add_query_param("tag", tag)
+                .await
+                .text()
+        }
+
+        let es_tag = primary_tag(&server, &auth, &user_id, movie.id, "es").await;
+        assert_eq!(
+            es_tag,
+            db::translated_image_id(movie.id, &es_url).to_string()
+        );
+        assert_eq!(image(&server, movie.id, &es_tag).await, "es poster");
+
+        let server_tag = primary_tag(&server, &auth, &user_id, movie.id, "").await;
+        assert_eq!(server_tag, server_image_id.to_string());
+        assert_eq!(image(&server, movie.id, &server_tag).await, "server poster");
     }
 
     #[tokio::test]

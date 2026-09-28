@@ -1415,6 +1415,12 @@ pub struct MediaFilter {
     pub exclude_ids: Option<Vec<Uuid>>,
     /// Emby `AnyProviderIdEquals` — item must match ANY listed provider ID.
     pub any_provider_ids: Option<api::AnyProviderIds>,
+    /// The requesting user's metadata language when it differs from the
+    /// server default. Title search, name sorting and name-range filters
+    /// use the translated title, and returned rows get translated text.
+    #[sqlx(skip)]
+    #[serde(skip)]
+    pub metadata_language: Option<remux_sdks::remux::MetadataLanguage>,
 }
 
 /// Normalise any country string to an ISO 3166-1 alpha-2 code (e.g. "US").
@@ -3751,6 +3757,18 @@ impl Media {
         db: &SqlitePool,
         filter: &MediaFilter,
     ) -> Result<FilterResult<Media>> {
+        // Title the requesting user sees: their translation, else the
+        // server-language title.
+        let display_title = |alias: &str| -> String {
+            match &filter.metadata_language {
+                Some(lang) => super::display_title_sql(alias, lang),
+                None if alias == "media" => "title".to_string(),
+                None => format!("{alias}.title"),
+            }
+        };
+        let title_sql = display_title("media");
+        let g_title = display_title("g");
+        let p_title = display_title("p");
         let is_manual_collection = filter
             .parent
             .as_ref()
@@ -4396,25 +4414,47 @@ impl Media {
             if let Some(s) = &filter.name_starts_with {
                 // LIKE is case-insensitive for ASCII in SQLite; no UPPER() needed.
                 // A COLLATE NOCASE index on title can satisfy this as a prefix scan.
-                qb.push(" AND title LIKE ")
+                qb.push(format!(" AND {title_sql} LIKE "))
                     .push_bind(format!("{}%", s));
             }
 
             if let Some(s) = &filter.name_starts_with_or_greater {
-                qb.push(" AND title >= ")
+                qb.push(format!(" AND {title_sql} >= "))
                     .push_bind(s.clone())
                     .push(" COLLATE NOCASE");
             }
 
             if let Some(s) = &filter.name_less_than {
-                qb.push(" AND title < ")
+                qb.push(format!(" AND {title_sql} < "))
                     .push_bind(s.clone())
                     .push(" COLLATE NOCASE");
             }
 
             if let Some(s) = &filter.title_contains {
-                qb.push(" AND title LIKE ")
-                    .push_bind(format!("%{}%", s));
+                let pattern = format!("%{}%", s);
+                match &filter.metadata_language {
+                    None => {
+                        qb.push(" AND title LIKE ")
+                            .push_bind(pattern);
+                    }
+                    Some(lang) => {
+                        // Match the reader's language and the server-language title.
+                        qb.push(" AND (title LIKE ")
+                            .push_bind(pattern.clone())
+                            .push(
+                                " OR media.id IN (SELECT media_id FROM media_translations \
+                                 WHERE language IN (",
+                            )
+                            .push(super::language_list_sql(lang))
+                            .push(")");
+                        if let Some(kind) = &filter.kind {
+                            qb.push_in("kind", kind);
+                        }
+                        qb.push(" AND title LIKE ")
+                            .push_bind(pattern)
+                            .push("))");
+                    }
+                }
             }
 
             if let Some(ids) = &filter.any_provider_ids {
@@ -4809,7 +4849,7 @@ impl Media {
                         .map(|u| format!("X'{}'", u.simple()));
                     let col = match sort {
                         api::ItemSortBy::SortName | api::ItemSortBy::Name => {
-                            format!("title COLLATE NOCASE {}", dir)
+                            format!("{title_sql} COLLATE NOCASE {}", dir)
                         }
                         api::ItemSortBy::DateCreated => {
                             format!("{DATE_CREATED_ORDER_EXPR} {}", dir)
@@ -4856,10 +4896,10 @@ impl Media {
                             // albums, own title for artist rows.
                             format!(
                                 "CASE WHEN kind = 'track' THEN \
-                                   COALESCE((SELECT g.title FROM media g WHERE g.id = media.grandparent_id), '') \
+                                   COALESCE((SELECT {g_title} FROM media g WHERE g.id = media.grandparent_id), '') \
                                  WHEN kind = 'album' THEN \
-                                   COALESCE((SELECT p.title FROM media p WHERE p.id = media.parent_id), '') \
-                                 ELSE COALESCE(title, '') END COLLATE NOCASE {}",
+                                   COALESCE((SELECT {p_title} FROM media p WHERE p.id = media.parent_id), '') \
+                                 ELSE COALESCE({title_sql}, '') END COLLATE NOCASE {}",
                                 dir
                             )
                         }
@@ -4868,10 +4908,10 @@ impl Media {
                             // albums, grandparent for tracks).
                             format!(
                                 "CASE WHEN kind = 'track' THEN \
-                                   COALESCE((SELECT g.title FROM media g WHERE g.id = media.grandparent_id), '') \
+                                   COALESCE((SELECT {g_title} FROM media g WHERE g.id = media.grandparent_id), '') \
                                  WHEN kind = 'album' THEN \
-                                   COALESCE((SELECT p.title FROM media p WHERE p.id = media.parent_id), '') \
-                                 ELSE COALESCE(title, '') END COLLATE NOCASE {}",
+                                   COALESCE((SELECT {p_title} FROM media p WHERE p.id = media.parent_id), '') \
+                                 ELSE COALESCE({title_sql}, '') END COLLATE NOCASE {}",
                                 dir
                             )
                         }
@@ -4879,8 +4919,8 @@ impl Media {
                             // Album title: parent row for tracks, own title for albums.
                             format!(
                                 "CASE WHEN kind = 'track' THEN \
-                                   COALESCE((SELECT p.title FROM media p WHERE p.id = media.parent_id), '') \
-                                 ELSE COALESCE(title, '') END COLLATE NOCASE {}",
+                                   COALESCE((SELECT {p_title} FROM media p WHERE p.id = media.parent_id), '') \
+                                 ELSE COALESCE({title_sql}, '') END COLLATE NOCASE {}",
                                 dir
                             )
                         }
@@ -4889,10 +4929,10 @@ impl Media {
                             // for seasons, own title for everything else.
                             format!(
                                 "CASE WHEN kind = 'episode' THEN \
-                                   COALESCE((SELECT g.title FROM media g WHERE g.id = media.grandparent_id), '') \
+                                   COALESCE((SELECT {g_title} FROM media g WHERE g.id = media.grandparent_id), '') \
                                  WHEN kind = 'season' THEN \
-                                   COALESCE((SELECT p.title FROM media p WHERE p.id = media.parent_id), '') \
-                                 ELSE COALESCE(title, '') END COLLATE NOCASE {}",
+                                   COALESCE((SELECT {p_title} FROM media p WHERE p.id = media.parent_id), '') \
+                                 ELSE COALESCE({title_sql}, '') END COLLATE NOCASE {}",
                                 dir
                             )
                         }
@@ -4929,7 +4969,7 @@ impl Media {
                                 // completion time is still meaningful for ranking.
                                 format!("COALESCE(dp.last_played_at, dp.played_at) {}", dir)
                             } else {
-                                format!("title COLLATE NOCASE {}", dir)
+                                format!("{title_sql} COLLATE NOCASE {}", dir)
                             }
                         }
                         api::ItemSortBy::PlayCount => {
@@ -4940,7 +4980,7 @@ impl Media {
                                     dir
                                 )
                             } else {
-                                format!("title COLLATE NOCASE {}", dir)
+                                format!("{title_sql} COLLATE NOCASE {}", dir)
                             }
                         }
                         api::ItemSortBy::IsPlayed => {
@@ -4953,7 +4993,7 @@ impl Media {
                                     dir
                                 )
                             } else {
-                                format!("title COLLATE NOCASE {}", dir)
+                                format!("{title_sql} COLLATE NOCASE {}", dir)
                             }
                         }
                         api::ItemSortBy::IsUnplayed => {
@@ -4966,7 +5006,7 @@ impl Media {
                                     dir
                                 )
                             } else {
-                                format!("title COLLATE NOCASE {}", dir)
+                                format!("{title_sql} COLLATE NOCASE {}", dir)
                             }
                         }
                         api::ItemSortBy::IsFavoriteOrLiked => {
@@ -4977,15 +5017,15 @@ impl Media {
                                     dir
                                 )
                             } else {
-                                format!("title COLLATE NOCASE {}", dir)
+                                format!("{title_sql} COLLATE NOCASE {}", dir)
                             }
                         }
                         api::ItemSortBy::Random => "RANDOM()".to_string(),
                         api::ItemSortBy::ChannelOrder => {
-                            format!("(sort_order IS NULL), COALESCE(sort_order, channel_number, 999999) {dir}, title COLLATE NOCASE")
+                            format!("(sort_order IS NULL), COALESCE(sort_order, channel_number, 999999) {dir}, {title_sql} COLLATE NOCASE")
                         }
                         api::ItemSortBy::DisplayOrder => {
-                            format!("(sort_order IS NULL), COALESCE(sort_order, 999999) {dir}, title COLLATE NOCASE")
+                            format!("(sort_order IS NULL), COALESCE(sort_order, 999999) {dir}, {title_sql} COLLATE NOCASE")
                         }
                         api::ItemSortBy::CatalogOrder => {
                             let catalog_ids: Vec<String> = filter
@@ -5012,7 +5052,7 @@ impl Media {
                                      AND mr.left_media_id IN ({in_clause})), 999999) ASC"
                                 )
                             } else {
-                                format!("title COLLATE NOCASE {dir}")
+                                format!("{title_sql} COLLATE NOCASE {dir}")
                             }
                         }
                         api::ItemSortBy::PopularityAllTime => {
@@ -5071,11 +5111,11 @@ impl Media {
                             if is_manual_collection {
                                 format!("mr.weight {}", dir)
                             } else {
-                                format!("title COLLATE NOCASE {}", dir)
+                                format!("{title_sql} COLLATE NOCASE {}", dir)
                             }
                         }
                         // Default fallback
-                        _ => format!("title COLLATE NOCASE {}", dir),
+                        _ => format!("{title_sql} COLLATE NOCASE {}", dir),
                     };
                     col
                 })
@@ -5104,7 +5144,7 @@ impl Media {
             );
         } else if is_channel_query {
             records_qb.push(
-                " ORDER BY (sort_order IS NULL), COALESCE(sort_order, channel_number, 999999), title COLLATE NOCASE",
+                format!(" ORDER BY (sort_order IS NULL), COALESCE(sort_order, channel_number, 999999), {title_sql} COLLATE NOCASE"),
             );
         } else if filter
             .title_contains
@@ -5114,7 +5154,9 @@ impl Media {
             // useful than titles that only contain the term later. Keep person rows
             // at the end because they are secondary search results in Jellyfin.
             records_qb
-                .push(" ORDER BY CASE WHEN LOWER(kind) = 'person' THEN 2 WHEN title LIKE ")
+                .push(format!(
+                    " ORDER BY CASE WHEN LOWER(kind) = 'person' THEN 2 WHEN {title_sql} LIKE "
+                ))
                 .push_bind(format!(
                     "{}%",
                     filter
@@ -5122,14 +5164,14 @@ impl Media {
                         .as_deref()
                         .unwrap_or_default()
                 ))
-                .push(" THEN 0 ELSE 1 END, title COLLATE NOCASE ASC");
+                .push(format!(" THEN 0 ELSE 1 END, {title_sql} COLLATE NOCASE ASC"));
         } else {
             // Universal fallback: sort by index numbers so episodes/seasons/tracks
             // always come back in natural order when the client sends no SortBy.
             // Indexed content (episodes, seasons, tracks) has idx set; non-indexed
             // content (movies, series) gets COALESCE to 9999 and falls back to title.
             records_qb.push(
-                " ORDER BY COALESCE(parent_idx, 9999) ASC, COALESCE(idx, 9999) ASC, title COLLATE NOCASE ASC",
+                format!(" ORDER BY COALESCE(parent_idx, 9999) ASC, COALESCE(idx, 9999) ASC, {title_sql} COLLATE NOCASE ASC"),
             );
         }
 
@@ -5820,6 +5862,14 @@ impl Media {
         }
 
         Self::preload_parents(db, &mut records).await;
+        Self::resolve_translations(
+            db,
+            &mut records,
+            filter
+                .metadata_language
+                .as_ref(),
+        )
+        .await;
 
         if filter.include_user_state {
             let uid = filter
@@ -6162,18 +6212,45 @@ impl Media {
             Vec::new()
         };
 
-        // Resolve genre names → IDs
+        let metadata_language = user
+            .and_then(|u| {
+                u.configuration
+                    .as_ref()
+            })
+            .and_then(|c| {
+                c.0.metadata_language_override(server_config.and_then(|s| {
+                    s.preferred_metadata_language
+                        .as_deref()
+                }))
+            });
+
+        // Resolve genre names → IDs. A translated reader also sends the
+        // genre names they were shown.
         let genre_ids_from_names: Option<Vec<Uuid>> =
             if let Some(names) = &filter.genres {
                 if names.is_empty() {
                     None
                 } else {
                     let mut qb = sqlx::QueryBuilder::new(
-                        "SELECT id FROM media WHERE kind = 'genre' AND title IN (",
+                        "SELECT id FROM media WHERE kind = 'genre' AND (title IN (",
                     );
                     let mut sep = qb.separated(", ");
                     for n in names {
                         sep.push_bind(n);
+                    }
+                    qb.push(")");
+                    if let Some(lang) = &metadata_language {
+                        qb.push(
+                            " OR id IN (SELECT media_id FROM media_translations \
+                             WHERE language IN (",
+                        );
+                        qb.push(super::language_list_sql(lang));
+                        qb.push(") AND title IN (");
+                        let mut sep = qb.separated(", ");
+                        for n in names {
+                            sep.push_bind(n);
+                        }
+                        qb.push(")");
                     }
                     qb.push(")");
                     let rows = qb
@@ -6479,6 +6556,7 @@ impl Media {
                         .include_childless
                         .unwrap_or(false),
                 any_provider_ids: filter.any_provider_ids(),
+                metadata_language,
                 ..Default::default()
             },
         )

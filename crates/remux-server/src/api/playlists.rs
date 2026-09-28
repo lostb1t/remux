@@ -332,16 +332,31 @@ pub async fn get_playlist_items(
     let mut by_id: std::collections::HashMap<Uuid, db::Media> = if item_ids.is_empty() {
         std::collections::HashMap::new()
     } else {
-        db::Media::get_by_ids(
+        let mut rows = db::Media::get_by_ids(
             &state
                 .ctx
                 .db,
             &item_ids,
         )
-        .await?
-        .into_iter()
-        .map(|m| (m.id, m))
-        .collect()
+        .await?;
+        db::Media::resolve_translations(
+            &state
+                .ctx
+                .db,
+            &mut rows,
+            session
+                .metadata_language(
+                    &state
+                        .ctx
+                        .db,
+                )
+                .await
+                .as_ref(),
+        )
+        .await;
+        rows.into_iter()
+            .map(|m| (m.id, m))
+            .collect()
     };
 
     let mut ordered: Vec<(Uuid, db::Media)> = relations

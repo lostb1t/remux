@@ -163,7 +163,7 @@ pub async fn person_by_name(
 #[get("/genres/{name}")]
 pub async fn genre_by_name(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse> {
     let record = db::Media::get_by_filter(
@@ -174,6 +174,13 @@ pub async fn genre_by_name(
             kind: Some(vec![db::MediaKind::Genre]),
             title_contains: Some(name.clone()),
             limit: Some(1),
+            metadata_language: session
+                .metadata_language(
+                    &state
+                        .ctx
+                        .db,
+                )
+                .await,
             ..Default::default()
         },
     )

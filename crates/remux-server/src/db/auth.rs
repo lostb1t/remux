@@ -444,6 +444,34 @@ pub struct AuthSession {
     pub user: db::User,
 }
 
+impl AuthSession {
+    /// This user's metadata language when it differs from the server
+    /// default.
+    pub async fn metadata_language(
+        &self,
+        db: &SqlitePool,
+    ) -> Option<remux_sdks::remux::MetadataLanguage> {
+        let config = &self
+            .user
+            .configuration
+            .as_ref()?
+            .0;
+        remux_sdks::remux::MetadataLanguage::parse_pref(
+            config
+                .remux
+                .as_ref()?
+                .metadata_language
+                .as_deref(),
+        )?;
+        let server = db::Settings::get_config_or_default(db).await;
+        config.metadata_language_override(
+            server
+                .preferred_metadata_language
+                .as_deref(),
+        )
+    }
+}
+
 //#[async_trait]
 impl FromRequestParts<AppState> for AuthSession {
     type Rejection = ApiError;
