@@ -491,6 +491,18 @@ impl MediaRelation {
             .begin()
             .await?;
 
+        Self::upsert_in(&mut tx, items).await?;
+        tx.commit()
+            .await?;
+        Ok(())
+    }
+
+    /// Upsert `items` on an existing connection/transaction; the caller
+    /// holds the write permit.
+    async fn upsert_in(
+        conn: &mut sqlx::SqliteConnection,
+        items: &[Self],
+    ) -> Result<()> {
         for chunk in items.chunks(CHUNK_SIZE) {
             let mut qb = sqlx::QueryBuilder::new(
                 "INSERT INTO media_relations (relation_id, left_media_id, right_media_id, weight, role, character) ",
@@ -508,12 +520,9 @@ impl MediaRelation {
             qb.push(" ON CONFLICT (left_media_id, right_media_id, COALESCE(role, '')) DO UPDATE SET weight = excluded.weight, character = excluded.character");
 
             qb.build()
-                .execute(&mut *tx)
+                .execute(&mut *conn)
                 .await?;
         }
-
-        tx.commit()
-            .await?;
         Ok(())
     }
 
@@ -700,38 +709,8 @@ impl MediaRelation {
         let mut tx = db
             .begin()
             .await?;
-        if !right_kinds.is_empty() {
-            let mut qb = sqlx::QueryBuilder::new(
-                "DELETE FROM media_relations WHERE left_media_id = ",
-            );
-            qb.push_bind(left_id);
-            qb.push(" AND right_media_id IN (SELECT id FROM media WHERE kind IN (");
-            let mut sep = qb.separated(", ");
-            for k in right_kinds {
-                sep.push_bind(k.to_string());
-            }
-            qb.push("))");
-            qb.build()
-                .execute(&mut *tx)
-                .await?;
-        }
-        for chunk in items.chunks(CHUNK_SIZE) {
-            let mut qb = sqlx::QueryBuilder::new(
-                "INSERT INTO media_relations (relation_id, left_media_id, right_media_id, weight, role, character) ",
-            );
-            qb.push_values(chunk.iter(), |mut b, item| {
-                b.push_bind(&item.relation_id)
-                    .push_bind(&item.left_media_id)
-                    .push_bind(&item.right_media_id)
-                    .push_bind(&item.weight)
-                    .push_bind(&item.role)
-                    .push_bind(&item.character);
-            });
-            qb.push(" ON CONFLICT (left_media_id, right_media_id, COALESCE(role, '')) DO UPDATE SET weight = excluded.weight, character = excluded.character");
-            qb.build()
-                .execute(&mut *tx)
-                .await?;
-        }
+        Self::delete_by_right_kinds_in(&mut tx, left_id, right_kinds).await?;
+        Self::upsert_in(&mut tx, items).await?;
         tx.commit()
             .await?;
         Ok(())
@@ -739,6 +718,17 @@ impl MediaRelation {
 
     pub async fn delete_by_right_kinds(
         db: &SqlitePool,
+        left_id: Uuid,
+        right_kinds: &[MediaKind],
+    ) -> Result<()> {
+        let mut conn = db
+            .acquire()
+            .await?;
+        Self::delete_by_right_kinds_in(&mut conn, left_id, right_kinds).await
+    }
+
+    async fn delete_by_right_kinds_in(
+        conn: &mut sqlx::SqliteConnection,
         left_id: Uuid,
         right_kinds: &[MediaKind],
     ) -> Result<()> {
@@ -756,7 +746,7 @@ impl MediaRelation {
         }
         qb.push("))");
         qb.build()
-            .execute(db)
+            .execute(&mut *conn)
             .await?;
         Ok(())
     }
