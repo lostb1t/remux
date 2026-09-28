@@ -20,7 +20,7 @@ pub mod ytdlp;
 use anyhow::{Result, anyhow};
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use futures::Stream;
+use futures::{FutureExt, Stream};
 use sqlx::SqlitePool;
 use std::{
     collections::HashMap,
@@ -375,6 +375,23 @@ pub(crate) async fn save_pending_tags(ctx: &AppContext, items: &[db::Media]) {
 
 pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: bool) {
     use remux_utils::merge_option;
+
+    for src in &source.translations {
+        match target
+            .translations
+            .iter_mut()
+            .find(|t| t.language == src.language)
+        {
+            Some(dst) => {
+                merge_option(&mut dst.title, &src.title, replace);
+                merge_option(&mut dst.description, &src.description, replace);
+                merge_option(&mut dst.primary_image, &src.primary_image, replace);
+            }
+            None => target
+                .translations
+                .push(src.clone()),
+        }
+    }
 
     if !target.is_field_locked(&db::MetadataField::Name)
         && (replace
@@ -820,6 +837,19 @@ pub trait SearchAddon: Send + Sync {
         limit: usize,
         ctx: &AppContext,
     ) -> Result<Option<Vec<db::Media>>>;
+
+    /// Titles of this query's results in `language`, keyed by the id
+    /// `search` gives each result. For readers whose metadata language isn't
+    /// the server default; results missing from the map keep their title.
+    async fn search_titles_in(
+        &self,
+        _kind: &db::MediaKind,
+        _query: &str,
+        _ctx: &AppContext,
+        _language: &remux_sdks::remux::MetadataLanguage,
+    ) -> std::collections::HashMap<Uuid, String> {
+        std::collections::HashMap::new()
+    }
 }
 
 #[derive(Clone)]
@@ -1091,6 +1121,10 @@ fn kind_in_type_list(kind: &db::MediaKind, list: &[db::MediaKind]) -> bool {
 // ---------------------------------------------------------------------------
 // AddonService
 // ---------------------------------------------------------------------------
+
+/// How long a search waits for a reader's translated titles after its
+/// server-language results arrive.
+const TRANSLATED_SEARCH_GRACE: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 pub struct AddonService {
@@ -2641,6 +2675,7 @@ impl AddonService {
         limit: usize,
         ctx: &AppContext,
         user_id: Option<Uuid>,
+        language: Option<&remux_sdks::remux::MetadataLanguage>,
     ) -> Result<Vec<db::Media>> {
         let override_ids = match user_id {
             Some(uid) => addon::user_addon_override(&ctx.db, uid)
@@ -2674,15 +2709,50 @@ impl AddonService {
             {
                 continue;
             }
-            match r
+            let search = r
                 .search
                 .as_ref()
-                .unwrap()
+                .unwrap();
+            let titles_in_language = async {
+                match language {
+                    Some(language) => {
+                        search
+                            .search_titles_in(kind, query, ctx, language)
+                            .await
+                    }
+                    None => Default::default(),
+                }
+            };
+            // The translated titles get a short grace period once the
+            // server-language results are in; past it they're left out.
+            let titles_in_language = titles_in_language.fuse();
+            let search_results = search
                 .search(kind, query, limit, ctx)
-                .await
-            {
+                .fuse();
+            futures::pin_mut!(titles_in_language, search_results);
+            let mut early_titles = None;
+            let result = loop {
+                futures::select! {
+                    r = search_results => break r,
+                    t = titles_in_language => early_titles = Some(t),
+                }
+            };
+            let mut translated = match early_titles {
+                Some(t) => t,
+                None => {
+                    tokio::time::timeout(TRANSLATED_SEARCH_GRACE, titles_in_language)
+                        .await
+                        .unwrap_or_default()
+                }
+            };
+            match result {
                 Ok(Some(mut results)) => {
+                    let titles: Vec<Option<String>> = results
+                        .iter()
+                        .map(|m| translated.remove(&m.id))
+                        .collect();
                     db::Media::adopt_existing_rows(&ctx.db, &mut results).await;
+                    // The store is shared by all users: cache server-language text only.
                     for m in &results {
                         ctx.store
                             .save(
@@ -2690,6 +2760,14 @@ impl AddonService {
                                 m.clone(),
                                 Duration::from_secs(3600),
                             );
+                    }
+                    for (m, title) in results
+                        .iter_mut()
+                        .zip(titles)
+                    {
+                        if let Some(title) = title {
+                            m.title = title;
+                        }
                     }
                     return Ok(results);
                 }
@@ -3913,6 +3991,49 @@ mod tests {
         };
         apply_title_format(&mut media);
         assert_eq!(media.title, "Tumbleton");
+    }
+
+    #[test]
+    fn merge_media_merges_translations_by_language_and_field() {
+        let text = |language: &str, title: Option<&str>, description: Option<&str>| {
+            db::TranslatedText {
+                language: language
+                    .parse()
+                    .unwrap(),
+                title: title.map(str::to_string),
+                description: description.map(str::to_string),
+                primary_image: None,
+            }
+        };
+        let mut target = db::Media {
+            translations: vec![
+                text("es", Some("A es"), None),
+                text("fr", Some("A fr"), Some("A fr overview")),
+            ],
+            ..Default::default()
+        };
+        let source = db::Media {
+            translations: vec![
+                text("es", Some("B es"), Some("B es overview")),
+                text("de", Some("B de"), None),
+            ],
+            ..Default::default()
+        };
+        merge_media(&mut target, &source, false);
+        assert_eq!(
+            target.translations,
+            vec![
+                text("es", Some("A es"), Some("B es overview")),
+                text("fr", Some("A fr"), Some("A fr overview")),
+                text("de", Some("B de"), None),
+            ]
+        );
+
+        merge_media(&mut target, &source, true);
+        assert_eq!(
+            target.translations[0],
+            text("es", Some("B es"), Some("B es overview"))
+        );
     }
 
     #[test]

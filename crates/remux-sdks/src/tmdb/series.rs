@@ -64,6 +64,7 @@ pub struct Series {
     pub credits: Option<super::Credits>,
     pub images: Option<super::Images>,
     pub content_ratings: Option<SeriesContentRatings>,
+    pub translations: Option<super::Translations>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -92,6 +93,13 @@ pub struct SeriesEndpoint {
 }
 
 impl SeriesEndpoint {
+    /// Also return title/overview in every language TMDB has.
+    pub fn with_translations(mut self) -> Self {
+        self.append_to_response
+            .push("translations".to_string());
+        self
+    }
+
     pub fn new(id: i64, language: Option<String>) -> Self {
         Self {
             id,
@@ -263,6 +271,9 @@ impl Endpoint for EpisodeEndpoint {
 pub struct SeriesSearchResult {
     pub id: i64,
     pub name: String,
+    pub original_name: Option<String>,
+    #[serde(default)]
+    pub original_language: Option<String>,
     #[serde(default, deserialize_with = "crate::deserialize_option_naive_date")]
     pub first_air_date: Option<NaiveDate>,
     pub poster_path: Option<String>,

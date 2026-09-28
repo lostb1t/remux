@@ -45,7 +45,7 @@ use purge_metrics::PurgeMetricsTask;
 use purge_movies::PurgeMoviesTask;
 use purge_music::PurgeMusicTask;
 use purge_shows::PurgeShowsTask;
-use refresh_all_meta::RefreshAllMetaTask;
+pub(crate) use refresh_all_meta::RefreshAllMetaTask;
 use refresh_iptv::RefreshIptvTask;
 use refresh_library::RefreshLibraryTask;
 use refresh_popularity::RefreshPopularityTask;

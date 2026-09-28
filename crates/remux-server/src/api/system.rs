@@ -301,6 +301,10 @@ pub async fn update_system_configuration(
         &config,
     )
     .await?;
+    state
+        .ctx
+        .store
+        .delete(crate::addons::tmdb::TRANSLATION_LANGUAGES_CACHE_KEY);
 
     Ok(StatusCode::NO_CONTENT)
 }

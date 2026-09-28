@@ -1557,6 +1557,11 @@ pub struct Media {
     /// this is `Arc` rather than `Box`.
     #[sqlx(skip)]
     pub grandparent: Option<Arc<Media>>,
+    /// Provider text in other users' languages, written to
+    /// `media_translations` by [`Media::upsert`].
+    #[sqlx(skip)]
+    #[serde(skip)]
+    pub translations: Vec<super::TranslatedText>,
 
     // stream
     #[sqlx(json(nullable))]
@@ -2850,6 +2855,20 @@ impl Media {
 
             tx.commit()
                 .await?;
+        }
+
+        let translations: Vec<(Uuid, super::TranslatedText)> = items
+            .iter()
+            .flat_map(|m| {
+                m.translations
+                    .iter()
+                    .map(|t| (m.id, t.clone()))
+            })
+            .collect();
+        if let Err(e) =
+            super::MediaTranslation::upsert_provider(db, &translations).await
+        {
+            warn!(error = %e, "failed to save media translations");
         }
 
         Ok(())

@@ -36,6 +36,50 @@ use super::{
     shows::{livetv_view_id, livetv_view_item, next_up_candidates},
 };
 
+async fn active_metadata_languages(
+    state: &AppState,
+) -> std::collections::BTreeSet<remux_sdks::remux::MetadataLanguage> {
+    let server = db::Settings::get_config_or_default(
+        &state
+            .ctx
+            .db,
+    )
+    .await;
+    db::active_metadata_languages(
+        &state
+            .ctx
+            .db,
+        server
+            .preferred_metadata_language
+            .as_deref(),
+    )
+    .await
+    .unwrap_or_default()
+}
+
+/// After a configuration save: when it makes a metadata language active,
+/// run a full metadata refresh to fetch it.
+async fn after_metadata_language_change(
+    state: &AppState,
+    before: &std::collections::BTreeSet<remux_sdks::remux::MetadataLanguage>,
+) {
+    state
+        .ctx
+        .store
+        .delete(crate::addons::tmdb::TRANSLATION_LANGUAGES_CACHE_KEY);
+    let after = active_metadata_languages(state).await;
+    let added: Vec<_> = after
+        .difference(before)
+        .collect();
+    if !added.is_empty() {
+        tracing::info!(languages = ?added, "new metadata language selected, refreshing metadata");
+        let _ = state
+            .tasks
+            .run_task("RefreshAllMeta")
+            .await;
+    }
+}
+
 #[post("/users/{user_id}/configuration")]
 pub async fn user_configuration_update(
     State(state): State<AppState>,
@@ -53,6 +97,7 @@ pub async fn user_configuration_update(
         &mut payload,
     )
     .await?;
+    let languages_before = active_metadata_languages(&state).await;
     db::User::save_configuration(
         &state
             .ctx
@@ -61,6 +106,7 @@ pub async fn user_configuration_update(
         &payload,
     )
     .await?;
+    after_metadata_language_change(&state, &languages_before).await;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -87,6 +133,7 @@ pub async fn user_configuration_legacy(
         &mut payload,
     )
     .await?;
+    let languages_before = active_metadata_languages(&state).await;
     db::User::save_configuration(
         &state
             .ctx
@@ -95,6 +142,7 @@ pub async fn user_configuration_legacy(
         &payload,
     )
     .await?;
+    after_metadata_language_change(&state, &languages_before).await;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -1236,12 +1284,14 @@ pub async fn update_user(
         );
         user.configuration = Some(sqlx::types::Json(config));
     }
+    let languages_before = active_metadata_languages(&state).await;
     user.save(
         &state
             .ctx
             .db,
     )
     .await?;
+    after_metadata_language_change(&state, &languages_before).await;
     state
         .ctx
         .signals

@@ -19,6 +19,8 @@ where
 pub struct Movie {
     pub id: i64,
     pub title: String,
+    #[serde(default)]
+    pub original_title: Option<String>,
     pub overview: Option<String>,
     #[serde(default, deserialize_with = "crate::deserialize_option_naive_date")]
     pub release_date: Option<NaiveDate>,
@@ -39,6 +41,7 @@ pub struct Movie {
     pub images: Option<super::Images>,
     pub release_dates: Option<MovieReleaseDates>,
     pub popularity: Option<f64>,
+    pub translations: Option<super::Translations>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -75,6 +78,13 @@ pub struct MovieEndpoint {
 }
 
 impl MovieEndpoint {
+    /// Also return title/overview in every language TMDB has.
+    pub fn with_translations(mut self) -> Self {
+        self.append_to_response
+            .push("translations".to_string());
+        self
+    }
+
     pub fn new(id: i64, language: Option<String>) -> Self {
         Self {
             id,
@@ -106,6 +116,9 @@ impl Endpoint for MovieEndpoint {
 pub struct MovieSearchResult {
     pub id: i64,
     pub title: String,
+    pub original_title: Option<String>,
+    #[serde(default)]
+    pub original_language: Option<String>,
     #[serde(default, deserialize_with = "crate::deserialize_option_naive_date")]
     pub release_date: Option<NaiveDate>,
     pub poster_path: Option<String>,

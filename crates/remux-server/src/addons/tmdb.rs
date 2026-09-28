@@ -1,7 +1,12 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
-use std::{pin::Pin, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeSet, HashMap},
+    pin::Pin,
+    sync::Arc,
+    time::Duration,
+};
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -13,6 +18,7 @@ use super::{
 };
 use crate::{
     AppContext, api, common, db, sdks,
+    sdks::remux::MetadataLanguage,
     sdks::{CachedEndpoint, ClientError},
     services::MediaResolveService,
 };
@@ -165,6 +171,21 @@ impl SearchAddon for TmdbAddon {
             }
             _ => Ok(None),
         }
+    }
+
+    async fn search_titles_in(
+        &self,
+        kind: &db::MediaKind,
+        query: &str,
+        ctx: &AppContext,
+        language: &MetadataLanguage,
+    ) -> HashMap<Uuid, String> {
+        search_tmdb_titles_in(kind, query, ctx, language)
+            .await
+            .unwrap_or_else(|error| {
+                warn!(%error, %language, "TMDB translated search failed");
+                HashMap::new()
+            })
     }
 }
 
@@ -1180,21 +1201,28 @@ async fn fetch_tmdb_meta(
             let tmdb_movie_id: Option<i64> = ids.tmdb;
 
             if let Some(tmdb_id) = tmdb_movie_id {
-                let movie_details = client
-                    .execute(
-                        sdks::tmdb::MovieEndpoint::new(
-                            tmdb_id,
-                            config
-                                .preferred_metadata_language
-                                .clone(),
-                        )
-                        .with_image_languages(thumb_and_logo_languages(
+                let langs = translation_languages(ctx, config).await;
+                let mut endpoint = sdks::tmdb::MovieEndpoint::new(
+                    tmdb_id,
+                    config
+                        .preferred_metadata_language
+                        .clone(),
+                )
+                .with_image_languages(
+                    with_translation_image_languages(
+                        thumb_and_logo_languages(
                             config
                                 .preferred_metadata_language
                                 .as_deref(),
-                        ))
-                        .with_cache(Duration::from_secs(360)),
-                    )
+                        ),
+                        &langs,
+                    ),
+                );
+                if !langs.is_empty() {
+                    endpoint = endpoint.with_translations();
+                }
+                let movie_details = client
+                    .execute(endpoint.with_cache(Duration::from_secs(360)))
                     .await?;
                 let external_ids = db::ExternalIds {
                     tmdb: Some(movie_details.id),
@@ -1327,9 +1355,30 @@ async fn fetch_tmdb_meta(
                 if let Some(url) = thumb {
                     patch.set_image(db::ImageKind::Thumb, url);
                 }
+                patch.translations = translated_texts(
+                    movie_details
+                        .translations
+                        .as_ref(),
+                    movie_details
+                        .images
+                        .as_ref(),
+                    &langs,
+                    &movie_details.original_language,
+                    movie_details
+                        .original_title
+                        .as_deref(),
+                );
                 let mut relations = vec![];
                 if let Some(genres) = &movie_details.genres {
                     relations.extend(build_genre_relations(media.id, genres));
+                    attach_genre_translations(
+                        &mut relations,
+                        genres,
+                        sdks::tmdb::GenreListKind::Movie,
+                        &langs,
+                        &client,
+                    )
+                    .await;
                 }
                 if let Some(credits) = &movie_details.credits {
                     relations.extend(build_person_relations(media.id, credits));
@@ -1362,21 +1411,28 @@ async fn fetch_tmdb_meta(
             let tmdb_series_id: Option<i64> = ids.tmdb;
 
             if let Some(tmdb_id) = tmdb_series_id {
-                let tv_details = client
-                    .execute(
-                        sdks::tmdb::SeriesEndpoint::new(
-                            tmdb_id,
-                            config
-                                .preferred_metadata_language
-                                .clone(),
-                        )
-                        .with_image_languages(thumb_and_logo_languages(
+                let langs = translation_languages(ctx, config).await;
+                let mut endpoint = sdks::tmdb::SeriesEndpoint::new(
+                    tmdb_id,
+                    config
+                        .preferred_metadata_language
+                        .clone(),
+                )
+                .with_image_languages(
+                    with_translation_image_languages(
+                        thumb_and_logo_languages(
                             config
                                 .preferred_metadata_language
                                 .as_deref(),
-                        ))
-                        .with_cache(Duration::from_secs(360)),
-                    )
+                        ),
+                        &langs,
+                    ),
+                );
+                if !langs.is_empty() {
+                    endpoint = endpoint.with_translations();
+                }
+                let tv_details = client
+                    .execute(endpoint.with_cache(Duration::from_secs(360)))
                     .await?;
                 let tmdb_ext = tv_details
                     .external_ids
@@ -1515,9 +1571,28 @@ async fn fetch_tmdb_meta(
                 if let Some(url) = thumb {
                     patch.set_image(db::ImageKind::Thumb, url);
                 }
+                patch.translations = translated_texts(
+                    tv_details
+                        .translations
+                        .as_ref(),
+                    tv_details
+                        .images
+                        .as_ref(),
+                    &langs,
+                    &tv_details.original_language,
+                    Some(&tv_details.original_name),
+                );
                 let mut relations = vec![];
                 if let Some(genres) = &tv_details.genres {
                     relations.extend(build_genre_relations(media.id, genres));
+                    attach_genre_translations(
+                        &mut relations,
+                        genres,
+                        sdks::tmdb::GenreListKind::Tv,
+                        &langs,
+                        &client,
+                    )
+                    .await;
                 }
                 if let Some(credits) = &tv_details.credits {
                     relations.extend(build_person_relations(media.id, credits));
@@ -1618,7 +1693,39 @@ async fn fetch_tmdb_meta(
                 else {
                     return Ok(None);
                 };
-                return Ok(Some(db::Media::from(ep)));
+                let mut patch = db::Media::from(ep);
+                for lang in translation_languages(ctx, config)
+                    .await
+                    .iter()
+                {
+                    let Some(season) =
+                        season_in_language(&client, tmdb_id, s_n, lang).await
+                    else {
+                        continue;
+                    };
+                    if let Some(ep) = season
+                        .episodes
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .find(|e| e.episode_number == e_n)
+                    {
+                        patch
+                            .translations
+                            .push(db::TranslatedText {
+                                language: lang.clone(),
+                                title: Some(
+                                    ep.name
+                                        .clone(),
+                                ),
+                                description: ep
+                                    .overview
+                                    .clone(),
+                                primary_image: None,
+                            });
+                    }
+                }
+                return Ok(Some(patch));
             }
         }
         db::MediaKind::Season => {
@@ -1706,8 +1813,10 @@ async fn fetch_tmdb_season_meta(
     let (Some(tmdb_id), Some(season_idx)) = (series_tmdb_id, media.idx) else {
         return Ok(None);
     };
-    let tv_details = client
-        .execute(
+    let langs = translation_languages(ctx, config).await;
+    // Independent requests run concurrently, so one season costs one round trip.
+    let (tv_details, season_ids, in_languages) = futures::join!(
+        client.execute(
             sdks::tmdb::SeriesEndpoint::new(
                 tmdb_id,
                 config
@@ -1715,8 +1824,26 @@ async fn fetch_tmdb_season_meta(
                     .clone(),
             )
             .with_cache(Duration::from_secs(360)),
-        )
-        .await?;
+        ),
+        client.execute(
+            sdks::tmdb::SeasonExternalIdsEndpoint {
+                series_id: tmdb_id,
+                season_number: season_idx,
+            }
+            .with_cache(Duration::from_secs(360)),
+        ),
+        futures::future::join_all(
+            langs
+                .iter()
+                .map(|lang| async move {
+                    (
+                        lang,
+                        season_in_language(client, tmdb_id, season_idx, lang).await,
+                    )
+                })
+        ),
+    );
+    let tv_details = tv_details?;
     let season_data = tv_details
         .seasons
         .iter()
@@ -1739,21 +1866,38 @@ async fn fetch_tmdb_season_meta(
             .external_ids
             .as_ref(),
     );
-    match client
-        .execute(
-            sdks::tmdb::SeasonExternalIdsEndpoint {
-                series_id: tmdb_id,
-                season_number: season_idx,
-            }
-            .with_cache(Duration::from_secs(360)),
-        )
-        .await
-    {
+    match season_ids {
         Ok(ids) => patch
             .external_ids
             .merge(&tmdb_external_ids(season.id, Some(&ids)), true),
         Err(error) => {
             warn!(%error, series_id = tmdb_id, season = season_idx, "TMDB season external IDs unavailable")
+        }
+    }
+    let server_poster = season
+        .poster_path
+        .clone();
+    for (lang, season) in in_languages {
+        if let Some(season) = season {
+            let primary_image = season
+                .poster_path
+                .as_deref()
+                .filter(|p| Some(*p) != server_poster.as_deref())
+                .and_then(|p| tmdb_image(Some(p), db::ImageKind::Primary));
+            patch
+                .translations
+                .push(db::TranslatedText {
+                    language: lang.clone(),
+                    title: Some(
+                        season
+                            .name
+                            .clone(),
+                    ),
+                    description: season
+                        .overview
+                        .clone(),
+                    primary_image,
+                });
         }
     }
     Ok(Some(patch))
@@ -1880,6 +2024,280 @@ async fn search_tmdb_series(
         .take(limit)
         .map(series_result_to_stub)
         .collect())
+}
+
+/// Titles of a movie/series search's results in `language`, keyed by stub
+/// id. Where TMDB has no translation it returns the original title; those
+/// are left out so the server-language title is shown instead, unless
+/// `language` is the original language.
+async fn search_tmdb_titles_in(
+    kind: &db::MediaKind,
+    query: &str,
+    ctx: &AppContext,
+    language: &MetadataLanguage,
+) -> Result<HashMap<Uuid, String>> {
+    let config = crate::db::Settings::get_config(&ctx.db).await?;
+    let client = tmdb_client(
+        config.get_tmdb_key(),
+        &ctx.config
+            .tmdb_base_url,
+    )?;
+    let param = Some(sdks::tmdb::language_param(language));
+    let results: Vec<(i64, String, Option<String>, Option<String>)> = match kind {
+        db::MediaKind::Movie => client
+            .execute(sdks::tmdb::SearchMovieEndpoint {
+                query: query.to_string(),
+                year: None,
+                language: param,
+            })
+            .await?
+            .results
+            .into_iter()
+            .map(|m| (m.id, m.title, m.original_title, m.original_language))
+            .collect(),
+        db::MediaKind::Series => client
+            .execute(sdks::tmdb::SearchTvEndpoint {
+                query: query.to_string(),
+                language: param,
+            })
+            .await?
+            .results
+            .into_iter()
+            .map(|s| (s.id, s.name, s.original_name, s.original_language))
+            .collect(),
+        _ => return Ok(HashMap::new()),
+    };
+    Ok(results
+        .into_iter()
+        .filter(|(_, title, original, original_language)| {
+            !title
+                .trim()
+                .is_empty()
+                && (original.as_deref() != Some(title.as_str())
+                    || original_language
+                        .as_deref()
+                        .is_some_and(|l| l.eq_ignore_ascii_case(language.base())))
+        })
+        .map(|(id, title, _, _)| {
+            (
+                common::stable_media_uuid(kind, &format!("tmdb:{id}")),
+                title,
+            )
+        })
+        .collect())
+}
+
+// ---------------------------------------------------------------------------
+// Translations for users reading in other languages
+// ---------------------------------------------------------------------------
+
+/// Store key for the cached active-language set; cleared when a user's
+/// metadata language or the server configuration changes.
+pub(crate) const TRANSLATION_LANGUAGES_CACHE_KEY: &str = "tmdb:translation_languages";
+
+/// Languages to fetch translations in. Cached briefly so a refresh batch
+/// reads the users table once rather than once per item.
+async fn translation_languages(
+    ctx: &AppContext,
+    config: &crate::api::ServerConfiguration,
+) -> Arc<BTreeSet<MetadataLanguage>> {
+    const KEY: &str = TRANSLATION_LANGUAGES_CACHE_KEY;
+    if let Some(langs) = ctx
+        .store
+        .get::<BTreeSet<MetadataLanguage>>(KEY)
+    {
+        return langs;
+    }
+    let langs = db::active_metadata_languages(
+        &ctx.db,
+        config
+            .preferred_metadata_language
+            .as_deref(),
+    )
+    .await
+    .unwrap_or_else(|e| {
+        warn!(error = %e, "failed to load active metadata languages");
+        BTreeSet::new()
+    });
+    ctx.store
+        .save(KEY, langs.clone(), Duration::from_secs(60));
+    Arc::new(langs)
+}
+
+/// `include_image_language` for a detail call: `base` plus every active
+/// language, so posters in those languages come back.
+fn with_translation_image_languages(
+    base: String,
+    langs: &BTreeSet<MetadataLanguage>,
+) -> String {
+    let mut out: Vec<&str> = base
+        .split(',')
+        .collect();
+    for lang in langs {
+        if !out.contains(&lang.base()) {
+            out.insert(out.len() - 1, lang.base());
+        }
+    }
+    out.join(",")
+}
+
+/// Best-voted poster tagged with `language`'s base language.
+fn poster_in_language(
+    images: Option<&sdks::tmdb::Images>,
+    language: &MetadataLanguage,
+) -> Option<String> {
+    let poster = images?
+        .posters
+        .iter()
+        .filter(|p| {
+            p.iso_639_1
+                .as_deref()
+                .is_some_and(|l| l.eq_ignore_ascii_case(language.base()))
+        })
+        .max_by(|a, b| {
+            a.vote_average
+                .unwrap_or_default()
+                .total_cmp(
+                    &b.vote_average
+                        .unwrap_or_default(),
+                )
+                .then(
+                    a.vote_count
+                        .cmp(&b.vote_count),
+                )
+        })?;
+    tmdb_image(Some(&poster.file_path), db::ImageKind::Primary)
+}
+
+/// TMDB leaves a translation's title empty when it equals the original
+/// title, so a reader of the original language gets `original_title`.
+fn translated_texts(
+    translations: Option<&sdks::tmdb::Translations>,
+    images: Option<&sdks::tmdb::Images>,
+    langs: &BTreeSet<MetadataLanguage>,
+    original_language: &str,
+    original_title: Option<&str>,
+) -> Vec<db::TranslatedText> {
+    langs
+        .iter()
+        .filter_map(|lang| {
+            let (title, description) = translations
+                .map(|t| t.text_for(lang))
+                .unwrap_or_default();
+            let title = title.or_else(|| {
+                lang.base()
+                    .eq_ignore_ascii_case(original_language)
+                    .then(|| original_title.map(str::to_string))
+                    .flatten()
+            });
+            let primary_image = poster_in_language(images, lang);
+            (title.is_some() || description.is_some() || primary_image.is_some()).then(
+                || db::TranslatedText {
+                    language: lang.clone(),
+                    title,
+                    description,
+                    primary_image,
+                },
+            )
+        })
+        .collect()
+}
+
+/// Give each genre relation row its name in every active language, matched
+/// by TMDB genre id.
+async fn attach_genre_translations(
+    relations: &mut [(db::MediaRelation, db::Media)],
+    genres: &[sdks::tmdb::Genre],
+    kind: sdks::tmdb::GenreListKind,
+    langs: &BTreeSet<MetadataLanguage>,
+    client: &sdks::RestClient<sdks::BearerAuth>,
+) {
+    if langs.is_empty() || genres.is_empty() {
+        return;
+    }
+    let genre_row_ids: Vec<(u64, Uuid)> = genres
+        .iter()
+        .map(|g| {
+            (
+                g.id,
+                common::stable_media_uuid(
+                    &db::MediaKind::Genre,
+                    &g.name
+                        .to_lowercase(),
+                ),
+            )
+        })
+        .collect();
+    for lang in langs {
+        let list = match client
+            .execute_arc(
+                sdks::tmdb::GenreListEndpoint {
+                    kind,
+                    language: sdks::tmdb::language_param(lang),
+                }
+                .with_cache(Duration::from_secs(86400)),
+            )
+            .await
+        {
+            Ok(list) => list,
+            Err(error) => {
+                warn!(%error, %lang, "TMDB genre list unavailable");
+                continue;
+            }
+        };
+        for (tmdb_genre_id, row_id) in &genre_row_ids {
+            let Some(name) = list
+                .genres
+                .iter()
+                .find(|g| g.id == *tmdb_genre_id)
+                .map(|g| {
+                    g.name
+                        .clone()
+                })
+            else {
+                continue;
+            };
+            for (_, genre) in relations
+                .iter_mut()
+                .filter(|(_, m)| m.id == *row_id)
+            {
+                genre
+                    .translations
+                    .push(db::TranslatedText {
+                        language: lang.clone(),
+                        title: Some(name.clone()),
+                        description: None,
+                        primary_image: None,
+                    });
+            }
+        }
+    }
+}
+
+/// A season in one active language: season and episode names/overviews.
+/// Cached like the default-language season, so every episode of a season
+/// shares one call per language.
+async fn season_in_language(
+    client: &sdks::RestClient<sdks::BearerAuth>,
+    series_id: i64,
+    season_number: i64,
+    lang: &MetadataLanguage,
+) -> Option<Arc<sdks::tmdb::Season>> {
+    client
+        .execute_arc(
+            sdks::tmdb::SeasonEndpoint {
+                series_id,
+                season_number,
+                language: Some(sdks::tmdb::language_param(lang)),
+                append_to_response: None,
+            }
+            .with_cache(Duration::from_secs(360)),
+        )
+        .await
+        .inspect_err(|error| {
+            warn!(%error, series_id, season_number, %lang, "TMDB translated season unavailable")
+        })
+        .ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -2445,5 +2863,545 @@ mod tests {
         assert_eq!(thumb_and_logo_languages(Some("en")), "en,null");
         assert_eq!(thumb_and_logo_languages(Some("nl")), "nl,en,null");
         assert_eq!(thumb_and_logo_languages(Some("nl-NL")), "nl,en,null");
+    }
+
+    async fn ctx_with_tmdb(
+        tmdb: &httpmock::MockServer,
+    ) -> crate::integration_test::TestGuard {
+        crate::integration_test::new_test_server_with_config(crate::Config {
+            database_url: Some("sqlite::memory:".into()),
+            torrent_http_port: None,
+            disable_dht: true,
+            tmdb_base_url: tmdb.base_url(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .1
+    }
+
+    async fn set_user_language(ctx: &AppContext, language: &str) {
+        sqlx::query(
+            "UPDATE users SET configuration = json_set(COALESCE(configuration, '{}'), \
+             '$.remux', json_object('metadata_language', ?))",
+        )
+        .bind(language)
+        .execute(&ctx.db)
+        .await
+        .unwrap();
+        ctx.store
+            .delete(TRANSLATION_LANGUAGES_CACHE_KEY);
+    }
+
+    async fn stored_translations(
+        ctx: &AppContext,
+        media_id: Uuid,
+    ) -> Vec<(String, Option<String>, Option<String>)> {
+        sqlx::query_as(
+            "SELECT language, title, description FROM media_translations \
+             WHERE media_id = ? ORDER BY language",
+        )
+        .bind(media_id)
+        .fetch_all(&ctx.db)
+        .await
+        .unwrap()
+    }
+
+    fn mock_spirited_away(tmdb: &httpmock::MockServer) {
+        mock_spirited_away_after(tmdb, Duration::ZERO);
+    }
+
+    fn mock_spirited_away_after(
+        tmdb: &httpmock::MockServer,
+        delay: Duration,
+    ) -> httpmock::Mock<'_> {
+        let movie = tmdb.mock(|when, then| {
+            when.path("/movie/129");
+            then.status(200)
+                .delay(delay)
+                .json_body(serde_json::json!({
+                    "id": 129,
+                    "title": "Spirited Away",
+                    "overview": "A girl enters the spirit world.",
+                    "adult": false,
+                    "original_language": "ja",
+                    "genres": [{ "id": 16, "name": "Animation" }],
+                    "translations": { "translations": [
+                        { "iso_639_1": "es", "iso_3166_1": "ES",
+                          "data": { "title": "El viaje de Chihiro", "overview": "Chihiro entra al mundo de los espíritus." } },
+                        { "iso_639_1": "fr", "iso_3166_1": "FR",
+                          "data": { "title": "Le Voyage de Chihiro", "overview": "Chihiro entre dans le monde des esprits." } }
+                    ]}
+                }));
+        });
+        tmdb.mock(|when, then| {
+            when.path("/genre/movie/list")
+                .query_param("language", "es");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "genres": [{ "id": 16, "name": "Animación" }]
+                }));
+        });
+        movie
+    }
+
+    async fn refresh_spirited_away(ctx: &AppContext) -> Uuid {
+        let movie = db::Media {
+            id: common::stable_media_uuid(&db::MediaKind::Movie, "tmdb:129"),
+            title: "Spirited Away".into(),
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                tmdb: Some(129),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        db::Media::upsert(&ctx.db, &[movie.clone()])
+            .await
+            .unwrap();
+        ctx.addons
+            .process_meta_batch(vec![movie.clone()], ctx, true, None)
+            .await
+            .unwrap();
+        movie.id
+    }
+
+    #[tokio::test]
+    async fn refresh_stores_translations_only_in_languages_users_read() {
+        let tmdb = httpmock::MockServer::start();
+        mock_spirited_away(&tmdb);
+        let guard = ctx_with_tmdb(&tmdb).await;
+        let ctx = &guard.0;
+        set_user_language(ctx, "es").await;
+
+        let movie_id = refresh_spirited_away(ctx).await;
+
+        assert_eq!(
+            stored_translations(ctx, movie_id).await,
+            vec![(
+                "es".to_string(),
+                Some("El viaje de Chihiro".to_string()),
+                Some("Chihiro entra al mundo de los espíritus.".to_string())
+            )],
+            "only the language a user reads is kept"
+        );
+        let genre_id = common::stable_media_uuid(&db::MediaKind::Genre, "animation");
+        assert_eq!(
+            stored_translations(ctx, genre_id).await,
+            vec![("es".to_string(), Some("Animación".to_string()), None)],
+            "genre row keeps its identity and gains a translated name"
+        );
+    }
+
+    /// Languages stored for Spirited Away after a full refresh during which
+    /// the user's language changes from `before` to `during`. A `before`
+    /// translation is stored first, as an earlier refresh would have.
+    async fn full_refresh_changing_language(before: &str, during: &str) -> Vec<String> {
+        let tmdb = httpmock::MockServer::start();
+        let movie_mock = mock_spirited_away_after(&tmdb, Duration::from_millis(500));
+        let guard = ctx_with_tmdb(&tmdb).await;
+        let ctx = guard
+            .0
+            .clone();
+        set_user_language(&ctx, before).await;
+        let movie_id = common::stable_media_uuid(&db::MediaKind::Movie, "tmdb:129");
+        db::Media::upsert(
+            &ctx.db,
+            &[db::Media {
+                id: movie_id,
+                title: "Spirited Away".into(),
+                kind: db::MediaKind::Movie,
+                external_ids: db::ExternalIds {
+                    tmdb: Some(129),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+        )
+        .await
+        .unwrap();
+        if let Ok(language) = before.parse() {
+            db::MediaTranslation::upsert_provider(
+                &ctx.db,
+                &[(
+                    movie_id,
+                    db::TranslatedText {
+                        language,
+                        title: Some("Spirited Away (earlier)".into()),
+                        description: None,
+                        primary_image: None,
+                    },
+                )],
+            )
+            .await
+            .unwrap();
+        }
+        let tasks = Arc::new(
+            crate::tasks::TaskService::new(ctx.clone())
+                .await
+                .unwrap(),
+        );
+        let run = tokio::spawn({
+            let ctx = ctx.clone();
+            async move {
+                use crate::tasks::Task;
+                crate::tasks::RefreshAllMetaTask
+                    .run(
+                        ctx,
+                        tasks,
+                        crate::common::ProgressReporter::new(Default::default()),
+                    )
+                    .await
+            }
+        });
+        while movie_mock.hits() == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        set_user_language(&ctx, during).await;
+        run.await
+            .unwrap()
+            .unwrap();
+        stored_translations(&ctx, movie_id)
+            .await
+            .into_iter()
+            .map(|(language, ..)| language)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn full_refresh_goes_round_again_for_a_language_selected_mid_run() {
+        assert_eq!(full_refresh_changing_language("", "es").await, vec!["es"]);
+    }
+
+    #[tokio::test]
+    async fn full_refresh_prunes_a_language_deselected_mid_run() {
+        assert!(
+            full_refresh_changing_language("fr", "")
+                .await
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_without_user_languages_stores_nothing() {
+        let tmdb = httpmock::MockServer::start();
+        mock_spirited_away(&tmdb);
+        let guard = ctx_with_tmdb(&tmdb).await;
+        let ctx = &guard.0;
+
+        let movie_id = refresh_spirited_away(ctx).await;
+
+        assert!(
+            stored_translations(ctx, movie_id)
+                .await
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn original_language_readers_get_the_original_title() {
+        let translations: sdks::tmdb::Translations = serde_json::from_value(serde_json::json!({
+            "translations": [
+                { "iso_639_1": "en", "iso_3166_1": "US",
+                  "data": { "title": "", "overview": "Spanning the years 1945 to 1955…" } },
+                { "iso_639_1": "fr", "iso_3166_1": "FR",
+                  "data": { "title": "", "overview": "En 1945, à New York…" } }
+            ]
+        }))
+        .unwrap();
+        let langs: BTreeSet<MetadataLanguage> = ["en", "fr"]
+            .iter()
+            .map(|l| {
+                l.parse()
+                    .unwrap()
+            })
+            .collect();
+        let texts = translated_texts(
+            Some(&translations),
+            None,
+            &langs,
+            "en",
+            Some("The Godfather"),
+        );
+        let title = |tag: &str| {
+            texts
+                .iter()
+                .find(|t| {
+                    t.language
+                        .as_str()
+                        == tag
+                })
+                .and_then(|t| {
+                    t.title
+                        .clone()
+                })
+        };
+        assert_eq!(title("en").as_deref(), Some("The Godfather"));
+        assert_eq!(
+            title("fr"),
+            None,
+            "other languages fall back to the server title"
+        );
+    }
+
+    #[test]
+    fn posters_are_picked_per_language_by_vote() {
+        let images: sdks::tmdb::Images = serde_json::from_value(serde_json::json!({
+            "posters": [
+                { "file_path": "/en-low.jpg", "iso_639_1": "en", "vote_average": 5.0, "vote_count": 3 },
+                { "file_path": "/en-high.jpg", "iso_639_1": "en", "vote_average": 5.6, "vote_count": 1 },
+                { "file_path": "/es.jpg", "iso_639_1": "es", "vote_average": 9.0, "vote_count": 9 },
+                { "file_path": "/none.jpg", "iso_639_1": null, "vote_average": 9.9, "vote_count": 9 }
+            ]
+        }))
+        .unwrap();
+        let lang = |l: &str| -> MetadataLanguage {
+            l.parse()
+                .unwrap()
+        };
+        assert_eq!(
+            poster_in_language(Some(&images), &lang("en-gb")).as_deref(),
+            Some("https://image.tmdb.org/t/p/w780/en-high.jpg")
+        );
+        assert_eq!(poster_in_language(Some(&images), &lang("fr")), None);
+        assert_eq!(poster_in_language(None, &lang("en")), None);
+    }
+
+    #[test]
+    fn detail_calls_request_images_in_active_languages() {
+        let langs: BTreeSet<MetadataLanguage> = ["fr", "pt-br", "en"]
+            .iter()
+            .map(|l| {
+                l.parse()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            with_translation_image_languages(
+                thumb_and_logo_languages(Some("es")),
+                &langs
+            ),
+            "es,en,fr,pt,null"
+        );
+        assert_eq!(
+            with_translation_image_languages(
+                thumb_and_logo_languages(Some("es")),
+                &BTreeSet::new()
+            ),
+            "es,en,null"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_shows_user_language_titles_without_caching_them() {
+        let tmdb = httpmock::MockServer::start();
+        let translated = tmdb.mock(|when, then| {
+            when.path("/search/movie")
+                .query_param("language", "es");
+            // TMDB falls back to the original title where it has no translation.
+            then.status(200)
+                .json_body(serde_json::json!({ "results": [
+                    { "id": 478137, "title": "Kontroll", "original_title": "Kontroll", "original_language": "hu" },
+                    { "id": 129, "title": "El viaje de Chihiro", "original_title": "千と千尋の神隠し" },
+                    { "id": 1417, "title": "El laberinto del fauno", "original_title": "El laberinto del fauno", "original_language": "es" }
+                ]}));
+        });
+        tmdb.mock(|when, then| {
+            when.path("/search/movie")
+                .query_param("language", "en");
+            then.status(200)
+                .json_body(serde_json::json!({ "results": [
+                    { "id": 129, "title": "Spirited Away", "original_title": "千と千尋の神隠し" },
+                    { "id": 478137, "title": "Control", "original_title": "Kontroll" },
+                    { "id": 1417, "title": "Pan's Labyrinth", "original_title": "El laberinto del fauno" }
+                ]}));
+        });
+        let guard = ctx_with_tmdb(&tmdb).await;
+        let ctx = &guard.0;
+        let es: MetadataLanguage = "es"
+            .parse()
+            .unwrap();
+
+        let titles = |results: Vec<db::Media>| -> Vec<String> {
+            results
+                .into_iter()
+                .map(|m| m.title)
+                .collect()
+        };
+        let results = ctx
+            .addons
+            .search(&db::MediaKind::Movie, "chihiro", 10, ctx, None, Some(&es))
+            .await
+            .unwrap();
+        assert_eq!(
+            titles(results),
+            vec!["El viaje de Chihiro", "Control", "El laberinto del fauno"],
+            "an original title is kept for a reader of the original language"
+        );
+
+        let cached = ctx
+            .store
+            .get::<db::Media>(
+                common::stable_media_uuid(&db::MediaKind::Movie, "tmdb:129")
+                    .to_string(),
+            )
+            .expect("stub cached");
+        assert_eq!(
+            cached.title, "Spirited Away",
+            "shared cache holds server-language text"
+        );
+
+        let results = ctx
+            .addons
+            .search(&db::MediaKind::Movie, "chihiro", 10, ctx, None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            titles(results),
+            vec!["Spirited Away", "Control", "Pan's Labyrinth"]
+        );
+        translated.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn slow_translated_search_does_not_hold_up_results() {
+        let tmdb = httpmock::MockServer::start();
+        tmdb.mock(|when, then| {
+            when.path("/search/movie")
+                .query_param("language", "es");
+            then.status(200)
+                .delay(Duration::from_secs(10))
+                .json_body(serde_json::json!({ "results": [
+                    { "id": 129, "title": "El viaje de Chihiro", "original_title": "千と千尋の神隠し" }
+                ]}));
+        });
+        tmdb.mock(|when, then| {
+            when.path("/search/movie")
+                .query_param("language", "en");
+            then.status(200)
+                .json_body(serde_json::json!({ "results": [
+                    { "id": 129, "title": "Spirited Away", "original_title": "千と千尋の神隠し" }
+                ]}));
+        });
+        let guard = ctx_with_tmdb(&tmdb).await;
+        let ctx = &guard.0;
+        let es: MetadataLanguage = "es"
+            .parse()
+            .unwrap();
+
+        let started = std::time::Instant::now();
+        let results = ctx
+            .addons
+            .search(&db::MediaKind::Movie, "chihiro", 10, ctx, None, Some(&es))
+            .await
+            .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(results[0].title, "Spirited Away");
+    }
+
+    #[tokio::test]
+    async fn seasons_and_episodes_get_text_from_one_call_per_season_and_language() {
+        let tmdb = httpmock::MockServer::start();
+        tmdb.mock(|when, then| {
+            when.path("/tv/1399");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "id": 1399,
+                    "name": "Game of Thrones",
+                    "seasons": [{ "id": 3624, "name": "Season 1", "season_number": 1 }]
+                }));
+        });
+        let translated_season = tmdb.mock(|when, then| {
+            when.path("/tv/1399/season/1")
+                .query_param("language", "es");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "id": 3624, "name": "Temporada 1", "overview": "La primera temporada.",
+                    "season_number": 1,
+                    "episodes": [{ "id": 63056, "name": "Se acerca el invierno",
+                                   "overview": "Episodio uno.", "episode_number": 1, "season_number": 1 }]
+                }));
+        });
+        tmdb.mock(|when, then| {
+            when.path("/tv/1399/season/1")
+                .query_param("language", "en");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "id": 3624, "name": "Season 1", "season_number": 1,
+                    "episodes": [{ "id": 63056, "name": "Winter Is Coming",
+                                   "overview": "Episode one.", "episode_number": 1, "season_number": 1 }]
+                }));
+        });
+        let guard = ctx_with_tmdb(&tmdb).await;
+        let ctx = &guard.0;
+        set_user_language(ctx, "es").await;
+        let config = db::Settings::get_config_or_default(&ctx.db).await;
+
+        let series = Arc::new(db::Media {
+            kind: db::MediaKind::Series,
+            external_ids: db::ExternalIds {
+                tmdb: Some(1399),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let season = db::Media {
+            kind: db::MediaKind::Season,
+            idx: Some(1),
+            grandparent: Some(Arc::clone(&series)),
+            ..Default::default()
+        };
+        let episode = db::Media {
+            kind: db::MediaKind::Episode,
+            idx: Some(1),
+            parent_idx: Some(1),
+            grandparent: Some(series),
+            ..Default::default()
+        };
+
+        let es = |patch: db::Media| {
+            patch
+                .translations
+                .into_iter()
+                .map(|t| {
+                    (
+                        t.language
+                            .to_string(),
+                        t.title,
+                        t.description,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let season_patch = fetch_tmdb_meta(&season, ctx, &config)
+            .await
+            .unwrap()
+            .expect("season patch");
+        assert_eq!(
+            es(season_patch),
+            vec![(
+                "es".to_string(),
+                Some("Temporada 1".to_string()),
+                Some("La primera temporada.".to_string())
+            )]
+        );
+        let episode_patch = fetch_tmdb_meta(&episode, ctx, &config)
+            .await
+            .unwrap()
+            .expect("episode patch");
+        assert_eq!(episode_patch.title, "Winter Is Coming");
+        assert_eq!(
+            es(episode_patch),
+            vec![(
+                "es".to_string(),
+                Some("Se acerca el invierno".to_string()),
+                Some("Episodio uno.".to_string())
+            )]
+        );
+        translated_season.assert_hits(1);
     }
 }

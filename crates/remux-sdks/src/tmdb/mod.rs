@@ -12,6 +12,8 @@ pub mod movie;
 pub use movie::*;
 pub mod series;
 pub use series::*;
+pub mod translations;
+pub use translations::*;
 
 pub trait IdSetter {
     fn id(self, id: i64) -> Self;

@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::Arc,
+};
 
 use remux_sdks::remux::MetadataLanguage;
 use sqlx::SqlitePool;
@@ -28,13 +31,38 @@ pub struct MediaTranslation {
     pub locked_fields: Option<Vec<MetadataField>>,
 }
 
-/// Provider text for one media item in one non-default language.
+/// Provider text in one non-default language, carried on a fetched
+/// `Media` until `Media::upsert` writes it for that row.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranslatedText {
     pub language: MetadataLanguage,
     pub title: Option<String>,
     pub description: Option<String>,
     pub primary_image: Option<String>,
+}
+
+/// Languages to fetch and keep translations for: every language a user has
+/// chosen, minus the server default (stored on the media row itself).
+pub async fn active_metadata_languages(
+    db: &SqlitePool,
+    server_default: Option<&str>,
+) -> Result<BTreeSet<MetadataLanguage>, sqlx::Error> {
+    let rows: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT DISTINCT json_extract(configuration, '$.remux.metadata_language') \
+         FROM users WHERE configuration IS NOT NULL",
+    )
+    .fetch_all(db)
+    .await?;
+    let server_default = MetadataLanguage::parse_pref(server_default);
+    Ok(rows
+        .into_iter()
+        .filter_map(|l| MetadataLanguage::parse_pref(l.as_deref()))
+        .filter(|l| {
+            !server_default
+                .as_ref()
+                .is_some_and(|s| l.is_covered_by(s))
+        })
+        .collect())
 }
 
 /// Fields stored per language. Every other `MetadataField` is global.
@@ -387,6 +415,34 @@ impl MediaTranslation {
                     .unwrap_or_else(|| n.clone())
             })
             .collect())
+    }
+
+    /// Delete provider rows for languages no user reads any more, keeping
+    /// each kept language's fallback tags. Manual rows are kept.
+    pub async fn prune_provider_rows(
+        db: &SqlitePool,
+        keep: &BTreeSet<MetadataLanguage>,
+    ) -> Result<u64, sqlx::Error> {
+        let tags: BTreeSet<&str> = keep
+            .iter()
+            .flat_map(MetadataLanguage::fallbacks)
+            .collect();
+        let mut qb = sqlx::QueryBuilder::new(
+            "DELETE FROM media_translations WHERE source = 'provider'",
+        );
+        if !tags.is_empty() {
+            qb.push(" AND language NOT IN (");
+            let mut sep = qb.separated(", ");
+            for tag in tags {
+                sep.push_bind(tag);
+            }
+            qb.push(")");
+        }
+        Ok(qb
+            .build()
+            .execute(db)
+            .await?
+            .rows_affected())
     }
 }
 
@@ -1277,6 +1333,54 @@ mod tests {
         .unwrap();
         assert_eq!(names, vec!["Kids"]);
     }
+
+    #[tokio::test]
+    async fn prune_keeps_active_languages_and_manual_rows() {
+        let db = test_db().await;
+        let m = insert_movie(&db, "The Matrix").await;
+        for tag in ["es", "fr"] {
+            MediaTranslation::upsert_provider(
+                &db,
+                &[(
+                    m.id,
+                    TranslatedText {
+                        language: lang(tag),
+                        title: Some(format!("Matrix {tag}")),
+                        description: None,
+                        primary_image: None,
+                    },
+                )],
+            )
+            .await
+            .unwrap();
+        }
+        MediaTranslation::set_manual(
+            &db,
+            m.id,
+            &lang("de"),
+            Some("Matrix DE"),
+            None,
+            &[],
+        )
+        .await
+        .unwrap();
+        let removed = MediaTranslation::prune_provider_rows(
+            &db,
+            &[lang("es-mx")]
+                .into_iter()
+                .collect(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(removed, 1, "es stays as the fallback for es-mx readers");
+        for (tag, present) in [("es", true), ("fr", false), ("de", true)] {
+            let found = MediaTranslation::get_for_media_ids(&db, &[m.id], &lang(tag))
+                .await
+                .unwrap();
+            assert_eq!(found.contains_key(&m.id), present, "{tag}");
+        }
+    }
+
     async fn seed_translated_movies(db: &SqlitePool) -> Vec<Media> {
         // server-language title -> Spanish title
         let pairs = [
@@ -1427,5 +1531,35 @@ mod tests {
         let mut f = movie_filter(Some("es-mx"));
         f.name_starts_with = Some("M".into());
         assert_eq!(titles(&db, f).await, vec!["Matrix"]);
+    }
+
+    #[tokio::test]
+    async fn active_languages_are_users_choices_minus_server_default() {
+        let db = test_db().await;
+        for (name, config) in [
+            ("a", Some(r#"{"remux":{"metadata_language":"es-ES"}}"#)),
+            ("b", Some(r#"{"remux":{"metadata_language":"es"}}"#)),
+            ("c", Some(r#"{"remux":{"metadata_language":"en"}}"#)),
+            ("d", Some(r#"{"remux":{"metadata_language":""}}"#)),
+            ("e", Some("{}")),
+            ("f", None),
+        ] {
+            sqlx::query(
+                "INSERT INTO users (id, username, password_hash, configuration) VALUES (?, ?, '', ?)",
+            )
+            .bind(Uuid::new_v4().to_string())
+            .bind(name)
+            .bind(config)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        let active: Vec<String> = active_metadata_languages(&db, Some("en-US"))
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|l| l.to_string())
+            .collect();
+        assert_eq!(active, vec!["es", "es-es"]);
     }
 }

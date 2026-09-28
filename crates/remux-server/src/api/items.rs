@@ -379,6 +379,7 @@ pub async fn get_items(
                                     .user
                                     .id,
                             ),
+                            metadata_language.as_ref(),
                         )
                 })
                 .collect();
@@ -4172,6 +4173,21 @@ mod tests {
         m
     }
 
+    /// Another user reading `language`, so a test user choosing it doesn't
+    /// make it newly active and start a full metadata refresh.
+    async fn add_reader(db: &sqlx::SqlitePool, language: &str) {
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash, configuration) \
+             VALUES (?, ?, '', json_object('remux', json_object('metadata_language', ?)))",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(format!("reader-{language}"))
+        .bind(language)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
     async fn add_genre(db: &sqlx::SqlitePool, media_id: Uuid, genre: &str) {
         let pairs = db::build_genre_relations_from_names(
             media_id,
@@ -4208,6 +4224,7 @@ mod tests {
                 .unwrap(),
         )
         .await;
+        add_reader(db, "es").await;
 
         let movie =
             insert_media(db, "Spirited Away", db::MediaKind::Movie, "tt0245429").await;
@@ -4333,6 +4350,7 @@ mod tests {
                 .unwrap(),
         )
         .await;
+        add_reader(db, "es").await;
         let movie =
             insert_media(db, "Spirited Away", db::MediaKind::Movie, "tt0245429").await;
         let server_image_id = Uuid::new_v4();
@@ -4425,6 +4443,7 @@ mod tests {
                 .unwrap(),
         )
         .await;
+        add_reader(db, "es").await;
 
         let movie =
             insert_media(db, "Spirited Away", db::MediaKind::Movie, "tt0245429").await;
