@@ -6073,6 +6073,42 @@ impl Media {
             .collect())
     }
 
+    /// Writes only the rating columns the RemuxDB metrics sync owns, in one
+    /// transaction. The sync holds a minimal projection of each item, so a full
+    /// `upsert` would overwrite every other column with its default.
+    /// `rating_*` keep their stored value when the new one is `None`, like
+    /// `upsert`'s `COALESCE`.
+    pub async fn update_ratings(db: &SqlitePool, items: &[Self]) -> Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let _permit = DB_WRITE_SEMAPHORE
+            .acquire()
+            .await
+            .unwrap();
+        let mut tx = db
+            .begin()
+            .await?;
+        for item in items {
+            sqlx::query(
+                "UPDATE media SET \
+                 rating_audience = COALESCE(?, rating_audience), \
+                 rating_critic = COALESCE(?, rating_critic), \
+                 external_ratings = COALESCE(?, external_ratings) \
+                 WHERE id = ?",
+            )
+            .bind(item.rating_audience)
+            .bind(item.rating_critic)
+            .bind(sqlx::types::Json(&item.external_ratings))
+            .bind(item.id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit()
+            .await?;
+        Ok(())
+    }
+
     pub async fn get_by_jellyfin_filter(
         db: &sqlx::SqlitePool,
         filter: &api::GetItemsQuery,
