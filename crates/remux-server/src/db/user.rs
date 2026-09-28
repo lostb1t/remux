@@ -126,7 +126,18 @@ impl User {
         id: &Uuid,
         config: &crate::api::UserConfiguration,
     ) -> Result<()> {
-        let json = sqlx::types::Json(config.clone());
+        let mut config = config.clone();
+        if config
+            .remux
+            .is_none()
+        {
+            let stored = Self::get_by_id(db, id)
+                .await?
+                .and_then(|u| u.configuration)
+                .map(|c| c.0);
+            config.keep_remux_extension_from(stored.as_ref());
+        }
+        let json = sqlx::types::Json(config);
         sqlx::query(r#"UPDATE users SET configuration = ?1 WHERE id = ?2"#)
             .bind(&json)
             .bind(id)

@@ -1228,7 +1228,12 @@ pub async fn update_user(
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context_bad_request("Invalid username")?;
     user.username = username.into_inner();
-    if let Some(config) = payload.configuration {
+    if let Some(mut config) = payload.configuration {
+        config.keep_remux_extension_from(
+            user.configuration
+                .as_ref()
+                .map(|c| &c.0),
+        );
         user.configuration = Some(sqlx::types::Json(config));
     }
     user.save(
